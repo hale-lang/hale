@@ -66,6 +66,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hale_graph::ids::SiteId;
 use hale_model::ApplicationModel;
 use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
@@ -92,6 +93,8 @@ use crate::frontend::{
     collect_ap_files, link_checkable, merge_programs, parse_checkable, seed_dir_of, source_map,
     CheckableFailure, LoadMode,
 };
+use crate::dependents::{Declaration, DependencyIndex, Dependents};
+use crate::typing_reuse::{Plan, ReuseKey, Side, TypingReuse};
 use crate::imports::ImportRenames;
 use crate::source::SourceProvider;
 
@@ -387,6 +390,19 @@ pub struct Checked {
     pub diags: Vec<Diag>,
 }
 
+/// The typing's record: what the resolver and the checker report, the
+/// effects certificate report, what the check typed (the record the
+/// typed-body table is packaged from, [`Snapshot::demand_typed_bodies`]),
+/// the per-declaration passes' results per declaration (what a later
+/// snapshot of the seed may reuse), and what this one reused.
+struct Typed {
+    diags: Vec<Diag>,
+    certificates: EffectCertificates,
+    record: TypingRecord,
+    by_decl: hale_types::check::ByDeclaration,
+    reuse: TypingReuse,
+}
+
 /// The top scope and what building it reported.
 struct Scope {
     top: TopScope,
@@ -447,11 +463,16 @@ pub struct Snapshot {
     bindings: OnceCell<Result<BindingRows, Blocked>>,
     forms: OnceCell<Result<FormRows, Blocked>>,
     /// The typing's diagnostics, the effects certificate report its
-    /// check produced ([`Snapshot::demand_effect_certificates`]), and
-    /// what it typed, the record the typed-body table is packaged from
-    /// ([`Snapshot::demand_typed_bodies`]).
-    typing: OnceCell<Result<(Vec<Diag>, EffectCertificates, TypingRecord), Blocked>>,
+    /// check produced ([`Snapshot::demand_effect_certificates`]), what
+    /// it typed, the record the typed-body table is packaged from
+    /// ([`Snapshot::demand_typed_bodies`]), what the per-declaration
+    /// passes reported per declaration, and what was reused.
+    typing: OnceCell<Result<Typed, Blocked>>,
     typed_bodies: OnceCell<Result<TypedBodies, Blocked>>,
+    /// The editor's previous snapshot of this seed, offered for its
+    /// typing's reuse ([`Snapshot::reusing_typing`]); taken when the
+    /// typing runs.
+    previous: Cell<Option<Box<Snapshot>>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
@@ -470,6 +491,10 @@ pub struct Snapshot {
     check: OnceCell<Result<Checked, Blocked>>,
     intra_locus: OnceCell<Result<IntraLocusStage, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
+    /// The top-level declarations ([`Snapshot::declarations`]), and the
+    /// families' rows joined to them ([`Snapshot::declaration_dependents`]).
+    declarations: OnceCell<Vec<Declaration>>,
+    dependency_index: OnceCell<Result<DependencyIndex, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
     stage_builds: [Cell<u32>; STAGES.len()],
 }
@@ -634,6 +659,7 @@ impl Snapshot {
             forms: OnceCell::new(),
             typing: OnceCell::new(),
             typed_bodies: OnceCell::new(),
+            previous: Cell::new(None),
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
@@ -646,6 +672,8 @@ impl Snapshot {
             check: OnceCell::new(),
             intra_locus: OnceCell::new(),
             lowering: OnceCell::new(),
+            declarations: OnceCell::new(),
+            dependency_index: OnceCell::new(),
             builds,
             stage_builds: Default::default(),
         };
@@ -1100,42 +1128,130 @@ impl Snapshot {
     /// does not typecheck (it reads declarations, not types), so a
     /// family the check reads is never one the check had to clear.
     fn typing(&self) -> Result<&[Diag], &Blocked> {
-        self.typed().map(|(diags, _, _)| diags.as_slice())
+        self.typed().map(|t| t.diags.as_slice())
     }
 
-    fn typed(&self) -> Result<&(Vec<Diag>, EffectCertificates, TypingRecord), &Blocked> {
+    fn typed(&self) -> Result<&Typed, &Blocked> {
         self.typing
-            .get_or_init(|| {
-                let scope = self.scope().map_err(Clone::clone)?;
-                // The effect rows on request: a codec binding's purity
-                // assertion demands them, nothing else in the check does.
-                let effects = || self.demand_effects().ok();
-                let inputs = hale_types::check::CheckInputs {
-                    top: &scope.top,
-                    handlers: self.demand_handlers().map_err(Clone::clone)?,
-                    ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
-                    effects: &effects,
-                    entry: self.demand_entry().map_err(Clone::clone)?,
-                    bindings: self.demand_bindings().map_err(Clone::clone)?,
-                    alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
-                    forms: self.demand_forms().map_err(Clone::clone)?,
-                    bus: self.demand_bus_graph().map_err(Clone::clone)?,
-                    intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
-                    placement: self.demand_placement().map_err(Clone::clone)?,
-                };
-                self.count("expression_typing");
-                let mut diags = scope.diags.clone();
-                let (checked, certificates, record) = hale_types::check::check_bundle_typing(
-                    &self.bundle(),
-                    &inputs,
-                    self.config.allow_unowned_subscriber,
-                    self.config.whole_program,
-                    self.config.whole_program,
-                );
-                diags.extend(checked);
-                Ok((diags, certificates, record))
-            })
+            .get_or_init(|| self.check_typing(true))
             .as_ref()
+    }
+
+    /// The typing's check over the snapshot's families, the scope's
+    /// diagnostics first. `reusing`: the per-declaration passes the
+    /// editor's previous snapshot of the seed answers are skipped
+    /// ([`hale_types::check::check_bundle_by_declaration`]), the previous
+    /// snapshot taken once every family the check reads is ready, so a
+    /// blocked typing leaves it for the next ([`Snapshot::take_previous`]).
+    fn check_typing(&self, reusing: bool) -> Result<Typed, Blocked> {
+        let scope = self.scope().map_err(Clone::clone)?;
+        // The effect rows on request: a codec binding's purity
+        // assertion demands them, nothing else in the check does.
+        let effects = || self.demand_effects().ok();
+        let inputs = hale_types::check::CheckInputs {
+            top: &scope.top,
+            handlers: self.demand_handlers().map_err(Clone::clone)?,
+            ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
+            effects: &effects,
+            entry: self.demand_entry().map_err(Clone::clone)?,
+            bindings: self.demand_bindings().map_err(Clone::clone)?,
+            alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
+            forms: self.demand_forms().map_err(Clone::clone)?,
+            bus: self.demand_bus_graph().map_err(Clone::clone)?,
+            intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
+            placement: self.demand_placement().map_err(Clone::clone)?,
+        };
+        self.count("expression_typing");
+        // The editor's previous snapshot of the seed, if it offered
+        // one: what its per-declaration passes may stand in for.
+        let offered = if reusing { self.previous.take() } else { None };
+        let (plan, reuse) = match offered {
+            None => (None, TypingReuse::Fresh),
+            Some(prev) => match self.reuse_plan(&prev) {
+                Ok((plan, reuse)) => (Some(plan), reuse),
+                Err(why) => (None, TypingReuse::Whole(why)),
+            },
+        };
+        let mut diags = scope.diags.clone();
+        let (checked, certificates, record, by_decl) = hale_types::check::check_bundle_by_declaration(
+            &self.bundle(),
+            &inputs,
+            self.config.allow_unowned_subscriber,
+            self.config.whole_program,
+            self.config.whole_program,
+            &|key, i| plan.as_ref()?.get(key)?.get(i)?.clone(),
+        );
+        diags.extend(checked);
+        Ok(Typed { diags, certificates, record, by_decl, reuse })
+    }
+
+    /// Offer the previous snapshot of this seed for the typing's reuse
+    /// (F.40 phase 3, X2, [`crate::typing_reuse`]): the typing stage keeps
+    /// the per-declaration results of every declaration unchanged since
+    /// `previous` and no dependent of a changed one, and checks the rest.
+    /// Opt-in; the editor opts in, every other entry point checks whole.
+    /// `previous` is taken when the typing runs: a snapshot whose typing
+    /// is blocked (a seed with a hole) leaves it to
+    /// [`Snapshot::take_previous`]. A previous snapshot whose typing never
+    /// ran, or that loaded another seed or under another config, offers
+    /// nothing and the typing is whole ([`TypingReuse::Whole`]).
+    pub fn reusing_typing(self, previous: Snapshot) -> Snapshot {
+        drop(previous.previous.take());
+        self.previous.set(Some(Box::new(previous)));
+        self
+    }
+
+    /// The previous snapshot [`Snapshot::reusing_typing`] offered, if the
+    /// typing has not taken it.
+    pub fn take_previous(&self) -> Option<Snapshot> {
+        self.previous.take().map(|b| *b)
+    }
+
+    /// What the typing stage reused, once it ran: nothing offered, the
+    /// seed checked whole and why, or how many declarations were checked
+    /// and reused.
+    pub fn typing_reuse(&self) -> Option<&TypingReuse> {
+        self.typing.get()?.as_ref().ok().map(|t| &t.reuse)
+    }
+
+    fn reuse_key(&self) -> ReuseKey {
+        ReuseKey {
+            entry: self.key.entry.clone(),
+            mode: self.key.mode,
+            target: self.key.target.clone(),
+            config_digest: self.key.config_digest,
+            import_renames: {
+                // A set: two loads of one seed list it in different orders.
+                let mut renames: Vec<&(Vec<String>, String)> = self.import_renames.iter().collect();
+                renames.sort_unstable();
+                let mut d = Digest::new();
+                d.count(renames.len());
+                for (path, mangled) in renames {
+                    d.count(path.len());
+                    for seg in path {
+                        d.field(seg.as_bytes());
+                    }
+                    d.field(mangled.as_bytes());
+                }
+                d.finish()
+            },
+        }
+    }
+
+    fn reuse_plan(&self, prev: &Snapshot) -> Result<(Plan, TypingReuse), &'static str> {
+        if prev.reuse_key() != self.reuse_key() {
+            return Err("another load: the entry, mode, target, config or import renames changed");
+        }
+        let Some(Ok(done)) = prev.typing.get() else {
+            return Err("the previous snapshot was not typed");
+        };
+        let prev_dependents = |site| prev.declaration_dependents(site).ok();
+        let next_dependents = |site| self.declaration_dependents(site).ok();
+        crate::typing_reuse::plan(
+            &Side { programs: &prev.programs, decls: prev.declarations(), dependents: &prev_dependents },
+            &done.by_decl,
+            &Side { programs: &self.programs, decls: self.declarations(), dependents: &next_dependents },
+        )
     }
 
     /// The effects certificate report the typing's check produced: each
@@ -1144,7 +1260,7 @@ impl Snapshot {
     /// check's laws, and the artifact's), so the engine runs once per
     /// snapshot. Blocked with the typing; no family of its own.
     pub fn demand_effect_certificates(&self) -> Result<&EffectCertificates, &Blocked> {
-        self.typed().map(|(_, certificates, _)| certificates)
+        self.typed().map(|t| &t.certificates)
     }
 
     /// The typed-body table ([`hale_types::typed_bodies`], F.40 phase 3,
@@ -1156,10 +1272,24 @@ impl Snapshot {
     /// record and runs no second check; a site the checker could not
     /// type is a hole. Blocked with the typing, not with its
     /// diagnostics.
+    ///
+    /// A typing that reused a declaration's passes (X2,
+    /// [`Snapshot::reusing_typing`]) never walked it, so its record lacks
+    /// that declaration's bodies; the table of such a snapshot is
+    /// packaged from a whole check instead. Only the editor reuses, and
+    /// the editor never lowers.
     pub fn demand_typed_bodies(&self) -> Result<&TypedBodies, &Blocked> {
         self.typed_bodies
             .get_or_init(|| {
-                let (_, _, record) = self.typed().map_err(Clone::clone)?;
+                let typed = self.typed().map_err(Clone::clone)?;
+                let whole;
+                let record = match typed.reuse {
+                    TypingReuse::Reused { reused, .. } if reused > 0 => {
+                        whole = self.check_typing(false)?.record;
+                        &whole
+                    }
+                    _ => &typed.record,
+                };
                 let scope = self.scope().map_err(Clone::clone)?;
                 self.count("typed_bodies");
                 Ok(hale_types::typed_bodies::typed_bodies(&self.bundle(), &scope.top, record))
@@ -1275,6 +1405,60 @@ impl Snapshot {
                 let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("placement");
                 Ok(hale_types::placement::derive_placement(&self.bundle(), &scope.top, entry))
+            })
+            .as_ref()
+    }
+
+    /// The top-level declarations of the programs held, in program then
+    /// item order, each with its minted site ([`crate::dependents`]).
+    /// Empty for a seed with a hole, which is not a program.
+    pub fn declarations(&self) -> &[Declaration] {
+        self.declarations.get_or_init(|| match self.has_hole() {
+            true => Vec::new(),
+            false => crate::dependents::declarations(&self.programs, &self.identities),
+        })
+    }
+
+    /// Which declarations may check differently when the declaration at
+    /// `site` changes, through the families' rows: the callgraph's
+    /// readers closed, and its neighbours in the ownership graph, the bus
+    /// graph, the placement table and the flow rows
+    /// ([`crate::dependents`]). [`Dependents::Whole`] for a declaration no
+    /// family places and for a site that names no declaration. Blocked
+    /// with the scope.
+    pub fn declaration_dependents(&self, site: SiteId) -> Result<Dependents, &Blocked> {
+        let index = self.dependency_index()?;
+        let decls = self.declarations();
+        Ok(match decls.iter().position(|d| d.site == Some(site)) {
+            Some(i) => index.dependents(decls, i),
+            None => Dependents::Whole("the site names no declaration"),
+        })
+    }
+
+    /// The declaration a site sits in: an index into
+    /// [`Snapshot::declarations`].
+    pub fn declaration_of(&self, site: SiteId) -> Option<usize> {
+        self.dependency_index().ok()?.owner(site)
+    }
+
+    fn dependency_index(&self) -> Result<&DependencyIndex, &Blocked> {
+        self.dependency_index
+            .get_or_init(|| {
+                let summary = self.alloc_summary().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                let bus = self.demand_bus_graph().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                let programs: Vec<&Program> = self.programs.values().collect();
+                let flows = hale_types::flows::survey(&programs, &self.import_renames);
+                Ok(DependencyIndex::build(&crate::dependents::Families {
+                    programs: &self.programs,
+                    decls: self.declarations(),
+                    summary,
+                    ownership,
+                    bus,
+                    placement,
+                    flows: &flows,
+                }))
             })
             .as_ref()
     }

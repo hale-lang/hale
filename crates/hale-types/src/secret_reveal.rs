@@ -557,14 +557,42 @@ pub fn secret_reveal_diags(
     renames: &[(Vec<String>, String)],
     sources: &[crate::symbol::SourceFile],
 ) -> Vec<Diag> {
+    secret_reveal_by_item(programs, renames, sources, &|_, _| None).into_values().flatten().flatten().collect()
+}
+
+/// The reveal rule per top-level declaration: each program's items' own
+/// diagnostics, in order, the world gathered over every program. The walk
+/// of one item reads the world and that item alone, so `reused` may stand
+/// in for an item whose result the caller already holds (F.40 phase 3,
+/// X2, `check::check_bundle_by_declaration`), keyed `(program key, item
+/// index)`.
+pub fn secret_reveal_by_item(
+    programs: &BTreeMap<String, &Program>,
+    renames: &[(Vec<String>, String)],
+    sources: &[crate::symbol::SourceFile],
+    reused: &dyn Fn(&str, usize) -> Option<Vec<Diag>>,
+) -> BTreeMap<String, Vec<Vec<Diag>>> {
     let list: Vec<(&str, &Program)> = programs.iter().map(|(k, p)| (k.as_str(), *p)).collect();
     let mut world = World::gather(&list, renames);
     world.sources = sources.iter().map(|u| (u.path.clone(), u.base, u.len)).collect();
-    let mut diags = Vec::new();
-    for (key, p) in programs {
-        walk_items(&world, key, &p.items, &mut diags);
-    }
-    diags
+    programs
+        .iter()
+        .map(|(key, p)| {
+            let per = p
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    reused(key, i).unwrap_or_else(|| {
+                        let mut diags = Vec::new();
+                        walk_items(&world, key, std::slice::from_ref(item), &mut diags);
+                        diags
+                    })
+                })
+                .collect();
+            (key.clone(), per)
+        })
+        .collect()
 }
 
 /// `Pos(…)`-free, rename-free text of a declaration: the same body reads

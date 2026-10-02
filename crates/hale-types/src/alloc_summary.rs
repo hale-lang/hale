@@ -747,6 +747,34 @@ pub struct AllocSummary {
     pub analysis_copy_loci: BTreeSet<String>,
     /// The interfaces of the stdlib's analysis copy, likewise.
     pub analysis_copy_interfaces: BTreeSet<String>,
+    /// The program's bodies that are no fn's row, each summarized as a
+    /// member of its declaration ([`DeclarationBody`]). No judgment reads
+    /// them; the declaration dependents relation reads their call edges.
+    pub declaration_bodies: Vec<DeclarationBody>,
+}
+
+/// A body of the program the reveal rule reads (`secret_reveal`) that is
+/// no fn's row: an `on_failure` handler, a params block's initializers, a
+/// constant's value, a `birth_check`, a perspective's members, a
+/// synthesized hook, each wherever it is declared (a `module { }`'s
+/// included), and every subexpression a walk does not descend into (a
+/// callee that is no name). Each is walked as a row is, and kept
+/// beside the rows rather than among them, so the judgments over the rows
+/// see what they saw; the declaration dependents relation
+/// (`hale_frontend::dependents`) reads its call edges as the declaration's
+/// own (F.40 phase 3, X2), so a helper the body calls has the declaration
+/// for a reader.
+#[derive(Debug, Clone)]
+pub struct DeclarationBody {
+    /// The declaration the body is a member of, by its site: the locus
+    /// for its `on_failure` or params, the perspective for its fn, the
+    /// declaration of the body a subexpression sits in.
+    pub declaration: SiteId,
+    /// What the body is (`on_failure`, `params`, `const`, `birth_check`,
+    /// `stable_when`, `fn` (a perspective's), `lifecycle` (a synthesized
+    /// hook), `subexpression`).
+    pub position: &'static str,
+    pub summary: FnSummary,
 }
 
 impl AllocSummary {
@@ -850,6 +878,7 @@ impl AllocSummary {
             analysis_copy: BTreeSet::new(),
             analysis_copy_loci: BTreeSet::new(),
             analysis_copy_interfaces: BTreeSet::new(),
+            declaration_bodies: self.declaration_bodies.clone(),
         }
     }
 }
@@ -1491,9 +1520,9 @@ pub fn summarize_identified(
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
     // from its params (D2); then the identities of the program the body
-    // is in, and whether it is an `@hot` fn and a mode. A body's place
-    // in the list is its `decl_index`.
-    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool));
+    // is in, whether it is an `@hot` fn and a mode, and the declaration
+    // it is a member of. A body's place in the list is its `decl_index`.
+    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
@@ -1717,7 +1746,7 @@ pub fn summarize_identified(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false)));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -1799,6 +1828,7 @@ pub fn summarize_identified(
                                     param_var_elem_types(&md.params),
                                     ids,
                                     (false, true),
+                                    l.id,
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -1826,6 +1856,7 @@ pub fn summarize_identified(
                                     param_var_elem_types(&decl.params),
                                     ids,
                                     (decl.hot, false),
+                                    l.id,
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -1849,6 +1880,7 @@ pub fn summarize_identified(
                                     param_var_elem_types(&lc.params),
                                     ids,
                                     (false, false),
+                                    l.id,
                                 ));
                             }
                             _ => {}
@@ -1856,6 +1888,25 @@ pub fn summarize_identified(
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    // The program's bodies that are no row ([`DeclarationBody`]), with
+    // what a row's walk is given: the stdlib's analysis copy has none the
+    // relation reads.
+    let mut member_bodies: Vec<(SiteId, MemberBody, &crate::snapshot::Snapshot)> = Vec::new();
+    for (program, ids) in identified {
+        if is_stdlib_copy(ids) {
+            continue;
+        }
+        let mut found = Vec::new();
+        for item in flat_decls(&program.items) {
+            member_bodies_of(item, &mut found);
+        }
+        for (decl, body) in found {
+            if let Some(site) = ids.site_id(decl) {
+                member_bodies.push((site, body, ids));
             }
         }
     }
@@ -2042,7 +2093,18 @@ pub fn summarize_identified(
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
-    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode))) in bodies.iter().enumerate() {
+    // A body's walk; `(hot, mode, decl_index)` are a row's columns, and a
+    // declaration body, which is no row, has none of them.
+    let walk = |key: &FnKey,
+                body: &Block,
+                entry: Option<EntryKind>,
+                enclosing_locus: &Option<String>,
+                param_types: &[(String, String)],
+                fn_params: &[String],
+                param_elems: &[(String, String)],
+                ids: &crate::snapshot::Snapshot,
+                (hot, mode, decl_index): (bool, bool, usize)|
+     -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
             .as_ref()
@@ -2053,11 +2115,12 @@ pub fn summarize_identified(
             .and_then(|l| locus_inline_arrays.get(l))
             .unwrap_or(&empty_inline_arrays);
         let mut w = Walker {
-            fn_params: fn_params.clone(),
+            fn_params: fn_params.to_vec(),
             sites: Vec::new(),
             effect_sites: Vec::new(),
             locus_types: &locus_type_names,
             calls: Vec::new(),
+            skipped: Vec::new(),
             loops: Vec::new(),
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
@@ -2087,28 +2150,83 @@ pub fn summarize_identified(
             in_place_sites: Vec::new(),
         };
         w.walk_block(body, 0, Escape::Local);
-        starts_of.insert(key.clone(), std::mem::take(&mut w.starts));
-        if is_stdlib_copy(ids) {
-            summary.analysis_copy.insert(key.clone());
-        } else {
-            own.insert(key.clone());
-        }
-        summary.fns.insert(
-            key.clone(),
+        let starts = std::mem::take(&mut w.starts);
+        (
             FnSummary {
                 key: key.clone(),
-                entry: *entry,
+                entry,
                 sites: w.sites,
                 calls: w.calls,
                 loops: w.loops,
                 effect_sites: w.effect_sites,
-                fn_params: fn_params.clone(),
-                hot: *hot,
-                mode: *mode,
+                fn_params: fn_params.to_vec(),
+                hot,
+                mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
             },
-        );
+            starts,
+            w.skipped,
+        )
+    };
+    // The declaration bodies still to walk: the program's bodies that are
+    // no row, then every subexpression a walk skipped, under the key and
+    // the parameters of the body it sits in.
+    type Pending<'i> =
+        (SiteId, &'static str, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot);
+    let mut pending: Vec<Pending> = Vec::new();
+    let skipped_block = |es: Vec<Expr>| Block {
+        span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
+        stmts: es.into_iter().map(Stmt::Expr).collect(),
+        tail: None,
+    };
+    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl)) in
+        bodies.iter().enumerate()
+    {
+        let (row, starts, skipped) =
+            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, ids, (*hot, *mode, decl_index));
+        starts_of.insert(key.clone(), starts);
+        if is_stdlib_copy(ids) {
+            summary.analysis_copy.insert(key.clone());
+        } else {
+            own.insert(key.clone());
+            if let Some(site) = ids.site_id(*decl).filter(|_| !skipped.is_empty()) {
+                pending.push((
+                    site,
+                    "subexpression",
+                    key.clone(),
+                    skipped_block(skipped),
+                    param_types.clone(),
+                    fn_params.clone(),
+                    param_elems.clone(),
+                    ids,
+                ));
+            }
+        }
+        summary.fns.insert(key.clone(), row);
+    }
+    for (site, m, ids) in member_bodies {
+        pending.push((
+            site,
+            m.position,
+            m.key,
+            m.body,
+            param_var_types(m.params),
+            fn_typed_params(m.params),
+            param_var_elem_types(m.params),
+            ids,
+        ));
+    }
+    let mut next = 0;
+    while next < pending.len() {
+        let (site, position, key, body, param_types, fn_params, param_elems, ids) = pending[next].clone();
+        next += 1;
+        let (body_summary, _, skipped) =
+            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, ids, (false, false, usize::MAX));
+        summary.declaration_bodies.push(DeclarationBody { declaration: site, position, summary: body_summary });
+        if !skipped.is_empty() {
+            pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids));
+        }
     }
     summary.bounded_loci = bounded_loci;
     // Second pass: a locus holding a sync-bearing form can take that
@@ -2186,7 +2304,10 @@ pub fn summarize_identified(
         conformers.insert(iname, who);
     }
     let mut next_group: u32 = 0;
-    for fs in summary.fns.values_mut() {
+    // The rows first, so their groups are numbered as before the
+    // declaration bodies were summarized beside them.
+    let rows = summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().map(|b| &mut b.summary));
+    for fs in rows {
         let mut rewritten: Vec<CallEdge> =
             Vec::with_capacity(fs.calls.len());
         for edge in fs.calls.drain(..) {
@@ -2325,6 +2446,86 @@ fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
         .iter()
         .filter_map(|p| type_expr_name(&p.ty).map(|t| (p.name.name.clone(), t)))
         .collect()
+}
+
+/// A body that is no row, as [`member_bodies_of`] finds it: the key it is
+/// walked under (its enclosing locus or perspective, for `self`), what it
+/// is, the block (an expression position is a block of its expressions),
+/// and its parameters.
+struct MemberBody<'p> {
+    key: FnKey,
+    position: &'static str,
+    body: Block,
+    params: &'p [Param],
+}
+
+/// The bodies of `item` the reveal rule walks that are no row (a
+/// [`DeclarationBody`] each), with the declaration each is a member of.
+/// The rows are a fn's body and a locus's methods, modes and authored
+/// hooks, a `module { }`'s declarations' included; the caller hands in
+/// those too (`flat_decls`).
+fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>)>) {
+    let initializers = |pb: &'p ParamsBlock| -> Vec<&'p Expr> {
+        pb.params
+            .iter()
+            .filter_map(|pd| match &pd.init {
+                ParamInit::Value(e) => Some(e),
+                ParamInit::Inferred => None,
+            })
+            .collect()
+    };
+    let exprs = |es: Vec<&Expr>, span: Span| Block {
+        stmts: es.into_iter().map(|e| Stmt::Expr(e.clone())).collect(),
+        tail: None,
+        span,
+    };
+    match item {
+        TopDecl::Const(c) => out.push((
+            c.id,
+            MemberBody {
+                key: FnKey::free_fn(c.name.name.clone()),
+                position: "const",
+                body: exprs(vec![&c.value], c.span),
+                params: &[],
+            },
+        )),
+        TopDecl::Locus(l) => {
+            let locus = &l.name.name;
+            let mut push = |name: &str, position: &'static str, body: Block, params: &'p [Param]| {
+                out.push((l.id, MemberBody { key: FnKey::method(locus.clone(), name), position, body, params }))
+            };
+            for m in &l.members {
+                match m {
+                    LocusMember::Lifecycle(lc) if lc.synthesized => {
+                        push(&lifecycle_key(lc.kind).0, "lifecycle", lc.body.clone(), &lc.params)
+                    }
+                    LocusMember::Failure(fd) => push("on_failure", "on_failure", fd.body.clone(), &fd.params),
+                    LocusMember::Params(pb) => push("params", "params", exprs(initializers(pb), pb.span), &[]),
+                    LocusMember::Const(c) => push(&c.name.name, "const", exprs(vec![&c.value], c.span), &[]),
+                    LocusMember::BirthCheck(bc) => {
+                        let es = std::iter::once(&bc.cond).chain(&bc.payload).collect();
+                        push("birth_check", "birth_check", exprs(es, bc.span), &[])
+                    }
+                    _ => {}
+                }
+            }
+        }
+        TopDecl::Perspective(p) => {
+            let perspective = &p.name.name;
+            let mut push = |name: &str, position: &'static str, body: Block, params: &'p [Param]| {
+                out.push((p.id, MemberBody { key: FnKey::method(perspective.clone(), name), position, body, params }))
+            };
+            for m in &p.members {
+                match m {
+                    PerspectiveMember::Fn(f) => push(&f.name.name, "fn", f.body.clone(), &f.params),
+                    PerspectiveMember::Params(pb) => push("params", "params", exprs(initializers(pb), pb.span), &[]),
+                    PerspectiveMember::StableWhen(b) => push("stable_when", "stable_when", b.clone(), &[]),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// D2: a locus's `params { … }` fields as field → declared-type-name, so a
@@ -2710,6 +2911,10 @@ struct Walker<'a> {
     /// a call through one can be marked indirect on its edge.
     fn_params: Vec<String>,
     calls: Vec<CallEdge>,
+    /// The subexpressions the walk does not descend into (a callee that
+    /// is no name), each summarized
+    /// beside the body as a [`DeclarationBody`] of its declaration.
+    skipped: Vec<Expr>,
     loops: Vec<LoopInfo>,
     escaping: &'a Escaping<'a>,
     enclosing_locus: Option<String>,
@@ -3458,7 +3663,8 @@ impl<'a> Walker<'a> {
                     Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
                         self.walk_expr(receiver, depth, Escape::Local);
                     }
-                    _ => {}
+                    Expr::Ident(_) | Expr::Path(_) => {}
+                    other => self.skipped.push(other.clone()),
                 }
                 for a in args {
                     self.walk_expr(a, depth, Escape::Local);
