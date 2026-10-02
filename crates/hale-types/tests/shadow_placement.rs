@@ -7,9 +7,6 @@
 //! (`Snapshot::demand_placement`) with each legacy producer the snapshot
 //! can reach, one column each, every key prefixed by its column:
 //!
-//! - `receiver`: F.31's owner-relative answer at `self.f`
-//!   (`enclosing_field_placement`, else the caller's pool, the owner
-//!   instance's domain), per `Owner.field`;
 //! - `bus`: `collect_subscriber_placements`, per type (no row is
 //!   `SameThread`, as the graph defines it);
 //! - `ownership`: the ownership graph's verbatim copy, `collect_placements`;
@@ -24,10 +21,12 @@
 //! `collect_main_placement` and its `DeploymentPlan` are the two legacy
 //! producers this shadow cannot run: they exist only inside lowering's
 //! context, and the lowering view (P1's PR 2) is where they are compared.
-//! The checker's per-type map (`compute_pool_of_locus_type`) had a column,
-//! and the phase-0 shadow compared it with the bus graph's, until the F.31
-//! rule and sync inference read the table (P1's checker switch): its
-//! classified divergences became the diagnostics that switch pins.
+//! The checker's per-type map (`compute_pool_of_locus_type`) and F.31's
+//! owner-relative answer at `self.f` (`enclosing_field_placement`) had a
+//! column each, and the phase-0 shadow compared the map with the bus
+//! graph's, until the F.31 rule, sync inference and the blocking check
+//! read the table (P1's checker switch): their classified divergences
+//! became the diagnostics that switch pins.
 //!
 //! **The gate.** The comparison runs per row, in memory, and `classify`
 //! names the correspondence's rows (§ 2, § 10) that explain each
@@ -51,8 +50,7 @@ use hale_frontend::source::Disk;
 use hale_graph::shadow::{gate_message, program_id, Class, Divergence, Kind, Report};
 use hale_syntax::ast::{flat_decls, LocusDecl, LocusMember, TopDecl, TypeExpr};
 use hale_types::bus_graph::{collect_subscriber_placements, Placement};
-use hale_types::check::PoolId;
-use hale_types::placement::legacy::{collect_placements, enclosing_field_placement};
+use hale_types::placement::legacy::collect_placements;
 use hale_types::placement::{
     Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
     PlacementTable, SiteUniverse,
@@ -439,13 +437,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             .collect()
     };
 
-    // receiver: F.31's owner-relative answer at `self.f`, per Owner.field:
-    // the enclosing locus's own entry for the field, else the caller's
-    // pool, the owner instance's domain (the checker reads that from the
-    // table).
-    let mut recv_new: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut recv_old: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut recv_witness: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // Owner.field → the declarations the field's rows realize.
     let mut field_decls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (k, r) in &t.instances {
@@ -454,34 +445,12 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
         }
         let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
         let Some(owner) = t.instances.get(o).and_then(|o| o.realizes.as_ref()) else { continue };
-        let key = format!("{}.{}", owner.lowered, step.field);
         field_decls
-            .entry(key.clone())
+            .entry(format!("{}.{}", owner.lowered, step.field))
             .or_default()
             .insert(r.realizes.as_ref().map(|d| d.lowered.clone()).unwrap_or_else(|| "<hole>".into()));
-        let rel = match r.owner_relative {
-            OwnerRelative::SameAsOwner => "same",
-            OwnerRelative::OffOwner => "off",
-        };
-        recv_new.entry(key.clone()).or_default().insert(rel.to_string());
-        let w = recv_witness.entry(key.clone()).or_default();
-        w.push(describe(k, r));
-        let Some(decl) = decl_of(&bundle, owner) else { continue };
-        let caller = PoolId::of_domain(t, t.instances[o].domain);
-        let callee = enclosing_field_placement(decl, &step.field).unwrap_or_else(|| caller.clone());
-        recv_old.entry(key).or_default().insert(if callee == caller { "same" } else { "off" }.to_string());
     }
     let field_decls: BTreeMap<String, String> = field_decls.iter().map(|(k, v)| (k.clone(), joined(v))).collect();
-    columns.push(Column {
-        name: "receiver",
-        old: recv_old.iter().map(|(k, v)| (k.clone(), joined(v))).collect(),
-        new: recv_new.iter().map(|(k, v)| (k.clone(), joined(v))).collect(),
-        map_old: BTreeMap::new(),
-        witness: recv_witness,
-        global: global.clone(),
-        slice: "F.31 receiver check (the callee's pool relative to the caller's)",
-        decl: field_decls.clone(),
-    });
 
     // bus and ownership: the per-type label, keyed by the last segment of
     // the placed field's written type; no row is `SameThread`. A label's

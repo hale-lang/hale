@@ -1133,7 +1133,10 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    *field instance*: the enclosing locus's own
    `placement { }` entry for `field` if it names one (e.g. a
    `db: pinned` field on the main locus), otherwise the field
-   co-locates with its owner (the caller's pool). The pool is a
+   co-locates with its owner (the caller's pool). A field that
+   holds an instance built elsewhere (`App { w: held }`) runs in
+   its holder's pool whatever an entry names for it; such an
+   entry is refused (GH #890). The pool is a
    property of the **instance**, not the field's type — the
    same locus type used as a field in two loci on two pools is
    two independent instances, one per owner, each single-pool.

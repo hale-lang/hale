@@ -3304,7 +3304,14 @@ main locus App {
    or across a cross-locus `self.field.method()` hop, isn't traced).
    Note rule 7 (the dead-receiver *error*) stays **direct-call-only**
    — it is not widened onto indirect paths, so the higher-stakes
-   diagnostic keeps its precision.
+   diagnostic keeps its precision. Rules 7 and 8, the pool-starvation
+   warning and the birth-order trap read where each field runs from
+   the placement table: they judge the `main locus` lowering deploys
+   (one it does not, imported or beside the deployed one, spawns
+   nothing and is not judged), and each field by the locus it
+   realizes, an alias or an imported seed's qualified path
+   included (a stdlib locus's `run()` is judged by the
+   known-long-running list, as before).
 9. **Orphan bus topic (warning).** In a closed-world program (one
    with an entry: the seed's own top-level `main locus`; an imported
    or a module-nested one is not the entry: "The entry locus", §
