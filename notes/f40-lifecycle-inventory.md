@@ -235,8 +235,8 @@ Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs u
 - `lifecycle_order` · `lower_program`: C20, C21
 - `lifecycle_order` · `main_test_fail_bb`: C22
 - `lifecycle_order` · `lower_return_inner`: C23, with C24 as the tail all three main exits share
-- `lifecycle_order` · `__reclaim_`: C25, and C26–C29, which call it
-- `lifecycle_order` · `emit_locus_arena_destroy`: C33, and its cascade C30–C32. `entrypoint` · `let is_main_locus` (dis) is C31.
+- `lifecycle_order` · `__reclaim_`: C25, and C26–C29, which call it (the row closed with L4's reclaim spine, which emits the reclaim from the plan)
+- `lifecycle_order` · `emit_locus_arena_destroy`: C33, and its cascade C30–C32 (the row closed with L4's reclaim and cascade spines). `entrypoint` · `let is_main_locus` (dis) is C31.
 - `handler_routing` · `resolve_failure_route`: C34
 - `handler_routing` · `failure_handler_for`: C35
 - the failure-delivery sites those two rows feed: C36–C40

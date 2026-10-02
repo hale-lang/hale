@@ -1859,6 +1859,23 @@ its `KNOWN_OPEN` table.
   perspective-slot cells). Before, a pinned locus's fields were
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
+
+  Lines 12 and 19 are an instance's own teardown, the dissolve
+  cascade and the reclaim, and the compiler emits both from the
+  lifecycle plan (F.40 phase 3, L4). The cascade's steps around an
+  owner's fields (the fields' drains, the owner's drain, its
+  dissolve-epoch closures and `dissolve()`, the fields' dissolves,
+  the reclaim) and the order of the fields come from the plan's rows
+  and edges for its declaration; so do the reclaim's (the owned
+  children's reclaims, the latch, the cancellation of the runs still
+  queued for the instance, the arena's release, the struct's). The
+  emitter refuses an order it cannot emit rather than reorder it.
+  The trace build holds each instance's emitted reclaim, on the spine
+  the plan holds it on, and a queued run's cancellation, on its
+  reclaim's spine, to the plan's order over every fixture. The
+  process-level teardown steps around them (the pool shutdown and
+  join, the wait-abort, the ingress quiesce, the pinned joins) are
+  not this order.
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown
