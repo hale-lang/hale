@@ -1,42 +1,36 @@
-// Decision line 19, a full ring at shutdown (RunAdmission). Known open
-// at inventory row R19. Compiled, not run: the order needs a runtime
-// handshake (L5).
+// Decision line 19, a full ring at shutdown (RunAdmission, Run,
+// Cancellation).
 //
-// `blocker` holds pool `side`'s worker inside its run() while App
-// replaces its placed field `k` many times, each replacement posting a
-// run to the same pool, until the ring is full. If the pool's shutdown
-// is set while the ring is full, the post is discarded and the caller
-// is not told.
+// Each `App` literal in main's loop is torn down where it stands, and
+// the eager spine joins the pools first: after the first, pool `side`
+// has shut down and its worker is gone. Each later App's placed field
+// `k` still posts its run() to `side`. While the ring has room the cell
+// is admitted and waits for a worker that will not come, and App's
+// teardown reclaims `k`, canceling the run first. The canceled cells
+// stay in the ring, so it fills (the harness runs this with a 64-cell
+// ring), and from then on the post meets a full ring with the pool's
+// shutdown set and is refused.
 //
-// Expected terminal outcome: each replacement's run is either admitted
-// and completed, or rejected before admission with a shutdown reason
-// (`not-started: shutdown`); none is silent, and each child is torn
-// down once. Today a run refused at shutdown is silent. Driving the
-// ring to full at the moment shutdown is set needs the handshake L5
-// adds, so the harness only compiles this program.
-
-locus Blocker {
-    run() { std::time::sleep(200ms); }
-}
+// Expected terminal outcome: the first run completes; every later one
+// is either admitted and then canceled, named not started with an
+// acknowledgement, or refused, named not started for the pool's
+// shutdown; none is silent, and each child is torn down once, judged by
+// the harness: `admitted-or-named`.
 
 locus Kid {
-    params { tag: Int = 0; }
-    run() { }
+    run() { println("ev kid-run"); }
+    dissolve() { println("ev kid-dissolve"); }
 }
 
 main locus App {
-    params {
-        blocker: Blocker = Blocker { };
-        k: Kid = Kid { };
-    }
-    placement { blocker: cooperative(pool = side); k: cooperative(pool = side); }
-    run() {
-        let mut i = 0;
-        while i < 2000 {
-            self.k = Kid { tag: i };
-            i = i + 1;
-        }
-    }
+    params { k: Kid = Kid { }; }
+    placement { k: cooperative(pool = side); }
 }
 
-fn main() { App { }; }
+fn main() {
+    let mut i = 0;
+    while i < 200 {
+        App { };
+        i = i + 1;
+    }
+}

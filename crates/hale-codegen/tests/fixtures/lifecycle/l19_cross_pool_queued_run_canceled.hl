@@ -1,0 +1,49 @@
+// Decision line 19, a run queued on one pool for a child torn down on
+// another (RunAdmission, Run, Cancellation).
+//
+// `holder` holds pool `side`'s worker inside its run() until a gate file
+// appears. App's placed field `k` has its run() posted to `side`, where
+// it waits behind the holder. App's run(), on main (pool `main`),
+// replaces `k`: the old child's reclaim begins by canceling its queued
+// run, before its arena is released, and only then does App open the
+// gate. The released worker dequeues the canceled cell and drops it
+// without touching the reclaimed struct, then starts the replacement's
+// run().
+//
+// Expected terminal outcome: the first child's run() never starts and is
+// named not started with an acknowledgement on main, the replacement's
+// runs, and each child is torn down once, judged by the harness:
+// `named:not-started`.
+
+fn gate() -> String {
+    return "/tmp/hale-l19-cross-pool-" + to_string(std::process::pid());
+}
+
+locus Holder {
+    run() {
+        while !std::io::fs::file_exists(gate()) {
+            std::time::sleep(1ms);
+        }
+    }
+}
+
+locus Kid {
+    params { tag: Int = 0; }
+    run() { println("ev kid-run " + to_string(self.tag)); }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params {
+        holder: Holder = Holder { };
+        k: Kid = Kid { tag: 0 };
+    }
+    placement { holder: cooperative(pool = side); k: cooperative(pool = side); }
+    run() {
+        self.k = Kid { tag: 1 };
+        std::io::fs::write_file(gate(), "go") or discard;
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

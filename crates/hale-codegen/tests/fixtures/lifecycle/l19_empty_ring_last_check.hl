@@ -1,40 +1,32 @@
 // Decision line 19, an empty ring after the worker's last check
-// (RunAdmission). Known open at inventory row R19. Compiled, not run:
-// the order needs a runtime handshake (L5).
+// (RunAdmission, Run, Cancellation).
 //
-// A pinned `late` thread replaces App's placed field `k` after the
-// pools have been told to shut down. When the run cell lands after
-// pool `side`'s worker made its last empty-and-shutdown check, the
-// worker never sees it, and the pool's destroy frees it unrun.
+// The first `App` is torn down where it stands, and the eager spine
+// joins the pools first: pool `side`'s worker makes its last
+// empty-and-shutdown check and exits. The second App's placed field `k`
+// posts its run() to `side`: the ring has room, so the cell is
+// admitted, and no worker will dequeue it. The second App's teardown
+// reclaims `k`, canceling the run before it releases the child, and the
+// pools' teardown at exit frees a cell whose run is already named. (A
+// cell no reclaim canceled would end not started for that teardown,
+// named there: the negative control removes the cancellation.)
 //
-// Expected terminal outcome: the run is rejected before admission with
-// a shutdown reason, or admitted and then canceled with an
-// acknowledgement; never freed unrun in silence, and the child is torn
-// down once. Landing the cell exactly after the last check needs the
-// handshake L5 adds, so the harness only compiles this program.
+// Expected terminal outcome: the first run completes, the second is
+// named not started with an acknowledgement, never freed unrun in
+// silence, and each child is torn down once, judged by the harness:
+// `admitted-or-named`.
 
 locus Kid {
-    params { tag: Int = 0; }
-    run() { }
-}
-
-locus Late {
-    params { posted: Int = 0; }
-    run() {
-        std::time::sleep(30ms);
-        self.posted = 1;
-    }
+    run() { println("ev kid-run"); }
+    dissolve() { println("ev kid-dissolve"); }
 }
 
 main locus App {
-    params {
-        k: Kid = Kid { };
-        late: Late = Late { };
-    }
-    placement { k: cooperative(pool = side); late: pinned; }
-    run() {
-        self.k = Kid { tag: 1 };
-    }
+    params { k: Kid = Kid { }; }
+    placement { k: cooperative(pool = side); }
 }
 
-fn main() { App { }; }
+fn main() {
+    App { };
+    App { };
+}

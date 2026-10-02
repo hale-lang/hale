@@ -1894,12 +1894,8 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
                  const char *spine, const char *type);
 void lotus_lc_parked_abandoned(void *self);
 void lotus_lc_run_canceled(void *self);
+void lotus_lc_run_shutdown(void *self, const char *cause, int admitted);
 #endif
-
-/* Run retention (decision line 19), defined with the cooperative pool:
- * a reclaim cancels the child's runs still queued before it frees the
- * child. */
-static void lotus_run_cancel_queued(void *child);
 
 /* One held failure. A node stays linked until its handler has
  * returned (state DONE), so a failing child can find it — to defer its
@@ -2262,13 +2258,12 @@ void *lotus_child_struct_alloc(lotus_arena_t *owner, uint64_t size,
  * latch, and leaving it NULL keeps any stale teardown path a
  * no-op.
  *
- * Every reclaim of a locus ends here, once (past its `__arena` latch),
- * so this is where a run still queued for the child is canceled
- * (decision line 19): before the struct is listed for reuse, or left
- * in the owner's arena to be freed with it. */
+ * A run still queued for the child was canceled at the start of this
+ * reclaim, before its arena was released (`lotus_run_cancel_queued`,
+ * decision line 19), so nothing queued can reach the struct once it is
+ * listed for reuse. */
 void lotus_child_struct_release(void *owner_self, void *child,
                                 uint64_t size) {
-    if (child) lotus_run_cancel_queued(child);
     if (!owner_self || !child || size < LOTUS_CHILD_STRUCT_MIN) return;
     lotus_arena_t *owner = *(lotus_arena_t **)owner_self;
     if (!owner) return;
@@ -8238,21 +8233,29 @@ typedef struct lotus_coop_overflow {
  * enqueued. From then until the worker starts it or a teardown cancels
  * it, the cell holds a retention on the child: a ticket, linked here
  * under the child's address. The worker starts the run only by
- * unlinking its ticket (`lotus_run_admit`). A reclaim of the child
- * first cancels every ticket still linked (`lotus_run_cancel_queued`,
- * from `lotus_child_struct_release`), and names each run's terminal,
- * not started with an acknowledgement; the cell, dequeued later, is
- * dropped unrun. Without it, an owner torn down on the worker its
- * child's run was posted to reclaimed the child while the run sat in
- * the queue behind the teardown, and the run then started on the freed
- * struct (a heap-use-after-free, and a second teardown of an accepted
- * child at its run end).
+ * unlinking its ticket (`lotus_run_admit`). The Reclaim of the child
+ * begins by canceling every ticket still linked
+ * (`lotus_run_cancel_queued`, the compiler's first call past the
+ * reclaim latch on every reclaim path, before the arena or the struct
+ * is released), and names each run's terminal, not started with an
+ * acknowledgement; the cell, dequeued later, is dropped unrun. Without
+ * it, an owner torn down on the worker its child's run was posted to
+ * reclaimed the child while the run sat in the queue behind the
+ * teardown, and the run then started on the freed struct (a
+ * heap-use-after-free, and a second teardown of an accepted child at
+ * its run end). A run queued on another pool's worker finds the child
+ * whole or its ticket canceled, never a released arena: the ticket's
+ * lock linearizes the two, so a worker that unlinks the ticket first
+ * holds the child for its run, and a reclaim that cancels first wins.
  *
  * A run already started is not canceled: its ticket is gone, and the
  * teardown's ordering against it is the join's, as before. The ticket
  * memory belongs to the cell: whoever ends the cell (the drain, a post
- * that cannot enqueue, the registry's teardown) frees it, after
- * unlinking it if no cancel did.
+ * refused at shutdown, the registry's teardown) frees it, after
+ * unlinking it if no cancel did, and no run ends unnamed: a post
+ * refused at shutdown ends not started for the pool's shutdown, a cell
+ * the pools' teardown frees ends not started for that teardown, and a
+ * run post that cannot allocate aborts.
  *
  * One mutex: a ticket is linked at a run post and unlinked at its start
  * or its cancel, rare next to bus traffic (a bus delivery carries no
@@ -8286,12 +8289,19 @@ static void lotus_run_ticket_unlink(lotus_run_ticket_t *t) {
     __atomic_sub_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
 }
 
-/* The retention a run post takes on its child; NULL when it cannot be
- * allocated (the post then fails as a payload allocation does). */
+/* A run post that cannot allocate fails at the failing call, as the
+ * lifecycle runtime's other allocations do (`lotus_held_oom`): a run is
+ * never dropped in silence (decision line 19). */
+static void lotus_run_post_oom(void) {
+    fprintf(stderr, "lotus: out of memory posting a run\n");
+    abort();
+}
+
+/* The retention a run post takes on its child. */
 static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
     lotus_run_ticket_t *t =
         (lotus_run_ticket_t *)malloc(sizeof(lotus_run_ticket_t));
-    if (!t) return NULL;
+    if (!t) lotus_run_post_oom();
     t->child    = child;
     t->canceled = 0;
     t->prev     = NULL;
@@ -8305,13 +8315,26 @@ static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
     return t;
 }
 
-/* A run cell ends without starting (a post that cannot enqueue, the
- * registry's teardown): release its retention and free the ticket. */
-static void lotus_run_ticket_drop(lotus_run_ticket_t *t) {
+/* A run cell ends without starting because its pool is shutting down:
+ * refused at the post (`PoolShutdown`, never admitted), or freed with
+ * the pool registry (`PoolTeardown`, admitted and never dequeued).
+ * Release its retention, free the ticket, and name the run's terminal,
+ * not started for that shutdown reason, unless a reclaim's cancel ended
+ * the run first and named it (decision line 19). The release build
+ * runs the same path with the naming compiled out. */
+static void lotus_run_ticket_end_unrun(lotus_run_ticket_t *t,
+                                       const char *cause, int admitted) {
     if (!t) return;
     pthread_mutex_lock(&g_run_tickets_lock);
-    if (!t->canceled) lotus_run_ticket_unlink(t);
+    int ended = t->canceled;
+    if (!ended) lotus_run_ticket_unlink(t);
     pthread_mutex_unlock(&g_run_tickets_lock);
+#ifdef LOTUS_LIFECYCLE_TRACE
+    if (!ended) lotus_lc_run_shutdown(t->child, cause, admitted);
+#else
+    (void)cause;
+    (void)admitted;
+#endif
     free(t);
 }
 
@@ -8353,7 +8376,17 @@ static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell) {
     return 1;
 }
 
-static void lotus_run_cancel_queued(void *child) {
+/* The first step of the Reclaim bracket, on every reclaim path: the
+ * compiled teardown calls it past the child's `__arena` latch, before
+ * the arena (or, for an elided arena, the struct) is released. */
+void lotus_run_cancel_queued(void *child) {
+    if (!child) return;
+#ifdef LOTUS_LIFECYCLE_TRACE
+    /* A negative control removes the cancellation (a step the runtime
+     * performs itself): only on a fixture whose queued cells no worker
+     * will dequeue, so the pools' teardown is what frees them. */
+    if (lotus_lc_skips("Cancellation")) return;
+#endif
     if (__atomic_load_n(&g_run_tickets_live, __ATOMIC_ACQUIRE) == 0) return;
     int canceled = 0;
     pthread_mutex_lock(&g_run_tickets_lock);
@@ -8699,14 +8732,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
             memcpy(heap_buf, payload_src, payload_size);
         }
     }
-    lotus_run_ticket_t *ticket = NULL;
-    if (run) {
-        ticket = lotus_run_ticket_take(self_ptr);
-        if (!ticket) {
-            if (heap_buf) free(heap_buf);
-            return;
-        }
-    }
+    lotus_run_ticket_t *ticket = run ? lotus_run_ticket_take(self_ptr) : NULL;
     lotus_bus_cell_t cell;
     cell.handler      = handler;
     cell.self_ptr     = self_ptr;
@@ -8742,7 +8768,8 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
             if (atomic_load_explicit(&p->shutdown, memory_order_relaxed)) {
                 pthread_mutex_unlock(&p->lock);
                 if (heap_buf) free(heap_buf);
-                lotus_run_ticket_drop(ticket);
+                /* refused: a run is named not started at shutdown */
+                lotus_run_ticket_end_unrun(ticket, "PoolShutdown", 0);
                 return;                          /* drop — shutting down */
             }
             atomic_fetch_add_explicit(&p->producers_waiting, 1,
@@ -8800,8 +8827,8 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
         lotus_coop_overflow_t *node = (lotus_coop_overflow_t *)
             malloc(sizeof(lotus_coop_overflow_t));
         if (!node) {
+            if (ticket) lotus_run_post_oom();
             if (heap_buf) free(heap_buf);
-            lotus_run_ticket_drop(ticket);
             return;
         }
         node->cell = cell;
@@ -10450,15 +10477,18 @@ void lotus_coop_pool_destroy_all(void) {
          * ring / overflow drain here is single-threaded. Mirrors
          * lotus_mailbox_destroy. */
         lotus_bus_cell_t cell;
+        /* A run cell still here was admitted and never dequeued: unless
+         * its child's reclaim canceled it, its run ends not started at
+         * the pools' teardown, named (decision line 19). */
         while (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
             if (cell.payload_heap) free(cell.payload_heap);
-            lotus_run_ticket_drop(cell.run_ticket);
+            lotus_run_ticket_end_unrun(cell.run_ticket, "PoolTeardown", 1);
         }
         while (p->overflow_head) {
             lotus_coop_overflow_t *node = p->overflow_head;
             p->overflow_head = node->next;
             if (node->cell.payload_heap) free(node->cell.payload_heap);
-            lotus_run_ticket_drop(node->cell.run_ticket);
+            lotus_run_ticket_end_unrun(node->cell.run_ticket, "PoolTeardown", 1);
             free(node);
         }
         p->overflow_tail = NULL;
@@ -24732,7 +24762,9 @@ void lotus_bus_dispatch_wire_inbound(const char *subject,
  * `lotus_lc_enter` answer 0, so the emitted step and both its events
  * are skipped, and the steps the runtime performs itself check the same
  * name (`ConstructionDelivery`: no failure is held, so it is delivered
- * in place while the params are still open); `<Kind>.<Point>` drops
+ * in place while the params are still open; `Cancellation`: a reclaim
+ * cancels no queued run, so the pools' teardown names the cell a worker
+ * never dequeued); `<Kind>.<Point>` drops
  * that one event line and nothing else.
  * =================================================================== */
 #define LOTUS_LC_SLOTS (1u << 18)
@@ -24896,5 +24928,19 @@ void lotus_lc_run_canceled(void *self) {
     lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
     lotus_lc_emit("Run", "Terminal(NotStarted(Acknowledged))", s, "PoolRun");
     lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
+}
+
+/* Decision line 19: a run that never starts because its pool is shutting
+ * down ends NotStarted(Shutdown(cause)). A post refused at shutdown was
+ * never admitted, so the Run's terminal stands alone, on the posting
+ * thread; a cell freed unrun when the pools are torn down was admitted
+ * and is canceled by that teardown, bracketed as a reclaim's cancel is. */
+void lotus_lc_run_shutdown(void *self, const char *cause, int admitted) {
+    lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
+    char point[96];
+    snprintf(point, sizeof point, "Terminal(NotStarted(Shutdown(%s)))", cause);
+    if (admitted) lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
+    lotus_lc_emit("Run", point, s, "PoolRun");
+    if (admitted) lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
 }
 #endif /* LOTUS_LIFECYCLE_TRACE */

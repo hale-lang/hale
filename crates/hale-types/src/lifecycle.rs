@@ -15,7 +15,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C47, R1–R49 and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C47, R1–R49, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -113,7 +113,7 @@
 //! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
-//! 19    RunAdmission Run Cancellation            Shipped (retention, L5); KnownOpen R19 (refused or freed unrun); Shipped (R20a, named by L2)
+//! 19    RunAdmission Run Cancellation            Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
 //! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
 //! ```
@@ -477,7 +477,7 @@ impl ObligationKind {
             ObligationKind::PinnedJoin => &["C13", "C16", "C18", "R26", "R27"],
             ObligationKind::PoolJoin => &["C13", "C19", "C21", "C22", "C23", "R20"],
             ObligationKind::JoinProgress => &["C18", "R20"],
-            ObligationKind::Cancellation => &["R19", "R20a", "R21"],
+            ObligationKind::Cancellation => &["R19", "R19a", "R20a", "R21"],
             ObligationKind::TeardownDelivery => &["C16", "R33", "R35"],
             ObligationKind::Dissolve => &["C31", "C32"],
             ObligationKind::Reclaim => &["C15", "C24", "C25", "C27", "C28", "C29", "C33", "R8", "R10", "R13", "R14", "R47"],
@@ -708,6 +708,7 @@ impl Terminal {
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::OwnerTeardown)),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::ProcessDrain)),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolTeardown)),
             Terminal::CanceledAfterStart,
             Terminal::FailureDelivered,
             Terminal::ClosureViolation,
@@ -771,6 +772,9 @@ pub enum ShutdownCause {
     OwnerTeardown,
     /// The process drains (a signal raised the draining flag).
     ProcessDrain,
+    /// The pools are torn down with the run's cell still queued: no
+    /// worker is left to dequeue it.
+    PoolTeardown,
 }
 
 impl ShutdownCause {
@@ -779,6 +783,7 @@ impl ShutdownCause {
             ShutdownCause::PoolShutdown => "PoolShutdown",
             ShutdownCause::OwnerTeardown => "OwnerTeardown",
             ShutdownCause::ProcessDrain => "ProcessDrain",
+            ShutdownCause::PoolTeardown => "PoolTeardown",
         }
     }
 }
@@ -1025,7 +1030,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
                 Status::Shipped,
                 "a queued run is retained against its child's teardown, which cancels it first: NotStarted(Acknowledged) (L5)",
             ),
-            (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun at the pools' teardown, is silent"),
+            (
+                Status::Shipped,
+                "a post refused at shutdown ends NotStarted(Shutdown(PoolShutdown)), a cell freed unrun at the pools' teardown NotStarted(Shutdown(PoolTeardown)) (L5)",
+            ),
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
         ],
     },

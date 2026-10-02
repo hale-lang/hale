@@ -1864,10 +1864,17 @@ its `KNOWN_OPEN` table.
   | started, returned | completed |
   | started, abandoned by an asynchronous shutdown | canceled after start; the worker's quiescence is witnessed separately, by the pool join |
 
-  Admission and the worker's closure are linearized on the pool's
-  queue: a post enqueued before the worker's last
-  empty-and-shutdown check is admitted, and a post after it is
-  rejected. Run admission is separate from the admission of a
+  Admission is decided on the pool's queue: a post that finds room
+  in the ring is admitted, and one that meets a full ring once the
+  pool's shutdown is set is rejected, not started for the pool's
+  shutdown (`PoolShutdown`). A cell admitted after the worker's last
+  empty-and-shutdown check is never dequeued: its child's reclaim
+  cancels it (not started, with an acknowledgement), or, when no
+  reclaim reached the child first, the pools' teardown frees it, not
+  started for that teardown (`PoolTeardown`). Nothing is silent: every
+  run that does not start is named on one of these paths, and a run
+  post that cannot allocate aborts, as the lifecycle runtime's other
+  allocations do. Run admission is separate from the admission of a
   failure decision, which shutdown never refuses while its child
   waits (join progress, below). Whatever the outcome, the child is
   torn down exactly once. A started run abandoned by an async pool's
@@ -1878,28 +1885,47 @@ its `KNOWN_OPEN` table.
   No release build observes a run's terminal, so the name lives
   there. An admitted run is retained against its child's teardown:
   from admission until the worker starts it or a teardown cancels it,
-  the run holds its child. A teardown on a worker cancels the runs
-  queued on it for the dying child before reclaiming it, each ending
-  not started with an acknowledgement, so a child torn down by its
-  owner on the worker its `run()` was posted to is reclaimed without
-  that run starting, and is torn down once; a run that started before
-  the teardown began is ordered against it by the join, as before.
-  Shipped (F.40 phase 3, L5): the cancellation is named in the trace
-  build where the reclaim makes it, before the child's struct is
-  released, and the release build runs the same path
-  (`l19_queued_run_canceled.hl`, and the lifecycle matrix's pool
-  cells, which assert the named terminal). Before it, the run started
+  the run holds its child. The child's Reclaim begins by canceling
+  the runs still queued for it, on whatever pool, each ending not
+  started with an acknowledgement, before its arena (or an elided
+  arena's struct) is released: every reclaim path makes the call,
+  past its latch, so a queued run finds the child whole or finds its
+  run canceled, never a released arena. The ticket's lock
+  linearizes the cancellation against admission: a worker that
+  takes the run first holds the child for it, and a reclaim that
+  cancels first wins. A child torn down by its owner on the worker
+  its `run()` was posted to is reclaimed without that run starting,
+  and so is one whose run waits on another pool's worker; each is
+  torn down once. A run that started before the teardown began is
+  ordered against it by the join, as before. Shipped (F.40 phase 3,
+  L5): the cancellation is named in the trace build on the thread
+  that reclaims, inside the Reclaim's bracket, and the release build
+  runs the same path (`l19_queued_run_canceled.hl`;
+  `l19_cross_pool_queued_run_canceled.hl`, a run queued on pool
+  `side` for a child its owner replaces on main, also run under
+  AddressSanitizer; the lifecycle matrix's pool cells, which assert
+  the named terminal). Before it, the run started
   on the freed struct (a heap-use-after-free under AddressSanitizer;
   an accepted child was torn down twice), or, for a subscriber, was
-  freed unrun with no terminal named. Not yet shipped: the post's ABI
-  is `void`, and a run refused at shutdown or freed unrun when the
-  pools are torn down is silent (inventory row R19). The regressions:
-  a full ring and an empty ring after the last check
-  (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
-  only until L5's handshake can drive them), self-post overflow
-  (`l19_self_post_overflow.hl`, every admitted run completes
-  today), a resumed run (`l19_resumed_run_at_shutdown.hl`), and the
-  parked started coroutine.
+  freed unrun with no terminal named. A run refused at shutdown and a
+  cell freed unrun when the pools are torn down are named the same
+  way, by the trace build where the runtime ends them, on the release
+  build's path (L5; before it both were silent). The refused run was
+  never admitted, so its Run's terminal stands alone on the posting
+  thread; the freed cell's is bracketed by the teardown's
+  cancellation. The post's ABI stays `void`: the caller does not
+  learn the outcome, the trace names it. The regressions: a full ring
+  (`l19_full_ring.hl`: after the first `App` literal's teardown has
+  joined the pools, each later one's placed field posts its run to
+  a pool with no worker; the first 64 cells are canceled by their
+  children's reclaims, and once they fill the 64-cell ring every
+  later post is refused), an empty ring after the last check
+  (`l19_empty_ring_last_check.hl`; with the reclaim's cancel removed
+  by the trace build's negative control, the pools' teardown names
+  the cell instead), self-post overflow (`l19_self_post_overflow.hl`,
+  every admitted run completes today), a resumed run
+  (`l19_resumed_run_at_shutdown.hl`), and the parked started
+  coroutine.
 - **Restart during drain.** A restart the handler asks for after
   its owner has entered teardown, or while the process drains, is
   not performed. The recovery decision (what the handler asked
@@ -1971,12 +1997,18 @@ so a struct recycled at the same address is a new instance. The
 events: `ParamsSettle` (the bracket's entry, and its settle),
 `Accept`, `Birth`, `Run` (and `Run Terminal(CanceledAfterStart)` for
 a started run whose parked coroutine a pool worker abandons at
-shutdown, with that `Cancellation`), `FailureDelivery` (entered
+shutdown, with that `Cancellation`; a run that never starts ends
+`Terminal(NotStarted(...))`: `Acknowledged` when its child's
+`Reclaim` cancels it, with that `Cancellation`, inside the reclaim;
+`Shutdown(PoolShutdown)` when the post is refused at shutdown, on
+the posting thread; `Shutdown(PoolTeardown)`, with a
+`Cancellation`, when the pools' teardown frees its cell), `FailureDelivery` (entered
 where the failure is raised, completed when the handler returns,
 in place or at settle), `ConstructionDelivery` (a held failure,
 from the hold to its handler's return at settle), `Restart`, `Drain`,
 `Dissolve` (the dissolve-epoch closures and `dissolve()`),
-`Reclaim` (the arena's release past the `__arena` latch), `PreDrain`,
+`Reclaim` (past the `__arena` latch: the queued runs' cancellation,
+then the arena's release), `PreDrain`,
 `WaitAbort`, `PoolJoin` and `PinnedJoin`. Readiness, subscription and
 the run's admission have no events yet.
 
@@ -1994,7 +2026,9 @@ into `Event`s and checks them against what a run owes.
 a comma list of steps a negative control removes: a kind's name
 skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
-place while the params are open); `<Kind>.<Point>` drops that one
+place while the params are open; for `Cancellation`, a reclaim
+cancels no queued run, which only a fixture whose cells no worker
+will dequeue may use); `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan

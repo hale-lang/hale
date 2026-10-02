@@ -104,7 +104,13 @@
 //! that is tearing its owner down ran on the reclaimed struct, or, for
 //! a subscriber, was freed unrun and unnamed. The teardown now cancels
 //! it before the reclaim, and the cell's plan owes the named terminal,
-//! `Run=NotStarted(Acknowledged)`.
+//! `Run=NotStarted(Acknowledged)`, as the first step of the subject's
+//! Reclaim, before its arena goes (L5's second part). A `cross_pool`
+//! cell owes no cancellation: the subject's run on `side` is joined
+//! before its owner is torn down on main, so nothing is queued at its
+//! reclaim; the run queued on one pool and reclaimed from another is
+//! `l19_cross_pool_queued_run_canceled.hl`'s, and `HALE_MATRIX_ASAN=full`
+//! holds the cross-pool cells to no step on a reclaimed struct.
 //!
 //! ## Size
 //!
@@ -843,9 +849,10 @@ fn plan_for(c: Cell) -> String {
     }
     if canceled {
         // The teardown that reclaims the subject cancels its queued run
-        // and names it, on the worker, before the reclaim completes.
+        // and names it, on the worker, inside the reclaim's bracket.
         lines.push(format!("{subj}: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side"));
         lines.push("edge Subj.Run.Ended -> Subj.Reclaim.Completed".into());
+        lines.push("edge Subj.Reclaim.Entered -> Subj.Cancellation.Entered".into());
         lines.push("edge Subj.Cancellation.Completed -> Subj.Reclaim.Completed".into());
     }
     if raises(c) && held(c) {
