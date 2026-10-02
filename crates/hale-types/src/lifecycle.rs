@@ -113,7 +113,7 @@
 //! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
-//! 19    RunAdmission Run Cancellation            Shipped (retention, L5); KnownOpen R19 (refused or freed unrun); Shipped (R20a, named by L2)
+//! 19    RunAdmission Run Cancellation            Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
 //! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
 //! ```
@@ -708,6 +708,7 @@ impl Terminal {
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::OwnerTeardown)),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::ProcessDrain)),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolTeardown)),
             Terminal::CanceledAfterStart,
             Terminal::FailureDelivered,
             Terminal::ClosureViolation,
@@ -771,6 +772,9 @@ pub enum ShutdownCause {
     OwnerTeardown,
     /// The process drains (a signal raised the draining flag).
     ProcessDrain,
+    /// The pools are torn down with the run's cell still queued: no
+    /// worker is left to dequeue it.
+    PoolTeardown,
 }
 
 impl ShutdownCause {
@@ -779,6 +783,7 @@ impl ShutdownCause {
             ShutdownCause::PoolShutdown => "PoolShutdown",
             ShutdownCause::OwnerTeardown => "OwnerTeardown",
             ShutdownCause::ProcessDrain => "ProcessDrain",
+            ShutdownCause::PoolTeardown => "PoolTeardown",
         }
     }
 }
@@ -1025,7 +1030,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
                 Status::Shipped,
                 "a queued run is retained against its child's teardown, which cancels it first: NotStarted(Acknowledged) (L5)",
             ),
-            (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun at the pools' teardown, is silent"),
+            (
+                Status::Shipped,
+                "a post refused at shutdown ends NotStarted(Shutdown(PoolShutdown)), a cell freed unrun at the pools' teardown NotStarted(Shutdown(PoolTeardown)) (L5)",
+            ),
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
         ],
     },

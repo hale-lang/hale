@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable_with_options;
 use hale_types::lifecycle::trace::{self, Trace, Violation};
-use hale_types::lifecycle::{NotStarted, ObligationKind, Point, Spine, Terminal};
+use hale_types::lifecycle::{NotStarted, ObligationKind, Point, ShutdownCause, Spine, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -76,10 +76,14 @@ enum RunMode {
     Plain,
     /// Send SIGINT once stdout carries this line.
     SigintAfter(&'static str),
-    /// Checked and built, never run: the order it needs takes a runtime
-    /// handshake (L5).
-    CompileOnly,
+    /// Run with these variables set: a runtime knob the fixture's shape
+    /// needs (a small ring, to fill it).
+    Env(&'static [(&'static str, &'static str)]),
 }
+
+/// A 64-cell pool ring (the floor `LOTUS_BUS_QUEUE_CAP` allows), so a
+/// fixture fills it in a few hundred posts.
+const SMALL_RING: &[(&str, &str)] = &[("LOTUS_BUS_QUEUE_CAP", "64")];
 
 struct Ran {
     stdout: String,
@@ -128,8 +132,8 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: queued_run_canceled },
     Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
-    Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::CompileOnly, judge: outcome_line },
-    Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::CompileOnly, judge: outcome_line },
+    Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Env(SMALL_RING), judge: full_ring },
+    Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Plain, judge: empty_ring },
     Fixture { file: "rd_restart_during_teardown.hl", line: "RD", adopted: Some("restart-not-performed"), run: RunMode::Plain, judge: restart_during_teardown },
     Fixture { file: "jp_late_failure_pinned_join.hl", line: "JP", adopted: Some("delivered-once"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "jp_late_failure_pool_join.hl", line: "JP", adopted: Some("delivered-once"), run: RunMode::Plain, judge: outcome_line },
@@ -146,8 +150,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l07_pool_or_wait_teardown.hl", "R34", "hang-in-pool-join"),
     ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
-    ("l19_full_ring.hl", "R19", "not-run"),
-    ("l19_empty_ring_last_check.hl", "R19", "not-run"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
 ];
 
@@ -162,7 +164,7 @@ const PENDING: &[(&str, &str)] = &[
 ];
 
 /// Each adopted line's plan, as the trace oracle reads it (a fixture on
-/// a pending line, or compiled only, has none), in the notation
+/// a pending line has none), in the notation
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
@@ -325,6 +327,24 @@ const PLANS: &[(&str, &str)] = &[
          Kid: Cancellation!main
          edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered
          edge Holder.Run.Ended -> Holder.Drain.Entered",
+    ),
+    // R19's other half: a run admitted after the worker's last check is
+    // canceled by its child's reclaim; once the canceled cells fill the
+    // ring, a post is refused for the pool's shutdown, named with no
+    // cancellation. The judge counts the two ends.
+    (
+        "l19_full_ring.hl",
+        "App*200: Birth Drain Dissolve Reclaim
+         Kid*200: Birth Drain Dissolve Reclaim
+         Kid*+: Cancellation!main
+         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
+    ),
+    (
+        "l19_empty_ring_last_check.hl",
+        "App*2: Birth Drain Dissolve Reclaim
+         Kid*2: Birth Drain Dissolve Reclaim
+         Kid: Cancellation!main
+         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
     ),
     (
         "l19_resumed_run_at_shutdown.hl",
@@ -670,7 +690,7 @@ fn assert_control(name: &str) {
         v.iter().map(Violation::to_string).collect()
     };
     let env: Vec<(&str, &str)> = if c.skip.is_empty() { vec![] } else { vec![("LOTUS_LIFECYCLE_SKIP", c.skip)] };
-    let ran = run_fixture(f, &env).expect("a control runs its fixture");
+    let ran = run_fixture(f, &env);
     let shown = check(&ran);
     eprintln!("control {name}: {shown:#?}");
     assert!(
@@ -679,7 +699,7 @@ fn assert_control(name: &str) {
         c.fails_with
     );
     if c.baseline_passes {
-        let ran = run_fixture(f, &[]).expect("a control runs its fixture");
+        let ran = run_fixture(f, &[]);
         let shown = check(&ran);
         assert!(shown.is_empty(), "control {name}: without the skip the plan should hold; the oracle reports {shown:#?}");
     }
@@ -708,9 +728,8 @@ fn source(file: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// Check one fixture and build it with the lifecycle trace; `None` when
-/// it is compiled only.
-fn build_fixture(f: &Fixture) -> Option<PathBuf> {
+/// Check one fixture and build it with the lifecycle trace.
+fn build_fixture(f: &Fixture) -> PathBuf {
     let program = hale_syntax::parse_source(&source(f.file)).unwrap_or_else(|e| panic!("{}: parse: {e:?}", f.file));
     let errs: Vec<String> = hale_types::check_program(&program)
         .iter()
@@ -721,16 +740,12 @@ fn build_fixture(f: &Fixture) -> Option<PathBuf> {
     let bin = harness::unique_bin(&format!("hale_lifecycle_{}", f.file.trim_end_matches(".hl")));
     let opts = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
     build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("{}: build: {e:?}", f.file));
-    if f.run == RunMode::CompileOnly {
-        let _ = std::fs::remove_file(&bin);
-        return None;
-    }
-    Some(bin)
+    bin
 }
 
 /// Build and run one fixture, the runtime given `env`; what it did.
-fn run_fixture(f: &Fixture, env: &[(&str, &str)]) -> Option<Ran> {
-    let bin = build_fixture(f)?;
+fn run_fixture(f: &Fixture, env: &[(&str, &str)]) -> Ran {
+    let bin = build_fixture(f);
     let ran = run_bin(&bin, f.run, env);
     let _ = std::fs::remove_file(&bin);
     eprintln!("{}: --- stdout\n{}--- stderr\n{}--- trace", f.file, ran.stdout, ran.stderr);
@@ -746,11 +761,13 @@ fn run_fixture(f: &Fixture, env: &[(&str, &str)]) -> Option<Ran> {
             e.subject.map(|s| (s.instance.raw(), s.incarnation.raw()))
         );
     }
-    Some(ran)
+    ran
 }
 
 fn run_bin(bin: &Path, mode: RunMode, env: &[(&str, &str)]) -> Ran {
+    let knobs: &[(&str, &str)] = if let RunMode::Env(knobs) = mode { knobs } else { &[] };
     let mut child = Command::new(bin)
+        .envs(knobs.iter().copied())
         .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1021,6 +1038,43 @@ fn cross_pool_run_canceled(r: &Ran) -> String {
     }
 }
 
+/// How many runs the trace names as ending in `t`.
+fn runs_ending(r: &Ran, t: Terminal) -> usize {
+    r.trace.events.iter().filter(|e| e.kind == ObligationKind::Run && e.point == Point::Terminal(t)).count()
+}
+
+const ACKNOWLEDGED: Terminal = Terminal::NotStarted(NotStarted::Acknowledged);
+const REFUSED: Terminal = Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown));
+const FREED_AT_TEARDOWN: Terminal = Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolTeardown));
+
+/// The first of 200 runs completes; each later one is canceled or
+/// refused, named either way, and both happen (the ring filled).
+fn full_ring(r: &Ran) -> String {
+    if r.code != Some(0) {
+        return exit_word(r);
+    }
+    let (ran, dissolved) = (count(r, "ev kid-run"), count(r, "ev kid-dissolve"));
+    let (canceled, refused) = (runs_ending(r, ACKNOWLEDGED), runs_ending(r, REFUSED));
+    match (ran, dissolved, canceled, refused) {
+        (1, 200, c, f) if c > 0 && f > 0 && c + f == 199 => "admitted-or-named".to_string(),
+        _ => format!("runs {ran}, dissolves {dissolved}/200, canceled {canceled}, refused {refused}"),
+    }
+}
+
+/// The first run completes; the second, admitted after the worker's last
+/// check, is canceled by its child's reclaim and named.
+fn empty_ring(r: &Ran) -> String {
+    if r.code != Some(0) {
+        return exit_word(r);
+    }
+    let (ran, dissolved) = (count(r, "ev kid-run"), count(r, "ev kid-dissolve"));
+    match (ran, dissolved, runs_ending(r, ACKNOWLEDGED), runs_ending(r, FREED_AT_TEARDOWN)) {
+        (1, 2, 1, 0) => "admitted-or-named".to_string(),
+        (1, 2, 0, 0) => "freed-unrun-silently".to_string(),
+        (ran, dissolved, c, t) => format!("runs {ran}, dissolves {dissolved}/2, canceled {c}, freed at teardown {t}"),
+    }
+}
+
 fn completed_or_named(r: &Ran) -> String {
     let dissolved_once = count(r, "ev kid-dissolve") == 1;
     let ended = count(r, "ev kid-run-end") == 1 || r.stderr.contains("not-started");
@@ -1079,12 +1133,11 @@ fn every_fixture_is_listed_and_formatted() {
     for f in FIXTURES.iter().filter(|f| f.adopted.is_none()) {
         assert!(PENDING.iter().any(|(p, _)| *p == f.file), "{} has no adopted outcome and no PENDING entry", f.file);
     }
-    // Every adopted line that runs has a plan; a pending or compiled-only
-    // fixture has none; every plan parses and names steps that exist.
+    // Every adopted line has a plan; a pending fixture has none; every
+    // plan parses and names steps that exist.
     for f in FIXTURES {
         let has_plan = PLANS.iter().any(|(p, _)| *p == f.file);
-        let wants_plan = f.adopted.is_some() && f.run != RunMode::CompileOnly;
-        assert_eq!(has_plan, wants_plan, "{}: a plan is owed exactly by an adopted line that runs", f.file);
+        assert_eq!(has_plan, f.adopted.is_some(), "{}: a plan is owed exactly by an adopted line", f.file);
     }
     for (file, text) in PLANS {
         fixture(file);
@@ -1154,14 +1207,9 @@ fn assert_trace(file: &str, ran: &Ran) {
 fn assert_fixture(file: &str) {
     let f = fixture(file);
     let ran = run_fixture(f, &[]);
-    let got = match &ran {
-        Some(ran) => (f.judge)(ran),
-        None => "not-run".to_string(),
-    };
+    let got = (f.judge)(&ran);
     eprintln!("{file}: outcome {got}");
-    if let Some(ran) = &ran {
-        assert_trace(file, ran);
-    }
+    assert_trace(file, &ran);
     if let Some((_, row, today)) = KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) {
         assert!(
             Some(got.as_str()) != f.adopted,
@@ -1220,6 +1268,38 @@ fixture_tests! {
     rd_restart_during_teardown => "rd_restart_during_teardown.hl",
     jp_late_failure_pinned_join => "jp_late_failure_pinned_join.hl",
     jp_late_failure_pool_join => "jp_late_failure_pool_join.hl",
+}
+
+/// Decision line 19's last unrun path: a cell the pools' teardown frees
+/// with its run never ended. Every reclaim cancels its child's runs
+/// first, so a well-formed program reaches the teardown with none; the
+/// trace build's `LOTUS_LIFECYCLE_SKIP=Cancellation` removes the
+/// reclaim's cancel on the empty-ring fixture, whose admitted cell no
+/// worker dequeues, and the teardown then names the run not started for
+/// its own reason, never silent. The plan's cancellation inside the
+/// reclaim is what goes missing (and the trace's subject, retired at the
+/// reclaim, is named again by an address nothing built: the step on a
+/// reclaimed struct the cancel exists to prevent).
+#[test]
+fn pool_teardown_names_a_cell_no_reclaim_canceled() {
+    let file = "l19_empty_ring_last_check.hl";
+    let ran = run_fixture(fixture(file), &[("LOTUS_LIFECYCLE_SKIP", "Cancellation")]);
+    assert_eq!(ran.code, Some(0), "{file} without the cancel: {}\n{}", exit_word(&ran), ran.stderr);
+    assert_eq!((count(&ran, "ev kid-run"), count(&ran, "ev kid-dissolve")), (1, 2), "{file} without the cancel:\n{}", ran.stdout);
+    let at_teardown: Vec<&str> = ran
+        .trace
+        .events
+        .iter()
+        .filter(|e| e.kind == ObligationKind::Run && e.point == Point::Terminal(FREED_AT_TEARDOWN))
+        .map(|e| e.domain.as_str())
+        .collect();
+    assert_eq!(at_teardown, ["main"], "{file} without the cancel: the run freed at the pools' teardown is not named once, on main");
+    assert_eq!(runs_ending(&ran, ACKNOWLEDGED), 0, "{file}: the skip did not remove the reclaim's cancel");
+    let shown: Vec<String> = trace_violations(file, &ran).iter().map(Violation::to_string).collect();
+    assert!(
+        shown.iter().any(|s| s == "missing: Kid.Cancellation"),
+        "{file} without the cancel: the plan should miss the cancellation inside the reclaim; the oracle reports {shown:#?}"
+    );
 }
 
 const SANITIZER_MARKERS: &[&str] = &[
