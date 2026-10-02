@@ -46,9 +46,11 @@ through host functions instead.
 The check finds every way your program reaches a refused namespace,
 not just a call spelled `std::io::fs::…`: building a
 `std::io::tcp::Listener { … }`, calling `conn.recv(64)` on a
-`std::io::tcp::Stream`, or calling a library's `c::stamp()` whose body
-calls `std::process::pid()`. Each is refused where your code makes it,
-with the chain that leads to the namespace:
+`std::io::tcp::Stream`, calling a library's `c::stamp()` whose body
+calls `std::process::pid()`, or building a library's `lib::Kid { }`
+whose params default (or `on_failure` handler) calls it. Each is
+refused where your code makes it, with the chain that leads to the
+namespace:
 
 ```text
 error: `std::process` is unavailable under `target wasm`: OS process control (`std::process`) isn't available in the browser — witness: `c::stamp` → `std::process::pid`

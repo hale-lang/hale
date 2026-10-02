@@ -441,14 +441,21 @@ program reaches a gated namespace, read off the resolved program
 - a method on a handle (`conn.recv(64)` with `conn:
   std::io::tcp::Stream`), resolved through the receiver's type;
 - a call into another seed through its import alias (`c::stamp()`),
-  refused at that call when the seed's fn reaches the namespace.
+  refused at that call when the seed's fn reaches the namespace;
+- a construction of another seed's locus (`lib::Kid { }`), refused at
+  the literal when what its existence runs reaches the namespace: its
+  lifecycle, its params initializers and its `on_failure` handler — the
+  same requirements that refuse the locus declared in the program's own
+  sources at the use inside it.
 
 A use reached through a chain is worded ``error: `std::<namespace>` is
 unavailable under `target wasm`: <reason> — witness: `<use>` → … →
 `<primitive>` ``, naming each link. The program's own sources are the
 horizon: a fn the program writes is judged at the use in its own body,
 once, and the calls to it carry nothing; a fn of an imported seed or of
-the stdlib is judged at the call that crosses into it. A type that only
+the stdlib is judged at the call that crosses into it, and a locus of
+one at its construction. The horizon relocates a refusal; it never
+erases a requirement. A type that only
 names a gated namespace — a parameter, field or return typed
 `std::io::tcp::Stream` — is not a use. A call whose requirements cannot
 be established (a method on a receiver whose type is not known, a call
