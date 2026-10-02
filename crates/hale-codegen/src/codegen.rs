@@ -1472,7 +1472,6 @@ pub fn build_resolved(
         instantiating_into_payload_arena: false,
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
-        main_placement_replicas: BTreeMap::new(),
         params_init_self: None,
         field_holder: None,
         supervising_parent: None,
@@ -1501,6 +1500,7 @@ pub fn build_resolved(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
+        placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
@@ -3767,15 +3767,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// co-locates with its thread's node. Consumed via `mem::take`
     /// like its sibling.
     pub(crate) numa_node_for_next_locus_instantiation: Option<i64>,
-    /// Topology Phase 1c (replicas): per-main-locus map of `params`
-    /// field name → `(count, cores)` for a `pinned(..., replicas =
-    /// K)` entry with `K > 1`. `cores` is the resolved affinity set
-    /// (empty for a bare `pinned(replicas = K)`); replica `i` is
-    /// pinned to `cores[i % cores.len()]` (round-robin) or left
-    /// OS-scheduled when `cores` is empty. Only populated for
-    /// `K > 1`; `K <= 1` behaves as an ordinary single instance.
-    pub(crate) main_placement_replicas:
-        BTreeMap<String, (i64, Vec<i64>)>,
     /// F.31 Phase 3b (2026-05-23): transient parent context set
     /// during a locus's params-init loop. Children instantiated
     /// as field defaults consult this via
@@ -3971,6 +3962,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// — a locus instantiation with no row in it is a
     /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: &'p crate::ownership::OwnerTable,
+    /// The snapshot's placement table (`LoweringView::placement`): the
+    /// deployment plan is read from its root rows, domains and adapters
+    /// (`collect_main_placement`).
+    pub(crate) placement: &'p hale_types::placement::PlacementTable,
     /// GH #921 A2: where the value about to be instantiated came
     /// from. One-shot, taken at the top of
     /// `lower_locus_instantiation` exactly like the flags it shadows,
@@ -7877,11 +7872,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lotus_bus_dispatch.
         self.collect_routing_key_subjects();
 
-        // F.31 (2026-05-23): pre-pass over main locus's
-        // placement entries. Populates `main_placement_map`
-        // keyed by `params` field name, plus caches
-        // `main_locus_name` so the params-init loop in
-        // `lower_locus_instantiation` can decide whether to
+        // F.31: main's deployment, read from the placement table.
+        // Populates `main_placement_map` keyed by `params` field
+        // name, plus caches `main_locus_name` so the params-init loop
+        // in `lower_locus_instantiation` can decide whether to
         // override the per-field placement.
         self.collect_main_placement();
 
@@ -9226,291 +9220,130 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// Topology Phase 1b: expand a [`PinAffinity`] to the
-    /// concrete [`CoreSpec`] the affinity path emits (`None` = no
-    /// mask, own thread, OS picks the core). `Cores` passes
-    /// through unchanged (Phase 1a). `Node` / `L3` resolve
-    /// against the `topology { }` block to a `CoreSpec::Set` — the
-    /// thread's affinity mask becomes that domain's cores, reusing
-    /// the exact 1a cpuset emission. Arena-on-node co-location is
-    /// the follow-up slice; this is thread affinity only.
-    fn resolve_pin_affinity(
-        affinity: &PinAffinity,
-        topology: Option<&TopologyBlock>,
-    ) -> Option<CoreSpec> {
-        match affinity {
-            PinAffinity::Any => None,
-            PinAffinity::Cores(spec) => Some(spec.clone()),
-            PinAffinity::Node(n) => topology
-                .and_then(|t| t.node_cores(*n))
-                .filter(|c| !c.is_empty())
-                .map(CoreSpec::Set),
-            PinAffinity::L3(name) => topology
-                .and_then(|t| t.l3_cores(&name.name))
-                .filter(|c| !c.is_empty())
-                .map(CoreSpec::Set),
-        }
-    }
-
-    /// Topology arena-on-node: the NUMA node an affinity binds its
-    /// *memory* to (as opposed to which cores its thread runs on).
-    /// `node = N` binds to `N` directly; `l3 = name` binds to the
-    /// node containing that cache domain. `cores` / bare `pinned`
-    /// have no node — their arenas stay unbound (ordinary malloc).
-    fn resolve_pin_node(
-        affinity: &PinAffinity,
-        topology: Option<&TopologyBlock>,
-    ) -> Option<i64> {
-        match affinity {
-            PinAffinity::Node(n) => {
-                // Only bind if the node is actually declared (so a
-                // typecheck-rejected reference doesn't leak to a
-                // bogus node id at codegen).
-                topology.and_then(|t| t.node_cores(*n)).map(|_| *n)
-            }
-            PinAffinity::L3(name) => {
-                topology.and_then(|t| t.node_of_l3(&name.name))
-            }
-            PinAffinity::Any | PinAffinity::Cores(_) => None,
-        }
-    }
-
-    /// F.31 (2026-05-23): pre-pass over `main locus`'s
-    /// `placement { }` block. Caches `main_locus_name` and
-    /// populates `main_placement_map` keyed by field name with
-    /// the effective ScheduleClass for each placement entry.
+    /// F.31: main's deployment, read from the placement table (F.40
+    /// phase 3, P1 5 of 6) before any lowering runs: the root lowering
+    /// deploys (`main_locus_name`), and per root field a `placement { }`
+    /// entry decides, its schedule class, pool, NUMA node and replicas,
+    /// keyed by field name for the params init of the root. The domains
+    /// give the pools their `async_io` and affinity; the type sets are
+    /// the anchors' and the pooled rows' realized declarations, an
+    /// adapter of the root's `bindings { }` among the anchors.
     ///
-    /// PlacementSpec → ScheduleClass mapping:
-    /// - `pinned` → `ScheduleClass::Pinned(None)`
-    /// - `pinned(core = N)` / `pinned(cores = …)` → `ScheduleClass::Pinned(Some(spec))`
-    /// - `pinned(node = N)` / `pinned(l3 = name)` → resolved
-    ///   against `topology { }` to `Pinned(Some(Set(cores)))`
-    ///   (topology Phase 1b)
-    /// - `cooperative` / `cooperative(pool = X)` → `ScheduleClass::Cooperative`
-    ///   (pool-routing — Phase 4 — extends ScheduleClass with the
-    ///   pool tag; v1 of this phase honors pinned vs cooperative
-    ///   only, single-pool semantics)
+    /// Domain → ScheduleClass:
+    /// - main (`cooperative`, `pool = main`) → `Cooperative`
+    /// - a worker pool → `Cooperative`, the field's pool recorded
+    /// - pinned → `Pinned(cores)`: the domain's resolved core set, one
+    ///   core (`Single`) where the deciding entry writes `core = N`,
+    ///   else the set; with `replicas = K > 1`, replica `i` binds to
+    ///   its own row's one core.
     ///
-    /// Unspecified main-locus params default to Cooperative
-    /// (no entry in the map → no override → falls back to the
-    /// locus's default schedule_class, which is now Cooperative
-    /// for every user locus per the F.31 spec amendment).
+    /// Every template of the root has the same field families (each
+    /// entry decides one in every template), so the first template's
+    /// rows answer for a field. Fields no entry decides keep the
+    /// locus's own default class (Cooperative under F.31).
     fn collect_main_placement(&mut self) {
-        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
-            _ => None,
-        });
-        let Some(l) = main_locus else { return };
-        self.deployment.main_locus_name = Some(l.name.name.clone());
-
-        // Build a name → locus-type-name map for main's params so
-        // we can resolve placement entries' field references back
-        // to the locus type that gets pinned. Qualified paths
-        // (e.g. `std::http::Server`) are resolved to their
-        // mangled-name form via the same lookup the struct-literal
-        // codegen uses — without this resolution, downstream
-        // `coop_pool_locus_types` insertion silently drops fields
-        // typed against stdlib loci, the `__coop_pool_run_<L>`
-        // wrapper never gets synthesized, and the run() emission
-        // falls back to the defensive synchronous-call path that
-        // blocks the parent on a long-running accept loop
-        // (2026-05-28: surfaced as the refstore-shaped main.run()
-        // starvation in a downstream issue tracker).
-        let mut params_locus_types: BTreeMap<String, String> = BTreeMap::new();
-        for m in &l.members {
-            if let LocusMember::Params(pb) = m {
-                for p in &pb.params {
-                    if let Some(TypeExpr::Named { path, generic_args, .. }) =
-                        &p.ty
-                    {
-                        if !generic_args.is_empty() {
-                            continue;
-                        }
-                        let resolved = if path.segments.len() == 1 {
-                            Some(path.segments[0].name.clone())
-                        } else {
-                            let segs: Vec<&str> = path
-                                .segments
-                                .iter()
-                                .map(|s| s.name.as_str())
-                                .collect();
-                            self.mangled_for_path(&segs)
-                        };
-                        if let Some(name) = resolved {
-                            params_locus_types
-                                .insert(p.name.name.clone(), name);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Topology Phase 1b: the `topology { }` block (declare-
-        // only) that `pinned(node =)` / `pinned(l3 =)` resolve
-        // against. The typechecker has already validated that any
-        // node/l3 reference names a declared domain; codegen just
-        // expands it to a concrete core set (reusing the Phase 1a
-        // cpuset affinity path). An unresolvable reference here
-        // (only reachable if typecheck was bypassed) degrades to
-        // an unpinned own-thread locus rather than panicking.
-        let topology: Option<&TopologyBlock> =
-            l.members.iter().find_map(|m| match m {
-                LocusMember::Topology(tb) => Some(tb),
+        use hale_types::placement::{Decision, DomainKind, HoleKind, InstanceKey, InstanceRow, Origin};
+        let table = self.placement;
+        let Some(root) = table.root.as_ref() else { return };
+        self.deployment.main_locus_name = Some(root.realizes.lowered.clone());
+        // The root's placement entries, by their sites: a user site is
+        // the node of the same index in lowering's program.
+        let root_id = NodeId(root.realizes.site.id.index);
+        let entries: BTreeMap<u32, &PlacementEntry> = hale_syntax::ast::flat_decls(&self.program.items)
+            .filter_map(|item| match item {
+                TopDecl::Locus(l) if l.id == root_id => Some(l),
                 _ => None,
-            });
-
-        // Walk placement entries: populate main_placement_map +
-        // pinned_locus_types + (Phase 4) main_cooperative_pools.
-        for m in &l.members {
-            if let LocusMember::Placement(pb) = m {
-                for entry in &pb.entries {
-                    let sc = match &entry.spec {
-                        PlacementSpec::Pinned { affinity, replicas } => {
-                            let cores = Self::resolve_pin_affinity(
-                                affinity, topology,
-                            );
-                            // Topology arena-on-node: record the
-                            // resolved node so the field's arena
-                            // create binds its memory to that node.
-                            if let Some(node) =
-                                Self::resolve_pin_node(affinity, topology)
-                            {
-                                self.deployment.main_placement_node.insert(
-                                    entry.field.name.clone(),
-                                    node,
-                                );
-                            }
-                            // Topology Phase 1c: `replicas = K` (K > 1)
-                            // fans this field into K single-threaded
-                            // instances, replica `i` on one core of the
-                            // affinity set (round-robin). Record the
-                            // count + core list and give replica 0 a
-                            // single-core affinity; the params-init loop
-                            // emits the extra K-1 instances. K <= 1 is
-                            // an ordinary single instance (full mask).
-                            let k = replicas.unwrap_or(1);
-                            if k > 1 {
-                                let core_list = cores
-                                    .as_ref()
-                                    .map(|c| c.expand())
-                                    .unwrap_or_default();
-                                self.main_placement_replicas.insert(
-                                    entry.field.name.clone(),
-                                    (k, core_list.clone()),
-                                );
-                                let rep0 = core_list
-                                    .first()
-                                    .copied()
-                                    .map(CoreSpec::Single);
-                                ScheduleClass::Pinned(rep0)
-                            } else {
-                                ScheduleClass::Pinned(cores)
-                            }
-                        }
-                        PlacementSpec::Cooperative { pool, affinity } => {
-                            // F.31 Phase 4: capture the pool name
-                            // when present. `None` means default
-                            // pool "main" (no entry needed; the
-                            // main thread's existing cooperative
-                            // queue handles main-pool subscribers).
-                            if let Some(name) = pool {
-                                if name.name != "main" {
-                                    self.deployment.main_cooperative_pools.insert(
-                                        entry.field.name.clone(),
-                                        name.name.clone(),
-                                    );
-                                    // Pool affinity (2026-08-12):
-                                    // resolve like pinned and record
-                                    // per pool (typecheck already
-                                    // rejected conflicting entries;
-                                    // first resolution wins here).
-                                    if let Some(spec) =
-                                        Self::resolve_pin_affinity(
-                                            affinity,
-                                            topology,
-                                        )
-                                    {
-                                        let cores: Vec<i64> =
-                                            spec.expand();
-                                        if !cores.is_empty() {
-                                            self.deployment
-                                                .coop_pool_affinity
-                                                .entry(name.name.clone())
-                                                .or_insert(cores);
-                                        }
-                                    }
-                                    // Phase 4b: track the locus
-                                    // type so a __coop_pool_run
-                                    // wrapper gets synthesized for
-                                    // it.
-                                    if let Some(locus_ty) =
-                                        params_locus_types.get(&entry.field.name)
-                                    {
-                                        self.deployment.coop_pool_locus_types
-                                            .insert(locus_ty.clone());
-                                    }
-                                }
-                            }
-                            ScheduleClass::Cooperative
-                        }
+            })
+            .flat_map(|l| l.members.iter())
+            .filter_map(|m| match m {
+                LocusMember::Placement(pb) => Some(pb.entries.iter()),
+                _ => None,
+            })
+            .flatten()
+            .map(|e| (e.id.0, e))
+            .collect();
+        // Per field an entry decides, the rows of the first template
+        // that holds it, in replica order.
+        let mut fields: BTreeMap<&str, (Origin, Vec<(&InstanceKey, &InstanceRow)>)> = BTreeMap::new();
+        for (k, r) in &table.instances {
+            if k.path.len() != 1 || !matches!(r.decided_by, Decision::Entry { .. }) {
+                continue;
+            }
+            let (origin, rows) = fields.entry(k.path[0].field.as_str()).or_insert((k.origin, Vec::new()));
+            if *origin == k.origin {
+                rows.push((k, r));
+            }
+        }
+        for (field, (_, rows)) in fields {
+            let (_, first) = rows[0];
+            let realized = first.realizes.as_ref().map(|d| d.lowered.clone());
+            let class = match &table.domain(first.domain).kind {
+                DomainKind::Main => ScheduleClass::Cooperative,
+                DomainKind::Pool { name, .. } => {
+                    self.deployment.main_cooperative_pools.insert(field.to_string(), name.clone());
+                    self.deployment.coop_pool_locus_types.extend(realized);
+                    ScheduleClass::Cooperative
+                }
+                DomainKind::Pinned { affinity, numa_node, .. } => {
+                    if let Some(node) = numa_node {
+                        self.deployment.main_placement_node.insert(field.to_string(), *node);
+                    }
+                    self.deployment.pinned_locus_types.extend(realized);
+                    // Each replica's one core, from its own row's domain.
+                    let one_core = |r: &InstanceRow| match &table.domain(r.domain).kind {
+                        DomainKind::Pinned { affinity: Some(c), .. } => c.0.first().copied(),
+                        _ => None,
                     };
-                    self.deployment.main_placement_map
-                        .insert(entry.field.name.clone(), sc.clone());
-                    // F.31 Phase 3b: if the entry pins the field,
-                    // mark the field's locus TYPE as pinned-
-                    // equivalent so its struct layout includes
-                    // pinned-required fields.
-                    if matches!(sc, ScheduleClass::Pinned(_)) {
-                        if let Some(locus_ty) =
-                            params_locus_types.get(&entry.field.name)
-                        {
-                            self.deployment.pinned_locus_types
-                                .insert(locus_ty.clone());
-                        }
-                    }
-                    // F.35 Slice 2: track pools whose entries
-                    // declare `where async_io`. Typecheck already
-                    // verified mode-consistency across pool entries
-                    // and rejected the placement-spec contradictions
-                    // (pinned / pool=main); here we just collect the
-                    // pool name for the prelude's enable_async_io
-                    // emit.
-                    let has_async_io = entry.constraints.iter().any(|c| {
-                        matches!(c.kind, PlacementConstraint::AsyncIo)
-                    });
-                    if has_async_io {
-                        if let PlacementSpec::Cooperative { pool: Some(name), .. } =
-                            &entry.spec
-                        {
-                            if name.name != "main" {
-                                self.deployment.async_io_pools
-                                    .insert(name.name.clone());
+                    if rows.len() > 1 {
+                        let cores: Vec<Option<i64>> = rows.iter().map(|(_, r)| one_core(r)).collect();
+                        let rep0 = cores[0];
+                        self.deployment.main_placement_replicas.insert(field.to_string(), cores);
+                        ScheduleClass::Pinned(rep0.map(CoreSpec::Single))
+                    } else {
+                        // The entry's written selector decides how the
+                        // affinity is emitted: one core, or a set.
+                        let entry = match &first.decided_by {
+                            Decision::Entry { entry, .. } => entries.get(&entry.id.index).copied(),
+                            _ => None,
+                        };
+                        let single = matches!(
+                            entry.map(|e| &e.spec),
+                            Some(PlacementSpec::Pinned { affinity: PinAffinity::Cores(CoreSpec::Single(_)), .. })
+                        );
+                        ScheduleClass::Pinned(affinity.as_ref().filter(|c| !c.0.is_empty()).map(|c| {
+                            if single {
+                                CoreSpec::Single(c.0[0])
+                            } else {
+                                CoreSpec::Set(c.0.clone())
                             }
-                        }
+                        }))
                     }
+                }
+            };
+            self.deployment.main_placement_map.insert(field.to_string(), class);
+        }
+        for d in &table.domains {
+            if let DomainKind::Pool { name, async_io, affinity } = &d.kind {
+                if *async_io {
+                    self.deployment.async_io_pools.insert(name.clone());
+                }
+                if let Some(cores) = affinity.as_ref().filter(|c| !c.0.is_empty()) {
+                    self.deployment.coop_pool_affinity.insert(name.clone(), cores.0.clone());
                 }
             }
         }
-
-        // Walk binding entries: adapter loci instantiated inline
-        // are pinned-equivalent by construction. (The GH #233
-        // stdlib transport loci are deliberately NOT pinned —
-        // birth must run inline on the boot path so realization
-        // failure refuses the boot synchronously; their serve
-        // thread is C-spawned by birth, not placement-spawned.)
-        for m in &l.members {
-            if let LocusMember::Bindings(bb) = m {
-                for entry in &bb.entries {
-                    if let TransportSpec::Adapter { locus, .. } =
-                        &entry.transport
-                    {
-                        self.deployment.pinned_locus_types.insert(locus.name.clone());
-                    }
-                }
+        // The adapters of the root's `bindings { }`: pinned anchors of
+        // their own, built once by the bindings prelude.
+        for (k, r) in &table.instances {
+            if matches!(k.origin, Origin::Binding(_)) && k.path.is_empty() {
+                self.deployment.pinned_locus_types.extend(r.realizes.as_ref().map(|d| d.lowered.clone()));
             }
         }
-    }
+        for h in &table.holes {
+            if let HoleKind::EntryDecidesNothing { field } = &h.kind {
+                self.deployment.undecided_fields.insert(field.clone());
+            }
+        }    }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
         // Each binding entry resolves its topic ref through the topic

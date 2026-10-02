@@ -142,6 +142,12 @@ pub struct LoweringView {
     /// table ([`route_anchors`]): the anchor's mailbox is their route
     /// (the placement correspondence's U-6).
     pub route_anchors: BTreeSet<String>,
+    /// The snapshot's placement table, the one the view was resolved
+    /// with: lowering's deployment plan reads its root rows, domains and
+    /// adapters (`collect_main_placement`). A user site the table names
+    /// is the node of the same index in `merged` (the mint keeps the ids
+    /// the bundle minted).
+    pub placement: crate::placement::PlacementTable,
 }
 
 /// The pinned anchors of `table` (a root field placed `pinned`, one per
@@ -299,8 +305,9 @@ pub fn resolve_program(
 /// a caller with none passes `&FormRows::default()`, and every form then
 /// gets its written discipline. `placement` is the snapshot's placement
 /// table (`Snapshot::demand_placement`); a caller with none passes
-/// `&PlacementTable::default()`, and no anchor then routes its nested
-/// subscriptions (`route_anchors`). The error is the message codegen
+/// `&PlacementTable::default()`, and lowering then deploys no main locus
+/// and no anchor routes its nested subscriptions (`route_anchors`). The
+/// error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
@@ -535,6 +542,7 @@ pub fn resolve_rewritten(
         top,
         alloc_routing,
         route_anchors,
+        placement: placement.clone(),
     })
 }
 
