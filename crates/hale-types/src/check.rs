@@ -496,13 +496,17 @@ pub struct CheckInputs<'a> {
     /// included. The F.31 cross-pool check, the instance-aliasing rule
     /// and the effects certificate engine read them.
     pub forms: &'a crate::form_rows::FormRows,
+    /// The bus graph over the checked programs: rules 7, 9 and 10 read
+    /// it (F.40 phase 3, C4).
+    pub bus: &'a crate::bus_graph::BusGraph,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
-/// [`crate::form_rows::form_rows`]; the effect rows when a rule asks).
+/// [`crate::form_rows::form_rows`], the bus graph; the effect rows when a
+/// rule asks).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -519,6 +523,7 @@ pub fn check_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
+    let bus = crate::bundle_bus_graph(bundle, top);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -526,6 +531,7 @@ pub fn check_bundle(
         entry: &entry,
         alloc_summary: &alloc_summary,
         forms: &forms,
+        bus: &bus,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -810,7 +816,7 @@ pub fn check_bundle_reporting(
     // wired to only one end. Gated on a closed-world program (one
     // with an entry), so library seeds whose consumers are external
     // aren't falsely flagged.
-    check_bus_graph(bundle, top, inputs.entry, &mut diags);
+    check_bus_graph(bundle, top, inputs.entry, inputs.bus, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
     // an intra-locus loop is devirtualized synchronous self-dispatch
@@ -6809,18 +6815,19 @@ fn collect_topic_pub_sub(
 // whose publishers/subscribers live in downstream consumers must not
 // be flagged, since the other half is out of this bundle.
 //
-// Subjects are keyed by `BusSubject::canonical()` (literal string /
-// topic name / qualified last segment), which is exactly the key a
-// declared topic's name matches. False-positive guards: transport
-// bindings (external peer), trailing-`**` wildcard coverage, and
+// Judged over the bus graph (F.40 phase 3, C4): subjects are the
+// graph's wire rows, keyed by the canonical subject (spec/model.md rule
+// 8), so a topic published by name and subscribed by its literal
+// subject is one subject. False-positive guards are the rows' columns:
+// transport bindings (external peer), `**` wildcard coverage, and
 // cross-seed (`alias::Foo`) references (the other seed owns the other
-// half). A declared topic is matched by both its name and its
-// `wire_subject` (a literal site may address it by the wire form).
+// half). A site the graph cannot resolve is a hole, judged by no rule.
 
 fn check_bus_graph(
     bundle: &Bundle<'_>,
     top: &TopScope,
     entry: &crate::entry::EntryRow,
+    bus: &crate::bus_graph::BusGraph,
     diags: &mut Vec<Diag>,
 ) {
     // Closed-world gate: only a complete program (one with an entry,
@@ -6830,18 +6837,6 @@ fn check_bus_graph(
     if entry.entry().is_none() {
         return;
     }
-
-    // The publisher/subscriber/bound/cross-seed walk is shared with
-    // `bus_graph::build_bus_graph` (the static-devirt analysis) — one
-    // walk, two consumers. The orphan diagnostics below use only the
-    // ends + bound + cross_seed; the per-site detail is ignored here.
-    let crate::bus_graph::BusWalk {
-        publishers,
-        subscribers,
-        bound,
-        cross_seed,
-        ..
-    } = crate::bus_graph::collect_bus_walk(bundle);
 
     // A subject has a publisher if some locus publishes it (exactly
     // or via wildcard), it is bound to a transport (external peer),
@@ -6864,21 +6859,21 @@ fn check_bus_graph(
         });
         found
     });
-    let has_pub = |aliases: &[&str]| {
+    let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
         api_bound
-            || aliases.iter().any(|a| {
-                publishers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+            || row.is_some_and(|r| {
+                r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed
             })
     };
-    let has_sub = |aliases: &[&str]| {
+    let has_sub = |row: Option<&crate::bus_graph::WireRow>| {
         api_bound
-            || aliases.iter().any(|a| {
-                subscribers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+            || row.is_some_and(|r| {
+                r.subscribed.is_some() || r.subscribed_by_pattern || r.bound || r.cross_seed
             })
     };
 
-    // 1) Declared topics — matched by name and wire_subject.
-    let mut declared_keys: BTreeSet<String> = BTreeSet::new();
+    // 1) Declared topics — the row of their wire subject.
+    let mut declared_wires: BTreeSet<&str> = BTreeSet::new();
     for (name, sym) in &top.symbols {
         let TopSymbol::Topic(info) = sym else { continue };
         // Topics that failed parent resolution carry an empty wire
@@ -6886,22 +6881,12 @@ fn check_bus_graph(
         if info.wire_subject.is_empty() {
             continue;
         }
-        declared_keys.insert(name.clone());
-        declared_keys.insert(info.wire_subject.clone());
-        let aliases: Vec<&str> = if info.wire_subject == *name {
-            vec![name.as_str()]
-        } else {
-            vec![name.as_str(), info.wire_subject.as_str()]
-        };
-        let p = has_pub(&aliases);
-        let s = has_sub(&aliases);
+        declared_wires.insert(info.wire_subject.as_str());
+        let row = bus.wires.get(&info.wire_subject);
+        let p = has_pub(row);
+        let s = has_sub(row);
         if p && !s {
-            let span = publishers
-                .concrete
-                .get(name)
-                .or_else(|| publishers.concrete.get(&info.wire_subject))
-                .copied()
-                .unwrap_or(info.span);
+            let span = row.and_then(|r| r.published).unwrap_or(info.span);
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -6912,12 +6897,7 @@ fn check_bus_graph(
                 ),
             ));
         } else if s && !p {
-            let span = subscribers
-                .concrete
-                .get(name)
-                .or_else(|| subscribers.concrete.get(&info.wire_subject))
-                .copied()
-                .unwrap_or(info.span);
+            let span = row.and_then(|r| r.subscribed).unwrap_or(info.span);
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -6939,19 +6919,16 @@ fn check_bus_graph(
         }
     }
 
-    // 2) Literal subjects (not a declared topic's name or wire form).
-    let mut literal_keys: BTreeSet<String> = BTreeSet::new();
-    for k in publishers.concrete.keys().chain(subscribers.concrete.keys()) {
-        if !declared_keys.contains(k) {
-            literal_keys.insert(k.clone());
+    // 2) Literal subjects: a row some site names that no declared topic
+    //    carries.
+    for (k, row) in &bus.wires {
+        if declared_wires.contains(k.as_str()) {
+            continue;
         }
-    }
-    for k in literal_keys {
-        let aliases = [k.as_str()];
-        let p = has_pub(&aliases);
-        let s = has_sub(&aliases);
+        let p = has_pub(Some(row));
+        let s = has_sub(Some(row));
         if p && !s {
-            let span = publishers.concrete.get(&k).copied().unwrap();
+            let Some(span) = row.published else { continue };
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -6962,7 +6939,7 @@ fn check_bus_graph(
                 ),
             ));
         } else if s && !p {
-            let span = subscribers.concrete.get(&k).copied().unwrap();
+            let Some(span) = row.subscribed else { continue };
             diags.push(Diag::warn(
                 span,
                 format!(

@@ -299,6 +299,7 @@ pub fn check_bundle_opts_scoped(
     };
     let entry = entry::entry_row(bundle);
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
+    let bus = bundle_bus_graph(bundle, &top);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -308,6 +309,7 @@ pub fn check_bundle_opts_scoped(
             entry: &entry,
             alloc_summary: &alloc_summary,
             forms: &forms,
+            bus: &bus,
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -331,7 +333,8 @@ pub fn check_bundle_opts_scoped(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms);
+        let model =
+            model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms, &bus);
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
@@ -361,27 +364,36 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
-    model_over_scope(bundle, &top, &handlers, summary, &forms)
+    let bus = bundle_bus_graph(bundle, &top);
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus)
+}
+
+/// The bus graph of a bundle no snapshot holds, over its scope: what
+/// the test entries' check and model read ([`check_bundle_opts_scoped`],
+/// [`check::check_bundle`], [`derive_application_model`]). Every verb
+/// reads its snapshot's (`Snapshot::demand_bus_graph`).
+pub(crate) fn bundle_bus_graph(bundle: &Bundle<'_>, top: &resolve::TopScope) -> bus_graph::BusGraph {
+    bus_graph::build_bus_graph(bundle, top)
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary and the form rows its caller already built: the
-/// graphs the model reads beside them are built here.
+/// allocation summary, the form rows and the bus graph its caller
+/// already built: the graphs the model reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     handlers: &handler_routing::HandlerRouting,
     alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
     forms: &form_rows::FormRows,
+    bus_graph: &bus_graph::BusGraph,
 ) -> hale_model::ApplicationModel {
-    let bus_graph = bus_graph::build_bus_graph(bundle, top);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
         bundle,
         &model_builder::ModelInputs {
             top,
-            bus_graph: &bus_graph,
+            bus_graph,
             ownership: &ownership,
             handlers,
             effects: &effects,

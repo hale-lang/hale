@@ -711,7 +711,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(BUS_GRAPH, "dispatch_gates")],
         seams: &[
             Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2), (CHECK, 1)] },
+            Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2)] },
             Seam { symbol: "dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
         ],
     },

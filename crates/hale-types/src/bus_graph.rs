@@ -20,9 +20,11 @@
 //! optimization.
 //!
 //! Build #1a is pure analysis: nothing here changes codegen. The
-//! diagnostics pass (`check::check_bus_graph`) and `build_bus_graph`
-//! SHARE the publishers/subscribers/bound/cross-seed/wildcard walk
-//! via [`collect_bus_walk`] — there is one walk, two consumers.
+//! checker's bus rules read the graph (F.40 phase 3, C4,
+//! spec/semantics.md rules 7, 9 and 10): the walk's bound, cross-seed
+//! and wildcard facts are columns of the graph's canonical subjects,
+//! [`BusGraph::wires`], and a subject the graph cannot resolve is a
+//! hole, [`BusGraph::holes`], that no rule fires on.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,29 +33,22 @@ use hale_syntax::Span;
 
 use crate::resolve::TopScope;
 use crate::symbol::{Bundle, TopSymbol};
+use crate::topic_identity::TopicRows;
 
-// === Shared walk (consumed by both check_bus_graph + build) =======
+// === The walk =====================================================
 
-/// One end of the bus graph: subject-key → first declaration span,
-/// plus the wildcard patterns seen on that end (matched separately).
+/// One end of the bus graph: the wildcard patterns seen on that end,
+/// which the gate matches against each subject.
 #[derive(Default)]
 pub(crate) struct BusEnd {
-    pub(crate) concrete: BTreeMap<String, Span>,
     pub(crate) wildcards: Vec<String>,
 }
 
 impl BusEnd {
-    fn record(&mut self, key: String, span: Span) {
+    fn record(&mut self, key: String) {
         if key.contains("**") {
             self.wildcards.push(key);
-        } else {
-            self.concrete.entry(key).or_insert(span);
         }
-    }
-    /// Does this end carry `subject` — exactly, or via a wildcard?
-    pub(crate) fn covers(&self, subject: &str) -> bool {
-        self.concrete.contains_key(subject)
-            || self.wildcards.iter().any(|p| crate::wildcard_match(p, subject))
     }
 }
 
@@ -63,6 +58,7 @@ impl BusEnd {
 pub(crate) struct RawPub {
     pub(crate) locus: String,
     pub(crate) key: String,
+    pub(crate) subject: Subject,
     pub(crate) span: Span,
 }
 
@@ -74,32 +70,37 @@ pub(crate) struct RawSub {
     pub(crate) locus: String,
     pub(crate) handler: String,
     pub(crate) key: String,
+    pub(crate) subject: Subject,
     pub(crate) span: Span,
     pub(crate) qualified: bool,
     pub(crate) keyed: bool,
 }
 
-/// The product of one walk over the bundle's bus topology — every
-/// input the orphan diagnostics OR the eligibility gate needs.
+/// The product of one walk over the bundle's bus topology: the
+/// eligibility gate's inputs, keyed by `BusSubject::canonical()`, and
+/// each site's canonical subject, from which the graph's wire rows are
+/// built.
 pub(crate) struct BusWalk {
     pub(crate) publishers: BusEnd,
     pub(crate) subscribers: BusEnd,
     pub(crate) bound: BTreeSet<String>,
+    /// The wire subjects of the bound topics (the rows' `bound`).
+    pub(crate) bound_wires: BTreeSet<String>,
     pub(crate) cross_seed: BTreeSet<String>,
     pub(crate) pub_sites: Vec<RawPub>,
     pub(crate) sub_sites: Vec<RawSub>,
 }
 
 /// Walk every locus's `bus { }` + `bindings { }` blocks once,
-/// collecting the publisher/subscriber ends (for orphan
-/// diagnostics) AND the per-site detail (for the graph). This is
-/// the single source of truth `check_bus_graph` and
-/// `build_bus_graph` both consume — do not duplicate the walk.
-pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
+/// collecting the publisher/subscriber ends AND the per-site detail,
+/// each site's subject resolved through the topic rows. The one walk
+/// [`build_bus_graph`] reads — do not duplicate it.
+pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWalk {
     let mut w = BusWalk {
         publishers: BusEnd::default(),
         subscribers: BusEnd::default(),
         bound: BTreeSet::new(),
+        bound_wires: BTreeSet::new(),
         cross_seed: BTreeSet::new(),
         pub_sites: Vec::new(),
         sub_sites: Vec::new(),
@@ -119,6 +120,7 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
         items: &[TopDecl],
         w: &mut BusWalk,
         wire_subjects: &BTreeMap<String, String>,
+        topics: &TopicRows,
     ) {
         for item in items {
             match item {
@@ -134,10 +136,11 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
                                             if matches!(subject, BusSubject::QualifiedTopic(_)) {
                                                 w.cross_seed.insert(key.clone());
                                             }
-                                            w.publishers.record(key.clone(), *span);
+                                            w.publishers.record(key.clone());
                                             w.pub_sites.push(RawPub {
                                                 locus: locus.clone(),
                                                 key,
+                                                subject: Subject::of(subject, topics),
                                                 span: *span,
                                             });
                                         }
@@ -156,11 +159,12 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
                                             if qualified {
                                                 w.cross_seed.insert(key.clone());
                                             }
-                                            w.subscribers.record(key.clone(), *span);
+                                            w.subscribers.record(key.clone());
                                             w.sub_sites.push(RawSub {
                                                 locus: locus.clone(),
                                                 handler: handler.name.clone(),
                                                 key,
+                                                subject: Subject::of(subject, topics),
                                                 span: *span,
                                                 qualified,
                                                 keyed: key_filter.is_some(),
@@ -199,6 +203,15 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
                                     {
                                         w.bound.insert(wire.clone());
                                     }
+                                    // The canonical subject the entry
+                                    // binds, for the wire rows: the
+                                    // topic's row, when one answers.
+                                    if let Subject::Wire(wire) = Subject::of_topic(
+                                        &entry.topic.name,
+                                        topics,
+                                    ) {
+                                        w.bound_wires.insert(wire);
+                                    }
                                 }
                             }
                             _ => {}
@@ -206,16 +219,159 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
                     }
                 }
                 TopDecl::Module(md) => {
-                    walk(&md.items, w, wire_subjects)
+                    walk(&md.items, w, wire_subjects, topics)
                 }
                 _ => {}
             }
         }
     }
     for program in bundle.programs.values() {
-        walk(&program.items, &mut w, &wire_subjects);
+        walk(&program.items, &mut w, &wire_subjects, topics);
     }
     w
+}
+
+/// A site's subject under the graph's canonical key (spec/semantics.md
+/// rule 9): the wire subject (spec/model.md rule 8), or a hole.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Subject {
+    /// A wire subject: a literal subject as written (a `**` pattern
+    /// included), or the wire of the topic row a topic reference names.
+    /// A topic published by its declared name and subscribed by its
+    /// literal subject is one `Wire`.
+    Wire(String),
+    /// A subject the graph cannot resolve, as written (a path joined
+    /// with `::`): a topic name no unbroken row answers, or a qualified
+    /// path (`alias::Topic`) no import rename resolved.
+    Unresolved(String),
+}
+
+impl Subject {
+    /// The canonical subject a `bus { }` member names.
+    pub(crate) fn of(subject: &BusSubject, topics: &TopicRows) -> Subject {
+        match subject {
+            BusSubject::Literal { subject, .. } => Subject::Wire(subject.clone()),
+            BusSubject::Topic(id) => Subject::of_topic(&id.name, topics),
+            BusSubject::QualifiedTopic(qn) => Subject::Unresolved(
+                qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+            ),
+        }
+    }
+
+    /// The canonical subject a topic name names: its row's wire, or a
+    /// hole when no unbroken row answers it.
+    pub(crate) fn of_topic(name: &str, topics: &TopicRows) -> Subject {
+        match topics.named(name) {
+            Some(t) if !t.broken => Subject::Wire(t.wire.clone()),
+            _ => Subject::Unresolved(name.to_string()),
+        }
+    }
+
+    /// The wire subject, when the graph resolved one.
+    pub fn wire(&self) -> Option<&str> {
+        match self {
+            Subject::Wire(w) => Some(w),
+            Subject::Unresolved(_) => None,
+        }
+    }
+}
+
+/// One canonical subject of the graph: a wire subject some site names
+/// or some topic carries, with the facts rule 9 reads (F.40 phase 3,
+/// C4). A `**` pattern is not a row: its coverage is a column of the
+/// rows it covers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WireRow {
+    /// The first publish site on the subject, in walk order.
+    pub published: Option<Span>,
+    /// The first subscribe site on the subject, in walk order.
+    pub subscribed: Option<Span>,
+    /// A `bindings { }` entry binds a topic carrying the subject to a
+    /// transport: an external peer is (or may be) its other end.
+    pub bound: bool,
+    /// A cross-seed reference (`alias::Topic`) may name the subject: a
+    /// qualified path whose last segment is the name of a topic
+    /// carrying it, or the subject itself. The other seed owns the
+    /// other half.
+    pub cross_seed: bool,
+    /// A `**` publish pattern covers the subject.
+    pub published_by_pattern: bool,
+    /// A `**` subscription covers the subject.
+    pub subscribed_by_pattern: bool,
+}
+
+/// A site whose subject the graph cannot resolve: recorded, and judged
+/// by no rule (an unresolved subject is not a proven orphan).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hole {
+    /// The subject as written.
+    pub written: String,
+    /// The locus whose `bus { }` block holds the site.
+    pub locus: String,
+    /// `true` for a publish, `false` for a subscription.
+    pub publish: bool,
+    pub span: Span,
+}
+
+/// The graph's canonical subjects and its holes, from the walk's sites.
+fn wire_rows(walk: &BusWalk, topics: &TopicRows) -> (BTreeMap<String, WireRow>, Vec<Hole>) {
+    let mut rows: BTreeMap<String, WireRow> = BTreeMap::new();
+    let mut holes = Vec::new();
+    for t in topics.iter().filter(|t| !t.broken) {
+        rows.entry(t.wire.clone()).or_default();
+    }
+    let ends = walk
+        .pub_sites
+        .iter()
+        .map(|p| (&p.subject, &p.locus, true, p.span))
+        .chain(walk.sub_sites.iter().map(|s| (&s.subject, &s.locus, false, s.span)));
+    let mut patterns: Vec<(&str, bool)> = Vec::new();
+    for (subject, locus, publish, span) in ends {
+        match subject {
+            Subject::Wire(w) if w.contains("**") => patterns.push((w, publish)),
+            Subject::Wire(w) => {
+                let row = rows.entry(w.clone()).or_default();
+                let first = if publish { &mut row.published } else { &mut row.subscribed };
+                first.get_or_insert(span);
+            }
+            Subject::Unresolved(written) => holes.push(Hole {
+                written: written.clone(),
+                locus: locus.clone(),
+                publish,
+                span,
+            }),
+        }
+    }
+    for wire in &walk.bound_wires {
+        if let Some(row) = rows.get_mut(wire) {
+            row.bound = true;
+        }
+    }
+    // The walk's cross-seed fact is the last segment of each qualified
+    // path: it may name a topic of that name, or the subject it spells.
+    for seg in &walk.cross_seed {
+        let named = match Subject::of_topic(seg, topics) {
+            Subject::Wire(w) => Some(w),
+            Subject::Unresolved(_) => None,
+        };
+        for wire in named.iter().chain(std::iter::once(seg)) {
+            if let Some(row) = rows.get_mut(wire) {
+                row.cross_seed = true;
+            }
+        }
+    }
+    for (wire, row) in rows.iter_mut() {
+        for (pattern, publish) in &patterns {
+            if crate::wildcard_match(pattern, wire) {
+                if *publish {
+                    row.published_by_pattern = true;
+                } else {
+                    row.subscribed_by_pattern = true;
+                }
+            }
+        }
+    }
+    (rows, holes)
 }
 
 // === Public graph =================================================
@@ -347,10 +503,17 @@ pub struct SubjectInfo {
     pub written_topics: Vec<(hale_syntax::ast::NodeId, String)>,
 }
 
-/// The whole-bundle bus graph, keyed by `BusSubject::canonical()`.
+/// The whole-bundle bus graph. `subjects` is keyed by
+/// `BusSubject::canonical()` (the gates, the model, hale/busGraph);
+/// `wires` by the canonical subject, the wire, which the checker's bus
+/// rules read (F.40 phase 3, C4).
 #[derive(Debug, Clone, Default)]
 pub struct BusGraph {
     pub subjects: BTreeMap<String, SubjectInfo>,
+    /// Every wire subject a site names or an unbroken topic carries.
+    pub wires: BTreeMap<String, WireRow>,
+    /// The sites whose subject the graph cannot resolve, in walk order.
+    pub holes: Vec<Hole>,
 }
 
 impl BusGraph {
@@ -407,13 +570,12 @@ impl BusGraph {
 /// Build the authoritative [`BusGraph`] for a bundle. Run this
 /// AFTER typecheck so `top` carries resolved payload types.
 ///
-/// Shares the publishers/subscribers/bound/cross-seed/wildcard
-/// computation with `check::check_bus_graph` via
-/// [`collect_bus_walk`]; the only graph-specific work here is
-/// joining per-site detail (locus, handler, payload, placement)
-/// and applying the eligibility gate.
+/// Reads the one walk, [`collect_bus_walk`]: joins per-site detail
+/// (locus, handler, payload, placement), applies the eligibility gate,
+/// and builds the canonical subjects the checker's bus rules read.
 pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
-    let walk = collect_bus_walk(bundle);
+    let walk = collect_bus_walk(bundle, &top.topics);
+    let (wires, holes) = wire_rows(&walk, &top.topics);
 
     // Closed-world gate input (DEVIRT-ONLY notion): a complete,
     // closed-world program is one with an ENTRY POINT — a bare
@@ -522,7 +684,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
         );
     }
 
-    BusGraph { subjects }
+    BusGraph { subjects, wires, holes }
 }
 
 /// The soundness-critical gate. Returns `None` when the subject is

@@ -1024,6 +1024,7 @@ impl Snapshot {
                     entry: self.demand_entry().map_err(Clone::clone)?,
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
+                    bus: self.demand_bus_graph().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
