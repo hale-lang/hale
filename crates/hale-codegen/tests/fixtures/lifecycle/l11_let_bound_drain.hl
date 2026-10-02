@@ -1,0 +1,20 @@
+// Decision line 11, a let-bound literal drains at scope exit (Drain).
+// Shipped.
+//
+// `Kid` is let-bound in fn main. Its drain() is deferred with its
+// dissolve to the end of the scope, after the statements that follow
+// the binding.
+//
+// Expected terminal outcome: `ev after-let`, then `ev kid-drain`, then
+// `ev kid-dissolve`, judged by the harness: `drain-at-scope-exit`.
+
+locus Kid {
+    run() { println("ev kid-run"); }
+    drain() { println("ev kid-drain"); }
+    dissolve() { println("ev kid-dissolve"); }
+}
+
+fn main() {
+    let k = Kid { };
+    println("ev after-let");
+}

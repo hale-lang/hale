@@ -1,0 +1,25 @@
+// Decision line 4, the failure route bound at birth in every spine
+// (FailureDelivery, Dissolve). Known open at inventory row C31.
+//
+// `Kid` is App's field, and its dissolve-epoch closure fails in the
+// dissolve cascade of App's teardown. That cascade is lowered in fn
+// main, where no locus is `self`, so the route resolution finds no
+// parent and the violation takes the bare report and exit, as the
+// reclaim spine's does (`l04_dissolve_route_reclaim.hl`). The route
+// bound at Kid's birth names App's handler.
+//
+// Expected terminal outcome: App's handler hears the violation exactly
+// once, judged by the harness: `owner-handled-once`. Today: the
+// structural exit.
+
+locus Kid {
+    params { left: Int = 1; }
+    closure clean { self.left ~~ 0 within 0; epoch dissolve; }
+}
+
+main locus App {
+    params { k: Kid = Kid { }; }
+    on_failure(c: Kid, err: ClosureViolation) { println("ev handler " + err.closure); }
+}
+
+fn main() { App { }; }

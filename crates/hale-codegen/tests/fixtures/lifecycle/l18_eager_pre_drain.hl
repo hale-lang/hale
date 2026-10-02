@@ -1,0 +1,36 @@
+// Decision line 18, every spine pre-drains (PreDrain). Known open at
+// inventory row C13 as a step the eager spine does not emit; the
+// outcome below already holds today, by another road.
+//
+// `Hub` is a statement-position literal with no subscriptions of its
+// own, so it takes the eager spine. Its run() publishes to its field
+// `sub`, on the main pool. A pre-drain delivers the cell before the
+// first teardown step; it is a delivery point, not a quiescence
+// witness.
+//
+// Today the cell is delivered by run()'s own exit flush, which drains
+// the bus for any body that may have published, before the eager
+// spine starts (and a main locus's ingress quiesce ends in a drain of
+// its own). No program here reaches the eager spine with a cell the
+// exit flush did not see, so the spine's missing pre-drain is the
+// trace build's to show (L2): this fixture guards the outcome.
+//
+// Expected terminal outcome: `ev sub-heard` before `ev sub-dissolve`,
+// judged by the harness: `delivered-before-teardown`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l18"; }
+
+locus Sub {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) { println("ev sub-heard"); }
+    dissolve() { println("ev sub-dissolve"); }
+}
+
+locus Hub {
+    params { sub: Sub = Sub { }; }
+    bus { publish Pings; }
+    run() { Pings <- Ping { n: 1 }; }
+}
+
+fn main() { Hub { }; }

@@ -1,0 +1,56 @@
+// Decision line 1, negative case: the instantiating thread settles
+// while the worker needs its queue (ConstructionDelivery).
+//
+// `Failer` and `Quick` are App fields on pool `side`. Failer's run()
+// fails on the worker while App's params loop is still open on main
+// (`slow` keeps it open), so the failure is held and the worker waits
+// for the decision. Quick's run() is queued on that same worker behind
+// Failer's. Main settles App's params and runs the handler; only then
+// can the worker go on to Quick.
+//
+// A construction-time delivery that waits for the worker to run the
+// handler, while the worker waits for the handler's decision, is the
+// cycle this fixture must never show.
+//
+// Expected terminal outcome: one delivery at settle, then Quick's run()
+// completed: `outcome: delivered-at-settle-queue-ran`.
+
+locus Failer {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() { violate fuse; }
+}
+
+locus Quick {
+    params { ran: Int = 0; }
+    run() { self.ran = 1; }
+}
+
+locus Slow {
+    run() { std::time::sleep(100ms); }
+}
+
+main locus App {
+    params {
+        f: Failer = Failer { name: "f" };
+        q: Quick = Quick { };
+        slow: Slow = Slow { };
+        fired: Int = 0;
+    }
+    placement { f: cooperative(pool = side); q: cooperative(pool = side); }
+    on_failure(c: Failer, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() {
+        let mut i = 0;
+        while self.q.ran == 0 && i < 100 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        if self.fired == 1 && self.q.ran == 1 {
+            println("outcome: delivered-at-settle-queue-ran");
+        } else {
+            println("outcome: fired=" + to_string(self.fired) + " ran=" + to_string(self.q.ran));
+        }
+    }
+}
+
+fn main() { App { }; }

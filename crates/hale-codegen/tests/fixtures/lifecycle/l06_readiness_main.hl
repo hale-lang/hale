@@ -1,0 +1,44 @@
+// Decision line 6, registration before birth and readiness (Subscribe,
+// Readiness), for a subscriber on the main pool.
+//
+// `Sub` subscribes to `Pings`, and its birth() publishes one and then
+// sleeps before marking itself born. Registration precedes birth(), so
+// the publish reaches Sub's own subscription (shipped). Readiness: the
+// delivery becomes eligible once birth() has completed, and the cell
+// waits in the queue until then.
+//
+// Expected terminal outcome: delivered once, after birth() completed,
+// `outcome: delivered-after-birth`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l06.main"; }
+
+locus Sub {
+    params { born: Int = 0; early: Int = 0; heard: Int = 0; }
+    bus { subscribe Pings as on_ping; publish Pings; }
+    fn on_ping(p: Ping) {
+        self.heard = self.heard + 1;
+        if self.born == 0 { self.early = self.early + 1; }
+    }
+    birth() {
+        Pings <- Ping { n: 1 };
+        std::time::sleep(30ms);
+        self.born = 1;
+    }
+}
+
+main locus App {
+    params { s: Sub = Sub { }; }
+    run() {
+        std::time::sleep(100ms);
+        if self.s.heard == 1 && self.s.early == 0 {
+            println("outcome: delivered-after-birth");
+        } else if self.s.early > 0 {
+            println("outcome: delivered-during-birth");
+        } else {
+            println("outcome: heard=" + to_string(self.s.heard));
+        }
+    }
+}
+
+fn main() { App { }; }

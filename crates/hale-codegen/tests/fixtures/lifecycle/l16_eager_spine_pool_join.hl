@@ -1,0 +1,29 @@
+// Decision line 16, a target's lifecycle obligations come from the
+// capability matrix (PoolJoin, WaitAbort). Pending: P3's capability
+// matrix is the authority, and gating the eager spine on wasm is an
+// interim correction.
+//
+// The eager spine's shape: App is a statement-position literal with no
+// subscriptions, and its field runs on pool `side`. On a native target
+// the spine joins the pool before it tears the field down; it emits
+// the join on wasm too, where the four other spines emit none. The
+// native half is pinned here; the wasm half waits for P3.
+//
+// Expected terminal outcome on a native target: the worker's run()
+// ends before the field's dissolve(), judged by the harness:
+// `joined-before-teardown`.
+
+locus Worker {
+    run() {
+        std::time::sleep(50ms);
+        println("ev worker-run-end");
+    }
+    dissolve() { println("ev worker-dissolve"); }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: cooperative(pool = side); }
+}
+
+fn main() { App { }; }

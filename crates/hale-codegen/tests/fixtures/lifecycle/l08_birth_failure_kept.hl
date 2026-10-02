@@ -1,0 +1,29 @@
+// Decision line 8, a birth failure's shape (FailureDelivery, Birth).
+// Shipped.
+//
+// A birth failure is a `ClosureViolation`, and the failing child is kept
+// for its owner's supervision: the handler reads the child's fields.
+// `Kid`'s birth closure fails; App's handler reads `c.tag` and the
+// violation's closure name.
+//
+// Expected terminal outcome: `outcome: closure-violation-child-kept`.
+
+locus Kid {
+    params { tag: String = ""; n: Int = 0; }
+    closure ready { self.n ~~ 1 within 0; epoch birth; }
+}
+
+main locus App {
+    params { saw: String = ""; }
+    on_failure(c: Kid, err: ClosureViolation) { self.saw = c.tag + "/" + err.closure; }
+    run() {
+        Kid { tag: "k" };
+        if self.saw == "k/ready" {
+            println("outcome: closure-violation-child-kept");
+        } else {
+            println("outcome: saw=" + self.saw);
+        }
+    }
+}
+
+fn main() { App { }; }

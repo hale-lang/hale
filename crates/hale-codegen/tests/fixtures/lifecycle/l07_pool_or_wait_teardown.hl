@@ -1,0 +1,53 @@
+// Decision line 7, abort unsatisfiable waits before the join
+// (WaitAbort, PoolJoin). Known open at inventory row R34.
+//
+// `Evt` holds at most two cells per subscriber and refuses past that.
+// `tally` subscribes on the main pool; `pusher` runs on pool `side` and
+// publishes a burst with `or wait`, after App's run() has returned and
+// fn main's exit is joining the pool workers. Only main drains
+// `tally`'s queue, and main is inside the join, so the third publish
+// waits for space that only the wait-abort would end. Every teardown
+// spine raises the wait-abort after the pool join.
+//
+// Expected terminal outcome: the wait is aborted before the join, and
+// the aborted publish is not a success: the process ends with the
+// `BusWaitAborted` report, `wait-aborted`. Today the join never
+// returns: `hang-in-pool-join`.
+
+type E { n: Int = 0; }
+topic Evt {
+    payload: E;
+    subject: "lifecycle.l07";
+    bounded(2);
+    on_full: fail;
+}
+
+locus Tally {
+    params { seen: Int = 0; }
+    bus { subscribe Evt as on_e; }
+    fn on_e(e: E) { self.seen = self.seen + 1; }
+}
+
+locus Pusher {
+    bus { publish Evt; }
+    run() {
+        std::time::sleep(100ms);
+        let mut i = 0;
+        while i < 10 {
+            Evt <- E { n: i } or wait;
+            i = i + 1;
+        }
+        println("outcome: published");
+    }
+}
+
+main locus App {
+    params {
+        tally: Tally = Tally { };
+        pusher: Pusher = Pusher { };
+    }
+    placement { pusher: cooperative(pool = side); }
+    run() { std::time::sleep(10ms); }
+}
+
+fn main() { App { }; }

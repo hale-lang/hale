@@ -1,0 +1,40 @@
+// Decision line 19, an empty ring after the worker's last check
+// (RunAdmission). Known open at inventory row R19. Compiled, not run:
+// the order needs a runtime handshake (L5).
+//
+// A pinned `late` thread replaces App's placed field `k` after the
+// pools have been told to shut down. When the run cell lands after
+// pool `side`'s worker made its last empty-and-shutdown check, the
+// worker never sees it, and the pool's destroy frees it unrun.
+//
+// Expected terminal outcome: the run is rejected before admission with
+// a shutdown reason, or admitted and then canceled with an
+// acknowledgement; never freed unrun in silence, and the child is torn
+// down once. Landing the cell exactly after the last check needs the
+// handshake L5 adds, so the harness only compiles this program.
+
+locus Kid {
+    params { tag: Int = 0; }
+    run() { }
+}
+
+locus Late {
+    params { posted: Int = 0; }
+    run() {
+        std::time::sleep(30ms);
+        self.posted = 1;
+    }
+}
+
+main locus App {
+    params {
+        k: Kid = Kid { };
+        late: Late = Late { };
+    }
+    placement { k: cooperative(pool = side); late: pinned; }
+    run() {
+        self.k = Kid { tag: 1 };
+    }
+}
+
+fn main() { App { }; }

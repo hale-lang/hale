@@ -1,0 +1,28 @@
+// Decision line 5, accept's position (Accept). Shipped.
+//
+// accept(c) runs after the child's params are built and before its
+// birth(), and its result is not read: it admits, and cannot reject.
+// `Kid`'s params are set by its literal; its birth() marks `born`.
+//
+// Expected terminal outcome: accept saw the params and not the birth,
+// `outcome: accept-after-params-before-birth`.
+
+locus Kid {
+    params { tag: String = ""; born: Int = 0; }
+    birth() { self.born = 1; }
+}
+
+main locus App {
+    params { saw: String = ""; }
+    accept(c: Kid) { self.saw = c.tag + "/" + to_string(c.born); }
+    run() {
+        Kid { tag: "t" };
+        if self.saw == "t/0" {
+            println("outcome: accept-after-params-before-birth");
+        } else {
+            println("outcome: saw=" + self.saw);
+        }
+    }
+}
+
+fn main() { App { }; }

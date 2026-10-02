@@ -1,0 +1,41 @@
+// Decision line 2, the post-run tick closures on a posted run()
+// (Closures, Run). Pending: no option is chosen for the line.
+//
+// `Ticker` is placed on pool `side`; its run() is posted to the worker
+// and clears `busy` only when it returns. Its tick closure requires
+// `busy == 0`. Evaluated after run() returns, it passes; evaluated
+// right after the post, while run() is still sleeping on the worker,
+// it fails and App's handler hears it.
+//
+// Expected terminal outcome today: the closure runs before run()
+// returns, `outcome: tick-before-run-returned`. Under either option for
+// the line it would not: `tick-after-run-returned` (a) or no tick at
+// all (b), both `outcome: no-early-tick`.
+
+locus Ticker {
+    params { busy: Int = 1; }
+    closure idle { self.busy ~~ 0 within 0; epoch tick; }
+    run() {
+        std::time::sleep(50ms);
+        self.busy = 0;
+    }
+}
+
+main locus App {
+    params {
+        t: Ticker = Ticker { };
+        early: Int = 0;
+    }
+    placement { t: cooperative(pool = side); }
+    on_failure(c: Ticker, err: ClosureViolation) { self.early = self.early + 1; }
+    run() {
+        std::time::sleep(150ms);
+        if self.early > 0 {
+            println("outcome: tick-before-run-returned");
+        } else {
+            println("outcome: no-early-tick");
+        }
+    }
+}
+
+fn main() { App { }; }

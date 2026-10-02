@@ -1,0 +1,31 @@
+// Decision line 19, a resumed run (Resume, RunAdmission, Run).
+//
+// `k` is placed on pool `side`; its birth closure fails while App's
+// params are open, and the handler absorbs it at settle, so the resume
+// starts its run(). App's run() returns at once: under the adopted
+// rule the resumed run is admitted like a first run, so it either
+// completes or, refused because the pool is shutting down, ends in a
+// named not-started outcome. It never ends silently, and the child is
+// torn down once either way.
+//
+// Expected terminal outcome: `ev kid-run-end` (completed) or a named
+// not-started outcome, and one dissolve, judged by the harness:
+// `completed-or-named`.
+
+locus Kid {
+    params { n: Int = 0; }
+    closure ready { self.n ~~ 1 within 0; epoch birth; }
+    run() {
+        std::time::sleep(20ms);
+        println("ev kid-run-end");
+    }
+    dissolve() { println("ev kid-dissolve"); }
+}
+
+main locus App {
+    params { k: Kid = Kid { }; }
+    placement { k: cooperative(pool = side); }
+    on_failure(c: Kid, err: ClosureViolation) { println("ev handled"); }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,25 @@
+// Decision line 10, the dissolve-epoch closures before the user's
+// dissolve() (Closures, Dissolve). Shipped.
+//
+// `Kid` is App's field. At App's teardown, Kid's dissolve-epoch closure
+// fails and App's handler prints; then Kid's dissolve() prints.
+//
+// Expected terminal outcome: the closure runs before dissolve(), judged
+// by the harness: `closures-before-dissolve`. Today the cascade's route
+// does not select App's handler either (the reclaim spine's defect,
+// line 4, reaches this cascade too), so the violation takes the
+// structural exit before Kid's dissolve() prints; that order is the
+// same answer.
+
+locus Kid {
+    params { left: Int = 1; }
+    closure clean { self.left ~~ 0 within 0; epoch dissolve; }
+    dissolve() { println("ev kid-dissolve"); }
+}
+
+main locus App {
+    params { k: Kid = Kid { }; }
+    on_failure(c: Kid, err: ClosureViolation) { println("ev handler " + err.closure); }
+}
+
+fn main() { App { }; }

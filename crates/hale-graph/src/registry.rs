@@ -1197,7 +1197,7 @@ pub const FAMILIES: &[Family] = &[
             "each rule says whether it is shipped, adopted, known open at an inventory row, or pending on a named condition",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs", "crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)"],
+        tests: &["crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs", "crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)", "crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one)"],
         spec: &["spec/runtime.md (failure delivery; pool join rule b)", "spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart)", "spec/semantics.md § lifecycle"],
         owned: &[site(LIFECYCLE, "LifecyclePlan")],
         seams: &[],

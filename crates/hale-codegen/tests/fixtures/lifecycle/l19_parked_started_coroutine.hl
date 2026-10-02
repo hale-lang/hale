@@ -1,0 +1,30 @@
+// Decision line 19, a parked started coroutine (Cancellation, Run).
+// Known open at inventory row R20a.
+//
+// `srv` is an async_io listener nobody connects to, so its run() is a
+// started coroutine parked in accept() when the pools are joined. The
+// worker abandons it: its stack is freed without resuming it, and its
+// run end never runs. That is a cancellation after start; the worker's
+// quiescence is the pool join's completion, witnessed separately.
+//
+// Expected terminal outcome: the run ends in a named
+// `canceled-after-start`, which the trace build (L2) records, and the
+// listener is torn down once. Today the process exits cleanly and the
+// cancellation is unnamed: `exit-clean-unnamed`.
+
+fn noop(s: std::io::tcp::Stream) { }
+
+main locus App {
+    params {
+        srv: std::io::tcp::Listener = std::io::tcp::Listener {
+            host: "127.0.0.1",
+            port: 0,
+            max_accepts: 1,
+            on_connection: noop,
+        };
+    }
+    placement { srv: cooperative(pool = io) where async_io; }
+    run() { std::time::sleep(100ms); }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,28 @@
+// Decision line 15, a signal raises a cooperative flag (ProcessDrain).
+// Shipped.
+//
+// SIGINT raises the process's draining flag; it calls no lifecycle
+// method. `Loop` is pinned and watches `self.draining`; the harness
+// sends SIGINT once it reads `ev ready`. The run() returns, and the
+// ordinary teardown follows: drain(), then dissolve(), once each.
+//
+// Expected terminal outcome: exit 0 with the loop's return, one drain
+// and one dissolve, judged by the harness: `cooperative-drain`.
+
+locus Loop {
+    @unbounded
+    run() {
+        println("ev ready");
+        while !self.draining { std::time::sleep(10ms); }
+        println("ev loop-sees-drain");
+    }
+    drain() { println("ev loop-drain"); }
+    dissolve() { println("ev loop-dissolve"); }
+}
+
+main locus App {
+    params { l: Loop = Loop { }; }
+    placement { l: pinned; }
+}
+
+fn main() { App { }; }
