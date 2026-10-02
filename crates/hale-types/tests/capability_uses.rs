@@ -205,6 +205,48 @@ fn a_hole_is_refused_on_wasm32_and_recorded_elsewhere() {
     assert_eq!((holes[0].kind, holes[0].chain.as_slice()), (UseKind::Call, ["f".to_string()].as_slice()));
 }
 
+const UNRESOLVED: &str = "the callee is a function value the summary cannot resolve";
+
+/// The review of #1318, round 3: a call through a local bound to a
+/// stdlib path is the path's use, located at the local and witnessed
+/// through it, in a fn's body and in a params initializer alike.
+#[test]
+fn a_call_through_a_let_bound_path_is_refused_through_the_local() {
+    let want = format!("`std::process` is unavailable under {{selector}}: {PROCESS} — witness: `f` → `std::process::pid`");
+    refused_on_wasm32("fn main() {\n    let f = std::process::pid;\n    let _ = f();\n}\n", &[(3, 13, &want)]);
+    refused_on_wasm32(
+        "locus Holder {\n    params { n: Int = { let f = std::process::pid; f() }; }\n    run() { println(self.n); }\n}\n\n\
+         fn main() { Holder { }; }\n",
+        &[(2, 52, &want)],
+    );
+}
+
+/// A call in the program's own code through a local the bindings do not
+/// follow to a fn — or through a computed callee — is a hole: wasm32
+/// cannot admit what it might need, and the host admits it.
+#[test]
+fn a_call_through_an_unresolved_local_is_a_hole_in_the_programs_own_code() {
+    let fns = "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n\n";
+    refused_on_wasm32(
+        &format!("{fns}fn main() {{\n    let f = if len(\"ab\") == 2 {{ one }} else {{ two }};\n    println(f());\n}}\n"),
+        &[(6, 13, &format!("cannot establish what `f()` requires on wasm32: {UNRESOLVED}"))],
+    );
+    refused_on_wasm32(
+        &format!(
+            "{fns}locus Holder {{\n    params {{ n: Int = {{ let f = if len(\"ab\") == 2 {{ one }} else {{ two }}; f() }}; }}\n    \
+             run() {{ println(self.n); }}\n}}\n\nfn main() {{ Holder {{ }}; }}\n"
+        ),
+        &[(5, 73, &format!("cannot establish what `f()` requires on wasm32: {UNRESOLVED}"))],
+    );
+    refused_on_wasm32(
+        &format!("{fns}fn main() {{\n    let fs = [one, two];\n    println(fs[0]());\n}}\n"),
+        &[(6, 13, &format!("cannot establish what `<expr>()` requires on wasm32: {UNRESOLVED}"))],
+    );
+    // A local bound to a fn of the program's own is followed: its body is
+    // judged where it is written, and asks nothing here.
+    admitted(&format!("{fns}fn main() {{\n    let f = one;\n    println(f());\n}}\n"));
+}
+
 /// The declaration-level uses: placement entries and bindings are use
 /// rows with their capability, located at the entry.
 #[test]

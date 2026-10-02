@@ -441,6 +441,12 @@ pub struct CallEdge {
     /// to anything else leaves the edge as it was written (`Unresolved`
     /// with the local's name).
     pub via_local: Option<String>,
+    /// The call is through a local the body's bindings do not follow to
+    /// a fn (`let f = self.g; f()`, a parameter, a reassigned local). The
+    /// edge is the one it always was, an `Unresolved` call named for the
+    /// local; only the capability admission reads this, as a hole in the
+    /// program's own code.
+    pub unresolved_local: bool,
     pub loop_depth: u32,
     /// True if the call is inside an unbounded loop — then the callee is
     /// invoked unboundedly many times regardless of its own multiplicity.
@@ -3829,6 +3835,7 @@ impl<'a> Walker<'a> {
         let mut recv_ty: Option<String> = None;
         let mut receiver_present = false;
         let mut via_local: Option<String> = None;
+        let mut unresolved_local = false;
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
@@ -3846,7 +3853,11 @@ impl<'a> Walker<'a> {
                             via_local = Some(id.name.clone());
                             c.clone()
                         }
-                        Some(Local::Unresolved) | None => Callee::Unresolved(id.name.clone()),
+                        Some(Local::Unresolved) => {
+                            unresolved_local = true;
+                            Callee::Unresolved(id.name.clone())
+                        }
+                        None => Callee::Unresolved(id.name.clone()),
                     }
                 }
             }
@@ -3916,6 +3927,7 @@ impl<'a> Walker<'a> {
             callee: resolved,
             indirect,
             via_local,
+            unresolved_local,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,
@@ -5574,5 +5586,42 @@ mod tests {
             fn main() { }
         "#;
         assert_eq!(local_calls(src, "g"), vec![written("?h"), ("?cb".to_string(), None, true)]);
+    }
+
+    /// A call through a local the bindings do not follow is marked for
+    /// the capability admission alone; a call by name, through a followed
+    /// local, or of a name no binding holds is not.
+    #[test]
+    fn a_call_through_an_unfollowed_local_is_marked() {
+        let src = r#"
+            fn target() -> Int { return 1; }
+            fn g(c: Bool, cb: fn() -> Int) -> Int {
+                let f = if c { target } else { target };
+                f();
+                let h = target;
+                h();
+                let k = cb;
+                k();
+                cb();
+                len("x");
+                unknown();
+                return target();
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let marked: Vec<(String, bool)> = fns(&s, &FnKey::free_fn("g"))
+            .calls
+            .iter()
+            .map(|c| match &c.spelling {
+                CallSpelling::Ident(n) => (n.clone(), c.unresolved_local),
+                other => panic!("a bare callee: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            marked,
+            [("f", true), ("h", false), ("k", true), ("cb", true), ("len", false), ("unknown", false), ("target", false)]
+                .map(|(n, m)| (n.to_string(), m))
+        );
     }
 }

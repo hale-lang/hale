@@ -61,10 +61,11 @@ call. A type that only names a stdlib handle (a parameter typed
 `std::io::tcp::Stream`) is fine. And a call the compiler cannot see
 through — a method on a value whose type it doesn't know, or a call
 through a function-typed parameter — is refused under wasm32 too, since
-it can't promise what that call needs. In a library locus's params
-default, a call through a local is followed to the function the local
-holds (`let f = pid; f()` needs what `pid` needs); a local holding a
-field or a call's result can't be followed, and is refused the same way.
+it can't promise what that call needs. A call through a local is
+followed to the function the local holds (`let f = pid; f()` needs what
+`pid` needs, and the refusal's witness names `f`); in your own code and
+in a library locus's params default, a local holding a field, a call's
+result or an `if` value can't be followed, and is refused the same way.
 
 The **in-process typed bus** — `topic` / `bus { publish … }` /
 `bus { subscribe … }` across loci — runs under wasm exactly as it

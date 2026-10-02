@@ -590,19 +590,20 @@ const PID: &str = "fn pid() -> Int { return std::process::pid(); }\n\n";
 /// in an imported initializer met nothing, so the construction carried
 /// neither the requirement nor a hole. The local resolves to the fn it
 /// is bound to, and the construction is refused with the witness through
-/// it, as the direct call is; the host admits both.
+/// it, as the direct call is (the local a link of the witness, as round
+/// 3 has every call through a local witnessed); the host admits both.
 #[test]
 fn a_call_through_a_local_fn_value_is_refused_at_the_construction() {
     if !wasm_toolchain() {
         eprintln!("SKIP a_call_through_a_local_fn_value_is_refused_at_the_construction: no wasm32 clang or wasm-ld");
         return;
     }
-    for init in ["{ let f = pid; f() }", "pid()"] {
+    for (init, local) in [("{ let f = pid; f() }", "`f` → "), ("pid()", "")] {
         let lib = format!("{PID}locus Kid {{\n    params {{ n: Int = {init}; }}\n    run() {{ println(self.n); }}\n}}\n");
         seeded_case("fn_value", Some(&lib), "fn main() { lib::Kid { }; }\n", |at, selector| {
             vec![format!(
                 "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Kid` → \
-                 `params {{ n }}` → `lib::pid` → `std::process::pid`",
+                 `params {{ n }}` → {local}`lib::pid` → `std::process::pid`",
                 at + 1
             )]
         });
@@ -632,7 +633,7 @@ fn a_call_through_a_local_fn_value_in_on_failure_is_refused() {
     seeded_case("fn_value_failure", Some(&keeper), "fn main() { lib::Keeper { }; }\n", |at, selector| {
         vec![format!(
             "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Keeper` → \
-             `on_failure()` → `lib::pid` → `std::process::pid`",
+             `on_failure()` → `f` → `lib::pid` → `std::process::pid`",
             at + 1
         )]
     });
@@ -674,6 +675,69 @@ fn a_portable_local_fn_value_is_admitted() {
          locus Calm {\n    params { n: Int = { let f = width; f(\"abc\") }; }\n    run() { println(self.n); }\n}\n",
         "fn main() { lib::Calm { }; }\n",
     );
+}
+
+/// The review of #1318, round 3: a call through a local bound to a fn
+/// was a call to nothing in every body the summary walks. In a seed fn
+/// (`lib::via`), in `main`, and in the program's own params initializer
+/// (the admission's own walk), the local now reaches the fn it names: each
+/// is refused with the witness through the local, and the host admits
+/// each.
+#[test]
+fn a_call_through_a_let_bound_fn_is_refused_in_every_body() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_through_a_let_bound_fn_is_refused_in_every_body: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let via = format!("{PID}fn via() -> Int {{\n    let f = pid;\n    return f();\n}}\n");
+    let holder = "locus Holder {\n    params { n: Int = { let f = lib::pid; f() }; }\n    run() { println(self.n); }\n}\n\n\
+                  fn main() { Holder { }; }\n";
+    let cases: [(&str, &str, &str, usize, usize, &str); 3] = [
+        ("let_via", &via, "fn main() { println(lib::via()); }\n", 1, 21, "`lib::via` → `f` → "),
+        ("let_main", PID, "fn main() {\n    let f = lib::pid;\n    println(f());\n}\n", 3, 13, "`f` → "),
+        ("let_init", PID, holder, 2, 43, "`f` → "),
+    ];
+    for (tag, lib, main, line, col, links) in cases {
+        seeded_case(tag, Some(lib), main, |at, selector| {
+            vec![format!(
+                "{}:{col} `std::process` is unavailable under {selector}: {PROCESS} — witness: {links}`lib::pid` → \
+                 `std::process::pid`",
+                at + line
+            )]
+        });
+        let dir = case_dir(&format!("{tag}_host"));
+        std::fs::create_dir_all(dir.join("kidlib")).unwrap();
+        std::fs::write(dir.join("kidlib/kid.hl"), lib).unwrap();
+        std::fs::write(dir.join("main.hl"), format!("import \"kidlib\" as lib;\n{main}")).unwrap();
+        let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+        assert_eq!(code, 0, "{tag}: the host admits it:\n{check}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A call in the program's own code through a local the bindings cannot
+/// follow to a fn (here an `if` value) is a hole, refused on wasm32 with
+/// the member walk's wording; the host admits it.
+#[test]
+fn a_call_through_an_unresolved_local_in_own_code_is_a_hole() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_through_an_unresolved_local_in_own_code_is_a_hole: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let main = "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n\n\
+                fn main() {\n    let f = if len(\"ab\") == 2 { one } else { two };\n    println(f());\n}\n";
+    seeded_case("let_unresolved", None, main, |at, _| {
+        vec![format!(
+            "{}:13 cannot establish what `f()` requires on wasm32: the callee is a function value the summary \
+             cannot resolve",
+            at + 6
+        )]
+    });
+    let dir = case_dir("let_unresolved_host");
+    std::fs::write(dir.join("main.hl"), main).unwrap();
+    let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+    assert_eq!(code, 0, "the host admits it:\n{check}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `hale run` executes what it builds, and a declared program builds a

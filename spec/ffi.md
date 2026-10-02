@@ -457,12 +457,15 @@ the stdlib is judged at the call that crosses into it, and a locus of
 one at its construction. The horizon relocates a refusal; it never
 erases a requirement. A type that only
 names a gated namespace — a parameter, field or return typed
-`std::io::tcp::Stream` — is not a use. A call whose requirements cannot
-be established (a method on a receiver whose type is not known, a call
-through a function-typed parameter, a call in another seed's params
-initializer or `on_failure` handler through a local function value bound
-to anything but a fn — `let f = self.g; f()`) is refused under wasm32 as
-``cannot
+`std::io::tcp::Stream` — is not a use. A call through a local bound by
+`let` to a fn or a stdlib path is that fn's use, the local a link of the
+witness (`let f = pid; f()` → `` `f` → `pid` → `std::process::pid` ``).
+A call whose requirements cannot be established (a method on a receiver
+whose type is not known, a call through a function-typed parameter, a
+computed callee, a call in the program's own code or in another seed's
+params initializer or `on_failure` handler through a local function value
+bound to anything but a fn — `let f = self.g; f()`) is refused under
+wasm32 as ``cannot
 establish what `<callee>` requires on wasm32: <why>``, since an unknown
 requirement is never an admission there; on the native targets it is
 admitted.
