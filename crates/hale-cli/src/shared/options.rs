@@ -92,6 +92,9 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     // F.40 P3: the target the program is checked for, parsed as
     // `hale build --target` parses it (design §1.3).
     ("--target", true),
+    // F.40 P3 (T4): a link library the build would take, held to the
+    // target's `LinkLibrary` cell as the build holds it.
+    ("--link", true),
 ];
 
 /// GH #861: the one argument splitter `hale build` and `hale run`
@@ -505,6 +508,82 @@ pub(crate) fn collect_ffi_from_imports(
         }
     }
     opts
+}
+
+/// Where a link library came from (T4, design §1.5): an imported
+/// package's `hale.toml`, at its `[ffi] link` key's line, or `--link`.
+pub(crate) enum LinkInput {
+    Manifest { path: PathBuf, line: usize, libs: Vec<String> },
+    Flag { lib: String },
+}
+
+/// Every link library a build of these imports would take, with where
+/// each came from: the `--link` flags, then each imported package's
+/// `[ffi] link` ([`collect_ffi_from_imports`]'s walk).
+pub(crate) fn link_inputs(
+    flags: &[String],
+    imports: &[hale_syntax::ast::Import],
+    importer_dir: &Path,
+    workspace_root: Option<&Path>,
+) -> Vec<LinkInput> {
+    let mut out: Vec<LinkInput> = flags.iter().map(|l| LinkInput::Flag { lib: l.clone() }).collect();
+    let mut seen_dirs = std::collections::BTreeSet::new();
+    for imp in imports {
+        if imp.path.starts_with("std/") || imp.path == "std" {
+            continue;
+        }
+        let Some(ImportTarget::Directory(lib_dir)) = resolve_import(importer_dir, workspace_root, &imp.path, &Disk) else {
+            continue;
+        };
+        if !seen_dirs.insert(lib_dir.canonicalize().unwrap_or_else(|_| lib_dir.clone())) {
+            continue;
+        }
+        let Ok(Some(ffi)) = crate::pkg::read_lib_ffi(&lib_dir) else { continue };
+        if ffi.link.is_empty() {
+            continue;
+        }
+        let path = lib_dir.join("hale.toml");
+        // The `link` key's line under `[ffi]`, for the record's position.
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut in_ffi = false;
+        let mut line = 1;
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim();
+            if t.starts_with('[') {
+                in_ffi = t == "[ffi]";
+            } else if in_ffi && t.starts_with("link") && t[4..].trim_start().starts_with('=') {
+                line = i + 1;
+                break;
+            }
+        }
+        out.push(LinkInput::Manifest { path, line, libs: ffi.link });
+    }
+    out
+}
+
+/// The `LinkLibrary` cell's refusals for the effective target, one per
+/// input, rendered before any tool is looked up (T4): a record against
+/// the manifest's `[ffi] link` line, or the `--link` argument named as
+/// such. Empty where the target links system libraries.
+pub(crate) fn link_refusals(row: &hale_types::capability::TargetRow, inputs: &[LinkInput]) -> Vec<String> {
+    use hale_types::capability::{derive_capability_matrix, Capability};
+    let Some(class) = row.class else { return Vec::new() };
+    let m = derive_capability_matrix();
+    let cell = m.behaviour(class, Capability::LinkLibrary).expect("a row");
+    let Some(refusal) = cell.refusal() else { return Vec::new() };
+    inputs
+        .iter()
+        .map(|input| match input {
+            LinkInput::Manifest { path, line, libs } => {
+                let libs = hale_types::capability::libs_hole(libs);
+                format!("{}:{line}:1: error: {}", path.display(), refusal.render(&cell.witness, &[("libs", &libs)]))
+            }
+            LinkInput::Flag { lib } => {
+                let libs = hale_types::capability::libs_hole(std::slice::from_ref(lib));
+                format!("error: --link {lib}: {}", refusal.render(&cell.witness, &[("libs", &libs)]))
+            }
+        })
+        .collect()
 }
 
 /// GH #1109: what `build --env` and `run --env` resolve before the

@@ -1190,9 +1190,9 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["--target", "a source `target` declaration", "stdlib_surface", "FFI signatures"],
         producer: Some(site(CAPABILITY, "derive_capability_matrix")),
         legacy: &[
-            legacy(CG, "link_wasm", "link-time refusals (link_libs) and the export list", "same"),
+            legacy(CG, "link_wasm", "the export list, spelled at the link (its `[ffi] link` refusal moved ahead of every tool, into the check and the build's LinkLibrary read, in P3 2 of 3)", "same"),
             legacy(CG_INST, "lotus_replay_start_ingress", "one of the per-site wasm skips; on wasm the eager main-locus spine emits the pool join where every other spine omits it, and every spine but the deferred entry emits wait-abort", "same"),
-            legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory", "emission configuration through TargetSpec only; every capability through the matrix"),
+            legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory; where the admission reads a cell (an exported locus's run(), an export-only host program) the check refuses first and codegen's refusal is a harness backstop", "emission configuration through TargetSpec only; every capability through the matrix"),
             legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
         ],
         consumers: &[
@@ -1204,6 +1204,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("hale run and replay refuse a program whose effective target is wasm32", "crates/hale-cli/src/shared/options.rs", "refuse_unexecutable"),
             consumer_at("the use rows, on the snapshot: the check's input beside the row", SNAPSHOT, "demand_capability_uses"),
             consumer_at("the admission law: every use's cell for the effective target, in the check of every entry point", CHECK, "admission_diags"),
+            consumer_at("hale check and hale build: every link input (--link, each package's [ffi] link) held to LinkLibrary before any tool, located at its manifest line or flag", "crates/hale-cli/src/shared/options.rs", "link_refusals"),
+            consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read before lowering and before any tool", CG, "Capability::LinkLibrary"),
         ],
         invariants: &[
             "Approximate is legitimate only in layers 5 and 7; everywhere else a target lowers or rejects, with the row's witness",
@@ -1216,12 +1218,14 @@ pub const FAMILIES: &[Family] = &[
             "every use is read off resolved identities (a call, a method through its receiver's type, a cross-seed alias, a construction and the lifecycle it implies), never a `std::` spelling of the call; a type-only mention is not a use",
             "the program's own sources are the horizon: a use is refused once, at its first site in them, naming the capability, the target and its witness chain; a callee beyond it is refused at the call that crosses into it",
             "an unresolved requirement is never an admission on a target that rejects anything in its family: a hole is refused there and recorded elsewhere",
+            "a policy refusal comes before any tool is probed: a link input the target refuses is refused by the check and by the build before clang, wasm-ld or zig is looked up, located at its input (T4)",
         ],
         missing: Missing::Error,
         tests: &[
             "crates/hale-types/tests/wasm_target_gating.rs",
             "crates/hale-codegen/tests/wasm_target.rs",
             "crates/hale-cli/tests/target_model.rs",
+            "crates/hale-cli/tests/wasm_package_csrc.rs (T4: a package's [ffi] link refused by check and build alike at the manifest's line; --link named as the flag; the refusal before any tool, on a PATH with no clang)",
             "crates/hale-cli/tests/target_precedence.rs (the precedence table: source x --target, check, build and the editor agreeing per cell; wasm-flower built for its declared target; run refusing a declared program; the agreement test: every wasm-relevant program's located refusals equal on check, build and the editor, with and without --target wasm32)",
             "crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires; KNOWN_OPEN empty since T2, T3 and T5 landed, a new entry held to today's answer)",
             "crates/hale-types/src/target.rs (async_io_follows_the_libc: TargetSpec::has_async_io is the runtime's shape, the AsyncIoPool cell what a program may ask for; they differ on wasm32 alone)",
@@ -1244,6 +1248,10 @@ pub const FAMILIES: &[Family] = &[
                     (CAPABILITY_USES, 2),
                     // the target model's test, holding has_async_io to the cell
                     ("crates/hale-types/src/target.rs", 1),
+                    // LinkLibrary, read before any tool by the CLI and by a
+                    // build handed link libraries
+                    ("crates/hale-cli/src/shared/options.rs", 1),
+                    (CG, 1),
                 ],
             },
             // the definition, the snapshot's family, and the two checks
