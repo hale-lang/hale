@@ -4883,16 +4883,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #468: drain kernel-accepted LISTEN ingress
                 // while the registry, pools, and subscriber loci
                 // are all still alive (the main locus's run() just
-                // returned; nothing has dissolved yet).
-                if self.cells.emits(hale_types::capability::Obligation::IngressQuiesce) {
-                    self.emit_bus_ingress_quiesce()?;
-                }
-                self.emit_coop_pool_shutdown_all()?;
-                // GH #255: wake `or wait` parked publishers into
-                // the raise path before the pinned joins below.
-                if self.cells.emits(hale_types::capability::Obligation::WaitAbort) {
-                    self.emit_bus_wait_abort_all()?;
-                }
+                // returned; nothing has dissolved yet). GH #255 and
+                // decision line 7: wake `or wait` parked publishers into
+                // the raise path before the pool join and the pinned
+                // joins below. Which of the three the target owes is its
+                // cells', their order the plan's.
+                self.emit_teardown_obligations(false)?;
             }
             // GH #253: join this locus's own pinned children (the
             // frame entries pushed during param init above) BEFORE

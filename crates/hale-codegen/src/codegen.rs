@@ -1486,6 +1486,7 @@ pub fn build_resolved(
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
+        head_aborted_waits: false,
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
@@ -3563,6 +3564,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
     in_main: bool,
+    /// Set while one of fn main's exits tears its frame down after its
+    /// head aborted the waits (ahead of the pool join it emits), so the
+    /// frame teardown does not abort them a second time.
+    head_aborted_waits: bool,
     /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
     /// pushed. Identifies "we are at main's top frame" so a
     /// recorded-assertion-failure branch only routes through main's
@@ -5764,6 +5769,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// destroying the arena concurrently with still-active
     /// worker threads. Idempotent + no-op when no pools were
     /// registered.
+    /// The process-wide obligations a teardown spine owes at its head
+    /// (the ingress quiesce R35, the pool join R20 where the program has
+    /// pools, the wait-abort R34), as the target's cells select them, in
+    /// the lifecycle plan's order (`hale_types::lifecycle::teardown_order`:
+    /// R35, then R34, then R20, so a pool worker parked in an `or wait`
+    /// only the abort ends is released before the join waits for it).
+    /// `frame_aborts`: the spine's frame teardown aborts the waits after
+    /// its pre-drain (fn main's three exits), so the head takes the
+    /// wait-abort only where the plan orders it ahead of a join the head
+    /// emits. Returns whether the head aborted the waits.
+    pub(crate) fn emit_teardown_obligations(&mut self, frame_aborts: bool) -> Result<bool, CodegenError> {
+        let joins = self.cells.emits(Obligation::PoolJoin) && !self.deployment.main_cooperative_pools.is_empty();
+        let mut selected = Vec::new();
+        if self.cells.emits(Obligation::IngressQuiesce) {
+            selected.push(Obligation::IngressQuiesce);
+        }
+        if joins {
+            selected.push(Obligation::PoolJoin);
+        }
+        if self.cells.emits(Obligation::WaitAbort) && (joins || !frame_aborts) {
+            selected.push(Obligation::WaitAbort);
+        }
+        for o in hale_types::lifecycle::teardown_order(&selected) {
+            match o {
+                Obligation::IngressQuiesce => self.emit_bus_ingress_quiesce()?,
+                Obligation::PoolJoin => self.emit_coop_pool_shutdown_all()?,
+                Obligation::WaitAbort => self.emit_bus_wait_abort_all()?,
+                other => unreachable!("{} is not a teardown spine's obligation", other.name()),
+            }
+        }
+        Ok(selected.contains(&Obligation::WaitAbort))
+    }
+
     pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
         if !self.deployment.main_cooperative_pools.is_empty() {
             let shutdown_fn = self
@@ -5941,8 +5979,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // teardown — wake `or wait` parked publishers into the
         // raise path before the pinned joins below would block on
         // them. Gated on in_main: every other fn's flush must not
-        // disable waits program-wide.
-        if self.in_main && self.cells.emits(Obligation::WaitAbort) {
+        // disable waits program-wide. A main exit whose head already
+        // aborted them (ahead of its pool join) owes no second abort.
+        if self.in_main && !self.head_aborted_waits && self.cells.emits(Obligation::WaitAbort) {
             self.emit_bus_wait_abort_all()?;
         }
         self.lc_spine = lc_outer;
@@ -6119,16 +6158,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
             );
             if is_main_entry {
-                if self.cells.emits(Obligation::IngressQuiesce) {
-                    self.emit_bus_ingress_quiesce()?;
-                }
-                // The wait-abort is omitted with the join here, as this
-                // spine always has; it reads its own cell once the
-                // spines' obligations are selected and ordered as one.
-                if self.cells.emits(Obligation::PoolJoin) {
-                    self.emit_coop_pool_shutdown_all()?;
-                    self.emit_bus_wait_abort_all()?;
-                }
+                self.emit_teardown_obligations(false)?;
             }
             // m28a + m28b: pinned loci — pthread_join blocks until
             // the pinned thread's full lifecycle (birth → run →
@@ -8974,14 +9004,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // through the intact registry BEFORE pools join and
             // loci dissolve — the exit half of the delivery
             // contract (the boot half is the readers' early-
-            // ingress buffer).
-            if self.cells.emits(Obligation::IngressQuiesce) {
-                self.emit_bus_ingress_quiesce()?;
-            }
-            if self.cells.emits(Obligation::PoolJoin) {
-                self.emit_coop_pool_shutdown_all()?;
-            }
+            // ingress buffer). The obligations are the cells' and their
+            // order the plan's (`emit_teardown_obligations`).
+            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             self.flush_dissolve_frame()?;
+            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
@@ -9019,14 +9046,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
-            if self.cells.emits(Obligation::IngressQuiesce) {
-                self.emit_bus_ingress_quiesce()?;
-            }
-            if self.cells.emits(Obligation::PoolJoin) {
-                self.emit_coop_pool_shutdown_all()?;
-            }
+            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
+            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
@@ -21591,13 +21614,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainReturn");
             // GH #468: same exit-quiesce as the fallthrough
             // main-exit path — return-from-main must not lose
-            // kernel-accepted ingress either.
-            if self.cells.emits(Obligation::IngressQuiesce) {
-                self.emit_bus_ingress_quiesce()?;
-            }
-            if self.cells.emits(Obligation::PoolJoin) {
-                self.emit_coop_pool_shutdown_all()?;
-            }
+            // kernel-accepted ingress either. The obligations are the
+            // cells' and their order the plan's.
+            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             // GH #789: emit the teardown for everything main owns at
             // this point, but LEAVE the frame on the stack. `return`
             // terminates its own block, so the frame is still the
@@ -21632,6 +21651,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let frame =
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
+            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
