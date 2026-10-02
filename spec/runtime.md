@@ -1701,8 +1701,9 @@ across shapes by the lifecycle matrix
 (`crates/hale-codegen/tests/lifecycle_matrix.rs`): a generated
 program for each failure phase, tree position and domain, held to
 its outcome, its trace plan and AddressSanitizer, with the cells
-that fail today, and the inventory row each fails at, in its
-`KNOWN_OPEN` table.
+that fail today, the inventory row each fails at (two, for a cell
+that shows two known defects), and the departures each shows, in
+its `KNOWN_OPEN` table.
 
 - **Line 1, construction-time delivery.** Construction, readiness
   and failure delivery are one protocol, and its settlement is

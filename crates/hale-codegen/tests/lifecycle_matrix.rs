@@ -83,13 +83,16 @@
 //!      must print the same.
 //!
 //! [`KNOWN_OPEN`] names the cells that fail today, each with its
-//! inventory row, the reason, and the failure it shows; an entry is
-//! asserted to fail with that failure, so when the fix lands the entry
-//! has to go. 39 cells in five families: a handler run in place off the
-//! owner's domain (C36, L5's), a pinned locus's fields undrained (C9),
-//! a pinned locus's `birth_check` never evaluated (C38), and a child's
-//! `run()` posted to the worker that is tearing its owner down, which
-//! either runs on the reclaimed struct or is freed unrun (R19).
+//! inventory row (two, for a cell that shows two known defects), the
+//! reason, and the departures it shows; a cell is asserted to show
+//! exactly those, so a departure outside them fails it, and when the
+//! fix lands the entry has to change or go. 39 cells in five families:
+//! a handler run in place off the owner's domain (C36, L5's), a pinned
+//! locus's fields undrained (C9), a pinned locus's `birth_check` never
+//! evaluated (C38), and a child's `run()` posted to the worker that is
+//! tearing its owner down, which either runs on the reclaimed struct or
+//! is freed unrun (R19). `handler/grandchild/pinned` shows both C9 and
+//! C36.
 //!
 //! ## Size
 //!
@@ -347,73 +350,103 @@ fn no_path(c: Cell) -> Option<&'static str> {
 // Expected failures
 // ===================================================================
 
-/// Cells that fail today: (cell, inventory row, the reason in one
-/// sentence, the failure it shows as it starts). Each is asserted to
-/// fail with that failure; when the fix lands it does not, and the
-/// entry has to go.
-const KNOWN_OPEN: &[(&str, &str, &str, &str)] = &[
+/// One known defect a cell shows: (inventory row, the reason in one
+/// sentence, the departures it shows). The departures are the row's
+/// defect and its consequences in this cell, whole violations as
+/// [`departures`] writes them, with the instance written `_`.
+type Open = (&'static str, &'static str, &'static [&'static str]);
+
+/// Cells that fail today: (cell, the defects it shows), almost always
+/// one; a cell exhibiting two known defects carries both rows. A cell is
+/// asserted to show exactly its rows' departures, so a departure outside
+/// them fails it as it would any other cell, and when a fix lands its
+/// departures go, the assertion fails, and the entry has to change or
+/// go. An `asan:` departure is owed only where ASan ran.
+const KNOWN_OPEN: &[(&str, &[Open])] = &[
     // L5's: a failure raised off the owner's thread.
-    ("run/root_child/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("run/replica/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("run/root_child/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("handler/root_child/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("handler/replica/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("handler/root_child/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("handler/grandchild/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("drain/root_child/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("drain/replica/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
-    ("drain/grandchild/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("run/root_child/pinned", &[("C36", IN_PLACE, &[RAN_ON_PINNED_1])]),
+    ("run/replica/pinned", &[("C36", IN_PLACE, &[RAN_ON_PINNED_1, RAN_ON_PINNED_2])]),
+    ("run/root_child/cross_pool", &[("C36", IN_PLACE, &[RAN_ON_SIDE])]),
+    ("handler/root_child/pinned", &[("C36", IN_PLACE, &[RAN_ON_PINNED_1])]),
+    ("handler/replica/pinned", &[("C36", IN_PLACE, &[RAN_ON_PINNED_1, RAN_ON_PINNED_2])]),
+    ("handler/root_child/cross_pool", &[("C36", IN_PLACE, &[RAN_ON_SIDE])]),
+    ("handler/grandchild/cross_pool", &[("C36", IN_PLACE, &[RAN_ON_MAIN_FOR_SIDE])]),
+    ("drain/root_child/pinned", &[("C36", IN_PLACE, &[RAN_ON_PINNED_1])]),
+    ("drain/replica/pinned", &[("C36", IN_PLACE, &[RAN_ON_PINNED_1, RAN_ON_PINNED_2])]),
+    ("drain/grandchild/cross_pool", &[("C36", IN_PLACE, &[RAN_ON_MAIN_FOR_SIDE])]),
     // A pinned locus's own fields.
-    ("params_settle/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
-    ("birth/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
-    ("run/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
-    ("handler/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
-    ("drain/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
-    ("none/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
-    ("birth/root_child/pinned", "C38", NO_BIRTH_CHECK, SHOWS_UNDELIVERED),
-    ("birth/replica/pinned", "C38", NO_BIRTH_CHECK, SHOWS_UNDELIVERED),
+    ("params_settle/grandchild/pinned", &[("C9", UNDRAINED, &[NO_DRAIN])]),
+    ("birth/grandchild/pinned", &[("C9", UNDRAINED, &[NO_DRAIN])]),
+    ("run/grandchild/pinned", &[("C9", UNDRAINED, &[NO_DRAIN])]),
+    // `Subj`'s handler, on main, delivers the failure in place there
+    // while its owner `Mid` is pinned: C36 as well as C9.
+    ("handler/grandchild/pinned", &[("C9", UNDRAINED, &[NO_DRAIN]), ("C36", IN_PLACE, &[RAN_ON_MAIN_FOR_PINNED])]),
+    // The drain that would raise the failure never runs.
+    ("drain/grandchild/pinned", &[("C9", UNDRAINED, &[UNHEARD, NO_DRAIN, NO_DELIVERY, RECLAIMED_UNHEARD])]),
+    ("none/grandchild/pinned", &[("C9", UNDRAINED, &[NO_DRAIN])]),
+    ("birth/root_child/pinned", &[("C38", NO_BIRTH_CHECK, &[UNHEARD, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD])]),
+    ("birth/replica/pinned", &[("C38", NO_BIRTH_CHECK, &[UNHEARD_2, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD_2])]),
     // A child's run() posted to the worker that tears its owner down: a
     // use-after-free today, fixed by L5's first part (inventory R19).
-    ("birth/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("run/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("run/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("run/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("run/iface_field/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("run/persp_slot/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("drain/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("drain/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("drain/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("drain/iface_field/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("drain/persp_slot/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("none/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("none/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("none/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("none/iface_field/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("none/persp_slot/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
-    ("handler/root_child/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
-    ("handler/grandchild/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
-    ("handler/accepted_child/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
-    ("handler/iface_field/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
-    ("handler/persp_slot/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
+    ("birth/accepted_child/pool", &[("R19", RUN_AFTER_RECLAIM, &[SIGNAL, RUN_RECLAIMED, ASAN_UAF])]),
+    ("run/root_child/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, RECLAIMED_UNHEARD])]),
+    ("run/grandchild/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, RECLAIMED_UNHEARD])]),
+    (
+        "run/accepted_child/pool",
+        &[("R19", RUN_AFTER_RECLAIM, &[SIGNAL, RUN_RECLAIMED, TWO_DRAINS, TWO_DISSOLVES, RECLAIMED_UNHEARD])],
+    ),
+    ("run/iface_field/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, RECLAIMED_UNHEARD, ASAN_UAF])]),
+    ("run/persp_slot/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, RECLAIMED_UNHEARD])]),
+    ("drain/root_child/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED])]),
+    ("drain/grandchild/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, ASAN_UAF])]),
+    ("drain/accepted_child/pool", &[("R19", RUN_AFTER_RECLAIM, &[SIGNAL, RUN_RECLAIMED])]),
+    ("drain/iface_field/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED])]),
+    ("drain/persp_slot/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED])]),
+    ("none/root_child/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, ASAN_UAF])]),
+    ("none/grandchild/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED])]),
+    ("none/accepted_child/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED])]),
+    ("none/iface_field/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED])]),
+    ("none/persp_slot/pool", &[("R19", RUN_AFTER_RECLAIM, &[RUN_RECLAIMED, ASAN_UAF])]),
+    ("handler/root_child/pool", &[("R19", RUN_FREED_UNRUN, &[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD])]),
+    ("handler/grandchild/pool", &[("R19", RUN_FREED_UNRUN, &[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD])]),
+    ("handler/accepted_child/pool", &[("R19", RUN_FREED_UNRUN, &[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD])]),
+    ("handler/iface_field/pool", &[("R19", RUN_FREED_UNRUN, &[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD])]),
+    ("handler/persp_slot/pool", &[("R19", RUN_FREED_UNRUN, &[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD])]),
 ];
 
 const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
-const SHOWS_DOMAIN: &str = "trace: domain: Subj.FailureDelivery";
+const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main";
+const RAN_ON_PINNED_2: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:2, claimed main";
+const RAN_ON_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pool:side, claimed main";
+const RAN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pool:side";
+const RAN_ON_MAIN_FOR_PINNED: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pinned";
 
 const UNDRAINED: &str = "a pinned locus's own fields are never drained, so `Mid`'s field `Subj` is dissolved without its drain";
-const SHOWS_UNDRAINED: &str = "trace: missing: Subj.Drain";
+const NO_DRAIN: &str = "trace: missing: Subj.Drain";
 
 // Inventory C38 said the check agrees; it is never evaluated on a pinned
 // locus. The checker does not refuse it: L4's birth spine runs the check
 // on the pinned thread before run().
 const NO_BIRTH_CHECK: &str = "the pinned thread function runs birth() without the locus's birth_check, so the check never fires and the owner hears nothing";
-const SHOWS_UNDELIVERED: &str = "trace: missing: Subj.FailureDelivery";
 
 const RUN_AFTER_RECLAIM: &str = "the subject's run(), posted to the worker that is running its owner's eager teardown, is accepted and starts only after that teardown reclaimed the subject, on the reclaimed struct (heap-use-after-free under ASan; a double teardown for an accepted child)";
-const SHOWS_RECLAIMED: &str = "trace: law: Run of a subject never built";
+const RUN_RECLAIMED: &str = "trace: law: Run of a subject never built: Subj (inst _) on pool:side (a step on a reclaimed struct?)";
+const SIGNAL: &str = "outcome: signal, adopted delivered-once";
+const TWO_DRAINS: &str = "trace: count: Subj.Drain has 2 subjects, owes 1";
+const TWO_DISSOLVES: &str = "trace: count: Subj.Dissolve has 2 subjects, owes 1";
+const ASAN_UAF: &str = "asan: [\"ERROR: AddressSanitizer\", \"heap-use-after-free\"]";
 
 const RUN_FREED_UNRUN: &str = "the subscriber's run(), posted to the worker that is running its owner's eager teardown, is never run and its terminal is never named, so the cell it would publish never reaches its handler";
-const SHOWS_UNRUN: &str = "trace: missing: Subj.Run";
+const NO_RUN: &str = "trace: missing: Subj.Run";
+
+// The owner hears nothing: no handler runs, the failure is never
+// delivered, and each subject is reclaimed without its delivery.
+const UNHEARD: &str = "outcome: handler 0/1, dissolve 1/1, adopted delivered-once";
+const UNHEARD_2: &str = "outcome: handler 0/2, dissolve 2/2, adopted delivered-once";
+const NO_DELIVERY: &str = "trace: missing: Subj.FailureDelivery";
+const RECLAIMED_UNHEARD: &str = "trace: edge: Subj.Reclaim.Entered (inst _ inc 0) with Subj.FailureDelivery.Completed not reached";
+const ASAN_UNHEARD: &str = "asan: the instrumented build gives handler 0/1, dissolve 1/1";
+const ASAN_UNHEARD_2: &str = "asan: the instrumented build gives handler 0/2, dissolve 2/2";
 
 // ===================================================================
 // Rendering
@@ -924,6 +957,8 @@ fn form(c: Cell) -> Form {
     }
 }
 
+const KEPT_NOTE: &str = "(the program is kept at ";
+
 /// Every way a cell failed, each as `<oracle>: <what>`.
 fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let id = cell_id(c);
@@ -988,7 +1023,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     if failures.is_empty() {
         let _ = std::fs::remove_file(bin.with_extension("hl"));
     } else {
-        failures.push(format!("(the program is kept at {})", bin.with_extension("hl").display()));
+        failures.push(format!("{KEPT_NOTE}{})", bin.with_extension("hl").display()));
     }
     failures
 }
@@ -1045,10 +1080,12 @@ fn default_sample() -> Vec<Cell> {
     let programs: Vec<Cell> = all.iter().copied().filter(|c| is_program(*c)).collect();
     let mut picked: BTreeSet<Cell> = BTreeSet::new();
     let mut families: BTreeSet<&str> = BTreeSet::new();
-    for (id, _, reason, _) in KNOWN_OPEN {
+    for (id, opens) in KNOWN_OPEN {
         let c = *programs.iter().find(|c| cell_id(**c) == *id).unwrap_or_else(|| panic!("KNOWN_OPEN names {id}, not a program"));
-        if families.insert(reason) {
-            picked.insert(c);
+        for (_, reason, _) in *opens {
+            if families.insert(reason) {
+                picked.insert(c);
+            }
         }
     }
     for (i, &phase) in PHASES.iter().enumerate() {
@@ -1079,8 +1116,20 @@ fn selected_cells() -> Vec<Cell> {
 // The shards
 // ===================================================================
 
-fn open_entry(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
-    KNOWN_OPEN.iter().find(|(k, ..)| *k == id)
+fn open_entry(id: &str) -> Option<&'static [Open]> {
+    KNOWN_OPEN.iter().find(|(k, _)| *k == id).map(|(_, opens)| *opens)
+}
+
+/// A run's failures as departures: each failure's first line (the rest
+/// is its evidence: a sanitizer report, two spellings' output), its
+/// instance numbers written `_`, without the note saying where the
+/// program is kept.
+fn departures(failures: &[String]) -> Vec<String> {
+    failures
+        .iter()
+        .filter(|f| !f.starts_with(KEPT_NOTE))
+        .map(|f| lifecycle_plan::normalized(f.lines().next().unwrap_or_default()))
+        .collect()
 }
 
 /// Run the selected cells of one domain and one phase, each held to the
@@ -1093,14 +1142,32 @@ fn run_shard(domain: Domain, phase: Phase) {
     for c in cells {
         let id = cell_id(c);
         let started = Instant::now();
-        let failures = run_cell(c, sample.contains(&c));
+        let asan = sample.contains(&c);
+        let failures = run_cell(c, asan);
         eprintln!("{id}: {} failure(s) in {:?}", failures.len(), started.elapsed());
         match open_entry(&id) {
-            Some((_, row, reason, shows)) => {
-                if !failures.iter().any(|f| f.starts_with(shows)) {
-                    unexpected_pass.push(format!(
-                        "{id} (KNOWN_OPEN at {row}: {reason}) no longer shows `{shows}`: the fix has landed, so the entry has to go; it shows {failures:#?}"
+            Some(opens) => {
+                let shown = departures(&failures);
+                let rows: Vec<&str> = opens.iter().map(|(row, ..)| *row).collect();
+                let unmatched: Vec<&String> =
+                    shown.iter().filter(|s| !opens.iter().any(|(_, _, allowed)| allowed.contains(&s.as_str()))).collect();
+                if !unmatched.is_empty() {
+                    unexpected_fail.push(format!(
+                        "{id} fails beyond the departures of inventory row(s) {rows:?}: {unmatched:#?}\n  {}",
+                        failures.join("\n  ")
                     ));
+                }
+                for (row, reason, allowed) in opens {
+                    // A sanitizer departure is owed only where ASan ran.
+                    let gone: Vec<&&str> = allowed
+                        .iter()
+                        .filter(|d| (asan || !d.starts_with("asan: ")) && !shown.iter().any(|s| s == *d))
+                        .collect();
+                    if !gone.is_empty() {
+                        unexpected_pass.push(format!(
+                            "{id} (KNOWN_OPEN at {row}: {reason}) no longer shows {gone:#?}: the fix has landed, so the entry has to change or go; it shows {shown:#?}"
+                        ));
+                    }
                 }
             }
             None if failures.is_empty() => {}
@@ -1207,9 +1274,22 @@ fn every_cell_is_written_or_named() {
         default_sample().len()
     );
 
-    for (id, row, reason, shows) in KNOWN_OPEN {
+    let mut open_ids = BTreeSet::new();
+    for (id, opens) in KNOWN_OPEN {
         assert!(ids.contains(*id), "KNOWN_OPEN names {id}, which is not a cell");
-        assert!(!row.is_empty() && !reason.is_empty() && !shows.is_empty(), "{id}: an entry owes its row, reason and failure");
+        assert!(open_ids.insert(*id), "KNOWN_OPEN names {id} twice; a cell's rows go in one entry");
+        assert!(!opens.is_empty(), "{id}: an entry owes at least one row");
+        let mut rows = BTreeSet::new();
+        let mut claimed = BTreeSet::new();
+        for (row, reason, allowed) in *opens {
+            assert!(!row.is_empty() && !reason.is_empty() && !allowed.is_empty(), "{id}: a row owes its name, reason and departures");
+            assert!(rows.insert(*row), "{id} names row {row} twice");
+            for d in *allowed {
+                assert_eq!(lifecycle_plan::normalized(d), *d, "{id}: a departure names its instance as `_`");
+                assert!(!d.contains('\n'), "{id}: a departure is one line");
+                assert!(claimed.insert(*d), "{id}: `{d}` is listed twice; a departure belongs to one row");
+            }
+        }
     }
 
     let sample = default_sample();

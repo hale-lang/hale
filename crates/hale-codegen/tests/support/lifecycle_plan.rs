@@ -119,3 +119,20 @@ pub fn plan(text: &str) -> Expected {
     }
     exp
 }
+
+/// A violation with its instance numbers written `_`: `(inst 3 inc 0)`
+/// is `(inst _ inc 0)`. The runtime mints the number, so a known-open
+/// departure is written, and matched, in this form.
+pub fn normalized(violation: &str) -> String {
+    let mut out = String::new();
+    let mut rest = violation;
+    while let Some(i) = rest.find("(inst ") {
+        let (head, tail) = rest.split_at(i + "(inst ".len());
+        out.push_str(head);
+        let digits = tail.len() - tail.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        out.push_str(if digits > 0 { "_" } else { "" });
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    out
+}
