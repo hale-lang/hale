@@ -16,7 +16,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C48, R1–R49, R19a and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C50, R1–R50, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -531,14 +531,14 @@ impl ObligationKind {
     /// The inventory rows the kind stands for.
     pub fn rows(self) -> &'static [&'static str] {
         match self {
-            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "R1", "R5"],
+            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "C48", "R1", "R5"],
             ObligationKind::ConstructionDelivery => &["C11", "R2", "R3", "R4", "R5"],
             ObligationKind::Accept => &["C2", "C7", "R6"],
-            ObligationKind::Subscribe => &["C8"],
-            ObligationKind::Readiness => &["C8", "C10"],
-            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "R9", "R11", "R12", "R46"],
+            ObligationKind::Subscribe => &["C8", "C48", "C49", "R50"],
+            ObligationKind::Readiness => &["C8", "C10", "C49"],
+            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "C48", "C49", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
-            ObligationKind::Run => &["C9", "C12", "C48", "R24", "R25"],
+            ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "R24", "R25"],
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],

@@ -101,8 +101,8 @@
 //! locus's fields undrained (C9), a pinned locus's `birth_check` never
 //! evaluated (C38), a contract-typed field drained after its owner's
 //! dissolve (C32), and a field nested under a pool-placed field run
-//! inline off its pool (C12). `handler/grandchild/pinned` shows both C9
-//! and C36; the failing cross-pool grandchildren C36 and C12.
+//! inline off its pool (C12). `handler/grandchild/pinned` shows C9 after its subtree initializes
+//! on the pinned thread; the failing cross-pool grandchildren C36 and C12.
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -421,13 +421,12 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     ("params_settle/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
     ("birth/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
     ("run/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
-    // `Subj`'s handler, on main, delivers the failure in place there
-    // while its owner `Mid` is pinned: C36 as well as C9.
-    (
-        "handler/grandchild/pinned",
-        &[("C9", UNDRAINED), ("C36", IN_PLACE)],
-        &[&[NO_DRAIN, MID_DRAIN_ORDER, RAN_ON_MAIN_FOR_PINNED]],
-    ),
+    // `Subj`'s handler delivers the failure in place on `Mid`'s thread,
+    // its owner's domain: `Mid`'s subtree initializes there, `Subj`'s
+    // inline `run()` and the handler its publication reaches included
+    // (the review of PR #1319). It showed C36 as well while that tree
+    // was built on main.
+    ("handler/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
     // The drain that would raise the failure never runs.
     (
         "drain/grandchild/pinned",
@@ -477,7 +476,6 @@ const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0
 const RAN_ON_PINNED_2: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:2, claimed main";
 const RAN_ON_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pool:side, claimed main";
 const RAN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pool:side";
-const RAN_ON_MAIN_FOR_PINNED: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pinned";
 
 const UNDRAINED: &str = "a pinned locus's own fields are never drained, so `Mid`'s field `Subj` is dissolved without its drain";
 const NO_DRAIN: &str = "trace: missing: Subj.Drain";
@@ -791,10 +789,13 @@ fn held(c: Cell) -> bool {
     // instantiation returned (inventory C9): its owner may have settled.
     let born_on_it = !(c.domain == Domain::Pinned && c.position != Position::Grandchild);
     // A run() inline on the instantiating thread runs inside the params
-    // loop (the fixture l01_held_failure_settle): on main, and for a
-    // grandchild whose placed parent's params run on main (inventory
-    // C9). On a pool worker the field's run() is posted, and where a
-    // pool locus's lifecycle runs waits on decision line 3.
+    // loop (the fixture l01_held_failure_settle): on main; for a
+    // grandchild whose cross-pool parent's params run on main (inventory
+    // C9); and for a grandchild under a pinned parent, whose params
+    // initialize on that parent's own thread, which opens and settles
+    // them (the review of PR #1319). On a pool worker the field's run()
+    // is posted, and where a pool locus's lifecycle runs waits on
+    // decision line 3.
     let run_inline =
         c.domain == Domain::Main || (c.position == Position::Grandchild && c.domain != Domain::Pool);
     born_on_it && (at_birth || (c.phase == Phase::Run && run_inline))
