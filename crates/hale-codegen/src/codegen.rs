@@ -3611,7 +3611,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// True while lowering the body of `main`. `return` is treated
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
-    in_main: bool,
+    pub(crate) in_main: bool,
     /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
     /// pushed. Identifies "we are at main's top frame" so a
     /// recorded-assertion-failure branch only routes through main's

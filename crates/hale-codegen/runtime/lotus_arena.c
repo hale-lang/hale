@@ -8084,6 +8084,78 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
     }
 }
 
+/* The start of a pinned locus (the review of PR #1319, correcting U-6):
+ * its subtree initializes on its own thread. The instantiating thread
+ * creates the locus's route and its thread, then waits here until the
+ * thread has initialized the locus's params — every nested
+ * construction, its registrations against the route, its birth and
+ * its inline cooperative `run()` — so a nested child that waits for a
+ * delivery during its initialization is drained by the thread the
+ * delivery is routed to, and no one observes the tree before it is
+ * built. The instantiating thread then finishes the instantiation (the
+ * synthetic fields, the failure route, the locus's own registrations)
+ * and releases the thread into `birth()` and its consumer loop.
+ *
+ *   IT:     create → pthread_create → await_ready → … → go
+ *   thread: params init → ready → await_go (frees the gate) → birth …
+ *
+ * After `go` the instantiating thread never touches the gate; the
+ * pinned thread frees it once its wait has returned. */
+typedef struct lotus_pinned_start {
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int state;                 /* 0 initializing, 1 ready, 2 go */
+} lotus_pinned_start_t;
+
+lotus_pinned_start_t *lotus_pinned_start_create(void) {
+    lotus_pinned_start_t *s = calloc(1, sizeof *s);
+    if (!s) {
+        fprintf(stderr, "lotus: out of memory starting a pinned locus\n");
+        abort();
+    }
+    pthread_mutex_init(&s->lock, NULL);
+    pthread_cond_init(&s->cond, NULL);
+    return s;
+}
+
+static void lotus_pinned_start_set(lotus_pinned_start_t *s, int state) {
+    pthread_mutex_lock(&s->lock);
+    s->state = state;
+    pthread_cond_broadcast(&s->cond);
+    pthread_mutex_unlock(&s->lock);
+}
+
+static void lotus_pinned_start_wait(lotus_pinned_start_t *s, int state) {
+    pthread_mutex_lock(&s->lock);
+    while (s->state < state)
+        pthread_cond_wait(&s->cond, &s->lock);
+    pthread_mutex_unlock(&s->lock);
+}
+
+/* The pinned thread: its params are initialized. */
+void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
+    lotus_pinned_start_set(s, 1);
+}
+
+/* The instantiating thread: wait for the params. */
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s) {
+    lotus_pinned_start_wait(s, 1);
+}
+
+/* The instantiating thread: the instantiation is complete; its last
+ * touch of the gate. */
+void lotus_pinned_start_go(lotus_pinned_start_t *s) {
+    lotus_pinned_start_set(s, 2);
+}
+
+/* The pinned thread: wait for the instantiation, then free the gate. */
+void lotus_pinned_start_await_go(lotus_pinned_start_t *s) {
+    lotus_pinned_start_wait(s, 2);
+    pthread_cond_destroy(&s->cond);
+    pthread_mutex_destroy(&s->lock);
+    free(s);
+}
+
 /*
  * F.31 Phase 4: cooperative-pool worker threads (M:N substrate).
  *

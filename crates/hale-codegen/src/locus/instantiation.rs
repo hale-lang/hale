@@ -2399,7 +2399,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // retires every registration routed to it and only then
         // destroys it (`emit_pinned_join`). A pool outlives every
         // arena: pools are joined before any is destroyed.
-        let anchor_route = if matches!(info.schedule_class, ScheduleClass::Pinned(_)) {
+        //
+        // The review of PR #1319: the route is only half of it. A
+        // pinned locus's params — every nested construction, its
+        // registrations against the route, its birth and its inline
+        // cooperative `run()` — initialize on the locus's OWN thread
+        // (`thread_init`, below), so a nested child that waits during
+        // its initialization for a delivery through the mailbox is
+        // drained by the thread the delivery is routed to.
+        let thread_init = matches!(info.schedule_class, ScheduleClass::Pinned(_));
+        let anchor_route = if thread_init {
             match info.mailbox_field_idx {
                 Some(mb_idx) => {
                     let create_fn = self
@@ -2470,7 +2479,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .defaults
                     .iter()
                     .any(|(_, d)| matches!(d, DefaultInit::Expr(_))));
-        if settles_failures {
+        // A pinned locus opens its params on its own thread, where they
+        // initialize (the opener is the thread `lotus_failure_await`
+        // compares against), inside its init function below.
+        if settles_failures && !thread_init {
             self.lc_in_spine("Instantiation", |cx| {
                 cx.lc_event("ParamsSettle", "Entered", Some(self_ptr), Some(locus_name))
             })?;
@@ -2572,6 +2584,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut self.current_instantiation_parent,
             Some(self_ptr),
         );
+        // The review of PR #1319 (correcting U-6): a pinned locus's
+        // params initialize on its own thread. Everything from here to
+        // `lotus_params_settle` is lowered into `__pinned_init_<L>`,
+        // which that thread runs before `birth()`; the instantiating
+        // thread creates the thread after it (`finish_pinned_init`) and
+        // waits for the params. Inside, `self_ptr` is the init's own
+        // parameter; any other value of the instantiating function the
+        // loop reads is captured into the thread's argument block.
+        let caller_self_ptr = self_ptr;
+        let mut pinned_init = if thread_init {
+            let p = self.begin_pinned_init(locus_name, &info)?;
+            if let Some(pis) = self.params_init_self.as_mut() {
+                pis.self_ptr = p.self_param;
+            }
+            self.current_instantiation_parent = Some(p.self_param);
+            if settles_failures {
+                let me = p.self_param;
+                self.lc_in_spine("Instantiation", |cx| {
+                    cx.lc_event("ParamsSettle", "Entered", Some(me), Some(locus_name))
+                })?;
+                let open_fn = self
+                    .module
+                    .get_function("lotus_params_open")
+                    .expect("lotus_params_open declared");
+                self.builder
+                    .build_call(open_fn, &[me.into()], "params.open")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Some(p)
+        } else {
+            None
+        };
+        let self_ptr = pinned_init.as_ref().map_or(self_ptr, |p| p.self_param);
         for (fname, default) in info.defaults.iter() {
             // F.31: per-field placement override for main-locus
             // params. Looked up by field name in
@@ -2788,6 +2833,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let (val, val_ty, owned_via_literal, came_from_literal) =
                 if let Some(expr) = overrides.get(fname.as_str()) {
+                    // The review of PR #1319: under a pinned locus whose
+                    // params initialize on its own thread, an override
+                    // is the instantiating code's (`Worker { started:
+                    // pthread_self() }` reads the instantiating thread),
+                    // so it is lowered in the instantiating function,
+                    // before the thread starts, and its value is
+                    // captured into the init. A locus the override
+                    // builds as the field's value belongs to the pinned
+                    // subtree and is built in the init, on its thread.
+                    let on_it = pinned_init.is_some() && !self.owner_table.field_owns(expr);
+                    if on_it {
+                        let p = pinned_init.as_mut().expect("checked");
+                        self.suspend_pinned_init(p, caller_self_ptr);
+                    }
                     // a downstream tool F.4 (2026-05-23): override expressions
                     // are written at the CALL site, so `self.X`
                     // inside them must resolve to the CALLER's
@@ -2867,14 +2926,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #1035: the literal this override builds is
                     // THIS locus's child, though the rest of the
                     // expression reads the caller's context.
-                    self.field_holder =
-                        inner_pis.clone().map(|cx| (own_site_id, cx));
+                    self.field_holder = inner_pis.clone().map(|mut cx| {
+                        if on_it {
+                            cx.self_ptr = caller_self_ptr;
+                        }
+                        (own_site_id, cx)
+                    });
                     let r = self.lower_expr(expr, scope);
                     self.field_holder = None;
                     let r = r?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
+                    if on_it {
+                        let p = pinned_init.as_mut().expect("checked");
+                        self.resume_pinned_init(p);
+                    }
                     let from_lit = matches!(
                         expr,
                         Expr::Literal(
@@ -3250,6 +3317,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_call(settle_fn, &[self_ptr.into()], "params.settle")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // The pinned locus's init ends here: back in the instantiating
+        // function, its thread is created and awaited.
+        let self_ptr = caller_self_ptr;
+        let pinned_start = match pinned_init {
+            Some(p) => Some(self.finish_pinned_init(p, locus_name, &info, self_ptr)?),
+            None => None,
+        };
         self.current_arena_override = prev_arena_override;
         // iris handoff-2 P9: restore the obs-parent context.
         self.current_instantiation_parent = prev_obs_parent;
@@ -4039,7 +4113,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )));
             }
 
-            let i64_t = self.context.i64_type();
             let i32_t = self.context.i32_type();
 
             // m28b: if the locus has a mailbox, register all its own
@@ -4109,20 +4182,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     None
                 };
 
-            // Synthesize __pinned_main_<LocusName>(self_ptr) -> ptr.
-            // Body: birth → run → (mailbox loop if subscriptions) →
-            // drain → dissolve, returning null.
+            // The body of __pinned_main_<LocusName>(start) -> ptr,
+            // declared and started by `finish_pinned_init` once the
+            // params were lowered into its init: params init → ready →
+            // wait for the instantiation → birth → run → (mailbox loop
+            // if subscriptions) → drain → dissolve, returning null.
+            let start = pinned_start.expect("a pinned locus's params initialize on its thread");
+            let thread_main = start.thread_main;
             let saved_block = self
                 .builder
                 .get_insert_block()
                 .expect("pinned spawn inside an active block");
-            let thread_main_name =
-                format!("__pinned_main_{}", locus_name);
-            let thread_main_ty =
-                ptr_t.fn_type(&[ptr_t.into()], false);
-            let thread_main = self
-                .module
-                .add_function(&thread_main_name, thread_main_ty, None);
             // Emitted MID-STATEMENT while lowering the caller;
             // restored with the block below.
             let saved_di = (self.di_current_loc, self.di_current_pos);
@@ -4131,8 +4201,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .append_basic_block(thread_main, "entry");
             self.builder.position_at_end(entry_bb);
             self.di_begin_function();
-            let thread_self =
+            let start_ptr =
                 thread_main.get_nth_param(0).unwrap().into_pointer_value();
+            let start_field = |cx: &mut Self, i: u32, name: &str| -> Result<PointerValue<'ctx>, CodegenError> {
+                let slot = cx
+                    .builder
+                    .build_struct_gep(start.start_ty, start_ptr, i, &format!("{}.ptr", name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(cx
+                    .builder
+                    .build_load(ptr_t, slot, name)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value())
+            };
+            let thread_self = start_field(self, 0, "thread.self")?;
+            let thread_gate = start_field(self, 1, "thread.gate")?;
             // GH #296: stamp this thread's stable consumer identity
             // (64 + obs instance id) for record/replay attribution.
             // Thread start is cold; the callee no-ops when obs is
@@ -4184,6 +4267,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // The review of PR #1319: the params initialize here, on
+            // this thread, with its mailbox already current, so a yield
+            // in a nested body (a cooperative child's inline `run()`)
+            // drains the deliveries routed to it, as a yield on main
+            // drains main's queue. Then the thread reports its params
+            // ready and waits for the instantiating thread to finish the
+            // instantiation (synthetic fields, failure route, its own
+            // registrations) before `birth()`.
+            self.builder
+                .build_call(start.init_fn, &[thread_self.into(), start_ptr.into()], &format!("{}.params.init", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_call(self.pinned_start_fn("lotus_pinned_start_ready"), &[thread_gate.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_call(self.pinned_start_fn("lotus_pinned_start_await_go"), &[thread_gate.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             // GH #1066: a pinned locus that can fail runs run() — and
             // the closures checked after it — in a loop. A handler that
             // asked for a restart gets it here once run() returns, on
@@ -4372,7 +4472,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_return(Some(&ptr_t.const_null()))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             // Restore builder to the calling fn so the rest of
-            // the instantiation (pthread_create) emits there.
+            // the instantiation emits there.
             self.builder.position_at_end(saved_block);
             self.di_current_loc = saved_di.0;
             self.di_current_pos = saved_di.1;
@@ -4380,109 +4480,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(loc) => self.builder.set_current_debug_location(loc),
                 None => self.builder.unset_current_debug_location(),
             }
-
-            // pthread_t alloca in the enclosing fn frame — hoisted
-            // to entry so a locus-instantiation-in-loop pattern
-            // doesn't leak stack per iter (mirrors the cliff-lift
-            // session's fix for the locus .self struct alloca).
-            let tid_alloca = self
-                .alloca_in_entry(i64_t.into(), &format!("{}.tid", locus_name))?;
-
-            let thread_main_ptr =
-                thread_main.as_global_value().as_pointer_value();
-            let null_attr = ptr_t.const_null();
-            let create_fn = self
-                .module
-                .get_function("pthread_create")
-                .expect("pthread_create declared");
-            self.builder
-                .build_call(
-                    create_fn,
-                    &[
-                        tid_alloca.into(),
-                        null_attr.into(),
-                        thread_main_ptr.into(),
-                        self_ptr.into(),
-                    ],
-                    &format!("{}.pthread_create", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let _ = mailbox_ptr_opt;
-
-            // m28c: optional CPU-core affinity. If the placement
-            // entry declared `pinned(core = N)`, route the
-            // freshly-created tid through pthread_setaffinity_np
-            // (via the C-side helper) so the OS scheduler keeps
-            // this thread on the requested logical CPU. Topology
-            // Phase 1a: `pinned(cores = ...)` range/set specs
-            // expand statically to a constant i32 array and go
-            // through the cpuset helper instead — the thread's
-            // affinity mask is the whole set, and the OS
-            // schedules freely within it.
-            if let ScheduleClass::Pinned(Some(cores_spec)) =
-                &info.schedule_class
-            {
-                let tid_for_aff = self
-                    .builder
-                    .build_load(i64_t, tid_alloca, "pinned.tid.aff")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                match cores_spec {
-                    CoreSpec::Single(core) => {
-                        let core_const =
-                            i32_t.const_int(*core as u64, true);
-                        let set_aff_fn = self
-                            .module
-                            .get_function("lotus_set_core_affinity")
-                            .expect("lotus_set_core_affinity declared");
-                        self.builder
-                            .build_call(
-                                set_aff_fn,
-                                &[tid_for_aff.into(), core_const.into()],
-                                &format!("{}.set_aff", locus_name),
-                            )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?;
-                    }
-                    _ => {
-                        // Range / Set → sorted, deduped constant
-                        // array (typecheck rejected empty specs).
-                        let cores = cores_spec.expand();
-                        let vals: Vec<_> = cores
-                            .iter()
-                            .map(|c| i32_t.const_int(*c as u64, true))
-                            .collect();
-                        let arr = i32_t.const_array(&vals);
-                        let g = self.module.add_global(
-                            arr.get_type(),
-                            None,
-                            &format!("{}.cores", locus_name),
-                        );
-                        g.set_initializer(&arr);
-                        g.set_constant(true);
-                        g.set_linkage(inkwell::module::Linkage::Internal);
-                        let count_const =
-                            i32_t.const_int(cores.len() as u64, false);
-                        let set_aff_fn = self
-                            .module
-                            .get_function("lotus_set_core_affinity_set")
-                            .expect("lotus_set_core_affinity_set declared");
-                        self.builder
-                            .build_call(
-                                set_aff_fn,
-                                &[
-                                    tid_for_aff.into(),
-                                    g.as_pointer_value().into(),
-                                    count_const.into(),
-                                ],
-                                &format!("{}.set_aff_set", locus_name),
-                            )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?;
-                    }
-                }
-            }
+            // The instantiation is complete: release the thread into
+            // birth(). The instantiating thread's last touch of the gate.
+            self.builder
+                .build_call(self.pinned_start_fn("lotus_pinned_start_go"), &[start.gate.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let tid_alloca = start.tid_alloca;
 
             // Defer pthread_join + arena destroy to scope exit.
             // flush_dissolve_frame skips drain/dissolve for pinned
@@ -5171,7 +5175,430 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 }
 
+/// A pinned locus's params-init, lowered into a function its own thread
+/// runs (the review of PR #1319, correcting U-6): what
+/// [`Cx::begin_pinned_init`] took of the instantiating function's
+/// lowering state, given back by [`Cx::finish_pinned_init`].
+pub(crate) struct PinnedInit<'ctx> {
+    init_fn: inkwell::values::FunctionValue<'ctx>,
+    /// The locus, as the init function's first parameter.
+    pub(crate) self_param: PointerValue<'ctx>,
+    saved_block: inkwell::basic_block::BasicBlock<'ctx>,
+    saved_di: (Option<inkwell::debug_info::DILocation<'ctx>>, Option<(usize, u32)>),
+    saved_fn: Option<inkwell::values::FunctionValue<'ctx>>,
+    saved_loops: Vec<crate::codegen::LoopFrame<'ctx>>,
+    saved_in_main: bool,
+    /// The other side's half of the state [`Cx::suspend_pinned_init`]
+    /// swaps: while the init lowers, the instantiating function's route
+    /// for the locus and its obs parent; while it is suspended, the
+    /// init's block and deferred-dissolve frame.
+    route: Option<crate::codegen::AnchorRoute<'ctx>>,
+    parent: Option<PointerValue<'ctx>>,
+    init_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    init_frame: Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>,
+}
+
+/// A pinned locus whose thread is initializing its params: what the
+/// rest of the instantiation needs to give that thread its body and
+/// release it into `birth()`.
+pub(crate) struct PinnedStart<'ctx> {
+    /// `__pinned_main_<L>`, declared; its body is the pinned branch's.
+    thread_main: inkwell::values::FunctionValue<'ctx>,
+    init_fn: inkwell::values::FunctionValue<'ctx>,
+    /// `{ self, gate, captures… }`, the thread's argument.
+    start_ty: inkwell::types::StructType<'ctx>,
+    gate: PointerValue<'ctx>,
+    tid_alloca: PointerValue<'ctx>,
+}
+
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// A runtime function of the pinned start gate, declared at its
+    /// first use, so a program with no pinned locus carries none.
+    fn pinned_start_fn(&self, name: &str) -> inkwell::values::FunctionValue<'ctx> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        self.module.get_function(name).unwrap_or_else(|| {
+            let ty = if name == "lotus_pinned_start_create" {
+                ptr_t.fn_type(&[], false)
+            } else {
+                self.context.void_type().fn_type(&[ptr_t.into()], false)
+            };
+            self.module.add_function(name, ty, None)
+        })
+    }
+
+    /// Start lowering a pinned locus's params-init into
+    /// `__pinned_init_<L>(self, start)`, the function its thread runs
+    /// before `birth()` (the review of PR #1319). The builder moves
+    /// into the function, with a fresh deferred-dissolve frame (a
+    /// temporary of the defaults is reclaimed at the end of the
+    /// init, on the locus's thread), no loop, and not in `main`. A
+    /// nested subscription registers against the locus's mailbox,
+    /// read back from its slot.
+    pub(crate) fn begin_pinned_init(
+        &mut self,
+        locus_name: &str,
+        info: &LocusInfo<'ctx>,
+    ) -> Result<PinnedInit<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let saved_block = self
+            .builder
+            .get_insert_block()
+            .expect("a pinned instantiation inside an active block");
+        let init_fn = self.module.add_function(
+            &format!("__pinned_init_{}", locus_name),
+            self.context.void_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        let saved_di = (self.di_current_loc, self.di_current_pos);
+        let entry = self.context.append_basic_block(init_fn, "entry");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let saved_fn = self.current_fn.replace(init_fn);
+        let saved_loops = std::mem::take(&mut self.loops);
+        let saved_in_main = std::mem::replace(&mut self.in_main, false);
+        self.push_dissolve_frame();
+        let self_param = init_fn.get_nth_param(0).expect("init self param").into_pointer_value();
+        let route = self.anchor_route.clone();
+        if let (Some(mb_idx), Some(crate::codegen::AnchorRoute::Mailbox(_))) =
+            (info.mailbox_field_idx, &self.anchor_route)
+        {
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_param, mb_idx, &format!("{}.__mailbox.ptr", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let mb = self
+                .builder
+                .build_load(ptr_t, slot, &format!("{}.mailbox", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            self.anchor_route = Some(crate::codegen::AnchorRoute::Mailbox(mb));
+        }
+        Ok(PinnedInit {
+            init_fn,
+            self_param,
+            saved_block,
+            saved_di,
+            saved_fn,
+            saved_loops,
+            saved_in_main,
+            route,
+            parent: None,
+            init_block: None,
+            init_frame: Vec::new(),
+        })
+    }
+
+    /// Lower the next code in the instantiating function instead of the
+    /// init, until [`Cx::resume_pinned_init`]: an override written at
+    /// the literal is the instantiating code's own, evaluated by the
+    /// instantiating thread before the locus's thread starts, and its
+    /// value reaches the init through the argument block
+    /// (`capture_into_init`). `caller_self` is the locus as the
+    /// instantiating function sees it.
+    pub(crate) fn suspend_pinned_init(&mut self, p: &mut PinnedInit<'ctx>, caller_self: PointerValue<'ctx>) {
+        p.init_block = self.builder.get_insert_block();
+        p.init_frame = self.deferred_dissolves.pop().expect("the init's frame");
+        std::mem::swap(&mut self.current_fn, &mut p.saved_fn);
+        std::mem::swap(&mut self.loops, &mut p.saved_loops);
+        std::mem::swap(&mut self.in_main, &mut p.saved_in_main);
+        std::mem::swap(&mut self.anchor_route, &mut p.route);
+        p.parent = std::mem::replace(&mut self.current_instantiation_parent, Some(caller_self));
+        self.builder.position_at_end(p.saved_block);
+        self.di_current_loc = p.saved_di.0;
+        self.di_current_pos = p.saved_di.1;
+        match p.saved_di.0 {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
+        }
+    }
+
+    /// Back into the init after [`Cx::suspend_pinned_init`].
+    pub(crate) fn resume_pinned_init(&mut self, p: &mut PinnedInit<'ctx>) {
+        p.saved_block = self.builder.get_insert_block().expect("the instantiating function's block");
+        p.saved_di = (self.di_current_loc, self.di_current_pos);
+        std::mem::swap(&mut self.current_fn, &mut p.saved_fn);
+        std::mem::swap(&mut self.loops, &mut p.saved_loops);
+        std::mem::swap(&mut self.in_main, &mut p.saved_in_main);
+        std::mem::swap(&mut self.anchor_route, &mut p.route);
+        self.current_instantiation_parent = p.parent.take();
+        self.deferred_dissolves.push(std::mem::take(&mut p.init_frame));
+        self.builder.position_at_end(p.init_block.take().expect("the init's block"));
+        self.di_begin_function();
+    }
+
+    /// Close the init function, return to the instantiating function,
+    /// and start the thread there: `__pinned_main_<L>` is declared (the
+    /// pinned branch gives it its body), its argument block holds the
+    /// locus, the start gate and every value of the instantiating
+    /// function the init reads (`capture_into_init`), the thread is
+    /// created with its affinity, and the instantiating thread waits
+    /// until the params are initialized.
+    pub(crate) fn finish_pinned_init(
+        &mut self,
+        p: PinnedInit<'ctx>,
+        locus_name: &str,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<PinnedStart<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        self.flush_dissolve_frame_kind(false)?;
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.current_fn = p.saved_fn;
+        self.loops = p.saved_loops;
+        self.in_main = p.saved_in_main;
+        self.builder.position_at_end(p.saved_block);
+        self.di_current_loc = p.saved_di.0;
+        self.di_current_pos = p.saved_di.1;
+        match p.saved_di.0 {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
+        }
+        let caller_fn = p.saved_block.get_parent().expect("block in a function");
+        let (start_ty, captures) = self.capture_into_init(p.init_fn, caller_fn, locus_name)?;
+
+        let start = self.alloca_in_entry(start_ty.into(), &format!("{}.pinned.start", locus_name))?;
+        let gate = self
+            .builder
+            .build_call(self.pinned_start_fn("lotus_pinned_start_create"), &[], &format!("{}.pinned.gate", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_pinned_start_create returns ptr")
+            .into_pointer_value();
+        let mut slots: Vec<inkwell::values::BasicValueEnum<'ctx>> = vec![self_ptr.into(), gate.into()];
+        slots.extend(captures);
+        for (i, v) in slots.into_iter().enumerate() {
+            let slot = self
+                .builder
+                .build_struct_gep(start_ty, start, i as u32, &format!("{}.pinned.start.{}", locus_name, i))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(slot, v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        let thread_main = self.module.add_function(
+            &format!("__pinned_main_{}", locus_name),
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        // pthread_t alloca in the enclosing fn frame — hoisted to entry
+        // so a locus-instantiation-in-loop pattern doesn't leak stack
+        // per iter (mirrors the cliff-lift session's fix for the locus
+        // .self struct alloca).
+        let tid_alloca = self.alloca_in_entry(i64_t.into(), &format!("{}.tid", locus_name))?;
+        let create_fn = self.module.get_function("pthread_create").expect("pthread_create declared");
+        self.builder
+            .build_call(
+                create_fn,
+                &[
+                    tid_alloca.into(),
+                    ptr_t.const_null().into(),
+                    thread_main.as_global_value().as_pointer_value().into(),
+                    start.into(),
+                ],
+                &format!("{}.pthread_create", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_pinned_affinity(&info.schedule_class, tid_alloca, locus_name)?;
+        self.builder
+            .build_call(self.pinned_start_fn("lotus_pinned_start_await_ready"), &[gate.into()], "")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(PinnedStart { thread_main, init_fn: p.init_fn, start_ty, gate, tid_alloca })
+    }
+
+    /// The values of the instantiating function `caller` that the code
+    /// lowered into `init` reads — the locus's arena, a binding of the
+    /// scope the literal sits in, the enclosing `self` an override
+    /// names, … — moved into the thread's argument block: each becomes
+    /// a load from the block at the init's entry, and the returned list
+    /// is what the instantiating function stores there. The block is
+    /// `{ self, gate, captures… }`; the instantiating thread is blocked
+    /// in `lotus_pinned_start_await_ready` for as long as the init runs,
+    /// so a captured pointer into its frame is live and unshared. A
+    /// branch out of the init, or a value of a third function, is
+    /// refused.
+    fn capture_into_init(
+        &mut self,
+        init: inkwell::values::FunctionValue<'ctx>,
+        caller: inkwell::values::FunctionValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(inkwell::types::StructType<'ctx>, Vec<inkwell::values::BasicValueEnum<'ctx>>), CodegenError> {
+        use inkwell::llvm_sys::core::{
+            LLVMGetBasicBlockParent, LLVMGetInstructionParent, LLVMGetNumOperands, LLVMGetOperand,
+            LLVMGetParamParent, LLVMGetTypeKind, LLVMIsAArgument, LLVMIsAInstruction, LLVMSetOperand,
+            LLVMTypeOf, LLVMValueAsBasicBlock, LLVMValueIsBasicBlock,
+        };
+        use inkwell::llvm_sys::prelude::LLVMValueRef;
+        use inkwell::llvm_sys::LLVMTypeKind;
+        use inkwell::values::AsValueRef;
+
+        let init_ref = init.as_value_ref();
+        let caller_ref = caller.as_value_ref();
+        let mut captured: Vec<LLVMValueRef> = Vec::new();
+        let mut uses: Vec<(LLVMValueRef, u32, usize)> = Vec::new();
+        for bb in init.get_basic_blocks() {
+            let mut inst = bb.get_first_instruction();
+            while let Some(i) = inst {
+                let iref = i.as_value_ref();
+                let n = unsafe { LLVMGetNumOperands(iref) };
+                for k in 0..n.max(0) as u32 {
+                    let op = unsafe { LLVMGetOperand(iref, k) };
+                    if op.is_null() {
+                        continue;
+                    }
+                    let owner = unsafe {
+                        if LLVMValueIsBasicBlock(op) != 0 {
+                            let parent = LLVMGetBasicBlockParent(LLVMValueAsBasicBlock(op));
+                            if parent != init_ref {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "pinned locus `{}`: its params initialize on its own thread, \
+                                     and an initializer branches out of them (a `return`, a \
+                                     propagated failure or a `break` of the enclosing function)",
+                                    locus_name
+                                )));
+                            }
+                            continue;
+                        }
+                        if matches!(LLVMGetTypeKind(LLVMTypeOf(op)), LLVMTypeKind::LLVMMetadataTypeKind) {
+                            continue;
+                        }
+                        if !LLVMIsAInstruction(op).is_null() {
+                            LLVMGetBasicBlockParent(LLVMGetInstructionParent(op))
+                        } else if !LLVMIsAArgument(op).is_null() {
+                            LLVMGetParamParent(op)
+                        } else {
+                            continue;
+                        }
+                    };
+                    if owner == init_ref {
+                        continue;
+                    }
+                    if owner != caller_ref {
+                        return Err(CodegenError::LlvmEmit(format!(
+                            "pinned locus `{}`: its params-init reads a value of a function \
+                             other than the one instantiating it",
+                            locus_name
+                        )));
+                    }
+                    let at = match captured.iter().position(|v| *v == op) {
+                        Some(at) => at,
+                        None => {
+                            captured.push(op);
+                            captured.len() - 1
+                        }
+                    };
+                    uses.push((iref, k, at));
+                }
+                inst = i.get_next_instruction();
+            }
+        }
+        let values: Vec<inkwell::values::BasicValueEnum<'ctx>> =
+            captured.iter().map(|v| unsafe { inkwell::values::BasicValueEnum::new(*v) }).collect();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut fields: Vec<inkwell::types::BasicTypeEnum<'ctx>> = vec![ptr_t.into(), ptr_t.into()];
+        fields.extend(values.iter().map(|v| v.get_type()));
+        let start_ty = self.context.struct_type(&fields, false);
+        if values.is_empty() {
+            return Ok((start_ty, values));
+        }
+        // The loads go first in the init's entry, so each dominates
+        // every use.
+        let saved = self.builder.get_insert_block();
+        let entry = init.get_first_basic_block().expect("init entry");
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        self.builder.unset_current_debug_location();
+        let env = init.get_nth_param(1).expect("init start param").into_pointer_value();
+        let mut loaded: Vec<LLVMValueRef> = Vec::with_capacity(values.len());
+        for (i, v) in values.iter().enumerate() {
+            let slot = self
+                .builder
+                .build_struct_gep(start_ty, env, (i + 2) as u32, &format!("{}.capture.{}.ptr", locus_name, i))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let l = self
+                .builder
+                .build_load(v.get_type(), slot, &format!("{}.capture.{}", locus_name, i))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            loaded.push(l.as_value_ref());
+        }
+        for (inst, k, at) in uses {
+            unsafe { LLVMSetOperand(inst, k, loaded[at]) };
+        }
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        match self.di_current_loc {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
+        }
+        Ok((start_ty, values))
+    }
+
+    /// m28c: optional CPU-core affinity. If the placement entry
+    /// declared `pinned(core = N)`, route the freshly-created tid
+    /// through pthread_setaffinity_np (via the C-side helper) so the
+    /// OS scheduler keeps this thread on the requested logical CPU.
+    /// Topology Phase 1a: `pinned(cores = ...)` range/set specs expand
+    /// statically to a constant i32 array and go through the cpuset
+    /// helper instead — the thread's affinity mask is the whole set,
+    /// and the OS schedules freely within it.
+    fn emit_pinned_affinity(
+        &mut self,
+        schedule_class: &ScheduleClass,
+        tid_alloca: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let ScheduleClass::Pinned(Some(cores_spec)) = schedule_class else {
+            return Ok(());
+        };
+        let i64_t = self.context.i64_type();
+        let i32_t = self.context.i32_type();
+        let tid_for_aff = self
+            .builder
+            .build_load(i64_t, tid_alloca, "pinned.tid.aff")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match cores_spec {
+            CoreSpec::Single(core) => {
+                let core_const = i32_t.const_int(*core as u64, true);
+                let set_aff_fn = self
+                    .module
+                    .get_function("lotus_set_core_affinity")
+                    .expect("lotus_set_core_affinity declared");
+                self.builder
+                    .build_call(set_aff_fn, &[tid_for_aff.into(), core_const.into()], &format!("{}.set_aff", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            _ => {
+                // Range / Set → sorted, deduped constant array
+                // (typecheck rejected empty specs).
+                let cores = cores_spec.expand();
+                let vals: Vec<_> = cores.iter().map(|c| i32_t.const_int(*c as u64, true)).collect();
+                let arr = i32_t.const_array(&vals);
+                let g = self.module.add_global(arr.get_type(), None, &format!("{}.cores", locus_name));
+                g.set_initializer(&arr);
+                g.set_constant(true);
+                g.set_linkage(inkwell::module::Linkage::Internal);
+                let count_const = i32_t.const_int(cores.len() as u64, false);
+                let set_aff_fn = self
+                    .module
+                    .get_function("lotus_set_core_affinity_set")
+                    .expect("lotus_set_core_affinity_set declared");
+                self.builder
+                    .build_call(
+                        set_aff_fn,
+                        &[tid_for_aff.into(), g.as_pointer_value().into(), count_const.into()],
+                        &format!("{}.set_aff_set", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Interest-based ownership #2: get-or-create the internal global
     /// `@__owner_singleton_<A>` that stashes a SingletonConst owner `A`'s
     /// self-pointer. Created lazily (ptr, internal linkage, null init) so

@@ -269,6 +269,19 @@ subscribes to a topic, its handler runs on the gateway's thread (or
 on `io`'s worker), wherever the publisher is: the runtime routes
 the helper's subscriptions to its anchor's thread.
 
+Under a pinned locus this holds from the start. The gateway's
+params are built on the gateway's own thread, so a helper's
+`birth()` and, for a helper with a `run()`, its `run()` happen
+there too, before the gateway's own `birth()`. A helper whose
+`run()` waits for a message through the gateway's mailbox gets it:
+a `std::time::sleep` on that thread drains the mailbox. The
+literal that builds the gateway returns once its params are built.
+An override written in that literal (`Gateway { started:
+std::time::monotonic_ns() }`) is your code, not the gateway's, and
+is evaluated where the literal is; a helper the override builds
+(`Gateway { reg: std::metrics::Registry { namespace: "edge" } }`)
+is still the gateway's, built on its thread.
+
 ## The bus crosses threads for you
 
 When a cooperative locus on one pool publishes to a subscriber on

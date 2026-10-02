@@ -1028,10 +1028,35 @@ m20's "memcpy payload into subscriber's arena" step happens at
 ENQUEUE time (publisher's frame).
 
 **m27 + m28a (pinned threads + full lifecycle):** Pinned-class
-loci spawn a pthread at instantiation; the locus's full
-declared lifecycle (birth → run → drain → dissolve, each only
-if declared) executes on that thread, in order. Main thread
-continues immediately after spawn. At scope exit (deferred-
+loci spawn a pthread at instantiation; the locus's params and
+its full declared lifecycle (birth → run → drain → dissolve,
+each only if declared) execute on that thread, in order.
+
+A pinned locus's subtree initializes on its thread. The
+instantiating thread creates the locus's mailbox, if it has
+one, and then its thread. The thread makes the mailbox current
+and initializes the locus's params: every nested construction,
+its subscriptions, its `birth()` and a cooperative child's
+inline `run()`, and the params bracket and its settle. The
+initialization has a scope of its own: a temporary locus a
+default builds (`Helper { }.value()`) is dissolved when the
+initialization ends, on the pinned thread, not when the
+instantiating function's scope does. So every
+lifecycle body of a locus nested under a pinned one runs on the
+pinned thread, the domain it is placed in, and a yield inside
+one (`std::time::sleep`, an `await`) drains the pinned locus's
+mailbox, as a yield on main drains main's queue. The
+instantiating thread waits until the params are initialized
+(`lotus_pinned_start_await_ready`), so nothing observes the tree
+before it is built. Then it finishes the instantiation (the
+synthetic fields, the failure route, the locus's own
+subscriptions) and releases the thread (`lotus_pinned_start_go`)
+into `birth()` and the rest of its lifecycle, and continues. An
+override written at the literal (`Worker { started:
+pthread_self() }`) is the instantiating code's: it is evaluated
+on the instantiating thread, before the pinned thread starts. A
+locus an override builds as the field's value is part of the
+subtree, and is built on the pinned thread. At scope exit (deferred-
 dissolve flush), `pthread_join` blocks until the pinned
 thread has finished its lifecycle and returned; the main
 thread's only remaining work for a pinned entry is the join
@@ -1041,10 +1066,14 @@ SKIPPED on the main side — they ran on the pinned thread).
 m28a synthesizes a per-locus `__pinned_main_<LocusName>`
 function whose signature matches pthread's start-routine
 contract directly (`ptr (ptr)`); pthread_create gets that
-function pointer with `self_ptr` as its argument. No C-side
-adapter, no thread_args struct. The synthesized body simply
-calls each declared lifecycle method in sequence, then
-returns null.
+function pointer with the locus's start block as its argument:
+the locus, the start gate, and each value of the instantiating
+function that the params' initialization reads (the
+instantiating thread is blocked while they are read). No C-side
+adapter. The synthesized body makes the mailbox current, runs
+the params' initialization (`__pinned_init_<LocusName>`),
+reports ready, waits for its release, calls each declared
+lifecycle method in sequence, then returns null.
 
 **m28b stage 1 (inline-payload queue):** Bus queue cells now
 carry an inline `[u8; 512]` payload buffer (with `pthread_mutex_t`
@@ -1083,7 +1112,16 @@ anything in its tree subscribes, whether or not it subscribes
 itself; under an anchor on `cooperative(pool = X)` it is pool `X`.
 The route exists before the subscriptions that use it: the anchor's
 mailbox is created before its params are initialized, which is
-where every nested instance registers. It outlives them: each
+where every nested instance registers. A pinned anchor's params
+initialize on its own thread (m27 + m28a, above), so a nested
+instance that waits during its initialization for a delivery
+through the mailbox is served by the thread the mailbox belongs
+to. An anchor on a pool is different: its tree is built on the
+instantiating thread (§ "Lifecycle obligations", line 3), while
+the pool's worker is already running, so a delivery to a nested
+subscriber during that initialization runs on the worker while
+the nested body may still be running on the instantiating
+thread. The route outlives the subscriptions: each
 nested instance deregisters in its own `dissolve()`, on the
 anchor's thread, before the join below returns, and the join
 retires any registration still routed to the mailbox before

@@ -281,6 +281,13 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    itself sits in a default (F.4 call-site rule). This holds
    regardless of where the instantiation executes (fn main, a
    params-init, or another locus's method body — 2026-07-14 fix).
+   For a locus placed `pinned`, the defaults, and every locus
+   nested under it with its whole instantiation, are computed on
+   the locus's own thread, and the literal completes once they
+   are; an override is still evaluated where the literal is,
+   except a locus it builds as the field's value, which is part
+   of the pinned subtree (`runtime.md` § "Placement classes",
+   m27 + m28a).
 2. The nearest enclosing ancestor that declares `accept(c: I)`
    for the child's interface is the **owner** (innermost-wins —
    interest-based ownership / accept bubbling; see below and
