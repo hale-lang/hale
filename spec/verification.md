@@ -2273,6 +2273,15 @@ assume the others in a build:
   if it had been written at the top level — including the `@hot`
   promotion to a hard error. (Before #764 the lint stopped at the top
   level, so wrapping a program in a module silenced it.)
+
+  **The lint is a law over the allocation summary's rows** (F.40 phase
+  3). It walks no body of its own: each finding is a row's site or call
+  where it is written, read with the row's context (a bus handler, `@hot`,
+  `@unbounded`), and the allocating `recv` family is the one list
+  `@budget` reads. So it sees what the summary sees — a locus
+  instantiated in a loop inside a publish's value or a bare `{ … }`
+  block is a finding — and nothing written inside an index expression
+  is, since the summary does not walk one.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the default advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)

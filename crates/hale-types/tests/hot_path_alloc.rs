@@ -731,7 +731,7 @@ fn hot_fn_two_modules_deep_is_flagged() {
 #[test]
 fn hot_locus_method_inside_a_module_is_flagged() {
     // The locus arm was equally blind: `@hot` on a METHOD of a locus
-    // declared inside a module never reached `hot_walk_block`.
+    // declared inside a module never reached the lint's walk.
     let src = r#"
 module inner {
     locus L {
@@ -796,4 +796,58 @@ fn main() { }
         "the module-nested finding stays a WARNING: {:?}",
         found
     );
+}
+
+// ---- a law over the allocation rows (F.40 phase 3, E3a part C) ------
+//
+// The lint reads the allocation summary's rows, so it sees what the
+// summary's walk sees. That walk reaches statements the lint's own
+// walk skipped, and skips one expression the lint's walk reached.
+
+/// A locus instantiated in a loop inside a publish, or inside a bare
+/// `{ … }` block, is a finding: the lint's own walk never entered either
+/// statement.
+#[test]
+fn a_publish_or_a_bare_block_in_a_loop_is_seen() {
+    for src in [
+        r#"
+topic Evt { payload: Int; subject: "evt"; }
+locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+main locus App {
+    bus { publish Evt; }
+    run() { let mut i = 0; while i < 3 { Evt <- Child { n: i }.get(); i = i + 1; } }
+}
+fn main() { App { }; }
+"#,
+        r#"
+locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+main locus App {
+    run() { let mut i = 0; while i < 3 { { let c = Child { n: i }; println(c.get()); } i = i + 1; } }
+}
+fn main() { App { }; }
+"#,
+    ] {
+        let ws = warnings(src);
+        assert!(
+            ws.len() == 1 && ws[0].contains("locus `Child`") && ws[0].contains("inside a loop"),
+            "expected the loop finding, got: {:?}",
+            ws
+        );
+    }
+}
+
+/// An index expression is not walked by the summary, so a locus
+/// instantiated in one is no finding, where the lint's own walk found
+/// it. A call or an allocation written there is in no row; this pin
+/// moves with the summary.
+#[test]
+fn an_index_expression_is_not_in_the_rows() {
+    let src = r#"
+locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+main locus App {
+    run() { let xs = [1, 2, 3]; let mut i = 0; while i < 3 { println(xs[Child { n: 0 }.get()]); i = i + 1; } }
+}
+fn main() { App { }; }
+"#;
+    assert_eq!(warnings(src), Vec::<String>::new());
 }
