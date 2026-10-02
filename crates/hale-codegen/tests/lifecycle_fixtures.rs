@@ -125,6 +125,8 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l03_field_parents_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l03_field_parents_two_domains_nested.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: twig_born },
     Fixture { file: "l03_field_parents_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
+    Fixture { file: "l03_body_literal_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
+    Fixture { file: "l03_body_literal_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l04_dissolve_route_reclaim.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: outcome_or_exit },
     Fixture { file: "l04_dissolve_route_cascade.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: handled_once },
     Fixture { file: "l05_accept_position.hl", line: "5", adopted: Some("accept-after-params-before-birth"), run: RunMode::Plain, judge: outcome_line },
@@ -275,6 +277,17 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l03_field_parents_one_domain.hl" => {
             p.occurrences = count(&[("Parent", 2), ("Leaf", 2)]);
+            &["3"]
+        }
+        // One body-literal template, built by a method of the two Mids on
+        // main and on pool `side`, each run inline at its statement; or
+        // both on main, the control.
+        "l03_body_literal_two_domains.hl" => {
+            p.occurrences = count(&[("Mid", 2), ("Leaf", 2)]);
+            &["3"]
+        }
+        "l03_body_literal_one_domain.hl" => {
+            p.occurrences = count(&[("Mid", 2), ("Leaf", 2)]);
             &["3"]
         }
         "l05_accept_position.hl" => {
@@ -1312,6 +1325,57 @@ const FIELD_PLANS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The projected expectations of the body-literal fixtures: a literal a
+/// method of `Mid` builds, with Mids on main and on pool `side`, claims
+/// the set for its birth and run, where the template that kept its
+/// first enclosing Mid as its only owner claimed neither (the scope's
+/// two domains named no one). Each occurrence's run() runs inline at its
+/// statement and ends before its drain, on side as on main: a body
+/// literal's run is never posted behind its owner's teardown. The
+/// control, both Mids on main, renders byte for byte what it did before.
+const BODY_PLANS: &[(&str, &str)] = &[
+    (
+        "l03_body_literal_two_domains.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
+         Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+    ),
+    (
+        "l03_body_literal_one_domain.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         Mid: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+    ),
+];
+
+#[test]
+fn a_body_literal_under_enclosing_templates_claims_their_domains() {
+    let mut differ = Vec::new();
+    for (file, want) in BODY_PLANS {
+        let got = render(&derived_plan(file).expect("a plan"));
+        if got != *want {
+            differ.push(format!("{file}:\n{got}"));
+        }
+    }
+    assert!(differ.is_empty(), "the projected plans differ:\n{}", differ.join("\n\n"));
+}
+
 #[test]
 fn a_field_reached_under_two_parents_claims_their_domains() {
     let mut differ = Vec::new();
@@ -1386,6 +1450,8 @@ fixture_tests! {
     l03_field_parents_two_domains => "l03_field_parents_two_domains.hl",
     l03_field_parents_two_domains_nested => "l03_field_parents_two_domains_nested.hl",
     l03_field_parents_one_domain => "l03_field_parents_one_domain.hl",
+    l03_body_literal_two_domains => "l03_body_literal_two_domains.hl",
+    l03_body_literal_one_domain => "l03_body_literal_one_domain.hl",
     l04_dissolve_route_reclaim => "l04_dissolve_route_reclaim.hl",
     l04_dissolve_route_cascade => "l04_dissolve_route_cascade.hl",
     l05_accept_position => "l05_accept_position.hl",

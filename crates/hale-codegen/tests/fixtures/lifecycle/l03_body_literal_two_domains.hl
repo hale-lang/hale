@@ -1,0 +1,25 @@
+// Decision line 3, a body literal whose enclosing locus has templates
+// on two domains (Birth, Run).
+//
+// `Mid`'s method `make()` builds `Leaf { }`, and two `Mid` literals are
+// built and called: one by `App`'s run() on main and one by `Worker`'s
+// run() on pool `side`. The Leaf literal is one template whose owners
+// are both Mid templates; each Leaf is built on the thread running its
+// own Mid's method, so the template's birth and run claim the set of
+// the two domains, and each occurrence runs on one of them; neither
+// Mid's domain alone is the template's. A body literal's run() is not
+// posted (inventory C12): on each domain it runs inline at its
+// statement, before the statement's teardown drains it.
+//
+// Expected terminal outcome: one Leaf born on each domain, judged by
+// the harness from the trace: `born-on-each-parents-domain`.
+
+locus Leaf { run() { println("ev leaf-run"); } }
+locus Mid { fn make() { Leaf { }; } }
+locus Worker { run() { let m = Mid { }; m.make(); } }
+main locus App {
+    params { worker: Worker = Worker { }; }
+    placement { worker: cooperative(pool = side); }
+    run() { let m = Mid { }; m.make(); }
+}
+fn main() { App { }; }

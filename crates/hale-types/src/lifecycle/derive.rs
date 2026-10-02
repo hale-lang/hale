@@ -16,10 +16,14 @@
 //!   instances here, each its field literal's template, in its owner's
 //!   domains. A field literal reached through several constructions of
 //!   its owner's declaration is one template that keeps each one's
-//!   contribution (owner, instantiating domain, own domain, bound), a
-//!   nested field the product of its owner's with its own placement:
-//!   its bound is their sum, and a claim is one domain where they agree
-//!   and their set where they do not, never one owner's alone.
+//!   contribution (owner, instantiating domain, own domain), a nested
+//!   field the product of its owner's with its own placement, and its
+//!   bound is their sum. A body or accepted literal keeps every template
+//!   of its enclosing locus as an owner the same way, each occurrence on
+//!   the domain its enclosing occurrence runs it on, with the table's
+//!   bound, which covers every enclosing scope. A claim is one domain
+//!   where the contributions agree and their set where they do not,
+//!   never one owner's alone.
 //! - the **handler rows**: which `on_failure` an instance's owner runs
 //!   for it, and the recovery ops it can invoke (a restart).
 //! - the **flow rows**: whether an accepted child is reclaimed at the
@@ -320,13 +324,16 @@ struct Subject<'a> {
     universe: SiteUniverse,
     how: How,
     /// Every parent context, in construction order: one for a static
-    /// row, an adapter, a template's top and a body literal; one per
-    /// contribution of its owner for a dynamic literal's field, which is
-    /// one template however many constructions of its owner's
-    /// declaration reach it. Nothing about an occurrence is read from
-    /// one contribution alone.
+    /// row, an adapter, a template's top and a literal in a free fn; one
+    /// per contribution of each owner for a dynamic literal's field,
+    /// which is one template however many constructions of its owner's
+    /// declaration reach it, and for a body or accepted literal, whose
+    /// owners are every template of its enclosing locus. Nothing about
+    /// an occurrence is read from one contribution alone.
     contributions: Vec<Contribution>,
-    /// How many occurrences: the contributions' bounds, summed.
+    /// How many occurrences: the table's for a static row and a literal
+    /// (it covers every scope the literal is written in), its owners'
+    /// summed for a field.
     bound: Bound,
     /// Built in an `on_failure` body under every contribution: it exists
     /// only on a path where the handler runs.
@@ -342,39 +349,42 @@ struct Subject<'a> {
 }
 
 /// One parent context of a template: the owner it is built under there,
-/// the domains it is built and runs on, and how many occurrences it
-/// gives the template.
-#[derive(Debug, Clone)]
+/// and the domains it is built and runs on.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Contribution {
     /// The instance whose `on_failure` it fails to and whose arena holds
     /// it: a field's owner, an accepted child's acceptor, a body
-    /// literal's enclosing locus. `None` for a template's top and a
-    /// literal in a free fn.
+    /// literal's enclosing locus. `None` for a template's top, a literal
+    /// in a free fn, and the occurrences of a cycle of owners.
     owner: Option<usize>,
-    /// The owner's contribution this one is built under: a field's,
-    /// which is its owner's context with the field's own placement.
-    /// `None` pairs it with every contribution of the owner.
+    /// The owner's contribution this one is built under: for a field,
+    /// its owner's context with the field's own placement; for a body or
+    /// accepted literal, the enclosing occurrence that runs it. `None`
+    /// pairs it with every contribution of the owner.
     under: Option<usize>,
     /// The instantiating thread: the domain running the code that holds
     /// the literal. `None` when the scope's domains are unknown or many.
     it: Option<DomainId>,
     /// The queue owner: where its `run()` runs and its cells land.
     own: Option<DomainId>,
-    bound: Bound,
     in_handler: bool,
 }
 
-impl Subject<'_> {
-    fn sum_bounds(&mut self) {
-        let mut bounds = self.contributions.iter().map(|c| c.bound.clone());
-        let first = bounds.next().unwrap_or(Bound::Once);
-        self.bound = bounds.fold(first, |a, b| add_bounds(&a, &b));
-        self.in_handler = self.contributions.iter().all(|c| c.in_handler);
-    }
+/// Where a template's contributions come from.
+enum Source<'t> {
+    /// A static row or a literal in a free fn: the one the table gives.
+    Fixed,
+    /// A body or accepted literal: one per contribution of each template
+    /// of its enclosing locus, on the domain that occurrence runs (one of
+    /// the table's `domains` for the scope).
+    Enclosed { decl: DeclRef, domains: &'t BTreeSet<DomainId>, in_handler: bool },
+    /// A dynamic literal's field: one per contribution of each template
+    /// its literal is a default of.
+    Field { parents: Vec<usize> },
 }
 
-/// Whether `to` is `from` or an owner of it, through any contribution.
-fn reaches(out: &[Subject<'_>], from: usize, to: usize) -> bool {
+/// Whether `to` is `from` or an owner of it, through any owner.
+fn reaches(owners: &[Vec<usize>], from: usize, to: usize) -> bool {
     let mut seen = BTreeSet::new();
     let mut stack = vec![from];
     while let Some(o) = stack.pop() {
@@ -382,10 +392,61 @@ fn reaches(out: &[Subject<'_>], from: usize, to: usize) -> bool {
             return true;
         }
         if seen.insert(o) {
-            stack.extend(out[o].contributions.iter().filter_map(|c| c.owner));
+            stack.extend(owners[o].iter().copied());
         }
     }
     false
+}
+
+/// `c` at the end of `v`, where `v` does not hold it yet.
+fn push_unique(v: &mut Vec<Contribution>, c: Contribution) {
+    if !v.contains(&c) {
+        v.push(c);
+    }
+}
+
+/// A template's contributions from its owners' current ones; `cut` are
+/// the owners whose edge closed a cycle, built under none of theirs.
+fn derived_contributions(
+    out: &[Subject<'_>],
+    source: &Source<'_>,
+    owners: &[usize],
+    cut: &[usize],
+) -> Vec<Contribution> {
+    let mut v = Vec::new();
+    match source {
+        Source::Fixed => unreachable!("a fixed template keeps the table's contribution"),
+        Source::Enclosed { domains, in_handler, .. } => {
+            // One domain for the scope is every occurrence's; otherwise the
+            // enclosing occurrence's own, where the table names it.
+            let one = (domains.len() == 1).then(|| *domains.iter().next().expect("one"));
+            let on = |d: Option<DomainId>| one.or(d.filter(|d| domains.contains(d)));
+            for &o in owners {
+                for (k, c) in out[o].contributions.iter().enumerate() {
+                    let d = on(c.own);
+                    v.push(Contribution { owner: Some(o), under: Some(k), it: d, own: d, in_handler: *in_handler });
+                }
+            }
+            if owners.is_empty() || !cut.is_empty() {
+                push_unique(&mut v, Contribution { owner: None, under: None, it: one, own: one, in_handler: *in_handler });
+            }
+        }
+        // Built inline in the owner's params loop: on the owner's threads,
+        // under that owner.
+        Source::Field { .. } => {
+            for &p in owners {
+                for (k, c) in out[p].contributions.iter().enumerate() {
+                    v.push(Contribution { owner: Some(p), under: Some(k), ..c.clone() });
+                }
+            }
+            for &p in cut {
+                for c in &out[p].contributions {
+                    push_unique(&mut v, Contribution { owner: None, under: None, ..c.clone() });
+                }
+            }
+        }
+    }
+    v
 }
 
 /// One claim from every contribution's: the rule they share, over the
@@ -501,7 +562,6 @@ fn subjects<'a>(
                 under: None,
                 it: Some(PlacementTable::MAIN),
                 own: Some(row.domain),
-                bound: bound.clone(),
                 in_handler: false,
             }],
             bound,
@@ -510,19 +570,21 @@ fn subjects<'a>(
             placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
         });
     }
-    // A body literal's owner is its enclosing locus's instance, which may
-    // be a dynamic site listed after it: resolved once every instance is.
-    let mut enclosed: Vec<(usize, DeclRef)> = Vec::new();
+    // Every dynamic template first: a body literal's owners are its
+    // enclosing locus's templates, which may be dynamic sites listed after
+    // it or their fields, so contributions are derived once all exist.
+    let mut sources: Vec<Source<'a>> = out.iter().map(|_| Source::Fixed).collect();
     for d in &t.dynamic {
         let (Some(realizes), Some(decl)) = (d.realizes.clone(), d.realizes.as_ref().and_then(|r| index.decl(r.site))) else {
             continue;
         };
         let at = literals.get(&d.literal).copied().unwrap_or(LiteralAt { built: Built::Nested, member: Member::Other });
         let domain = (d.domains.len() == 1).then(|| *d.domains.iter().next().expect("one"));
+        let in_handler = at.member == Member::Handler;
         let i = out.len();
         let how = match &d.enclosing {
             Enclosing::Locus(enclosing) => {
-                enclosed.push((i, enclosing.clone()));
+                sources.push(Source::Enclosed { decl: enclosing.clone(), domains: &d.domains, in_handler });
                 let acceptor = index.decl(enclosing.site);
                 let accepts = acceptor.is_some_and(|a| {
                     accept_types(a).any(|ty| index.names(ty, enclosing.site.universe) == Some(realizes.site))
@@ -533,63 +595,115 @@ fn subjects<'a>(
                     How::Body { built: at.built, in_fn_main: false }
                 }
             }
-            Enclosing::Fn(_) => How::Body { built: at.built, in_fn_main: at.member == Member::FnMain },
+            Enclosing::Fn(_) => {
+                sources.push(Source::Fixed);
+                How::Body { built: at.built, in_fn_main: at.member == Member::FnMain }
+            }
         };
-        let in_handler = at.member == Member::Handler;
         out.push(Subject {
             site: SourceSite { decl: realizes.clone(), template: Template::Dynamic { literal: d.literal } },
             decl,
             universe: realizes.site.universe,
             how,
-            contributions: vec![Contribution {
-                owner: None,
-                under: None,
-                it: domain,
-                own: domain,
-                bound: d.bound.clone(),
-                in_handler,
-            }],
+            contributions: vec![Contribution { owner: None, under: None, it: domain, own: domain, in_handler }],
             bound: d.bound.clone(),
             in_handler,
             contract: false,
             placed: false,
         });
-        dynamic_fields(&mut out, i, 0..1, index, &inputs.bundle.snapshot, &mut Vec::new());
+        dynamic_fields(&mut out, &mut sources, i, index, &inputs.bundle.snapshot);
     }
-    for (i, enclosing) in enclosed {
-        out[i].contributions[0].owner = (0..out.len()).find(|&j| j != i && out[j].site.decl == enclosing);
-    }
+    // Each template's owners: a static row's from the table, a body
+    // literal's every template of its enclosing locus, in the order they
+    // are listed, a field's every template it is a default of.
+    let mut owners: Vec<Vec<usize>> = (0..out.len())
+        .map(|i| match &sources[i] {
+            Source::Fixed => out[i].contributions.iter().filter_map(|c| c.owner).collect(),
+            Source::Enclosed { decl, .. } => (0..out.len()).filter(|&j| j != i && out[j].site.decl == *decl).collect(),
+            Source::Field { parents } => parents.clone(),
+        })
+        .collect();
     // A locus that builds itself (`B { }` in B's run, or two loci that
-    // build each other) owns no instance of its own chain: the
-    // contribution closing a cycle of owners has none.
+    // build each other) owns no instance of its own chain: the owner
+    // closing a cycle of owners is cut, its occurrences built under none.
+    let mut cut: Vec<Vec<usize>> = vec![Vec::new(); out.len()];
     for i in 0..out.len() {
-        for k in 0..out[i].contributions.len() {
-            if out[i].contributions[k].owner.is_some_and(|o| reaches(&out, o, i)) {
-                out[i].contributions[k].owner = None;
+        let mut k = 0;
+        while k < owners[i].len() {
+            if reaches(&owners, owners[i][k], i) {
+                cut[i].push(owners[i].remove(k));
+            } else {
+                k += 1;
             }
         }
+    }
+    for i in 0..out.len() {
+        if matches!(sources[i], Source::Fixed) {
+            for c in &mut out[i].contributions {
+                c.owner = c.owner.filter(|o| !cut[i].contains(o));
+            }
+        } else {
+            out[i].contributions.clear();
+        }
+    }
+    // Every contribution from its owners', to a fixpoint: with the cycles
+    // cut the owners are acyclic, so each template's count is bounded.
+    loop {
+        let mut changed = false;
+        for i in 0..out.len() {
+            if matches!(sources[i], Source::Fixed) {
+                continue;
+            }
+            let next = derived_contributions(&out, &sources[i], &owners[i], &cut[i]);
+            if next != out[i].contributions {
+                out[i].contributions = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // A field's bound is its owners' summed (a cut owner's without its own
+    // cycle); a template is built in a handler only where every
+    // contribution is.
+    fn bound_of_field(
+        i: usize,
+        out: &[Subject<'_>],
+        sources: &[Source<'_>],
+        owners: &[Vec<usize>],
+        cut: Option<&[Vec<usize>]>,
+    ) -> Bound {
+        if !matches!(sources[i], Source::Field { .. }) {
+            return out[i].bound.clone();
+        }
+        let from_owners = owners[i].iter().map(|&o| bound_of_field(o, out, sources, owners, cut));
+        let from_cut = cut.into_iter().flat_map(|c| &c[i]).map(|&o| bound_of_field(o, out, sources, owners, None));
+        from_owners.chain(from_cut).reduce(|a, b| add_bounds(&a, &b)).unwrap_or(Bound::Once)
+    }
+    let bounds: Vec<Bound> = (0..out.len()).map(|i| bound_of_field(i, &out, &sources, &owners, Some(&cut))).collect();
+    for (s, bound) in out.iter_mut().zip(bounds) {
+        s.bound = bound;
+        s.in_handler = !s.contributions.is_empty() && s.contributions.iter().all(|c| c.in_handler);
     }
     out
 }
 
 /// The locus fields a dynamic literal's declaration builds from its
-/// defaults, each an instance of its field literal, recursively: the
-/// parent's contributions `new`, each with the field's own placement,
-/// are the field's contributions (`path` holds the templates the
-/// recursion is inside, which a cycle of defaults does not re-enter).
+/// defaults, each one template of its field literal however many
+/// templates it is a default of, recursively; a field literal already
+/// a template is not re-entered, which a cycle of defaults ends at.
 fn dynamic_fields<'a>(
     out: &mut Vec<Subject<'a>>,
+    sources: &mut Vec<Source<'a>>,
     parent: usize,
-    new: std::ops::Range<usize>,
     index: &LocusIndex<'a>,
     ids: &Snapshot,
-    path: &mut Vec<usize>,
 ) {
     let universe = out[parent].universe;
     if universe != SiteUniverse::User {
         return;
     }
-    path.push(parent);
     let decl = out[parent].decl;
     for m in &decl.members {
         let LocusMember::Params(pb) = m else { continue };
@@ -601,31 +715,17 @@ fn dynamic_fields<'a>(
             let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
             let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone() };
             let contract = p.ty.as_ref().is_some_and(|ty| index.names(ty, universe).is_none());
-            // Built inline in the owner's params loop: on the owner's
-            // threads, under that owner.
-            let added: Vec<Contribution> = new
-                .clone()
-                .map(|k| {
-                    let c = &out[parent].contributions[k];
-                    Contribution {
-                        owner: Some(parent),
-                        under: Some(k),
-                        it: c.it,
-                        own: c.own,
-                        bound: c.bound.clone(),
-                        in_handler: c.in_handler,
-                    }
-                })
-                .collect();
             // Every instance of a literal shares its rows: a field literal
-            // reached under several of its declaration's literals is one
-            // template, with a contribution from each.
+            // reached under several of its declaration's templates is one
+            // template, with each as a parent.
             let template = Template::Dynamic { literal };
-            let (j, from) = match out.iter().position(|s| s.site.template == template) {
+            match out.iter().position(|s| s.site.template == template) {
                 Some(j) => {
-                    let from = out[j].contributions.len();
-                    out[j].contributions.extend(added);
-                    (j, from)
+                    if let Source::Field { parents } = &mut sources[j] {
+                        if !parents.contains(&parent) {
+                            parents.push(parent);
+                        }
+                    }
                 }
                 None => {
                     out.push(Subject {
@@ -635,21 +735,16 @@ fn dynamic_fields<'a>(
                         decl: field_decl,
                         universe,
                         how: How::Field,
-                        contributions: added,
+                        contributions: Vec::new(),
                         bound: Bound::Once,
                         in_handler: false,
                     });
-                    (out.len() - 1, 0)
+                    sources.push(Source::Field { parents: vec![parent] });
+                    dynamic_fields(out, sources, out.len() - 1, index, ids);
                 }
-            };
-            out[j].sum_bounds();
-            if !path.contains(&j) {
-                let to = out[j].contributions.len();
-                dynamic_fields(out, j, from..to, index, ids, path);
             }
         }
     }
-    path.pop();
 }
 
 /// How many occurrences two sources of one template give it together.
@@ -996,10 +1091,15 @@ impl<'b, 'a> Builder<'b, 'a> {
     /// (line 19, the retention L5 shipped): the run is retained against
     /// that teardown, which cancels it if it is still queued before it
     /// reclaims the child, so its end is ordered before the reclaim's
-    /// completion, not before the drain.
-    fn posted_to_its_owners_teardown(&self, c: &Contribution) -> bool {
+    /// completion, not before the drain. Only a field or an accepted
+    /// child is posted (inventory C12: a placed field, or one owned beyond
+    /// its scope); a body literal's run() runs inline at its statement.
+    fn posted_to_its_owners_teardown(&self, i: usize, c: &Contribution) -> bool {
         let under = self.under(c);
-        self.is_pool(c.own) && !under.is_empty() && under.iter().all(|o| o.it == c.own)
+        matches!(self.subjects[i].how, How::Field | How::Accepted { .. })
+            && self.is_pool(c.own)
+            && !under.is_empty()
+            && under.iter().all(|o| o.it == c.own)
     }
 
     /// The domain the instance's birth runs on: its pinned thread, or
@@ -1083,7 +1183,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         let pinned = self.is_pinned(i);
         let on_pool = self.any(i, |c| self.is_pool(c.own));
         let on_async_pool = self.any(i, |c| self.is_async_pool(c.own));
-        let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(c));
+        let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(i, c));
         let accepted = matches!(s.how, How::Accepted { .. });
         let flow = matches!(s.how, How::Accepted { flow: true });
         let let_bound = matches!(s.how, How::Body { built: Built::Let | Built::Nested, .. });
@@ -1360,14 +1460,14 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.runs_on = combine(
                 self.contributions(i)
                     .iter()
-                    .filter(|c| self.posted_to_its_owners_teardown(c))
+                    .filter(|c| self.posted_to_its_owners_teardown(i, c))
                     .map(|c| Self::on(c.own, shipped("19"))),
             );
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
             self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
             // Only an occurrence posted there has a cancellation to wait for.
-            if self.all(i, |c| self.posted_to_its_owners_teardown(c)) {
+            if self.all(i, |c| self.posted_to_its_owners_teardown(i, c)) {
                 self.get(id).edges.completion.push(after(cancel, Point::Completed, shipped("19")));
             }
         }
@@ -1923,6 +2023,36 @@ impl<'b, 'a> Builder<'b, 'a> {
         let mut o = process_row(K::ProcessDrain, Spine::Process, Some("15"), Status::Shipped);
         o.guard = PathGuard::DrainInFlight;
         self.push(o);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn on(d: u32, rule: Rule) -> Option<RunsOn> {
+        Some(RunsOn { domains: BTreeSet::from([DomainId(d)]), rule })
+    }
+
+    /// A known limit: contributions that state different rules for one
+    /// row make no claim, not a set under either rule. No program reaches
+    /// it through the producer today, so it is pinned here: a template
+    /// with several contributions is dynamic, each of its occurrences is
+    /// built and run on its owner occurrence's domain, and every rule a
+    /// contribution states is the same function of domains that agree.
+    #[test]
+    fn contributions_stating_different_rules_claim_no_domain() {
+        let delivered = shipped("L0-1");
+        let crossing = open("L0-1", "C36");
+        assert_eq!(
+            combine([on(0, delivered), on(1, delivered)]),
+            Some(RunsOn { domains: BTreeSet::from([DomainId(0), DomainId(1)]), rule: delivered }),
+            "one rule: the set"
+        );
+        assert_eq!(combine([on(0, delivered), on(0, delivered)]), on(0, delivered), "one rule, one domain");
+        assert_eq!(combine([on(0, delivered), on(1, crossing)]), None, "two rules: no claim");
+        assert_eq!(combine([on(0, delivered), on(0, crossing)]), None, "two rules on one domain: no claim");
+        assert_eq!(combine([on(0, delivered), None]), None, "one occurrence's domain unknown: no claim");
     }
 }
 

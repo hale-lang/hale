@@ -361,6 +361,143 @@ fn a_field_under_parents_on_two_domains_fails_to_each() {
     assert!(settles.is_subset(&waits), "the held delivery waits for each parent's settle");
 }
 
+/// `Mid { }` built and its method `make()` called by App's run() on main
+/// and by Worker's on pool `side` (or on main): `make()`'s `Leaf { }` is
+/// one template whose owners are both Mid templates.
+fn two_enclosing(leaf: &str, mid_extra: &str, worker_placed: bool) -> String {
+    let placement = if worker_placed { "    placement { worker: cooperative(pool = side); }\n" } else { "" };
+    format!(
+        "{leaf}\nlocus Mid {{\n    fn make() {{ Leaf {{ }}; }}\n{mid_extra}}}\nlocus Worker {{ run() {{ let m = Mid {{ }}; m.make(); }} }}\nmain locus App {{\n    params {{ worker: Worker = Worker {{ }}; }}\n{placement}    run() {{ let m = Mid {{ }}; m.make(); }}\n}}\nfn main() {{ App {{ }}; }}\n"
+    )
+}
+
+/// Line 3: a body literal whose enclosing locus has a template on main
+/// and one on pool `side` keeps both as owners. Each occurrence is built
+/// on the domain its own Mid runs the method on, so its birth and run
+/// claim the set; the template that kept the first Mid alone claimed
+/// neither. It is a child of both, and its bound is the table's.
+#[test]
+fn a_body_literal_under_enclosing_templates_on_two_domains_claims_both() {
+    let s = snapshot(&two_enclosing("locus Leaf { run() { } }", "", true));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let leaf: Vec<_> = p.instances.iter().filter(|i| i.site.decl.lowered == "Leaf").collect();
+    assert_eq!(leaf.len(), 1, "one template");
+    assert!(matches!(leaf[0].bound, Bound::Unbounded(_)), "a locus body runs any number of times");
+    for kind in [K::Birth, K::Run] {
+        let o = one(p, "Leaf", kind);
+        assert_eq!(claimed(p, o), labels(&["main", "pool:side"]), "{}", kind.name());
+        assert_eq!(o.runs_on.as_ref().map(|r| r.rule), Some(Rule::SHIPPED), "{}", kind.name());
+    }
+    // A body literal's run is not posted (C12): on side as on main it runs
+    // inline at its statement, before its drain, and nothing cancels it.
+    assert!(rows(p, "Leaf", K::Cancellation).is_empty());
+    let leaf_run = id_of(p, one(p, "Leaf", K::Run));
+    assert!(one(p, "Leaf", K::Drain).edges.entry.iter().any(|pr| pr.event.obligation == leaf_run && pr.event.point == Point::Ended));
+    // A child of each Mid: reclaimed before its arena.
+    let leaf_reclaim = id_of(p, one(p, "Leaf", K::Reclaim));
+    let mid_reclaims = rows(p, "Mid", K::Reclaim);
+    assert_eq!(mid_reclaims.len(), 2, "two Mid literals, two templates");
+    for r in mid_reclaims {
+        assert!(r.edges.entry.iter().any(|pr| pr.event.obligation == leaf_reclaim));
+    }
+}
+
+/// The failure route of such a literal reaches each Mid's handler on that
+/// Mid's domain, in place: the delivery claims the set, shipped. The
+/// template that kept the first Mid alone (Worker's, the first written)
+/// claimed that Mid's domain, `pool:side`, known open (C36), false of
+/// the occurrence raising and handled on main.
+#[test]
+fn a_body_literal_under_enclosing_templates_on_two_domains_fails_to_each() {
+    let s = snapshot(&two_enclosing(
+        "locus Leaf {\n    params { name: String = \"\"; }\n    closure fuse { captures: name; epoch inline; }\n    run() { violate fuse; }\n}",
+        "    on_failure(c: Leaf, err: ClosureViolation) { }\n",
+        true,
+    ));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let deliveries = rows(p, "Leaf", K::FailureDelivery);
+    assert_eq!(deliveries.len(), 1, "a body literal's failure is never held");
+    assert_eq!(claimed(p, deliveries[0]), labels(&["main", "pool:side"]));
+    assert_eq!(deliveries[0].runs_on.as_ref().map(|r| (r.rule.line, r.rule.status)), Some((Some("L0-1"), Status::Shipped)));
+}
+
+/// An accepted literal the same: a Host on main and one on `side` each
+/// accept the Kid their method builds, so the Kid template's accept,
+/// birth and run claim the set.
+#[test]
+fn an_accepted_literal_under_acceptors_on_two_domains_claims_both() {
+    let s = snapshot(
+        "locus Kid { run() { } }\nlocus Host {\n    accept(c: Kid) { }\n    release (c: Kid) { }\n    fn make() { Kid { }; }\n}\nlocus Worker { run() { let h = Host { }; h.make(); } }\nmain locus App {\n    params { worker: Worker = Worker { }; }\n    placement { worker: cooperative(pool = side); }\n    run() { let h = Host { }; h.make(); }\n}\nfn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    for kind in [K::Accept, K::Birth, K::Run] {
+        assert_eq!(claimed(p, one(p, "Kid", kind)), labels(&["main", "pool:side"]), "{}", kind.name());
+    }
+}
+
+/// The control: both Mids on main. Every contribution agrees, and the
+/// claim is the one domain.
+#[test]
+fn a_body_literal_under_enclosing_templates_on_one_domain_claims_it() {
+    let s = snapshot(&two_enclosing("locus Leaf { run() { } }", "", false));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    for kind in [K::Birth, K::Run] {
+        let o = one(p, "Leaf", kind);
+        assert_eq!(o.runs_on.as_ref().and_then(|r| r.one()), Some(hale_types::placement::PlacementTable::MAIN), "{}", kind.name());
+    }
+}
+
+/// A known limit: a template exists only where a handler runs when every
+/// contribution is built in one. A field whose parents are built one in
+/// an `on_failure` body and one outside it is stated as always built.
+#[test]
+fn a_template_is_built_in_a_handler_only_where_every_contribution_is() {
+    let src = "locus Boom {\n    params { name: String = \"\"; }\n    closure fuse { captures: name; epoch inline; }\n    run() { violate fuse; }\n}\nlocus Leaf { run() { } }\nlocus Parent { params { leaf: Leaf = Leaf { }; } }\nlocus Worker { run() { Parent { }; } }\nmain locus App {\n    params { boom: Boom = Boom { }; worker: Worker = Worker { }; }\n    on_failure(c: Boom, err: ClosureViolation) { Parent { }; }\n}\nfn main() { App { }; }\n";
+    let in_handler = |src: &str| -> (Vec<bool>, Vec<bool>) {
+        let s = snapshot(src);
+        let p = plan(&s);
+        assert!(laws(p).is_empty(), "{:?}", laws(p));
+        let of = |decl: &str| p.instances.iter().filter(|i| i.site.decl.lowered == decl).map(|i| i.in_handler).collect::<Vec<_>>();
+        (of("Parent"), of("Leaf"))
+    };
+    let (parents, leaf) = in_handler(src);
+    assert_eq!(parents, [false, true], "Worker's Parent, then the handler's");
+    assert_eq!(leaf, [false], "one Leaf template, built outside a handler under one of its parents");
+    let (parents, leaf) = in_handler(&src.replace("locus Worker { run() { Parent { }; } }", "locus Worker { run() { } }"));
+    assert_eq!((parents, leaf), (vec![true], vec![true]), "the control: every parent built in the handler");
+}
+
+/// A known limit: the pool join waits for a run's end only where every
+/// occurrence of its template is on a pool. A literal built on main and
+/// on `side` has its run left out of the join; built on `side` alone, it
+/// is joined. Neither owes a cancellation: a body literal under a single
+/// owner on a pool was owed one, as if its run were posted behind that
+/// owner's teardown, where it runs inline at its statement (C12).
+#[test]
+fn the_pool_join_holds_a_run_only_where_every_occurrence_is_on_a_pool() {
+    let joined = |src: &str| -> (bool, bool) {
+        let s = snapshot(src);
+        let p = plan(&s);
+        assert!(laws(p).is_empty(), "{:?}", laws(p));
+        let run = id_of(p, one(p, "Leaf", K::Run));
+        let waits: BTreeSet<ObligationId> = p
+            .obligations
+            .iter()
+            .filter(|o| o.kind == K::PoolJoin)
+            .flat_map(|o| o.edges.completion.iter().map(|pr| pr.event.obligation))
+            .collect();
+        (waits.contains(&run), rows(p, "Leaf", K::Cancellation).is_empty())
+    };
+    let both = two_enclosing("locus Leaf { run() { } }", "", true);
+    assert_eq!(joined(&both), (false, true), "main and side: the run not joined");
+    let side_only = both.replace("    run() { let m = Mid { }; m.make(); }\n}", "}");
+    assert_eq!(joined(&side_only), (true, true), "side alone: the run joined");
+}
+
 /// Line 13: a locus that declares no run() owes none when it resumes;
 /// the row says so, known open (C48), and owes no event.
 #[test]

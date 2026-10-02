@@ -306,10 +306,10 @@ impl FailureSource {
 /// A resolved domain claim, by this rule: every event of one occurrence
 /// of the obligation runs on one of these domains. One domain where
 /// every occurrence of the template runs on it; several where a field
-/// template is reached under parents on different domains and each
-/// occurrence runs on its own parent's (the producer keeps every
-/// parent's contribution; no claim is taken from one parent alone).
-/// Never empty.
+/// template, or a body or accepted literal, is reached under parents on
+/// different domains and each occurrence runs on its own parent's (the
+/// producer keeps every parent's contribution; no claim is taken from
+/// one parent alone). Never empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunsOn {
     pub domains: std::collections::BTreeSet<crate::placement::DomainId>,
