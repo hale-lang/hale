@@ -2195,9 +2195,8 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 /// right. The rows are the summary's walk, which sees a statement the
 /// lint's own walk skipped (a publish, a bare `{ … }` block, `violate`,
 /// a recovery, `shm_write`): a locus instantiated there in a loop is a
-/// finding now. It does not walk an index expression or a callee that
-/// is an expression of its own, which the lint's walk did, so nothing
-/// written there is.
+/// finding now. It does not walk a callee that is an expression of its
+/// own, which the lint's walk did, so nothing written there is.
 fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopScope, diags: &mut Vec<Diag>) {
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =

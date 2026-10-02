@@ -566,7 +566,7 @@ crates/hale-codegen/tests/fixtures/examples/49-fn-handle-rooting/main.hl e4c583f
 crates/hale-codegen/tests/fixtures/examples/50-mode-defaults/main.hl c112b73b0da9cba0
 crates/hale-codegen/tests/fixtures/examples/51-geom-segment/main.hl 5affcb2150daf4c4
 crates/hale-codegen/tests/fixtures/examples/52-window-decay/main.hl 5fbe113b8c67ccaf
-crates/hale-codegen/tests/fixtures/examples/53-window-ring/main.hl 65208df46bedfadb
+crates/hale-codegen/tests/fixtures/examples/53-window-ring/main.hl 3543995e79faad59
 crates/hale-codegen/tests/fixtures/examples/54-geom-leading-edge/main.hl b01b711570431451
 crates/hale-codegen/tests/fixtures/examples/55-geom-triangulate/main.hl f77c90b7db90a4b1
 crates/hale-codegen/tests/fixtures/examples/56-io-frame-line/main.hl 17102e7d6134134f
@@ -1520,7 +1520,7 @@ crates/hale-types/tests/hot_path_alloc.rs#20 7e39a961fbd87bc6
 crates/hale-types/tests/hot_path_alloc.rs#22 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#23 57668da480423fea
 crates/hale-types/tests/hot_path_alloc.rs#24 d58a6f68d4edfc90
-crates/hale-types/tests/hot_path_alloc.rs#25 b134d0e389ab3b4f
+crates/hale-types/tests/hot_path_alloc.rs#25 d58a6f68d4edfc90
 crates/hale-types/tests/hot_path_alloc.rs#4 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#6 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#7 8b5c9b6ca27eb054
