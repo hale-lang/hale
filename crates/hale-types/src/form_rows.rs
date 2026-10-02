@@ -175,21 +175,16 @@ impl FormRows {
         }
     }
 
-    /// Whether `l`'s form carries a `sync` discipline, for the readers
-    /// that ask it as one question: the model's `sync_form` (the
-    /// `depends` law), the effects certificate engine (a call into the
-    /// form, or into a locus holding it, can take its lock) and the
+    /// Whether `l`'s form is safe for cross-domain access, for the
+    /// readers that ask it as one question: the model's `sync_form`
+    /// (the `depends` law), the effects certificate engine (a call into
+    /// the form, or into a locus holding it, can take its lock) and the
     /// checker's instance-aliasing rule. Each asks
-    /// [`FormRow::explicitly_configured`] or
-    /// [`FormRow::safe_for_cross_domain_access`] — an explicit
-    /// `sync = none` counts, as the written argument always did. A
-    /// declaration with no row reads its written argument.
-    pub fn carries_sync(&self, l: &LocusDecl) -> bool {
-        let Some(form) = &l.form else { return false };
-        match self.of(l) {
-            Some(row) => row.explicitly_configured() || row.safe_for_cross_domain_access(),
-            None => sync_config(form) != SyncConfig::Omitted,
-        }
+    /// [`FormRow::safe_for_cross_domain_access`] alone: an explicit
+    /// `sync = none` takes no lock and is not one. A declaration with
+    /// no row reads its written argument.
+    pub fn synchronizes(&self, l: &LocusDecl) -> bool {
+        l.form.is_some() && self.effective(l).synchronizes()
     }
 
     fn push(&mut self, row: FormRow) {

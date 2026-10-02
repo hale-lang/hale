@@ -257,23 +257,29 @@ fn decl<'a>(program: &'a Program, locus: &str) -> &'a hale_syntax::ast::LocusDec
         .expect("the declaration")
 }
 
-/// The readers that ask whether a form carries a `sync` discipline as
-/// one question (the model's `sync_form`, the effects certificate
-/// engine, the instance-aliasing rule) count a written argument, `none`
-/// included, and inference's pick; a map inference left unsynchronized
-/// does not count.
+/// The readers that ask whether a form synchronizes as one question
+/// (the model's `sync_form`, the effects certificate engine, the
+/// instance-aliasing rule) ask safe-for-cross-domain-access alone: a
+/// written discipline that synchronizes, and inference's pick, count.
+/// An explicit `sync = none`, an argument naming no discipline and a
+/// map inference left unsynchronized take no lock and do not.
 #[test]
-fn carries_sync_is_configured_or_safe() {
-    for arg in ["", ", sync = none", ", sync = serialized", ", sync = lockfree, cap = 64", ", sync = fast"] {
+fn synchronizes_is_safe_for_cross_domain_access() {
+    for arg in ["", ", sync = serialized", ", sync = lockfree, cap = 64"] {
         let program = hale_syntax::parse_source(&two_writers(arg)).expect("parse");
         let r = rows_of(&program);
-        assert!(r.carries_sync(decl(&program, "Registry")), "{arg}");
+        assert!(r.synchronizes(decl(&program, "Registry")), "{arg}");
+    }
+    for arg in [", sync = none", ", sync = fast"] {
+        let program = hale_syntax::parse_source(&two_writers(arg)).expect("parse");
+        let r = rows_of(&program);
+        assert!(!r.synchronizes(decl(&program, "Registry")), "{arg}: takes no lock");
     }
     let one_pool = hale_syntax::parse_source(&two_writers("").replace("pool = compute", "pool = io")).expect("parse");
     let r = rows_of(&one_pool);
     assert_eq!(r.named("Registry").unwrap().effective, Discipline::None, "one pool");
-    assert!(!r.carries_sync(decl(&one_pool, "Registry")));
-    assert!(!r.carries_sync(decl(&one_pool, "App")), "not a form");
+    assert!(!r.synchronizes(decl(&one_pool, "Registry")));
+    assert!(!r.synchronizes(decl(&one_pool, "App")), "not a form");
 }
 
 /// A declaration the rows do not hold (the stdlib's, merged into the
@@ -293,9 +299,9 @@ locus Plain { capacity { pool entries of Entry indexed_by k; } }
     .expect("parse");
     let none = FormRows::default();
     assert_eq!(none.effective(decl(&program, "Store")), Discipline::Serialized);
-    assert!(none.carries_sync(decl(&program, "Store")));
+    assert!(none.synchronizes(decl(&program, "Store")));
     assert_eq!(none.effective(decl(&program, "Plain")), Discipline::None);
-    assert!(!none.carries_sync(decl(&program, "Plain")));
+    assert!(!none.synchronizes(decl(&program, "Plain")));
 
     let pinned = hale_syntax::parse_source(&two_writers("")).expect("parse");
     let merged = rows_of(&pinned).extended(FormRows::configured(&pinned.items));

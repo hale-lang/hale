@@ -17885,7 +17885,7 @@ fn collect_self_assign_in_stmt(s: &Stmt, f: &mut impl FnMut(Span)) {
 ///   - a method assigning `self.<field> = ...` mutates a plain field
 ///     with nothing ordering it
 ///   - a field whose type is a form WITHOUT a `sync` discipline (its
-///     form row's [`crate::form_rows::FormRows::carries_sync`]) is
+///     form row's [`crate::form_rows::FormRows::synchronizes`]) is
 ///     mutable through its synthesized methods with nothing ordering it
 ///
 /// Either makes the alias a race. Neither makes it safe by
@@ -17909,7 +17909,7 @@ fn locus_has_unsynchronized_state(
                 decl = Some(l);
             }
             if l.form.is_some() {
-                forms.insert(l.name.name.clone(), rows.carries_sync(l));
+                forms.insert(l.name.name.clone(), rows.synchronizes(l));
             }
         });
     }

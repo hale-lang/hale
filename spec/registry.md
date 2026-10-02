@@ -176,7 +176,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - an explicit `sync = none` is configuration: inference does not run over it, and the row does not call it safe for cross-domain access
 - one predicate per question: inference's candidates are the forms not explicitly configured, and the F.31 cross-pool exemption is safe for cross-domain access; sync inference runs once per snapshot, and the cross-pool diagnostic's hint reads its reasoning from the rows
 - nothing writes the discipline into the program: the check, the effects engine, the model and lowering read the row, and a declaration with no row (the stdlib's, merged for lowering) reads its written argument
-- the readers that ask whether a form carries a sync discipline as one question (the model's `sync_form`, the effects engine, instance aliasing) ask explicitly configured or safe for cross-domain access (`FormRows::carries_sync`), so an explicit `sync = none` still counts for them
+- the readers that ask whether a form synchronizes as one question (the model's `sync_form`, the effects engine, instance aliasing) ask safe for cross-domain access alone (`FormRows::synchronizes`): an explicit `sync = none` takes no lock and is not one
 
 **Missing data.** a missing required row is a compiler error
 

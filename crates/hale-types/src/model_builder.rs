@@ -484,7 +484,7 @@ pub fn derive_application_model_over(
         // (written or inferred). There is no annotation for it, and
         // there should not be — it is a property of how the form is
         // shared, not a claim about it.
-        let sync_form = inputs.forms.carries_sync(l);
+        let sync_form = inputs.forms.synchronizes(l);
         let mut params = Vec::new();
         for m in &l.members {
             let LocusMember::Params(pb) = m else { continue };

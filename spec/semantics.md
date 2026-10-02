@@ -3543,14 +3543,17 @@ Two questions are asked of the row:
 The build lays each map out by the same row: the discipline a
 program runs with is its form's effective one, and no `sync =`
 argument is ever written into the program on the author's
-behalf. Three readers ask whether a form *carries* a discipline
-as one question — the `depends` law (a held form is an input
-channel outside the bus graph), the effects contracts (a call
-into the form or a locus holding it may take its lock, which
-`@no_block` and `@deterministic` refuse) and the instance-aliasing
-rule (a field behind a discipline is not unsynchronized state) —
-and they count a form that is explicitly configured or safe, so a
-`sync = none` form counts for them.
+behalf. Three readers ask whether a form *synchronizes* as one
+question — the `depends` law (a held form is an input channel
+outside the bus graph), the effects contracts (a call into the
+form or a locus holding it may take its lock, which `@no_block`
+and `@deterministic` refuse) and the instance-aliasing rule (a
+field behind a discipline is not unsynchronized state) — and they
+ask the second question alone. An explicit `sync = none` is
+configured, unsynchronized, and holds no lock: a `@no_block`
+method may read the map, a `depends:` locus may hold it, and one
+instance holding it, reached from two pools, gets the
+unsynchronized-state warning.
 
 ### Nested instantiation
 

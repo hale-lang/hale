@@ -622,9 +622,9 @@ pub struct AllocSummary {
     /// the form's own declaration, not of anyone's intent or of how a
     /// consumer wires up placement.
     pub sync_holding_loci: BTreeSet<String>,
-    /// #341: form loci carrying a `sync` discipline — the forms
+    /// #341: form loci whose `sync` discipline synchronizes — the forms
     /// themselves, not the loci that hold them. A direct call into one
-    /// takes its lock. The summary reads a written argument; the
+    /// takes its lock. The summary reads a written discipline (`none` is not one); the
     /// effects engine adds the form rows' ([`AllocSummary::add_sync_forms`]).
     pub sync_forms: BTreeSet<String>,
     /// #345: classes a fn/locus DECLARES it carries, via
@@ -1169,7 +1169,7 @@ fn collect_sync_holding_loci(
 
 impl AllocSummary {
     /// The forms of `programs` their form rows say carry a `sync`
-    /// discipline (F.40 phase 3, C1: [`crate::form_rows::FormRows::carries_sync`],
+    /// discipline (F.40 phase 3, C1: [`crate::form_rows::FormRows::synchronizes`],
     /// inference's pick included), added to the ones the summary read off
     /// a written argument, and the loci holding them. The effects
     /// certificate engine reads both: the written argument alone misses a
@@ -1178,7 +1178,7 @@ impl AllocSummary {
         for program in programs {
             for item in &program.items {
                 if let TopDecl::Locus(l) = item {
-                    if forms.carries_sync(l) {
+                    if forms.synchronizes(l) {
                         self.sync_forms.insert(l.name.name.clone());
                     }
                 }
@@ -1197,7 +1197,7 @@ impl AllocSummary {
     ) -> std::borrow::Cow<'_, AllocSummary> {
         let adds = programs.iter().flat_map(|p| p.items.iter()).any(|item| {
             matches!(item, TopDecl::Locus(l)
-                if forms.carries_sync(l) && !self.sync_forms.contains(&l.name.name))
+                if forms.synchronizes(l) && !self.sync_forms.contains(&l.name.name))
         });
         if !adds {
             return std::borrow::Cow::Borrowed(self);
@@ -1480,7 +1480,10 @@ pub fn summarize_identified(
                         bounded_loci.insert(locus.clone());
                     }
                     if l.form.as_ref().is_some_and(|f| {
-                        f.args.iter().any(|a| a.name.name == "sync")
+                        matches!(
+                            crate::form_rows::sync_config(f),
+                            crate::form_rows::SyncConfig::Explicit(d) if d.synchronizes()
+                        )
                     }) {
                         sync_forms.insert(locus.clone());
                     }

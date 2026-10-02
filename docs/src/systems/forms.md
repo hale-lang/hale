@@ -72,7 +72,11 @@ discipline for it (`serialized`, or `striped` for several writers
 on a hot path), lays the map out with it, and accepts the
 cross-pool calls that discipline makes safe. Write `sync = none`
 to keep a map single-pool regardless: inference leaves it alone,
-and a cross-pool call into it is rejected.
+and a cross-pool call into it is rejected. A `sync = none` map
+takes no lock, so it is not one to the other checks either: a
+`@no_block` method may read it, an `@effects(depends: …)` locus
+may hold it, and one instance holding it, shared across two pools,
+gets the unsynchronized-state warning.
 
 ## The performance contract
 
