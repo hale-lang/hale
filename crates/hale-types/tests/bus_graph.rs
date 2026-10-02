@@ -691,6 +691,101 @@ fn main() { App { }; }
     );
 }
 
+/// Rule 12 compares payload types by the declaration they name: an
+/// alias of the payload type is that declaration (F.40 phase 3, C3).
+#[test]
+fn an_alias_of_the_payload_type_is_the_same_payload() {
+    let src = r#"
+type Tick { n: Int; }
+type Beat = Tick;
+
+locus Pub {
+    bus { publish "wire.sig" of type Tick; }
+    birth() { "wire.sig" <- Tick { n: 1 }; }
+}
+
+locus Sub {
+    bus { subscribe "wire.sig" as on_sig of type Beat; }
+    fn on_sig(t: Tick) { }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; s: Sub = Sub { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(CONFLICT)),
+        "an alias names the same declaration; got: {:?}",
+        msgs
+    );
+}
+
+fn check_with_imports(
+    seeds: &[&str],
+    renames: &[(&[&str], &str)],
+) -> Vec<String> {
+    let programs: Vec<_> = seeds.iter().map(|s| parse_source(s).expect("parse")).collect();
+    let mut map = std::collections::BTreeMap::new();
+    for (i, p) in programs.iter().enumerate() {
+        map.insert(format!("seed{i}.hl"), p);
+    }
+    let mut bundle = hale_types::Bundle::new(map);
+    bundle.import_renames = renames
+        .iter()
+        .map(|(segs, m)| (segs.iter().map(|s| s.to_string()).collect(), m.to_string()))
+        .collect();
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    hale_types::check::check_bundle(&bundle, &top, false)
+        .into_iter()
+        .map(|d| d.message)
+        .collect()
+}
+
+const PUB_SUB_TWO: &str = r#"
+locus Pub {
+    bus { publish "wire.sig" of type Tick; }
+}
+locus Sub {
+    bus { subscribe "wire.sig" as on_sig of type PAYLOAD; }
+    fn on_sig(t: Tick) { }
+}
+"#;
+
+/// Two import aliases of one library name one declaration.
+#[test]
+fn an_import_alias_of_the_same_declaration_is_the_same_payload() {
+    let uses = PUB_SUB_TWO.replace("PAYLOAD", "b::Tick").replace("of type Tick", "of type a::Tick");
+    let msgs = check_with_imports(
+        &["type lib_Tick { n: Int; }", &uses],
+        &[(&["a", "Tick"], "lib_Tick"), (&["b", "Tick"], "lib_Tick")],
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains(CONFLICT)),
+        "two aliases of one library are one declaration; got: {:?}",
+        msgs
+    );
+}
+
+/// Two declarations that merely share a name stay apart, with the
+/// existing wording.
+#[test]
+fn two_declarations_sharing_a_name_are_still_a_conflict() {
+    let uses = PUB_SUB_TWO.replace("PAYLOAD", "lib::Tick");
+    let msgs = check_with_imports(
+        &["type Tick { n: Int; }\ntype lib_Tick { n: Int; }", &uses],
+        &[(&["lib", "Tick"], "lib_Tick")],
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains(CONFLICT)
+            && m.contains("`lib::Tick` here vs `Tick`")),
+        "distinct declarations sharing a name must conflict; got: {:?}",
+        msgs
+    );
+}
+
 #[test]
 fn library_without_main_is_not_checked() {
     // No `main` locus: the publishers/subscribers may live in

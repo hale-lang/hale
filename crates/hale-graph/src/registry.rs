@@ -1471,7 +1471,6 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(M_IDS, "FunctionId", "model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings)", "same"),
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
-            legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),
         ],
         consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)")],
         invariants: &[
@@ -1487,7 +1486,10 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs", "crates/hale-types/tests/snapshot.rs (each_use_resolves_to_the_declaration_in_scope)", "crates/hale-types/tests/demand_gate.rs (each_snapshot_resolves_its_uses_once)", "crates/hale-syntax/tests/sites.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[site(SITES, "SiteKind"), site(TY_SNAPSHOT, "resolve_uses"), site(TY_SNAPSHOT, "declaration_of"), site(TY_SNAPSHOT, "number")],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 2), (STDLIB_BODIES, 1), (ALLOC, 1), (SYNC, 1)] }],
+        seams: &[
+            Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 2), (STDLIB_BODIES, 1), (ALLOC, 1), (SYNC, 1)] },
+            Seam { symbol: "type_expr_identity(", allowed: &[(CHECK, 7)] },
+        ],
     },
     Family {
         name: "demand",
@@ -1753,8 +1755,9 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: "crates/hale-syntax/src/json_gen.rs", fragment: "format!(\"{:?}\", f)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PARSER, fragment: "format!(\"{:?}\", err)", count: 21, verdict: ScanVerdict::Renders },
     DebugScan { path: CHECK, fragment: "format!(\"{:?}\", kind)", count: 1, verdict: ScanVerdict::Decides { family: "blocking" } },
-    DebugScan { path: CHECK, fragment: "format!(\"{:?}\", p)", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
-    DebugScan { path: CHECK, fragment: "format!(\"{:?}({})\", class, type_expr_key(inner))", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
+    DebugScan { path: CHECK, fragment: "format!(\"{:?}\", p)", count: 2, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
+    DebugScan { path: CHECK, fragment: "format!(\"{:?}({})\", class, type_expr_text(inner))", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: CHECK, fragment: "format!(\"{:?}({})\", class, type_expr_identity(inner, known))", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
     DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },

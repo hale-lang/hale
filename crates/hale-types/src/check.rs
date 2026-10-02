@@ -943,7 +943,7 @@ pub fn check_bundle_by_declaration(
     // type — otherwise a subscriber decodes the publisher's bytes as
     // the wrong type. Declared `topic`s are already unified by their
     // declaration; this closes the literal-subject gap.
-    check_bus_subject_types(bundle, &mut diags);
+    check_bus_subject_types(bundle, known, &mut diags);
     // GH #876: the declared payload must be a type the bus can
     // CARRY. The rule above relates two sites to each other; this one
     // relates one site to the runtime, which takes a user type, a
@@ -6911,14 +6911,14 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
 
 /// A canonical, comparable rendering of a `TypeExpr` — equal strings
 /// mean the same type at this layer. Also used in the diagnostic.
-fn type_expr_key(t: &TypeExpr) -> String {
+fn type_expr_text(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),
         TypeExpr::Perspective { name, .. } => {
             format!("perspective({})", name.name)
         }
         TypeExpr::Bounded { elem, cap, .. } => {
-            format!("bounded[{}; {}]", type_expr_key(elem), cap)
+            format!("bounded[{}; {}]", type_expr_text(elem), cap)
         }
         TypeExpr::Named { path, generic_args, .. } => {
             let base = path
@@ -6932,41 +6932,90 @@ fn type_expr_key(t: &TypeExpr) -> String {
             } else {
                 let args = generic_args
                     .iter()
-                    .map(type_expr_key)
+                    .map(type_expr_text)
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{}<{}>", base, args)
             }
         }
         TypeExpr::Projection { class, inner, .. } => {
-            format!("{:?}({})", class, type_expr_key(inner))
+            format!("{:?}({})", class, type_expr_text(inner))
         }
-        TypeExpr::Array { elem, .. } => format!("[{}]", type_expr_key(elem)),
+        TypeExpr::Array { elem, .. } => format!("[{}]", type_expr_text(elem)),
         TypeExpr::Tuple(tys, _) => format!(
             "({})",
-            tys.iter().map(type_expr_key).collect::<Vec<_>>().join(", ")
+            tys.iter().map(type_expr_text).collect::<Vec<_>>().join(", ")
         ),
         TypeExpr::Function { params, ret, .. } => format!(
             "fn({}){}",
-            params.iter().map(type_expr_key).collect::<Vec<_>>().join(", "),
+            params.iter().map(type_expr_text).collect::<Vec<_>>().join(", "),
             ret.as_ref()
-                .map(|r| format!(" -> {}", type_expr_key(r)))
+                .map(|r| format!(" -> {}", type_expr_text(r)))
                 .unwrap_or_default()
         ),
     }
 }
 
-fn check_bus_subject_types(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
-    // subject string -> the distinct payload types seen, each with a
-    // representative site span. Insertion order preserved so the
-    // first-declared type is the "expected" one in the message.
-    let mut subjects: BTreeMap<String, Vec<(String, Span)>> = BTreeMap::new();
+/// What rule 12 compares: a type NAME is the declaration it resolves
+/// to in the checker's name table, so an alias (`type Beat = Tick;`)
+/// and two import aliases of one library (`a::Tick`, `b::Tick`) are
+/// the one declaration they name, while two declarations that merely
+/// share a spelling stay apart (the merge mangles them). A name the
+/// table cannot resolve keeps its spelling, the permissive answer it
+/// always had.
+fn type_expr_identity(t: &TypeExpr, known: &KnownNames) -> String {
+    match t {
+        TypeExpr::Named { generic_args, .. } => match resolve_type_expr(t, known) {
+            Ty::Named(n) => format!("decl({})", n),
+            Ty::Prim(p) => format!("{:?}", p),
+            _ if generic_args.is_empty() => type_expr_text(t),
+            _ => {
+                let text = type_expr_text(t);
+                let base = text.split('<').next().unwrap_or_default();
+                let args = generic_args
+                    .iter()
+                    .map(|a| type_expr_identity(a, known))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}<{}>", base, args)
+            }
+        },
+        TypeExpr::Bounded { elem, cap, .. } => {
+            format!("bounded[{}; {}]", type_expr_identity(elem, known), cap)
+        }
+        TypeExpr::Projection { class, inner, .. } => {
+            format!("{:?}({})", class, type_expr_identity(inner, known))
+        }
+        TypeExpr::Array { elem, .. } => format!("[{}]", type_expr_identity(elem, known)),
+        TypeExpr::Tuple(tys, _) => format!(
+            "({})",
+            tys.iter()
+                .map(|t| type_expr_identity(t, known))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => type_expr_text(t),
+    }
+}
+
+fn check_bus_subject_types(
+    bundle: &Bundle<'_>,
+    known: &KnownNames,
+    diags: &mut Vec<Diag>,
+) {
+    // subject string -> the distinct payload types seen (identity,
+    // spelling), each with a representative site span. Insertion order
+    // preserved so the first-declared type is the "expected" one in
+    // the message.
+    type Seen = BTreeMap<String, Vec<(String, String, Span)>>;
+    let mut subjects: Seen = BTreeMap::new();
 
     fn record(
         subject: &BusSubject,
         ty: &Option<TypeExpr>,
         span: Span,
-        subjects: &mut BTreeMap<String, Vec<(String, Span)>>,
+        known: &KnownNames,
+        subjects: &mut Seen,
     ) {
         // Only literal subjects carry an independent `of type`; topic
         // refs are unified by their declaration, qualified refs live
@@ -6975,17 +7024,14 @@ fn check_bus_subject_types(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             return;
         };
         let Some(ty) = ty else { return };
-        let key = type_expr_key(ty);
+        let key = type_expr_identity(ty, known);
         let entry = subjects.entry(subj.clone()).or_default();
-        if !entry.iter().any(|(k, _)| k == &key) {
-            entry.push((key, span));
+        if !entry.iter().any(|(k, _, _)| k == &key) {
+            entry.push((key, type_expr_text(ty), span));
         }
     }
 
-    fn walk(
-        items: &[TopDecl],
-        subjects: &mut BTreeMap<String, Vec<(String, Span)>>,
-    ) {
+    fn walk(items: &[TopDecl], known: &KnownNames, subjects: &mut Seen) {
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
@@ -6994,32 +7040,32 @@ fn check_bus_subject_types(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                             for bm in &bb.members {
                                 match bm {
                                     BusMember::Publish { subject, ty, span, .. } => {
-                                        record(subject, ty, *span, subjects)
+                                        record(subject, ty, *span, known, subjects)
                                     }
                                     BusMember::Subscribe { subject, ty, span, .. } => {
-                                        record(subject, ty, *span, subjects)
+                                        record(subject, ty, *span, known, subjects)
                                     }
                                 }
                             }
                         }
                     }
                 }
-                TopDecl::Module(md) => walk(&md.items, subjects),
+                TopDecl::Module(md) => walk(&md.items, known, subjects),
                 _ => {}
             }
         }
     }
     for program in bundle.programs.values() {
-        walk(&program.items, &mut subjects);
+        walk(&program.items, known, &mut subjects);
     }
 
     for (subj, types) in &subjects {
         if types.len() < 2 {
             continue;
         }
-        let (expected, _) = &types[0];
+        let (_, expected, _) = &types[0];
         // Report each divergent type once, at its site.
-        for (got, span) in types.iter().skip(1) {
+        for (_, got, span) in types.iter().skip(1) {
             diags.push(Diag::ty(
                 *span,
                 format!(
