@@ -333,6 +333,8 @@ The inventory's line 16 ("C13 emits R20 and R34 on wasm; the others do not") and
 
 The cost is the `pthread_join`/`pthread_cond_broadcast` imports R20 drags in (RT:10149–10179). `start_all` (CG:9643) already brings in `pthread_create` whenever pools exist.
 
+**The host order is wrong today, on every spine.** C13 emits R35, R20, R34 (INST:4859–4865); C19 the same (CG:7126–7128); C21–C23 emit R35 and R20 (CG:9990–9991, :10030–10031, :22589–22590) and reach R34 only afterwards, inside `emit_frame_teardown` (CG:6954–6956). R20 is `lotus_coop_pool_shutdown_all`, which sets each pool's shutdown flag and then `pthread_join`s every worker (RT:10173–10178). Neither wait loop reads a pool's shutdown flag; both return only when their condition clears or R34's flag is set. A pool worker parked in either wait therefore holds R20's join forever. This is the lifecycle inventory's decision 7, adopted as option (a) in PR #1300 ("every teardown spine aborts the `or wait`s it would otherwise wait on before it joins the workers they block"; KNOWN_OPEN, fixture `l07_pool_or_wait_teardown.hl`).
+
 ### 3.2 The rule
 
 An obligation is required on a target exactly when some behaviour the target admits needs it:
@@ -366,7 +368,18 @@ Both loops read the same flag (RT:19107, RT:19129) and pump `lotus_bus_queue_dra
 - on wasm32 no spine emits R20 or R35, so C13 loses R20; every spine emits R34 until the proof of points 1–5 lands, so C19 gains it;
 - on the host every spine emits all three.
 
-The interim correction line 16 permits (gating C13 like the others) is unnecessary if P3 3 of 3 lands in wave 2. If L-line work needs it earlier, it must gate R20 **and** R34 together and leave C21–C23 alone, so the spines do not diverge a third way. The rule is stated in the matrix, not in each spine, so L1's plan reads it: an obligation row exists for `(instance, action)` only if its cell is `Lower(Emit)` for the snapshot's effective target.
+The interim correction line 16 permits (gating C13 like the others) is unnecessary if P3 3 of 3 lands in wave 2. If L-line work needs it earlier, it gates R20 only and leaves R34 in every spine, so the spines do not diverge a third way. The rule is stated in the matrix, not in each spine, so L1's plan reads it: an obligation row exists for `(instance, action)` only if its cell is `Lower(Emit)` for the snapshot's effective target.
+
+**The matrix selects; the lifecycle plan orders.** The matrix says which obligations a target owes and nothing about their order. The order belongs to L1's plan (PR #1300, `hale-types::lifecycle`), whose obligations carry entry and completion edges, and follows inventory decision 7. The rule: **wait-abort completes before any blocking join whose worker may be parked in a wait it ends is entered.** As edges in the plan:
+
+- R34 completes before R20 is entered (the pool workers; decision 7, the fix);
+- R34 completes before C18's pinned joins are entered (today's order, kept);
+- R35 completes before R20 is entered (GH #468: ingress drains while pools and subscribers are intact, kept);
+- R35 completes before R34 is entered (today's relative order, kept for a reason the plan records: the quiesce's drain runs handlers, and a handler's `or wait` that the drain itself can satisfy must not be aborted into a raise).
+
+So the host spines run R35, R34, R20, then the pinned joins and the cascade. An omitted obligation takes its edges with it, and the plan stays acyclic either way. The plan asserts each edge as a dependency of the obligation it constrains; the IR test asserts that the emitted calls respect the plan's edges. Neither asserts that three calls are present in a spelled sequence.
+
+P3 3 of 3's lifecycle commit depends on the line-7 reorder. If the L line has landed it, the commit only selects; if not, the reorder lands first, as its own commit in P3 3 of 3, taking `l07_pool_or_wait_teardown.hl` out of KNOWN_OPEN.
 
 ### 3.3 Tests, one per spine, on both targets
 
@@ -378,7 +391,7 @@ The program shapes:
 
 Each is built in four variants that change one behaviour at a time, so each obligation's presence or omission is witnessed by the behaviour it depends on: a pool field only; an `or wait` publish on a bound topic only; an `or wait` publish on a local `on_full: fail` topic with no binding only; none of them. No variant removes the pool and the bound topic together. Per spine (P3 3 of 3, `crates/hale-codegen/tests/target_lifecycle_cells.rs`, joining the area that holds `wasm_target.rs`):
 
-- **Host, with pool and bound topic:** the emitted module calls `lotus_coop_pool_shutdown_all`, `lotus_bus_wait_abort_all` and `lotus_bus_ingress_quiesce`, in that order, before the first pinned join or the cascade. The IR-shape assertion follows `corpus_oracle.rs`'s module inspection.
+- **Host:** each variant's plan holds exactly the obligations its behaviours select, with the edges of §3.2, and the emitted calls respect those edges ahead of the first pinned join and the cascade. The IR-shape check follows `corpus_oracle.rs`'s module inspection and reads the order to check from the plan, not from a list in the test.
 - **wasm32, the pool and bound-topic variants** are refused, and the test pins each refusal at its placement entry or binding. **The local bounded-topic variant and the bare one** build: the module calls neither `lotus_coop_pool_shutdown_all` nor `lotus_bus_ingress_quiesce`, calls `lotus_bus_wait_abort_all` in every spine (until the proof of §3.2 lands), and its import list contains no `pthread_*`, `epoll_*` or `eventfd`. This extends `wasm_build_emits_valid_module`'s byte check (`wasm_target.rs:787`) from one program to the spines.
 - **wasm32, the C21/C22 spines too** (fall-through, and a `std::test::assert` failure), so all five agree; they share `emit_frame_teardown`.
 
@@ -387,6 +400,7 @@ The wait forms have their own acceptance tests, beside the spine tests:
 - **The local capacity wait, no binding.** A topic with `on_full: fail` capacity, an `or wait` publish and no `bindings` entry: admitted by `hale check`, `hale build` and the editor under wasm32 alike; built and run under node with the queue filled first, so the publish parks and main's own pump empties the queue; the publish completes and stdout is pinned. The same program on the host, with the consumer on a pool, is the case below.
 - **The binding-loss wait.** A CONNECT binding with `or wait`: refused at the binding under wasm32 (T2); on the host it emits R34 in every spine (the existing `or_wait_loss_window` tests, now per spine).
 - **Teardown with a live waiter (host).** A local-capacity waiter on a pool worker at teardown completes in bounded time and raises (the L line's `l07_pool_or_wait_teardown.hl`, KNOWN_OPEN in PR #1300).
+- **A pool worker in a real binding-loss wait (host), per spine: eager, deferred and return.** A pool-placed publisher on a CONNECT binding whose peer the test closes, with an `on_failure` that declines to reconnect, so the binding stays `lost`. Synchronized, not slept: teardown starts only after the runtime has counted the worker's park (the binding's `ctr_waits`, bumped on the first slice at RT:19104, read through the bus stats or a test hook). Then the owner tears down. The process must finish within a deadline (the corpus oracle's), with the parked publish taking the raise path. Today each spine hangs in R20's join; after the reorder each completes.
 - **Reentrancy (wasm32, only if the proof is pursued).** An exported fn parks in a local capacity wait; a handler its pump runs calls an `@ffi("js")` import that re-enters `main` or `_hale_start`. The reentry traps, or the embedding contract refuses it, as point 4 chose. Without this test the omission is not taken.
 - **L1/L2 linkage:** once L1's plan exists, the plan of each wasm32 program has no R20 or R35 obligation and keeps R34 (until the §3.2 proof), and the host plan has all three. Until then, the IR assertion is the oracle.
 
@@ -465,7 +479,7 @@ Closes nothing yet; the registry names `capability.rs` as the producer, with the
 ### P3 3 of 3: codegen reads the cells; lifecycle; the gate column (M · Sonnet pane for the site switch; S · Opus for the lifecycle commit and the gate column)
 
 1. Every skip/substitute/export site of §2.5 reads a cell, one commit per capability: `ProcessSignals`, `ReplayIngress`, `RemoteTransport`, `ExportSurface`/`EntryInversion`, `ForeignAbi`. The `is_wasm` field is deleted, and backend sites read `self.target`. The oracle: IR identical over the corpus and `wasm_target.rs` for both targets (the module dump before and after).
-2. The lifecycle commit (§3): the obligations from the cells in all five spines, with the spine tests of §3.3.
+2. The lifecycle commit (§3): the obligations from the cells in all five spines, ordered by the plan's edges (§3.2), with the spine and wait-form tests of §3.3. It lands after the line-7 reorder, or carries it as the commit before.
 3. The gate column (§2.8): `payload_flat` on the gate row, `DispatchFlavor::of` with three legs, codegen reading the flavor, and the shadow against the old predicate at every publish site.
 4. The **portable subset**: programs whose stdout agrees byte-for-byte between the native binary and `node <loader>.mjs`. These are `wasm_target.rs` :846 (`STRUCTSUM=330`), :792 (run it; sum of squares 1..10, 385), :747 (`wrapped-main-ran`), :87 and :208 with `console_log` replaced by `println`, `wasm_link_is_quiet.rs:66` (`len=5`, `b0=104`, `hello`), `wasm_target_gating.rs:39` (`n=42`), and `play/examples/{collections,decimal,closure,enums,fallible,jobqueue}.hl` through `--wrap-main`. Each is built for both targets and run on both, and the outputs are compared. The test skips, naming what is missing, only when node or wasm-ld is absent. CI must have both: today `tests.yml` installs `clang-18` and not `lld` explicitly, so P3 3 of 3 states the dependency in the workflow.
 5. The import backstop (§2.3, T7).
