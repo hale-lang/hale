@@ -1692,7 +1692,11 @@ paragraph names the inventory row where they differ, and the
 fixture under `crates/hale-codegen/tests/fixtures/lifecycle/` that
 pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 `KNOWN_OPEN` table and fails once the outcome changes, so the
-entry has to go with the fix. A line still waiting on a condition
+entry has to go with the fix. Each fixture also runs under the
+lifecycle trace (§ "The lifecycle trace"), held to its line's plan;
+a departure the trace shows and the outcome cannot (a missing step,
+a step on the wrong thread) is in the same file's
+`TRACE_KNOWN_OPEN` table. A line still waiting on a condition
 says so and records today's behaviour.
 
 - **Line 1, construction-time delivery.** Construction, readiness
@@ -1798,9 +1802,11 @@ says so and records today's behaviour.
 - **Line 14, order.** There is no runtime state machine: order is
   the order the compiler emits, and latches keep a step from
   running twice (§ "Lifecycle", "Order by construction"). Shipped
-  (`l14_reclaim_exactly_once.hl`). The obligation table becomes the
-  state the trace build checks each run against (F.40 phase 3, L2);
-  adopted, not yet built.
+  (`l14_reclaim_exactly_once.hl`), and verified: the trace build
+  (§ "The lifecycle trace") checks every fixture's run, and every
+  runnable example's, against laws that hold whatever the plan (an
+  instance is reclaimed once, and only after it was born; every step
+  entered ends), and each adopted line's fixture against its plan.
 - **Line 15, signals.** SIGINT and SIGTERM raise the process's
   draining flag, from a watcher thread; nothing on the signal path
   calls a lifecycle method. The `run()`s that read `self.draining`
@@ -1832,8 +1838,9 @@ says so and records today's behaviour.
   spine (inventory row C13). No program shows the difference
   today: a body that may have published drains at its own exit,
   and a main locus's ingress quiesce ends in a drain
-  (`l18_eager_pre_drain.hl` guards the outcome); the missing step
-  is the trace build's to show.
+  (`l18_eager_pre_drain.hl` guards the outcome). The trace build
+  shows the missing step: the eager spine's run has no `PreDrain`
+  before its first teardown step.
 - **Line 19, a run's admission and its terminal outcome.** A run
   posted to a pool is attempted by the caller and then admitted or
   rejected; "attempted" is what the caller knows, not a third
@@ -1853,10 +1860,14 @@ says so and records today's behaviour.
   rejected. Run admission is separate from the admission of a
   failure decision, which shutdown never refuses while its child
   waits (join progress, below). Whatever the outcome, the child is
-  torn down exactly once. Not yet shipped: the post's ABI is
-  `void`, a run refused at shutdown or freed unrun is silent
-  (inventory row R19), and an abandoned parked run has no named
-  outcome (row R20a, `l19_parked_started_coroutine.hl`). The
+  torn down exactly once. A started run abandoned by an async pool's
+  shutdown ends canceled after start, named where the worker frees
+  its parked coroutine, and the pool join's completion is the
+  separate witness of the worker's quiescence; the trace build
+  records both (inventory row R20a, `l19_parked_started_coroutine.hl`).
+  No release build observes a run's terminal, so the name lives
+  there. Not yet shipped: the post's ABI is `void`, and a run refused
+  at shutdown or freed unrun is silent (inventory row R19). The
   regressions: a full ring and an empty ring after the last check
   (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
   only until L5's handshake can drive them), self-post overflow
@@ -1889,11 +1900,78 @@ says so and records today's behaviour.
   rules. Today a late failure during a pinned join or during the
   pool join completes (`jp_late_failure_pinned_join.hl`,
   `jp_late_failure_pool_join.hl`), but only because its handler
-  runs in place on the child's thread, outside decision L0-1; once
+  runs in place on the child's thread, outside decision L0-1 (the
+  trace build shows the delivery completing on the child's pinned
+  thread or pool worker, not on `main`, inventory row C36); once
   delivery follows L0-1, the joins, which pump no queue (inventory
   rows C18, R20), are the wait cycle this rule rules out. A late
   failure whose destination queue is full has no regression yet
   (L5).
+
+#### The lifecycle trace
+
+A debug aid, not a contract. A build made with
+`HALE_LIFECYCLE_TRACE=1` (`BuildOptions::lifecycle_trace`; native
+host targets only) compiles the runtime with `LOTUS_LIFECYCLE_TRACE`
+and emits each lifecycle step between an entry call and its
+completion event, so the program writes one line per obligation
+event on stderr:
+
+```text
+lc <seq> <Kind> <Point> spine=<Spine> dom=<domain> type=<T> inst=<n> inc=<n>
+```
+
+`Kind` is an `ObligationKind`, `Point` is `Entered`, `Completed` or
+`Terminal(<terminal>)`, and `Spine` is the spine that emitted the
+step (`-` where the site cannot name it: a failure delivered in
+place, a restart). The domain is the thread the event ran on: `main`,
+`pool:<name>` for a cooperative pool's worker, `pinned:<n>` for a
+pinned locus's thread, `thread:<n>` for any other. `type`, `inst` and
+`inc` name the subject; a process-level obligation (the pool join, a
+wait-abort, a pre-drain) prints `-` for all three.
+
+The runtime mints the subject, and this is the one place a runtime
+subject comes from: the first event naming a struct gives it the
+next instance number and incarnation 0, `Restart Entered` begins
+its next incarnation, and `Reclaim Completed` retires the number,
+so a struct recycled at the same address is a new instance. The
+events: `ParamsSettle` (the bracket's entry, and its settle),
+`Accept`, `Birth`, `Run` (and `Run Terminal(CanceledAfterStart)` for
+a started run whose parked coroutine a pool worker abandons at
+shutdown, with that `Cancellation`), `FailureDelivery` (entered
+where the failure is raised, completed when the handler returns,
+in place or at settle), `ConstructionDelivery` (a held failure,
+from the hold to its handler's return at settle), `Restart`, `Drain`,
+`Dissolve` (the dissolve-epoch closures and `dissolve()`),
+`Reclaim` (the arena's release past the `__arena` latch), `PreDrain`,
+`WaitAbort`, `PoolJoin` and `PinnedJoin`. Readiness, subscription and
+the run's admission have no events yet.
+
+The trace adds no happens-before edge between the threads it
+watches: the sequence number is one relaxed counter and the subject
+table takes no lock. On one thread `seq` order is program order, and
+if event a happens before event b then `seq(a) < seq(b)`, so a `seq`
+order that contradicts a required edge is a real violation, and one
+that agrees with it is evidence of an execution, not a proof. The
+write itself (one `write(2)` per line) is the trace's one
+perturbation. `hale_types::lifecycle::trace` parses the lines back
+into `Event`s and checks them against what a run owes.
+
+`LOTUS_LIFECYCLE_SKIP`, read by a trace build's runtime at start, is
+a comma list of steps a negative control removes: a kind's name
+skips that step and both its events where it is emitted (and, for
+`ConstructionDelivery`, holds no failure, so the handler runs in
+place while the params are open); `<Kind>.<Point>` drops that one
+line and nothing else. A build without the knob emits nothing of
+the trace and its IR is the same. `lifecycle_fixtures.rs`'s
+`CONTROLS` use it so that, for every obligation kind a fixture's plan
+holds a run to, a run with that step removed or reordered fails the
+oracle, and with the violation that says why: a removed pool join
+lets a worker's teardown begin before its `run()` has ended, a
+removed hold delivers a failure before its owner's settle, an omitted
+completion leaves a dependent step entered with its prerequisite
+unreached, and the host's own order (join, then abort the waits)
+fails line 7's edge.
 
 ### Native observation emission (iris P4, 2026-07-27)
 
@@ -3152,6 +3230,7 @@ build.
 | `LOTUS_DISABLE_PREFETCH` | `disable_prefetch` | Compile the runtime without its prefetch hints. | off |
 | `LOTUS_DI_TRACE` (*set*) | `di_trace` | Narrate debug-location decisions on stderr. | off |
 | `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject on stderr. | off |
+| `HALE_LIFECYCLE_TRACE` | `lifecycle_trace` | The lifecycle trace: one line per obligation event on stderr (§ "The lifecycle trace"). A debug build; native host targets only. | off |
 | `HALE_TIME` (*set*) | `time_phases` | Print per-phase wall times of the build on stderr. | off |
 | `HALE_CC_WARNINGS` | `cc_warnings` | Let the runtime's C warnings through instead of `-w`. For work on the runtime itself. | off |
 | `HALE_NO_LLD` | `no_lld` | Link with the default linker even when `ld.lld` is on PATH (Linux only; lld is otherwise used). | off |
@@ -3210,6 +3289,7 @@ its behavior as described in this document.
 | `LOTUS_BUS_UDP_RCVBUF=<N>` | the kernel's | `SO_RCVBUF`, in bytes, for the udp bus readers. Ignored unless a positive `int`. |
 | `LOTUS_BUS_TEST_BOOT_HOLD_MS=<ms>` | 0 | Test only: stretches the boot-registration window of a listening binding (see `LOTUS_BUS_QUIESCE_MS`). Never set in production. |
 | `LOTUS_BUS_TEST_READER_STALL_MS=<ms>` | 0 | Test only: stretches the window in which a binding's reader is descheduled. Never set in production. |
+| `LOTUS_LIFECYCLE_SKIP=<steps>` | unset | Test only, and read only by a lifecycle-trace build (`HALE_LIFECYCLE_TRACE=1`; a release runtime has no such code): a comma list of steps a negative control removes, a kind (`PoolJoin`) or one event line (`Reclaim.Completed`). See *The lifecycle trace*. |
 | `LOTUS_OBS=1` | off | Native observation emission (iris): the process creates its observation segment and its probes emit. Implied by `LOTUS_OBS_RECORD` and `LOTUS_REPLAY`. See *Native observation emission*. |
 | `LOTUS_OBS_RINGS=<N>` | 8 (64 when recording) | Rings in the observation segment, 1 to 64; a value outside that falls back to the default. |
 | `LOTUS_OBS_SLOTS=<N>` | 4096 | Slots per ring: a power of two, at least 64; anything else falls back to the default. |

@@ -125,6 +125,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
             false,
         );
+        // The trace: the delivery is entered here, on the raising
+        // thread, and completes when the handler returns, here or at
+        // the owner's settle (the runtime reports that one). The spine
+        // is whichever one raised it, which this site cannot name.
+        self.lc_in_spine("-", |cx| cx.lc_event("FailureDelivery", "Entered", Some(child_self), None))?;
         let join_bb = if hold {
             let size = self
                 .user_types
@@ -191,6 +196,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name,
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.lc_in_spine("-", |cx| cx.lc_event("FailureDelivery", "Completed", Some(child_self), None))?;
         if let Some(join_bb) = join_bb {
             self.builder
                 .build_unconditional_branch(join_bb)

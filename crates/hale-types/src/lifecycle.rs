@@ -75,17 +75,16 @@
 //! Each row, each retention and each progress rule carries a
 //! [`Status`]: [`Status::Shipped`] when the code does what the rule
 //! says, [`Status::Adopted`] when the rule is decided and nothing
-//! today contradicts it (a verification the trace build adds),
-//! [`Status::KnownOpen`] when the rule is decided and today's
-//! behaviour differs at a named inventory row, and [`Status::Pending`]
-//! when the rule itself waits on a named condition. The fixtures
-//! under `crates/hale-codegen/tests/fixtures/lifecycle/` pin today's
-//! outcome of each `KnownOpen` row a program can show
-//! (`lifecycle_fixtures.rs`, its `KNOWN_OPEN` table). Two cannot: the
-//! eager spine's missing pre-drain (line 18), which a body's exit flush
-//! covers in every program, and the domain a handler runs on (join
-//! progress), which no program observes; the trace build (L2) and
-//! L5's thread assertions carry those.
+//! today contradicts it, [`Status::KnownOpen`] when the rule is
+//! decided and today's behaviour differs at a named inventory row, and
+//! [`Status::Pending`] when the rule itself waits on a named condition.
+//! The fixtures under `crates/hale-codegen/tests/fixtures/lifecycle/`
+//! pin today's outcome of each `KnownOpen` row a program can show
+//! (`lifecycle_fixtures.rs`, its `KNOWN_OPEN` table). Two no program
+//! can show, the eager spine's missing pre-drain (line 18), which a
+//! body's exit flush covers, and the domain a handler runs on (join
+//! progress); the trace build ([`trace`], L2) shows both, and the same
+//! file's `TRACE_KNOWN_OPEN` table pins them.
 //!
 //! ## The decision lines
 //!
@@ -109,12 +108,12 @@
 //! 11    Drain                                    Shipped
 //! 12    Drain                                    KnownOpen C9
 //! 13    Resume RunAdmission                      KnownOpen C43
-//! 14    Reclaim                                  Shipped; Adopted (L2 verification)
+//! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
 //! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
-//! 19    RunAdmission Run Cancellation            KnownOpen R19; KnownOpen R20a
+//! 19    RunAdmission Run Cancellation            KnownOpen R19; Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
 //! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
 //! ```
@@ -138,6 +137,8 @@
 use hale_graph::ids::SiteId;
 
 use crate::ty::Ty;
+
+pub mod trace;
 
 // ------------------------------------------------------------ identity
 
@@ -247,6 +248,15 @@ impl Incarnation {
 
     pub fn raw(self) -> u32 {
         self.0
+    }
+}
+
+impl RuntimeSubject {
+    /// The subject a trace event carried: the runtime's instance and
+    /// incarnation numbers, read back. `trace::parse_line` is the one
+    /// caller; nothing else mints a subject.
+    pub fn observed(instance: u64, incarnation: u32) -> RuntimeSubject {
+        RuntimeSubject { instance: RuntimeInstance::observed(instance), incarnation: Incarnation::observed(incarnation) }
     }
 }
 
@@ -409,6 +419,11 @@ impl ObligationKind {
         ObligationKind::ProcessDrain,
     ];
 
+    /// The kind a trace line names (the inverse of [`ObligationKind::name`]).
+    pub fn from_name(name: &str) -> Option<ObligationKind> {
+        ObligationKind::ALL.iter().copied().find(|k| k.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ObligationKind::ParamsSettle => "ParamsSettle",
@@ -545,6 +560,49 @@ pub enum Spine {
     Process,
 }
 
+impl Spine {
+    pub const ALL: &'static [Spine] = &[
+        Spine::Instantiation,
+        Spine::PoolRun,
+        Spine::PinnedMain,
+        Spine::EagerTeardown,
+        Spine::DeferredEntry,
+        Spine::DeferredMainEntry,
+        Spine::MainFallThrough,
+        Spine::MainTestFailure,
+        Spine::MainReturn,
+        Spine::Reclaim,
+        Spine::Cascade,
+        Spine::Settle,
+        Spine::QueueDrain,
+        Spine::Process,
+    ];
+
+    /// The name a trace line carries.
+    pub fn name(self) -> &'static str {
+        match self {
+            Spine::Instantiation => "Instantiation",
+            Spine::PoolRun => "PoolRun",
+            Spine::PinnedMain => "PinnedMain",
+            Spine::EagerTeardown => "EagerTeardown",
+            Spine::DeferredEntry => "DeferredEntry",
+            Spine::DeferredMainEntry => "DeferredMainEntry",
+            Spine::MainFallThrough => "MainFallThrough",
+            Spine::MainTestFailure => "MainTestFailure",
+            Spine::MainReturn => "MainReturn",
+            Spine::Reclaim => "Reclaim",
+            Spine::Cascade => "Cascade",
+            Spine::Settle => "Settle",
+            Spine::QueueDrain => "QueueDrain",
+            Spine::Process => "Process",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Spine> {
+        Spine::ALL.iter().copied().find(|s| s.name() == name)
+    }
+}
+
 /// The domain an obligation runs on, relative to its instance. The
 /// producer resolves a role to P1's domain id; a role is what the rule
 /// says, a domain id is what a deployment makes of it.
@@ -628,6 +686,74 @@ pub enum Terminal {
     Dissolved,
 }
 
+impl Terminal {
+    /// The form a trace line writes: `CanceledAfterStart`,
+    /// `NotStarted(Shutdown(PoolShutdown))`.
+    pub fn name(self) -> String {
+        match self {
+            Terminal::Completed => "Completed".into(),
+            Terminal::NotStarted(NotStarted::Acknowledged) => "NotStarted(Acknowledged)".into(),
+            Terminal::NotStarted(NotStarted::Shutdown(c)) => format!("NotStarted(Shutdown({}))", c.name()),
+            Terminal::CanceledAfterStart => "CanceledAfterStart".into(),
+            Terminal::FailureDelivered => "FailureDelivered".into(),
+            Terminal::ClosureViolation => "ClosureViolation".into(),
+            Terminal::Dissolved => "Dissolved".into(),
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Terminal> {
+        const ALL: &[Terminal] = &[
+            Terminal::Completed,
+            Terminal::NotStarted(NotStarted::Acknowledged),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::OwnerTeardown)),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::ProcessDrain)),
+            Terminal::CanceledAfterStart,
+            Terminal::FailureDelivered,
+            Terminal::ClosureViolation,
+            Terminal::Dissolved,
+        ];
+        ALL.iter().copied().find(|t| t.name() == name)
+    }
+}
+
+impl Point {
+    /// `Entered`, `Completed`, `Ended`, or `Terminal(<terminal>)`.
+    pub fn name(self) -> String {
+        match self {
+            Point::Entered => "Entered".into(),
+            Point::Completed => "Completed".into(),
+            Point::Ended => "Ended".into(),
+            Point::Terminal(t) => format!("Terminal({})", t.name()),
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Point> {
+        match name {
+            "Entered" => Some(Point::Entered),
+            "Completed" => Some(Point::Completed),
+            "Ended" => Some(Point::Ended),
+            _ => name.strip_prefix("Terminal(")?.strip_suffix(')').and_then(Terminal::from_name).map(Point::Terminal),
+        }
+    }
+
+    /// Whether an event at `self` (as a trace writes it: `Entered`,
+    /// `Completed` or a terminal) is the point `want` names. `Ended`
+    /// is any end; `Completed` and `Terminal(Completed)` are one.
+    pub fn satisfies(self, want: Point) -> bool {
+        let end = |p: Point| match p {
+            Point::Completed => Some(Terminal::Completed),
+            Point::Terminal(t) => Some(t),
+            _ => None,
+        };
+        match want {
+            Point::Entered => self == Point::Entered,
+            Point::Ended => end(self).is_some(),
+            _ => end(self).is_some() && end(self) == end(want),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NotStarted {
     /// Rejected before admission: the domain is shutting down.
@@ -645,6 +771,16 @@ pub enum ShutdownCause {
     OwnerTeardown,
     /// The process drains (a signal raised the draining flag).
     ProcessDrain,
+}
+
+impl ShutdownCause {
+    pub fn name(self) -> &'static str {
+        match self {
+            ShutdownCause::PoolShutdown => "PoolShutdown",
+            ShutdownCause::OwnerTeardown => "OwnerTeardown",
+            ShutdownCause::ProcessDrain => "ProcessDrain",
+        }
+    }
 }
 
 /// How often an obligation is owed.
@@ -845,7 +981,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::Reclaim],
         statuses: &[
             (Status::Shipped, "emission order and the latches"),
-            (Status::Adopted, "the trace build verifies the table (L2)"),
+            (Status::Shipped, "verified by the trace build (L2): each instance reclaimed once, after its birth, its children before it"),
         ],
     },
     DecisionLine {
@@ -886,7 +1022,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::RunAdmission, K::Run, K::Cancellation],
         statuses: &[
             (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun, is silent"),
-            (Status::KnownOpen { inventory_row: "R20a" }, "an abandoned parked run has no named outcome"),
+            (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
         ],
     },
     DecisionLine {

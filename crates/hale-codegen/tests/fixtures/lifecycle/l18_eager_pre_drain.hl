@@ -12,8 +12,8 @@
 // the bus for any body that may have published, before the eager
 // spine starts (and a main locus's ingress quiesce ends in a drain of
 // its own). No program here reaches the eager spine with a cell the
-// exit flush did not see, so the spine's missing pre-drain is the
-// trace build's to show (L2): this fixture guards the outcome.
+// exit flush did not see, so the outcome holds; the trace build (L2)
+// shows the missing step, no `PreDrain` on the eager spine.
 //
 // Expected terminal outcome: `ev sub-heard` before `ev sub-dissolve`,
 // judged by the harness: `delivered-before-teardown`.

@@ -1,6 +1,7 @@
 // Join progress, a late failure during a pinned join (JoinProgress,
 // FailureDelivery). Known open at inventory row C18 for the domain the
-// handler runs on, which is L5's assertion; the outcome is pinned
+// handler runs on: the trace build (L2) shows the delivery completing
+// on the pinned thread, not on main (row C36); the outcome is pinned
 // here.
 //
 // `p` is pinned and fails 200ms into its run(), after App's run() has

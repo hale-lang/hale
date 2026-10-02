@@ -670,6 +670,13 @@ pub struct BuildOptions {
     /// Print the bus dispatch plan's flavor per subject on stderr
     /// (`HALE_DISPATCH_TRACE`).
     pub dispatch_trace: bool,
+    /// The lifecycle trace (F.40 phase 3, L2; `HALE_LIFECYCLE_TRACE`):
+    /// the runtime is compiled with `LOTUS_LIFECYCLE_TRACE` and the
+    /// emitted lifecycle steps call into it, so the binary writes one
+    /// line per obligation event on stderr (spec/runtime.md § The
+    /// lifecycle trace). A debug aid, not a contract; off, the build
+    /// emits nothing of it. Native host builds only.
+    pub lifecycle_trace: bool,
     /// Print per-phase wall times on stderr (`HALE_TIME`).
     pub time_phases: bool,
     /// Let the runtime's C warnings through instead of `-w`
@@ -738,6 +745,7 @@ impl BuildOptions {
             disable_prefetch: Default::default(),
             di_trace: Default::default(),
             dispatch_trace: Default::default(),
+            lifecycle_trace: Default::default(),
             time_phases: Default::default(),
             cc_warnings: Default::default(),
             no_lld: Default::default(),
@@ -1495,6 +1503,8 @@ pub fn build_resolved(
         di: None,
         di_loc_stack: Vec::new(),
         di_trace: options.di_trace,
+        lifecycle_trace: options.lifecycle_trace && !is_wasm && !is_foreign,
+        lc_spine: "Instantiation",
         di_current_loc: None,
         di_current_pos: None,
         di_pending_params: Vec::new(),
@@ -2097,6 +2107,9 @@ pub fn build_resolved(
     }
     if prefetch_disabled {
         rt_cflags.push("-DLOTUS_DISABLE_PREFETCH=1".into());
+    }
+    if options.lifecycle_trace {
+        rt_cflags.push("-DLOTUS_LIFECYCLE_TRACE=1".into());
     }
     // arena: the substrate core. tls: own TU so libssl/libcrypto only
     // ride along with main builds. shm_ring (Form K5): own TU, dead-
@@ -3955,6 +3968,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// it doesn't belong to (an LLVM verifier error).
     /// `BuildOptions::di_trace`: narrate debug-location decisions.
     di_trace: bool,
+    /// `BuildOptions::lifecycle_trace`, on a native host build: each
+    /// lifecycle step is emitted between `lotus_lc_enter` and its
+    /// completion event (`locus/lifecycle_trace.rs`). Off, nothing of
+    /// the trace is emitted or declared.
+    pub(crate) lifecycle_trace: bool,
+    /// The spine whose steps are being emitted, as the trace names it
+    /// (`hale_types::lifecycle::Spine`). Each spine emitter sets it for
+    /// its own steps and restores the outer value.
+    pub(crate) lc_spine: &'static str,
     di_loc_stack: Vec<(
         inkwell::values::FunctionValue<'ctx>,
         Option<inkwell::debug_info::DILocation<'ctx>>,
@@ -5706,9 +5728,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .module
                 .get_function("lotus_coop_pool_shutdown_all")
                 .expect("lotus_coop_pool_shutdown_all declared");
-            self.builder
-                .build_call(shutdown_fn, &[], "coop_pool.shutdown_all")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.lc_step("PoolJoin", None, None, |cx| {
+                cx.builder
+                    .build_call(shutdown_fn, &[], "coop_pool.shutdown_all")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -5861,10 +5886,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // skip the per-call drain entirely. See
         // `current_fn_skip_exit_drain`.
         let frame_statically_empty = frame.is_empty();
+        // The trace names fn main's three exits by the spine their
+        // caller set; any other fn's flush is the deferred spine.
+        let lc_spine = if self.lc_spine.starts_with("Main") { self.lc_spine } else { "DeferredEntry" };
+        let lc_outer = std::mem::replace(&mut self.lc_spine, lc_spine);
         if drain_queue
             && !(frame_statically_empty && self.current_fn_skip_exit_drain)
         {
-            self.emit_bus_drain()?;
+            self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?;
         }
         // GH #255: at fn-main's scope exit this flush IS main
         // teardown — wake `or wait` parked publishers into the
@@ -5874,6 +5903,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if self.in_main {
             self.emit_bus_wait_abort_all()?;
         }
+        self.lc_spine = lc_outer;
         // GH #253: join subscription-less pinned entries FIRST,
         // before any cooperative teardown. Reverse push order
         // alone processed a parent (and its cascade of subscriber
@@ -6042,6 +6072,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .main_locus_name
                 .as_deref()
                 .is_some_and(|n| n == locus_name);
+            let lc_outer = std::mem::replace(
+                &mut self.lc_spine,
+                if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
+            );
             if is_main_entry && !self.is_wasm {
                 self.emit_bus_ingress_quiesce()?;
                 self.emit_coop_pool_shutdown_all()?;
@@ -6058,84 +6092,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // side because they already ran on the pinned thread.
             let is_pinned_entry = thread_id_alloca.is_some();
             if let Some(tid_slot) = thread_id_alloca {
-                let i64_t = self.context.i64_type();
-                let ptr_t = self.context.ptr_type(AddressSpace::default());
-                // m28b: signal mailbox shutdown if the pinned
-                // locus has one. The shutdown call wakes any
-                // thread blocked in lotus_mailbox_drain_one's
-                // condvar wait, with shutdown=1, so it returns 0
-                // and the pinned thread proceeds to drain/dissolve.
-                if let Some(mb_idx) = info.mailbox_field_idx {
-                    let mb_slot = self
-                        .builder
-                        .build_struct_gep(
-                            info.struct_ty,
-                            self_ptr,
-                            mb_idx,
-                            &format!("{}.__mailbox.flush", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let mb = self
-                        .builder
-                        .build_load(ptr_t, mb_slot, "mailbox.shutdown.load")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_pointer_value();
-                    let shutdown_fn = self
-                        .module
-                        .get_function("lotus_mailbox_shutdown")
-                        .expect("lotus_mailbox_shutdown declared");
-                    self.builder
-                        .build_call(
-                            shutdown_fn,
-                            &[mb.into()],
-                            &format!("{}.mailbox.shutdown", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                let tid = self
-                    .builder
-                    .build_load(i64_t, tid_slot, "pinned.tid")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let null_retval = ptr_t.const_null();
-                let join_fn = self
-                    .module
-                    .get_function("pthread_join")
-                    .expect("pthread_join declared");
-                self.builder
-                    .build_call(
-                        join_fn,
-                        &[tid.into(), null_retval.into()],
-                        &format!("{}.pthread_join", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                // After join, destroy the mailbox.
-                if let Some(mb_idx) = info.mailbox_field_idx {
-                    let mb_slot = self
-                        .builder
-                        .build_struct_gep(
-                            info.struct_ty,
-                            self_ptr,
-                            mb_idx,
-                            &format!("{}.__mailbox.destroy", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let mb = self
-                        .builder
-                        .build_load(ptr_t, mb_slot, "mailbox.destroy.load")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_pointer_value();
-                    let destroy_fn = self
-                        .module
-                        .get_function("lotus_mailbox_destroy")
-                        .expect("lotus_mailbox_destroy declared");
-                    self.builder
-                        .build_call(
-                            destroy_fn,
-                            &[mb.into()],
-                            &format!("{}.mailbox.destroy.call", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                self.lc_step("PinnedJoin", Some(self_ptr), Some(&locus_name), |cx| {
+                    cx.emit_pinned_join(&info, self_ptr, &locus_name, tid_slot)
+                })?;
             }
             if !is_pinned_entry {
                 // Phase-2 (3): cascade child-field drains depth-first
@@ -6147,46 +6106,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // The cascade itself ran each descendant's closures
                 // during the descendant's own ephemeral-dissolve /
                 // scope-exit.
-                if let Some(drain_fn) = info.methods.get("drain") {
-                    if !info.empty_lifecycle.contains("drain") {
-                        self.builder
-                            .build_call(
-                                *drain_fn,
-                                &[self_ptr.into()],
-                                &format!("{}.drain.call", locus_name),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    }
-                }
-                if let Some(closures_fn) = info.dissolve_closures_fn {
-                    let (parent_self, handler_ptr) =
-                        self.resolve_failure_route(&locus_name);
-                    self.builder
-                        .build_call(
-                            closures_fn,
-                            &[
-                                self_ptr.into(),
-                                parent_self.into(),
-                                handler_ptr.into(),
-                            ],
-                            &format!(
-                                "{}.__dissolve_closures.call",
-                                locus_name
-                            ),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                if let Some(dissolve_fn) = info.methods.get("dissolve") {
-                    if !info.empty_lifecycle.contains("dissolve") {
-                        self.builder
-                            .build_call(
-                                *dissolve_fn,
-                                &[self_ptr.into()],
-                                &format!("{}.dissolve.call", locus_name),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    }
-                }
+                self.emit_traced_drain_dissolve(&info, self_ptr, &locus_name)?;
             }
             // Phase-2 (2): cascade dissolve for parent-owned child
             // loci. Mirrors the ephemeral path's ordering.
@@ -6231,6 +6151,99 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(after_bb);
+            self.lc_spine = lc_outer;
+        }
+        Ok(())
+    }
+
+    /// A pinned entry's join (C18, R26/R27): signal its mailbox's
+    /// shutdown, `pthread_join` its thread, destroy the mailbox.
+    /// pthread_join blocks until the pinned thread's full lifecycle
+    /// (birth → run → mailbox loop → drain → dissolve) has finished.
+    fn emit_pinned_join(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        tid_slot: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // m28b: signal mailbox shutdown if the pinned
+        // locus has one. The shutdown call wakes any
+        // thread blocked in lotus_mailbox_drain_one's
+        // condvar wait, with shutdown=1, so it returns 0
+        // and the pinned thread proceeds to drain/dissolve.
+        if let Some(mb_idx) = info.mailbox_field_idx {
+            let mb_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    mb_idx,
+                    &format!("{}.__mailbox.flush", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let mb = self
+                .builder
+                .build_load(ptr_t, mb_slot, "mailbox.shutdown.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let shutdown_fn = self
+                .module
+                .get_function("lotus_mailbox_shutdown")
+                .expect("lotus_mailbox_shutdown declared");
+            self.builder
+                .build_call(
+                    shutdown_fn,
+                    &[mb.into()],
+                    &format!("{}.mailbox.shutdown", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        let tid = self
+            .builder
+            .build_load(i64_t, tid_slot, "pinned.tid")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let null_retval = ptr_t.const_null();
+        let join_fn = self
+            .module
+            .get_function("pthread_join")
+            .expect("pthread_join declared");
+        self.builder
+            .build_call(
+                join_fn,
+                &[tid.into(), null_retval.into()],
+                &format!("{}.pthread_join", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // After join, destroy the mailbox.
+        if let Some(mb_idx) = info.mailbox_field_idx {
+            let mb_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    mb_idx,
+                    &format!("{}.__mailbox.destroy", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let mb = self
+                .builder
+                .build_load(ptr_t, mb_slot, "mailbox.destroy.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let destroy_fn = self
+                .module
+                .get_function("lotus_mailbox_destroy")
+                .expect("lotus_mailbox_destroy declared");
+            self.builder
+                .build_call(
+                    destroy_fn,
+                    &[mb.into()],
+                    &format!("{}.mailbox.destroy.call", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         Ok(())
     }
@@ -6448,19 +6461,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // A locus is a flow iff the flow row names it: some declared
             // locus has a `release(c: T)` whose T denotes this locus.
             let is_flow = self.is_flow(locus_name);
+            let lc_outer = std::mem::replace(&mut self.lc_spine, "Reclaim");
             // drain (children first, then self).
             self.emit_locus_field_drains(&info, self_arg, locus_name)?;
-            if let Some(drain_fn) = info.methods.get("drain") {
-                if !info.empty_lifecycle.contains("drain") {
-                    self.builder
-                        .build_call(
-                            *drain_fn,
-                            &[self_arg.into()],
-                            &format!("{}.reclaim.drain", locus_name),
-                        )
+            let drain_call =
+                info.methods.get("drain").copied().filter(|_| !info.empty_lifecycle.contains("drain"));
+            self.lc_step("Drain", Some(self_arg), Some(locus_name), |cx| {
+                if let Some(drain_fn) = drain_call {
+                    cx.builder
+                        .build_call(drain_fn, &[self_arg.into()], &format!("{}.reclaim.drain", locus_name))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-            }
+                Ok(())
+            })?;
             // `release(c)` parent bookend — after drain, before
             // dissolve — for a flow with a non-null owner.
             //
@@ -6538,28 +6551,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(after_rel_bb);
             }
-            if let Some(closures_fn) = info.dissolve_closures_fn {
-                let (parent_self, handler_ptr) =
-                    self.resolve_failure_route(locus_name);
-                self.builder
-                    .build_call(
-                        closures_fn,
-                        &[self_arg.into(), parent_self.into(), handler_ptr.into()],
-                        &format!("{}.reclaim.closures", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            if let Some(dissolve_fn) = info.methods.get("dissolve") {
-                if !info.empty_lifecycle.contains("dissolve") {
-                    self.builder
+            let closures = info.dissolve_closures_fn;
+            let dissolve_call =
+                info.methods.get("dissolve").copied().filter(|_| !info.empty_lifecycle.contains("dissolve"));
+            self.lc_step("Dissolve", Some(self_arg), Some(locus_name), |cx| {
+                if let Some(closures_fn) = closures {
+                    let (parent_self, handler_ptr) = cx.resolve_failure_route(locus_name);
+                    cx.builder
                         .build_call(
-                            *dissolve_fn,
-                            &[self_arg.into()],
-                            &format!("{}.reclaim.dissolve", locus_name),
+                            closures_fn,
+                            &[self_arg.into(), parent_self.into(), handler_ptr.into()],
+                            &format!("{}.reclaim.closures", locus_name),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-            }
+                if let Some(dissolve_fn) = dissolve_call {
+                    cx.builder
+                        .build_call(dissolve_fn, &[self_arg.into()], &format!("{}.reclaim.dissolve", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(())
+            })?;
             // Reclaim accept'd children BEFORE this locus's own fields
             // go: a child may borrow a parent's capacity slot
             // (`as_parent_for`), and a pool freed under a child that is
@@ -6576,6 +6588,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // mid-iteration (it frees the whole buffer wholesale), so
             // it skips removal.
             self.emit_locus_arena_destroy(&info, self_arg, locus_name)?;
+            self.lc_spine = lc_outer;
             self.current_fn = prev_fn;
             self.current_self = prev_self;
             self.builder
@@ -7312,13 +7325,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
                 self.builder.position_at_end(loop_bb);
                 let pre = self.emit_restart_count(&info, self_arg)?;
-                self.builder
-                    .build_call(
-                        run_fn,
-                        &[self_arg.into()],
-                        &format!("{}.run.via_pool", locus_name),
-                    )
-                    .map_err(e)?;
+                self.lc_in_spine("PoolRun", |cx| {
+                    cx.lc_step("Run", Some(self_arg), Some(locus_name), |cx| {
+                        cx.builder
+                            .build_call(run_fn, &[self_arg.into()], &format!("{}.run.via_pool", locus_name))
+                            .map_err(e)?;
+                        Ok(())
+                    })
+                })?;
                 let now = self.emit_restart_count(&info, self_arg)?;
                 let a = self.emit_failure_await(self_arg, Some(rf.resume), 0, now)?;
                 let resumed_later = self
@@ -7351,13 +7365,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(out_bb);
                 self.builder.build_return(None).map_err(e)?;
             } else {
-                self.builder
-                    .build_call(
-                        run_fn,
-                        &[self_arg.into()],
-                        &format!("{}.run.via_pool", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.lc_in_spine("PoolRun", |cx| {
+                    cx.lc_step("Run", Some(self_arg), Some(locus_name), |cx| {
+                        cx.builder
+                            .build_call(run_fn, &[self_arg.into()], &format!("{}.run.via_pool", locus_name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        Ok(())
+                    })
+                })?;
                 self.builder
                     .build_call(run_end, &[self_arg.into()], "run.end.call")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -8891,6 +8906,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // skip the pool join/cancel (its body references
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
+            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainFallThrough");
             if !self.is_wasm {
                 // GH #468: drain kernel-accepted LISTEN ingress
                 // through the intact registry BEFORE pools join and
@@ -8901,6 +8917,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.emit_coop_pool_shutdown_all()?;
             }
             self.flush_dissolve_frame()?;
+            self.lc_spine = lc_outer;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
             // exit reclaims everything), but going through
@@ -8936,12 +8953,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // fires here too.
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
+            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
             if !self.is_wasm {
                 self.emit_bus_ingress_quiesce()?;
                 self.emit_coop_pool_shutdown_all()?;
             }
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
+            self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
             let one = i32_t.const_int(1, false);
@@ -21499,6 +21518,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // skip the pool join/cancel (its body references
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
+            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainReturn");
             if !self.is_wasm {
                 // GH #468: same exit-quiesce as the fallthrough
                 // main-exit path — return-from-main must not lose
@@ -21540,6 +21560,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let frame =
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
+            self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
             self.builder

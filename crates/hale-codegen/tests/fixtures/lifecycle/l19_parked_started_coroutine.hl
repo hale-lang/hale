@@ -1,5 +1,5 @@
 // Decision line 19, a parked started coroutine (Cancellation, Run).
-// Known open at inventory row R20a.
+// Inventory row R20a, shipped in the trace build.
 //
 // `srv` is an async_io listener nobody connects to, so its run() is a
 // started coroutine parked in accept() when the pools are joined. The
@@ -8,9 +8,9 @@
 // quiescence is the pool join's completion, witnessed separately.
 //
 // Expected terminal outcome: the run ends in a named
-// `canceled-after-start`, which the trace build (L2) records, and the
-// listener is torn down once. Today the process exits cleanly and the
-// cancellation is unnamed: `exit-clean-unnamed`.
+// `canceled-after-start`, which the trace build (L2) records where the
+// worker frees the coroutine, and the listener is torn down once,
+// judged by the harness from the trace: `named:canceled-after-start`.
 
 fn noop(s: std::io::tcp::Stream) { }
 

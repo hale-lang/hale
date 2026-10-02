@@ -1,5 +1,6 @@
 // Decision line 14, order by construction with latches (Reclaim).
-// Shipped; the trace build's verification of the table is adopted (L2).
+// Shipped, and verified by the trace build (L2): each child is
+// reclaimed once, by its run end, before App's arena goes.
 //
 // Three flow children are reclaimed by their run ends; App's own
 // teardown then walks its accepted children, and the `__arena` latch

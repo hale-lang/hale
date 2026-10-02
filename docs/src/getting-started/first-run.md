@@ -85,6 +85,12 @@ A few switches worth knowing from day one:
   tuned for your CPU.
 - **Where did the build time go?** `HALE_TIME=1 hale build app.hl`
   prints per-phase wall times.
+- **What did the lifecycle do?** `HALE_LIFECYCLE_TRACE=1 hale run app.hl`
+  builds with the lifecycle trace: one `lc` line on stderr per step
+  (a birth, a `run()`, a drain, a dissolve, a reclaim, the pool
+  join), naming the instance, its restart incarnation and the thread
+  it ran on. A debug aid: the format is not a contract, and a build
+  without the switch carries none of it.
 - **Editor & agent integration:** `hale lsp` is a stdio Language
   Server — point any LSP-speaking editor (or agent harness) at it
   and you get live diagnostics: type errors as errors, the

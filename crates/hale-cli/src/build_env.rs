@@ -48,6 +48,7 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
     o.disable_prefetch = flag("LOTUS_DISABLE_PREFETCH");
     o.di_trace = is_set("LOTUS_DI_TRACE");
     o.dispatch_trace = flag("HALE_DISPATCH_TRACE");
+    o.lifecycle_trace = flag("HALE_LIFECYCLE_TRACE");
     o.time_phases = is_set("HALE_TIME");
     o.cc_warnings = flag("HALE_CC_WARNINGS");
     o.no_lld = flag("HALE_NO_LLD");
@@ -127,6 +128,9 @@ pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
     }
     if o.no_bus_devirt {
         fp.push_str(";no_bus_devirt");
+    }
+    if o.lifecycle_trace {
+        fp.push_str(";lifecycle_trace");
     }
     if o.no_ownership_bubble {
         fp.push_str(";no_ownership_bubble");
@@ -243,6 +247,7 @@ mod tests {
             ("lto full", Box::new(|o| o.lto = Some(LtoMode::Full))),
             ("disable_prefetch", Box::new(|o| o.disable_prefetch = true)),
             ("no_bus_devirt", Box::new(|o| o.no_bus_devirt = true)),
+            ("lifecycle_trace", Box::new(|o| o.lifecycle_trace = true)),
             ("no_ownership_bubble", Box::new(|o| o.no_ownership_bubble = true)),
             ("no_ts_shim", Box::new(|o| o.no_ts_shim = true)),
             ("ts_shim", Box::new(|o| o.ts_shim = Some(PathBuf::from("/a.a")))),

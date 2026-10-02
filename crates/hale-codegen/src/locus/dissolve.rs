@@ -474,32 +474,32 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // drain step ran earlier via `emit_locus_field_drains`
             // (depth-first before outer's drain) so this teardown
             // half can assume children have already drained.
-            if let Some(closures_fn) = inner_info.dissolve_closures_fn {
-                let (parent_self, handler_ptr) =
-                    self.resolve_failure_route(&inner_name);
-                self.builder
-                    .build_call(
-                        closures_fn,
-                        &[
-                            inner_ptr.into(),
-                            parent_self.into(),
-                            handler_ptr.into(),
-                        ],
-                        &format!("{}.cascade.closures", inner_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            if let Some(dissolve_fn) = inner_info.methods.get("dissolve") {
-                if !inner_info.empty_lifecycle.contains("dissolve") {
-                    self.builder
-                        .build_call(
-                            *dissolve_fn,
-                            &[inner_ptr.into()],
-                            &format!("{}.cascade.dissolve", inner_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
+            let closures = inner_info.dissolve_closures_fn;
+            let dissolve_call = inner_info
+                .methods
+                .get("dissolve")
+                .copied()
+                .filter(|_| !inner_info.empty_lifecycle.contains("dissolve"));
+            self.lc_in_spine("Cascade", |cx| {
+                cx.lc_step("Dissolve", Some(inner_ptr), Some(&inner_name), |cx| {
+                    if let Some(closures_fn) = closures {
+                        let (parent_self, handler_ptr) = cx.resolve_failure_route(&inner_name);
+                        cx.builder
+                            .build_call(
+                                closures_fn,
+                                &[inner_ptr.into(), parent_self.into(), handler_ptr.into()],
+                                &format!("{}.cascade.closures", inner_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    if let Some(dissolve_fn) = dissolve_call {
+                        cx.builder
+                            .build_call(dissolve_fn, &[inner_ptr.into()], &format!("{}.cascade.dissolve", inner_name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    Ok(())
+                })
+            })?;
             // GH #750: descend. Inner's own locus-typed param
             // fields are parent-owned exactly as inner is — their
             // instantiation took the `parent_owns_via_field`
@@ -944,7 +944,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             let descend = inner_name != locus_name
                 && self.locus_cascade_path.iter().all(|n| n != &inner_name)
                 && self.locus_descendants_have_drain(&inner_name);
-            if drain_fn.is_none() && !descend {
+            // The trace build reports every owned field's drain step,
+            // an empty one included.
+            if drain_fn.is_none() && !descend && !self.lifecycle_trace {
                 continue;
             }
             // F.29 follow-up: ownership branch (same gate as
@@ -997,15 +999,16 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 self.locus_cascade_path.pop();
                 deeper?;
             }
-            if let Some(drain_fn) = drain_fn {
-                self.builder
-                    .build_call(
-                        drain_fn,
-                        &[inner_ptr.into()],
-                        &format!("{}.cascade.drain", inner_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
+            self.lc_in_spine("Cascade", |cx| {
+                cx.lc_step("Drain", Some(inner_ptr), Some(&inner_name), |cx| {
+                    if let Some(drain_fn) = drain_fn {
+                        cx.builder
+                            .build_call(drain_fn, &[inner_ptr.into()], &format!("{}.cascade.drain", inner_name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    Ok(())
+                })
+            })?;
             self.builder
                 .build_unconditional_branch(skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1410,6 +1413,8 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.child_struct.release.elide", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
+            self.lc_in_spine_event("Reclaim", "Completed", self_ptr, locus_name)?;
             self.builder
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1839,6 +1844,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // GH #1077: past the latch, once per instance — one drain
         // observer fewer.
         self.emit_drain_observer_count(locus_name, -1)?;
+        // The trace's Reclaim is the arena's release past the latch:
+        // exactly once per instance (decision line 14).
+        self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
 
         let is_zero = self
             .builder
@@ -1967,6 +1975,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 &format!("{}.child_struct.release", locus_name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.lc_in_spine_event("Reclaim", "Completed", self_ptr, locus_name)?;
         self.builder
             .build_unconditional_branch(after_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

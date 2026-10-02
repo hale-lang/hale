@@ -1156,9 +1156,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/codegen.rs` · `__reclaim_` — the reclaim spine. *Removed when:* same.
 - `crates/hale-codegen/src/locus/dissolve.rs` · `emit_locus_arena_destroy` — the cascade (field drains, field dissolves, arena destroy). *Removed when:* same.
 - `crates/hale-codegen/src/locus/restart.rs` · `define_restart_fns` — restart and resume. *Removed when:* same.
-- `crates/hale-codegen/runtime/lotus_arena.c` · `lotus_failure_hold` — the hold/settle/defer/await protocol in the C runtime; verified against the table by a debug-build oracle before the table is trusted. *Removed when:* the oracle holds.
+- `crates/hale-codegen/runtime/lotus_arena.c` · `lotus_failure_hold` — the hold/settle/defer/await protocol in the C runtime; the trace oracle holds it to the plan over the corpus (L2, done), and the generated matrix half is L3's, still to come. *Removed when:* the matrix half holds (L3).
 
-**Also owned.** `crates/hale-types/src/lifecycle.rs` · `LifecyclePlan`
+**Also owned.** `crates/hale-types/src/lifecycle.rs` · `LifecyclePlan`; `crates/hale-types/src/lifecycle/trace.rs` · `Expected`
 
 **Consumers.** codegen (emission reads the order); closures (the event alphabet); transitions (reserved); deployment (reserved)
 
@@ -1169,12 +1169,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - an obligation is keyed by its source site (the declaration and P1's construction template); the runtime mints the instance and its incarnation, the table never does
 - every obligation ends in exactly one of its named terminal alternatives; lifetime (what stays alive until which event) and progress (what makes it reach a terminal) are separate fields
 - each rule says whether it is shipped, adopted, known open at an inventory row, or pending on a named condition
+- the runtime's protocol is checked by its trace, not trusted: a trace build reports the hold, the settle and each held delivery, and the trace oracle holds them to the plan's edges (delivered after the owner's settle, before its birth), with negative controls that remove or reorder a step and fail it
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs; crates/hale-codegen/tests/reclamation_spine.rs; crates/hale-codegen/tests/main_locus_deferred_pool_join.rs; crates/hale-codegen/tests/teardown_pinned_join_order.rs; crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data); crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one)
+**Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs; crates/hale-codegen/tests/reclamation_spine.rs; crates/hale-codegen/tests/main_locus_deferred_pool_join.rs; crates/hale-codegen/tests/teardown_pinned_join_order.rs; crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data); crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one; the trace oracle holds each run to its line's plan, TRACE_KNOWN_OPEN names today's departures, CONTROLS fail it); crates/hale-types/src/lifecycle/trace.rs (the trace's parser and oracle); crates/hale-codegen/tests/corpus_oracle.rs (corpus_traces_keep_the_lifecycle_laws: every runnable example, traced)
 
-**Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart); spec/semantics.md § lifecycle
+**Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart); spec/runtime.md § The lifecycle trace (a debug aid, not a contract); spec/semantics.md § lifecycle
 
 ### `bus_inert` — Canonical · derivation
 

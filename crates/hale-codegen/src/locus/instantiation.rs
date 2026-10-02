@@ -2354,6 +2354,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .iter()
                     .any(|(_, d)| matches!(d, DefaultInit::Expr(_))));
         if settles_failures {
+            self.lc_in_spine("Instantiation", |cx| {
+                cx.lc_event("ParamsSettle", "Entered", Some(self_ptr), Some(locus_name))
+            })?;
             let open_fn = self
                 .module
                 .get_function("lotus_params_open")
@@ -3650,18 +3653,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // chunked-class accept-in-a-loop patterns —
                     // the empty body's trailing bus drain costs
                     // hundreds of ns per child.
-                    if !parent_info.empty_lifecycle.contains("accept") {
-                        self.builder
-                            .build_call(
-                                accept_fn,
-                                &[
-                                    owner_ptr.into(),
-                                    self_ptr.into(),
-                                ],
-                                &format!("{}.accept.call", owner_name),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    }
+                    let accept_empty = parent_info.empty_lifecycle.contains("accept");
+                    self.lc_in_spine("Instantiation", |cx| {
+                        cx.lc_step("Accept", Some(self_ptr), Some(locus_name), |cx| {
+                            if !accept_empty {
+                                cx.builder
+                                    .build_call(
+                                        accept_fn,
+                                        &[owner_ptr.into(), self_ptr.into()],
+                                        &format!("{}.accept.call", owner_name),
+                                    )
+                                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            }
+                            Ok(())
+                        })
+                    })?;
                     // Append child_self to the parent's growable
                     // children buffer:
                     //   lotus_children_push(&__children,
@@ -4036,6 +4042,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            self.lc_pinned_thread()?;
             // 2026-05-23: stash this locus's mailbox in
             // TLS so time::sleep / yield inside birth() and run()
             // can drain it without going through the post-run
@@ -4077,17 +4084,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // parent's params not settled yet) is waited for first, so
             // the decision is the handler's, not the timing's.
             let restart = self.restart_fns.get(locus_name).copied();
-            if let Some(birth) = info.methods.get("birth") {
-                if !info.empty_lifecycle.contains("birth") {
-                    self.builder
-                        .build_call(
-                            *birth,
-                            &[thread_self.into()],
-                            &format!("{}.birth.thread_call", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
+            let birth_call = info
+                .methods
+                .get("birth")
+                .copied()
+                .filter(|_| !info.empty_lifecycle.contains("birth"));
+            self.lc_in_spine("PinnedMain", |cx| {
+                cx.lc_step("Birth", Some(thread_self), Some(locus_name), |cx| {
+                    if let Some(birth) = birth_call {
+                        cx.builder
+                            .build_call(birth, &[thread_self.into()], &format!("{}.birth.thread_call", locus_name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    Ok(())
+                })
+            })?;
             if let Some(method) = info.methods.get("run") {
                 let loop_bb = self
                     .context
@@ -4100,15 +4111,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some(_) => Some(self.emit_restart_count(&info, thread_self)?),
                     None => None,
                 };
-                if !info.empty_lifecycle.contains("run") {
-                    self.builder
-                        .build_call(
-                            *method,
-                            &[thread_self.into()],
-                            &format!("{}.run.thread_call", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                let run_empty = info.empty_lifecycle.contains("run");
+                let run_method = *method;
+                self.lc_in_spine("PinnedMain", |cx| {
+                    cx.lc_step("Run", Some(thread_self), Some(locus_name), |cx| {
+                        if !run_empty {
+                            cx.builder
+                                .build_call(
+                                    run_method,
+                                    &[thread_self.into()],
+                                    &format!("{}.run.thread_call", locus_name),
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                        Ok(())
+                    })
+                })?;
                 // m42: tick fires after run() on the pinned
                 // thread too. Use the wrapper here (it loads
                 // parent fields from the struct) since we're
@@ -4221,24 +4239,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(loop_after);
             }
-            for kind in &["drain", "dissolve"] {
-                if let Some(method) = info.methods.get(*kind) {
-                    if info.empty_lifecycle.contains(*kind) {
-                        continue;
-                    }
-                    self.builder
-                        .build_call(
-                            *method,
-                            &[thread_self.into()],
-                            &format!(
-                                "{}.{}.thread_call",
-                                locus_name, kind
-                            ),
-                        )
-                        .map_err(|e| {
-                            CodegenError::LlvmEmit(e.to_string())
-                        })?;
-                }
+            for (kind, obligation) in [("drain", "Drain"), ("dissolve", "Dissolve")] {
+                let method = info
+                    .methods
+                    .get(kind)
+                    .copied()
+                    .filter(|_| !info.empty_lifecycle.contains(kind));
+                self.lc_in_spine("PinnedMain", |cx| {
+                    cx.lc_step(obligation, Some(thread_self), Some(locus_name), |cx| {
+                        if let Some(method) = method {
+                            cx.builder
+                                .build_call(
+                                    method,
+                                    &[thread_self.into()],
+                                    &format!("{}.{}.thread_call", locus_name, kind),
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                        Ok(())
+                    })
+                })?;
             }
             self.builder
                 .build_return(Some(&ptr_t.const_null()))
@@ -4391,17 +4411,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // state's invariants). If birth violates and the parent
         // has a matching on_failure handler, that handler runs;
         // otherwise the runtime exits with a diagnostic.
-        if let Some(birth_fn) = info.methods.get("birth") {
-            if !info.empty_lifecycle.contains("birth") {
-                self.builder
-                    .build_call(
-                        *birth_fn,
-                        &[self_ptr.into()],
-                        &format!("{}.birth.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-        }
+        let birth_call = info
+            .methods
+            .get("birth")
+            .copied()
+            .filter(|_| !info.empty_lifecycle.contains("birth"));
+        self.lc_in_spine("Instantiation", |cx| {
+            cx.lc_step("Birth", Some(self_ptr), Some(locus_name), |cx| {
+                if let Some(birth_fn) = birth_call {
+                    cx.builder
+                        .build_call(birth_fn, &[self_ptr.into()], &format!("{}.birth.call", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(())
+            })
+        })?;
         if let Some(birth_closures_fn) = info.birth_closures_fn {
             let (parent_self, handler_ptr) =
                 self.resolve_failure_route(&locus_name);
@@ -4729,13 +4753,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     // No wrapper synthesized (run-less locus or a
                     // synthesis gap) — run synchronously.
-                    self.builder
-                        .build_call(
-                            *run_fn,
-                            &[self_ptr.into()],
-                            &format!("{}.run.call", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let run_fn = *run_fn;
+                    self.lc_in_spine("Instantiation", |cx| {
+                        cx.lc_step("Run", Some(self_ptr), Some(locus_name), |cx| {
+                            cx.builder
+                                .build_call(run_fn, &[self_ptr.into()], &format!("{}.run.call", locus_name))
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            Ok(())
+                        })
+                    })?;
                 }
             }
             // m42: tick fires after run() returns — run() is a
@@ -4833,6 +4859,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // dissolve here (see the matching no-op teardown branch).
             || bubbled;
         if !defer {
+            // The lifecycle trace names this spine for its steps.
+            let lc_outer = std::mem::replace(&mut self.lc_spine, "EagerTeardown");
             // 2026-06-01: the MAIN locus dissolves eagerly here, right
             // after its run() returns — but its `params` fields may be
             // placed on cooperative pools whose worker threads are
@@ -4917,46 +4945,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // interpreter ordering in eval.rs::dissolve_locus:
             // drain body fires first, then dissolve-epoch closures
             // are evaluated, then the user's dissolve() body.
-            if let Some(drain_fn) = info.methods.get("drain") {
-                if !info.empty_lifecycle.contains("drain") {
-                    self.builder
-                        .build_call(
-                            *drain_fn,
-                            &[self_ptr.into()],
-                            &format!("{}.drain.call", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
-            if let Some(closures_fn) = info.dissolve_closures_fn {
-                let (parent_self, handler_ptr) =
-                    self.resolve_failure_route(&locus_name);
-                self.builder
-                    .build_call(
-                        closures_fn,
-                        &[
-                            self_ptr.into(),
-                            parent_self.into(),
-                            handler_ptr.into(),
-                        ],
-                        &format!(
-                            "{}.__dissolve_closures.call",
-                            locus_name
-                        ),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            if let Some(dissolve_fn) = info.methods.get("dissolve") {
-                if !info.empty_lifecycle.contains("dissolve") {
-                    self.builder
-                        .build_call(
-                            *dissolve_fn,
-                            &[self_ptr.into()],
-                            &format!("{}.dissolve.call", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
+            self.emit_traced_drain_dissolve(&info, self_ptr, locus_name)?;
             // Phase-2 (2): cascade dissolve for parent-owned child
             // loci held as `LocusRef`-typed param fields. Runs
             // AFTER outer's user dissolve body so the body can
@@ -4979,6 +4968,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(eager_skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(eager_skip_bb);
+            self.lc_spine = lc_outer;
         } else if returns_this_locus {
             // Intentionally no-op: see m90 note above. The locus
             // outlives this fn's frame by design.
@@ -5644,32 +5634,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
 
         // birth() on A's thread.
-        if let Some(birth_fn) = child_info.methods.get("birth") {
-            if !child_info.empty_lifecycle.contains("birth") {
-                self.builder
-                    .build_call(
-                        *birth_fn,
-                        &[child_ptr.into()],
-                        &format!("{}.xpool.birth", child_locus),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-        }
+        let birth_call =
+            child_info.methods.get("birth").copied().filter(|_| !child_info.empty_lifecycle.contains("birth"));
+        self.lc_in_spine("Instantiation", |cx| {
+            cx.lc_step("Birth", Some(child_ptr), Some(child_locus), |cx| {
+                if let Some(birth_fn) = birth_call {
+                    cx.builder
+                        .build_call(birth_fn, &[child_ptr.into()], &format!("{}.xpool.birth", child_locus))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(())
+            })
+        })?;
 
         // Stitch to A: accept(A, I) (if non-empty) + children_push.
         if let Some((_, expected)) = &owner_info.accept_param {
             if expected == child_locus {
-                if let Some(accept_fn) = owner_info.methods.get("accept") {
-                    if !owner_info.empty_lifecycle.contains("accept") {
-                        self.builder
-                            .build_call(
-                                *accept_fn,
-                                &[a_self.into(), child_ptr.into()],
-                                &format!("{}.xpool.accept", owner_name),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    }
-                }
+                let accept_call = owner_info
+                    .methods
+                    .get("accept")
+                    .copied()
+                    .filter(|_| !owner_info.empty_lifecycle.contains("accept"));
+                self.lc_in_spine("Instantiation", |cx| {
+                    cx.lc_step("Accept", Some(child_ptr), Some(child_locus), |cx| {
+                        if let Some(accept_fn) = accept_call {
+                            cx.builder
+                                .build_call(
+                                    accept_fn,
+                                    &[a_self.into(), child_ptr.into()],
+                                    &format!("{}.xpool.accept", owner_name),
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                        Ok(())
+                    })
+                })?;
                 if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) = (
                     owner_info.children_field_idx,
                     owner_info.child_count_field_idx,
