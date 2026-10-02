@@ -1,0 +1,988 @@
+//! The `lifecycle_order` family's schema (F.40 phase 3, L1): the
+//! lifecycle as a table of obligations.
+//!
+//! Types only. The producer (one plan per snapshot, demanded like the
+//! entry row) waits for P1's placement producer, whose instance key
+//! this schema shares; the executable plans wait with it. What this
+//! module fixes is what a row says, so the producer, the trace oracle
+//! (L2), the matrix (L3) and emission (L4) are written against one
+//! shape.
+//!
+//! An obligation is something the compiler emits or the runtime
+//! performs that some domain owes some instance: params settle, a held
+//! failure's delivery, accept, readiness, birth, a run's admission and
+//! execution, a closure epoch, a failure's delivery to the owner, a
+//! recovery decision and its execution, drain, the pre-drain, the
+//! wait-abort, a join and the progress it owes, a cancellation,
+//! teardown delivery, dissolve, the reclaim. The inventory
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C46, R1–R49 and R20a)
+//! is the list of those actions as the code performs them;
+//! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
+//! points back at the rows it stands for.
+//!
+//! ## Two identities
+//!
+//! A row is keyed by its **source site** ([`SourceSite`]): the declaration
+//! that is built ([`DeclRef`], a generic's specialization by its
+//! substitution) and the construction template that builds it
+//! ([`Template`]). The template is P1's static key (hale-lang/hale#1296,
+//! `notes/f40-placement-correspondence.md` § 1): an origin, a path of
+//! fields with the literal taken at each guarded step, a replica index.
+//! A literal outside the static tower (a method body, a let-bound
+//! literal, an accepted child) is its literal site, as P1's dynamic
+//! sites are.
+//!
+//! The runtime has the second level: which live object, and which
+//! incarnation of it ([`RuntimeSubject`]). An instance is one execution
+//! of a template's literal; each `restart` begins its next incarnation.
+//! The runtime mints both numbers and the table never does: a plan row
+//! speaks of a template and is owed once per instance or once per
+//! incarnation ([`Multiplicity`]), and a trace event (L2) carries the
+//! runtime subject beside its template so the oracle can join the two
+//! ([`Occurrence`]). [`RuntimeInstance`] and [`Incarnation`] have no
+//! constructor but [`RuntimeInstance::observed`] and
+//! [`Incarnation::observed`], which read what the runtime emitted.
+//!
+//! ## Edges, terminals, lifetime and progress
+//!
+//! Order is stated on events, never on calls ([`Event`]: an obligation
+//! entered, completed, or ended in one of its terminals). A row has
+//! entry edges (what happened before it is entered) and completion
+//! edges (what happened before it completes). An action that runs
+//! inside another (R32 inside R31, R36 inside R29, R42 inside R32, C43
+//! inside R5) has both: an entry edge on its enclosing action's
+//! entry, and a completion edge from its own completion into the
+//! enclosing action's. A call relationship is never read as a
+//! completion edge (the inventory's warning above its table).
+//!
+//! Every obligation ends in exactly one of its named terminal
+//! alternatives ([`Terminal`]): completed; not started, with a shutdown
+//! reason or with an acknowledgement; canceled after start, with
+//! quiescence witnessed by a separate obligation; or, where the
+//! inventory names them, failure delivered, closure violation, or
+//! dissolved. No path ends silently.
+//!
+//! Lifetime and progress are separate fields. [`Retention`] says what
+//! must stay alive until which event (the child and the copied
+//! violation until the handler completes). [`Progress`] says what
+//! makes the obligation reach a terminal at all (the owner keeps
+//! completing failure decisions while it joins). A row can keep its
+//! lifetime and still owe progress it does not make, which is the
+//! join-progress defect: each of the two carries its own [`Status`].
+//!
+//! ## Adopted and shipped
+//!
+//! Each row, each retention and each progress rule carries a
+//! [`Status`]: [`Status::Shipped`] when the code does what the rule
+//! says, [`Status::Adopted`] when the rule is decided and nothing
+//! today contradicts it (a verification the trace build adds),
+//! [`Status::KnownOpen`] when the rule is decided and today's
+//! behaviour differs at a named inventory row, and [`Status::Pending`]
+//! when the rule itself waits on a named condition. The fixtures
+//! under `crates/hale-codegen/tests/fixtures/lifecycle/` pin today's
+//! outcome of each `KnownOpen` row a program can show
+//! (`lifecycle_fixtures.rs`, its `KNOWN_OPEN` table). Two cannot: the
+//! eager spine's missing pre-drain (line 18), which a body's exit flush
+//! covers in every program, and the domain a handler runs on (join
+//! progress), which no program observes; the trace build (L2) and
+//! L5's thread assertions carry those.
+//!
+//! ## The decision lines
+//!
+//! The inventory's nineteen decision lines, the two adopted
+//! requirements beside them (restart during drain, join progress) and
+//! the kinds each one binds. [`DECISION_LINES`] is the same table as
+//! data, and a test holds the two equal.
+//!
+//! ```text
+//! line  kinds                                    status
+//! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
+//! 2     Closures Run                             Pending (no option chosen)
+//! 3     Accept Birth Run Dissolve                Pending (no option chosen)
+//! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
+//! 5     Accept                                   Shipped
+//! 6     Subscribe Readiness                      Shipped; KnownOpen C8
+//! 7     WaitAbort PoolJoin                       KnownOpen R34
+//! 8     FailureDelivery Birth                    Shipped
+//! 9     FailureDelivery Closures                 Shipped
+//! 10    Closures Dissolve                        Shipped
+//! 11    Drain                                    Shipped
+//! 12    Drain                                    KnownOpen C9
+//! 13    Resume RunAdmission                      KnownOpen C43
+//! 14    Reclaim                                  Shipped; Adopted (L2 verification)
+//! 15    ProcessDrain                             Shipped
+//! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
+//! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
+//! 18    PreDrain                                 KnownOpen C13
+//! 19    RunAdmission Run Cancellation            KnownOpen R19; KnownOpen R20a
+//! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
+//! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
+//! ```
+//!
+//! **Pending, and why.** Line 16 waits for P3: the obligations a target
+//! without threads owes come from the capability matrix, and gating
+//! the eager spine on wasm is an interim correction, not the rule.
+//! Line 17 prefers the deferred spine's join order everywhere, on the
+//! condition that the teardown delivery contract's final-publish
+//! guarantees (GH #253) survive every eager, deferred and declaration
+//! permutation; it is settled only once that is shown. Line 1's
+//! pool-placed owner subcase waits for the construction-time domain:
+//! decision L0-1 names the pool's worker as that owner's domain, and
+//! `spec/semantics.md` names the thread settling the parent. Lines 2
+//! and 3 have no option chosen: the wave-2 decisions treat lines 1–3
+//! as one protocol (construction, readiness and failure delivery,
+//! settled by events) without choosing (a) or (b) for the post-run
+//! tick on a posted `run()` or for where lifecycle methods run on a
+//! pool, so their rows record the shipped domains and wait.
+
+use hale_graph::ids::SiteId;
+
+use crate::ty::Ty;
+
+// ------------------------------------------------------------ identity
+
+/// A row's static identity: the declaration built and the template
+/// that builds it. Two specializations of one generic share
+/// [`DeclRef::site`] and differ in [`DeclRef::args`], so they are two
+/// source sites with two sets of rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceSite {
+    pub decl: DeclRef,
+    pub template: Template,
+}
+
+/// The locus declaration an instance realizes: an override literal's,
+/// not the field's declared type (P1's `DeclRef`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeclRef {
+    /// The declaration's site; for a monomorph, the template's.
+    pub site: SiteId,
+    /// The substitution; empty unless generic.
+    pub args: Vec<Ty>,
+    /// The name lowering keys on (`__StdIoTcpListener`, `Cache_Int_String`).
+    pub lowered: String,
+}
+
+/// Where the instance comes from.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Template {
+    /// In a construction template's static tower, or an adapter's
+    /// binding entry: P1's instance key.
+    Static(InstanceKey),
+    /// A literal outside the static tower: in a method or fn body,
+    /// let-bound, accepted, bubbled. Every instance of it shares the
+    /// literal's rows; how many can be live is P1's bound on the site.
+    Dynamic { literal: SiteId },
+}
+
+/// P1's static instance key, field for field
+/// (`notes/f40-placement-correspondence.md` § 1, Schema): a key names
+/// a template, never a runtime instance. When P1's producer lands, its
+/// `placement::InstanceKey` replaces this type and this module
+/// re-exports it; until then the two are written to be the same.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InstanceKey {
+    pub origin: Origin,
+    /// The fields from the origin's top; empty is the top itself.
+    pub path: Vec<Step>,
+    /// `Some(i)` on a `replicas = K > 1` field and every row under it.
+    pub replica: Option<u32>,
+}
+
+/// The scope that constructs a static tower.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Origin {
+    /// A root literal: one template per literal site.
+    Construction(SiteId),
+    /// An adapter literal in the root's `bindings { }`: built once, in
+    /// the bindings prelude.
+    Binding(SiteId),
+}
+
+/// One field of a key's path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Step {
+    pub field: String,
+    /// The literal taken, when the field's initializer chooses among
+    /// literals; `None` when it has one.
+    pub alternative: Option<SiteId>,
+}
+
+/// The runtime level: one live object and one incarnation of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeSubject {
+    pub instance: RuntimeInstance,
+    pub incarnation: Incarnation,
+}
+
+/// A live instance, numbered by the runtime. The table never mints
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RuntimeInstance(u64);
+
+impl RuntimeInstance {
+    /// The number a trace event carried. Reading the runtime's numbers
+    /// is the only way to hold one.
+    pub fn observed(raw: u64) -> RuntimeInstance {
+        RuntimeInstance(raw)
+    }
+
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// An incarnation of one instance: 0 from its first `birth()`, the
+/// next at each `restart` / `restart_in_place` the runtime performs. A
+/// restart requested and not performed (restart during drain) begins
+/// none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Incarnation(u32);
+
+impl Incarnation {
+    /// The number a trace event carried.
+    pub fn observed(raw: u32) -> Incarnation {
+        Incarnation(raw)
+    }
+
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// A runtime subject joined to the source site it is an instance of:
+/// what the trace oracle builds from an event, and the only place the
+/// two levels meet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Occurrence {
+    pub site: SourceSite,
+    pub subject: RuntimeSubject,
+}
+
+// ------------------------------------------------------------ the rows
+
+/// One obligation of the plan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Obligation {
+    pub site: SourceSite,
+    pub kind: ObligationKind,
+    /// For [`ObligationKind::Closures`] and a failure raised by one:
+    /// the epoch.
+    pub epoch: Option<Epoch>,
+    /// The paths on which the obligation exists. A child that fails
+    /// at params settle never reaches `run()`; a restart repeats the
+    /// guarded subsequence; no row is unconditional over every path.
+    pub guard: PathGuard,
+    pub holder: Holder,
+    pub edges: Edges,
+    /// The named terminal alternatives, every one this obligation can
+    /// end in. A path ends in exactly one.
+    pub terminals: Vec<Terminal>,
+    pub multiplicity: Multiplicity,
+    pub lifetime: Vec<Retention>,
+    pub progress: Progress,
+    pub status: Status,
+}
+
+/// An obligation's position in its plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObligationId(pub u32);
+
+/// One snapshot's plan: every obligation, indexed by [`ObligationId`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LifecyclePlan {
+    pub obligations: Vec<Obligation>,
+}
+
+impl LifecyclePlan {
+    pub fn get(&self, id: ObligationId) -> Option<&Obligation> {
+        self.obligations.get(id.0 as usize)
+    }
+}
+
+/// What an obligation is: one name per lifecycle action the inventory
+/// lists, never one per emission site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ObligationKind {
+    /// The params bracket: opened before the first field is built,
+    /// settled once the last is stored. Settlement is the event the
+    /// held deliveries wait for.
+    ParamsSettle,
+    /// Construction-time delivery: a failure held while the owner's
+    /// params are open is delivered at settle, in arrival order,
+    /// before the owner's `birth()`; its child waits for the decision.
+    ConstructionDelivery,
+    /// `accept(c)`: after the child's params, before its birth; it
+    /// cannot reject.
+    Accept,
+    /// Subscription registration, before `birth()`.
+    Subscribe,
+    /// Delivery to a new instance becomes eligible; what was published
+    /// to it before then is retained, never dropped.
+    Readiness,
+    /// `birth()`, and its `birth_check`.
+    Birth,
+    /// A run's admission: attempted by the caller, then admitted or
+    /// rejected by the domain that would run it. Attempted is the
+    /// caller's knowledge, never a third outcome.
+    RunAdmission,
+    /// `run()`'s execution, from start to return.
+    Run,
+    /// The run end: await phase 0, the restart loop, the per-child
+    /// reclaim decision (a kept failed child stays, GH #1069).
+    RunEnd,
+    /// A closure epoch's evaluation (see [`Epoch`]).
+    Closures,
+    /// A failure's delivery: raised by a closure, `birth_check` or
+    /// `violate`, completed when the owner's handler returns on the
+    /// owner's domain (decision L0-1).
+    FailureDelivery,
+    /// The handler's recovery decision (restart, quarantine, bubble,
+    /// absorb), recorded apart from its execution.
+    RecoveryDecision,
+    /// A restart's execution: `birth()` again on the same instance,
+    /// beginning the next incarnation.
+    Restart,
+    /// The resume after a held handler: restart, start `run()`, or the
+    /// run end, through the same placement and admission as a first
+    /// run.
+    Resume,
+    /// `drain()`, with the owned fields' drains before it.
+    Drain,
+    /// The bus drain a teardown spine runs before its first entry.
+    PreDrain,
+    /// Waking every `or wait` that only teardown ends.
+    WaitAbort,
+    /// Joining an owned pinned child: mailbox shutdown, the join, the
+    /// mailbox's destroy.
+    PinnedJoin,
+    /// Joining every cooperative pool's worker.
+    PoolJoin,
+    /// The owner keeps completing outstanding failure decisions while
+    /// it joins, until the children it waits for have quiesced.
+    JoinProgress,
+    /// A deliberate abandonment at shutdown: a parked coroutine's
+    /// stack freed without resuming it.
+    Cancellation,
+    /// The teardown delivery contract: a result in flight to a
+    /// subscriber is delivered before the subscriber is torn down, or
+    /// discarded through deregister-on-dissolve, never dispatched to
+    /// freed memory.
+    TeardownDelivery,
+    /// The dissolve-epoch closures, then the user's `dissolve()`.
+    Dissolve,
+    /// The reclaim: the instance's teardown spine and its arena's
+    /// release, exactly once (the `__arena` latch).
+    Reclaim,
+    /// The whole-process drain a signal begins: a cooperative flag,
+    /// never a lifecycle call from the signal path.
+    ProcessDrain,
+}
+
+impl ObligationKind {
+    /// Every kind, in declaration order.
+    pub const ALL: &'static [ObligationKind] = &[
+        ObligationKind::ParamsSettle,
+        ObligationKind::ConstructionDelivery,
+        ObligationKind::Accept,
+        ObligationKind::Subscribe,
+        ObligationKind::Readiness,
+        ObligationKind::Birth,
+        ObligationKind::RunAdmission,
+        ObligationKind::Run,
+        ObligationKind::RunEnd,
+        ObligationKind::Closures,
+        ObligationKind::FailureDelivery,
+        ObligationKind::RecoveryDecision,
+        ObligationKind::Restart,
+        ObligationKind::Resume,
+        ObligationKind::Drain,
+        ObligationKind::PreDrain,
+        ObligationKind::WaitAbort,
+        ObligationKind::PinnedJoin,
+        ObligationKind::PoolJoin,
+        ObligationKind::JoinProgress,
+        ObligationKind::Cancellation,
+        ObligationKind::TeardownDelivery,
+        ObligationKind::Dissolve,
+        ObligationKind::Reclaim,
+        ObligationKind::ProcessDrain,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ObligationKind::ParamsSettle => "ParamsSettle",
+            ObligationKind::ConstructionDelivery => "ConstructionDelivery",
+            ObligationKind::Accept => "Accept",
+            ObligationKind::Subscribe => "Subscribe",
+            ObligationKind::Readiness => "Readiness",
+            ObligationKind::Birth => "Birth",
+            ObligationKind::RunAdmission => "RunAdmission",
+            ObligationKind::Run => "Run",
+            ObligationKind::RunEnd => "RunEnd",
+            ObligationKind::Closures => "Closures",
+            ObligationKind::FailureDelivery => "FailureDelivery",
+            ObligationKind::RecoveryDecision => "RecoveryDecision",
+            ObligationKind::Restart => "Restart",
+            ObligationKind::Resume => "Resume",
+            ObligationKind::Drain => "Drain",
+            ObligationKind::PreDrain => "PreDrain",
+            ObligationKind::WaitAbort => "WaitAbort",
+            ObligationKind::PinnedJoin => "PinnedJoin",
+            ObligationKind::PoolJoin => "PoolJoin",
+            ObligationKind::JoinProgress => "JoinProgress",
+            ObligationKind::Cancellation => "Cancellation",
+            ObligationKind::TeardownDelivery => "TeardownDelivery",
+            ObligationKind::Dissolve => "Dissolve",
+            ObligationKind::Reclaim => "Reclaim",
+            ObligationKind::ProcessDrain => "ProcessDrain",
+        }
+    }
+
+    /// The inventory rows the kind stands for.
+    pub fn rows(self) -> &'static [&'static str] {
+        match self {
+            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "R1", "R5"],
+            ObligationKind::ConstructionDelivery => &["C11", "R2", "R3", "R4", "R5"],
+            ObligationKind::Accept => &["C2", "C7", "R6"],
+            ObligationKind::Subscribe => &["C8"],
+            ObligationKind::Readiness => &["C8", "C10"],
+            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "R9", "R11", "R12", "R46"],
+            ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
+            ObligationKind::Run => &["C9", "C12", "R24", "R25"],
+            ObligationKind::RunEnd => &["C26", "R7"],
+            ObligationKind::Closures => &["C37", "C40"],
+            ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
+            ObligationKind::RecoveryDecision => &["C45"],
+            ObligationKind::Restart => &["C41", "C42", "R38", "R48"],
+            ObligationKind::Resume => &["C43"],
+            ObligationKind::Drain => &["C14", "C30", "R44"],
+            ObligationKind::PreDrain => &["C16", "R29"],
+            ObligationKind::WaitAbort => &["C17", "R34"],
+            ObligationKind::PinnedJoin => &["C13", "C16", "C18", "R26", "R27"],
+            ObligationKind::PoolJoin => &["C13", "C19", "C21", "C22", "C23", "R20"],
+            ObligationKind::JoinProgress => &["C18", "R20"],
+            ObligationKind::Cancellation => &["R20a", "R21"],
+            ObligationKind::TeardownDelivery => &["C16", "R33", "R35"],
+            ObligationKind::Dissolve => &["C31", "C32"],
+            ObligationKind::Reclaim => &["C15", "C24", "C25", "C27", "C28", "C29", "C33", "R8", "R10", "R13", "R14", "R47"],
+            ObligationKind::ProcessDrain => &["R43"],
+        }
+    }
+}
+
+/// A closure epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Epoch {
+    Birth,
+    Tick,
+    Duration,
+    Inline,
+    Dissolve,
+}
+
+/// The path an obligation exists on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PathGuard {
+    /// No failure on the way.
+    Normal,
+    /// The instance failed while its owner's params were open: the
+    /// failure is held, and its `run()` waits for the decision.
+    FailedAtSettle,
+    /// The instance failed during `birth()`.
+    FailedInBirth,
+    /// The instance failed in `run()` or after a handler.
+    FailedInRun,
+    /// A restart was performed: the guarded subsequence repeats in
+    /// the next incarnation.
+    Restart,
+    /// The owner is in teardown, or the process drains.
+    DrainInFlight,
+    /// Any path.
+    Any,
+}
+
+/// Who owes the obligation: which spine runs it, on which domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Holder {
+    pub spine: Spine,
+    pub domain: DomainRole,
+}
+
+/// The emitted sequence an obligation is discharged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Spine {
+    /// The instantiation: params, accept, subscribe, birth, run start
+    /// (C1–C12).
+    Instantiation,
+    /// The posted run's wrapper and its run end (C26).
+    PoolRun,
+    /// A pinned locus's thread function (C9).
+    PinnedMain,
+    /// Teardown spine 1: a statement-position literal (C13).
+    EagerTeardown,
+    /// The per-entry teardown of a deferred frame entry (C18).
+    DeferredEntry,
+    /// Teardown spine 2: the deferred main-locus entry (C19).
+    DeferredMainEntry,
+    /// Teardown spine 3: `fn main` falls through (C21).
+    MainFallThrough,
+    /// Teardown spine 4: `fn main`'s test-failure exit (C22).
+    MainTestFailure,
+    /// Teardown spine 5: `return` from `fn main` (C23).
+    MainReturn,
+    /// The reclaim spine (C25), from a run end, a handler's
+    /// `terminate`, settle, a cascade or a reassignment.
+    Reclaim,
+    /// The owned-field cascades (C30, C31, C32) and the accepted
+    /// children's (C28).
+    Cascade,
+    /// A held failure's settle and its resume (R5, C43).
+    Settle,
+    /// The owner's queue drain, where handlers run (R29, R36).
+    QueueDrain,
+    /// The process's start and exit tail (C20, C24).
+    Process,
+}
+
+/// The domain an obligation runs on, relative to its instance. The
+/// producer resolves a role to P1's domain id; a role is what the rule
+/// says, a domain id is what a deployment makes of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DomainRole {
+    /// The thread running the code that holds the literal.
+    Instantiating,
+    /// The instance's own queue owner: main, its pool's worker, or its
+    /// pinned thread.
+    Own,
+    /// The instance's owner's queue owner: where the owner's handlers
+    /// run (decision L0-1).
+    Owner,
+    /// The thread running the frame or cascade that tears the instance
+    /// down.
+    Teardown,
+    /// The process's main thread.
+    Main,
+    /// A cooperative pool's worker, for an obligation every worker owes
+    /// (the pool join's cancellation).
+    PoolWorker,
+    /// Compile time: the obligation is discharged by what is emitted.
+    Compile,
+}
+
+/// The order an obligation is placed in, on events.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Edges {
+    /// Events that happen before this obligation is entered. A
+    /// prerequisite is a completion unless it names an entry.
+    pub entry: Vec<Event>,
+    /// Events that happen before this obligation completes or reaches
+    /// any terminal.
+    pub completion: Vec<Event>,
+    /// For a nested action: the action it runs inside, entered and not
+    /// completed. Its entry edge names that action's entry, and that
+    /// action's completion edges name this one's terminal.
+    pub within: Option<ObligationId>,
+}
+
+/// A point in one obligation's life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Event {
+    pub obligation: ObligationId,
+    pub point: Point,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Point {
+    Entered,
+    /// Ended in [`Terminal::Completed`].
+    Completed,
+    /// Ended in any of its terminals.
+    Ended,
+    /// Ended in this terminal.
+    Terminal(Terminal),
+}
+
+/// A named terminal outcome (decision line 19's table, with the
+/// inventory's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Terminal {
+    /// Started and ran to its end.
+    Completed,
+    /// Never started. A run rejected before admission (a shutdown
+    /// reason), or admitted and then canceled before it started (an
+    /// acknowledgement); a restart asked for during drain.
+    NotStarted(NotStarted),
+    /// Started, then abandoned by an asynchronous shutdown (a parked
+    /// coroutine). The worker's quiescence is not this terminal: it is
+    /// the pool join's completion, a separate obligation.
+    CanceledAfterStart,
+    /// Ended by raising a failure; its delivery is its own
+    /// [`ObligationKind::FailureDelivery`].
+    FailureDelivered,
+    /// Ended in a violation with no route: the report and the
+    /// structural exit.
+    ClosureViolation,
+    /// Not performed because its subject was torn down first: a cell to
+    /// a dissolved subscriber, discarded by deregister-on-dissolve.
+    Dissolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NotStarted {
+    /// Rejected before admission: the domain is shutting down.
+    Shutdown(ShutdownCause),
+    /// Admitted, then canceled before start, with an acknowledgement
+    /// the caller can read.
+    Acknowledged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShutdownCause {
+    /// The pool's shutdown is set.
+    PoolShutdown,
+    /// The owner has entered teardown.
+    OwnerTeardown,
+    /// The process drains (a signal raised the draining flag).
+    ProcessDrain,
+}
+
+/// How often an obligation is owed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Multiplicity {
+    /// Exactly once per incarnation: birth, run, run end.
+    OncePerIncarnation,
+    /// Exactly once per instance, across its incarnations: subscribe,
+    /// accept, drain, dissolve, the reclaim.
+    OncePerInstance,
+    /// Exactly once per trigger: a delivery per raised failure, an
+    /// admission per attempted post.
+    OncePerTrigger,
+    /// At most once per instance, and only on its guard's path.
+    AtMostOncePerInstance,
+}
+
+/// Something that must stay alive until an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    pub resource: Resource,
+    pub until: Event,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Resource {
+    /// The instance's struct.
+    Instance,
+    /// Its owner's struct, with the failure route bound at birth.
+    Owner,
+    /// The copied violation a held or travelling failure carries.
+    FailurePayload,
+    /// The instance's arena.
+    Arena,
+    /// Its owner's arena (an accepted, bubbled or field-owned child's
+    /// struct lives in it).
+    OwnerArena,
+    /// A frame slot that holds the instance until the flush.
+    Slot,
+    /// A pinned instance's mailbox.
+    Mailbox,
+    /// A cell in flight: a run post, a bus cell, a failure cell.
+    Cell,
+}
+
+/// What makes an obligation reach a terminal, apart from what keeps its
+/// resources alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub rule: ProgressRule,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressRule {
+    /// Runs to a terminal on its holder's domain without waiting on
+    /// another.
+    Local,
+    /// Waits for an event on another domain, which that domain owes
+    /// whatever else it is doing.
+    WaitsFor { event: Event, owed_by: DomainRole },
+    /// A join: unbounded, and the joining domain keeps completing the
+    /// failure decisions the joined children wait for until they
+    /// quiesce (join progress).
+    Join { pumps: ObligationKind },
+    /// Bounded by a named limit, loud when hit
+    /// (`LOTUS_BUS_QUIESCE_MS`).
+    Bounded { limit: &'static str },
+}
+
+/// Whether a rule is what the code does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Status {
+    /// Decided; nothing today contradicts it, and nothing yet checks it.
+    Adopted,
+    /// The code does what the rule says.
+    Shipped,
+    /// Decided; today's behaviour differs at this inventory row, and a
+    /// fixture pins today's outcome.
+    KnownOpen { inventory_row: &'static str },
+    /// The rule waits on this condition, and is not guessed.
+    Pending { condition: &'static str },
+}
+
+// ------------------------------------------------------ the decisions
+
+/// One decision line: what it binds, and its status there.
+#[derive(Debug, Clone, Copy)]
+pub struct DecisionLine {
+    /// The inventory's number, or `RD` (restart during drain) and `JP`
+    /// (join progress).
+    pub line: &'static str,
+    pub title: &'static str,
+    pub kinds: &'static [ObligationKind],
+    /// Every status the line carries, each with what it covers.
+    pub statuses: &'static [(Status, &'static str)],
+}
+
+use ObligationKind as K;
+
+const POOL_OWNER: &str = "the construction-time domain for an owner placed on a cooperative pool: decision L0-1 names the pool's worker, spec/semantics.md the settling thread";
+const NO_OPTION: &str = "the wave-2 decisions frame lines 1-3 as one protocol and choose no option for this line";
+
+/// The decision lines and the kinds each binds. The module docs carry
+/// the same table, and `the_doc_table_is_the_data` holds the two equal.
+pub const DECISION_LINES: &[DecisionLine] = &[
+    DecisionLine {
+        line: "1",
+        title: "construction-time delivery",
+        kinds: &[K::ConstructionDelivery, K::ParamsSettle],
+        statuses: &[
+            (Status::Shipped, "an owner on the instantiating thread's domain"),
+            (Status::Pending { condition: POOL_OWNER }, "an owner placed on a cooperative pool"),
+        ],
+    },
+    DecisionLine {
+        line: "2",
+        title: "post-run tick closures on a posted run()",
+        kinds: &[K::Closures, K::Run],
+        statuses: &[(Status::Pending { condition: NO_OPTION }, "the tick and duration closures after a posted run()")],
+    },
+    DecisionLine {
+        line: "3",
+        title: "where lifecycle methods run on a pool",
+        kinds: &[K::Accept, K::Birth, K::Run, K::Dissolve],
+        statuses: &[(Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus")],
+    },
+    DecisionLine {
+        line: "4",
+        title: "the failure route bound at birth, in every spine",
+        kinds: &[K::FailureDelivery, K::Reclaim],
+        statuses: &[
+            (Status::KnownOpen { inventory_row: "C25" }, "a dissolve-epoch violation under the reclaim spine"),
+            (Status::KnownOpen { inventory_row: "C31" }, "a dissolve-epoch violation in a cascade lowered in fn main"),
+        ],
+    },
+    DecisionLine {
+        line: "5",
+        title: "accept: after params, before birth, no rejection",
+        kinds: &[K::Accept],
+        statuses: &[(Status::Shipped, "accept's position; the admission interface is separate work")],
+    },
+    DecisionLine {
+        line: "6",
+        title: "registration before birth; readiness",
+        kinds: &[K::Subscribe, K::Readiness],
+        statuses: &[
+            (Status::Shipped, "registration before birth()"),
+            (Status::KnownOpen { inventory_row: "C8" }, "delivery eligible only once birth() completes"),
+        ],
+    },
+    DecisionLine {
+        line: "7",
+        title: "abort unsatisfiable waits before the join",
+        kinds: &[K::WaitAbort, K::PoolJoin],
+        statuses: &[(Status::KnownOpen { inventory_row: "R34" }, "the wait-abort raised after the pool join")],
+    },
+    DecisionLine {
+        line: "8",
+        title: "a birth failure is a ClosureViolation; the child is kept",
+        kinds: &[K::FailureDelivery, K::Birth],
+        statuses: &[(Status::Shipped, "the failure's shape and the kept child")],
+    },
+    DecisionLine {
+        line: "9",
+        title: "delivery at the failing epoch, held while params are open",
+        kinds: &[K::FailureDelivery, K::Closures],
+        statuses: &[(Status::Shipped, "the epoch of delivery")],
+    },
+    DecisionLine {
+        line: "10",
+        title: "dissolve-epoch closures before the user's dissolve()",
+        kinds: &[K::Closures, K::Dissolve],
+        statuses: &[(Status::Shipped, "the order")],
+    },
+    DecisionLine {
+        line: "11",
+        title: "a let-bound literal drains at scope exit",
+        kinds: &[K::Drain],
+        statuses: &[(Status::Shipped, "drain deferred with dissolve")],
+    },
+    DecisionLine {
+        line: "12",
+        title: "owned fields drain before their parent, in the child's domain",
+        kinds: &[K::Drain],
+        statuses: &[(Status::KnownOpen { inventory_row: "C9" }, "a pinned locus's owned fields are never drained")],
+    },
+    DecisionLine {
+        line: "13",
+        title: "resume through placement and admission",
+        kinds: &[K::Resume, K::RunAdmission],
+        statuses: &[(Status::KnownOpen { inventory_row: "C43" }, "a pool-placed child's resumed run() runs inline")],
+    },
+    DecisionLine {
+        line: "14",
+        title: "order by construction, with latches",
+        kinds: &[K::Reclaim],
+        statuses: &[
+            (Status::Shipped, "emission order and the latches"),
+            (Status::Adopted, "the trace build verifies the table (L2)"),
+        ],
+    },
+    DecisionLine {
+        line: "15",
+        title: "a signal raises a cooperative flag",
+        kinds: &[K::ProcessDrain],
+        statuses: &[(Status::Shipped, "no lifecycle call from the signal path")],
+    },
+    DecisionLine {
+        line: "16",
+        title: "the target's lifecycle obligations come from the capability matrix",
+        kinds: &[K::PoolJoin, K::WaitAbort],
+        statuses: &[(
+            Status::Pending { condition: "P3's capability matrix is the authority; gating the eager spine is an interim correction" },
+            "pool and wait actions on a target without threads",
+        )],
+    },
+    DecisionLine {
+        line: "17",
+        title: "the pinned join set and order",
+        kinds: &[K::PinnedJoin, K::TeardownDelivery],
+        statuses: &[(
+            Status::Pending {
+                condition: "the deferred rule is the baseline only if GH #253's final-publish guarantees hold across eager, deferred and declaration permutations",
+            },
+            "subscription-less pinned first, subscribers in their slots, in every spine",
+        )],
+    },
+    DecisionLine {
+        line: "18",
+        title: "every spine pre-drains; not a quiescence witness",
+        kinds: &[K::PreDrain],
+        statuses: &[(Status::KnownOpen { inventory_row: "C13" }, "the eager spine has no pre-drain")],
+    },
+    DecisionLine {
+        line: "19",
+        title: "a run's admission and its named terminal outcome",
+        kinds: &[K::RunAdmission, K::Run, K::Cancellation],
+        statuses: &[
+            (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun, is silent"),
+            (Status::KnownOpen { inventory_row: "R20a" }, "an abandoned parked run has no named outcome"),
+        ],
+    },
+    DecisionLine {
+        line: "RD",
+        title: "restart during drain is not performed",
+        kinds: &[K::RecoveryDecision, K::Restart],
+        statuses: &[
+            (Status::Shipped, "while the process drains"),
+            (Status::KnownOpen { inventory_row: "C42" }, "while the owner is in teardown"),
+        ],
+    },
+    DecisionLine {
+        line: "JP",
+        title: "join progress",
+        kinds: &[K::JoinProgress, K::FailureDelivery],
+        statuses: &[
+            (Status::KnownOpen { inventory_row: "C18" }, "a pinned join pumps no queue"),
+            (Status::KnownOpen { inventory_row: "R20" }, "the pool joins pump no queue"),
+        ],
+    },
+];
+
+impl Status {
+    /// The status as the decision table writes it.
+    pub fn label(self) -> String {
+        match self {
+            Status::Adopted => "Adopted".to_string(),
+            Status::Shipped => "Shipped".to_string(),
+            Status::KnownOpen { inventory_row } => format!("KnownOpen {inventory_row}"),
+            Status::Pending { .. } => "Pending".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// Lines 1-19, then the two adopted requirements, each once.
+    #[test]
+    fn every_decision_line_binds_a_kind() {
+        let lines: Vec<&str> = DECISION_LINES.iter().map(|l| l.line).collect();
+        let mut expected: Vec<String> = (1..=19).map(|n| n.to_string()).collect();
+        expected.push("RD".into());
+        expected.push("JP".into());
+        assert_eq!(lines, expected);
+        for l in DECISION_LINES {
+            assert!(!l.kinds.is_empty(), "line {} binds no kind", l.line);
+            assert!(!l.statuses.is_empty(), "line {} has no status", l.line);
+        }
+    }
+
+    /// The Pending lines are exactly the ones the decisions leave open.
+    #[test]
+    fn pending_is_named_never_guessed() {
+        let pending: BTreeSet<&str> = DECISION_LINES
+            .iter()
+            .filter(|l| l.statuses.iter().any(|(s, _)| matches!(s, Status::Pending { .. })))
+            .map(|l| l.line)
+            .collect();
+        assert_eq!(pending, BTreeSet::from(["1", "2", "3", "16", "17"]));
+    }
+
+    #[test]
+    fn every_kind_names_its_rows_and_a_name() {
+        let names: BTreeSet<&str> = ObligationKind::ALL.iter().map(|k| k.name()).collect();
+        assert_eq!(names.len(), ObligationKind::ALL.len());
+        for k in ObligationKind::ALL {
+            assert!(!k.rows().is_empty(), "{} names no inventory row", k.name());
+        }
+    }
+
+    /// The table in the module docs is [`DECISION_LINES`], line for line.
+    #[test]
+    fn the_doc_table_is_the_data() {
+        let src = include_str!("lifecycle.rs");
+        let table: Vec<&str> = src
+            .lines()
+            .skip_while(|l| !l.starts_with("//! line  kinds"))
+            .skip(1)
+            .take_while(|l| !l.starts_with("//! ```"))
+            .map(|l| l.trim_start_matches("//!").trim())
+            .collect();
+        assert_eq!(table.len(), DECISION_LINES.len());
+        for (row, line) in table.iter().zip(DECISION_LINES) {
+            let mut words = row.split_whitespace();
+            assert_eq!(words.next(), Some(line.line));
+            let kinds: Vec<&str> = words.by_ref().take(line.kinds.len()).collect();
+            let want: Vec<&str> = line.kinds.iter().map(|k| k.name()).collect();
+            assert_eq!(kinds, want, "line {}", line.line);
+            let status: String = words.collect::<Vec<_>>().join(" ");
+            for (s, _) in line.statuses {
+                assert!(status.contains(&s.label()), "line {}: {status:?} lacks {}", line.line, s.label());
+            }
+        }
+    }
+}
