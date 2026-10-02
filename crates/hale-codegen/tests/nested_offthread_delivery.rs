@@ -65,7 +65,9 @@
 //! the review's own, one two levels down, and two anchors of one type;
 //! and by a round trip through the instantiating thread, whose readiness
 //! wait drains its own mailbox as a yield there would, with the drain
-//! switched off as its negative control. A temporary locus of a pinned
+//! switched off as its negative control. That wait is timed per
+//! platform, so the runtime's whole translation unit is compiled for
+//! the host and for wasm32. A temporary locus of a pinned
 //! default is dissolved when the init ends, on the anchor's thread.
 //!
 //! The outcomes measured today that contradict the spec are listed in
@@ -1103,6 +1105,44 @@ fn without_the_drain_the_round_trip_through_the_instantiating_thread_times_out()
         assert_eq!(code, Some(3), "{arm:?}: exit\n{stdout}\n{stderr}");
         assert_eq!(stdout.lines().collect::<Vec<_>>(), ["STARTUP_TIMEOUT"], "{arm:?}\n{stderr}");
     }
+}
+
+/// `clang -fsyntax-only` over the whole runtime translation unit with
+/// `args`: the readiness wait is per platform (a monotonic condattr
+/// clock, Darwin's relative wait, nothing on wasm32), and the whole
+/// unit has to compile before the link's dead-code elimination could
+/// drop an unused pinned start (the review of PR #1319, round 3).
+fn runtime_syntax_check(clang: &str, args: &[&str]) {
+    let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime/lotus_arena.c");
+    let out = Command::new(clang)
+        .args(args)
+        .args(["-fsyntax-only", "-Werror=implicit-function-declaration"])
+        .arg(&runtime)
+        .output()
+        .unwrap_or_else(|e| panic!("{clang}: {e}"));
+    eprintln!("MEASURE {clang} {} -fsyntax-only -Werror=implicit-function-declaration {}", args.join(" "), runtime.display());
+    assert!(out.status.success(), "{clang} {args:?}:\n{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// The runtime compiles for the host: on macOS, Apple's clang and SDK,
+/// where `pthread_condattr_setclock` does not exist.
+#[test]
+fn the_runtime_compiles_for_the_host() {
+    runtime_syntax_check("clang", &[]);
+}
+
+/// The runtime compiles for wasm32 with the flags and the bundled shim
+/// the wasm build uses (`link_wasm`), which declare no condattr call
+/// and no timed wait.
+#[test]
+fn the_runtime_compiles_for_wasm32() {
+    let Some(clang) = ["clang-18", "clang"].into_iter().find(|c| {
+        Command::new(c).arg("--version").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("version 18."))
+    }) else {
+        eprintln!("SKIP the_runtime_compiles_for_wasm32: no LLVM 18 clang on the path (clang-18, or a clang reporting version 18)");
+        return;
+    };
+    runtime_syntax_check(clang, &["--target=wasm32", "-mbulk-memory", "-Wno-builtin-requires-header"]);
 }
 
 /// The IR of `case`'s witnessing program.

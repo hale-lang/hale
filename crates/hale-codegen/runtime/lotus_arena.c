@@ -8110,12 +8110,35 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
  * pool worker). So a nested body that waits during the init for a
  * reply from a subscriber on the instantiating thread is answered
  * rather than deadlocked. A handler run here reaches its own
- * subscriber, not the instantiating frame the init has captured. */
-typedef struct lotus_pinned_start {
+ * subscriber, not the instantiating frame the init has captured.
+ *
+ * Each slice is timed on the clock its wait reads, one wait per
+ * platform. Elsewhere the condition variable is created on
+ * CLOCK_MONOTONIC and `pthread_cond_timedwait` takes an absolute
+ * monotonic deadline. Darwin has no `pthread_condattr_setclock`, so
+ * there the variable keeps its default and
+ * `pthread_cond_timedwait_relative_np` measures the 1 ms itself; no
+ * clock is read, so none can disagree with the wait's. Either wait
+ * returns early on the broadcast `ready` sends.
+ *
+ * wasm32 has no threads: every pinned placement is refused there, so
+ * codegen never emits these calls, and the family is not compiled (the
+ * shim declares neither the condattr calls nor a timed wait). Its
+ * stubs trap rather than leave the symbols undefined, which the wasm
+ * link (`--allow-undefined`) would turn into host imports answering 0. */
+typedef struct lotus_pinned_start lotus_pinned_start_t;
+
+#ifndef __wasm__
+struct lotus_pinned_start {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     int state;                 /* 0 initializing, 1 ready, 2 go */
-} lotus_pinned_start_t;
+};
+
+static void lotus_pinned_start_fail(const char *what, int rc) {
+    fprintf(stderr, "lotus: starting a pinned locus: %s failed (%d)\n", what, rc);
+    abort();
+}
 
 lotus_pinned_start_t *lotus_pinned_start_create(void) {
     lotus_pinned_start_t *s = calloc(1, sizeof *s);
@@ -8123,13 +8146,43 @@ lotus_pinned_start_t *lotus_pinned_start_create(void) {
         fprintf(stderr, "lotus: out of memory starting a pinned locus\n");
         abort();
     }
-    pthread_mutex_init(&s->lock, NULL);
+    int rc = pthread_mutex_init(&s->lock, NULL);
+    if (rc != 0) lotus_pinned_start_fail("pthread_mutex_init", rc);
+#if defined(__APPLE__)
+    rc = pthread_cond_init(&s->cond, NULL);
+    if (rc != 0) lotus_pinned_start_fail("pthread_cond_init", rc);
+#else
     pthread_condattr_t attr;
-    pthread_condattr_init(&attr);
-    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
-    pthread_cond_init(&s->cond, &attr);
-    pthread_condattr_destroy(&attr);
+    rc = pthread_condattr_init(&attr);
+    if (rc != 0) lotus_pinned_start_fail("pthread_condattr_init", rc);
+    rc = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    if (rc != 0) lotus_pinned_start_fail("pthread_condattr_setclock(CLOCK_MONOTONIC)", rc);
+    rc = pthread_cond_init(&s->cond, &attr);
+    if (rc != 0) lotus_pinned_start_fail("pthread_cond_init", rc);
+    (void)pthread_condattr_destroy(&attr);
+#endif
     return s;
+}
+
+/* One slice of the readiness wait, `s->lock` held: up to 1 ms, or
+ * until `ready`'s broadcast. */
+static void lotus_pinned_start_wait_slice(lotus_pinned_start_t *s) {
+#if defined(__APPLE__)
+    const struct timespec slice = { 0, 1000000 };           /* 1 ms */
+    int rc = pthread_cond_timedwait_relative_np(&s->cond, &s->lock, &slice);
+#else
+    struct timespec slice;
+    if (clock_gettime(CLOCK_MONOTONIC, &slice) != 0)
+        lotus_pinned_start_fail("clock_gettime(CLOCK_MONOTONIC)", errno);
+    slice.tv_nsec += 1000000;                               /* 1 ms */
+    if (slice.tv_nsec >= 1000000000L) {
+        slice.tv_sec += 1;
+        slice.tv_nsec -= 1000000000L;
+    }
+    int rc = pthread_cond_timedwait(&s->cond, &s->lock, &slice);
+#endif
+    if (rc != 0 && rc != ETIMEDOUT && rc != EINTR)
+        lotus_pinned_start_fail("the timed readiness wait", rc);
 }
 
 static void lotus_pinned_start_set(lotus_pinned_start_t *s, int state) {
@@ -8177,14 +8230,7 @@ void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
     lotus_mailbox_t *own = g_current_pinned_mailbox;
     pthread_mutex_lock(&s->lock);
     while (s->state < 1) {
-        struct timespec slice;
-        clock_gettime(CLOCK_MONOTONIC, &slice);
-        slice.tv_nsec += 1000000;                 /* 1 ms */
-        if (slice.tv_nsec >= 1000000000L) {
-            slice.tv_sec += 1;
-            slice.tv_nsec -= 1000000000L;
-        }
-        pthread_cond_timedwait(&s->cond, &s->lock, &slice);
+        lotus_pinned_start_wait_slice(s);
         if (s->state >= 1) break;
         pthread_mutex_unlock(&s->lock);
         lotus_bus_queue_drain(queue);
@@ -8207,6 +8253,33 @@ void lotus_pinned_start_await_go(lotus_pinned_start_t *s) {
     pthread_mutex_destroy(&s->lock);
     free(s);
 }
+#else /* __wasm__ */
+static void lotus_pinned_start_refused(void) {
+    fprintf(stderr, "lotus: a pinned locus cannot start on wasm32 (no threads)\n");
+    abort();
+}
+lotus_pinned_start_t *lotus_pinned_start_create(void) {
+    lotus_pinned_start_refused();
+    return NULL;
+}
+void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
+    (void)s;
+    lotus_pinned_start_refused();
+}
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
+                                    lotus_bus_queue_t *queue) {
+    (void)s; (void)queue;
+    lotus_pinned_start_refused();
+}
+void lotus_pinned_start_go(lotus_pinned_start_t *s) {
+    (void)s;
+    lotus_pinned_start_refused();
+}
+void lotus_pinned_start_await_go(lotus_pinned_start_t *s) {
+    (void)s;
+    lotus_pinned_start_refused();
+}
+#endif /* __wasm__ */
 
 /*
  * F.31 Phase 4: cooperative-pool worker threads (M:N substrate).
