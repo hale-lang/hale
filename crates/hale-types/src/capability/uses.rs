@@ -35,9 +35,10 @@
 //!
 //! **Holes.** A call the graph cannot resolve — a method on a receiver
 //! whose type the walk cannot name, a call through a function-typed
-//! parameter, or (in a member body beyond the horizon) a call through a
-//! local function value whose binding the walk cannot follow to a fn —
-//! leaves the use's requirements unknown. On a target whose
+//! parameter, a computed callee, or (in the program's own code and in a
+//! member body beyond the horizon) a call through a local function value
+//! whose binding the walk cannot follow to a fn — leaves the use's
+//! requirements unknown. On a target whose
 //! column rejects anything in the stdlib family (wasm32) that is a
 //! refusal; elsewhere it is a recorded hole, counted, never silent. A
 //! call through a local the summary follows to a fn (`let f = pid;
@@ -59,7 +60,7 @@ use super::{
     Abi, BehaviourVerdict, Capability, CapabilityMatrix, Inversion, KnownOpen, OpenCell, Origin,
     TargetClass, TargetRow, Transport, KNOWN_OPEN,
 };
-use crate::alloc_summary::{AllocKind, AllocSummary, CallEdge, Callee, FnKey};
+use crate::alloc_summary::{AllocKind, AllocSummary, CallEdge, CallSpelling, Callee, FnKey};
 
 /// What a use asks for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -165,6 +166,10 @@ fn hole_of(e: &CallEdge) -> Option<&'static str> {
     }
     if e.indirect {
         return Some("it is called through a function-typed parameter, whose target is not known here");
+    }
+    // A computed callee (`pick()(x)`), worded as the member walk words it.
+    if e.spelling == CallSpelling::Expr {
+        return Some(UNRESOLVED_VALUE);
     }
     if e.opaque_method_call() {
         return Some("its receiver's type is not known here");
@@ -325,10 +330,26 @@ impl<'a> Graph<'a> {
                     return Edge::Needs(Capability::StdNamespace(ns), format!("{t}::{name}"));
                 }
                 match hole_of(e) {
+                    // A function value's link is its call, as the member
+                    // walk writes it (`f()`).
+                    Some(why) if why == UNRESOLVED_VALUE => Edge::Hole(format!("{name}()"), why),
                     Some(why) => Edge::Hole(name.clone(), why),
                     None => Edge::Nothing,
                 }
             }
+        }
+    }
+
+    /// What a call edge in the program's own body asks for: its
+    /// [`Graph::edge`], and a hole for a call through a local the summary
+    /// does not follow to a fn, which every other reader of the edge
+    /// takes for the call to nothing it always was.
+    fn own_edge(&self, e: &CallEdge) -> Edge {
+        match (self.edge(e), &e.callee) {
+            (Edge::Nothing, Callee::Unresolved(name)) if e.unresolved_local => {
+                Edge::Hole(format!("{name}()"), UNRESOLVED_VALUE)
+            }
+            (edge, _) => edge,
         }
     }
 
@@ -374,17 +395,17 @@ impl<'a> Graph<'a> {
             let edges = out.entry(key.clone()).or_default();
             for m in met {
                 match m {
-                    Met::Needs(cap, link, _) => {
-                        r.caps.entry(*cap).or_insert_with(|| vec![link.clone()]);
+                    Met::Needs(cap, links, _) => {
+                        r.caps.entry(*cap).or_insert_with(|| links.clone());
                     }
-                    Met::Hole(name, why) => {
+                    Met::Hole(name, why, _) => {
                         if r.hole.is_none() {
                             r.hole = Some((vec![name.clone()], why));
                         }
                     }
-                    Met::Calls(k, _) => {
+                    Met::Calls(k, links, _) => {
                         if self.summary.fns.contains_key(k) {
-                            edges.push((k.clone(), vec![k.display()]));
+                            edges.push((k.clone(), links.clone()));
                         }
                     }
                     Met::Constructs(written, _) => {
@@ -486,7 +507,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
             continue;
         }
         for e in &fs.calls {
-            match g.edge(e) {
+            match g.own_edge(e) {
                 Edge::Needs(cap, link) => uses.push(CapabilityUse {
                     need: Need::Capability(cap),
                     kind: if e.receiver_present { UseKind::Receiver } else { UseKind::Call },
@@ -561,18 +582,25 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
             }
             for met in w.met {
                 match met {
-                    Met::Needs(cap, path, span) => uses.push(CapabilityUse {
+                    Met::Needs(cap, chain, span) => uses.push(CapabilityUse {
                         need: Need::Capability(cap),
                         kind: UseKind::Call,
                         span,
-                        chain: vec![path],
+                        chain,
                         holes: Vec::new(),
                     }),
-                    Met::Calls(k, span) if !g.own(&k) => {
-                        crossing(&mut uses, &req, &k, UseKind::Crossing, span, vec![k.display()], None)
+                    Met::Hole(name, why, span) => uses.push(CapabilityUse {
+                        need: Need::Hole(why),
+                        kind: UseKind::Call,
+                        span,
+                        chain: vec![name],
+                        holes: Vec::new(),
+                    }),
+                    Met::Calls(k, links, span) if !g.own(&k) => {
+                        crossing(&mut uses, &req, &k, UseKind::Crossing, span, links, None)
                     }
                     Met::Constructs(written, span) => construction(&mut uses, &g, &req, &written, span),
-                    Met::Calls(..) | Met::Hole(..) => {}
+                    Met::Calls(..) => {}
                 }
             }
         }
@@ -762,15 +790,18 @@ fn construction(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<FnK
 #[derive(Debug, Clone)]
 enum Met {
     /// A call spelled with a stdlib path: the primitive's namespace,
-    /// with the path.
-    Needs(Capability, String, Span),
-    /// A call to a fn the summary keys.
-    Calls(FnKey, Span),
+    /// with the links to it (the local a call through one is written
+    /// with, then the path).
+    Needs(Capability, Vec<String>, Span),
+    /// A call to a fn the summary keys, with the links to it.
+    Calls(FnKey, Vec<String>, Span),
     /// A literal, as its path is written.
     Constructs(String, Span),
-    /// A method whose receiver's type the walk cannot name (beyond the
-    /// horizon only: it is the construction's to locate).
-    Hole(String, &'static str),
+    /// A call whose requirements the walk cannot establish: a method
+    /// whose receiver's type it cannot name (beyond the horizon only: it
+    /// is the construction's to locate), or a function value it cannot
+    /// resolve.
+    Hole(String, &'static str, Span),
 }
 
 /// What a local function value beyond the horizon resolves to: what a
@@ -851,9 +882,19 @@ impl<'w, 'a> Walker<'w, 'a> {
         self.locals.iter().rev().find_map(|scope| scope.get(name))
     }
 
+    /// Whether a bare callee names a builtin or a fn a direct call
+    /// reaches: a merged name beyond the horizon, a fn of the program's
+    /// own in its sources.
+    fn names_fn(&self, name: &str) -> bool {
+        let keyed = || self.g.summary.fns.contains_key(&FnKey::free_fn(name.to_string()));
+        crate::check::BARE_BUILTIN_CALLEES.contains(&name)
+            || (name.starts_with("__") || self.receivers.is_none()) && keyed()
+    }
+
     /// The function value an expression evaluates to, or `None` when
     /// the walk cannot resolve it: a local's binding, a fn the merged
-    /// name keys, a builtin, a stdlib path, an import alias's fn.
+    /// name keys (in the program's own sources, a fn of its own), a
+    /// builtin, a stdlib path, an import alias's fn.
     fn fn_value(&self, e: &Expr) -> Option<FnValue> {
         match e {
             Expr::Ident(id) => match self.local(&id.name) {
@@ -861,6 +902,9 @@ impl<'w, 'a> Walker<'w, 'a> {
                 None if id.name.starts_with("__") => {
                     let k = FnKey::free_fn(id.name.clone());
                     Some(if self.g.summary.fns.contains_key(&k) { FnValue::Fn(k) } else { FnValue::Nothing })
+                }
+                None if self.receivers.is_none() && self.g.summary.fns.contains_key(&FnKey::free_fn(id.name.clone())) => {
+                    Some(FnValue::Fn(FnKey::free_fn(id.name.clone())))
                 }
                 None => crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()).then_some(FnValue::Nothing),
             },
@@ -876,14 +920,18 @@ impl<'w, 'a> Walker<'w, 'a> {
         }
     }
 
-    /// A call through a function value beyond the horizon: a use of the
-    /// target it resolves to, a hole when it resolves to none.
+    /// A call through a function value: a use of the target it resolves
+    /// to, through the local it is written with; a hole when it resolves
+    /// to none.
     fn call_value(&mut self, value: Option<FnValue>, callee: String, span: Span) {
         match value {
-            Some(FnValue::Fn(k)) => self.met.push(Met::Calls(k, span)),
-            Some(FnValue::Primitive(cap, path)) => self.met.push(Met::Needs(cap, path, span)),
+            Some(FnValue::Fn(k)) => {
+                let links = through(Some(&callee), k.display());
+                self.met.push(Met::Calls(k, links, span))
+            }
+            Some(FnValue::Primitive(cap, path)) => self.met.push(Met::Needs(cap, through(Some(&callee), path), span)),
             Some(FnValue::Nothing) => {}
-            None => self.met.push(Met::Hole(format!("{callee}()"), UNRESOLVED_VALUE)),
+            None => self.met.push(Met::Hole(format!("{callee}()"), UNRESOLVED_VALUE, span)),
         }
     }
 
@@ -902,15 +950,16 @@ impl<'w, 'a> Walker<'w, 'a> {
             _ => None,
         };
         match ty {
-            None => self.met.push(Met::Hole(name.to_string(), "its receiver's type is not known here")),
+            None => self.met.push(Met::Hole(name.to_string(), "its receiver's type is not known here", span)),
             Some(None) => {}
             Some(Some(ty)) => {
                 let ty = self.g.locus_of(&ty);
                 let k = FnKey::method(ty.clone(), name.to_string());
                 if self.g.summary.fns.contains_key(&k) {
-                    self.met.push(Met::Calls(k, span));
+                    let links = vec![k.display()];
+                    self.met.push(Met::Calls(k, links, span));
                 } else if let Some(ns) = self.g.std_loci.get(&ty) {
-                    self.met.push(Met::Needs(Capability::StdNamespace(ns), format!("{ty}::{name}"), span));
+                    self.met.push(Met::Needs(Capability::StdNamespace(ns), vec![format!("{ty}::{name}")], span));
                 }
             }
         }
@@ -929,14 +978,18 @@ impl<'w, 'a> Walker<'w, 'a> {
                     Expr::Path(qn) => {
                         let path = qualified(qn);
                         if let Some(ns) = std_namespace(self.g.m, &path) {
-                            self.met.push(Met::Needs(Capability::StdNamespace(ns), path, qn.span));
+                            self.met.push(Met::Needs(Capability::StdNamespace(ns), vec![path], qn.span));
                         } else if let Some(mangled) = self.g.renames.get(&path) {
-                            self.met.push(Met::Calls(FnKey::free_fn(mangled.clone()), qn.span));
+                            let k = FnKey::free_fn(mangled.clone());
+                            let links = vec![k.display()];
+                            self.met.push(Met::Calls(k, links, qn.span));
                         }
                     }
-                    // A call through a local beyond the horizon is a use of
-                    // the fn value it holds, or a hole: never nothing.
-                    Expr::Ident(id) if self.receivers.is_some() && self.local(&id.name).is_some() => {
+                    // A call through a local is a use of the fn value it
+                    // holds, or a hole: never nothing. A bare callee names
+                    // a builtin or a fn before a local, as codegen lowers
+                    // it.
+                    Expr::Ident(id) if self.local(&id.name).is_some() && !self.names_fn(&id.name) => {
                         let value = self.local(&id.name).cloned().flatten();
                         self.call_value(value, id.name.clone(), id.span);
                     }
@@ -946,7 +999,8 @@ impl<'w, 'a> Walker<'w, 'a> {
                     Expr::Ident(id) if self.receivers.is_some() && id.name.starts_with("__") => {
                         let k = FnKey::free_fn(id.name.clone());
                         if self.g.summary.fns.contains_key(&k) {
-                            self.met.push(Met::Calls(k, id.span));
+                            let links = vec![k.display()];
+                            self.met.push(Met::Calls(k, links, id.span));
                         }
                     }
                     Expr::Field { receiver, name, span } | Expr::Path2 { receiver, name, span } => {
@@ -955,13 +1009,11 @@ impl<'w, 'a> Walker<'w, 'a> {
                         // runs `i`.
                         self.expr(receiver);
                     }
-                    // A callee computed by an expression beyond the
-                    // horizon: the walk cannot resolve what it calls.
+                    // A callee computed by an expression: the walk cannot
+                    // resolve what it calls.
                     other @ (Expr::Ident(_) | Expr::KwSelf(_)) => self.expr(other),
                     other => {
-                        if self.receivers.is_some() {
-                            self.call_value(None, "<expr>".to_string(), *span);
-                        }
+                        self.call_value(None, "<expr>".to_string(), *span);
                         self.expr(other)
                     }
                 }
