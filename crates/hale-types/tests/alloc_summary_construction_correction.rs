@@ -50,6 +50,25 @@
 //! leak sites of the copy's own fns, and two lose two of `main`'s own.
 //! No site is added and no other target moves. The old answer is the
 //! corrected summary with `analysis_copy` cleared.
+//!
+//! **A program's declaration is the row where the copy declares the
+//! same name.** The summary keys a fn by its name, and the copy's body
+//! came last, so where a checked program declares a name the copy
+//! declares, the copy's row took the key and the program had none of
+//! its own: `hale check` over a stdlib source file saw the copy's bodies
+//! (the copy's spans, resolved in the copy's scope), and since commit 6
+//! its dump and advisory reported none of the file's fns. Now the copy's
+//! declaration of a name the program declares (a free fn, a locus, an
+//! interface) stays out. Only stdlib source shares such a name: no
+//! target, and of the corpus programs the 27 stdlib files. Their checks
+//! get their own rows back: against the commit before, the dump moves
+//! in all 27 and the advisory's warnings return in seven (`api`,
+//! `http_client`, `lang`, `name`, `tagged`, `text`, `yaml`), as part A
+//! reported them; and `http_client.hl`'s `__http_client_header` loses
+//! its `alloc` (its call to `__http_find_header_in_block`, declared by
+//! another stdlib file, is unresolved in the program's own scope), so
+//! that check's effect manifest, model and `shape_hash` move
+//! (`fccb52d86a539447` → `371edb8609756fca`).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -556,4 +575,104 @@ fn reached_a_started_loop_keeps_its_facts() {
         })
         .expect("the target loads");
     }
+}
+
+/// The top-level names (free fns, loci, interfaces) a program declares.
+fn top_level_names(program: &hale_syntax::ast::Program) -> BTreeSet<String> {
+    use hale_syntax::ast::TopDecl;
+    program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            TopDecl::Fn(f) => Some(f.name.name.clone()),
+            TopDecl::Locus(l) => Some(l.name.name.clone()),
+            TopDecl::Interface(i) => Some(i.name.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The stdlib's source files, by their path from the root.
+fn stdlib_sources() -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(root().join("crates/hale-stdlib/hl"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "hl"))
+        .map(|p| p.strip_prefix(root()).unwrap().to_string_lossy().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Only stdlib source shares a top-level name with the analysis copy:
+/// no target, and no corpus program outside `crates/hale-stdlib/hl`, so
+/// the correction moves nothing else.
+#[test]
+fn program_declaration_only_stdlib_source_shares_a_name() {
+    let copy = top_level_names(hale_types::stdlib_bodies::program().expect("the stdlib parses"));
+    for t in targets() {
+        let shared = over_target(&t, |snap, _| {
+            let bundle = snap.bundle();
+            bundle.programs.values().flat_map(|p| top_level_names(p)).filter(|n| copy.contains(n)).collect::<Vec<_>>()
+        });
+        assert_eq!(shared.unwrap_or_default(), Vec::<String>::new(), "{t} shares a name with the copy");
+    }
+    let mut sharing = 0;
+    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
+        let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
+        if top_level_names(&program).iter().any(|n| copy.contains(n)) {
+            assert!(p.origin.starts_with("crates/hale-stdlib/hl/"), "{} shares a name with the copy", p.origin);
+            sharing += 1;
+        }
+    }
+    assert_eq!(sharing, 27, "the stdlib source files that share a name with the copy");
+}
+
+/// A stdlib file checked as itself keeps its own rows: every fn of the
+/// program alone is the program's in the summary, with the program's
+/// body (its sites and loops where the program alone has them). The
+/// copy's row of the same name used to take the key, and the file then
+/// had none of its shared fns as its own.
+#[test]
+fn program_declaration_stdlib_files_checked_as_themselves() {
+    let mut keys = 0;
+    for t in stdlib_sources() {
+        let Some(n) = over_target(&t, |snap, now| {
+            let bundle = snap.bundle();
+            let alone: Vec<_> = bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
+            let alone = summarize_identified(&alone, &bundle.import_renames);
+            let spans = |f: &hale_types::alloc_summary::FnSummary| {
+                let sites: Vec<_> = f.sites.iter().map(|s| (s.span.start.0, s.span.end.0)).collect();
+                let loops: Vec<_> = f.loops.iter().map(|l| (l.span.start.0, l.span.end.0)).collect();
+                (sites, loops)
+            };
+            for (k, f) in &alone.fns {
+                let row = now.fns.get(k).unwrap_or_else(|| panic!("{t}: {} has no row", k.display()));
+                assert!(now.is_own(k), "{t}: {} is the copy's", k.display());
+                assert_eq!(spans(row), spans(f), "{t}: {} is not the program's body", k.display());
+            }
+            alone.fns.len()
+        }) else {
+            continue;
+        };
+        keys += n;
+    }
+    assert!(keys > 0, "the stdlib files have rows of their own");
+}
+
+/// `http_client.hl` checked as itself: `__http_client_header` calls
+/// `__http_find_header_in_block`, which another stdlib file declares, so
+/// in the program's own scope the call is unresolved and the row carries
+/// no `alloc`; the copy's same-named body resolved it in the copy's
+/// scope, and its `{alloc}` reached the effect rows, the model's effect
+/// column and `shape_hash`.
+#[test]
+fn program_declaration_http_client_header() {
+    let manifest = over_target("crates/hale-stdlib/hl/http_client.hl", |snap, _| {
+        let rows = snap.demand_effects().expect("the effect rows");
+        hale_types::dump_effects_manifest(&snap.bundle(), rows)
+    })
+    .expect("http_client.hl has a summary");
+    assert!(manifest.contains("__http_check_scheme  does={alloc}"), "the manifest lists a fn's classes:\n{manifest}");
+    assert!(!manifest.contains("__http_client_header  does="), "the row carries no class:\n{manifest}");
 }

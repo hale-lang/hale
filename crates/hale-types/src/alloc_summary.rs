@@ -1286,6 +1286,33 @@ pub fn summarize_identified(
     let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
         crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
     };
+    // What the checked programs declare at their top level. A program
+    // that is stdlib source itself (`hale check` over a stdlib file)
+    // declares what the analysis copy beside it declares; the program's
+    // declaration is the row, and the copy's of the same name stays out.
+    let mut declared_by_program: BTreeSet<String> = BTreeSet::new();
+    for (program, ids) in identified {
+        if is_stdlib_copy(ids) {
+            continue;
+        }
+        for item in &program.items {
+            match item {
+                TopDecl::Fn(f) => declared_by_program.insert(f.name.name.clone()),
+                TopDecl::Locus(l) => declared_by_program.insert(l.name.name.clone()),
+                TopDecl::Interface(i) => declared_by_program.insert(i.name.name.clone()),
+                _ => false,
+            };
+        }
+    }
+    let shadowed = |ids: &crate::snapshot::Snapshot, item: &TopDecl| {
+        is_stdlib_copy(ids)
+            && match item {
+                TopDecl::Fn(f) => declared_by_program.contains(&f.name.name),
+                TopDecl::Locus(l) => declared_by_program.contains(&l.name.name),
+                TopDecl::Interface(i) => declared_by_program.contains(&i.name.name),
+                _ => false,
+            }
+    };
     // #345: what each `@effects(is: {…})` declares, through the bundle's
     // one class table.
     let classes = crate::effect_classes::EffectClassTable::of(programs);
@@ -1501,7 +1528,7 @@ pub fn summarize_identified(
 
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
-        for item in &program.items {
+        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
                     {
