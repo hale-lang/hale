@@ -552,10 +552,10 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "F.8 compatibility, F.14 and F.20 satisfaction are judged once, with a witness",
             "one conformance function (`conformance_witness`), its witness the first requirement unmet in the interface's method order, rendered by each caller in its own words; the bus adapter's contract is judged without the error channel, as it always was",
-            "storage routing asks the conformance column, never the method names; a pair whose methods all match the interface's by name and not by signature (a generic locus's specialization by its template's methods) carries the column's `NameOnly` mark, which routing reads as satisfying, the rule it had when it compared method names: its literal goes to the program-lifetime payload arena",
+            "storage routing asks the conformance column, never the method names, and requires the checker's verdict that the locus satisfies the interface: a locus whose methods match the interface's by name and not by signature, or a generic locus's specialization, is no interface's, so its literal stays the frame's (a classified correction: the name comparison sent both to the program-lifetime payload arena; pinned in `conformance_routing_correction.rs`)",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/duplicate_member.rs", "crates/hale-types/tests/typed_bodies.rs"],
+        tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/duplicate_member.rs", "crates/hale-types/tests/typed_bodies.rs", "crates/hale-codegen/tests/conformance_routing_correction.rs"],
         spec: &["spec/types.md", "spec/semantics.md"],
         owned: &[site(CHECK, "conformance")],
         seams: &[],

@@ -1,4 +1,4 @@
-//! The `ownership_owners` integration-test binary: 15 test files of this area, kept
+//! The `ownership_owners` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -11,6 +11,8 @@ mod bubble_from_param_child;
 mod caller_arena_publish_gate;
 #[path = "caller_arena_tls_unwind.rs"]
 mod caller_arena_tls_unwind;
+#[path = "conformance_routing_correction.rs"]
+mod conformance_routing_correction;
 #[path = "factory_field_ownership.rs"]
 mod factory_field_ownership;
 #[path = "factory_locus_reclaim.rs"]

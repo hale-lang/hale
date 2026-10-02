@@ -29,8 +29,7 @@
 //!    writes.
 //! 4. `conformance`, per (concrete locus, interface) pair of declared
 //!    declarations: whether the locus satisfies the interface, with the
-//!    witness when it does not, marked [`Unsatisfied::NameOnly`] when
-//!    the methods match by name.
+//!    witness when it does not.
 //! 5. `fallible_calls`, per call site whose callee is fallible, stdlib
 //!    callees included: the callee and its error type.
 //!
@@ -289,12 +288,6 @@ pub enum Unsatisfied {
     Ret { method: String, want: Ty, got: Ty },
     /// GH #732: the method's error channel is not the interface's.
     ErrorChannel { method: String, why: &'static str, iface_sig: String, locus_sig: String },
-    /// Every method the interface declares is one of the locus's by
-    /// name (a generic locus's specialization: its template's), and
-    /// `unmet` is the requirement still unmet. Never the checker's
-    /// verdict, only the column's: the mark storage routing reads as
-    /// satisfying, the rule it had when it compared method names.
-    NameOnly { unmet: Box<Unsatisfied> },
 }
 
 impl Unsatisfied {
@@ -323,7 +316,6 @@ impl Unsatisfied {
             Unsatisfied::ErrorChannel { method, why, iface_sig, locus_sig } => format!(
                 "locus `{locus}` method `{method}` {why}: interface `{iface}` declares `{iface_sig}`, locus declares `{locus_sig}`"
             ),
-            Unsatisfied::NameOnly { unmet } => unmet.interface_message(locus, iface),
         }
     }
 
@@ -350,7 +342,6 @@ impl Unsatisfied {
             ),
             // The adapter contract does not judge the error channel.
             Unsatisfied::ErrorChannel { .. } => self.interface_message(locus, iface),
-            Unsatisfied::NameOnly { unmet } => unmet.adapter_message(locus, iface),
         }
     }
 }
@@ -514,15 +505,14 @@ impl TypedBodies {
                 out.conformance.entry((l.0, i.0)).or_insert_with(|| Conformance {
                     concrete: l,
                     interface: i,
-                    verdict: column_verdict(top, ln, ln, iname),
+                    verdict: crate::check::conformance_witness(top, ln, iname, true),
                 });
             }
         }
         for &(i, iname) in &decls.interfaces {
             for m in self.monomorphs.rows().iter().filter(|m| m.kind == TemplateKind::Locus) {
                 if out.monomorph_conformance(m, i).is_none() {
-                    let template = decls.templates.iter().find(|(t, _)| t.0 == m.template.0).map_or("", |&(_, n)| n);
-                    let verdict = column_verdict(top, &m.name, template, iname);
+                    let verdict = crate::check::conformance_witness(top, &m.name, iname, true);
                     out.monomorph_conformance.push((m.clone(), i.0, verdict));
                 }
             }
@@ -531,31 +521,11 @@ impl TypedBodies {
     }
 }
 
-/// The column's verdict for the locus named `judged` against the
-/// interface named `iface`: the checker's witness, marked
-/// [`Unsatisfied::NameOnly`] when every method the interface declares is
-/// one of the locus named `named`'s by name (a specialization is judged
-/// by its own name and named by its template's).
-fn column_verdict(top: &crate::resolve::TopScope, judged: &str, named: &str, iface: &str) -> Result<(), Unsatisfied> {
-    use crate::symbol::TopSymbol;
-    let by_name = match (top.lookup(iface), top.lookup(named)) {
-        (Some(TopSymbol::Interface(i)), Some(TopSymbol::Locus(l))) => {
-            i.methods.iter().all(|im| l.methods.iter().any(|lm| lm.name == im.name))
-        }
-        _ => false,
-    };
-    match crate::check::conformance_witness(top, judged, iface, true) {
-        Err(unmet) if by_name => Err(Unsatisfied::NameOnly { unmet: Box::new(unmet) }),
-        verdict => verdict,
-    }
-}
-
-/// The concrete loci, the generic loci and the interfaces declarations
-/// declare, by identity.
+/// The concrete loci and the interfaces declarations declare, by
+/// identity.
 #[derive(Default)]
 struct Declared<'a> {
     loci: Vec<(NodeId, &'a str)>,
-    templates: Vec<(NodeId, &'a str)>,
     interfaces: Vec<(NodeId, &'a str)>,
 }
 
@@ -563,13 +533,8 @@ impl<'a> Declared<'a> {
     fn add(&mut self, items: &'a [TopDecl]) {
         for item in hale_syntax::ast::flat_decls(items) {
             match item {
-                TopDecl::Locus(l) if !l.id.is_none() => {
-                    let row = (l.id, l.name.name.as_str());
-                    if l.generics.is_empty() {
-                        self.loci.push(row)
-                    } else {
-                        self.templates.push(row)
-                    }
+                TopDecl::Locus(l) if l.generics.is_empty() && !l.id.is_none() => {
+                    self.loci.push((l.id, l.name.name.as_str()))
                 }
                 TopDecl::Interface(i) if !i.id.is_none() => self.interfaces.push((i.id, i.name.name.as_str())),
                 _ => {}

@@ -421,6 +421,8 @@ crates/hale-codegen/tests/cond_match.rs#1 865d341109268295
 crates/hale-codegen/tests/cond_match.rs#2 d858656cfb6fb882
 crates/hale-codegen/tests/cond_match.rs#3 865d341109268295
 crates/hale-codegen/tests/cond_match.rs#4 865d341109268295
+crates/hale-codegen/tests/conformance_routing_correction.rs#0 afdc368a546d2f8d
+crates/hale-codegen/tests/conformance_routing_correction.rs#1 75939f7ee3f2d607
 crates/hale-codegen/tests/coop_pool_basic.rs#0 485e9ef86187f369
 crates/hale-codegen/tests/coop_pool_multi_locus.rs#0 643c2f0569b1b7e7
 crates/hale-codegen/tests/coop_pool_run_dispatch.rs#0 b5d1b9d8b1cac991

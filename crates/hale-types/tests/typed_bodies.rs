@@ -242,11 +242,10 @@ fn a_generic_fn_s_calls_are_specialized_per_monomorph() {
 
 /// The conformance column is the checker's one function: a locus whose
 /// method matches the interface's by name and not by return type does
-/// not satisfy it (the witness says which requirement, marked `NameOnly`
-/// since every method matches by name, as a generic locus's
-/// specialization's does by its template's), and the lowering view
-/// extends the snapshot's column with the merged stdlib's pairs, found
-/// by the identities its mint gave them.
+/// not satisfy it (the witness says which requirement), no more than a
+/// generic locus's specialization does, and the lowering view extends
+/// the snapshot's column with the merged stdlib's pairs, found by the
+/// identities its mint gave them.
 #[test]
 fn conformance_is_judged_by_signature_and_the_view_adds_the_stdlib_s_pairs() {
     let src = "interface Greeter { fn greet() -> Int; }\n\
@@ -266,20 +265,15 @@ fn conformance_is_judged_by_signature_and_the_view_adds_the_stdlib_s_pairs() {
     let odd = table.conformance(id_of(decl(p, "Odd")), greeter).expect("a row");
     assert_eq!(
         odd.verdict,
-        Err(Unsatisfied::NameOnly {
-            unmet: Box::new(Unsatisfied::Ret {
-                method: "greet".into(),
-                want: Ty::Prim(hale_syntax::ast::PrimType::Int),
-                got: Ty::Prim(hale_syntax::ast::PrimType::String),
-            })
+        Err(Unsatisfied::Ret {
+            method: "greet".into(),
+            want: Ty::Prim(hale_syntax::ast::PrimType::Int),
+            got: Ty::Prim(hale_syntax::ast::PrimType::String),
         })
     );
     assert_eq!(table.conformance(id_of(decl(p, "Hi")), greeter).expect("a row").verdict, Ok(()));
     let holder = table.monomorphs().named("Holder_Int").expect("the specialization");
-    assert_eq!(
-        table.monomorph_conformance(holder, greeter),
-        Some(&Err(Unsatisfied::NameOnly { unmet: Box::new(Unsatisfied::NotALocus) }))
-    );
+    assert_eq!(table.monomorph_conformance(holder, greeter), Some(&Err(Unsatisfied::NotALocus)));
 
     let view = s.demand_lowering().expect("lowered");
     let adapter = view

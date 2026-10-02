@@ -1122,10 +1122,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// program-lifetime allocation. The answer is the checker's: the
     /// typed-body table's conformance column (F.40 phase 3, E4), the
     /// pair found by the declarations' identities, a generic locus's
-    /// specialization by its monomorph row. A pair whose methods match
-    /// the interface's by name only carries the `NameOnly` mark and
-    /// counts as satisfying, the rule this question had when it
-    /// compared method names. A name that declares no interface is
+    /// specialization by its monomorph row. Only a pair the checker
+    /// accepts satisfies: one whose methods match the interface's by
+    /// name and not by signature, or a specialization (no interface
+    /// admits one), can never be the returned value, so its literal
+    /// stays the frame's. A name that declares no interface is
     /// satisfied by nothing; a pair the column holds no row for is
     /// refused.
     pub(crate) fn locus_satisfies_interface(
@@ -1155,7 +1156,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .and_then(|m| self.typed.monomorph_conformance(m, iface)),
         };
         match verdict {
-            Some(v) => Ok(matches!(v, Ok(()) | Err(hale_types::typed_bodies::Unsatisfied::NameOnly { .. }))),
+            Some(v) => Ok(v.is_ok()),
             None => Err(CodegenError::Unsupported(format!(
                 "locus `{}` against interface `{}`: the conformance column holds \
                  no row for the pair (a specialization the monomorph table does \
