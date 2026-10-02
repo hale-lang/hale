@@ -29,7 +29,8 @@ fn expected_capabilities() -> BTreeSet<String> {
         }
     }
     add(Capability::AsyncIoPool);
-    add(Capability::Threads);
+    add(Capability::PinnedThreads);
+    add(Capability::PoolThreads);
     for t in Transport::ALL {
         add(Capability::RemoteTransport(t));
     }
@@ -334,7 +335,7 @@ fn every_omit_premise_holds_or_is_known_open() {
         .iter()
         .filter_map(|k| match k.cell {
             OpenCell::Premise(o) => Some((k.class, o)),
-            OpenCell::Behaviour(_) => None,
+            OpenCell::Behaviour(_) | OpenCell::LateRefusal(_) => None,
         })
         .collect();
     assert_eq!(failing, open, "the failing premises are exactly KNOWN_OPEN's");
@@ -366,17 +367,31 @@ fn origins_are_the_capabilitys() {
 }
 
 /// Every KNOWN_OPEN behaviour is still today's answer: `Lower`, where
-/// the design makes it `Reject`. An entry whose cell has flipped has to
-/// go.
+/// the design makes it `Reject`; a late refusal is `Reject` with the
+/// linker's wording, where the design locates it. An entry whose cell
+/// has moved has to go.
 #[test]
 fn known_open_behaviours_are_todays_answer() {
     let m = derive_capability_matrix();
     let mut seen = BTreeSet::new();
     for k in KNOWN_OPEN {
         assert!(seen.insert((k.class, k.cell)), "KNOWN_OPEN names {:?} twice", k.cell);
-        if let OpenCell::Behaviour(cap) = k.cell {
-            let b = m.behaviour(k.class, cap).unwrap_or_else(|| panic!("{} has no row", cap.label()));
-            assert!(b.is_lower(), "{} × {} is no longer Lower: drop it from KNOWN_OPEN", cap.label(), k.class.name());
+        match k.cell {
+            OpenCell::Behaviour(cap) => {
+                let b = m.behaviour(k.class, cap).unwrap_or_else(|| panic!("{} has no row", cap.label()));
+                assert!(b.is_lower(), "{} × {} is no longer Lower: drop it from KNOWN_OPEN", cap.label(), k.class.name());
+            }
+            OpenCell::LateRefusal(cap) => {
+                let b = m.behaviour(k.class, cap).unwrap_or_else(|| panic!("{} has no row", cap.label()));
+                assert_eq!(
+                    b.refusal().map(|r| r.wording),
+                    Some(WASM_LD_WORDING),
+                    "{} × {} is no longer the late link refusal: drop it from KNOWN_OPEN",
+                    cap.label(),
+                    k.class.name()
+                );
+            }
+            OpenCell::Premise(_) => {}
         }
     }
 }
@@ -523,12 +538,12 @@ fn the_tables_have_the_reviewed_shape() {
         .filter(|(_, _, b)| !b.is_lower())
         .map(|(c, cap, _)| format!("{} × {}", cap.label(), c.name()))
         .collect();
-    assert_eq!((m.behaviours.len(), std), (103, 47), "behaviour rows (all, std::)");
+    assert_eq!((m.behaviours.len(), std), (104, 47), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 9);
-    // 10 namespaces, `[ffi] link`, `@export locus` with `run()` and
-    // ProcessSignals on wasm32; the export-only module and `--wrap-main`
-    // on both POSIX columns; `async_io` on musl; 9 FFI type classes × 2
-    // ABIs × 3 targets.
-    assert_eq!(rejects.len(), 72, "{}", rejects.join("\n"));
+    // 10 namespaces, `[ffi] link`, `@export locus` with `run()`,
+    // ProcessSignals, pinned threads and the adapter binding on wasm32;
+    // the export-only module and `--wrap-main` on both POSIX columns;
+    // `async_io` on musl; 9 FFI type classes × 2 ABIs × 3 targets.
+    assert_eq!(rejects.len(), 74, "{}", rejects.join("\n"));
 }

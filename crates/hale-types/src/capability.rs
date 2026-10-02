@@ -31,10 +31,12 @@
 //! `run`/`replay` refusal; `crates/hale-types/tests/shadow_capability.rs`
 //! and `crates/hale-codegen/tests/shadow_capability_lowering.rs` hold
 //! each of those legacy answers to its cell. Cells the design flips (T2:
-//! threads, `async_io` and transport bindings on wasm32; T3: the known
-//! stubs; T5: `@ffi("js")` on a native target) are written as they are
-//! today and named in [`KNOWN_OPEN`], which the laws assert is still
-//! today's answer; so are the three wasm32 obligations whose `Omit` is
+//! pool threads, `async_io` and transport bindings on wasm32; T3: the
+//! known stubs; T5: `@ffi("js")` on a native target) are written as they
+//! are today and named in [`KNOWN_OPEN`], which the laws assert is still
+//! today's answer; so are the two wasm32 refusals that exist today only
+//! as a link failure (a `pinned` placement and an adapter binding, T2
+//! locates them), and the three wasm32 obligations whose `Omit` is
 //! today's but whose premise only holds once T2 lands.
 //!
 //! What is not a cell: target-specific emission choices (the triple,
@@ -131,9 +133,13 @@ pub enum Capability {
     FfiType(FfiTypeClass, Abi),
     /// `where async_io` on a placement entry.
     AsyncIoPool,
-    /// Threads other than main's: a `pinned` placement, a cooperative
-    /// pool other than `main`.
-    Threads,
+    /// A thread a locus owns: a `pinned` placement, and an adapter
+    /// binding (an adapter's instance runs on its own thread). Main
+    /// joins it at dissolve (the pinned-child join).
+    PinnedThreads,
+    /// A cooperative pool other than `main`: worker threads the pools
+    /// share, joined by the teardown spines' pool join.
+    PoolThreads,
     /// A `bindings { }` entry.
     RemoteTransport(Transport),
     /// `or wait` on a topic with `on_full: fail` capacity (GH #255
@@ -339,7 +345,8 @@ impl Capability {
         match self {
             Capability::FfiType(..) => 2,
             Capability::AsyncIoPool
-            | Capability::Threads
+            | Capability::PinnedThreads
+            | Capability::PoolThreads
             | Capability::RemoteTransport(_)
             | Capability::BoundedWait => 5,
             Capability::ProcessSignals => 6,
@@ -362,7 +369,8 @@ impl Capability {
             | Capability::ForeignAbi(_)
             | Capability::FfiType(..)
             | Capability::AsyncIoPool
-            | Capability::Threads
+            | Capability::PinnedThreads
+            | Capability::PoolThreads
             | Capability::RemoteTransport(_)
             | Capability::BoundedWait => Origin::Source,
         }
@@ -378,7 +386,8 @@ impl Capability {
             Capability::ForeignAbi(a) => format!("ForeignAbi({})", a.name()),
             Capability::FfiType(t, a) => format!("FfiType({}, {})", t.name(), a.name()),
             Capability::AsyncIoPool => "AsyncIoPool".to_string(),
-            Capability::Threads => "Threads".to_string(),
+            Capability::PinnedThreads => "PinnedThreads".to_string(),
+            Capability::PoolThreads => "PoolThreads".to_string(),
             Capability::RemoteTransport(t) => format!("RemoteTransport({})", t.name()),
             Capability::BoundedWait => "BoundedWait".to_string(),
             Capability::ProcessSignals => "ProcessSignals".to_string(),
@@ -399,6 +408,14 @@ pub enum Invocation {
 
 impl Invocation {
     pub const ALL: [Invocation; 3] = [Invocation::Run, Invocation::Replay, Invocation::Record];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Invocation::Run => "Run",
+            Invocation::Replay => "Replay",
+            Invocation::Record => "Record",
+        }
+    }
 }
 
 /// A runtime call a spine or prelude emits, or omits, per target.
@@ -439,6 +456,20 @@ impl Obligation {
         Obligation::WaitAbort,
         Obligation::IngressQuiesce,
     ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Obligation::ReplayIngress => "ReplayIngress",
+            Obligation::ObservationIdentity => "ObservationIdentity",
+            Obligation::SignalInstall => "SignalInstall",
+            Obligation::DrainObserver => "DrainObserver",
+            Obligation::DrainTerm => "DrainTerm",
+            Obligation::BindingConfig => "BindingConfig",
+            Obligation::PoolJoin => "PoolJoin",
+            Obligation::WaitAbort => "WaitAbort",
+            Obligation::IngressQuiesce => "IngressQuiesce",
+        }
+    }
 }
 
 // --------------------------------------------------------------- cells
@@ -754,6 +785,10 @@ pub struct KnownOpen {
 pub enum OpenCell {
     /// `Lower` today, `Reject` once the decision lands.
     Behaviour(Capability),
+    /// `Reject` today, but refused late: unlocated, by the linker, after
+    /// clang has run. The decision makes it a located diagnostic at the
+    /// use.
+    LateRefusal(Capability),
     /// `Omit` today, as every spine does, on a premise that holds only
     /// once the decision lands.
     Premise(Obligation),
@@ -763,13 +798,16 @@ const T2: &str = "T2: Reject at the placement entry or binding until a real lowe
 const T3: &str = "T3: the known stubs are rejected, with guidance naming an `@ffi(\"js\")` host import (P3 2 of 3)";
 const T3_UNCLASSIFIED: &str = "T3: syscall-backed and not in the table; refused whole unless a reviewed lowering contract is written (P3 2 of 3)";
 const T5: &str = "T5: a located refusal at the `@ffi(\"js\")` declaration on a native target (P3 2 of 3)";
+const T2_LATE: &str = "T2: refused today only by wasm-ld, unlocated, after clang has run; a located refusal at the placement entry or binding (P3 2 of 3)";
 const T2_PREMISE: &str = "T2: the premise holds once the behaviours it names are Reject on wasm32 (P3 2 of 3)";
 
 pub const KNOWN_OPEN: &[KnownOpen] = &[
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::Threads), decision: T2 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::LateRefusal(Capability::PinnedThreads), decision: T2_LATE },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::PoolThreads), decision: T2 },
     KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::AsyncIoPool), decision: T2 },
     KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::RemoteTransport(Transport::Unix)), decision: T2 },
     KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::RemoteTransport(Transport::ShmRing)), decision: T2 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::LateRefusal(Capability::RemoteTransport(Transport::Adapter)), decision: T2_LATE },
     KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("time")), decision: T3 },
     KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("env")), decision: T3 },
     KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("ts")), decision: T3 },
@@ -1034,7 +1072,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
                 requires: &[],
                 witness: w(
                     "crates/hale-codegen/src/codegen.rs::synthesize_wasm_export_wrappers",
-                    "the module exports a wrapper per `@export fn` and `_hale_start`, beside its fixed exports",
+                    "the module exports a wrapper per `@export fn`, and for an `@export locus` `_hale_start` and a wrapper per method that is not fallible, beside its fixed exports",
                     SPEC_EXPORT,
                 ),
             },
@@ -1183,11 +1221,11 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
         capability: Capability::AsyncIoPool,
         cells: Columns {
             posix_async: Behaviour {
-                requires: &[Capability::Threads],
+                requires: &[Capability::PoolThreads],
                 ..lower(w(CHECK_ASYNC_IO, "the async_io backend is epoll (glibc Linux) or kqueue (macOS) over ucontext coroutines", SPEC_ASYNC_IO))
             },
             posix_no_async: Behaviour {
-                requires: &[Capability::Threads],
+                requires: &[Capability::PoolThreads],
                 ..reject(
                     "placement entry `{field}`: `async_io` pools \
                      aren't supported on musl Linux yet — use a \
@@ -1200,7 +1238,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
                 )
             },
             wasm32: Behaviour {
-                requires: &[Capability::Threads],
+                requires: &[Capability::PoolThreads],
                 ..lower(w(
                     CHECK_ASYNC_IO,
                     "admitted: the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, so the pool never runs",
@@ -1210,13 +1248,23 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
         },
     },
     BehaviourRow {
-        capability: Capability::Threads,
+        capability: Capability::PinnedThreads,
         cells: Columns {
-            posix_async: lower(w(CG_POOL_START, "pinned threads and pool workers are POSIX threads", SPEC_PLACEMENT)),
-            posix_no_async: lower(w(CG_POOL_START, "pinned threads and pool workers are POSIX threads", SPEC_PLACEMENT)),
+            posix_async: lower(w(CG_PINNED_JOIN, "a pinned locus owns a POSIX thread, which main joins at dissolve", SPEC_PLACEMENT)),
+            posix_no_async: lower(w(CG_PINNED_JOIN, "a pinned locus owns a POSIX thread, which main joins at dissolve", SPEC_PLACEMENT)),
+            wasm32: reject(WASM_LD_WORDING, None, w(BUILTIN_PTHREAD_JOIN, PTHREAD_JOIN_MISMATCH, SPEC_PLACEMENT)),
+        },
+    },
+    BehaviourRow {
+        capability: Capability::PoolThreads,
+        cells: Columns {
+            posix_async: lower(w(CG_POOL_START, "a pool's workers are POSIX threads", SPEC_PLACEMENT)),
+            posix_no_async: lower(w(CG_POOL_START, "a pool's workers are POSIX threads", SPEC_PLACEMENT)),
             wasm32: lower(w(
                 CG_POOL_START,
-                "admitted: `pthread_create` is an import the loader stubs with `() => 0`, so a pinned locus or a pool's `run()` is posted and never executes",
+                "admitted: `pthread_create` is an import the loader stubs with `() => 0`, so a pool's `run()` is posted and \
+                 never executes; the module links with wasm-ld's signature-mismatch warnings on `lotus_coop_pool_post` \
+                 and `lotus_bus_dispatch_keyed`, a trap if either call executes",
                 SPEC_PLACEMENT,
             )),
         },
@@ -1233,12 +1281,26 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
         "a POSIX shared-memory ring",
         "admitted: the bindings prelude is ungated and `shm_open` and `mmap` are imports the loader stubs with `() => 0`, so the ring never maps",
     ),
-    transport_row(
-        Transport::Adapter,
-        "a user adapter locus's `send`, handed to the bus runtime",
-        "a user adapter locus's `send`, handed to the bus runtime",
-        "a user adapter locus's `send`, handed to the bus runtime; its own calls decide what it can reach",
-    ),
+    BehaviourRow {
+        capability: Capability::RemoteTransport(Transport::Adapter),
+        cells: Columns {
+            posix_async: Behaviour { requires: &[Capability::PinnedThreads], ..lower(w(CG_BINDINGS, ADAPTER_NATIVE, SPEC_BINDINGS)) },
+            posix_no_async: Behaviour { requires: &[Capability::PinnedThreads], ..lower(w(CG_BINDINGS, ADAPTER_NATIVE, SPEC_BINDINGS)) },
+            wasm32: Behaviour {
+                requires: &[Capability::PinnedThreads],
+                ..reject(
+                    WASM_LD_WORDING,
+                    None,
+                    w(
+                        BUILTIN_PTHREAD_JOIN,
+                        "an adapter's instance runs on its own thread, so its binding requires `PinnedThreads`, and \
+                         meets the same late refusal: wasm-ld: function signature mismatch: pthread_join",
+                        SPEC_BINDINGS,
+                    ),
+                )
+            },
+        },
+    },
     BehaviourRow {
         capability: Capability::BoundedWait,
         cells: Columns {
@@ -1282,6 +1344,20 @@ const CG_HAS_EXPORTS: &str = "crates/hale-codegen/src/codegen.rs::has_exports";
 const CG_EXPORT_RUN: &str = "crates/hale-codegen/src/codegen.rs::must not define `run()`";
 const CG_FFI_DECL: &str = "crates/hale-codegen/src/codegen.rs::f.ffi.is_some()";
 const CG_POOL_START: &str = "crates/hale-codegen/src/codegen.rs::lotus_coop_pool_start_all";
+const CG_PINNED_JOIN: &str = "crates/hale-codegen/src/codegen.rs::pinned.tid";
+const CG_BINDINGS: &str = "crates/hale-codegen/src/codegen.rs::emit_bindings_prelude";
+const BUILTIN_PTHREAD_JOIN: &str = "crates/hale-codegen/src/shared/builtins.rs::declare i32 @pthread_join(i64 thread, ptr retval)";
+
+/// The late refusal a `pinned` placement or an adapter binding meets
+/// on wasm32 today, `link_wasm`'s text verbatim: wasm-ld's own error
+/// goes to stderr, and the build reports its exit.
+pub const WASM_LD_WORDING: &str = "wasm-ld failed: exit status: 1";
+
+const PTHREAD_JOIN_MISMATCH: &str = "wasm-ld: function signature mismatch: pthread_join; codegen declares \
+     `pthread_join(i64, ptr)` while the wasm shim's `pthread_t` is i32, and the only emitted call is the \
+     pinned-child join: a late, unlocated refusal after clang has run";
+
+const ADAPTER_NATIVE: &str = "a user adapter locus on its own thread, its `send` handed to the bus runtime";
 const CG_SIGNALS: &str = "crates/hale-codegen/src/codegen.rs::lotus_drain_signals_install";
 const CHECK_ASYNC_IO: &str = "crates/hale-types/src/check.rs::target_has_async_io";
 const RT_WAIT_SPACE: &str = "crates/hale-codegen/runtime/lotus_arena.c::lotus_bus_subject_wait_space";
@@ -1308,7 +1384,7 @@ const fn transport_row(
     posix_no_async: &'static str,
     wasm32: &'static str,
 ) -> BehaviourRow {
-    let site = "crates/hale-codegen/src/codegen.rs::emit_bindings_prelude";
+    let site = CG_BINDINGS;
     BehaviourRow {
         capability: Capability::RemoteTransport(t),
         cells: Columns {
@@ -1413,33 +1489,57 @@ const fn refused_on_wasm(spec: &'static str) -> InvocationCell {
     }
 }
 
-/// A musl artifact runs on any Linux. `hale run --target <musl>` from
-/// a glibc host is refused as a foreign platform: a fact of the host
-/// running the compiler, not of the target, so not a cell.
-const MUSL_RUNS: &str = "a static musl binary runs on any Linux; refusing it from another host's `hale run` is a host fact, not a cell";
+/// `hale run` / `hale replay` for a native target that is not the host,
+/// the CLI's wording verbatim: `{triple}` is the target's.
+pub const RUN_FOREIGN_WORDING: &str = "hale {cmd}: --target {triple} is not this host's platform, so \
+     nothing it builds can run here — build it with `hale build \
+     --target {triple}` and run it where it belongs";
+
+/// The musl column's invocations. The CLI refuses to run any native
+/// target that is not the host, and no host the compiler runs on is a
+/// musl one (`TargetSpec::host`), so for musl that refusal is constant:
+/// today's answer, and so the cell. (For a glibc triple the same
+/// refusal depends on which machine runs the compiler, which is no
+/// target's fact; the PosixAsync column states what the host's own
+/// triple does.)
+const fn refused_on_musl(spec: &'static str) -> InvocationCell {
+    InvocationCell {
+        verdict: InvocationVerdict::Refused(Refusal {
+            wording: RUN_FOREIGN_WORDING,
+            guidance: Some("build it with `hale build --target <musl triple>` and run it on the Linux it is for"),
+        }),
+        witness: w(
+            "crates/hale-cli/src/shared/options.rs::is not this host's platform",
+            "no host the compiler runs on is a musl one, so a musl artifact is always a cross build this host does not run",
+            spec,
+        ),
+    }
+}
+
+const SPEC_RUN: &str = "spec/projects.md § `hale run` interaction";
 
 pub const INVOCATIONS: &[InvocationRow] = &[
     InvocationRow {
         invocation: Invocation::Run,
         cells: Columns {
-            posix_async: allowed("the artifact runs on its platform", SPEC_ENTRY),
-            posix_no_async: allowed(MUSL_RUNS, SPEC_ENTRY),
-            wasm32: refused_on_wasm(SPEC_ENTRY),
+            posix_async: allowed("the host runs an artifact built for itself", SPEC_RUN),
+            posix_no_async: refused_on_musl(SPEC_RUN),
+            wasm32: refused_on_wasm(SPEC_RUN),
         },
     },
     InvocationRow {
         invocation: Invocation::Replay,
         cells: Columns {
-            posix_async: allowed("the artifact replays a recording made of it", SPEC_RECORDING),
-            posix_no_async: allowed(MUSL_RUNS, SPEC_RECORDING),
+            posix_async: allowed("the host replays a recording of an artifact built for itself", SPEC_RECORDING),
+            posix_no_async: refused_on_musl(SPEC_RECORDING),
             wasm32: refused_on_wasm(SPEC_RECORDING),
         },
     },
     InvocationRow {
         invocation: Invocation::Record,
         cells: Columns {
-            posix_async: allowed("the artifact records under the recording mode", SPEC_RECORDING),
-            posix_no_async: allowed(MUSL_RUNS, SPEC_RECORDING),
+            posix_async: allowed("`hale run` under LOTUS_OBS_RECORD records", SPEC_RECORDING),
+            posix_no_async: refused_on_musl(SPEC_RECORDING),
             wasm32: refused_on_wasm(SPEC_RECORDING),
         },
     },
@@ -1576,7 +1676,7 @@ pub const OBLIGATIONS: &[ObligationRow] = &[
         POOL_JOIN,
         POOL_JOIN,
         omit(
-            Premise::All(&[Premise::Rejects(Capability::Threads), Premise::Rejects(Capability::AsyncIoPool)]),
+            Premise::All(&[Premise::Rejects(Capability::PoolThreads), Premise::Rejects(Capability::AsyncIoPool)]),
             "crates/hale-codegen/src/codegen.rs::emit_coop_pool_shutdown_all",
             "no pool worker exists to join",
             SPEC_OBLIGATIONS,
