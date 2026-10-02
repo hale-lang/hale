@@ -94,9 +94,9 @@ pub struct Function {
     /// composed attribution classes).
     pub carries_user_class: bool,
     /// The legacy behavior summary WALKED this body (round 10:
-    /// function-grain analysis coverage — false for module-scoped
-    /// bodies and `on_failure` handlers, which are executable but
-    /// never analyzed). ONE authority: set by the model builder;
+    /// function-grain analysis coverage — false for `on_failure`
+    /// handlers, which are executable but never analyzed). ONE
+    /// authority: set by the model builder;
     /// the evidence layer, the artifact emitter, and the evidence
     /// identity digest all read it here.
     pub analyzed: bool,
@@ -127,8 +127,8 @@ pub struct LocusDecl {
     /// `@sealed` confinement (GH #436).
     pub sealed: bool,
     /// The legacy certificate engines walk this locus (round 9:
-    /// top-level declaration — module-scoped bodies are outside
-    /// the analyzable universe). ONE authority: the model builder
+    /// every executable member it owns, failure handlers aside, is
+    /// analyzed). ONE authority: the model builder
     /// sets it from its declaration walk; the evidence layer and
     /// the artifact emitter read it here, never re-walking source.
     pub analyzable: bool,

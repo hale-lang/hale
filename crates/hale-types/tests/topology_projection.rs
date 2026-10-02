@@ -611,7 +611,7 @@ fn main() { App { }; }
 
 /// P1 (round 12): labels and effects are V1-universe sections. The
 /// projector is public over any lawful model — a non-V1 function
-/// (module-scoped, unanalyzed) carrying a label or an effect set
+/// (unanalyzed) carrying a label or an effect set
 /// must NOT surface in a section whose fns are absent from
 /// sorts.fns. Constructed directly: the current builder never
 /// populates behavior on non-V1 fns, and this pin must hold as it

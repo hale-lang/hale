@@ -541,9 +541,8 @@ pub fn derive_application_model_over(
         locus: Option<String>,
         display: String,
         span: Option<hale_syntax::Span>,
-        /// The behavior analysis did not walk this body (module
-        /// scope / on_failure at Change 2) — emits an
-        /// UnanalyzedBody hole.
+        /// The behavior analysis did not walk this body (an
+        /// on_failure handler) — emits an UnanalyzedBody hole.
         unanalyzed: bool,
     }
     fn hook_name(k: &hale_syntax::ast::LifecycleKind) -> &'static str {
@@ -567,50 +566,22 @@ pub fn derive_application_model_over(
     }
     let mut fn_rows: BTreeMap<String, FnInfo> = BTreeMap::new();
     {
-        // depth > 0 = inside a module: the behavior summary's body
-        // walk does not recurse into modules, so those bodies are
-        // UNANALYZED at Change 2 and must hole out (review round 7).
-        fn walk_free<'a>(
-            items: &'a [TopDecl],
-            depth: u32,
-            out: &mut Vec<(&'a str, hale_syntax::Span, bool)>,
-        ) {
-            for item in items {
-                match item {
-                    TopDecl::Fn(f) => out.push((
-                        f.name.name.as_str(),
-                        f.name.span,
-                        depth > 0,
-                    )),
-                    TopDecl::Module(m) => {
-                        walk_free(&m.items, depth + 1, out)
-                    }
-                    _ => {}
-                }
-            }
-        }
-        fn walk_loci_mod<'a>(
-            items: &'a [TopDecl],
-            depth: u32,
-            out: &mut Vec<(&'a AstLocusDecl, bool)>,
-        ) {
-            for item in items {
-                match item {
-                    TopDecl::Locus(l) => out.push((l, depth > 0)),
-                    TopDecl::Module(m) => {
-                        walk_loci_mod(&m.items, depth + 1, out)
-                    }
-                    _ => {}
-                }
-            }
-        }
+        // A declaration inside a module is analyzed like one at the top
+        // level: the behavior summary collects module-nested bodies
+        // (F.40 phase 3, E3a part C), so they no longer hole out as
+        // unanalyzed (review round 7's Change 2 shape).
         let mut frees = Vec::new();
         let mut mod_loci = Vec::new();
         for pr in &programs {
-            walk_free(&pr.items, 0, &mut frees);
-            walk_loci_mod(&pr.items, 0, &mut mod_loci);
+            for item in hale_syntax::ast::flat_decls(&pr.items) {
+                match item {
+                    TopDecl::Fn(f) => frees.push((f.name.name.as_str(), f.name.span)),
+                    TopDecl::Locus(l) => mod_loci.push(l),
+                    _ => {}
+                }
+            }
         }
-        for (n, sp, in_module) in frees {
+        for (n, sp) in frees {
             fn_rows.insert(
                 n.to_string(),
                 FnInfo {
@@ -618,11 +589,11 @@ pub fn derive_application_model_over(
                     locus: None,
                     display: name(n),
                     span: Some(sp),
-                    unanalyzed: in_module,
+                    unanalyzed: false,
                 },
             );
         }
-        for (l, in_module) in &mod_loci {
+        for l in &mod_loci {
             let ld = l.name.name.clone();
             let ld_display = name(&ld);
             for m in &l.members {
@@ -687,7 +658,7 @@ pub fn derive_application_model_over(
                         locus: Some(ld.clone()),
                         display: format!("{}::{}", ld_display, fname),
                         span: Some(sp),
-                        unanalyzed: *in_module,
+                        unanalyzed: false,
                     },
                 );
             }
@@ -1212,8 +1183,8 @@ pub fn derive_application_model_over(
                         // A TYPED method miss (`w.tick()` with
                         // `recv_ty` known): resolve by call shape —
                         // raw `RecvTy::method` in the declaration
-                        // universe, where a module-scoped locus's
-                        // method lands. A stdlib/external method
+                        // universe, where a method the summary left
+                        // unresolved still lands. A stdlib/external method
                         // that resolves nowhere must NOT wire to a
                         // same-named free fn (round 10); the effect
                         // frontier and the stdlib contraction own
@@ -1248,13 +1219,16 @@ pub fn derive_application_model_over(
                     {
                         // The summary resolves callees against its
                         // own analyzed-body set only, so a direct
-                        // call to a module-scoped fn arrives
-                        // Unresolved — but the DECLARATION universe
-                        // knows the target. The edge is authored
-                        // fact and must exist ("a concrete path
-                        // beats a hole" is impossible if the path is
-                        // dropped); the callee's UnanalyzedBody hole
-                        // bounds any reasoning past it (round 9).
+                        // call to a declared fn it holds no row for
+                        // arrives Unresolved (a module-scoped fn's
+                        // did until the summary collected
+                        // module-nested bodies, F.40 phase 3) — but
+                        // the DECLARATION universe knows the target.
+                        // The edge is authored fact and must exist
+                        // ("a concrete path beats a hole" is
+                        // impossible if the path is dropped); a
+                        // callee's UnanalyzedBody hole bounds any
+                        // reasoning past it (round 9).
                         calls.insert(
                             (
                                 from,
@@ -1956,63 +1930,20 @@ pub fn derive_application_model_over(
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         e.effect_classes = rows;
     }
-    // Round 10: a locus is UNANALYZABLE only when it is
-    // module-scoped AND carries executable members the engines
-    // never walked. A memberless locus is VACUOUSLY analyzable —
-    // there is no body to walk, so the walk completed trivially
-    // and every phase contract holds by absence — which also makes
-    // the flag recomputable at admission (memberless ⇒ true;
-    // membered ⇒ agrees with the member coverage).
-    let module_loci: BTreeSet<String> = {
-        fn walk(items: &[TopDecl], depth: u32, out: &mut BTreeSet<String>) {
-            for item in items {
-                match item {
-                    TopDecl::Locus(l) if depth > 0 => {
-                        // ONE membership rule, shared with
-                        // admission's member-coverage recompute:
-                        // only members that produce FUNCTION
-                        // entities the certificate engines could
-                        // walk count. Failure handlers are never
-                        // analyzed anywhere (typed FailureHandler
-                        // kind), and CLOSURES are invisible to the
-                        // certificate machinery at every scope
-                        // (round 13: a top-level closure-only
-                        // locus already certifies synthetically —
-                        // the engines never walk closure bodies —
-                        // so a module-scoped one is vacuously
-                        // analyzable, symmetric).
-                        // An omitted `run` produces no function
-                        // entity (`LifecycleDecl::synthesized`).
-                        let executable =
-                            l.members.iter().any(|m| match m {
-                                LocusMember::Fn(_) | LocusMember::Mode(_) => true,
-                                LocusMember::Lifecycle(lc) => !lc.synthesized,
-                                _ => false,
-                            });
-                        if executable {
-                            out.insert(l.name.name.clone());
-                        }
-                    }
-                    TopDecl::Module(m) => {
-                        walk(&m.items, depth + 1, out)
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut out = BTreeSet::new();
-        for pr in &programs {
-            walk(&pr.items, 0, &mut out);
-        }
-        out
-    };
+    // Round 10: a locus is UNANALYZABLE only when it carries
+    // executable members the engines never walked, and the flag is
+    // recomputable at admission from the member coverage. Every
+    // member body is walked (a module-nested locus's included since
+    // the behavior summary collects module-nested bodies, E3a part
+    // C; failure handlers do not count), so every locus is
+    // analyzable.
     for (n, row) in &locus_rows {
         let pid = intern_span(&mut records, row.span);
         e.loci.push(LocusDecl {
             name: n.clone(),
             display: name(n),
             sealed: row.sealed,
-            analyzable: !module_loci.contains(n),
+            analyzable: true,
             sync_form: row.sync_form,
             params: row
                 .params
@@ -2389,7 +2320,7 @@ pub fn derive_application_model_over(
         }
     }
 
-    // Unanalyzed bodies (module scope, on_failure): declared
+    // Unanalyzed bodies (on_failure): declared
     // executable entities whose calls/publishes/effects the summary
     // never walked — typed holes keep the capabilities honest.
     for (n, info) in &fn_rows {

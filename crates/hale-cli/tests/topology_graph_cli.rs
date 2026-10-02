@@ -746,20 +746,24 @@ fn module_scoped_annotation_subject_admits() {
 effect money;
 module billing {
     @effects(causes: { money })
-    fn poke(v: Int) -> Int { return v; }
+    fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
 }
+fn id(v: Int) -> Int { return v; }
 main locus App {
     params { n: Int = 0; }
-    run() { println(1); }
+    run() { println(poke(id, 1)); }
 }
 fn main() { App { }; }
 "#,
     )
     .unwrap();
-    // Round 3: a module-scoped subject is outside the
-    // analyzable universe, so `causes:` over it is UNCERTIFIED and
-    // says so — check is no longer silent about a law it could not
-    // certify. The artifact is still emitted and must still admit.
+    // Round 3: `poke` calls through a fn-typed parameter (#353), a
+    // call the walk cannot follow, so `causes:` over it is
+    // UNCERTIFIED and says so — check is not silent about a law it
+    // could not certify. The artifact is still emitted and must
+    // still admit. (The module-scoped body is walked, F.40 phase 3,
+    // E3a part C; before, the module alone made the law
+    // uncertifiable.)
     let (artifact, err) = dump_artifact_with_law_errors(&dir, &src);
     assert!(
         err.contains("outside the analyzable universe")
@@ -2215,8 +2219,8 @@ fn main() { App { }; }
 
 /// Round 8: an implicit lifecycle phase (`@phase_effects(birth:
 /// {})` with no `birth` hook) gets a synthetic Holds certificate —
-/// the compiler's own check-clean artifact admits; a module-scoped
-/// locus's phase contract judges `uncertified` and admits too.
+/// the compiler's own check-clean artifact admits, a module-scoped
+/// locus's included.
 #[test]
 fn implicit_phase_and_module_locus_admit() {
     for (tag, src, expect_verdict) in [
@@ -2240,8 +2244,10 @@ fn implicit_phase_and_module_locus_admit() {
              run() { println(1); }\n}\nfn main() { App { }; }\n",
             "holds",
         ),
-        // A module locus WITH executable members is genuinely
-        // unanalyzed: residue, `uncertified`.
+        // A module locus WITH executable members is analyzed like a
+        // top-level one (F.40 phase 3, E3a part C: the summary walks
+        // module-nested bodies), so its contract holds too. It was
+        // unanalyzed residue, `uncertified`, before.
         (
             "modlocusmember",
             "module inner {\n    @phase_effects(birth: {})\n    \
@@ -2249,7 +2255,7 @@ fn implicit_phase_and_module_locus_admit() {
              fn poke(v: Int) -> Int { return v; }\n    \
              }\n}\nmain locus App {\n    params { n: Int = 0; }\n    \
              run() { println(1); }\n}\nfn main() { App { }; }\n",
-            "uncertified",
+            "holds",
         ),
     ] {
         let dir = workdir(tag);
@@ -2535,8 +2541,12 @@ fn main() { App { }; }
 }
 
 /// Round 9: `analyzable` is recomputed from the member account —
-/// flipping a module-scoped locus's flag (to dress `uncertified`
-/// up as `holds`) contradicts the hashed function universe.
+/// flipping a locus's flag contradicts the hashed function universe.
+/// The flip goes from true to false (to dress `holds` down as
+/// `uncertified`): no locus with an executable member is unanalyzable
+/// since the summary walks module-nested bodies (F.40 phase 3, E3a
+/// part C), so the false-to-true flip this test made has no honest
+/// artifact to start from.
 #[test]
 fn analyzable_flip_is_refused() {
     let dir = workdir("anaflip");
@@ -2563,9 +2573,9 @@ fn main() { App { }; }
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let flipped = raw.replacen(
         "\"name\": \"Hidden\", \"display\": \"Hidden\", \
-         \"analyzable\": false",
-        "\"name\": \"Hidden\", \"display\": \"Hidden\", \
          \"analyzable\": true",
+        "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+         \"analyzable\": false",
         1,
     );
     assert_ne!(flipped, raw, "test premise: the flip landed");
@@ -2860,8 +2870,10 @@ fn main() { App { }; }
 
 /// Round 11: the coverage account is typed, not prefix-inferred —
 /// a module-scoped ordinary method named `on_failure_helper` is a
-/// real (unanalyzed) member, so the module locus is honestly
-/// analyzable=false and its artifact admits.
+/// real member: a typed method, analyzed and summarized like any
+/// (the summary walks module-nested bodies, F.40 phase 3, E3a part
+/// C), where a failure handler would be neither. The module locus is
+/// honestly analyzable and its artifact admits.
 #[test]
 fn on_failure_helper_module_method_admits() {
     let dir = workdir("onfhelper");
@@ -2889,13 +2901,15 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     assert!(
-        raw.contains("\"kind\": \"method\"")
-            && raw.contains(
-                "\"name\": \"Hidden\", \"display\": \"Hidden\", \
-                 \"analyzable\": false"
-            ),
-        "the helper is a typed METHOD and the locus honestly \
-         unanalyzable:\n{}",
+        raw.contains(
+            "\"display\": \"Hidden::on_failure_helper\", \"analyzed\": \
+             true, \"summarized\": true, \"kind\": \"method\""
+        ) && raw.contains(
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": true"
+        ),
+        "the helper is a typed, analyzed METHOD and the locus \
+         honestly analyzable:\n{}",
         raw
     );
     let out = hale()
@@ -2968,8 +2982,11 @@ fn main() { App { }; }
 
 /// Round 12: the coverage bit cannot be upgraded — `analyzed` is
 /// anchored to the HASHED summary universe (a walked body is
-/// summarized), so flipping a module fn's bit to manufacture a
-/// Holds certificate contradicts `sorts.fns`.
+/// summarized), so flipping an unanalyzed body's bit to manufacture
+/// a Holds certificate contradicts `sorts.fns`. The unanalyzed body
+/// is an `on_failure` handler's, the one kind the behavior analysis
+/// does not walk (a module-scoped fn was one until the summary
+/// collected module-nested bodies, F.40 phase 3, E3a part C).
 #[test]
 fn coverage_upgrade_is_refused() {
     let dir = workdir("covupgrade");
@@ -2977,14 +2994,18 @@ fn coverage_upgrade_is_refused() {
     std::fs::write(
         &src,
         r#"
-module inner {
-    @effects(none: { syscall })
-    fn f(v: Int) -> Int {
-        return v;
+locus Child {
+    params { n: Int = 0; }
+    fn go(v: Int) { self.n = v; }
+}
+locus Parent {
+    params { c: Child = Child { }; }
+    on_failure(c: Child, err: ClosureViolation) {
+        restart (c);
     }
 }
 main locus App {
-    params { n: Int = 0; }
+    params { p: Parent = Parent { }; }
     run() { println(1); }
 }
 fn main() { App { }; }
@@ -2993,13 +3014,13 @@ fn main() { App { }; }
     .unwrap();
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
-    let needle = "\"display\": \"f\", \"analyzed\": false, \
-                  \"summarized\": false";
-    assert!(raw.contains(needle), "module fn coverage:\n{}", raw);
+    let needle = "\"display\": \"Parent::on_failure(Child,ClosureViolation)\", \
+                  \"analyzed\": false, \"summarized\": false";
+    assert!(raw.contains(needle), "failure handler coverage:\n{}", raw);
     let upgraded = raw.replacen(
         needle,
-        "\"display\": \"f\", \"analyzed\": true, \
-         \"summarized\": false",
+        "\"display\": \"Parent::on_failure(Child,ClosureViolation)\", \
+         \"analyzed\": true, \"summarized\": false",
         1,
     );
     let p2 = dir.join("upgraded.topology");
@@ -3147,9 +3168,10 @@ fn main() { App { }; }
 }
 
 /// Round 16: the artifact's typed owner is anchored to the entity
-/// identity too — retagging `Hidden::poke`'s owner to `App` (with
-/// both analyzability flags updated consistently) refuses because
-/// the display cannot canonically encode that owner.
+/// identity too — retagging `Hidden::poke`'s owner to `App` (both
+/// analyzability flags stay consistent: `poke` is analyzed, and a
+/// memberless `Hidden` is vacuously analyzable) refuses because the
+/// display cannot canonically encode that owner.
 #[test]
 fn artifact_owner_swap_is_refused() {
     let dir = workdir("ownerswap");
@@ -3175,31 +3197,16 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let needle = "\"display\": \"Hidden::poke\", \"analyzed\": \
-                  false, \"summarized\": false, \"kind\": \
+                  true, \"summarized\": true, \"kind\": \
                   \"method\", \"owner\": \"Hidden\"";
     assert!(raw.contains(needle), "typed owner present:\n{}", raw);
-    let swapped = raw
-        .replacen(
-            needle,
-            "\"display\": \"Hidden::poke\", \"analyzed\": false, \
-             \"summarized\": false, \"kind\": \"method\", \
-             \"owner\": \"App\"",
-            1,
-        )
-        .replacen(
-            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
-             \"analyzable\": false",
-            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
-             \"analyzable\": true",
-            1,
-        )
-        .replacen(
-            "\"name\": \"App\", \"display\": \"App\", \
-             \"analyzable\": true",
-            "\"name\": \"App\", \"display\": \"App\", \
-             \"analyzable\": false",
-            1,
-        );
+    let swapped = raw.replacen(
+        needle,
+        "\"display\": \"Hidden::poke\", \"analyzed\": true, \
+         \"summarized\": true, \"kind\": \"method\", \
+         \"owner\": \"App\"",
+        1,
+    );
     assert_ne!(swapped, raw, "test premise: the swap landed");
     let p2 = dir.join("ownerswap.topology");
     std::fs::write(&p2, restamp_digest(&strip_trailer(&swapped)))

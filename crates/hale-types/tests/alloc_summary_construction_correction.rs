@@ -69,6 +69,29 @@
 //! another stdlib file, is unresolved in the program's own scope), so
 //! that check's effect manifest, model and `shape_hash` move
 //! (`fccb52d86a539447` → `371edb8609756fca`).
+//!
+//! **The summary collects module-nested bodies** (E3a part C). Every
+//! declaration pass walked a program's top level only, so a fn or a
+//! locus declared inside `module { … }` had no row: a call into one was
+//! the unresolved bare name, which every effect walk read as nothing,
+//! and the model listed the declaration with an `UnanalyzedBody` hole
+//! (a module-nested locus with members `analyzable: false`). A module is
+//! a namespace, not an analysis boundary (GH #764), and the passes walk
+//! it now. Of the targets only `91-module-decls` has module-nested
+//! bodies: it gains seven rows, `App::run`'s seven calls into them
+//! resolve, no effect class moves and it holds no certificate. Across
+//! the corpus every program with a module-nested body moves its dump,
+//! its effect rows and its model, `shape_hash` included (the model's
+//! holes close and its summarized universe grows); `91-module-decls`
+//! goes `e433cc0599156f87` → `86745b4e2324e4a2`. Where a nested body
+//! does something its caller's effect row now says so: `App::run`
+//! calling a module-nested `danger` that runs a process was
+//! `{publish, alloc}` with nothing unknown, a false proof of absence.
+//! A `causes:` law through a module-nested fn, which could not be
+//! certified, holds. The old answer is the corrected summary with the
+//! module-nested rows removed and each call into one unresolved by its
+//! bare name (measured against the base build's dump and effect rows on
+//! every corpus program with a module-nested body: equal).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -675,4 +698,194 @@ fn program_declaration_http_client_header() {
     .expect("http_client.hl has a summary");
     assert!(manifest.contains("__http_check_scheme  does={alloc}"), "the manifest lists a fn's classes:\n{manifest}");
     assert!(!manifest.contains("__http_client_header  does="), "the row carries no class:\n{manifest}");
+}
+
+/// The free fns and the loci the programs declare inside a
+/// `module { … }`, at any depth.
+fn module_nested<'a>(programs: impl IntoIterator<Item = &'a hale_syntax::ast::Program>) -> (BTreeSet<String>, BTreeSet<String>) {
+    use hale_syntax::ast::{flat_decls, TopDecl};
+    let (mut fns, mut loci) = (BTreeSet::new(), BTreeSet::new());
+    for p in programs {
+        for item in &p.items {
+            let TopDecl::Module(m) = item else { continue };
+            for d in flat_decls(&m.items) {
+                match d {
+                    TopDecl::Fn(f) => {
+                        fns.insert(f.name.name.clone());
+                    }
+                    TopDecl::Locus(l) => {
+                        loci.insert(l.name.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (fns, loci)
+}
+
+/// The summary before module-nested bodies were collected: `now`
+/// without their rows, each call into one unresolved by its bare name.
+/// Returns it, the rows it drops and the calls it unresolves, as
+/// `caller -> callee`.
+fn without_module_bodies(now: &AllocSummary, (fns, loci): &(BTreeSet<String>, BTreeSet<String>)) -> (AllocSummary, Vec<String>, Vec<String>) {
+    let nested = |k: &FnKey| now.is_own(k) && k.locus.as_ref().map_or(fns.contains(&k.fn_name), |l| loci.contains(l));
+    let rows = now.fns.keys().filter(|k| nested(k)).map(FnKey::display).collect();
+    let mut old = now.clone();
+    old.fns.retain(|k, _| !nested(k));
+    let mut calls = Vec::new();
+    for (key, f) in old.fns.iter_mut() {
+        for c in &mut f.calls {
+            let Callee::Resolved(k) = &c.callee else { continue };
+            if nested(k) {
+                calls.push(format!("{} -> {}", key.display(), k.display()));
+                c.callee = Callee::Unresolved(k.fn_name.clone());
+            }
+        }
+    }
+    (old, rows, calls)
+}
+
+/// The dump's count line.
+fn counts(summary: &AllocSummary) -> String {
+    summary.render().lines().find(|l| l.contains(" fns, ")).unwrap_or_default().to_string()
+}
+
+/// Of the targets only 91-module-decls declares a body inside a module.
+#[test]
+fn module_bodies_only_one_target_has_them() {
+    let mut with = Vec::new();
+    for t in targets() {
+        let nested = over_target(&t, |snap, _| {
+            let (fns, loci) = module_nested(snap.bundle().programs.values().copied());
+            !fns.is_empty() || !loci.is_empty()
+        });
+        if nested == Some(true) {
+            with.push(t);
+        }
+    }
+    assert_eq!(with, ["crates/hale-codegen/tests/fixtures/examples/91-module-decls"]);
+}
+
+/// 91-module-decls: seven rows, the seven calls into them resolve, the
+/// effect rows gain the seven and `App::run`'s targets, no effect class
+/// moves, and the model's holes close.
+#[test]
+fn module_bodies_91_module_decls() {
+    over_target("crates/hale-codegen/tests/fixtures/examples/91-module-decls", |snap, now| {
+        let bundle = snap.bundle();
+        let (old, rows, calls) = without_module_bodies(now, &module_nested(bundle.programs.values().copied()));
+        assert_eq!(
+            rows,
+            ["larger", "manhattan", "read_through", "twice", "Counter::bump", "Listener::on_ping", "Sensor::value"]
+        );
+        assert_eq!(
+            calls,
+            [
+                "App::run -> manhattan",
+                "App::run -> twice",
+                "App::run -> larger",
+                "App::run -> Sensor::value",
+                "App::run -> read_through",
+                "App::run -> Counter::bump",
+                "App::run -> Counter::bump",
+            ]
+        );
+        assert_eq!(
+            (counts(&old), counts(now)),
+            (
+                "# 3 fns, 2 entry points, 0 invoked-unboundedly".to_string(),
+                "# 10 fns, 3 entry points, 1 invoked-unboundedly".to_string()
+            )
+        );
+        let rows_now = snap.demand_effects().expect("the effect rows");
+        let rows_old = derive_effect_rows(&bundle, snap.demand_scope().expect("the scope"), Arc::new(old));
+        let mut moved = Vec::new();
+        for (k, r) in &rows_now.rows {
+            let Some(o) = rows_old.rows.get(k) else { continue };
+            assert_eq!((o.effects, o.unknown), (r.effects, r.unknown), "{}: an effect moved", k.display());
+            if o.targets != r.targets {
+                moved.push(k.display());
+            }
+        }
+        assert_eq!(moved, ["App::run"]);
+        assert_eq!(rows_now.rows.len(), rows_old.rows.len() + 7);
+        assert!(snap.demand_effect_certificates().expect("the certificates").is_empty());
+        let model = snap.demand_model().expect("the model");
+        assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
+        assert!(model.entities.loci.iter().all(|l| l.analyzable));
+        let caps = &model.capabilities;
+        assert!(caps.exact_calls && caps.exact_publishes && caps.exact_effects);
+    })
+    .expect("91-module-decls loads");
+}
+
+/// A module-nested fn's effects reach its caller's row: `App::run`
+/// calls the module's `danger`, which runs a process. The old row was
+/// `{publish, alloc}` and claimed to know everything.
+#[test]
+fn module_bodies_reach_the_effect_rows() {
+    let src = r#"
+module inner {
+    fn danger() {
+        let out = std::process::run("true") or raise;
+        let c = out.code;
+    }
+}
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "m.t" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "m.t" of type Tick; }
+    run() {
+        danger();
+        "m.t" <- Tick { n: 1 };
+    }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
+    let now = hale_types::alloc_summary::derive_alloc_summary(&bundle);
+    let (old, rows, calls) = without_module_bodies(&now, &module_nested([&program]));
+    assert_eq!((rows, calls), (vec!["danger".to_string()], vec!["App::run -> danger".to_string()]));
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let run = FnKey::method("App", "run");
+    let row = |s: AllocSummary| {
+        let r = &derive_effect_rows(&bundle, &top, Arc::new(s)).rows[&run];
+        (r.effects, r.unknown)
+    };
+    use hale_types::stdlib_surface::EffectSet;
+    let both = EffectSet::PUBLISH.union(EffectSet::ALLOC);
+    assert_eq!(row(old), (both, false), "the old row: no process, nothing unknown");
+    assert_eq!(row(now), (both.union(EffectSet::SYSCALL).union(EffectSet::BLOCK), false));
+}
+
+/// A `causes:` law on a module-nested fn is certified: the walk sees
+/// `poke`'s body. Before, the law "cannot be certified": `poke` was an
+/// unanalyzed body, and the check said so.
+#[test]
+fn module_bodies_certify_a_causes_law() {
+    let src = r#"
+effect money;
+module billing {
+    @effects(causes: { money })
+    fn poke(v: Int) -> Int { return v; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let diags: Vec<String> = hale_types::check_program(&program).iter().map(|d| d.message.clone()).collect();
+    assert_eq!(diags, Vec::<String>::new());
+    let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
+    let model = hale_types::model_builder::derive_application_model(&bundle);
+    assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
 }
