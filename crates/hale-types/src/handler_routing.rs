@@ -41,6 +41,7 @@ use hale_syntax::ast::{
 };
 use hale_syntax::Span;
 
+use crate::placement::SiteRef;
 use crate::snapshot::Snapshot;
 
 /// The child type a handler names, resolved.
@@ -74,6 +75,12 @@ pub struct HandlerRow {
     /// unminted).
     pub parent_id: Option<SiteId>,
     pub child: ChildRef,
+    /// The declaration of the locus `child` resolves to (a monomorph's
+    /// template's), qualified by the store that minted it: a program's
+    /// in the snapshot the rows were built against, a stdlib locus's in
+    /// the analysis copy. `None` for an external child, and for an
+    /// unminted one.
+    pub child_decl: Option<crate::placement::SiteRef>,
     /// The child type as written, its path joined by `::`: what a
     /// reader who has no row for the resolved locus names it by.
     pub written: String,
@@ -202,6 +209,19 @@ impl HandlerRouting {
 pub struct DeclaredNames {
     pub loci: BTreeSet<String>,
     pub aliases: BTreeMap<String, TypeExpr>,
+    /// Each declared locus's declaration: the first a program
+    /// declares, else the bundled stdlib analysis copy's.
+    pub decls: BTreeMap<String, DeclAt>,
+}
+
+/// Where a locus a child type resolves to is declared, by the id the
+/// store that minted it gave the declaration: the programs handed in
+/// (the snapshot's), or the bundled stdlib's analysis copy, which is
+/// minted alone and numbers its own sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclAt {
+    Program(NodeId),
+    Stdlib(NodeId),
 }
 
 impl DeclaredNames {
@@ -216,14 +236,19 @@ impl DeclaredNames {
             for item in hale_syntax::ast::flat_decls(&std.items) {
                 if let TopDecl::Locus(l) = item {
                     out.loci.insert(l.name.name.clone());
+                    out.decls.entry(l.name.name.clone()).or_insert(DeclAt::Stdlib(l.id));
                 }
             }
         }
+        let mut own: BTreeSet<String> = BTreeSet::new();
         for p in programs {
             for item in hale_syntax::ast::flat_decls(&p.items) {
                 match item {
                     TopDecl::Locus(l) => {
                         out.loci.insert(l.name.name.clone());
+                        if own.insert(l.name.name.clone()) {
+                            out.decls.insert(l.name.name.clone(), DeclAt::Program(l.id));
+                        }
                     }
                     TopDecl::Type(t) if t.generics.is_empty() => {
                         if let TypeDeclBody::Alias(te) = &t.body {
@@ -263,20 +288,35 @@ pub fn child_locus_name(
     declared: &DeclaredNames,
     import_renames: &[(Vec<String>, String)],
 ) -> ChildRef {
+    child_locus(te, declared, import_renames).0
+}
+
+/// [`child_locus_name`]'s resolution, with the declaration the locus
+/// is: its own, or a monomorph's template's (a monomorph keeps its
+/// template's identity). `None` for an external child.
+pub fn child_locus(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+) -> (ChildRef, Option<DeclAt>) {
     match resolve(te, declared, import_renames, &mut Vec::new()) {
-        Some(name) => ChildRef::Locus(name),
-        None => ChildRef::External(written_name(te)),
+        Some((name, decl)) => {
+            let at = declared.decls.get(&decl).copied();
+            (ChildRef::Locus(name), at)
+        }
+        None => (ChildRef::External(written_name(te)), None),
     }
 }
 
-/// The locus name `te` denotes if it denotes one: `None` for a type no
-/// declared locus answers to.
+/// The locus name `te` denotes if it denotes one, with the name of the
+/// declaration that locus is (a monomorph's template): `None` for a
+/// type no declared locus answers to.
 fn resolve(
     te: &TypeExpr,
     declared: &DeclaredNames,
     renames: &[(Vec<String>, String)],
     seen: &mut Vec<String>,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let TypeExpr::Named { path, generic_args, .. } = te else {
         return None;
     };
@@ -286,7 +326,8 @@ fn resolve(
             if !declared.loci.contains(name) {
                 return None;
             }
-            return crate::mangle::mangle_generic_name(name, generic_args).ok();
+            let mangled = crate::mangle::mangle_generic_name(name, generic_args).ok()?;
+            return Some((mangled, name.clone()));
         }
         name.clone()
     } else {
@@ -302,7 +343,7 @@ fn resolve(
             resolve(target, declared, renames, seen)
         }
         Some(_) => None,
-        None => declared.loci.contains(&name).then_some(name),
+        None => declared.loci.contains(&name).then(|| (name.clone(), name)),
     }
 }
 
@@ -349,10 +390,19 @@ pub fn handler_rows(
                 continue;
             }
             let (ops, retry_bound) = recovery_ops(&fd.body);
+            let (child, at) = child_locus(&fd.params[0].ty, &declared, import_renames);
+            let child_decl = match at {
+                Some(DeclAt::Program(n)) => snapshot.site_id(n).map(SiteRef::user),
+                Some(DeclAt::Stdlib(n)) => crate::stdlib_bodies::identities()
+                    .and_then(|ids| ids.site_id(n))
+                    .map(SiteRef::stdlib),
+                None => None,
+            };
             routing.push(HandlerRow {
                 parent: l.name.name.clone(),
                 parent_id: snapshot.site_id(l.id),
-                child: child_locus_name(&fd.params[0].ty, &declared, import_renames),
+                child,
+                child_decl,
                 written: written_name(&fd.params[0].ty),
                 error_type: written_name(&fd.params[1].ty),
                 ordinal,

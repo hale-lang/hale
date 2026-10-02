@@ -25,7 +25,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
-| `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 3 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
+| `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
@@ -649,7 +649,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route` — the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's. *Removed when:* phase 3, when the instance is a row of an instance tree: the snapshot has no instance-tree family, so the parent instance is still the lowering context's (at the phase-2 close).
 - `crates/hale-types/src/model_builder.rs` · `fn_rows` — the model's function rows key a failure handler by a signature string built from its params' written types. *Removed when:* phase 3, keyed by the row's SiteId, with handler routing by identity: the routing rows carry SiteId columns no model reader joins on yet (the phase-2 exit's #1199 re-measurement), and round 3's finding 17 (a generic supervisor's unsubstituted row) lands with that join (finding 16, a monomorph's rows found by linear scan, closed with lowering's join by the parent's identity).
-- `crates/hale-types/src/model_builder.rs` · `SupervisedRef::External` — a child the routing rows resolve as external is recorded by its written name. *Removed when:* phase 3, keyed by the row's SiteId, with the same join as `fn_rows` (still by written name at the phase-2 close).
 
 **Also owned.** `crates/hale-types/src/handler_routing.rs` · `child_locus_name`
 
@@ -659,6 +658,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - the child type is resolved once, by `child_locus_name`; lowering, the checker and the model read the same row
 - a row carries its parent declaration's site (`parent_id`) and a reader holding a locus declaration asks for its rows by that identity (`handlers_of_decl`, `route_decl`): a monomorph keeps its template's id and so reads its template's rows, with no scan of the templates; lowering's handler fn is a column of the row, held per locus keyed by the row's site (`LocusInfo::failure_handlers`), and the handler table, the body pass and a route each join by that site, never by the row's ordinal
+- a row carries the site of the declaration its child resolves to (`child_decl`, a monomorph's template's, from the same resolution as `child`: `child_locus`), qualified by the store that minted it; the model's supervision rows join parent and child to its locus table by those sites, and a child declared outside the snapshot's programs (a stdlib locus) is `SupervisedRef::External`, whose written name is its display, never a join key; only a bundle no entry point minted joins by name
 - the checker builds no rows: the snapshot demands them before the check (`CheckInputs`), and the checker's duplicate-handler rule, the `@supervised` law and the model read that one build; a bundle no snapshot holds (the test entries) builds them once, in `bundle_handler_rows`
 
 **Missing data.** a missing required row is a compiler error
@@ -670,7 +670,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `handler_rows(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
-- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×3, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
+- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×3, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
+- `child_locus(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×3
 - `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
 
 ### `flows` — Canonical · derivation

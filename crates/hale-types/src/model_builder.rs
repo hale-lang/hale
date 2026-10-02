@@ -1775,13 +1775,34 @@ pub fn derive_application_model_over(
     //
     // The rows are the bundle's, demanded once per snapshot: a child
     // declared in a sibling file is a locus here as it is to lowering.
+    //
+    // Parent and child join the locus table by declaration identity:
+    // the row's parent site, and the site of the declaration its child
+    // resolves to (a monomorph's template's). A child declared outside
+    // the snapshot's programs (a stdlib locus, which the model has no
+    // declaration for) is external, by its written name. A bundle no
+    // entry point minted has no sites, and joins by name.
+    let mut locus_by_site: BTreeMap<u32, LocusDeclId> = BTreeMap::new();
+    for l in &ast.loci {
+        if !l.id.is_none() {
+            locus_by_site.insert(l.id.0, locus_id[&l.name.name]);
+        }
+    }
     for (authored, row) in inputs.handlers.rows().iter().enumerate() {
-        let parent = locus_id[&row.parent];
-        let declared = match &row.child {
-            ChildRef::Locus(n) => {
+        let parent = match row.parent_id {
+            Some(site) => locus_by_site[&site.index],
+            None => locus_id[&row.parent],
+        };
+        let declared = match (&row.child, row.child_decl) {
+            (ChildRef::External(_), _) => None,
+            (ChildRef::Locus(_), Some(d)) => match d.universe {
+                crate::placement::SiteUniverse::User => locus_by_site.get(&d.id.index),
+                crate::placement::SiteUniverse::StdlibAnalysis => None,
+            },
+            (ChildRef::Locus(_), None) if row.id.is_some() => None,
+            (ChildRef::Locus(n), None) => {
                 locus_id.get(n).or_else(|| locus_id.get(&row.written))
             }
-            ChildRef::External(_) => None,
         };
         let child = match declared {
             Some(id) => SupervisedRef::Locus(*id),
