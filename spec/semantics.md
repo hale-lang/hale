@@ -3536,6 +3536,16 @@ that keeps two facts apart:
   pool calls them, `serialized` for at most one writer pool, `striped` for
   several writer pools when a mutate is hot (inside a loop or an
   `on_` handler), else `serialized`; none for any other form.
+  The rule is applied per **instance**: a `self.field.set(..)`
+  call reaches the caller's own `field`, from the caller
+  instance's pool, so two maps each touched by its own owner on
+  its own pool need nothing, and the declaration gets the most
+  synchronized discipline any of its instances needs. One
+  instance two holders share (handed to both by `fn main`)
+  collects both holders' pools. An instance the placement table
+  cannot identify (one held through a parameter or `self.field`,
+  or a literal in a method body whose pools are unknown) is
+  called from a pool apart from every other, never main.
 
 Two questions are asked of the row:
 

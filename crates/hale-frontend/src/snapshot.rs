@@ -950,19 +950,19 @@ impl Snapshot {
     /// The form rows ([`hale_types::form_rows`]): every `@form`
     /// declaration's written `sync` configuration and the discipline it
     /// gets, sync inference's pick for a `hashmap` form its author did
-    /// not configure, over the scope and the entry row's pool map. A
-    /// scope that reported a diagnostic gets no inference (the program
-    /// does not build). Blocked with the scope.
+    /// not configure, over the scope and the placement table, per
+    /// instance. A scope that reported a diagnostic gets no inference
+    /// (the program does not build). Blocked with the scope.
     pub fn demand_forms(&self) -> Result<&FormRows, &Blocked> {
         self.forms
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
-                let entry = self.demand_entry().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("sync_inference");
                 Ok(hale_types::form_rows::form_rows(
                     &self.bundle(),
                     &scope.top,
-                    entry,
+                    placement,
                     scope.diags.is_empty(),
                 ))
             })
@@ -1024,6 +1024,7 @@ impl Snapshot {
                     entry: self.demand_entry().map_err(Clone::clone)?,
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
+                    placement: self.demand_placement().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1145,8 +1146,8 @@ impl Snapshot {
     /// from the entry row's lowering root, after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
-    /// total over a program that does not typecheck. No consumer reads it
-    /// yet (F.40 phase 3, P1).
+    /// total over a program that does not typecheck. The check's F.31
+    /// rule and sync inference read it (F.40 phase 3, P1).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {
@@ -1922,7 +1923,9 @@ mod tests {
 
     /// The form rows (F.40 phase 3, C1): one row per `@form` declaration,
     /// found by the identity the load minted, its discipline inference's
-    /// for a map two pools write. Demanded twice, built once.
+    /// for a map two pools write (the one instance `fn main` hands both
+    /// workers; inference is per instance, P1). Demanded twice, built
+    /// once.
     #[test]
     fn the_form_rows_are_one_family_by_identity() {
         use hale_types::form_rows::Discipline;
@@ -1944,7 +1947,10 @@ mod tests {
                  placement { io: cooperative(pool = io); cpu: cooperative(pool = compute); }\n\
                  bus { publish \"tick\" of type Tick; }\n\
                  run() { } }\n\
-             fn main() { App { }; }\n",
+             fn main() {\n\
+                 let reg = Registry { };\n\
+                 App { io: IoWorker { reg: reg }, cpu: CompWorker { reg: reg } };\n\
+             }\n",
         )
         .unwrap();
         let s = load_as(&d.join("app.hl"), LoadMode::WholeSeed, &Disk, Config::check(true, false));

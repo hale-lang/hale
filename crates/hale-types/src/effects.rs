@@ -697,7 +697,8 @@ pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertific
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let summary = crate::alloc_summary::derive_alloc_summary(bundle);
     let (top, diags) = crate::resolve::build_top_scope(bundle);
-    let forms = crate::form_rows::form_rows(bundle, &top, &crate::entry::entry_row(bundle), diags.is_empty());
+    let placement = crate::placement::derive_placement(bundle, &top, &crate::entry::entry_row(bundle));
+    let forms = crate::form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     effect_report_grouped(&programs, &summary, &forms).1
 }
 

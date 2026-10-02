@@ -8,23 +8,38 @@ use hale_syntax::ast::{Program, TopDecl};
 use hale_types::form_rows::{form_rows, Discipline, FormRows, SyncConfig};
 use hale_types::Bundle;
 
+/// The rows over the program minted, as every entry point mints it,
+/// and its placement table, which inference reads per instance.
 fn rows_of(program: &Program) -> FormRows {
+    let mut program = program.clone();
+    let ids = hale_types::snapshot::mint([("", &mut program)], &[]);
     let mut programs = BTreeMap::new();
-    programs.insert(String::new(), program);
-    let bundle = Bundle::new(programs);
+    programs.insert(String::new(), &program);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
     let (top, diags) = hale_types::resolve::build_top_scope(&bundle);
-    let entry = hale_types::entry::entry_row(&bundle);
-    form_rows(&bundle, &top, &entry, diags.is_empty())
+    let placement = hale_types::placement::derive_placement(&bundle, &top, &hale_types::entry::entry_row(&bundle));
+    form_rows(&bundle, &top, &placement, diags.is_empty())
 }
 
 fn rows(src: &str) -> FormRows {
     rows_of(&hale_syntax::parse_source(src).expect("parse"))
 }
 
-/// Two workers on two pools, each calling `set` on a `Registry` field
-/// from a bus handler: two writer pools on a hot path, which inference
-/// answers `striped`. `SYNC` is the registry's `sync` argument.
+/// Two workers on two pools, each calling `set` from a bus handler on
+/// the one `Registry` `fn main` hands them both: one instance with two
+/// writer pools on a hot path, which inference answers `striped`. `SYNC`
+/// is the registry's `sync` argument.
 fn two_writers(sync: &str) -> String {
+    own_maps(sync).replace(
+        "fn main() { App { }; }",
+        "fn main() {\n    let reg = Registry { };\n    App { io: IoWorker { reg: reg }, cpu: CompWorker { reg: reg } };\n}",
+    )
+}
+
+/// The same two workers, each with its own `Registry`: two maps, each
+/// written from one pool.
+fn own_maps(sync: &str) -> String {
     format!(
         r#"
 type Entry {{ k: Int; v: Int; }}
@@ -74,6 +89,23 @@ fn an_omitted_discipline_is_inferences() {
     assert!(row.inferred.is_some(), "the reasoning travels with the pick");
     assert!(!row.explicitly_configured());
     assert!(row.safe_for_cross_domain_access());
+}
+
+/// Sync inference is per instance (F.40 phase 3, P1; the
+/// correspondence's K-5): two maps, each written by its own owner on
+/// its own pool, need no synchronization. The type-level union the
+/// inference read before the placement table counted both owners'
+/// pools against one type and answered `striped`.
+#[test]
+fn two_owners_on_two_pools_infer_none() {
+    let r = rows(&own_maps(""));
+    let row = r.named("Registry").expect("a row for the form");
+    assert_eq!(row.effective, Discipline::None, "each map has one writer pool");
+    let inferred = row.inferred.as_ref().expect("inference ran");
+    assert_eq!(inferred.writer_pools.len(), 1, "one instance's writers: {inferred:?}");
+    assert!(!row.safe_for_cross_domain_access());
+    // The shared instance is the one that needs it.
+    assert_eq!(rows(&two_writers("")).named("Registry").unwrap().effective, Discipline::Striped);
 }
 
 #[test]
@@ -154,11 +186,19 @@ fn a_module_nested_form_has_a_row_and_no_inference() {
     assert_eq!(row.effective, Discipline::None, "inference reads the top level, as it always has");
 }
 
-/// `App` reads a `Registry` placed on another pool, and a `Writer` on
-/// a third pool writes one: one writer pool and two reader pools, which
-/// inference answers `serialized`. `SYNC` is the registry's `sync`
-/// argument.
+/// `App` reads its `Registry`, placed on another pool, and a `Writer`
+/// on a third pool writes the same instance, handed it as `self.reg`. A
+/// source the placement table cannot link (`self.reg`) is reached from
+/// wherever it was built, a domain apart from the writer's, so the one
+/// instance has two writers on a hot path, which inference answers
+/// `striped`. `SYNC` is the registry's `sync` argument.
 fn cross_pool(sync: &str) -> String {
+    own_map_read_across_pools(sync).replace("w: Writer = Writer { };", "w: Writer = Writer { reg: self.reg };")
+}
+
+/// The same program with the `Writer` writing a `Registry` of its own:
+/// the map `App` reads is touched from `App`'s domain alone.
+fn own_map_read_across_pools(sync: &str) -> String {
     format!(
         r#"
 type Entry {{ k: Int; v: Int; }}
@@ -194,7 +234,11 @@ fn main() {{ App {{ }}; }}
 }
 
 fn cross_pool_errors(sync: &str) -> Vec<String> {
-    let program = hale_syntax::parse_source(&cross_pool(sync)).expect("parse");
+    errors_of(&cross_pool(sync))
+}
+
+fn errors_of(src: &str) -> Vec<String> {
+    let program = hale_syntax::parse_source(src).expect("parse");
     hale_types::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error() && d.message.contains("cross-pool method call"))
@@ -208,9 +252,32 @@ fn cross_pool_errors(sync: &str) -> Vec<String> {
 #[test]
 fn an_inferred_discipline_admits_a_cross_pool_call() {
     let r = rows(&cross_pool(""));
-    assert_eq!(r.named("Registry").unwrap().effective, Discipline::Serialized);
+    assert_eq!(r.named("Registry").unwrap().effective, Discipline::Striped);
     assert_eq!(cross_pool_errors(""), Vec::<String>::new());
     assert_eq!(cross_pool_errors(", sync = serialized"), Vec::<String>::new());
+}
+
+/// Per instance (K-5): the map `App` reads across pools is touched from
+/// `App`'s domain alone, so inference leaves it unsynchronized, and the
+/// read is refused. Before the placement table, the `Writer`'s own map
+/// of the same type lent this one its writer pool, and the program was
+/// admitted because every `Registry` was serialized.
+#[test]
+fn a_map_no_other_domain_touches_does_not_admit_a_cross_pool_call() {
+    let src = own_map_read_across_pools("");
+    assert_eq!(rows(&src).named("Registry").unwrap().effective, Discipline::None);
+    let errors = errors_of(&src);
+    assert_eq!(
+        errors,
+        ["cross-pool method call: `self.reg.has` invokes a method on locus `Registry` placed \
+          `cooperative(pool = io)`, but the enclosing locus `App` is placed `cooperative(pool = main)`. \
+          Cross-pool coordination must go through the bus, not a direct call. See spec/types.md \
+          § \"Single-threaded-method invariant (F.31)\".\n  hint: receiver `Registry` is `@form(...)`. \
+          Cross-pool access requires an explicit sync discipline:\n    \
+          `@form(hashmap, sync = serialized)` — per-map mutex (simplest, lowest throughput)\n    \
+          `@form(hashmap, sync = striped)` — parallel writers, cache-padded cells (F.32-1β)\n  \
+          See `notes/f32-cache-aware-delivery-plan.md` § F.32-0 / F.32-1."],
+    );
 }
 
 /// The F.31 cross-pool check asks one question of the receiver's form

@@ -66,11 +66,13 @@ lives on. Opt into that with the `sync = …` parameter —
 (CAS-only steady state) — trading layout density for the sharing
 discipline the workload needs.
 
-A map you leave unconfigured is not always single-pool: when its
-methods are called from more than one pool, the compiler infers a
-discipline for it (`serialized`, or `striped` for several writers
-on a hot path), lays the map out with it, and accepts the
-cross-pool calls that discipline makes safe. Write `sync = none`
+A map you leave unconfigured is not always single-pool: when one
+instance of it is called from more than one pool, the compiler
+infers a discipline for it (`serialized`, or `striped` for several
+writers on a hot path), lays the map out with it, and accepts the
+cross-pool calls that discipline makes safe. The question is asked
+per instance: two workers on two pools that each hold their own
+map need nothing, and one map `fn main` hands to both does. Write `sync = none`
 to keep a map single-pool regardless: inference leaves it alone,
 and a cross-pool call into it is rejected. A `sync = none` map
 takes no lock, so it is not one to the other checks either: a

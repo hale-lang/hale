@@ -298,7 +298,8 @@ pub fn check_bundle_opts_scoped(
         }))
     };
     let entry = entry::entry_row(bundle);
-    let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
+    let placement = placement::derive_placement(bundle, &top, &entry);
+    let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -308,6 +309,7 @@ pub fn check_bundle_opts_scoped(
             entry: &entry,
             alloc_summary: &alloc_summary,
             forms: &forms,
+            placement: &placement,
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -360,7 +362,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
-    let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
+    let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
+    let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     model_over_scope(bundle, &top, &handlers, summary, &forms)
 }
 

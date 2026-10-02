@@ -306,7 +306,7 @@ fn main() { App { }; }
     );
 }
 
-// ---- compute_pool_of_locus_type / check_placement_single_thread ----
+// ---- the placement table / check_placement_single_thread -----------
 //
 // The F.31 single-threaded-method invariant: a direct
 // `self.<field>.method()` call whose receiver is placed on another
@@ -360,15 +360,21 @@ main locus App {
 fn main() { App { }; }
 ";
 
+/// The entry row, and the declarations the placement table places: what
+/// the F.31 rule judges instances of.
 fn pool_map(src: &str) -> (hale_types::entry::EntryRow, Vec<String>) {
-    let prog = parse_source(src).expect("parse");
+    let mut prog = parse_source(src).expect("parse");
+    let ids = hale_types::snapshot::mint([("", &mut prog)], &[]);
     let mut programs = std::collections::BTreeMap::new();
     programs.insert(String::new(), &prog);
-    let bundle = hale_types::Bundle::new(programs);
+    let mut bundle = hale_types::Bundle::new(programs);
+    bundle.snapshot = ids;
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
     let entry = hale_types::entry::entry_row(&bundle);
-    let pools = hale_types::check::compute_pool_of_locus_type(&bundle, &top, &entry);
-    (entry, pools.into_keys().collect())
+    let table = hale_types::placement::derive_placement(&bundle, &top, &entry);
+    let placed: std::collections::BTreeSet<String> =
+        table.instances.values().filter_map(|r| r.realizes.as_ref().map(|d| d.lowered.clone())).collect();
+    (entry, placed.into_iter().collect())
 }
 
 #[test]
@@ -387,26 +393,25 @@ fn cross_pool_call_to_a_locus_inside_a_module_is_flagged() {
 
 #[test]
 fn a_top_level_main_locus_seeds_the_pool_map_with_a_module_nested_locus() {
-    // `compute_pool_of_locus_type` is `pub` and is re-run outside
-    // this pass (sync inference, the pre-codegen finalization), so
-    // an empty map is not just a missing diagnostic — it is a
-    // different answer to "where does this locus run".
+    // The placement table is read outside this pass too (sync
+    // inference), so a missing row is not just a missing diagnostic —
+    // it is a different answer to "where does this locus run".
     let (_, pools) = pool_map(CROSS_POOL_CALL_TO_A_NESTED_LOCUS);
-    assert_eq!(pools, ["App", "DB"], "the entry seeds the map");
+    assert_eq!(pools, ["App", "DB"], "the entry seeds the table");
 }
 
 /// E0, decision 2: a `main locus` inside a module is not the entry.
 /// Lowering still deploys it as the root until it reads the entry
-/// (F.40 phase 3, L4), so it still seeds the pool map (GH #825) and
-/// its cross-pool call is refused as the top-level one is: the map
-/// reads the row's lowering root, not its entry.
+/// (F.40 phase 3, L4), so it still seeds the placement table (GH #825)
+/// and its cross-pool call is refused as the top-level one is: the
+/// table reads the row's lowering root, not its entry.
 #[test]
 fn a_module_nested_main_locus_is_not_the_entry_and_still_seeds_the_pool_map() {
     let nested = format!("{}\n{}", in_module(CROSS_POOL_CALL), MAIN);
     let (entry, pools) = pool_map(&nested);
     assert_eq!(entry.no_entry(), Some(hale_types::entry::NoEntry::OnlyModuleNested));
     assert_eq!(entry.lowering_root.as_ref().map(|m| m.name.as_str()), Some("App"));
-    assert_eq!(pools, ["App", "DB"], "the lowering root seeds the map");
+    assert_eq!(pools, ["App", "DB"], "the lowering root seeds the table");
     assert_module_matches_top_level(CROSS_POOL_CALL, CROSS_POOL_NEEDLE);
 }
 
