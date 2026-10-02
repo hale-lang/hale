@@ -413,6 +413,10 @@ pub struct CallEdge {
     /// effect-union judgments walk every alternative as usual.
     pub dispatch_group: Option<u32>,
     pub span: Span,
+    /// The callee expression's own span (`std::process::pid` of
+    /// `std::process::pid()`): where a diagnostic about the callee, not
+    /// the call, is located (the capability admission's refusals).
+    pub callee_span: Span,
 }
 
 impl CallEdge {
@@ -3433,6 +3437,7 @@ impl<'a> Walker<'a> {
             via_interface: None,
             dispatch_group: None,
             span,
+            callee_span: callee.span(),
         });
     }
 }

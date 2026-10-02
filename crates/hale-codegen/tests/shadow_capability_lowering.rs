@@ -343,6 +343,8 @@ struct Shadow {
     refused: BTreeMap<(&'static str, &'static str), usize>,
     /// Programs whose build failed for a cause no compared row names.
     unattributed: Vec<String>,
+    /// Programs whose wasm32 build the admission refused before lowering.
+    admission_refused: Vec<String>,
 }
 
 impl Shadow {
@@ -372,6 +374,10 @@ impl Shadow {
 
     fn one(&mut self, origin: &str, src: &str, host: &Built, wasm: &Built, program: &Program) {
         let id = program_id(origin, src);
+        // A build the admission refused (P3 2 of 3: a harness build reads
+        // the cells before lowering) stops before anything a row below
+        // observes, unless the refusal is that row's own.
+        let admitted = |b: &Built| !matches!(b.err, Some(CodegenError::CapabilityRefused(..)));
         // The entry inversion: the build's outcome on each target.
         if let Some((form, locus)) = inversion(program) {
             for (class, built) in [(TargetClass::PosixAsync, host), (TargetClass::Wasm32, wasm)] {
@@ -380,6 +386,9 @@ impl Shadow {
                     Some(e) => refusal_text(e),
                 };
                 let new = self.behaviour_fact(class, Capability::EntryInversion(form), &[("locus", &locus)]);
+                if !admitted(built) && old != new {
+                    continue;
+                }
                 let key = format!("EntryInversion({})", form.name());
                 self.compare("entry inversion", class, &id, vec![(key.clone(), old)], vec![(key, new)]);
             }
@@ -390,6 +399,9 @@ impl Shadow {
         // would hide the former's answer.
         let wanted = thread_uses(program);
         for (class, built) in [(TargetClass::PosixAsync, host), (TargetClass::Wasm32, wasm)] {
+            if !admitted(built) {
+                continue;
+            }
             let observed = thread_outcome(built);
             let mut old = Vec::new();
             let mut new = Vec::new();
@@ -418,7 +430,7 @@ impl Shadow {
                 // An export-only program's native build stops at its
                 // entry, which the entry inversion's row compares, and
                 // hides this answer.
-                if built.err.is_some() && !calls_js(built) && form.is_some() {
+                if built.err.is_some() && !calls_js(built) && (form.is_some() || !admitted(built)) {
                     continue;
                 }
                 let old = match &built.err {
@@ -430,14 +442,19 @@ impl Shadow {
                 self.compare("foreign abi", class, &id, vec![("ForeignAbi(Js)".to_string(), old)], vec![("ForeignAbi(Js)".to_string(), new)]);
             }
         }
-        // Every failed build is one a row above compares: the entry
-        // inversion's refusal, the late `pthread_join` refusal of an
-        // owned thread, or the native link of an `@ffi("js")` call. Any
-        // other is a cause the cells do not name.
-        let host_explained = host.err.is_none() || form.is_some() || calls_js(host);
+        // Every failed build is one a row above compares, or the
+        // admission's: the entry inversion's refusal, the late
+        // `pthread_join` refusal of an owned thread, the native link of an
+        // `@ffi("js")` call, or a use whose cell is `Reject`. Any other is
+        // a cause the cells do not name.
+        let host_explained = host.err.is_none() || form.is_some() || calls_js(host) || !admitted(host);
         let wasm_explained = wasm.err.is_none()
             || form.is_some()
+            || !admitted(wasm)
             || (wanted.contains(&Capability::PinnedThreads) && uses(&wasm.ir, "@pthread_join("));
+        if !admitted(wasm) {
+            self.admission_refused.push(origin.to_string());
+        }
         if !(host_explained && wasm_explained) {
             self.unattributed.push(origin.to_string());
         }
@@ -539,6 +556,7 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
         failed: Vec::new(),
         refused: BTreeMap::new(),
         unattributed: Vec::new(),
+        admission_refused: Vec::new(),
     };
     for ((origin, src, program), (host, wasm)) in parsed.iter().zip(&built) {
         shadow.one(origin, src, host, wasm, program);
@@ -569,10 +587,11 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
         merged.divergences.extend(r.divergences.iter().cloned());
     }
     eprintln!(
-        "shadow target_capability (lowering): {} programs, {} built on both targets\n{summary}not built on both (no obligation or export rows):\n  {}",
+        "shadow target_capability (lowering): {} programs, {} built on both targets\n{summary}not built on both (no obligation or export rows):\n  {}\nrefused by the admission on wasm32:\n  {}",
         parsed.len(),
         parsed.len() - shadow.failed.len(),
-        shadow.failed.join("\n  ")
+        shadow.failed.join("\n  "),
+        shadow.admission_refused.join("\n  ")
     );
     assert!(parsed.len() - shadow.failed.len() > 20, "the lowering shadow built too few programs on both targets");
     assert!(

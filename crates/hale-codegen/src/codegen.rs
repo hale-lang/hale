@@ -539,6 +539,12 @@ pub enum CodegenError {
     /// program lowered; the CLI renders it like a check
     /// diagnostic.
     MissingTsShim(String, Option<hale_syntax::Span>),
+    /// F.40 phase 3, P3: a use whose capability cell is `Reject` on the
+    /// build's target, refused before lowering. A build through the CLI
+    /// meets it as the check's located diagnostic; a harness build,
+    /// which lowers without the check, meets it here, with the same
+    /// sentence (the cell's witness and the use's chain) and its span.
+    CapabilityRefused(String, hale_syntax::Span),
 }
 
 impl std::fmt::Display for CodegenError {
@@ -552,6 +558,7 @@ impl std::fmt::Display for CodegenError {
             CodegenError::LlvmEmit(s) => write!(f, "LLVM emit failed: {}", s),
             CodegenError::Link(s) => write!(f, "link failed: {}", s),
             CodegenError::MissingTsShim(s, _) => write!(f, "{}", s),
+            CodegenError::CapabilityRefused(s, _) => write!(f, "{}", s),
         }
     }
 }
@@ -1102,10 +1109,11 @@ pub fn build_executable_with_options(
         // A bare program is not read from anywhere; kept for totality.
         Err(LoadError::Load(f)) => return Err(CodegenError::Unsupported(f.text())),
     };
-    let view = snap.demand_lowering().map_err(|b| {
-        CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
+    let view = snap.demand_lowering().map_err(|b| match (b.family, b.because.first()) {
+        ("target_capability", Some(d)) => CodegenError::CapabilityRefused(d.message.clone(), d.span),
+        _ => CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
             b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
-        }))
+        })),
     })?;
     build_resolved(view, output_path, options)
 }

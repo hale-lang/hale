@@ -62,19 +62,28 @@ fn cli_refusals(text: &str, file: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// The editor's errors over `file`, as `line:col message`.
+/// The editor's errors located in `file`, as `line:col message`.
 fn editor_refusals(file: &Path) -> BTreeSet<String> {
     let snap = match Snapshot::load(file, LoadMode::Editor, &Disk, Config::editor()) {
         Ok(s) => s,
         Err(_) => panic!("the editor could not load {}", file.display()),
     };
     let src = std::fs::read_to_string(file).unwrap();
+    // Spans are bundle-global: the file's own slice of that space.
+    let canonical = file.canonicalize().unwrap();
+    let (base, len) = snap
+        .file_bases()
+        .iter()
+        .find(|(_, p, _)| p.canonicalize().is_ok_and(|p| p == canonical))
+        .map(|(b, _, l)| (*b as usize, *l as usize))
+        .unwrap_or((0, src.len()));
     let diags = snap.demand_check().map(|c| c.diags.clone()).unwrap_or_else(|b| b.because.clone());
     diags
         .iter()
         .filter(|d| d.is_error())
+        .filter(|d| (base..=base + len).contains(&(d.span.start.0 as usize)))
         .map(|d| {
-            let at = d.span.start.0 as usize;
+            let at = d.span.start.0 as usize - base;
             let before = &src[..at.min(src.len())];
             let line = before.matches('\n').count() + 1;
             let col = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
@@ -282,6 +291,56 @@ fn wasm_flower_builds_for_its_declared_target() {
     let line = src.lines().position(|l| l.starts_with("target wasm")).unwrap() + 1;
     let want = conflict("wasm", &host_triple()).replacen("1:1", &format!("{line}:1"), 1);
     assert_eq!(cli_refusals(&text, &file), [want].into());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Paired case 12 (design §5): a call through an import alias into a
+/// seed whose fn reaches a refused namespace is refused at the call
+/// that crosses into the seed, with the chain down to the primitive;
+/// the seed's own body is beyond the horizon and carries nothing. Check,
+/// build and (declared) the editor agree; the host admits it.
+#[test]
+fn an_import_alias_is_refused_at_the_crossing_call() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP an_import_alias_is_refused_at_the_crossing_call: no wasm32 clang or wasm-ld");
+        return;
+    }
+    const PROCESS: &str = "OS process control (`std::process`) isn't available in the browser";
+    let body = "fn main() {\n    let t = c::stamp();\n    println(t);\n}\n";
+    for (decl, cli, selector) in
+        [("", Some("wasm32"), "`--target wasm32`"), ("target wasm { }\n", None, "`target wasm`")]
+    {
+        let dir = case_dir("alias");
+        std::fs::create_dir_all(dir.join("clocklib")).unwrap();
+        std::fs::write(dir.join("clocklib/clock.hl"), "fn stamp() -> Int {\n    return std::process::pid();\n}\n").unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, format!("import \"clocklib\" as c;\n{decl}\n{body}")).unwrap();
+        let f = file.to_str().unwrap();
+        let line = 4 + decl.lines().count();
+        let want: BTreeSet<String> = [format!(
+            "{line}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `c::stamp` → \
+             `std::process::pid`"
+        )]
+        .into();
+        let mut tail = vec![f];
+        tail.extend(cli.map(|t| ["--target", t]).iter().flatten());
+        let (check, code) = hale(&[&["check"], tail.as_slice()].concat());
+        assert_eq!(code, 1, "{check}");
+        assert_eq!(cli_refusals(&check, &file), want, "check:\n{check}");
+        assert!(!check.contains("clock.hl:"), "the seed's own body is beyond the horizon:\n{check}");
+        let (build, _) = hale(&[&["build"], tail.as_slice()].concat());
+        assert_eq!(cli_refusals(&build, &file), want, "build:\n{build}");
+        if cli.is_none() {
+            assert_eq!(editor_refusals(&file), want, "editor");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let dir = case_dir("alias_host");
+    std::fs::create_dir_all(dir.join("clocklib")).unwrap();
+    std::fs::write(dir.join("clocklib/clock.hl"), "fn stamp() -> Int {\n    return std::process::pid();\n}\n").unwrap();
+    std::fs::write(dir.join("main.hl"), format!("import \"clocklib\" as c;\n\n{body}")).unwrap();
+    let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+    assert_eq!(code, 0, "the host admits it:\n{check}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
