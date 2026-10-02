@@ -11,7 +11,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `seed_loading` | Layer 1 | Canonical | desugar | `collect_checkable` | 0 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 2 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
-| `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
+| `sync_inference` | Layer 1 | Migrating | derivation | `form_rows` | 3 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Migrating | derivation | `check_bundle_scoped` | 1 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
@@ -156,11 +156,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 ### `sync_inference` — Migrating · derivation
 
-**Answers.** Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from.
+**Answers.** Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access.
 
-**Inputs.** placement (the pool map); top_scope; form declarations; method call sites
+**Inputs.** placement (the entry row's pool map); top_scope; form declarations; method call sites
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`
+**Producer (today's authority, migrating).** `crates/hale-types/src/form_rows.rs` · `form_rows`
 
 **Legacy producers (permitted until removal).**
 
@@ -168,21 +168,26 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/check.rs` · `form_has_explicit_sync_discipline` — the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check). *Removed when:* one predicate over the form rows.
 - `crates/hale-types/src/sync_inference.rs` · `form_has_explicit_sync` — sync inference's own predicate, which counts `sync = none` where the checker's does not. *Removed when:* one predicate over the form rows.
 
-**Consumers.** check (F.31 cross-pool verdicts); codegen (`crates/hale-codegen/src/locus/decl.rs` · `sync_mode`); lsp
+**Also owned.** `crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`
+
+**Consumers.** the snapshot (one row set per snapshot, after the mint, over its scope and entry row) (`crates/hale-frontend/src/snapshot.rs` · `demand_forms`); check (F.31 cross-pool verdicts); codegen (`crates/hale-codegen/src/locus/decl.rs` · `sync_mode`); lsp
 
 **Invariants.**
 
 - every entry point sees the same discipline for the same program
+- one row per `@form` declaration, found by the identity the load minted (a monomorph by its template's) or by name: the configuration and the effective discipline are separate columns
+- an explicit `sync = none` is configuration: inference does not run over it, and the row does not call it safe for cross-domain access
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/placement.rs
+**Focused tests.** crates/hale-types/tests/form_rows.rs; crates/hale-frontend/src/snapshot.rs (the_form_rows_are_one_family_by_identity); crates/hale-types/tests/placement.rs
 
 **Spec.** spec/forms.md; spec/semantics.md § Placement block (F.31)
 
 **Guarded seams.**
 
 - `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-frontend/src/snapshot.rs` ×1
+- `form_rows(` may be referenced from: `crates/hale-types/src/form_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `effect_class_table` — Canonical · derivation
 
@@ -1074,7 +1079,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `compute_pool_of_locus_type(` may be referenced from: `crates/hale-types/src/check.rs` ×2, `crates/hale-types/src/lib.rs` ×1
+- `compute_pool_of_locus_type(` may be referenced from: `crates/hale-types/src/check.rs` ×2, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/form_rows.rs` ×1
 - `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 
 ### `target_capability` — Migrating · capability

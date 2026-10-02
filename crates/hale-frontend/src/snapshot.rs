@@ -62,6 +62,7 @@ use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
 use hale_types::entry::EntryRow;
+use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::resolve::TopScope;
@@ -83,13 +84,15 @@ use crate::source::SourceProvider;
 /// view over the resolved program whose tables are lowering's ownership,
 /// bus-graph, dispatch and handler-routing rows. Until the check runs
 /// over the resolved program, a snapshot that is checked for its model
-/// and lowered holds both shapes' graphs.
-pub const FAMILIES: [&str; 14] = [
+/// and lowered holds both shapes' graphs. `sync_inference` counts the
+/// form rows ([`Snapshot::demand_forms`]).
+pub const FAMILIES: [&str; 15] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
     "entrypoint",
     "top_scope",
+    "sync_inference",
     "expression_typing",
     "bus_graph",
     "ownership",
@@ -385,6 +388,7 @@ pub struct Snapshot {
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
     partial_scope: OnceCell<Result<Scope, Blocked>>,
+    forms: OnceCell<Result<FormRows, Blocked>>,
     /// The typing's diagnostics, and the effects certificate report its
     /// check produced ([`Snapshot::demand_effect_certificates`]).
     typing: OnceCell<Result<(Vec<Diag>, EffectCertificates), Blocked>>,
@@ -556,6 +560,7 @@ impl Snapshot {
             entry: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
+            forms: OnceCell::new(),
             typing: OnceCell::new(),
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
@@ -896,6 +901,28 @@ impl Snapshot {
     /// The top scope, with the bundle's topic rows.
     pub fn demand_scope(&self) -> Result<&TopScope, &Blocked> {
         self.scope().map(|s| &s.top)
+    }
+
+    /// The form rows ([`hale_types::form_rows`]): every `@form`
+    /// declaration's written `sync` configuration and the discipline it
+    /// gets, sync inference's pick for a `hashmap` form its author did
+    /// not configure, over the scope and the entry row's pool map. A
+    /// scope that reported a diagnostic gets no inference (the program
+    /// does not build). Blocked with the scope.
+    pub fn demand_forms(&self) -> Result<&FormRows, &Blocked> {
+        self.forms
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
+                self.count("sync_inference");
+                Ok(hale_types::form_rows::form_rows(
+                    &self.bundle(),
+                    &scope.top,
+                    entry,
+                    scope.diags.is_empty(),
+                ))
+            })
+            .as_ref()
     }
 
     /// The scope an editor request answers from while the seed is being
@@ -1764,6 +1791,60 @@ mod tests {
         // Lowering takes the first in declaration order (rule 1 refuses
         // the program before it builds).
         assert_eq!(root(&all).as_deref(), Some("Other"), "{all:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The form rows (F.40 phase 3, C1): one row per `@form` declaration,
+    /// found by the identity the load minted, its discipline inference's
+    /// for a map two pools write. Demanded twice, built once.
+    #[test]
+    fn the_form_rows_are_one_family_by_identity() {
+        use hale_types::form_rows::Discipline;
+        let d = scratch("forms");
+        std::fs::write(
+            d.join("app.hl"),
+            "type Entry { k: Int; v: Int; }\n\
+             type Tick { n: Int; }\n\
+             @form(hashmap)\nlocus Registry { capacity { pool entries of Entry indexed_by k; } }\n\
+             @form(vec)\nlocus Log { capacity { pool lines of Entry; } }\n\
+             locus IoWorker { params { reg: Registry = Registry { }; }\n\
+                 bus { subscribe \"tick\" as on_tick of type Tick; }\n\
+                 fn on_tick(t: Tick) { self.reg.set(Entry { k: t.n, v: 1 }); } }\n\
+             locus CompWorker { params { reg: Registry = Registry { }; }\n\
+                 bus { subscribe \"tick\" as on_tick of type Tick; }\n\
+                 fn on_tick(t: Tick) { self.reg.set(Entry { k: t.n, v: 2 }); } }\n\
+             main locus App {\n\
+                 params { io: IoWorker = IoWorker { }; cpu: CompWorker = CompWorker { }; }\n\
+                 placement { io: cooperative(pool = io); cpu: cooperative(pool = compute); }\n\
+                 bus { publish \"tick\" of type Tick; }\n\
+                 run() { } }\n\
+             fn main() { App { }; }\n",
+        )
+        .unwrap();
+        let s = load_as(&d.join("app.hl"), LoadMode::WholeSeed, &Disk, Config::check(true, false));
+        let rows = s.demand_forms().expect("the form rows");
+        assert!(std::ptr::eq(rows, s.demand_forms().unwrap()));
+        assert_eq!(s.builds()["sync_inference"], 1, "built once");
+        assert_eq!(rows.rows().len(), 2, "every form, not only maps");
+        let bundle = s.bundle();
+        for row in rows.rows() {
+            let decl = bundle
+                .programs
+                .values()
+                .flat_map(|p| p.items.iter())
+                .find_map(|i| match i {
+                    TopDecl::Locus(l) if l.name.name == row.locus => Some(l),
+                    _ => None,
+                })
+                .expect("the row names a declaration");
+            assert!(!row.id.is_none(), "the load minted it");
+            assert_eq!(row.id.0, decl.id.0, "by the minted identity");
+            assert!(std::ptr::eq(rows.of(decl).unwrap(), row));
+        }
+        let reg = rows.named("Registry").unwrap();
+        assert_eq!(reg.effective, Discipline::Striped, "two writer pools on a hot path");
+        assert!(reg.safe_for_cross_domain_access());
+        assert_eq!(rows.named("Log").unwrap().effective, Discipline::None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

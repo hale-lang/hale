@@ -67,6 +67,7 @@ pub mod flows;
 pub mod sealability;
 pub mod symbol;
 pub mod sync_inference;
+pub mod form_rows;
 pub mod ty;
 pub mod working_set;
 

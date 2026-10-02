@@ -235,6 +235,7 @@ const TOPOLOGY: &str = "crates/hale-types/src/topology.rs";
 const JUDGMENT: &str = "crates/hale-types/src/judgment.rs";
 const CLAIMS: &str = "crates/hale-types/src/claims.rs";
 const SYNC: &str = "crates/hale-types/src/sync_inference.rs";
+const FORM_ROWS: &str = "crates/hale-types/src/form_rows.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
@@ -370,21 +371,28 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Parse,
         state: State::Migrating,
         kind: Kind::Derivation,
-        answers: "Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from.",
-        inputs: &["placement (the pool map)", "top_scope", "form declarations", "method call sites"],
-        producer: Some(site(SYNC, "infer_sync_for_bundle")),
+        answers: "Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access.",
+        inputs: &["placement (the entry row's pool map)", "top_scope", "form declarations", "method call sites"],
+        producer: Some(site(FORM_ROWS, "form_rows")),
         legacy: &[
             legacy(TLIB, "apply_sync_inference", "injects the inferred `sync =` FormArg into the AST — the only analysis result codegen receives: every verb, the LSP and the test harness run it through the snapshot's load", "the inferred discipline is a row lowering reads; no AST mutation"),
             legacy(CHECK, "form_has_explicit_sync_discipline", "the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check)", "one predicate over the form rows"),
             legacy(SYNC, "form_has_explicit_sync", "sync inference's own predicate, which counts `sync = none` where the checker's does not", "one predicate over the form rows"),
         ],
-        consumers: &[consumer("check (F.31 cross-pool verdicts)"), consumer_at("codegen", CG_DECL, "sync_mode"), consumer("lsp")],
-        invariants: &["every entry point sees the same discipline for the same program"],
+        consumers: &[consumer_at("the snapshot (one row set per snapshot, after the mint, over its scope and entry row)", SNAPSHOT, "demand_forms"), consumer("check (F.31 cross-pool verdicts)"), consumer_at("codegen", CG_DECL, "sync_mode"), consumer("lsp")],
+        invariants: &[
+            "every entry point sees the same discipline for the same program",
+            "one row per `@form` declaration, found by the identity the load minted (a monomorph by its template's) or by name: the configuration and the effective discipline are separate columns",
+            "an explicit `sync = none` is configuration: inference does not run over it, and the row does not call it safe for cross-domain access",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/placement.rs"],
+        tests: &["crates/hale-types/tests/form_rows.rs", "crates/hale-frontend/src/snapshot.rs (the_form_rows_are_one_family_by_identity)", "crates/hale-types/tests/placement.rs"],
         spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
-        owned: &[],
-        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (SNAPSHOT, 1)] }],
+        owned: &[site(SYNC, "infer_sync_for_bundle")],
+        seams: &[
+            Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (SNAPSHOT, 1)] },
+            Seam { symbol: "form_rows(", allowed: &[(FORM_ROWS, 1), (SNAPSHOT, 1)] },
+        ],
     },
     Family {
         name: "effect_class_table",
@@ -1117,7 +1125,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
         owned: &[],
         seams: &[
-            Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (TLIB, 1)] },
+            Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (TLIB, 1), (FORM_ROWS, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
         ],
     },
