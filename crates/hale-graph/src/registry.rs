@@ -256,6 +256,7 @@ const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
 const TY_TARGET: &str = "crates/hale-types/src/target.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
+const CAPABILITY_TRANSPORT: &str = "crates/hale-types/src/capability/transport.rs";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
@@ -749,10 +750,11 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(BINDING_ROWS, "derive_binding_rows")),
         legacy: &[
             legacy(CG, "emit_bindings_prelude", "codegen decides transport, adapter, codec and producer-vs-attach at emission, and refuses a role still `None`", "codegen reads the binding rows"),
-            legacy(CHECK, "transport_satisfies", "the transport capability table", "a capability row in the matrix"),
         ],
         consumers: &[
             consumer_at("check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set)", CHECK, "check_main_and_bindings"),
+            consumer_at("check (a binding's `where` constraints are held to its transport's guarantee: the capability module's table, read through the row's transport kind)", CAPABILITY_TRANSPORT, "guarantee"),
+            consumer_at("the transport's cell on the effective target: `RemoteTransport(kind)` × the target row's backend, read through the snapshot (verdict-neutral: the adapter's wasm refusal is a late link refusal today, a known-open cell)", SNAPSHOT, "binding_cell"),
             consumer_at("model (main's binding thread domains: the role and the transport kind)", MODEL_BUILDER, "ModelInputs"),
             consumer_at("bus graph (the bound-topic set, at both grains, is the rows' projection)", BUS_GRAPH, "collect_bus_walk"),
             consumer("codegen"),
@@ -762,6 +764,7 @@ pub const FAMILIES: &[Family] = &[
             "F.36 and F.37: binding failure is structural; codec purity is a law over rows",
             "one row per snapshot (`Snapshot::demand_bindings`, the `bindings` count): one row per `bindings { }` entry of every locus of the bundle, an imported main's and a module-nested one's included, each with the entry's site, the topic and its wire key, the transport kind, the role, the codec, whether the bundle produces the topic and the stdlib locus a transport's loss surfaces through; the checker builds none (`CheckInputs::bindings`), and a bundle no snapshot holds builds it once",
             "the role is decided once, over the topic's ends read by wire subject (`desugar::role_from_ends` over the row's `publishes` and `subscribes`): the entry's own role wins, otherwise publish-only is `Connect` and subscribe-only is `Listen`, and a `unix` entry with neither is the checker's diagnostic. The checker, the model and lowering read it; the desugar's in-place fill applies the same pure rule over the topic names before the topic rewrite erases them, and agrees with it over the corpus",
+            "what a transport carries is data beside the matrix, not a branch in the checker: the transport kind's guarantee for each `where` constraint (`capability::transport::GUARANTEES`, three rows of four cells, the former `transport_satisfies` cell for cell, its words verbatim), which does not vary by target; and whether a target realizes the transport at all is the matrix's own `RemoteTransport(kind)` row, asked through the snapshot's target row (`Snapshot::binding_cell`)",
             "the bound-topic set is the rows' projection (`bound_names`, `bound_subjects`): the `or wait` legality check, the api gates and the bus graph's eligibility gate read it, and none walks `bindings { }` itself. An imported main's entries are in the set, as they were in each of the walks it replaces",
         ],
         missing: Missing::Error,
@@ -1217,7 +1220,7 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "wasm_unavailable_stdlib(", allowed: &[(CHECK, 2)] },
             // the definition and the document rendering, and the laws
-            Seam { symbol: "derive_capability_matrix(", allowed: &[(CAPABILITY, 2), ("crates/hale-types/src/capability/laws.rs", 12)] },
+            Seam { symbol: "derive_capability_matrix(", allowed: &[(CAPABILITY, 2), (CAPABILITY_TRANSPORT, 1), ("crates/hale-types/src/capability/laws.rs", 12)] },
             Seam { symbol: "target_row(", allowed: &[(CAPABILITY, 1), (SNAPSHOT, 1)] },
         ],
     },
