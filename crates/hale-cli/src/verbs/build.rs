@@ -10,6 +10,7 @@ use crate::build_env;
 use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::shared::options::build_config;
+use crate::shared::options::compile_target;
 use crate::shared::options::collect_ffi_from_imports;
 use crate::shared::options::exec_digest;
 use crate::shared::workspace::find_workspace_root;
@@ -46,25 +47,10 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // entry from a bare `fn main` on the AST, BEFORE typecheck — so the
     // checker sees the synthesized `target wasm` gate + `@export` locus,
     // and every diagnostic keeps the user's original line/col (no textual
-    // wrap, no offset). Wasm-only: there is no native entry inversion to
-    // wrap, so on a native build it is a hard error rather than a silent
-    // no-op (which would mask a misconfigured playground build). The
-    // wrap itself is a pass of the snapshot's load (`Config::wrap_main`).
+    // wrap, no offset). The wrap itself is a pass of the snapshot's load
+    // (`Config::wrap_main`); whether the program may be wrapped is read
+    // from the snapshot's effective target once it is loaded, below.
     let wrap_main = std::env::args().any(|a| a == "--wrap-main");
-    if wrap_main {
-        let args: Vec<String> = std::env::args().collect();
-        let target_wasm = args.windows(2).any(|w| {
-            w[0] == "--target" && (w[1] == "wasm32" || w[1] == "wasm")
-        });
-        if !target_wasm {
-            eprintln!(
-                "error: --wrap-main requires --target wasm32 — it \
-                 synthesizes the wasm @export entry from `fn main`, and \
-                 there is no native entry-inversion to wrap"
-            );
-            return ExitCode::from(2);
-        }
-    }
 
     // Options first: the check answers target questions (GH #970), so
     // it has to know the target, and `--api` (GH #1106) shapes the
@@ -84,7 +70,10 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let mut config = build_config(&options, &env_spec);
+    // `--target` names the target: it overrides a source declaration,
+    // where the host a build falls back to does not (T1(b)).
+    let explicit = flags.iter().any(|f| f == "--target");
+    let mut config = build_config(&options, &env_spec, explicit);
     config.wrap_main = wrap_main;
 
     // F.40 phase 2.2b: one snapshot, and the lowering view demanded
@@ -110,6 +99,30 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     };
     note_unmapped_roles(snap.api_surface(), &options);
     let (sources, file_bases) = (snap.sources(), snap.file_bases());
+
+    // The effective target (T1(b)): `--target`, else a written
+    // `target wasm`/`browser_js` declaration, else the host. The build
+    // emits for it — a declared program builds the wasm module and its
+    // loader — and names its artifact after it.
+    match snap.demand_target() {
+        Ok(row) => {
+            // Wasm-only: there is no native entry inversion to wrap, so on
+            // a native build `--wrap-main` is a hard error rather than a
+            // silent no-op (which would mask a misconfigured playground
+            // build). The declaration the wrap injects is a consequence of
+            // the target and never selects it, so the row's target is the
+            // written sources' own.
+            if wrap_main && !row.is_wasm32() {
+                eprintln!("error: {}", hale_types::capability::WRAP_MAIN_WORDING);
+                return ExitCode::from(2);
+            }
+            options.target = compile_target(row.effective);
+        }
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    }
 
     // Typecheck before lowering, with the build's rules beside it (the
     // borrow rule, bare fallible calls). The rename table reaches the

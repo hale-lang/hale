@@ -189,6 +189,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
                 name: Ident::new("wasm", main_span),
                 capabilities: Vec::new(),
                 span: main_span,
+                synthesized: true,
             }),
         );
     }

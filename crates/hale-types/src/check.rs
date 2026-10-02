@@ -503,6 +503,10 @@ pub struct CheckInputs<'a> {
     /// (the snapshot's `intra_locus` family): rule 10 reads it to tell
     /// a synchronous cycle from one the queue carries.
     pub intra_locus: &'a [hale_syntax::desugar::IntraLocusRewrite],
+    /// The effective-target row (the `target_capability` family's): the
+    /// one target the check judges the program against, and the row's
+    /// own refusals, which the check reports.
+    pub target: &'a crate::capability::TargetRow,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -539,6 +543,7 @@ fn check_numbered_bundle(
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
     let bus = crate::bundle_bus_graph(bundle, top);
     let intra_locus = crate::bundle_intra_locus(bundle);
+    let target = crate::capability::target_row(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -548,6 +553,7 @@ fn check_numbered_bundle(
         forms: &forms,
         bus: &bus,
         intra_locus: &intra_locus,
+        target: &target,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -594,14 +600,9 @@ pub fn check_bundle_reporting(
     let mut diags = Vec::new();
     let certificates;
     let known = &top.names;
-    // WASM plan: the bundle targets wasm if any program declares
-    // `target wasm` / `target browser_js`. Drives stdlib gating below.
-    let wasm_target = bundle.programs.values().any(|p| {
-        p.items.iter().any(|it| {
-            matches!(it, TopDecl::Target(t)
-                if matches!(t.name.name.as_str(), "wasm" | "browser_js"))
-        })
-    });
+    // The effective target's own refusal: an explicit `--target` a
+    // written declaration contradicts (T1(b)).
+    diags.extend(inputs.target.refusals.iter().cloned());
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
     //
@@ -662,9 +663,7 @@ pub fn check_bundle_reporting(
             in_on_failure: false,
             fallible_ctx: None,
             return_ctx: None,
-            wasm_target,
-            target_has_async_io: bundle.target_has_async_io,
-            target_label: bundle.target_label,
+            target: inputs.target,
             strict_callees,
             strict_idents,
             or_value_discarded: false,
@@ -7615,14 +7614,13 @@ struct Checker<'a> {
     /// `fn f() -> Int { return "s"; }` had no return check at all and
     /// surfaced at codegen as "unsupported in codegen v0".
     return_ctx: Option<Ty>,
-    /// WASM plan: true when the bundle declares `target wasm` /
-    /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
-    /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
-    wasm_target: bool,
-    /// The build target has the `async_io` pool backend — the bundle's
-    /// [`Bundle::target_has_async_io`], never the host's (GH #970).
-    target_has_async_io: bool,
-    target_label: &'static str,
+    /// The effective target (T1(b)): `--target`, else a written
+    /// `target wasm`/`browser_js` declaration, else the host. Under
+    /// wasm32 it gates the POSIX-only stdlib (no syscalls in the
+    /// browser sandbox) — see `wasm_unavailable_stdlib` — and its
+    /// `async_io` backend, never the host's (GH #970), judges
+    /// `where async_io`.
+    target: &'a crate::capability::TargetRow,
     strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -9550,7 +9548,7 @@ impl<'a> Checker<'a> {
                         // the clean-failure path (vs a link error). The
                         // target, not the host: this asked
                         // `cfg!(target_os = "macos")` until GH #970.
-                        if !self.target_has_async_io {
+                        if !self.target.effective.has_async_io() {
                             self.diags.push(Diag::ty(
                                 c.span,
                                 format!(
@@ -9561,7 +9559,8 @@ impl<'a> Checker<'a> {
                                      backend is epoll or kqueue over ucontext \
                                      coroutines; this target's libc has no \
                                      ucontext.)",
-                                    entry.field.name, self.target_label
+                                    entry.field.name,
+                                    self.target.effective.platform_label()
                                 ),
                             ));
                         }
@@ -14337,7 +14336,7 @@ impl<'a> Checker<'a> {
                 // Typecheck runs on USER code before the stdlib is merged
                 // in codegen, so this never flags the stdlib's own
                 // internals — only the program's calls.
-                if self.wasm_target {
+                if self.target.is_wasm32() {
                     if let Expr::Path(qn) = callee.as_ref() {
                         let segs: Vec<&str> =
                             qn.segments.iter().map(|s| s.name.as_str()).collect();
@@ -14345,8 +14344,9 @@ impl<'a> Checker<'a> {
                             self.diags.push(Diag::ty(
                                 qn.span,
                                 format!(
-                                    "`std::{}` is unavailable under `target wasm`: {}",
+                                    "`std::{}` is unavailable under {}: {}",
                                     segs[1..].join("::"),
+                                    self.target.wasm32_selector(),
                                     why
                                 ),
                             ));

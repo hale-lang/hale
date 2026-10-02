@@ -47,20 +47,12 @@ pub struct Bundle<'a> {
     /// would make the artifact differ per machine, and the artifact
     /// is supposed to be comparable.
     pub sources: Vec<SourceFile>,
-    /// Whether the build target's lotus runtime has the `async_io` pool
-    /// backend (epoll/eventfd/ucontext: Linux, and wasm's POSIX shim).
-    /// `where async_io` is refused where it is false.
-    ///
-    /// A property of the TARGET. [`Bundle::new`] defaults it to the
-    /// host's answer, which is the target for every build that does not
-    /// name another; `hale build --target <triple>` sets the named
-    /// target's (GH #970). Every host that runs the compiler has the
-    /// backend — Linux's epoll, macOS's kqueue — so the default is
-    /// true; a musl target is where it turns false.
-    pub target_has_async_io: bool,
-    /// The target's platform as the `async_io` diagnostic names it
-    /// ("macOS", "musl Linux"). Set beside `target_has_async_io`.
-    pub target_label: &'static str,
+    /// The target the configuration names (`--target`, or the host).
+    /// The effective-target row
+    /// ([`crate::capability::target_row`]) reads it beside the
+    /// programs' declarations; the checker reads the row, never this.
+    /// [`Bundle::new`] defaults it to the host, named by nothing.
+    pub target: crate::capability::ConfiguredTarget,
     /// F.40 phase 1.1b-iii: the identities minted for this bundle's
     /// programs (`snapshot::mint`, run by every entry point after its
     /// last desugar). Empty on a path that has not minted (a harness
@@ -94,9 +86,7 @@ impl<'a> Bundle<'a> {
             programs,
             import_renames: Vec::new(),
             sources: Vec::new(),
-            // The host is the target unless a build says otherwise.
-            target_has_async_io: true,
-            target_label: if cfg!(target_os = "macos") { "macOS" } else { "Linux" },
+            target: crate::capability::ConfiguredTarget::host(),
             snapshot: crate::snapshot::Snapshot::default(),
         }
     }

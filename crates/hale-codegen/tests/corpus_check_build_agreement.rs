@@ -105,6 +105,41 @@ fn with_synthetic_main(
     std::borrow::Cow::Owned(wrapped)
 }
 
+/// Whether the program's effective target, checked with no `--target`,
+/// is wasm32: the effective-target row over it, as `hale check` derives
+/// it.
+fn declares_wasm32(program: &hale_syntax::ast::Program) -> bool {
+    let mut programs: BTreeMap<String, &hale_syntax::ast::Program> = BTreeMap::new();
+    programs.insert(String::new(), program);
+    hale_types::capability::target_row(&hale_types::Bundle::new(programs)).is_wasm32()
+}
+
+/// Whether this box builds wasm32: wasm-ld, and a clang with the wasm32
+/// backend (bare or `-18`), probed once.
+fn wasm32_toolchain() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let runs = |n: &str| std::process::Command::new(n).arg("--version").output().is_ok_and(|o| o.status.success());
+        if !(runs("wasm-ld") || runs("wasm-ld-18")) {
+            return false;
+        }
+        let c = harness::unique_bin("hale_cb_wasm_probe").with_extension("c");
+        let _ = std::fs::write(&c, "int x;\n");
+        let ok = ["clang", "clang-18"].iter().any(|cc| {
+            std::process::Command::new(cc)
+                .args(["--target=wasm32", "-c"])
+                .arg(&c)
+                .arg("-o")
+                .arg(c.with_extension("o"))
+                .output()
+                .is_ok_and(|o| o.status.success())
+        });
+        let _ = std::fs::remove_file(&c);
+        let _ = std::fs::remove_file(c.with_extension("o"));
+        ok
+    })
+}
+
 /// The sweep's verdict on one harvested program.
 #[derive(Debug, PartialEq)]
 enum Verdict {
@@ -156,8 +191,19 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     // GH #829: no entry point is not a reason to skip; it is a
     // reason to add one.
     let program = with_synthetic_main(&program);
+    // The program is built for the target it was checked for, its
+    // effective target (T1(b)): a `target wasm { }` declaration selects
+    // wasm32, so comparing its check with a native build compared
+    // unlike things.
+    let mut options = build_opts::options();
+    if declares_wasm32(&program) {
+        if !wasm32_toolchain() {
+            return Verdict::Skipped("declares wasm32, and this box has no wasm32 clang or wasm-ld");
+        }
+        options.target = hale_codegen::CompileTarget::Wasm32;
+    }
     let bin = harness::unique_bin(bin_tag);
-    match build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
+    match build_executable_with_options(&program, &bin, &[], &options) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             Verdict::Built

@@ -13,8 +13,8 @@
 //!   namespace, wording included. On the POSIX columns the gate is off
 //!   and every call lowers, which the host check observes.
 //! - `wasm_target` (the trigger): whether the gate fires, observed by a
-//!   probe call appended to the program, against the effective-target
-//!   row's `stdlib_gate` (today's precedence, recorded as a fact).
+//!   probe call appended to the program, checked with no `--target` and
+//!   with `--target wasm32`, against the effective-target row (T1(b)).
 //! - `TargetSpec` (`has_async_io`): every `where async_io` placement
 //!   entry, checked with each column's spec, against `AsyncIoPool`,
 //!   wording included.
@@ -40,8 +40,8 @@ use hale_syntax::ast::{
 use hale_syntax::sites::{for_each_site, SiteKind};
 use hale_syntax::Span;
 use hale_types::capability::{
-    derive_capability_matrix, target_row, Abi, Capability, CapabilityMatrix, FfiTypeClass,
-    TargetClass,
+    derive_capability_matrix, target_row, Abi, Capability, CapabilityMatrix, ConfiguredTarget,
+    FfiTypeClass, TargetClass,
 };
 use hale_types::target::TargetSpec;
 use hale_types::Bundle;
@@ -126,7 +126,18 @@ struct Checked {
     program: Program,
 }
 
-fn check(program: &Program, target: &TargetSpec) -> Option<Checked> {
+/// The configured target a column's check runs under: the host named
+/// by nothing (a declaration then selects wasm32, as `hale check`
+/// without `--target`), or the triple `--target` names.
+fn configured(target: &TargetSpec, explicit: bool) -> ConfiguredTarget {
+    if explicit {
+        ConfiguredTarget { name: target.triple.to_string(), spec: *target, explicit: true }
+    } else {
+        ConfiguredTarget::host()
+    }
+}
+
+fn check(program: &Program, target: &ConfiguredTarget) -> Option<Checked> {
     let mut p = program.clone();
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut p],
@@ -138,8 +149,7 @@ fn check(program: &Program, target: &TargetSpec) -> Option<Checked> {
     programs.insert(String::new(), &p);
     let mut bundle = Bundle::new(programs);
     bundle.snapshot = ids;
-    bundle.target_has_async_io = target.has_async_io();
-    bundle.target_label = target.platform_label();
+    bundle.target = target.clone();
     let diags = hale_types::check_bundle_opts_whole_program(&bundle, false);
     let (known, _) = hale_types::resolve::build_top_scope(&bundle);
     drop(bundle);
@@ -155,7 +165,12 @@ fn declares_wasm(p: &Program) -> bool {
 fn with_declaration(p: &Program, at: usize) -> Program {
     let mut p = p.clone();
     let span = Span::new(at, at);
-    p.items.push(TopDecl::Target(TargetDecl { name: Ident::new("wasm", span), capabilities: Vec::new(), span }));
+    p.items.push(TopDecl::Target(TargetDecl {
+        name: Ident::new("wasm", span),
+        capabilities: Vec::new(),
+        span,
+        synthesized: false,
+    }));
     p
 }
 
@@ -194,6 +209,9 @@ fn namespace_of(m: &CapabilityMatrix, path: &str) -> Option<&'static str> {
 }
 
 const GATE: &str = "is unavailable under `target wasm`";
+/// The gate's refusal under either selector (the declaration, or
+/// `--target wasm32`).
+const GATES: &str = "is unavailable under `";
 
 /// One (row, column) tally: rows compared, and divergences.
 #[derive(Default)]
@@ -278,25 +296,29 @@ impl Shadow {
             }
         }
 
-        // ---- the host: the program as written, plus the probe.
+        // ---- the host: the program as written, plus the probe, checked
+        // as `hale check` checks it with no `--target`.
         let host_spec = spec("x86_64-unknown-linux-gnu");
+        let wasm_spec = spec("wasm32");
         let probed = hale_syntax::parse_source(&format!("{src}{PROBE}")).ok();
-        let Some(host) = check(probed.as_ref().unwrap_or(&program), &host_spec) else { return };
-        if probed.is_some() {
-            // The gate does not read the configured target, so one
-            // observation answers both columns' rows.
-            self.trigger(&id, &program, &host, end, &host_spec);
-            self.trigger(&id, &program, &host, end, &spec("wasm32"));
+        let Some(host) = check(probed.as_ref().unwrap_or(&program), &configured(&host_spec, false)) else { return };
+        if let Some(probed) = &probed {
+            // The gate reads the effective target: the host fallback, a
+            // declaration over it, or `--target wasm32`.
+            self.trigger(&id, &program, &host, end, &configured(&host_spec, false));
+            if let Some(on_wasm) = check(probed, &configured(&wasm_spec, true)) {
+                self.trigger(&id, &program, &on_wasm, end, &configured(&wasm_spec, true));
+            }
         }
         if !declared {
             self.table(TargetClass::PosixAsync, &id, &host, &calls, src.len());
         }
         self.ffi(&id, &host);
 
-        // ---- wasm32: the table under its trigger.
-        let wasm_spec = spec("wasm32");
+        // ---- wasm32: the table under its trigger, worded as the
+        // declaration words it.
         let triggered = if declared { program.clone() } else { with_declaration(&program, end) };
-        let on_wasm = check(&triggered, &wasm_spec);
+        let on_wasm = check(&triggered, &configured(&wasm_spec, true));
         if let Some(on_wasm) = &on_wasm {
             self.table(TargetClass::Wasm32, &id, on_wasm, &calls, src.len());
         }
@@ -304,7 +326,7 @@ impl Shadow {
         // ---- `where async_io`, on each column's spec.
         if !async_io.is_empty() {
             self.async_io(TargetClass::PosixAsync, &id, &host, &async_io);
-            if let Some(musl) = check(&program, &spec("x86_64-unknown-linux-musl")) {
+            if let Some(musl) = check(&program, &configured(&spec("x86_64-unknown-linux-musl"), true)) {
                 self.async_io(TargetClass::PosixNoAsync, &id, &musl, &async_io);
             }
             if let Some(on_wasm) = &on_wasm {
@@ -363,16 +385,19 @@ impl Shadow {
         }
     }
 
-    /// `wasm_target` against the effective-target row's stdlib gate.
-    fn trigger(&mut self, id: &str, program: &Program, host: &Checked, end: usize, configured: &TargetSpec) {
-        let fired = host.diags.iter().any(|d| d.message.contains(GATE) && d.span.start.0 as usize >= end);
+    /// `wasm_target` (the gate's trigger, which reads the effective
+    /// target) against the effective-target row.
+    fn trigger(&mut self, id: &str, program: &Program, checked: &Checked, end: usize, configured: &ConfiguredTarget) {
+        let fired = checked.diags.iter().any(|d| d.message.contains(GATES) && d.span.start.0 as usize >= end);
         let old = vec![("stdlib gate".to_string(), if fired { "wasm32" } else { "off" }.to_string())];
         let mut programs = BTreeMap::new();
         programs.insert(String::new(), program);
-        let row = target_row(&Bundle::new(programs), configured.triple, *configured);
-        let gate = row.precedence.stdlib_gate.map(|c| c.name()).unwrap_or("off");
+        let mut bundle = Bundle::new(programs);
+        bundle.target = configured.clone();
+        let row = target_row(&bundle);
+        let gate = if row.is_wasm32() { "wasm32" } else { "off" };
         let new = vec![("stdlib gate".to_string(), gate.to_string())];
-        let class = TargetClass::of(configured).expect("a column");
+        let class = TargetClass::of(&configured.spec).expect("a column");
         self.compare("wasm_target", class, id, old, new);
     }
 

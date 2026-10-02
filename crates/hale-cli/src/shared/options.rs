@@ -89,6 +89,9 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     // GH #409
     ("--env", true),
     ("--matrix", false),
+    // F.40 P3: the target the program is checked for, parsed as
+    // `hale build --target` parses it (design §1.3).
+    ("--target", true),
 ];
 
 /// GH #861: the one argument splitter `hale build` and `hale run`
@@ -282,40 +285,7 @@ pub(crate) fn parse_build_options(
                 let v = args.get(i + 1).ok_or_else(|| {
                     "--target requires a value (native|wasm32|<triple>)".to_string()
                 })?;
-                // Canonical triples, not just the two aliases. A target
-                // the compiler can NAME is not necessarily one it can
-                // BUILD, so say which of the two this is rather than
-                // failing later inside the linker (GH #445).
-                let spec = hale_codegen::target::TargetSpec::parse(v)
-                    .map_err(|e| format!("--target: {}", e))?;
-                let host = hale_codegen::target::TargetSpec::host();
-                match spec.support_from(&host) {
-                    hale_codegen::target::TargetSupport::Planned => {
-                        return Err(format!(
-                            "--target: `{}` is not buildable yet\n\n{}\n\n\
-                             The target model knows this platform; the codegen \
-                             and runtime for it do not exist yet. Track GH #445.",
-                            spec.triple,
-                            spec.describe_from(&host),
-                        ));
-                    }
-                    hale_codegen::target::TargetSupport::Cross
-                    | hale_codegen::target::TargetSupport::ForeignHost
-                    | hale_codegen::target::TargetSupport::Supported
-                    | hale_codegen::target::TargetSupport::ObjectOnly => {}
-                }
-                // GH #969: a native triple that is not the host must not
-                // become `Native`, which IS the host — that built a host
-                // binary under the target's name. It is its own target
-                // (GH #970): linked through zig where the target has a
-                // cross toolchain here, emitted as an object otherwise.
-                opts.target = if spec.is_wasm() {
-                    hale_codegen::CompileTarget::Wasm32
-                } else if spec.triple != host.triple {
-                    hale_codegen::CompileTarget::Foreign(spec)
-                } else {
-                    hale_codegen::CompileTarget::Native
-                };
+                opts.target = compile_target(parse_target(v)?);
                 i += 2;
             }
             // Backend CPU tuning for the native target. `native` tunes to
@@ -356,6 +326,78 @@ pub(crate) fn parse_build_options(
         }
     }
     Ok(opts)
+}
+
+/// `--target`'s value, as `hale build` and `hale check` read it alike:
+/// canonical triples, not just the two aliases. A target the compiler
+/// can NAME is not necessarily one it can BUILD, so say which of the two
+/// this is rather than failing later inside the linker (GH #445).
+pub(crate) fn parse_target(v: &str) -> Result<hale_codegen::target::TargetSpec, String> {
+    let spec = hale_codegen::target::TargetSpec::parse(v).map_err(|e| format!("--target: {}", e))?;
+    let host = hale_codegen::target::TargetSpec::host();
+    match spec.support_from(&host) {
+        hale_codegen::target::TargetSupport::Planned => Err(format!(
+            "--target: `{}` is not buildable yet\n\n{}\n\n\
+             The target model knows this platform; the codegen \
+             and runtime for it do not exist yet. Track GH #445.",
+            spec.triple,
+            spec.describe_from(&host),
+        )),
+        hale_codegen::target::TargetSupport::Cross
+        | hale_codegen::target::TargetSupport::ForeignHost
+        | hale_codegen::target::TargetSupport::Supported
+        | hale_codegen::target::TargetSupport::ObjectOnly => Ok(spec),
+    }
+}
+
+/// The backend a target selects. GH #969: a native triple that is not
+/// the host must not become `Native`, which IS the host — that built a
+/// host binary under the target's name. It is its own target (GH #970):
+/// linked through zig where the target has a cross toolchain here,
+/// emitted as an object otherwise.
+pub(crate) fn compile_target(spec: hale_codegen::target::TargetSpec) -> hale_codegen::CompileTarget {
+    if spec.is_wasm() {
+        hale_codegen::CompileTarget::Wasm32
+    } else if spec.triple != hale_codegen::target::TargetSpec::host().triple {
+        hale_codegen::CompileTarget::Foreign(spec)
+    } else {
+        hale_codegen::CompileTarget::Native
+    }
+}
+
+/// The configured target a snapshot is loaded with: the one `--target`
+/// names (`explicit`), or the host when nothing names one. The host is
+/// named `host` either way, as the build has always named it.
+pub(crate) fn configured_target(
+    target: hale_codegen::CompileTarget,
+    explicit: bool,
+) -> hale_frontend::snapshot::Target {
+    let spec = target.spec();
+    hale_frontend::snapshot::Target {
+        name: match target {
+            hale_codegen::CompileTarget::Native => "host".to_string(),
+            _ => spec.triple.to_string(),
+        },
+        spec,
+        explicit,
+    }
+}
+
+/// The refusal of a command that executes what it builds (`run`,
+/// `replay`) when the program's effective target is wasm32: a written
+/// `target wasm`/`browser_js` declaration selects the wasm backend
+/// (T1(b)), whose artifact this host cannot execute — the invocation
+/// cell `Run × Wasm32` (`--target wasm32` itself is refused at argument
+/// parsing, before any program is read).
+pub(crate) fn refuse_unexecutable(cmd: &str, snap: &hale_frontend::snapshot::Snapshot) -> Option<String> {
+    let row = snap.demand_target().ok()?;
+    let decl = row.declaration.as_ref().filter(|_| row.is_wasm32())?;
+    Some(format!(
+        "hale {cmd}: this program declares `target {}`, so it builds a wasm32 \
+         module this host cannot execute — build it with `hale build` and run \
+         it in a host that can",
+        decl.name
+    ))
 }
 
 /// GH #904: the build options of a command that compiles AND THEN
@@ -481,21 +523,16 @@ pub(crate) fn resolve_build_env(
 }
 
 /// GH #1109: the config a build's snapshot is loaded with, from its
-/// flags: the target it compiles for, `--api`, and `--env`'s role
-/// table and constitutions (resolved by [`resolve_build_env`]). The
-/// environment is a pass of the snapshot's load and part of its key.
+/// flags: the target it compiles for (`explicit` when `--target` named
+/// it, so it overrides a source declaration), `--api`, and `--env`'s
+/// role table and constitutions (resolved by [`resolve_build_env`]).
+/// The environment is a pass of the snapshot's load and part of its key.
 pub(crate) fn build_config(
     options: &hale_codegen::BuildOptions,
     env_spec: &Option<(crate::pkg::EnvSpec, Option<String>)>,
+    explicit: bool,
 ) -> hale_frontend::snapshot::Config {
-    let spec = options.target.spec();
-    let target = hale_frontend::snapshot::Target {
-        name: match options.target {
-            hale_codegen::CompileTarget::Native => "host".to_string(),
-            _ => spec.triple.to_string(),
-        },
-        spec,
-    };
+    let target = configured_target(options.target, explicit);
     let mut config = hale_frontend::snapshot::Config::build(target);
     config.api = options.api.clone();
     config.api_roles = options.api_roles.clone();

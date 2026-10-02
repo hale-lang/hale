@@ -147,7 +147,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             opt_name(overflow, f);
         }
         TopDecl::Target(t) => {
-            let TargetDecl { name: n, capabilities, span: _ } = t;
+            let TargetDecl { name: n, capabilities, span: _, synthesized: _ } = t;
             name(n, f);
             for c in capabilities {
                 let Capability { segments, span: _ } = c;

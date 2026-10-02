@@ -10,6 +10,7 @@ use crate::shared::diag::render_diag_json;
 use crate::shared::diag::render_flows;
 use crate::shared::diag::render_located;
 use crate::shared::frontend::retain_owned_advisories;
+use crate::shared::options::{compile_target, configured_target, flag_value_in, parse_target};
 /// Resolve a flat list of import directives originating from one
 /// importer directory: for each import, locate the target on disk
 /// (entry-relative file or dir, workspace-root fallback dir),
@@ -108,6 +109,26 @@ pub(crate) fn run_check_impl_labelled(
         target.is_dir(),
         std::env::args().any(|a| a == "--allow-unowned-subscriber"),
     );
+    // `--target`: the target the program is checked for, parsed as
+    // `hale build --target` parses it, and the effective target as it
+    // is the build's (T1(b)). Without it, a written declaration selects
+    // wasm32 and the host is the fallback, as in the build and the
+    // editor.
+    let args: Vec<String> = std::env::args().collect();
+    match flag_value_in(&args, "--target") {
+        Ok(None) => {}
+        Ok(Some(v)) => match parse_target(&v) {
+            Ok(spec) => config.target = configured_target(compile_target(spec), true),
+            Err(msg) => {
+                eprintln!("{}", msg);
+                return 2;
+            }
+        },
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return 2;
+        }
+    }
     // GH #409: an environment binds law to an ENTRYPOINT; the snapshot
     // refuses a seed with no main locus, and adopts the environment's
     // constitutions into the one it has.
