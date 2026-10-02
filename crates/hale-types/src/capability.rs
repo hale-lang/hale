@@ -1,0 +1,1537 @@
+//! The capability matrix (F.40 phase 3, P3; `notes/f40-capability-matrix.md`):
+//! what a target can do, stated once, as three typed tables.
+//!
+//! - **Behaviours** answer "may a program do this on this target, and
+//!   how is it lowered": a [`Behaviour`] cell is `Lower` or `Reject`,
+//!   and its [`Origin`] says whether a program construct requests it
+//!   (`Source`: a refusal is a located diagnostic) or nothing in a
+//!   program does (`Environment`: a signal arriving from outside, whose
+//!   `Reject` produces no diagnostic and exists only as a premise).
+//! - **Invocations** answer how the artifact may be invoked (`hale run`,
+//!   `hale replay`, a recording run): an [`InvocationCell`] is `Allowed`
+//!   or `Refused`.
+//! - **Obligations** answer whether a spine or prelude emits a runtime
+//!   call: an [`ObligationCell`] is `Emit`, or `Omit` with the
+//!   [`Premise`] that justifies the omission, which names a behaviour
+//!   that is `Reject` or an invocation that is `Refused` on the same
+//!   target. An obligation never is a behaviour's verdict; it refers to
+//!   one.
+//!
+//! The columns are the [`TargetClass`]es, derived from a
+//! [`TargetSpec`]'s `(arch, os, env)`, never from a triple's name. Every
+//! row writes all three cells: there is no default arm, and the musl
+//! column is written out like the others, so where musl's answer equals
+//! glibc's that equality is the reviewed answer, not a fallback. A new
+//! target is a new field of [`Columns`], which every row then has to
+//! write.
+//!
+//! **Today's verdicts.** This table states what the compiler does
+//! today, spread across `check.rs`'s stdlib table and `async_io` gate,
+//! `link_wasm`, the `is_wasm` sites in codegen and the CLI's
+//! `run`/`replay` refusal; `crates/hale-types/tests/shadow_capability.rs`
+//! and `crates/hale-codegen/tests/shadow_capability_lowering.rs` hold
+//! each of those legacy answers to its cell. Cells the design flips (T2:
+//! threads, `async_io` and transport bindings on wasm32; T3: the known
+//! stubs; T5: `@ffi("js")` on a native target) are written as they are
+//! today and named in [`KNOWN_OPEN`], which the laws assert is still
+//! today's answer; so are the three wasm32 obligations whose `Omit` is
+//! today's but whose premise only holds once T2 lands.
+//!
+//! What is not a cell: target-specific emission choices (the triple,
+//! CPU, optimization level, LTO, pass pipeline, DWARF, pointer width),
+//! a target's support tier, its file naming and the local toolchain.
+//! Those stay [`TargetSpec`] queries; the Final direction of #1212 does
+//! not count them as decisions.
+
+use hale_syntax::ast::PrimType;
+
+use crate::target::{TargetArch, TargetEnv, TargetOs, TargetSpec};
+use crate::ty::Ty;
+
+// ------------------------------------------------------------- columns
+
+/// A column of the matrix: what a target can do is decided by its
+/// class, and every target the compiler can build belongs to one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TargetClass {
+    /// glibc Linux and macOS: the lotus runtime over POSIX threads,
+    /// with the `async_io` backend (epoll, kqueue).
+    PosixAsync,
+    /// musl Linux: POSIX threads, and no `async_io` backend (musl
+    /// declares `<ucontext.h>` and implements none of it).
+    PosixNoAsync,
+    /// `wasm32-unknown-unknown`: a freestanding module, driven by its
+    /// host through the loader.
+    Wasm32,
+}
+
+impl TargetClass {
+    pub const ALL: [TargetClass; 3] =
+        [TargetClass::PosixAsync, TargetClass::PosixNoAsync, TargetClass::Wasm32];
+
+    /// The class of a target, from its `(arch, os, env)`. `None` for
+    /// Windows: a `Planned` tier, refused at argument parsing, which
+    /// never reaches the matrix because a tier is not a capability.
+    pub fn of(spec: &TargetSpec) -> Option<TargetClass> {
+        match spec.os {
+            TargetOs::Windows => None,
+            TargetOs::None => (spec.arch == TargetArch::Wasm32).then_some(TargetClass::Wasm32),
+            TargetOs::Linux if spec.env == TargetEnv::Musl => Some(TargetClass::PosixNoAsync),
+            TargetOs::Linux | TargetOs::MacOs => Some(TargetClass::PosixAsync),
+        }
+    }
+
+    /// The column as a document names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            TargetClass::PosixAsync => "glibc Linux, macOS",
+            TargetClass::PosixNoAsync => "musl Linux",
+            TargetClass::Wasm32 => "wasm32",
+        }
+    }
+}
+
+/// One cell per [`TargetClass`], each written by its row.
+#[derive(Debug, Clone, Copy)]
+pub struct Columns<T: 'static> {
+    pub posix_async: T,
+    pub posix_no_async: T,
+    pub wasm32: T,
+}
+
+impl<T> Columns<T> {
+    pub fn get(&self, class: TargetClass) -> &T {
+        match class {
+            TargetClass::PosixAsync => &self.posix_async,
+            TargetClass::PosixNoAsync => &self.posix_no_async,
+            TargetClass::Wasm32 => &self.wasm32,
+        }
+    }
+}
+
+// ---------------------------------------------------------------- keys
+
+/// A behaviour a program may ask of its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Capability {
+    /// A `std::` namespace, keyed by its path after `std` (`io::tcp`).
+    /// Every namespace the stdlib defines has a row.
+    StdNamespace(&'static str),
+    /// `[ffi] link` in the manifest, or `--link`.
+    LinkLibrary,
+    /// `@export fn`, `@export locus`, and the module's fixed exports.
+    ExportSurface,
+    /// A program whose entry the host drives.
+    EntryInversion(Inversion),
+    /// `@ffi("c")`, `@ffi("js")`.
+    ForeignAbi(Abi),
+    /// A type in an `@ffi` or `@export` signature, by its class, at a
+    /// boundary of the given ABI (`@export fn` is a C-ABI symbol).
+    FfiType(FfiTypeClass, Abi),
+    /// `where async_io` on a placement entry.
+    AsyncIoPool,
+    /// Threads other than main's: a `pinned` placement, a cooperative
+    /// pool other than `main`.
+    Threads,
+    /// A `bindings { }` entry.
+    RemoteTransport(Transport),
+    /// `or wait` on a topic with `on_full: fail` capacity (GH #255
+    /// phase 2), bound or not.
+    BoundedWait,
+    /// A process signal reaching the program: SIGINT's drain, SIGPIPE.
+    /// Nothing in a program requests it; its origin is the environment.
+    ProcessSignals,
+}
+
+/// The forms of an inverted entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Inversion {
+    /// A program with `@export`s and no `fn main`: an export-only
+    /// module.
+    ExportOnly,
+    /// `--wrap-main`: a bare `fn main` wrapped as the module's
+    /// `@export` entry.
+    WrapMain,
+    /// An `@export locus` that defines `run()`: a host-driven singleton
+    /// asked to run its own loop.
+    ExportedLocusRun,
+}
+
+impl Inversion {
+    pub const ALL: [Inversion; 3] = [Inversion::ExportOnly, Inversion::WrapMain, Inversion::ExportedLocusRun];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Inversion::ExportOnly => "ExportOnly",
+            Inversion::WrapMain => "WrapMain",
+            Inversion::ExportedLocusRun => "ExportedLocusRun",
+        }
+    }
+}
+
+/// A foreign ABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Abi {
+    C,
+    Js,
+}
+
+impl Abi {
+    pub const ALL: [Abi; 2] = [Abi::C, Abi::Js];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Abi::C => "C",
+            Abi::Js => "Js",
+        }
+    }
+
+    /// The ABI an `@ffi("…")` attribute names; `None` for any other.
+    pub fn of(name: &str) -> Option<Abi> {
+        match name {
+            "c" => Some(Abi::C),
+            "js" => Some(Abi::Js),
+            _ => None,
+        }
+    }
+}
+
+/// The transport of a `bindings { }` entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Transport {
+    /// `unix("/path")`, either role.
+    Unix,
+    /// `shm_ring(...)`.
+    ShmRing,
+    /// A user adapter locus (`MyAdapter { url: ... }`).
+    Adapter,
+}
+
+impl Transport {
+    pub const ALL: [Transport; 3] = [Transport::Unix, Transport::ShmRing, Transport::Adapter];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Transport::Unix => "Unix",
+            Transport::ShmRing => "ShmRing",
+            Transport::Adapter => "Adapter",
+        }
+    }
+}
+
+/// The class of a type at an FFI boundary: one per arm of the
+/// FFI-portable predicate, so a type's class decides its verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FfiTypeClass {
+    Int,
+    Float,
+    Bool,
+    String,
+    Bytes,
+    BytesView,
+    StringView,
+    BytesMut,
+    Time,
+    Duration,
+    Decimal,
+    Uint,
+    Unit,
+    /// A named user type: its C struct, kept layout-compatible by the
+    /// library author.
+    Named,
+    Bounded,
+    Projection,
+    Array,
+    Tuple,
+    Function,
+    Fallible,
+    /// An unresolved type name.
+    Unknown,
+}
+
+impl FfiTypeClass {
+    pub const ALL: [FfiTypeClass; 21] = [
+        FfiTypeClass::Int,
+        FfiTypeClass::Float,
+        FfiTypeClass::Bool,
+        FfiTypeClass::String,
+        FfiTypeClass::Bytes,
+        FfiTypeClass::BytesView,
+        FfiTypeClass::StringView,
+        FfiTypeClass::BytesMut,
+        FfiTypeClass::Time,
+        FfiTypeClass::Duration,
+        FfiTypeClass::Decimal,
+        FfiTypeClass::Uint,
+        FfiTypeClass::Unit,
+        FfiTypeClass::Named,
+        FfiTypeClass::Bounded,
+        FfiTypeClass::Projection,
+        FfiTypeClass::Array,
+        FfiTypeClass::Tuple,
+        FfiTypeClass::Function,
+        FfiTypeClass::Fallible,
+        FfiTypeClass::Unknown,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FfiTypeClass::Int => "Int",
+            FfiTypeClass::Float => "Float",
+            FfiTypeClass::Bool => "Bool",
+            FfiTypeClass::String => "String",
+            FfiTypeClass::Bytes => "Bytes",
+            FfiTypeClass::BytesView => "BytesView",
+            FfiTypeClass::StringView => "StringView",
+            FfiTypeClass::BytesMut => "BytesMut",
+            FfiTypeClass::Time => "Time",
+            FfiTypeClass::Duration => "Duration",
+            FfiTypeClass::Decimal => "Decimal",
+            FfiTypeClass::Uint => "Uint",
+            FfiTypeClass::Unit => "Unit",
+            FfiTypeClass::Named => "Named",
+            FfiTypeClass::Bounded => "Bounded",
+            FfiTypeClass::Projection => "Projection",
+            FfiTypeClass::Array => "Array",
+            FfiTypeClass::Tuple => "Tuple",
+            FfiTypeClass::Function => "Function",
+            FfiTypeClass::Fallible => "Fallible",
+            FfiTypeClass::Unknown => "Unknown",
+        }
+    }
+
+    /// The class of a resolved type.
+    pub fn of(ty: &Ty) -> FfiTypeClass {
+        match ty {
+            Ty::Prim(p) => match p {
+                PrimType::Int => FfiTypeClass::Int,
+                PrimType::Float => FfiTypeClass::Float,
+                PrimType::Bool => FfiTypeClass::Bool,
+                PrimType::String => FfiTypeClass::String,
+                PrimType::Bytes => FfiTypeClass::Bytes,
+                PrimType::BytesView => FfiTypeClass::BytesView,
+                PrimType::StringView => FfiTypeClass::StringView,
+                PrimType::BytesMut => FfiTypeClass::BytesMut,
+                PrimType::Time => FfiTypeClass::Time,
+                PrimType::Duration => FfiTypeClass::Duration,
+                PrimType::Decimal => FfiTypeClass::Decimal,
+                PrimType::Uint => FfiTypeClass::Uint,
+            },
+            Ty::Unit => FfiTypeClass::Unit,
+            Ty::Named(_) => FfiTypeClass::Named,
+            Ty::Bounded(_, _) => FfiTypeClass::Bounded,
+            Ty::Projection(_, _) => FfiTypeClass::Projection,
+            Ty::Array(_, _) => FfiTypeClass::Array,
+            Ty::Tuple(_) => FfiTypeClass::Tuple,
+            Ty::Function { .. } => FfiTypeClass::Function,
+            Ty::Fallible { .. } => FfiTypeClass::Fallible,
+            Ty::Unknown => FfiTypeClass::Unknown,
+        }
+    }
+}
+
+impl Capability {
+    /// The semantic layer the capability belongs to (RFC #1212's
+    /// numbering): an approximating lowering is legitimate only on
+    /// layers 5 and 7.
+    pub fn layer(self) -> u8 {
+        match self {
+            Capability::FfiType(..) => 2,
+            Capability::AsyncIoPool
+            | Capability::Threads
+            | Capability::RemoteTransport(_)
+            | Capability::BoundedWait => 5,
+            Capability::ProcessSignals => 6,
+            Capability::StdNamespace(_)
+            | Capability::LinkLibrary
+            | Capability::ExportSurface
+            | Capability::EntryInversion(_)
+            | Capability::ForeignAbi(_) => 8,
+        }
+    }
+
+    /// Who asks for it: a program construct, or the environment.
+    pub fn origin(self) -> Origin {
+        match self {
+            Capability::ProcessSignals => Origin::Environment,
+            Capability::StdNamespace(_)
+            | Capability::LinkLibrary
+            | Capability::ExportSurface
+            | Capability::EntryInversion(_)
+            | Capability::ForeignAbi(_)
+            | Capability::FfiType(..)
+            | Capability::AsyncIoPool
+            | Capability::Threads
+            | Capability::RemoteTransport(_)
+            | Capability::BoundedWait => Origin::Source,
+        }
+    }
+
+    /// The capability as a document names it.
+    pub fn label(self) -> String {
+        match self {
+            Capability::StdNamespace(ns) => format!("std::{ns}"),
+            Capability::LinkLibrary => "LinkLibrary".to_string(),
+            Capability::ExportSurface => "ExportSurface".to_string(),
+            Capability::EntryInversion(i) => format!("EntryInversion({})", i.name()),
+            Capability::ForeignAbi(a) => format!("ForeignAbi({})", a.name()),
+            Capability::FfiType(t, a) => format!("FfiType({}, {})", t.name(), a.name()),
+            Capability::AsyncIoPool => "AsyncIoPool".to_string(),
+            Capability::Threads => "Threads".to_string(),
+            Capability::RemoteTransport(t) => format!("RemoteTransport({})", t.name()),
+            Capability::BoundedWait => "BoundedWait".to_string(),
+            Capability::ProcessSignals => "ProcessSignals".to_string(),
+        }
+    }
+}
+
+/// How the artifact may be invoked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Invocation {
+    /// `hale run`.
+    Run,
+    /// `hale replay`.
+    Replay,
+    /// A recording run (`hale run` under the recording mode).
+    Record,
+}
+
+impl Invocation {
+    pub const ALL: [Invocation; 3] = [Invocation::Run, Invocation::Replay, Invocation::Record];
+}
+
+/// A runtime call a spine or prelude emits, or omits, per target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Obligation {
+    /// `lotus_replay_start_ingress` on the main locus.
+    ReplayIngress,
+    /// The observation identity (`lotus_obs_topic_shape`,
+    /// `lotus_obs_exec_digest_set`) and its eager init
+    /// (`lotus_obs_eager_init`).
+    ObservationIdentity,
+    /// `lotus_io_init` (SIGPIPE) and `lotus_drain_signals_install`.
+    SignalInstall,
+    /// The drain observer (`lotus.observes_drain.<locus>`).
+    DrainObserver,
+    /// The process-draining term: `self.draining`, the restart gate and
+    /// `sleep`'s cut-short read `lotus_process_draining_flag`.
+    DrainTerm,
+    /// `lotus_bus_load_config` and the listen bindings' key extractors.
+    BindingConfig,
+    /// `lotus_coop_pool_shutdown_all` (R20) in a teardown spine.
+    PoolJoin,
+    /// `lotus_bus_wait_abort_all` (R34) in a teardown spine.
+    WaitAbort,
+    /// `lotus_bus_ingress_quiesce` (R35) in a teardown spine.
+    IngressQuiesce,
+}
+
+impl Obligation {
+    pub const ALL: [Obligation; 9] = [
+        Obligation::ReplayIngress,
+        Obligation::ObservationIdentity,
+        Obligation::SignalInstall,
+        Obligation::DrainObserver,
+        Obligation::DrainTerm,
+        Obligation::BindingConfig,
+        Obligation::PoolJoin,
+        Obligation::WaitAbort,
+        Obligation::IngressQuiesce,
+    ];
+}
+
+// --------------------------------------------------------------- cells
+
+/// Why a cell says what it says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Witness {
+    /// The site that decides it today, as `path::symbol` (a symbol or a
+    /// text fragment the file contains: the registry's convention).
+    pub site: &'static str,
+    /// The one sentence a diagnostic or a document renders.
+    pub reason: &'static str,
+    /// The spec section whose sentence the cell implements, as
+    /// `spec/<file>.md § <heading>`.
+    pub spec: &'static str,
+}
+
+/// A refusal's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refusal {
+    /// The diagnostic, today's text verbatim, with its holes named:
+    /// `{reason}` and `{guidance}` are the cell's own, every other hole
+    /// is the use's (`{path}`, `{field}`, `{libs}`, `{locus}`, `{cmd}`).
+    pub wording: &'static str,
+    /// What a program does instead, or why nothing can stand in.
+    pub guidance: Option<&'static str>,
+}
+
+impl Refusal {
+    /// The diagnostic for one use: the cell's reason and guidance, and
+    /// the use's holes.
+    pub fn render(&self, witness: &Witness, holes: &[(&str, &str)]) -> String {
+        let mut out = self.wording.replace("{reason}", witness.reason);
+        if let Some(g) = self.guidance {
+            out = out.replace("{guidance}", g);
+        }
+        for (k, v) in holes {
+            out = out.replace(&format!("{{{k}}}"), v);
+        }
+        out
+    }
+}
+
+/// A module export the lowering emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Export {
+    pub name: &'static str,
+    /// Exported only when the module defines it.
+    pub if_defined: bool,
+}
+
+/// What a `Lower` verdict carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lowering {
+    /// Lowered as the program states it.
+    Direct,
+    /// The module's fixed exports, beside the `@export` set.
+    Exports(&'static [Export]),
+    /// The `js` ABI's marshalling: an `Int` crosses as an f64.
+    IntAsF64,
+    /// A collapse that changes no observable answer (F.38: placement is
+    /// semantics-free). Legitimate on layers 5 and 7 only; no cell uses
+    /// one today.
+    Approximate { collapse: &'static str },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A program construct requests it; a refusal is a located
+    /// diagnostic.
+    Source,
+    /// Nothing in a program requests it; a `Reject` produces no
+    /// diagnostic and exists only as a premise.
+    Environment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviourVerdict {
+    Lower(Lowering),
+    Reject(Refusal),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Behaviour {
+    pub verdict: BehaviourVerdict,
+    pub origin: Origin,
+    /// The behaviours it stands on: a `Lower` cell requires only
+    /// behaviours that are `Lower` on the same target.
+    pub requires: &'static [Capability],
+    pub witness: Witness,
+}
+
+impl Behaviour {
+    pub fn is_lower(&self) -> bool {
+        matches!(self.verdict, BehaviourVerdict::Lower(_))
+    }
+    pub fn refusal(&self) -> Option<&Refusal> {
+        match &self.verdict {
+            BehaviourVerdict::Reject(r) => Some(r),
+            BehaviourVerdict::Lower(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationVerdict {
+    Allowed,
+    Refused(Refusal),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvocationCell {
+    pub verdict: InvocationVerdict,
+    pub witness: Witness,
+}
+
+/// A stated proof an omission may rest on, registered with its tests in
+/// [`PROOFS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProofId(pub &'static str);
+
+/// A registered proof.
+#[derive(Debug, Clone, Copy)]
+pub struct Proof {
+    pub id: ProofId,
+    pub tests: &'static [&'static str],
+}
+
+/// The proofs an `Omit` may cite. None is registered yet: the
+/// single-thread proof that would omit `WaitAbort` on wasm32 (§3.2 of
+/// the design) is a future gate.
+pub const PROOFS: &[Proof] = &[];
+
+/// Why an obligation may be omitted on a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Premise {
+    /// That target's behaviour cell is `Reject`.
+    Rejects(Capability),
+    /// That target's invocation cell is `Refused`.
+    Refuses(Invocation),
+    /// A registered proof.
+    Proven(ProofId),
+    All(&'static [Premise]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObligationVerdict {
+    Emit,
+    Omit(Premise),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObligationCell {
+    pub verdict: ObligationVerdict,
+    pub witness: Witness,
+}
+
+impl ObligationCell {
+    pub fn emits(&self) -> bool {
+        self.verdict == ObligationVerdict::Emit
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BehaviourRow {
+    pub capability: Capability,
+    pub cells: Columns<Behaviour>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InvocationRow {
+    pub invocation: Invocation,
+    pub cells: Columns<InvocationCell>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ObligationRow {
+    pub obligation: Obligation,
+    pub cells: Columns<ObligationCell>,
+}
+
+// -------------------------------------------------------------- matrix
+
+/// The three tables.
+#[derive(Debug, Clone, Copy)]
+pub struct CapabilityMatrix {
+    pub behaviours: &'static [BehaviourRow],
+    pub invocations: &'static [InvocationRow],
+    pub obligations: &'static [ObligationRow],
+}
+
+/// The `target_capability` family's producer: the matrix, as data.
+pub fn derive_capability_matrix() -> CapabilityMatrix {
+    CapabilityMatrix { behaviours: BEHAVIOURS, invocations: INVOCATIONS, obligations: OBLIGATIONS }
+}
+
+impl CapabilityMatrix {
+    /// The cell, or `None` when the capability has no row: a missing
+    /// required row is an error for the caller to report, never a
+    /// guess.
+    pub fn behaviour(&self, class: TargetClass, cap: Capability) -> Option<&'static Behaviour> {
+        self.behaviours.iter().find(|r| r.capability == cap).map(|r| r.cells.get(class))
+    }
+
+    pub fn invocation(&self, class: TargetClass, inv: Invocation) -> Option<&'static InvocationCell> {
+        self.invocations.iter().find(|r| r.invocation == inv).map(|r| r.cells.get(class))
+    }
+
+    pub fn obligation(&self, class: TargetClass, ob: Obligation) -> Option<&'static ObligationCell> {
+        self.obligations.iter().find(|r| r.obligation == ob).map(|r| r.cells.get(class))
+    }
+
+    /// Whether a premise holds on a target: each `Rejects` names a
+    /// behaviour that is `Reject` there, each `Refuses` an invocation
+    /// that is `Refused` there, each `Proven` a registered proof.
+    pub fn premise_holds(&self, class: TargetClass, premise: &Premise) -> bool {
+        match premise {
+            Premise::Rejects(c) => self.behaviour(class, *c).is_some_and(|b| !b.is_lower()),
+            Premise::Refuses(i) => self
+                .invocation(class, *i)
+                .is_some_and(|c| matches!(c.verdict, InvocationVerdict::Refused(_))),
+            Premise::Proven(p) => PROOFS.iter().any(|q| q.id == *p),
+            Premise::All(ps) => ps.iter().all(|p| self.premise_holds(class, p)),
+        }
+    }
+}
+
+// ------------------------------------------------------------ known open
+
+/// A cell written as it is today that the design changes.
+#[derive(Debug, Clone, Copy)]
+pub struct KnownOpen {
+    pub class: TargetClass,
+    pub cell: OpenCell,
+    /// The decision that changes it (`notes/f40-capability-matrix.md`
+    /// §7) and what it becomes.
+    pub decision: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OpenCell {
+    /// `Lower` today, `Reject` once the decision lands.
+    Behaviour(Capability),
+    /// `Omit` today, as every spine does, on a premise that holds only
+    /// once the decision lands.
+    Premise(Obligation),
+}
+
+const T2: &str = "T2: Reject at the placement entry or binding until a real lowering exists (P3 2 of 3)";
+const T3: &str = "T3: the known stubs are rejected, with guidance naming an `@ffi(\"js\")` host import (P3 2 of 3)";
+const T3_UNCLASSIFIED: &str = "T3: syscall-backed and not in the table; refused whole unless a reviewed lowering contract is written (P3 2 of 3)";
+const T5: &str = "T5: a located refusal at the `@ffi(\"js\")` declaration on a native target (P3 2 of 3)";
+const T2_PREMISE: &str = "T2: the premise holds once the behaviours it names are Reject on wasm32 (P3 2 of 3)";
+
+pub const KNOWN_OPEN: &[KnownOpen] = &[
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::Threads), decision: T2 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::AsyncIoPool), decision: T2 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::RemoteTransport(Transport::Unix)), decision: T2 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::RemoteTransport(Transport::ShmRing)), decision: T2 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("time")), decision: T3 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("env")), decision: T3 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("ts")), decision: T3 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("io::unix")), decision: T3_UNCLASSIFIED },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("io::sockopt")), decision: T3_UNCLASSIFIED },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("io::mirror")), decision: T3_UNCLASSIFIED },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("ring")), decision: T3_UNCLASSIFIED },
+    KnownOpen { class: TargetClass::PosixAsync, cell: OpenCell::Behaviour(Capability::ForeignAbi(Abi::Js)), decision: T5 },
+    KnownOpen { class: TargetClass::PosixNoAsync, cell: OpenCell::Behaviour(Capability::ForeignAbi(Abi::Js)), decision: T5 },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Premise(Obligation::BindingConfig), decision: T2_PREMISE },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Premise(Obligation::PoolJoin), decision: T2_PREMISE },
+    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Premise(Obligation::IngressQuiesce), decision: T2_PREMISE },
+];
+
+// -------------------------------------------------------------- sites
+
+const SPEC_WASM_GATE: &str = "spec/ffi.md § The `target` declaration + stdlib gating";
+const SPEC_STDLIB: &str = "spec/stdlib.md § Module surface";
+const SPEC_WASM_FFI: &str = "spec/ffi.md § Package `[ffi]` under wasm32";
+const SPEC_EXPORT: &str = "spec/ffi.md § `@export` — exports (Hale → callable by the host)";
+const SPEC_ENTRY: &str = "spec/ffi.md § Entry-inversion run-model";
+const SPEC_JS: &str = "spec/ffi.md § `@ffi(\"js\")` — host imports (host → into Hale's callees)";
+const SPEC_FFI: &str = "spec/ffi.md § Syntax";
+const SPEC_FFI_TYPES: &str = "spec/ffi.md § Type marshalling";
+const SPEC_ASYNC_IO: &str = "spec/runtime.md § `where async_io` — green-I/O cooperative pools (F.35)";
+const SPEC_PLACEMENT: &str = "spec/semantics.md § Placement block (F.31)";
+const SPEC_BINDINGS: &str = "spec/semantics.md § Phase 2: hierarchy, subjects, bindings, closed-world optimization";
+const SPEC_BUS: &str = "spec/runtime.md § Bus message router";
+const SPEC_DRAIN: &str = "spec/semantics.md § Drain cascade (whole-process)";
+const SPEC_RECORDING: &str = "spec/runtime.md § Lossless recording mode (GH #296 Phase 1)";
+const SPEC_OBSERVATION: &str = "spec/runtime.md § Native observation emission (iris P4, 2026-07-27)";
+const SPEC_OBLIGATIONS: &str = "spec/runtime.md § Lifecycle obligations";
+
+const fn w(site: &'static str, reason: &'static str, spec: &'static str) -> Witness {
+    Witness { site, reason, spec }
+}
+
+const fn lower(witness: Witness) -> Behaviour {
+    Behaviour {
+        verdict: BehaviourVerdict::Lower(Lowering::Direct),
+        origin: Origin::Source,
+        requires: &[],
+        witness,
+    }
+}
+
+const fn reject(wording: &'static str, guidance: Option<&'static str>, witness: Witness) -> Behaviour {
+    Behaviour {
+        verdict: BehaviourVerdict::Reject(Refusal { wording, guidance }),
+        origin: Origin::Source,
+        requires: &[],
+        witness,
+    }
+}
+
+// --------------------------------------------------------- behaviours
+
+/// The stdlib refusal on wasm32, the checker's wording verbatim:
+/// `{path}` is the use's call path after `std`.
+pub const STD_WASM_WORDING: &str = "`std::{path}` is unavailable under `target wasm`: {reason}";
+
+const STD_NATIVE: Behaviour = lower(w(
+    "crates/hale-types/src/stdlib_surface.rs::SURFACES",
+    "lowered over the target's libc",
+    SPEC_STDLIB,
+));
+const STD_WASM: Behaviour = lower(w(
+    "crates/hale-types/src/check.rs::wasm_unavailable_stdlib",
+    "admitted: outside the browser-unavailable set, lowered through the wasm shim",
+    SPEC_WASM_GATE,
+));
+const fn std_wasm_stub(reason: &'static str) -> Behaviour {
+    lower(w("crates/hale-codegen/runtime/wasm/lotus_wasm_shim.h::__wasm__", reason, SPEC_WASM_GATE))
+}
+const fn std_wasm_reject(reason: &'static str, guidance: &'static str) -> Behaviour {
+    reject(
+        STD_WASM_WORDING,
+        Some(guidance),
+        w("crates/hale-types/src/check.rs::wasm_unavailable_stdlib", reason, SPEC_WASM_GATE),
+    )
+}
+const fn std_ns(
+    ns: &'static str,
+    posix_async: Behaviour,
+    posix_no_async: Behaviour,
+    wasm32: Behaviour,
+) -> BehaviourRow {
+    BehaviourRow { capability: Capability::StdNamespace(ns), cells: Columns { posix_async, posix_no_async, wasm32 } }
+}
+
+const WASM_TCP: Behaviour = std_wasm_reject(
+    "raw TCP sockets don't exist in the browser; use a WebSocket \
+     bus adapter (`ws://`) for networking",
+    "a WebSocket bus adapter (`ws://`)",
+);
+const WASM_UDP: Behaviour =
+    std_wasm_reject("raw UDP sockets don't exist in the browser", "(no raw UDP in the browser)");
+const WASM_TLS: Behaviour = std_wasm_reject(
+    "raw TLS isn't available; the browser performs TLS transparently \
+     for `wss://` / `https://`",
+    "the browser does TLS transparently for `wss://` / `https://`",
+);
+const WASM_FS: Behaviour = std_wasm_reject(
+    "filesystem access isn't available in the browser sandbox; use \
+     `fetch` (via an `@ffi(\"js\")` host import) or a bus message",
+    "`fetch` via an `@ffi(\"js\")` host import, or a bus message",
+);
+const WASM_STDIO: Behaviour = std_wasm_reject(
+    "raw terminal I/O isn't available; use `println(...)` (the loader \
+     routes it to the host console)",
+    "`println(...)` (the loader routes it to the host console)",
+);
+const WASM_TERM: Behaviour = std_wasm_reject(
+    "terminal control (`std::term`) isn't available in the browser",
+    "(no terminal in the browser)",
+);
+const WASM_PROCESS: Behaviour = std_wasm_reject(
+    "OS process control (`std::process`) isn't available in the browser",
+    "(no OS process control)",
+);
+const WASM_HTTP: Behaviour = std_wasm_reject(
+    "the `std::http` server is built on raw TCP and isn't available \
+     in the browser",
+    "(server is built on raw TCP)",
+);
+
+/// The behaviours. The stdlib rows come first: the rejected
+/// namespaces in the order the documents list them, then every other
+/// namespace the stdlib defines (`stdlib_surface::SURFACES` and the
+/// namespaces of `LOCUS_PATHS`), alphabetically.
+pub const BEHAVIOURS: &[BehaviourRow] = &[
+    std_ns("io::tcp", STD_NATIVE, STD_NATIVE, WASM_TCP),
+    std_ns("io::udp", STD_NATIVE, STD_NATIVE, WASM_UDP),
+    std_ns("io::tls", STD_NATIVE, STD_NATIVE, WASM_TLS),
+    std_ns("io::fs", STD_NATIVE, STD_NATIVE, WASM_FS),
+    std_ns("io::file", STD_NATIVE, STD_NATIVE, WASM_FS),
+    std_ns("io::stdin", STD_NATIVE, STD_NATIVE, WASM_STDIO),
+    std_ns("io::stdout", STD_NATIVE, STD_NATIVE, WASM_STDIO),
+    std_ns("term", STD_NATIVE, STD_NATIVE, WASM_TERM),
+    std_ns("process", STD_NATIVE, STD_NATIVE, WASM_PROCESS),
+    std_ns("http", STD_NATIVE, STD_NATIVE, WASM_HTTP),
+    std_ns("api", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("bus", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("bytes", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("bytes::builder", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("cli", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("compress", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("crypto", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("decimal", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("diag", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns(
+        "env",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub("admitted, and a stub: every operation reads the shim's inline `getenv`, which returns NULL"),
+    ),
+    std_ns("io", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns(
+        "io::mirror",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
+    ),
+    std_ns(
+        "io::sockopt",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
+    ),
+    std_ns(
+        "io::unix",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
+    ),
+    std_ns("iter", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("json", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("lang", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("log", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("math", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("metrics", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("name", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("os", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("rand", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("regex", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns(
+        "ring",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
+    ),
+    std_ns("secret", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("shm", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("source", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("str", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("tagged", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("tar", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("test", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("text", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("text::base64", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns(
+        "time",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub(
+            "admitted, and mixed: the clock reads go through the shim's inline `clock_gettime`, \
+             which writes zero, and `sleep` calls `clock_nanosleep`, an import stubbed to 0; the \
+             conversions compute on their argument",
+        ),
+    ),
+    std_ns(
+        "ts",
+        STD_NATIVE,
+        STD_NATIVE,
+        std_wasm_stub("admitted, and a stub: the wasm link returns before the tree-sitter shim is linked"),
+    ),
+    std_ns("yaml", STD_NATIVE, STD_NATIVE, STD_WASM),
+    // ---- link, exports, entry
+    BehaviourRow {
+        capability: Capability::LinkLibrary,
+        cells: Columns {
+            posix_async: lower(w(
+                "crates/hale-codegen/src/codegen.rs::link_libs",
+                "a system library is linked by the native linker",
+                SPEC_WASM_FFI,
+            )),
+            posix_no_async: lower(w(
+                "crates/hale-codegen/src/codegen.rs::link_libs",
+                "a system library is linked by the native linker (zig cc, static)",
+                SPEC_WASM_FFI,
+            )),
+            wasm32: reject(
+                "`[ffi] link = {libs}` cannot be satisfied on wasm32 — {reason}. {guidance}",
+                Some(
+                    "Provide the code as `[ffi] csrc` so it can be compiled into the module, \
+                     or gate the dependency out of the wasm build.",
+                ),
+                w(
+                    "crates/hale-codegen/src/codegen.rs::link_wasm",
+                    "there are no system dynamic libraries to link against",
+                    SPEC_WASM_FFI,
+                ),
+            ),
+        },
+    },
+    BehaviourRow {
+        capability: Capability::ExportSurface,
+        cells: Columns {
+            posix_async: lower(w(
+                "crates/hale-codegen/src/codegen.rs::synthesize_native_export_wrappers",
+                "an `@export fn` is an unmangled C-ABI symbol, and an `@export locus` an ordinary locus",
+                SPEC_EXPORT,
+            )),
+            posix_no_async: lower(w(
+                "crates/hale-codegen/src/codegen.rs::synthesize_native_export_wrappers",
+                "an `@export fn` is an unmangled C-ABI symbol, and an `@export locus` an ordinary locus",
+                SPEC_EXPORT,
+            )),
+            wasm32: Behaviour {
+                verdict: BehaviourVerdict::Lower(Lowering::Exports(WASM_FIXED_EXPORTS)),
+                origin: Origin::Source,
+                requires: &[],
+                witness: w(
+                    "crates/hale-codegen/src/codegen.rs::synthesize_wasm_export_wrappers",
+                    "the module exports a wrapper per `@export fn` and `_hale_start`, beside its fixed exports",
+                    SPEC_EXPORT,
+                ),
+            },
+        },
+    },
+    BehaviourRow {
+        capability: Capability::EntryInversion(Inversion::ExportOnly),
+        cells: Columns {
+            posix_async: reject(
+                "program has no `fn main()`",
+                None,
+                w(CG_HAS_EXPORTS, "a native program's entry is its `fn main`", SPEC_ENTRY),
+            ),
+            posix_no_async: reject(
+                "program has no `fn main()`",
+                None,
+                w(CG_HAS_EXPORTS, "a native program's entry is its `fn main`", SPEC_ENTRY),
+            ),
+            wasm32: lower(w(
+                CG_HAS_EXPORTS,
+                "an export-only module: the host drives it through its exports",
+                SPEC_ENTRY,
+            )),
+        },
+    },
+    BehaviourRow {
+        capability: Capability::EntryInversion(Inversion::WrapMain),
+        cells: Columns {
+            posix_async: reject(
+                WRAP_MAIN_WORDING,
+                None,
+                w(V_BUILD_WRAP, "there is no native entry-inversion to wrap", SPEC_ENTRY),
+            ),
+            posix_no_async: reject(
+                WRAP_MAIN_WORDING,
+                None,
+                w(V_BUILD_WRAP, "there is no native entry-inversion to wrap", SPEC_ENTRY),
+            ),
+            wasm32: lower(w(
+                V_BUILD_WRAP,
+                "a bare `fn main` is wrapped as the module's `@export` entry",
+                SPEC_ENTRY,
+            )),
+        },
+    },
+    BehaviourRow {
+        capability: Capability::EntryInversion(Inversion::ExportedLocusRun),
+        cells: Columns {
+            posix_async: lower(w(CG_EXPORT_RUN, "an `@export locus` is an ordinary locus, `run()` and all", SPEC_EXPORT)),
+            posix_no_async: lower(w(CG_EXPORT_RUN, "an `@export locus` is an ordinary locus, `run()` and all", SPEC_EXPORT)),
+            wasm32: reject(
+                "@export locus `{locus}` must not define `run()` — {reason}",
+                None,
+                w(
+                    CG_EXPORT_RUN,
+                    "a wasm singleton is host-driven via its `@export` methods, not a cooperative run loop",
+                    SPEC_ENTRY,
+                ),
+            ),
+        },
+    },
+    // ---- foreign ABIs
+    BehaviourRow {
+        capability: Capability::ForeignAbi(Abi::C),
+        cells: Columns {
+            posix_async: lower(w(CG_FFI_DECL, "an `@ffi(\"c\")` fn is an external C symbol", SPEC_FFI)),
+            posix_no_async: lower(w(CG_FFI_DECL, "an `@ffi(\"c\")` fn is an external C symbol", SPEC_FFI)),
+            wasm32: lower(w(
+                CG_FFI_DECL,
+                "an `@ffi(\"c\")` fn is an `env` import, supplied by a package's `csrc` or the loader",
+                SPEC_WASM_FFI,
+            )),
+        },
+    },
+    BehaviourRow {
+        capability: Capability::ForeignAbi(Abi::Js),
+        cells: Columns {
+            posix_async: lower(w(
+                CG_FFI_DECL,
+                "admitted: declared as an external symbol, so a call fails at the native link as an undefined reference",
+                SPEC_JS,
+            )),
+            posix_no_async: lower(w(
+                CG_FFI_DECL,
+                "admitted: declared as an external symbol, so a call fails at the native link as an undefined reference",
+                SPEC_JS,
+            )),
+            wasm32: Behaviour {
+                verdict: BehaviourVerdict::Lower(Lowering::IntAsF64),
+                origin: Origin::Source,
+                requires: &[],
+                witness: w(
+                    "crates/hale-codegen/src/codegen.rs::a.abi == \"js\"",
+                    "an `@ffi(\"js\")` fn is a loader import; an `Int` crosses as an f64",
+                    SPEC_JS,
+                ),
+            },
+        },
+    },
+    // ---- FFI types: target-independent (design §2.6), one row per
+    // class and ABI.
+    ffi_row(FfiTypeClass::Int, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Int, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Float, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Float, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Bool, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Bool, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::String, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::String, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Bytes, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Bytes, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::BytesView, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::BytesView, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::StringView, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::StringView, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::BytesMut, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::BytesMut, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Time, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Time, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Duration, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Duration, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::Decimal, Abi::C, FFI_DECIMAL),
+    ffi_row(FfiTypeClass::Decimal, Abi::Js, FFI_DECIMAL),
+    ffi_row(FfiTypeClass::Uint, Abi::C, FFI_UINT),
+    ffi_row(FfiTypeClass::Uint, Abi::Js, FFI_UINT),
+    ffi_row(FfiTypeClass::Unit, Abi::C, FFI_UNIT),
+    ffi_row(FfiTypeClass::Unit, Abi::Js, FFI_UNIT),
+    ffi_row(FfiTypeClass::Named, Abi::C, FFI_NAMED),
+    ffi_row(FfiTypeClass::Named, Abi::Js, FFI_NAMED),
+    ffi_row(FfiTypeClass::Bounded, Abi::C, FFI_BOUNDED),
+    ffi_row(FfiTypeClass::Bounded, Abi::Js, FFI_BOUNDED),
+    ffi_row(FfiTypeClass::Projection, Abi::C, FFI_PROJECTION),
+    ffi_row(FfiTypeClass::Projection, Abi::Js, FFI_PROJECTION),
+    ffi_row(FfiTypeClass::Array, Abi::C, FFI_ARRAY),
+    ffi_row(FfiTypeClass::Array, Abi::Js, FFI_ARRAY),
+    ffi_row(FfiTypeClass::Tuple, Abi::C, FFI_TUPLE),
+    ffi_row(FfiTypeClass::Tuple, Abi::Js, FFI_TUPLE),
+    ffi_row(FfiTypeClass::Function, Abi::C, FFI_FUNCTION),
+    ffi_row(FfiTypeClass::Function, Abi::Js, FFI_FUNCTION),
+    ffi_row(FfiTypeClass::Fallible, Abi::C, FFI_FALLIBLE),
+    ffi_row(FfiTypeClass::Fallible, Abi::Js, FFI_FALLIBLE),
+    ffi_row(FfiTypeClass::Unknown, Abi::C, FFI_UNKNOWN),
+    ffi_row(FfiTypeClass::Unknown, Abi::Js, FFI_UNKNOWN),
+    // ---- placement and the bus
+    BehaviourRow {
+        capability: Capability::AsyncIoPool,
+        cells: Columns {
+            posix_async: Behaviour {
+                requires: &[Capability::Threads],
+                ..lower(w(CHECK_ASYNC_IO, "the async_io backend is epoll (glibc Linux) or kqueue (macOS) over ucontext coroutines", SPEC_ASYNC_IO))
+            },
+            posix_no_async: Behaviour {
+                requires: &[Capability::Threads],
+                ..reject(
+                    "placement entry `{field}`: `async_io` pools \
+                     aren't supported on musl Linux yet — use a \
+                     cooperative pool (drop `where async_io`), \
+                     or build for glibc Linux or macOS. (The \
+                     backend is epoll or kqueue over ucontext \
+                     coroutines; {reason}.)",
+                    Some("a cooperative pool (drop `where async_io`), or a glibc Linux or macOS build"),
+                    w(CHECK_ASYNC_IO, "this target's libc has no ucontext", SPEC_ASYNC_IO),
+                )
+            },
+            wasm32: Behaviour {
+                requires: &[Capability::Threads],
+                ..lower(w(
+                    CHECK_ASYNC_IO,
+                    "admitted: the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, so the pool never runs",
+                    SPEC_ASYNC_IO,
+                ))
+            },
+        },
+    },
+    BehaviourRow {
+        capability: Capability::Threads,
+        cells: Columns {
+            posix_async: lower(w(CG_POOL_START, "pinned threads and pool workers are POSIX threads", SPEC_PLACEMENT)),
+            posix_no_async: lower(w(CG_POOL_START, "pinned threads and pool workers are POSIX threads", SPEC_PLACEMENT)),
+            wasm32: lower(w(
+                CG_POOL_START,
+                "admitted: `pthread_create` is an import the loader stubs with `() => 0`, so a pinned locus or a pool's `run()` is posted and never executes",
+                SPEC_PLACEMENT,
+            )),
+        },
+    },
+    transport_row(
+        Transport::Unix,
+        "an AF_UNIX socket served by the runtime's transport threads",
+        "an AF_UNIX socket served by the runtime's transport threads",
+        "admitted: the bindings prelude is ungated and the socket calls are imports the loader stubs with `() => 0`, so the binding never connects",
+    ),
+    transport_row(
+        Transport::ShmRing,
+        "a POSIX shared-memory ring",
+        "a POSIX shared-memory ring",
+        "admitted: the bindings prelude is ungated and `shm_open` and `mmap` are imports the loader stubs with `() => 0`, so the ring never maps",
+    ),
+    transport_row(
+        Transport::Adapter,
+        "a user adapter locus's `send`, handed to the bus runtime",
+        "a user adapter locus's `send`, handed to the bus runtime",
+        "a user adapter locus's `send`, handed to the bus runtime; its own calls decide what it can reach",
+    ),
+    BehaviourRow {
+        capability: Capability::BoundedWait,
+        cells: Columns {
+            posix_async: lower(w(RT_WAIT_SPACE, "the publisher parks until a consumer frees room, or wait-abort ends the wait", SPEC_BUS)),
+            posix_no_async: lower(w(RT_WAIT_SPACE, "the publisher parks until a consumer frees room, or wait-abort ends the wait", SPEC_BUS)),
+            wasm32: lower(w(
+                RT_WAIT_SPACE,
+                "the publisher spins on its own pump (the 1 ms nap is the shim's inline no-op) until the queue empties, or wait-abort ends the wait",
+                SPEC_BUS,
+            )),
+        },
+    },
+    BehaviourRow {
+        capability: Capability::ProcessSignals,
+        cells: Columns {
+            posix_async: Behaviour {
+                origin: Origin::Environment,
+                ..lower(w(CG_SIGNALS, "SIGINT and SIGTERM start the drain, and SIGPIPE is ignored", SPEC_DRAIN))
+            },
+            posix_no_async: Behaviour {
+                origin: Origin::Environment,
+                ..lower(w(CG_SIGNALS, "SIGINT and SIGTERM start the drain, and SIGPIPE is ignored", SPEC_DRAIN))
+            },
+            wasm32: Behaviour {
+                origin: Origin::Environment,
+                ..reject(
+                    "{reason}",
+                    None,
+                    w(
+                        "crates/hale-codegen/runtime/lotus_arena.c::lotus_drain_signals_install",
+                        "wasm32 has no signal source: no drain signal and no SIGPIPE reach the module, and the drain flag stays 0",
+                        SPEC_DRAIN,
+                    ),
+                )
+            },
+        },
+    },
+];
+
+const CG_HAS_EXPORTS: &str = "crates/hale-codegen/src/codegen.rs::has_exports";
+const CG_EXPORT_RUN: &str = "crates/hale-codegen/src/codegen.rs::must not define `run()`";
+const CG_FFI_DECL: &str = "crates/hale-codegen/src/codegen.rs::f.ffi.is_some()";
+const CG_POOL_START: &str = "crates/hale-codegen/src/codegen.rs::lotus_coop_pool_start_all";
+const CG_SIGNALS: &str = "crates/hale-codegen/src/codegen.rs::lotus_drain_signals_install";
+const CHECK_ASYNC_IO: &str = "crates/hale-types/src/check.rs::target_has_async_io";
+const RT_WAIT_SPACE: &str = "crates/hale-codegen/runtime/lotus_arena.c::lotus_bus_subject_wait_space";
+const V_BUILD_WRAP: &str = "crates/hale-cli/src/verbs/build.rs::--wrap-main requires --target wasm32";
+
+/// The `--wrap-main` refusal, `hale build`'s wording verbatim.
+pub const WRAP_MAIN_WORDING: &str = "--wrap-main requires --target wasm32 — it \
+     synthesizes the wasm @export entry from `fn main`, and \
+     there is no native entry-inversion to wrap";
+
+/// The module's fixed exports, beside the `@export` set: `link_wasm`'s
+/// list.
+pub const WASM_FIXED_EXPORTS: &[Export] = &[
+    Export { name: "main", if_defined: true },
+    Export { name: "__heap_base", if_defined: false },
+    Export { name: "memory", if_defined: true },
+    Export { name: "lotus_wasm_alloc", if_defined: false },
+    Export { name: "lotus_wasm_set_inbox", if_defined: false },
+];
+
+const fn transport_row(
+    t: Transport,
+    posix_async: &'static str,
+    posix_no_async: &'static str,
+    wasm32: &'static str,
+) -> BehaviourRow {
+    let site = "crates/hale-codegen/src/codegen.rs::emit_bindings_prelude";
+    BehaviourRow {
+        capability: Capability::RemoteTransport(t),
+        cells: Columns {
+            posix_async: lower(w(site, posix_async, SPEC_BINDINGS)),
+            posix_no_async: lower(w(site, posix_no_async, SPEC_BINDINGS)),
+            wasm32: lower(w(site, wasm32, SPEC_BINDINGS)),
+        },
+    }
+}
+
+/// An FFI type's row. The predicate does not vary by target (design
+/// §2.6), so the one cell is written into each column: this is the
+/// only row shape that does so, and only because the design states the
+/// equality.
+const fn ffi_row(class: FfiTypeClass, abi: Abi, cell: Behaviour) -> BehaviourRow {
+    BehaviourRow {
+        capability: Capability::FfiType(class, abi),
+        cells: Columns { posix_async: cell, posix_no_async: cell, wasm32: cell },
+    }
+}
+
+/// An FFI type's refusal is its reason; the checker frames it at the
+/// declaration's parameter or return.
+const FFI_WORDING: &str = "{reason}";
+const CHECK_FFI: &str = "crates/hale-types/src/check.rs::ffi_type_unportable";
+
+const FFI_PORTABLE: Behaviour = lower(w(CHECK_FFI, "in the FFI-portable set", SPEC_FFI_TYPES));
+const FFI_NAMED: Behaviour = lower(w(
+    CHECK_FFI,
+    "a named user type crosses as its C struct; the library author keeps the layouts compatible",
+    SPEC_FFI_TYPES,
+));
+const FFI_UNKNOWN: Behaviour = lower(w(
+    CHECK_FFI,
+    "an unresolved type name is admitted; codegen catches a broken signature at declaration",
+    SPEC_FFI_TYPES,
+));
+const fn ffi_reject(reason: &'static str) -> Behaviour {
+    reject(FFI_WORDING, None, w(CHECK_FFI, reason, SPEC_FFI_TYPES))
+}
+const FFI_DECIMAL: Behaviour = ffi_reject(
+    "Decimal (i128) has platform-variable ABI; marshal as \
+     Int/Float at the Hale side instead",
+);
+const FFI_UINT: Behaviour = ffi_reject(
+    "Uint is Hale-internal; declare as Int in the @ffi \
+     signature",
+);
+const FFI_UNIT: Behaviour = ffi_reject("() (unit) is not a meaningful FFI parameter type");
+const FFI_BOUNDED: Behaviour = ffi_reject(
+    "bounded[T; N] has no portable C mapping — pass the \
+     element pointer + count separately",
+);
+const FFI_PROJECTION: Behaviour = ffi_reject(
+    "projection-typed values (Rich / Chunked / Recognition) \
+     carry per-locus metadata and don't cross the C-ABI \
+     boundary",
+);
+const FFI_ARRAY: Behaviour = ffi_reject(
+    "fixed-size arrays don't cross the C-ABI boundary at \
+     Stage 1; pass Bytes / a wrapper struct instead",
+);
+const FFI_TUPLE: Behaviour = ffi_reject(
+    "tuples have no portable C struct layout; declare a named \
+     type instead",
+);
+const FFI_FUNCTION: Behaviour = ffi_reject(
+    "function-pointer types are not yet FFI-portable; declare \
+     the wrapper at the C side and pass a struct/handle",
+);
+const FFI_FALLIBLE: Behaviour = ffi_reject(
+    "fallible(E) is an Hale internal channel; C functions \
+     must return an error sentinel and the Hale wrapper \
+     above translates",
+);
+
+// -------------------------------------------------------- invocations
+
+const OPT_EXEC: &str = "crates/hale-cli/src/shared/options.rs::parse_exec_build_options";
+const OPT_WASM_REFUSAL: &str = "crates/hale-cli/src/shared/options.rs::emits an artifact this host";
+
+/// `hale run` / `hale replay` under wasm32, the CLI's wording
+/// verbatim: `{cmd}` is the verb.
+pub const RUN_WASM_WORDING: &str = "hale {cmd}: --target wasm32 emits an artifact this host \
+     cannot execute — build it with `hale build --target \
+     wasm32` and run it in a host that can";
+
+const fn allowed(reason: &'static str, spec: &'static str) -> InvocationCell {
+    InvocationCell { verdict: InvocationVerdict::Allowed, witness: w(OPT_EXEC, reason, spec) }
+}
+const fn refused_on_wasm(spec: &'static str) -> InvocationCell {
+    InvocationCell {
+        verdict: InvocationVerdict::Refused(Refusal {
+            wording: RUN_WASM_WORDING,
+            guidance: Some("build it with `hale build --target wasm32` and run it in a host that can"),
+        }),
+        witness: w(
+            OPT_WASM_REFUSAL,
+            "the host cannot execute the artifact, and the loader passes it no mode",
+            spec,
+        ),
+    }
+}
+
+/// A musl artifact runs on any Linux. `hale run --target <musl>` from
+/// a glibc host is refused as a foreign platform: a fact of the host
+/// running the compiler, not of the target, so not a cell.
+const MUSL_RUNS: &str = "a static musl binary runs on any Linux; refusing it from another host's `hale run` is a host fact, not a cell";
+
+pub const INVOCATIONS: &[InvocationRow] = &[
+    InvocationRow {
+        invocation: Invocation::Run,
+        cells: Columns {
+            posix_async: allowed("the artifact runs on its platform", SPEC_ENTRY),
+            posix_no_async: allowed(MUSL_RUNS, SPEC_ENTRY),
+            wasm32: refused_on_wasm(SPEC_ENTRY),
+        },
+    },
+    InvocationRow {
+        invocation: Invocation::Replay,
+        cells: Columns {
+            posix_async: allowed("the artifact replays a recording made of it", SPEC_RECORDING),
+            posix_no_async: allowed(MUSL_RUNS, SPEC_RECORDING),
+            wasm32: refused_on_wasm(SPEC_RECORDING),
+        },
+    },
+    InvocationRow {
+        invocation: Invocation::Record,
+        cells: Columns {
+            posix_async: allowed("the artifact records under the recording mode", SPEC_RECORDING),
+            posix_no_async: allowed(MUSL_RUNS, SPEC_RECORDING),
+            wasm32: refused_on_wasm(SPEC_RECORDING),
+        },
+    },
+];
+
+// -------------------------------------------------------- obligations
+
+const fn emit(site: &'static str, reason: &'static str, spec: &'static str) -> ObligationCell {
+    ObligationCell { verdict: ObligationVerdict::Emit, witness: w(site, reason, spec) }
+}
+const fn omit(premise: Premise, site: &'static str, reason: &'static str, spec: &'static str) -> ObligationCell {
+    ObligationCell { verdict: ObligationVerdict::Omit(premise), witness: w(site, reason, spec) }
+}
+const fn ob_row(
+    obligation: Obligation,
+    posix_async: ObligationCell,
+    posix_no_async: ObligationCell,
+    wasm32: ObligationCell,
+) -> ObligationRow {
+    ObligationRow { obligation, cells: Columns { posix_async, posix_no_async, wasm32 } }
+}
+
+// The POSIX cells. A musl build emits every one of them as a glibc
+// build does (the runtime has each call on both); each row names the
+// cell in both columns, so that equality is written, not inherited.
+const REPLAY_INGRESS: ObligationCell = emit(
+    "crates/hale-codegen/src/locus/instantiation.rs::lotus_replay_start_ingress",
+    "the main locus starts replay ingress at its boot/run boundary",
+    SPEC_RECORDING,
+);
+const OBSERVATION_IDENTITY: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::lotus_obs_eager_init",
+    "main registers the topic shapes and the execution digest, and initializes observation eagerly",
+    SPEC_OBSERVATION,
+);
+const SIGNAL_INSTALL: ObligationCell =
+    emit(CG_SIGNALS, "main ignores SIGPIPE and installs the drain signals", SPEC_DRAIN);
+const DRAIN_OBSERVER: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::lotus.observes_drain.",
+    "a locus that reads the drain is counted",
+    SPEC_DRAIN,
+);
+const DRAIN_TERM: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::lotus_process_draining_flag",
+    "`self.draining`, the restart gate and `sleep` read the process flag",
+    SPEC_DRAIN,
+);
+const BINDING_CONFIG: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::lotus_bus_load_config",
+    "main loads the transport configuration and registers the listen bindings' key extractors",
+    SPEC_BINDINGS,
+);
+const POOL_JOIN: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::emit_coop_pool_shutdown_all",
+    "a teardown spine joins the cooperative pools' workers",
+    SPEC_OBLIGATIONS,
+);
+const WAIT_ABORT: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::emit_bus_wait_abort_all",
+    "a teardown spine aborts the parked `or wait` publishers",
+    SPEC_OBLIGATIONS,
+);
+const INGRESS_QUIESCE: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::emit_bus_ingress_quiesce",
+    "a teardown spine drains kernel-accepted listen ingress first",
+    SPEC_OBLIGATIONS,
+);
+
+const SIGNALS: Premise = Premise::Rejects(Capability::ProcessSignals);
+const LISTEN_TRANSPORTS: &[Premise] = &[
+    Premise::Rejects(Capability::RemoteTransport(Transport::Unix)),
+    Premise::Rejects(Capability::RemoteTransport(Transport::ShmRing)),
+];
+
+pub const OBLIGATIONS: &[ObligationRow] = &[
+    ob_row(
+        Obligation::ReplayIngress,
+        REPLAY_INGRESS,
+        REPLAY_INGRESS,
+        omit(
+            Premise::Refuses(Invocation::Replay),
+            "crates/hale-codegen/src/locus/instantiation.rs::lotus_replay_start_ingress",
+            "the artifact is never replayed",
+            SPEC_RECORDING,
+        ),
+    ),
+    ob_row(
+        Obligation::ObservationIdentity,
+        OBSERVATION_IDENTITY,
+        OBSERVATION_IDENTITY,
+        omit(
+            Premise::All(&[Premise::Refuses(Invocation::Replay), Premise::Refuses(Invocation::Record)]),
+            "crates/hale-codegen/src/codegen.rs::lotus_obs_eager_init",
+            "the artifact is neither recorded nor replayed",
+            SPEC_OBSERVATION,
+        ),
+    ),
+    ob_row(
+        Obligation::SignalInstall,
+        SIGNAL_INSTALL,
+        SIGNAL_INSTALL,
+        omit(SIGNALS, CG_SIGNALS, "no signal reaches the module", SPEC_DRAIN),
+    ),
+    ob_row(
+        Obligation::DrainObserver,
+        DRAIN_OBSERVER,
+        DRAIN_OBSERVER,
+        omit(SIGNALS, "crates/hale-codegen/src/codegen.rs::lotus.observes_drain.", "no drain signal arrives", SPEC_DRAIN),
+    ),
+    ob_row(
+        Obligation::DrainTerm,
+        DRAIN_TERM,
+        DRAIN_TERM,
+        omit(
+            SIGNALS,
+            "crates/hale-codegen/src/codegen.rs::lotus_process_draining_flag",
+            "the process flag is always 0",
+            SPEC_DRAIN,
+        ),
+    ),
+    ob_row(
+        Obligation::BindingConfig,
+        BINDING_CONFIG,
+        BINDING_CONFIG,
+        omit(
+            Premise::All(LISTEN_TRANSPORTS),
+            "crates/hale-codegen/src/codegen.rs::lotus_bus_load_config",
+            "no transport binding can serve the module",
+            SPEC_BINDINGS,
+        ),
+    ),
+    ob_row(
+        Obligation::PoolJoin,
+        POOL_JOIN,
+        POOL_JOIN,
+        omit(
+            Premise::All(&[Premise::Rejects(Capability::Threads), Premise::Rejects(Capability::AsyncIoPool)]),
+            "crates/hale-codegen/src/codegen.rs::emit_coop_pool_shutdown_all",
+            "no pool worker exists to join",
+            SPEC_OBLIGATIONS,
+        ),
+    ),
+    ob_row(
+        Obligation::WaitAbort,
+        WAIT_ABORT,
+        WAIT_ABORT,
+        emit(
+            "crates/hale-codegen/src/codegen.rs::emit_bus_wait_abort_all",
+            "the local capacity wait is admitted, and no proof yet shows no waiter is live at teardown",
+            SPEC_OBLIGATIONS,
+        ),
+    ),
+    ob_row(
+        Obligation::IngressQuiesce,
+        INGRESS_QUIESCE,
+        INGRESS_QUIESCE,
+        omit(
+            Premise::All(LISTEN_TRANSPORTS),
+            "crates/hale-codegen/src/codegen.rs::emit_bus_ingress_quiesce",
+            "no listen binding exists to quiesce",
+            SPEC_OBLIGATIONS,
+        ),
+    ),
+];
+
+
+#[cfg(test)]
+mod laws;

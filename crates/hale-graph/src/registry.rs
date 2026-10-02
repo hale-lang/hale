@@ -253,7 +253,8 @@ const CG_WIRE: &str = "crates/hale-codegen/src/bus/wire.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
-const CG_TARGET: &str = "crates/hale-codegen/src/target.rs";
+const TY_TARGET: &str = "crates/hale-types/src/target.rs";
+const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
@@ -1164,7 +1165,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Capability,
         answers: "What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability.",
         inputs: &["--target", "a source `target` declaration", "stdlib_surface", "FFI signatures"],
-        producer: None,
+        producer: Some(site(CAPABILITY, "derive_capability_matrix")),
         legacy: &[
             legacy(CHECK, "wasm_unavailable_stdlib", "a hand-kept slice-pattern table keyed by leading namespace, consulted only when the SOURCE declares `target wasm` (never from `--target wasm32`), and only for call forms", "one CapabilityMatrix consulted by the driver before lowering"),
             legacy(CHECK, "wasm_target", "the source-declaration flag the table is gated on", "same"),
@@ -1172,7 +1173,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG_INST, "lotus_replay_start_ingress", "one of the per-site wasm skips; instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not", "same"),
             legacy(CG, "is_wasm", "the backend configuration scattered across a dozen sites", "same"),
             legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
-            legacy(CG_TARGET, "TargetSpec", "has_async_io is true for wasm32; the checker sees the target only under `hale build`", "the matrix is the one statement, on every entry point"),
+            legacy(TY_TARGET, "TargetSpec", "has_async_io is true for wasm32; the checker sees the target only under `hale build`", "the matrix is the one statement, on every entry point"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("docs (systems/webassembly.md, generated from the matrix)")],
         invariants: &["Approximate is legitimate only in layers 5 and 7; everywhere else a target lowers or rejects, with the row's witness", "the docs' target statement is generated, never hand-maintained"],
