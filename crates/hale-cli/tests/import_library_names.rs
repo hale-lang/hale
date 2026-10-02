@@ -368,3 +368,87 @@ fn a_library_beside_the_entry_keeps_its_name() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A library declaring the enum `name` with variants `Red` and `Green`.
+fn enum_lib(name: &str) -> String {
+    format!("type {name} = enum {{ Red, Green }};\n")
+}
+
+/// The re-review's program: an app importing `path` as `lib` and
+/// matching a `lib::<name>` over `variants`, printing the label of `Red`.
+fn enum_app(path: &str, name: &str, variants: &[&str]) -> String {
+    let mut s = format!("import \"{path}\" as lib;\n\nfn label(c: lib::{name}) -> String {{\n    return match c {{\n");
+    for v in variants {
+        s.push_str(&format!("        lib::{name}::{v} -> \"{}\",\n", v.to_lowercase()));
+    }
+    s.push_str(&format!("    }};\n}}\n\nfn main() {{\n    println(label(lib::{name}::Red));\n}}\n"));
+    s
+}
+
+/// The three ways an app reaches a library declaring the enum: a
+/// directory beside the entry, a single file beside it (the
+/// compatibility spelling for an ordinary name), and a single file
+/// outside the entry's directory (always encoded). Each is
+/// `(file, import path)`, relative to the tree, the entry at `app/`.
+const ENUM_SHAPES: [(&str, &str); 3] =
+    [("app/lib/defs.hl", "lib"), ("app/lib.hl", "lib"), ("one/defs.hl", "../one/defs")];
+
+/// An ordinary name and three whose declaration is encoded in the
+/// merged name, so its text is no suffix of the symbol.
+const ENUM_NAMES: [&str; 4] = ["Color", "Code_x", "E__Code", "_Color"];
+
+/// C2 re-review: a complete match over an imported enum is exhaustive
+/// whatever the enum is called. The exhaustiveness reader compared the
+/// merged symbol with the authored name as a suffix, so an encoded name
+/// (`Code_x` is `…__Code_x5fx`) made a complete match "not exhaustive".
+/// The arm's `lib::Enum` now resolves through the import table and is
+/// compared with the scrutinee's declaration by identity.
+#[test]
+fn a_complete_match_over_an_imported_enum_is_exhaustive_whatever_its_name() {
+    for (i, (file, path)) in ENUM_SHAPES.iter().enumerate() {
+        for name in ENUM_NAMES {
+            let d = tree(
+                &format!("enum_complete_{i}_{name}"),
+                &[(file, &enum_lib(name)), ("app/main.hl", &enum_app(path, name, &["Red", "Green"]))],
+            );
+            let (ok, out) = hale(&d.join("app"), &["check", "main.hl"]);
+            assert!(ok, "a complete match over `lib::{name}` from {file} must check:\n{out}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+}
+
+/// The control: a match that leaves a variant out is still refused, for
+/// every name and every shape.
+#[test]
+fn a_match_missing_a_variant_of_an_imported_enum_is_refused() {
+    for (i, (file, path)) in ENUM_SHAPES.iter().enumerate() {
+        for name in ENUM_NAMES {
+            let d = tree(
+                &format!("enum_missing_{i}_{name}"),
+                &[(file, &enum_lib(name)), ("app/main.hl", &enum_app(path, name, &["Red"]))],
+            );
+            let (ok, out) = hale(&d.join("app"), &["check", "main.hl"]);
+            assert!(!ok, "a match missing `Green` of `lib::{name}` from {file} must not check:\n{out}");
+            assert!(out.contains("match is not exhaustive"), "the refusal names exhaustiveness:\n{out}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+}
+
+/// The re-review's program, built and run: `Code_x` in a directory
+/// library is merged under an encoded name, and the match reaches `red`.
+#[test]
+fn an_encoded_imported_enum_matches_natively() {
+    let d = tree(
+        "enum_native",
+        &[("app/lib/defs.hl", &enum_lib("Code_x")), ("app/main.hl", &enum_app("lib", "Code_x", &["Red", "Green"]))],
+    );
+    let app = d.join("app");
+    let s = symbols(&app.join("main.hl"));
+    assert!(!s["lib::Code_x"].ends_with("_Code_x"), "the declaration's name is encoded: {}", s["lib::Code_x"]);
+    let (ok, out) = hale(&app, &["run", "main.hl"]);
+    assert!(ok, "run must pass:\n{out}");
+    assert_eq!(out.trim(), "red");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -127,7 +127,12 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
 ///     must be covered by an unguarded `EnumName::Variant`
 ///     constructor pattern.
 ///   - For everything else: a wildcard / binding is required.
-fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool {
+fn match_is_exhaustive(
+    scrut_ty: &Ty,
+    arms: &[MatchArm],
+    top: &TopScope,
+    known: &KnownNames,
+) -> bool {
     let unguarded = |a: &&MatchArm| a.guard.is_none();
     let has_catchall = arms.iter().filter(unguarded).any(|a| {
         matches!(a.pattern, Pattern::Wildcard(_) | Pattern::Binding(_))
@@ -171,24 +176,24 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool
             // `<template>_<arg>_<arg>...` so the prefix check
             // is unambiguous.
             let mangle_prefix = format!("{}_", name);
-            // GH #534: an importer's arm is `alias::Enum::Variant` —
-            // three segments whose middle is the enum's authored name,
-            // while the scrutinee is typed by the seed-mangled name
-            // `__lib_<id>_<stem>_Enum`. The checker holds no alias
-            // table (the same limitation the `__lib_` tail matching
-            // elsewhere documents), so match on the mangled tail.
+            // GH #534: an importer's arm is `alias::Enum::Variant`,
+            // while the scrutinee is typed by the declaration's merged
+            // name. The arm's `alias::Enum` is resolved through the
+            // scope's one import table (`KnownNames::import_target`,
+            // the table the scrutinee's qualified type resolved
+            // through), so the two compare by identity: the merged
+            // name encodes the declaration's, and its text is no
+            // suffix of anything the author wrote.
             for arm in arms.iter().filter(unguarded) {
                 if let Pattern::Constructor { path, .. } = &arm.pattern {
                     let segs: Vec<&str> =
                         path.segments.iter().map(|s| s.name.as_str()).collect();
                     let (enum_seg, variant_seg) = match segs.as_slice() {
                         [e, v] => (*e, *v),
-                        [_, e, v]
-                            if name.starts_with("__lib_")
-                                && name.ends_with(&format!("_{}", e)) =>
-                        {
-                            (name.as_str(), *v)
-                        }
+                        [a, e, v] => match known.import_target(&format!("{a}::{e}")) {
+                            Some(target) => (target, *v),
+                            None => continue,
+                        },
                         _ => continue,
                     };
                     {
@@ -12962,7 +12967,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top) {
+        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
                 stmt.span,
                 format!(
