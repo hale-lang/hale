@@ -200,3 +200,119 @@ fn the_walks_bound_cross_seed_and_wildcard_facts_are_columns() {
         "{msgs:?}"
     );
 }
+
+// --- rule 10: edges by declaration ----------------------------------
+
+fn cycles(msgs: &[String]) -> Vec<&String> {
+    msgs.iter().filter(|m| m.contains("bus cycle")).collect()
+}
+
+const TWO_OF_ONE_NAME: &str = r#"
+type Tick { n: Int; }
+topic A { payload: Tick; subject: "a"; }
+topic B { payload: Tick; subject: "b"; }
+
+module left {
+    locus W {
+        bus { subscribe A as on_a; publish B; }
+        fn on_a(x: Tick) { B <- Tick { n: 1 }; }
+    }
+}
+module right {
+    locus W {
+        bus { subscribe B as on_b; publish A; }
+        fn on_b(x: Tick) { A <- Tick { n: 1 }; }
+    }
+}
+
+main locus App {
+    params { l: left::W = left::W { }; r: right::W = right::W { }; }
+}
+
+fn main() { App { }; }
+"#;
+
+/// Two loci of one name (the duplicate is its own error) each wrote one
+/// edge: `A → B` in `left::W`, `B → A` in `right::W`. The loop crosses
+/// two declarations, so it is the cross-locus warning, naming both by
+/// their module paths. Before the migration rule 10 merged the edges by
+/// name and reported "locus `W` has a re-entrant synchronous bus cycle".
+#[test]
+fn two_loci_of_one_name_have_their_own_edges() {
+    let msgs = check(TWO_OF_ONE_NAME);
+    assert!(msgs.iter().any(|m| m.contains("duplicate top-level name `W`")), "{msgs:?}");
+    assert_eq!(
+        cycles(&msgs),
+        ["bus cycle `A → B → A` across loci (left::W, right::W): a cell can re-trigger its \
+          own publish, spinning the cooperative queue. Break the loop or add a terminating \
+          condition."],
+        "{msgs:?}"
+    );
+    let g = graph(TWO_OF_ONE_NAME);
+    let by_decl: Vec<(Vec<String>, &str, &str)> = g
+        .edges
+        .iter()
+        .map(|e| (g.decls[e.decl].modules.clone(), e.from.as_str(), e.to.as_str()))
+        .collect();
+    assert_eq!(
+        by_decl,
+        [(vec!["left".to_string()], "a", "b"), (vec!["right".to_string()], "b", "a")],
+        "each edge is its own declaration's, between wire subjects"
+    );
+}
+
+const NAME_SENT_LITERAL_SUBSCRIBED: &str = r#"
+type Tick { n: Int; }
+topic T { payload: Tick; subject: "t"; }
+
+locus Echo {
+    bus { subscribe "t" as on_t of type Tick; publish T; }
+    fn on_t(x: Tick) { T <- Tick { n: 1 }; }
+}
+main locus App {
+    params { e: Echo = Echo { }; }
+}
+fn main() { App { }; }
+"#;
+
+/// A handler subscribed to the literal `"t"` that sends `T` by name
+/// sends to its own subject: one subject under the canonical key, so
+/// the unconditional self-republish is the intra-locus error. Before
+/// the migration the edge ran from `t` to `T`, two nodes, and rule 10
+/// said nothing.
+#[test]
+fn a_send_by_name_meets_a_subscription_by_literal_subject() {
+    let msgs = check(NAME_SENT_LITERAL_SUBSCRIBED);
+    assert!(
+        msgs.iter().any(|m| m
+            == "locus `Echo` has a re-entrant synchronous bus cycle `t → t`: each publish onto \
+                a topic the locus also subscribes is a direct in-thread call (intra-locus \
+                self-dispatch), so this recurses without bound and overflows the stack. Break \
+                the cycle, or route one hop through a different pool (an async enqueue)."),
+        "{msgs:?}"
+    );
+}
+
+const UNRESOLVED_CYCLE: &str = r#"
+type Tick { n: Int; }
+locus Echo {
+    bus { subscribe Nowhere as on_n; publish Nowhere; }
+    fn on_n(x: Tick) { Nowhere <- Tick { n: 1 }; }
+}
+main locus App {
+    params { e: Echo = Echo { }; }
+}
+fn main() { App { }; }
+"#;
+
+/// A subject no topic answers forms no edge: the resolver reports the
+/// name, and rule 10 does not build a cycle out of the spelling. Before
+/// the migration it also reported "locus `Echo` has a re-entrant
+/// synchronous bus cycle `Nowhere → Nowhere`".
+#[test]
+fn an_unresolved_subject_forms_no_edge() {
+    let msgs = check(UNRESOLVED_CYCLE);
+    assert!(msgs.iter().any(|m| m.contains("unknown topic `Nowhere`")), "{msgs:?}");
+    assert!(!msgs.iter().any(|m| m.contains("re-entrant") || m.contains("bus cycle")), "{msgs:?}");
+    assert!(graph(UNRESOLVED_CYCLE).edges.is_empty());
+}
