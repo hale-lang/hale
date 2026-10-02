@@ -229,6 +229,85 @@ fn dead_receiver_inside_a_module_is_flagged() {
     );
 }
 
+// The warning half reaches its blocking call through a helper: a free
+// fn, or a method of the locus's own. The set of helpers that block is
+// the effect rows' (F.40 phase 3, E2), which key a module's fns by
+// their bare names as the resolver does, so the helper one brace deeper
+// still blocks.
+
+const BLOCKING_FREE_HELPER: &str = "\
+fn pump() { let n = std::io::tls::recv_into(0, 0, 64); }
+
+locus Worker {
+    params { n: Int = 0; }
+    run() { pump(); }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: cooperative(pool = io); }
+}
+";
+
+#[test]
+fn a_blocking_free_helper_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        BLOCKING_FREE_HELPER,
+        "reaches the blocking call `pump() (which makes a blocking call)`",
+    );
+}
+
+#[test]
+fn a_top_level_run_sees_a_module_nested_helper_block() {
+    // The helper alone one brace deeper: the `run()` that calls it is
+    // at the top level, so only the set says `pump` blocks.
+    let src = "\
+module inner {
+    fn pump() { let n = std::io::tls::recv_into(0, 0, 64); }
+}
+
+locus Worker {
+    params { n: Int = 0; }
+    run() { pump(); }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: cooperative(pool = io); }
+}
+
+fn main() { App { }; }
+";
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|(e, m)| !e
+            && m.contains("reaches the blocking call `pump() (which makes a blocking call)`")),
+        "a top-level run() calling a module-nested blocking helper must warn: {:?}",
+        ds
+    );
+}
+
+const BLOCKING_SELF_HELPER: &str = "\
+locus Worker {
+    params { n: Int = 0; }
+    fn pump() { let n = std::io::tls::recv_into(0, 0, 64); }
+    run() { self.pump(); }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: cooperative(pool = io); }
+}
+";
+
+#[test]
+fn a_blocking_self_helper_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        BLOCKING_SELF_HELPER,
+        "reaches the blocking call `self.pump() (which makes a blocking call)`",
+    );
+}
+
 // ---- check_nested_long_running_child -------------------------------
 //
 // A non-main locus with work of its own, holding a params field of a

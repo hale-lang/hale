@@ -56,6 +56,18 @@ interprocedural — the high-stakes diagnostic stays precise. See
 `spec/semantics.md` type-check rules 7–8 and
 `docs/src/services/concurrency.md`.
 
+**The warning's horizon.** The helpers that block are read off the
+effect rows: a fn blocks when its own `block` leaf holds the worker
+(below), or when any fn it calls blocks, transitively over the rows'
+resolved call targets — a module's fns by their bare names, a
+qualified cross-seed call, a stdlib body behind a handle method and
+another locus's method included. The `run()` walk consults that set at
+two call shapes only: a bare call `pump()` (a free fn) and
+`self.pump()` (a method of the locus's own). A handle method or a
+`self.field.method()` hop written in `run()` itself is not looked at;
+the same call inside a helper that `run()` calls makes the helper
+block.
+
 **What counts as "blocking" for both** is the effects registry's
 `block` classification — the same rows the effect assertions and the
 `.hale.effects` manifest read (`stdlib_surface::SURFACES`) — and not a

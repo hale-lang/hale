@@ -485,9 +485,11 @@ pub struct CheckInputs<'a> {
     /// unowned-subscriber rule's births, declarations and owners.
     pub ownership: &'a crate::ownership_graph::OwnershipGraph,
     /// The effect rows, demanded only when a rule reads them: a codec
-    /// binding's purity assertion reads the purity column. A check
-    /// whose program binds no codec never asks, so the editor's
-    /// no-claims path runs no effects fixpoint. `None` only if the rows
+    /// binding's purity assertion reads the purity column, and the
+    /// blocking check reads which helpers hold a cooperative worker once
+    /// a placement entry puts a field with a `run()` on a classic pool or
+    /// main. A check whose program does neither never asks, so the
+    /// editor's no-claims path runs no effects fixpoint. `None` only if the rows
     /// are blocked, which they never are once the scope the check reads
     /// exists.
     pub effects: &'a dyn Fn() -> Option<&'a crate::effect_rows::EffectRows>,
@@ -847,7 +849,8 @@ pub fn check_bundle_by_declaration(
     // pool the dead-receiver error already reported.
     if let Some(main) = inputs.placement.root.as_ref().and_then(|r| r.decl.decl(bundle)) {
         let fields = root_field_placements(bundle, inputs.placement);
-        let errored_pools = check_cooperative_pool_blocking(bundle, inputs.bus, &fields, &mut diags);
+        let errored_pools =
+            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut diags);
         check_pool_starvation(main, &fields, &errored_pools, &mut diags);
         check_birth_order(main, &fields, &mut diags);
     }
@@ -1549,10 +1552,12 @@ fn run_statically_nonreturning(run_body: &Block, decl: &LocusDecl) -> Option<Spa
 /// `pinned` owns its own thread.) The warning path follows the call
 /// graph interprocedurally — a `run()` that blocks through a helper
 /// fn or a `self.method` is flagged (see `find_blocking_deep_in_block`
-/// and the `blocking_*_fns` fixpoints). Still best-effort: blocking
-/// via a method on a stdlib *handle* (`stream.recv(...)`) or across a
-/// cross-locus `self.field.method()` hop isn't traced — this is a
-/// warning, so the residual incompleteness is acceptable.
+/// and [`worker_holding_fns`], the effect rows' answer). Still
+/// best-effort at the `run()` itself: a method on a stdlib *handle*
+/// (`stream.recv(...)`) or a cross-locus `self.field.method()` hop
+/// written in `run()` isn't looked at (a helper that makes one does
+/// hold the worker) — this is a warning, so the residual
+/// incompleteness is acceptable.
 ///
 /// GH #830: the leaf set is the effects registry's `block`
 /// classification (minus the leaves that yield a cooperative worker
@@ -1672,212 +1677,53 @@ fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
 // The direct-call walk above only sees blocking ops written literally
 // in `run()`. A `run()` that calls a helper fn — `self.drain()` or a
 // free `pump(conn)` — that itself blocks holds the pool's thread just
-// as surely, but escaped the syntactic walk. These helpers build a
-// small call graph and propagate "blocks" from leaf stdlib ops up
-// through callees, so the pool-stall **warning** also fires on
-// blocking reached one or more fn-hops deep. (The dead-receiver ERROR
-// deliberately stays direct-call-only — it over-fired once before, so
-// we don't widen its call-graph surface; see
-// `check_cooperative_pool_blocking`.)
+// as surely, but escaped the syntactic walk. The helpers that block
+// are read off the effect rows (F.40 phase 3, E2), so the pool-stall
+// **warning** also fires on blocking reached one or more fn-hops deep.
+// (The dead-receiver ERROR deliberately stays direct-call-only — it
+// over-fired once before, so we don't widen its call-graph surface;
+// see `check_cooperative_pool_blocking`.)
 
-/// Names a call expression's callee resolves to, split into free-fn
-/// names (bare ident / single-segment path) and `self.method` names.
-/// Used to build the call graph; over-collection is harmless (the
-/// fixpoint only follows edges into fns it actually knows).
-#[derive(Default)]
-struct CalleeSet {
-    free: BTreeSet<String>,
-    self_methods: BTreeSet<String>,
-}
-
-fn collect_callees_in_block(b: &Block, out: &mut CalleeSet) {
-    for s in &b.stmts {
-        collect_callees_in_stmt(s, out);
-    }
-}
-
-fn collect_callees_in_stmt(stmt: &Stmt, out: &mut CalleeSet) {
-    match stmt {
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
-            collect_callees_in_expr(value, out)
-        }
-        Stmt::Assign { value, .. } => collect_callees_in_expr(value, out),
-        Stmt::Send { subject, value, .. } => {
-            collect_callees_in_expr(subject, out);
-            collect_callees_in_expr(value, out);
-        }
-        Stmt::Return(Some(e), _) => collect_callees_in_expr(e, out),
-        Stmt::Fail { value, .. } => collect_callees_in_expr(value, out),
-        Stmt::Violate { payload: Some(e), .. } => collect_callees_in_expr(e, out),
-        Stmt::Recovery { args, .. } => {
-            args.iter().for_each(|e| collect_callees_in_expr(e, out))
-        }
-        Stmt::Expr(e) => collect_callees_in_expr(e, out),
-        Stmt::If(i) => collect_callees_in_if(i, out),
-        Stmt::Match(m) => collect_callees_in_match(m, out),
-        Stmt::For { iter, body, .. } => {
-            collect_callees_in_expr(iter, out);
-            collect_callees_in_block(body, out);
-        }
-        Stmt::While { cond, body, .. } => {
-            collect_callees_in_expr(cond, out);
-            collect_callees_in_block(body, out);
-        }
-        Stmt::Block(b) => collect_callees_in_block(b, out),
-        _ => {}
-    }
-}
-
-fn collect_callees_in_if(i: &IfStmt, out: &mut CalleeSet) {
-    collect_callees_in_expr(&i.cond, out);
-    collect_callees_in_block(&i.then_block, out);
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => collect_callees_in_block(b, out),
-        Some(ElseBranch::ElseIf(n)) => collect_callees_in_if(n, out),
-        None => {}
-    }
-}
-
-fn collect_callees_in_match(m: &MatchStmt, out: &mut CalleeSet) {
-    collect_callees_in_expr(&m.scrutinee, out);
-    for arm in &m.arms {
-        if let Some(g) = &arm.guard {
-            collect_callees_in_expr(g, out);
-        }
-        match &arm.body {
-            MatchArmBody::Expr(e) => collect_callees_in_expr(e, out),
-            MatchArmBody::Block(b) => collect_callees_in_block(b, out),
-        }
-    }
-}
-
-/// Record the callee a `Call` resolves to (if a free fn or
-/// `self.method`), then recurse into sub-expressions.
-fn collect_callees_in_expr(expr: &Expr, out: &mut CalleeSet) {
-    match expr {
-        Expr::Call { callee, args, .. } => {
-            match callee.as_ref() {
-                Expr::Ident(id) => {
-                    out.free.insert(id.name.clone());
-                }
-                Expr::Path(qn) if qn.segments.len() == 1 => {
-                    out.free.insert(qn.segments[0].name.clone());
-                }
-                Expr::Field { receiver, name, .. }
-                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-                {
-                    out.self_methods.insert(name.name.clone());
-                }
-                _ => {}
-            }
-            collect_callees_in_expr(callee, out);
-            args.iter().for_each(|a| collect_callees_in_expr(a, out));
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_callees_in_expr(left, out);
-            collect_callees_in_expr(right, out);
-        }
-        Expr::Unary { operand, .. } => collect_callees_in_expr(operand, out),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            collect_callees_in_expr(receiver, out)
-        }
-        Expr::Index { receiver, index, .. } => {
-            collect_callees_in_expr(receiver, out);
-            collect_callees_in_expr(index, out);
-        }
-        Expr::Tuple(es, _) | Expr::Array(es, _) => {
-            es.iter().for_each(|e| collect_callees_in_expr(e, out))
-        }
-        Expr::Struct { inits, .. } => {
-            inits.iter().for_each(|i| collect_callees_in_expr(&i.value, out))
-        }
-        Expr::Block(b) => collect_callees_in_block(b, out),
-        Expr::If(i) => collect_callees_in_if(i, out),
-        Expr::Match(m) => collect_callees_in_match(m, out),
-        Expr::Sum(e, _) | Expr::Prod(e, _) => collect_callees_in_expr(e, out),
-        Expr::Or { inner, disposition, .. } => {
-            collect_callees_in_expr(inner, out);
-            match disposition {
-                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    collect_callees_in_expr(e, out)
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The set of free-fn names that block — directly (a leaf stdlib op in
-/// the body) or transitively (they call a blocking free fn).
-/// Fixpoint over the free-fn call graph; free fns can't reference
-/// `self`, so they only depend on other free fns.
-fn blocking_free_fns(free_fns: &BTreeMap<String, &Block>) -> BTreeSet<String> {
-    let mut blocking: BTreeSet<String> = free_fns
-        .iter()
-        .filter(|(_, body)| find_blocking_in_block(body).is_some())
-        .map(|(n, _)| n.clone())
+/// The fns that hold a classic cooperative pool's worker, keyed as the
+/// effect rows key them: a module's fns by their bare names, a locus's
+/// methods under the locus. A row's BLOCK class includes
+/// `std::time::sleep`, which yields the worker between slices, so the
+/// class alone is not the answer: a fn holds the worker when its own
+/// BLOCK comes from a leaf `stdlib_surface::holds_cooperative_worker`
+/// names, or when one of its resolved targets holds it, transitively.
+///
+/// The rows' horizon is the whole call graph: a qualified cross-seed
+/// call, a stdlib body behind a handle method and another locus's
+/// method all carry BLOCK up. The rule's `run()` walk consults the set
+/// only at a bare call or a `self.m()` call, so the horizon decides
+/// what a helper reaches, never which call in `run()` is looked at.
+fn worker_holding_fns(
+    rows: &crate::effect_rows::EffectRows,
+) -> BTreeSet<&crate::alloc_summary::FnKey> {
+    let mut holding: BTreeSet<&crate::alloc_summary::FnKey> = rows
+        .rows
+        .values()
+        .filter(|r| {
+            r.direct.contains(crate::stdlib_surface::EffectSet::BLOCK)
+                && r.unresolved.iter().any(|leaf| {
+                    let segs: Vec<&str> = leaf.split("::").collect();
+                    crate::stdlib_surface::holds_cooperative_worker(&segs)
+                })
+        })
+        .map(|r| &r.key)
         .collect();
-    let mut callees: BTreeMap<&str, CalleeSet> = BTreeMap::new();
-    for (n, body) in free_fns {
-        let mut cs = CalleeSet::default();
-        collect_callees_in_block(body, &mut cs);
-        callees.insert(n.as_str(), cs);
-    }
     loop {
         let mut changed = false;
-        for (n, cs) in &callees {
-            if blocking.contains(*n) {
-                continue;
-            }
-            if cs.free.iter().any(|c| blocking.contains(c)) {
-                blocking.insert((*n).to_string());
+        for r in rows.rows.values() {
+            if !holding.contains(&r.key) && r.targets.iter().any(|t| holding.contains(t)) {
+                holding.insert(&r.key);
                 changed = true;
             }
         }
         if !changed {
-            break;
+            return holding;
         }
     }
-    blocking
-}
-
-/// The set of a locus's own method names that block — directly, via a
-/// blocking free fn, or via another blocking method on the same locus.
-/// Seeded by `blocking_free`; fixpoint over the intra-locus method
-/// call graph.
-fn blocking_self_methods(
-    methods: &BTreeMap<String, &Block>,
-    blocking_free: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut callees: BTreeMap<&str, CalleeSet> = BTreeMap::new();
-    let mut blocking: BTreeSet<String> = BTreeSet::new();
-    for (n, body) in methods {
-        let mut cs = CalleeSet::default();
-        collect_callees_in_block(body, &mut cs);
-        if find_blocking_in_block(body).is_some()
-            || cs.free.iter().any(|c| blocking_free.contains(c))
-        {
-            blocking.insert(n.clone());
-        }
-        callees.insert(n.as_str(), cs);
-    }
-    loop {
-        let mut changed = false;
-        for (n, cs) in &callees {
-            if blocking.contains(*n) {
-                continue;
-            }
-            if cs.self_methods.iter().any(|c| blocking.contains(c)) {
-                blocking.insert((*n).to_string());
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    blocking
 }
 
 /// Interprocedural form of `find_blocking_in_block`: reports the first
@@ -2602,27 +2448,20 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// decides, in the entries' order. Returns the pools where the
 /// dead-receiver error fired, which the starvation law
 /// ([`check_pool_starvation`]) leaves alone.
-fn check_cooperative_pool_blocking(
+///
+/// The helpers that block are the effect rows' ([`worker_holding_fns`]),
+/// demanded only once a placed field has a `run()` to walk.
+fn check_cooperative_pool_blocking<'r>(
     bundle: &Bundle<'_>,
     bus: &crate::bus_graph::BusGraph,
+    effects: &dyn Fn() -> Option<&'r crate::effect_rows::EffectRows>,
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
     diags: &mut Vec<Diag>,
 ) -> BTreeSet<String> {
-    // GH #825: the index of free fns flattens `module { … }`. It is
-    // what the interprocedural blocking call graph is built from, so a
-    // module-nested helper that blocks has to be in it or a top-level
-    // `run()` calling it looks clean.
-    let mut free_fns: BTreeMap<String, &Block> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Fn(f) = item {
-                free_fns.insert(f.name.name.clone(), &f.body);
-            }
-        });
-    }
-    // Interprocedural call graph for the warning path: free fns that
-    // block (directly or via another blocking free fn).
-    let blocking_free = blocking_free_fns(&free_fns);
+    // GH #825: the rows key a module's fns by their bare names, as the
+    // resolver does, so a module-nested helper that blocks is in the
+    // set and a top-level `run()` calling it does not look clean.
+    let mut holding: Option<BTreeSet<&crate::alloc_summary::FnKey>> = None;
 
     // Pools where the dead-receiver ERROR fired — the pool-
     // starvation warning is suppressed there; the error already
@@ -2654,25 +2493,25 @@ fn check_cooperative_pool_blocking(
             }) else {
                 continue;
             };
-            // The locus's own methods (named fns + lifecycle
-            // bodies) form the intra-locus call graph for the
-            // interprocedural warning.
-            let mut methods: BTreeMap<String, &Block> = BTreeMap::new();
-            for m in &decl.members {
-                match m {
-                    LocusMember::Fn(f) => {
-                        methods.insert(f.name.name.clone(), &f.body);
+            // The free fns and this locus's own methods that hold the
+            // worker: what a bare call and a `self.m()` call in `run()`
+            // can reach.
+            let holding = holding.get_or_insert_with(|| {
+                effects().map(worker_holding_fns).unwrap_or_default()
+            });
+            let mut blocking_free: BTreeSet<String> = BTreeSet::new();
+            let mut blocking_self: BTreeSet<String> = BTreeSet::new();
+            for key in holding.iter() {
+                match key.locus.as_deref() {
+                    None => {
+                        blocking_free.insert(key.fn_name.clone());
                     }
-                    LocusMember::Lifecycle(LifecycleDecl {
-                        kind, body, ..
-                    }) => {
-                        methods.insert(format!("{:?}", kind), body);
+                    Some(l) if l == locus_name => {
+                        blocking_self.insert(key.fn_name.clone());
                     }
-                    _ => {}
+                    Some(_) => {}
                 }
             }
-            let blocking_self =
-                blocking_self_methods(&methods, &blocking_free);
 
             // WARNING trigger: blocking reachable from run() either
             // directly or through a helper fn / self-method.
