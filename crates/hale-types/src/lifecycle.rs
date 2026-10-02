@@ -15,7 +15,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C46, R1–R49 and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C47, R1–R49 and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -468,7 +468,7 @@ impl ObligationKind {
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
-            ObligationKind::RecoveryDecision => &["C45"],
+            ObligationKind::RecoveryDecision => &["C45", "C47"],
             ObligationKind::Restart => &["C41", "C42", "R38", "R48"],
             ObligationKind::Resume => &["C43"],
             ObligationKind::Drain => &["C14", "C30", "R44"],

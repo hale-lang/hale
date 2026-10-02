@@ -163,7 +163,20 @@ cargo test --release -p hale-codegen --test ownership_matrix
 HALE_MATRIX=full cargo test --release -p hale-codegen --test ownership_matrix
 ```
 
-The cells that fail today are named in its `KNOWN_OPEN` table and
+The lifecycle has one too: `crates/hale-codegen/tests/lifecycle_matrix.rs`
+generates a program per failure phase × tree position × domain (192
+cells, 121 of them programs; the rest are named as unwritable under
+the rule that refuses them, or as having no path) and holds each to
+its outcome word, the lifecycle trace against its plan, ASan on the
+sample and the `let`-bound differential. The default is a 60-program
+sample (~10 s); `HALE_MATRIX=full` runs all 121 (~12 s):
+
+```sh
+cargo test --release -p hale-codegen --test lifecycle_matrix
+HALE_MATRIX=full cargo test --release -p hale-codegen --test lifecycle_matrix
+```
+
+The cells that fail today are named in each matrix's `KNOWN_OPEN` table and
 are asserted to FAIL, so the matrix is green on `main`; when a fix
 closes one, the cell goes green and the table entry has to go.
 

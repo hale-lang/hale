@@ -941,11 +941,12 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // an arena to destroy), a subtree with no `drain()`
             // anywhere below it has nothing to emit, so skip it and
             // keep the IR identical for the common shape.
+            // The trace build reports every owned field's drain step,
+            // an empty one included, at every level: it descends into
+            // a subtree with no `drain()` too.
             let descend = inner_name != locus_name
                 && self.locus_cascade_path.iter().all(|n| n != &inner_name)
-                && self.locus_descendants_have_drain(&inner_name);
-            // The trace build reports every owned field's drain step,
-            // an empty one included.
+                && (self.lifecycle_trace || self.locus_descendants_have_drain(&inner_name));
             if drain_fn.is_none() && !descend && !self.lifecycle_trace {
                 continue;
             }
