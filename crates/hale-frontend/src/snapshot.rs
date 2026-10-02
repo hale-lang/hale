@@ -1101,6 +1101,7 @@ impl Snapshot {
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
                     effects: &effects,
                     entry: self.demand_entry().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,

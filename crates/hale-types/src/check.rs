@@ -471,15 +471,19 @@ fn substitute_generic_ty(
 
 /// What the checker reads from the families it does not own, each
 /// built once over the programs it checks (F.40 phase 2.3): the top
-/// scope with its topic rows, the handler rows, and the entry row (F.40
-/// phase 3, E0). The frontend's snapshot demands each as a family of
-/// its own (`Snapshot::demand_scope`, `demand_handlers`,
-/// `demand_entry`) and hands them here, as it hands the model its
+/// scope with its topic rows, the handler rows, the entry row (F.40
+/// phase 3, E0) and the ownership graph (C4). The frontend's snapshot
+/// demands each as a family of its own (`Snapshot::demand_scope`,
+/// `demand_handlers`, `demand_entry`, `demand_ownership_graph`) and
+/// hands them here, as it hands the model its
 /// [`crate::model_builder::ModelInputs`]; the checker builds none of
 /// them.
 pub struct CheckInputs<'a> {
     pub top: &'a TopScope,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
+    /// The ownership graph over the programs checked: the
+    /// unowned-subscriber rule's births, declarations and owners.
+    pub ownership: &'a crate::ownership_graph::OwnershipGraph,
     /// The effect rows, demanded only when a rule reads them: a codec
     /// binding's purity assertion reads the purity column. A check
     /// whose program binds no codec never asks, so the editor's
@@ -517,10 +521,10 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
-/// the bus graph; the effect rows when a rule asks), over the bundle
-/// [`crate::with_identities`] numbers. `top` is read beside the numbered
-/// copy: a scope names declarations, not sites, so the one built over
-/// `bundle` is the copy's.
+/// the bus graph, [`crate::bundle_ownership_graph`]; the effect rows when
+/// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
+/// is read beside the numbered copy: a scope names declarations, not
+/// sites, so the one built over `bundle` is the copy's.
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -535,6 +539,7 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
+    let ownership = crate::bundle_ownership_graph(bundle, top);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -552,6 +557,7 @@ fn check_numbered_bundle(
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
+        ownership: &ownership,
         effects: &effects,
         entry: &entry,
         bindings: &bindings,
@@ -820,11 +826,12 @@ pub fn check_bundle_reporting(
             }
         }
     }
-    // 2026-05-29: a bus-subscribing locus instantiated non-owned
-    // inside another locus's method/handler body dissolves at that
-    // method's scope exit, so its subscription can never fire.
-    // Hard error unless `--allow-unowned-subscriber` is set.
-    check_unowned_subscriber_locus(bundle, allow_unowned_subscriber, &mut diags);
+    // 2026-05-29: a bus-subscribing locus born in another locus's bus
+    // handler that no ancestor accepts dissolves when the handler
+    // returns, so its subscription can never fire. Judged over the
+    // ownership graph (F.40 phase 3, C4). Hard error unless
+    // `--allow-unowned-subscriber` is set.
+    check_unowned_subscriber_locus(inputs.ownership, allow_unowned_subscriber, &mut diags);
     // GH #18 #4: bus-graph property checks over the typed topic
     // topology. v1 (PR A): orphan topics — declared/used subjects
     // wired to only one end. Gated on a closed-world program (one
@@ -860,17 +867,6 @@ pub fn check_bundle_reporting(
     (diags, certificates)
 }
 
-/// True if the locus declares at least one `bus { subscribe ... }`.
-fn locus_has_bus_subscribe(l: &LocusDecl) -> bool {
-    l.members.iter().any(|m| match m {
-        LocusMember::Bus(b) => b
-            .members
-            .iter()
-            .any(|bm| matches!(bm, BusMember::Subscribe { .. })),
-        _ => false,
-    })
-}
-
 /// True if `parent` declares `accept(c: <child_name>)` — i.e. it
 /// owns instantiations of that locus type as children (accept
 /// fires by type, regardless of let-vs-statement binding).
@@ -889,231 +885,84 @@ fn locus_accepts(parent: &LocusDecl, child_name: &str) -> bool {
     })
 }
 
-/// Collect single-segment locus-instantiation sites
-/// (`L { ... }`) reachable in a method body, as
-/// (locus_name, span). Filtered to actual loci by the caller.
-fn collect_locus_instantiations(
-    block: &Block,
-    out: &mut Vec<(String, Span)>,
-) {
-    for stmt in &block.stmts {
-        collect_in_stmt(stmt, out);
-    }
-}
-
-fn collect_in_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
-    match stmt {
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
-            collect_in_expr(value, out)
-        }
-        Stmt::Assign { value, .. } => collect_in_expr(value, out),
-        Stmt::Send { subject, value, .. } => {
-            collect_in_expr(subject, out);
-            collect_in_expr(value, out);
-        }
-        Stmt::If(i) => collect_in_if(i, out),
-        Stmt::Match(m) => collect_in_match(m, out),
-        Stmt::For { iter, body, .. } => {
-            collect_in_expr(iter, out);
-            collect_locus_instantiations(body, out);
-        }
-        Stmt::While { cond, body, .. } => {
-            collect_in_expr(cond, out);
-            collect_locus_instantiations(body, out);
-        }
-        Stmt::Return(Some(e), _) => collect_in_expr(e, out),
-        Stmt::Fail { value, .. } => collect_in_expr(value, out),
-        Stmt::Violate { payload: Some(e), .. } => collect_in_expr(e, out),
-        Stmt::Recovery { args, .. } => {
-            for a in args {
-                collect_in_expr(a, out);
-            }
-        }
-        Stmt::Block(b) => collect_locus_instantiations(b, out),
-        Stmt::Expr(e) => collect_in_expr(e, out),
-        _ => {}
-    }
-}
-
-fn collect_in_if(stmt: &IfStmt, out: &mut Vec<(String, Span)>) {
-    collect_in_expr(&stmt.cond, out);
-    collect_locus_instantiations(&stmt.then_block, out);
-    if let Some(eb) = &stmt.else_block {
-        match eb.as_ref() {
-            ElseBranch::Else(b) => collect_locus_instantiations(b, out),
-            ElseBranch::ElseIf(nested) => collect_in_if(nested, out),
-        }
-    }
-}
-
-fn collect_in_match(stmt: &MatchStmt, out: &mut Vec<(String, Span)>) {
-    collect_in_expr(&stmt.scrutinee, out);
-    for arm in &stmt.arms {
-        if let Some(g) = &arm.guard {
-            collect_in_expr(g, out);
-        }
-        match &arm.body {
-            MatchArmBody::Expr(e) => collect_in_expr(e, out),
-            MatchArmBody::Block(b) => collect_locus_instantiations(b, out),
-        }
-    }
-}
-
-fn collect_in_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
-    match expr {
-        Expr::Struct { path, inits, span, .. } => {
-            if path.segments.len() == 1 {
-                out.push((path.segments[0].name.clone(), *span));
-            }
-            for init in inits {
-                collect_in_expr(&init.value, out);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_in_expr(left, out);
-            collect_in_expr(right, out);
-        }
-        Expr::Unary { operand, .. } => collect_in_expr(operand, out),
-        Expr::Call { callee, args, .. } => {
-            collect_in_expr(callee, out);
-            for a in args {
-                collect_in_expr(a, out);
-            }
-        }
-        Expr::Field { receiver, .. }
-        | Expr::Path2 { receiver, .. } => collect_in_expr(receiver, out),
-        Expr::Index { receiver, index, .. } => {
-            collect_in_expr(receiver, out);
-            collect_in_expr(index, out);
-        }
-        Expr::Tuple(es, _) | Expr::Array(es, _) => {
-            for e in es {
-                collect_in_expr(e, out);
-            }
-        }
-        Expr::Block(b) => collect_locus_instantiations(b, out),
-        Expr::If(i) => collect_in_if(i, out),
-        Expr::Match(m) => collect_in_match(m, out),
-        Expr::Sum(e, _) | Expr::Prod(e, _) => collect_in_expr(e, out),
-        Expr::Approx { left, right, tolerance, .. } => {
-            collect_in_expr(left, out);
-            collect_in_expr(right, out);
-            collect_in_expr(tolerance, out);
-        }
-        Expr::Range { lo, hi, .. } => {
-            collect_in_expr(lo, out);
-            collect_in_expr(hi, out);
-        }
-        Expr::ArrayRepeat { val, .. } => collect_in_expr(val, out),
-        Expr::Or { inner, disposition, .. } => {
-            collect_in_expr(inner, out);
-            match disposition {
-                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    collect_in_expr(e, out)
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-}
-
+/// The unowned-subscriber rule (spec/semantics.md § Placement block,
+/// type-check rule 20), judged over the ownership graph: every birth of a locus
+/// with bus handlers inside a bus handler's body whose child no
+/// ancestor accepts.
+///
+/// The antipattern is narrow on purpose: a subscriber spawned in a BUS
+/// HANDLER body is unambiguously broken — a handler returns after each
+/// message, so the spawned subscriber dissolves before it could receive
+/// the next one. A subscriber spawned in `run()` / `birth()` / a plain
+/// method is NOT flagged: it lives for that scope and can legitimately
+/// receive messages published during it (the canonical pattern: `run()`
+/// spawns N watchers, then publishes).
+///
+/// Which declaration a birth names, which loci accept it and which are
+/// its ancestors are the graph's: an `accept` owns a child it names by
+/// declaration identity, a name shared by two declarations judges the
+/// first, and a birth whose owner the graph cannot decide is not
+/// reported (`OwnershipGraph::owner_of_site`).
 fn check_unowned_subscriber_locus(
-    bundle: &Bundle<'_>,
+    graph: &crate::ownership_graph::OwnershipGraph,
     allow: bool,
     diags: &mut Vec<Diag>,
 ) {
+    use crate::ownership_graph::OwnerResolution;
     if allow {
         return;
     }
-    // GH #825: a module is a namespace, not an analysis boundary —
-    // both the index and the walk flatten it.
-    let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                local_loci.insert(l.name.name.as_str(), l);
-            }
-        });
-    }
-
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            let TopDecl::Locus(p) = item else {
-                return;
-            };
-            // Collect this locus's bus-handler fn names. The
-            // antipattern is narrow on purpose: a subscriber
-            // spawned in a BUS HANDLER body is unambiguously
-            // broken — a handler returns after each message, so
-            // the spawned subscriber dissolves before it could
-            // receive the next one. A subscriber spawned in
-            // `run()` / `birth()` / a plain method is NOT flagged:
-            // it lives for that scope and can legitimately receive
-            // messages published during it (the canonical
-            // `run()` spawns N watchers then publishes` pattern).
-            let mut handler_names: std::collections::BTreeSet<&str> =
-                std::collections::BTreeSet::new();
-            for member in &p.members {
-                if let LocusMember::Bus(b) = member {
-                    for bm in &b.members {
-                        if let BusMember::Subscribe { handler, .. } = bm {
-                            handler_names.insert(handler.name.as_str());
-                        }
-                    }
-                }
-            }
-            if handler_names.is_empty() {
-                return;
-            }
-            for member in &p.members {
-                let LocusMember::Fn(fd) = member else {
-                    continue;
-                };
-                if !handler_names.contains(fd.name.name.as_str()) {
-                    continue;
-                }
-                let mut hits: Vec<(String, Span)> = Vec::new();
-                collect_locus_instantiations(&fd.body, &mut hits);
-                for (name, span) in hits {
-                    let Some(child) = local_loci.get(name.as_str()) else {
-                        continue;
-                    };
-                    if !locus_has_bus_subscribe(child) {
-                        continue;
-                    }
-                    if locus_accepts(p, &name) {
-                        continue; // owned as a child — fine
-                    }
-                    diags.push(Diag::ty(
-                        span,
-                        format!(
-                            "locus `{}` declares `bus subscribe` but is \
-                             instantiated unowned inside `{}`'s bus handler \
-                             `{}`. A bus handler returns after each message, \
-                             so the locals it binds dissolve immediately — \
-                             `{}`'s subscription would never fire for a later \
-                             message.\n\n\
-                             Own it so it shares the parent's lifetime \
-                             instead of the handler's:\n\
-                             - `accept(c: {})` on `{}` (child membership; the \
-                             canonical N-dynamic-children shape), or\n\
-                             - a capacity pool / params field of `{}`.\n\n\
-                             If you manage its lifetime another way, pass \
-                             `--allow-unowned-subscriber` to downgrade this \
-                             to allowed.",
-                            name,
-                            p.name.name,
-                            fd.name.name,
-                            name,
-                            name,
-                            p.name.name,
-                            p.name.name,
-                        ),
-                    ));
-                }
-            }
-        });
+    // In declaration order of the enclosing locus, as the program reads;
+    // the graph lists its sites by locus name.
+    let mut sites: Vec<&crate::ownership_graph::OwnedSite> = graph.sites.iter().collect();
+    sites.sort_by_key(|s| s.enclosing_decl);
+    for site in sites {
+        let p = &graph.declarations[site.enclosing_decl];
+        let Some(handler) = site.member.as_deref().filter(|m| p.bus_handlers.contains(*m)) else {
+            continue;
+        };
+        let Some(child) = site.child_decl.map(|d| &graph.declarations[d]) else {
+            continue;
+        };
+        if child.bus_handlers.is_empty() {
+            continue;
+        }
+        if !matches!(graph.owner_of_site(site), Some(OwnerResolution::Orphan)) {
+            continue; // owned, or the graph cannot decide
+        }
+        let (name, p_name) = (&child.name, &p.name);
+        let mut diag = Diag::ty(
+            site.span,
+            format!(
+                "locus `{}` declares `bus subscribe` but is \
+                 instantiated unowned inside `{}`'s bus handler \
+                 `{}`. A bus handler returns after each message, \
+                 so the locals it binds dissolve immediately — \
+                 `{}`'s subscription would never fire for a later \
+                 message.\n\n\
+                 Own it so it shares the parent's lifetime \
+                 instead of the handler's:\n\
+                 - `accept(c: {})` on `{}` (child membership; the \
+                 canonical N-dynamic-children shape), or\n\
+                 - a capacity pool / params field of `{}`.\n\n\
+                 If you manage its lifetime another way, pass \
+                 `--allow-unowned-subscriber` to downgrade this \
+                 to allowed.",
+                name, p_name, handler, name, name, p_name, p_name,
+            ),
+        );
+        // A name two declarations share: the graph judged the first.
+        let same_name = graph.declarations.iter().filter(|d| d.name == *name).count();
+        if same_name > 1 {
+            diag = diag.with_related(
+                child.span,
+                format!(
+                    "the declaration judged: the first, in declaration order, of the \
+                     {same_name} loci named `{name}`"
+                ),
+            );
+        }
+        diags.push(diag);
     }
 }
 

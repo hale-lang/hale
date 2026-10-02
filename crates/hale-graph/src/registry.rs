@@ -854,7 +854,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(HANDLER_ROUTING, "child_locus_name")],
         seams: &[
             Seam { symbol: "handler_rows(", allowed: &[(HANDLER_ROUTING, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1)] },
-            Seam { symbol: "child_locus_name(", allowed: &[(HANDLER_ROUTING, 2), (OWNERSHIP_GRAPH, 1), (TY_OWN, 1), ("crates/hale-types/src/flows.rs", 1)] },
+            Seam { symbol: "child_locus_name(", allowed: &[(HANDLER_ROUTING, 2), (OWNERSHIP_GRAPH, 3), (TY_OWN, 1), ("crates/hale-types/src/flows.rs", 1)] },
             Seam { symbol: "DeclaredNames::of(", allowed: &[(HANDLER_ROUTING, 1), (OWNERSHIP_GRAPH, 1), (TY_OWN, 1), ("crates/hale-types/src/flows.rs", 1)] },
         ],
     },

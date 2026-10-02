@@ -144,7 +144,6 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     );
     assert_eq!(builds["claims"], 0);
     assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
-    assert_eq!(builds["ownership"], 0, "the model's input `ownership` is demanded with it");
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
     // Both stages ran (the allocation advisory is the editor's typing
     // stage's), the second with nothing to judge: a program with no law
@@ -155,8 +154,9 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     // one only when the checker consumed the snapshot's family. The test
     // entry (`check_bundle_opts_scoped`) builds its own, which no
     // snapshot counts. The bus graph is one of them since rules 7, 9 and
-    // 10 read it (F.40 phase 3, C4).
-    for family in ["handler_routing", "entrypoint", "bus_graph"] {
+    // 10 read it, the ownership graph since rule 20 does (F.40 phase 3,
+    // C4).
+    for family in ["handler_routing", "entrypoint", "bus_graph", "ownership"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_eq!(builds["alloc_summary"], 1, "the check's certificate engine reads the snapshot's summary");

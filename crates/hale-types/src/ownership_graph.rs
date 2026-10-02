@@ -34,6 +34,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use hale_graph::ids::SiteId;
 use hale_syntax::ast::*;
 use hale_syntax::Span;
 
@@ -142,6 +143,41 @@ pub struct OwnedSite {
     pub owner_projection: Option<ProjectionClass>,
     /// The span of the `I { ... }` literal.
     pub span: Span,
+    /// The declaration whose body holds the literal: an index into
+    /// [`OwnershipGraph::declarations`]. `enclosing_locus` is its name.
+    pub enclosing_decl: usize,
+    /// The `fn` whose body holds the literal; `None` for a lifecycle, a
+    /// mode, a failure handler or a params default.
+    pub member: Option<String>,
+    /// The declaration the literal names, an index into
+    /// [`OwnershipGraph::declarations`]: the first of its name in
+    /// declaration order, a qualified path resolved as an `accept`'s
+    /// type is. `None` for a path that names no declaration here.
+    pub child_decl: Option<usize>,
+    /// The literal's child in the terms of [`OwnershipGraph::accepts`]:
+    /// the locus `child_locus_name` resolves it to, a generic template
+    /// specialized by the binding's or field's declared type. `None`
+    /// where the graph cannot say which locus is born: a qualified path
+    /// that resolves to none, a generic template no declared type
+    /// specializes. `child_ty` and `resolution` stay keyed by the
+    /// literal's last segment, as lowering and the model read them.
+    pub child_key: Option<String>,
+}
+
+/// One locus declaration, in the bundle's declaration order (programs
+/// in bundle order, then items in source order, modules flattened).
+/// Two declarations may share a name; each is its own row.
+#[derive(Debug, Clone)]
+pub struct LocusDeclRow {
+    pub name: String,
+    pub span: Span,
+    /// The declaration's snapshot identity (`None` when unminted).
+    pub id: Option<SiteId>,
+    /// `locus L<T>`: a template, specialized at its use sites.
+    pub generic: bool,
+    /// The fns its `bus { subscribe … as h }` entries name: its bus
+    /// handlers.
+    pub bus_handlers: BTreeSet<String>,
 }
 
 /// The whole-bundle ownership graph.
@@ -149,6 +185,8 @@ pub struct OwnedSite {
 pub struct OwnershipGraph {
     /// Every resolved instantiation site, in walk order.
     pub sites: Vec<OwnedSite>,
+    /// Every locus declaration, in declaration order.
+    pub declarations: Vec<LocusDeclRow>,
     /// locus type → the child types it declares `accept(_: T)` for, each
     /// the locus `child_locus_name` resolves it to: an alias followed,
     /// generic arguments mangled, a `std::` or cross-seed path renamed.
@@ -178,6 +216,28 @@ impl OwnershipGraph {
     /// Every site instantiating `child_ty`.
     pub fn sites_for<'g>(&'g self, child_ty: &str) -> Vec<&'g OwnedSite> {
         self.sites.iter().filter(|s| s.child_ty == child_ty).collect()
+    }
+
+    /// Who owns the child `site` gives birth to, judged by its
+    /// declaration identity: the accepting ancestors are found for
+    /// [`OwnedSite::child_key`], so an `accept` naming the child through
+    /// an alias, an import path or a generic specialization owns it, and
+    /// one naming only its last segment or its template does not.
+    ///
+    /// `None` where the graph cannot decide: an open world (no entry
+    /// point, so a consumer may complete the tower), or a child the
+    /// graph cannot identify. Unknown ownership is not proven absence.
+    pub fn owner_of_site(&self, site: &OwnedSite) -> Option<OwnerResolution> {
+        if matches!(site.resolution, OwnerResolution::Unanalyzable(_)) {
+            return None;
+        }
+        let key = site.child_key.as_deref()?;
+        Some(resolve_owner(
+            &site.enclosing_locus,
+            key,
+            &self.accepts,
+            &self.instantiated_by,
+        ))
     }
 
     /// Interest-based ownership, artifact #2b — **owner-forwarding sets**.
@@ -374,6 +434,14 @@ struct LocusFacts {
 struct RawSite {
     child_ty: String,
     span: Span,
+    /// The literal's path as written.
+    path: Vec<String>,
+    /// The type the literal's binding or field declares, when the
+    /// literal is a `let`'s or a params default's whole value.
+    declared: Option<TypeExpr>,
+    /// See [`OwnedSite::enclosing_decl`] and [`OwnedSite::member`].
+    enclosing_decl: usize,
+    member: Option<String>,
 }
 
 /// The product of one walk: per-locus facts + the whole-bundle set of
@@ -381,6 +449,8 @@ struct RawSite {
 /// struct literal) + the closed-world entry-point flag.
 struct OwnershipWalk {
     facts: BTreeMap<String, LocusFacts>,
+    declarations: Vec<LocusDeclRow>,
+    declared: DeclaredNames,
     has_entry_point: bool,
 }
 
@@ -426,17 +496,45 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
 
     // Pass 2: per-locus facts.
     let mut facts: BTreeMap<String, LocusFacts> = BTreeMap::new();
+    let mut declarations: Vec<LocusDeclRow> = Vec::new();
+    struct WalkCx<'a> {
+        locus_types: &'a BTreeSet<String>,
+        declared: &'a DeclaredNames,
+        renames: &'a [(Vec<String>, String)],
+        snapshot: &'a crate::snapshot::Snapshot,
+    }
     fn walk(
         items: &[TopDecl],
-        locus_types: &BTreeSet<String>,
-        declared: &DeclaredNames,
-        renames: &[(Vec<String>, String)],
+        cx: &WalkCx<'_>,
         facts: &mut BTreeMap<String, LocusFacts>,
+        declarations: &mut Vec<LocusDeclRow>,
     ) {
+        let (locus_types, declared, renames) = (cx.locus_types, cx.declared, cx.renames);
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
+                    let decl = declarations.len();
+                    declarations.push(LocusDeclRow {
+                        name: l.name.name.clone(),
+                        span: l.span,
+                        id: cx.snapshot.site_id(l.id),
+                        generic: !l.generics.is_empty(),
+                        bus_handlers: l
+                            .members
+                            .iter()
+                            .filter_map(|m| match m {
+                                LocusMember::Bus(b) => Some(&b.members),
+                                _ => None,
+                            })
+                            .flatten()
+                            .filter_map(|bm| match bm {
+                                BusMember::Subscribe { handler, .. } => Some(handler.name.clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    });
                     let entry = facts.entry(l.name.name.clone()).or_default();
+                    let first_site = entry.instantiates.len();
                     entry.singleton |= l.is_main || l.export;
                     if entry.projection.is_none() {
                         for ann in &l.annotations {
@@ -463,11 +561,17 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                     &mut entry.instantiates,
                                 );
                             }
-                            LocusMember::Fn(fd) => collect_sites_block(
-                                &fd.body,
-                                locus_types,
-                                &mut entry.instantiates,
-                            ),
+                            LocusMember::Fn(fd) => {
+                                let from = entry.instantiates.len();
+                                collect_sites_block(
+                                    &fd.body,
+                                    locus_types,
+                                    &mut entry.instantiates,
+                                );
+                                for s in &mut entry.instantiates[from..] {
+                                    s.member = Some(fd.name.name.clone());
+                                }
+                            }
                             LocusMember::Mode(md) => collect_sites_block(
                                 &md.body,
                                 locus_types,
@@ -490,10 +594,17 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                             LocusMember::Params(pb) => {
                                 for p in &pb.params {
                                     if let ParamInit::Value(e) = &p.init {
+                                        let at = entry.instantiates.len();
                                         collect_sites_expr(
                                             e,
                                             locus_types,
                                             &mut entry.instantiates,
+                                        );
+                                        declare_site(
+                                            &mut entry.instantiates,
+                                            at,
+                                            e,
+                                            p.ty.as_ref(),
                                         );
                                     }
                                 }
@@ -501,22 +612,77 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                             _ => {}
                         }
                     }
+                    for s in &mut entry.instantiates[first_site..] {
+                        s.enclosing_decl = decl;
+                    }
                 }
-                TopDecl::Module(m) => {
-                    walk(&m.items, locus_types, declared, renames, facts)
-                }
+                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations),
                 _ => {}
             }
         }
     }
+    let cx = WalkCx { locus_types: &locus_types, declared: &declared, renames, snapshot: &bundle.snapshot };
     for program in &programs {
-        walk(&program.items, &locus_types, &declared, renames, &mut facts);
+        walk(&program.items, &cx, &mut facts, &mut declarations);
     }
 
     OwnershipWalk {
         facts,
+        declarations,
+        declared,
         has_entry_point,
     }
+}
+
+/// Record `declared` as the type of the site `value` pushed at `at`, when
+/// `value` is itself the literal (not a literal nested inside it).
+fn declare_site(out: &mut [RawSite], at: usize, value: &Expr, declared: Option<&TypeExpr>) {
+    let (Some(te), Expr::Struct { span, .. }) = (declared, value) else {
+        return;
+    };
+    if let Some(site) = out.get_mut(at).filter(|s| s.span == *span) {
+        site.declared = Some(te.clone());
+    }
+}
+
+/// [`OwnedSite::child_decl`] and [`OwnedSite::child_key`] for a raw
+/// site: the declaration the literal names and the child an `accept`
+/// would have to name to own it.
+fn identify_child(
+    site: &RawSite,
+    declarations: &[LocusDeclRow],
+    declared: &DeclaredNames,
+    renames: &[(Vec<String>, String)],
+) -> (Option<usize>, Option<String>) {
+    let first = |name: &str| declarations.iter().position(|d| d.name == name);
+    if site.path.len() > 1 {
+        // A qualified literal names what the same path names in an
+        // `accept`: an import or a `std::` path, resolved.
+        let te = TypeExpr::Named {
+            path: QualifiedName {
+                segments: site.path.iter().map(|s| Ident::new(s.clone(), site.span)).collect(),
+                span: site.span,
+            },
+            generic_args: Vec::new(),
+            span: site.span,
+        };
+        return match child_locus_name(&te, declared, renames) {
+            ChildRef::Locus(name) => (first(&name), Some(name)),
+            ChildRef::External(_) => (None, None),
+        };
+    }
+    let decl = first(&site.child_ty);
+    let generic = decl.is_some_and(|d| declarations[d].generic);
+    if !generic {
+        return (decl, Some(site.child_ty.clone()));
+    }
+    // A template is born as the specialization its binding or field
+    // declares; without one the graph cannot say which.
+    let key = site.declared.as_ref().and_then(|te| match child_locus_name(te, declared, renames) {
+        ChildRef::Locus(name) => Some(name),
+        ChildRef::External(_) => None,
+    });
+    (decl, key)
 }
 
 // === Build ========================================================
@@ -569,6 +735,12 @@ pub fn build_ownership_graph(
     for (enclosing, f) in &walk.facts {
         for site in &f.instantiates {
             let child = &site.child_ty;
+            let (child_decl, child_key) = identify_child(
+                site,
+                &walk.declarations,
+                &walk.declared,
+                &bundle.import_renames,
+            );
 
             // Open world: the DAG may be completed by a downstream
             // consumer — resolve everything conservatively.
@@ -585,6 +757,10 @@ pub fn build_ownership_graph(
                     edge_class: EdgeClass::Open,
                     owner_projection: None,
                     span: site.span,
+                    enclosing_decl: site.enclosing_decl,
+                    member: site.member.clone(),
+                    child_decl,
+                    child_key,
                 });
                 continue;
             }
@@ -606,12 +782,17 @@ pub fn build_ownership_graph(
                 edge_class,
                 owner_projection,
                 span: site.span,
+                enclosing_decl: site.enclosing_decl,
+                member: site.member.clone(),
+                child_decl,
+                child_key,
             });
         }
     }
 
     OwnershipGraph {
         sites,
+        declarations: walk.declarations,
         accepts,
         instantiated_by,
     }
@@ -937,7 +1118,12 @@ fn collect_sites_stmt(
     out: &mut Vec<RawSite>,
 ) {
     match s {
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+        Stmt::Let { value, ty, .. } => {
+            let at = out.len();
+            collect_sites_expr(value, locus_types, out);
+            declare_site(out, at, value, ty.as_ref());
+        }
+        Stmt::LetTuple { value, .. } => {
             collect_sites_expr(value, locus_types, out)
         }
         Stmt::Assign { target, value, .. } => {
@@ -1040,6 +1226,10 @@ fn collect_sites_expr(
                     out.push(RawSite {
                         child_ty: name.clone(),
                         span: *span,
+                        path: path.segments.iter().map(|s| s.name.clone()).collect(),
+                        declared: None,
+                        enclosing_decl: 0,
+                        member: None,
                     });
                 }
             }
