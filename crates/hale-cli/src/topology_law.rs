@@ -248,8 +248,8 @@ pub struct RefContext {
     /// `uncertified` (or `invalid` when statically invalid).
     pub sorts_fns: Vec<String>,
     /// (raw, display, analyzable) — loci carry the engine-walk
-    /// discriminator: module-scoped loci are in every sort but
-    /// outside the legacy certificate walk.
+    /// discriminator: a locus with an unwalked executable member is
+    /// in every sort but outside the legacy certificate walk.
     pub loci: Vec<(String, String, bool)>,
     pub phases: Vec<String>,
     pub seeds: Vec<String>,
@@ -789,8 +789,8 @@ impl RefContext {
             if members.is_empty() {
                 // Memberless ⇒ VACUOUSLY analyzable (no body to
                 // walk): the flag is fully recomputable, so a
-                // module-scoped memberless contract cannot be
-                // flipped in either direction.
+                // memberless contract cannot be flipped in either
+                // direction.
                 if !analyzable {
                     return Err(format!(
                         "law.loci: `{}` marks analyzable=false \
@@ -2753,7 +2753,7 @@ pub fn validate_law_account(
         // Certificate rows: evidence binding + verdict recompute.
         if let Some(expected) = expected_cert_forms(&decoded) {
             // A subject outside the legacy analyzable universe
-            // (`sorts.fns` — e.g. a module-scoped fn) has NO
+            // (`sorts.fns` — e.g. an `on_failure` handler) has NO
             // engine report: the row must carry no certificates
             // and only `invalid` is truthful. Everything inside
             // the universe binds its full evidence.

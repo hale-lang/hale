@@ -664,24 +664,26 @@ fn main() { App { }; }
     );
 }
 
-/// Review round 2: the legacy bridge never manufactures `holds` —
-/// a module-scoped `causes:` is lowered but the old engine's
-/// nonrecursive walk never evaluated it, so its row stays
-/// `uncertified` (and the document verdict follows); two asserts
-/// on one fn share one diagnostic anchor, so when a diagnostic
-/// exists neither row can claim it.
+/// Review round 2: the artifact never manufactures `holds` — a
+/// `causes:` the walk cannot certify keeps its row `uncertified`
+/// (and the document verdict follows); two asserts on one fn share
+/// one diagnostic anchor, so when a diagnostic exists neither row
+/// can claim it. The subject here calls through a fn-typed
+/// parameter (#353), a call the walk cannot follow. (It used to be a
+/// module-scoped body, which the summary did not walk until it
+/// collected module-nested bodies, F.40 phase 3, E3a part C.)
 #[test]
 fn unenumerated_and_ambiguous_rows_stay_uncertified() {
-    // Module-scoped: lowered, never evaluated.
     let src = r#"
 effect money;
 module billing {
     @effects(causes: { money })
-    fn poke(v: Int) -> Int { return v; }
+    fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
 }
+fn id(v: Int) -> Int { return v; }
 main locus App {
     params { n: Int = 0; }
-    run() { println(1); }
+    run() { println(poke(id, 1)); }
 }
 fn main() { App { }; }
 "#;
@@ -694,11 +696,10 @@ fn main() { App { }; }
     let causes = rows
         .iter()
         .find(|r| r["law"]["kind"] == "effect_causes")
-        .expect("the module-scoped row IS lowered");
+        .expect("the row IS lowered");
     assert_eq!(
         causes["verdict"], "uncertified",
-        "no old-engine evidence exists for a module-scoped row — \
-         a missing diagnostic must not become holds: {}",
+        "a law the walk cannot certify must not become holds: {}",
         causes
     );
     assert_eq!(

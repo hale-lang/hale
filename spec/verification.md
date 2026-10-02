@@ -27,7 +27,12 @@ same message, the same span and the same severity as the identical
 declaration written at the top level, and whole-bundle facts (the
 at-most-one-`main` count, the pool map seeded from the `main` locus's
 placement block, the transport-bound topic set, the `@form`
-sync-discipline index) count module-nested declarations too.
+sync-discipline index) count module-nested declarations too. The
+behavior summary the effect, allocation and certificate analyses read
+collects module-nested bodies as well (F.40 phase 3), so a
+module-nested fn is never an unanalyzed body: a call into one
+resolves, its effects are in its callers' sets, and a law through it
+can be certified.
 
 ## Concurrency & placement safety
 
@@ -440,8 +445,8 @@ The `law` section also carries the CANONICAL catalogs:
 their wire `subject`), **`subjects`** (the wire-subject pattern
 universe), and **`effect_classes`** (each class with its
 `declared` / `cyclic` status). `fn_universe` covers every
-function the model knows — wider than the legacy `sorts.fns`, so
-module-scoped annotation subjects resolve. A resolved reference
+function the model knows — wider than the legacy `sorts.fns`, which
+holds the summarized ones (a failure handler is not). A resolved reference
 must match one exact `(name, display)` pair — the raw half is
 the machine join key and is anchored, not merely
 cross-row-consistent — and the catalogs are cross-tied to the
@@ -489,7 +494,7 @@ verdict is EXACTLY its recomputed evidence severity. A subject
 outside the legacy analyzable universe carries no certificates
 and judges `uncertified` with its residue on the row (round 8):
 `sorts.fns` for fn subjects, the `analyzable` flag on `law.loci`
-rows for phase contracts — module-scoped bodies are residue, not
+rows for phase contracts — an unanalyzed body is residue, not
 invalidity. An implicit lifecycle phase with no hook body gets a
 SYNTHETIC `Holds` certificate from the evidence layer (no hook
 performs no effects), so `@phase_effects(birth: {})` on a
@@ -654,8 +659,8 @@ projection carries a per-diagnostic discriminator, so numeric
 overlap with a bundle file cannot misfile stdlib evidence as
 application code. No row bridges to an old engine: every
 family is judged over the model, and a subject the judgment
-cannot start from — a module-scoped annotation body, outside the
-analyzable universe — is `uncertified` WITH its reason rather
+cannot start from — a body outside the analyzable universe — is
+`uncertified` WITH its reason rather
 than silently absent. The legacy `claims` / `lowered` string rows
 remain, now PROJECTED from the canonical model path; `semantics`
 bumps to 2 because the machine verdicts are stricter in two
@@ -1995,8 +2000,8 @@ assume the others in a build:
   handler whose effects are not fully classified leaves the law
   **`uncertified` WITH its reason**, rather than reporting every
   class it never proved — and uncertified is reported, not silent,
-  so a subject the walk cannot even start from (a module-scoped
-  body, outside the analyzable universe) now says so. A class the
+  so a subject the walk cannot even start from (a body outside the
+  analyzable universe) now says so. A class the
   walk DID prove survives whatever else is unknown, so a law a
   known effect already violates reads as violated. And delivery
   joins on WIRE IDENTITY: a literal `"t" <- …` send is judged
@@ -2268,6 +2273,15 @@ assume the others in a build:
   if it had been written at the top level — including the `@hot`
   promotion to a hard error. (Before #764 the lint stopped at the top
   level, so wrapping a program in a module silenced it.)
+
+  **The lint is a law over the allocation summary's rows** (F.40 phase
+  3). It walks no body of its own: each finding is a row's site or call
+  where it is written, read with the row's context (a bus handler, `@hot`,
+  `@unbounded`), and the allocating `recv` family is the one list
+  `@budget` reads. So it sees what the summary sees — a locus
+  instantiated in a loop inside a publish's value or a bare `{ … }`
+  block is a finding, and so is one inside an index expression's
+  subscript, which the summary walks as it walks any operand.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the default advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)

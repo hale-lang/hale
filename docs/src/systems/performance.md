@@ -219,6 +219,11 @@ These are advisory warnings, not build failures:
   analysis boundary, so a fn or a locus method declared inside one —
   however deeply nested — is checked exactly as if it sat at the top
   level, with the same findings and the same `@hot` severity.
+
+  The lint reads the same allocation summary the other analyses do, so
+  it sees every place that summary does: a locus built in a loop inside
+  a publish (`Topic <- Child { … }.value()`) or inside a bare `{ … }`
+  block warns too.
 - One structural warning: **`accept` without `release` on a locus whose
   `run()` loops forever**. Without a `release(c: C)` declaration every
   accepted child is *resident* — it lives until the accepting locus

@@ -622,9 +622,9 @@ impl Artifact {
             }
         }
         // Round 10: `phases` / `effects` may cover the FULL model
-        // function universe (module-scoped members carry phase
-        // assignments and derived effects even though the legacy
-        // summary sort excludes them) — resolve against
+        // function universe (an unsummarized member, an `on_failure`
+        // handler, carries a phase assignment even though the legacy
+        // summary sort excludes it) — resolve against
         // `law.fn_universe` where present, `sorts.fns` otherwise.
         let full_fn_set: std::collections::BTreeSet<&str> = art.v
             ["law"]["fn_universe"]

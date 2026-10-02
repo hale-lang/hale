@@ -731,7 +731,7 @@ fn hot_fn_two_modules_deep_is_flagged() {
 #[test]
 fn hot_locus_method_inside_a_module_is_flagged() {
     // The locus arm was equally blind: `@hot` on a METHOD of a locus
-    // declared inside a module never reached `hot_walk_block`.
+    // declared inside a module never reached the lint's walk.
     let src = r#"
 module inner {
     locus L {
@@ -796,4 +796,111 @@ fn main() { }
         "the module-nested finding stays a WARNING: {:?}",
         found
     );
+}
+
+// ---- a law over the allocation rows (F.40 phase 3, E3a part C) ------
+//
+// The lint reads the allocation summary's rows, so it sees what the
+// summary's walk sees. That walk reaches statements the lint's own
+// walk skipped, and an index expression's subscript as the lint's
+// walk did.
+
+/// A locus instantiated in a loop inside a publish, or inside a bare
+/// `{ … }` block, is a finding: the lint's own walk never entered either
+/// statement.
+#[test]
+fn a_publish_or_a_bare_block_in_a_loop_is_seen() {
+    for src in [
+        r#"
+type Msg { v: Int; }
+topic Evt { payload: Msg; subject: "evt"; }
+locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+main locus App {
+    bus { publish Evt; }
+    run() { let mut i = 0; while i < 3 { Evt <- Msg { v: Child { n: i }.get() }; i = i + 1; } }
+}
+fn main() { App { }; }
+"#,
+        r#"
+locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+main locus App {
+    run() { let mut i = 0; while i < 3 { { let c = Child { n: i }; println(c.get()); } i = i + 1; } }
+}
+fn main() { App { }; }
+"#,
+    ] {
+        let ws = warnings(src);
+        assert!(
+            ws.len() == 1 && ws[0].contains("locus `Child`") && ws[0].contains("inside a loop"),
+            "expected the loop finding, got: {:?}",
+            ws
+        );
+    }
+}
+
+/// A subscript is evaluated like any operand, so the summary walks it:
+/// a locus instantiated in one, in a loop, is the loop finding. The
+/// rows once stopped at the index, and the advisory went quiet.
+#[test]
+fn an_index_expression_is_in_the_rows() {
+    let src = r#"
+locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+main locus App {
+    run() { let xs = [1, 2, 3]; let mut i = 0; while i < 3 { println(xs[Child { n: 0 }.get()]); i = i + 1; } }
+}
+fn main() { App { }; }
+"#;
+    let ws = warnings(src);
+    assert!(
+        ws.len() == 1 && ws[0].contains("locus `Child`") && ws[0].contains("inside a loop"),
+        "expected the loop finding, got: {:?}",
+        ws
+    );
+}
+
+/// The `@hot` rejection of the lint's own walk, word for word.
+const HOT_CHILD_IN_LOOP: &str = "@hot: hot-path allocation: locus `Child` is instantiated \
+    inside a loop — a fresh instance (its own arena / heap buffer) is allocated every \
+    iteration, and reclaimed only when the next iteration replaces it, so an arena \
+    create/destroy pair and the instance's whole lifecycle are on the hot path. Hoist it \
+    to a reused field, `clear()` and refill one builder, or acknowledge an intentional \
+    shape with `@unbounded` on the enclosing fn/hook.";
+
+/// Review finding on the rows switch: a locus built inside an index
+/// expression in a `@hot` loop checked clean once the lint read rows
+/// that stopped at the index, where the lint's own walk refused it.
+/// It is refused again, with the same error at the same span as the
+/// control that builds it outside the index.
+#[test]
+fn hot_refuses_a_locus_built_inside_an_index_expression() {
+    let program = |value: &str| {
+        format!(
+            r#"
+locus Child {{
+    params {{ n: Int = 0; }}
+    fn get() -> Int {{ return self.n; }}
+}}
+@hot
+fn pump() {{
+    let xs = [1, 2, 3];
+    let mut i = 0;
+    while i < 3 {{
+        println({value});
+        i = i + 1;
+    }}
+}}
+fn main() {{ pump(); }}
+"#
+        )
+    };
+    let hot_errors = |src: &str| -> Vec<(String, String)> {
+        diags_with_span_text(src)
+            .into_iter()
+            .filter(|(is_err, m, _)| *is_err && m.contains("hot-path allocation"))
+            .map(|(_, m, text)| (m, text))
+            .collect()
+    };
+    let expected = vec![(HOT_CHILD_IN_LOOP.to_string(), "Child { n: 0 }".to_string())];
+    assert_eq!(hot_errors(&program("xs[Child { n: 0 }.get()]")), expected, "inside the index");
+    assert_eq!(hot_errors(&program("Child { n: 0 }.get()")), expected, "the control");
 }

@@ -174,7 +174,9 @@ fn main() {
 Everything else follows from that. A declaration one brace
 deeper is an ordinary declaration: it typechecks, compiles, and
 is reported on identically — the hot-path lint reaches into it,
-a bus topic declared in it routes, a library's module-nested type
+what its body does counts in its callers' effects (so an
+`@effects` or `causes:` law sees through it), a bus topic
+declared in it routes, a library's module-nested type
 is reachable across an `import` as `lib::Point`, and two modules
 declaring the same name is the same duplicate-name error as two
 top-level ones.

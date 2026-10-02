@@ -1830,12 +1830,15 @@ pub fn effect_manifest_with_inference(
         .collect();
     let mut rows: Vec<EffectManifestRow> = Vec::new();
     let mut add = |name: String, key: FnKey, in_module: bool| {
-        // Round 3 (GH #296): the callgraph summarizer does not yet
-        // descend into inline modules, and a missing summary key
-        // infers PURE — which turned a module-contained subprocess
-        // call invisible. Inside a module, an unresolvable key is
+        // Round 3 (GH #296): a missing summary key infers PURE,
+        // which turned a module-contained subprocess call
+        // invisible. Inside a module, an unresolvable key is
         // rendered `unclassified` ("may do anything"): fail closed,
-        // and scoped so non-module rows are untouched.
+        // and scoped so non-module rows are untouched. The summary
+        // holds module-nested bodies now (F.40 phase 3), under the
+        // bare name the resolver keys them by; this manifest still
+        // looks them up by the qualified name, so they stay
+        // `unclassified` until it reads those rows.
         let inferred = if in_module && !summary.fns.contains_key(&key)
         {
             vec!["unclassified".to_string()]
@@ -1895,9 +1898,8 @@ pub fn effect_manifest_with_inference(
                     // unqualified key let `inner::Worker::run` find
                     // an unrelated top-level `Worker::run`'s summary
                     // and inherit its (possibly pure) effects. The
-                    // qualified key misses until the summarizer
-                    // descends into modules, which fails closed as
-                    // `unclassified`.
+                    // qualified key misses the summary's bare one,
+                    // which fails closed as `unclassified`.
                     let locus_key = format!("{}{}", prefix, l.name.name);
                     for m in &l.members {
                         match m {

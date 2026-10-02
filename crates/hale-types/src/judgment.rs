@@ -4318,7 +4318,7 @@ pub fn judge_certificates(
         let Some(ev) = usable else {
             // Round 8: an entirely REPORT-LESS row (no evidence
             // row, or one with zero certificates) is a subject the
-            // engines never analyzed — a module-scoped body. That
+            // engines never analyzed. That
             // is residue, not invalidity: `uncertified`, with the
             // reason on the row. A PARTIAL disagreement (subject
             // mismatch, or a count that differs with certificates
@@ -4334,9 +4334,8 @@ pub fn judge_certificates(
                     claim_span(row.provenance),
                     format!(
                         "claim `{}`: the certificate engines did not \
-                         analyze this subject (module-scoped bodies are \
-                         outside the legacy analyzable universe) — \
-                         uncertified",
+                         analyze this subject (it is outside the legacy \
+                         analyzable universe) — uncertified",
                         row.name
                     ),
                 ));
@@ -4721,9 +4720,9 @@ pub fn judge_causes_witnessed(
             continue;
         };
         let mut diags: Vec<Diag> = Vec::new();
-        // An UNRESOLVED subject (round 3): a module-scoped body is
-        // outside the analyzable universe, so this walk has nothing
-        // to start from. Skipping the row left `judge_certificates`
+        // An UNRESOLVED subject (round 3): a subject outside the
+        // analyzable universe gives this walk nothing to start
+        // from. Skipping the row left `judge_certificates`
         // to answer with a bare `uncertified` and no explanation —
         // silent on the check path, and evidence-less in the
         // artifact, which admission then refused.
@@ -4732,10 +4731,8 @@ pub fn judge_causes_witnessed(
                 claim_span(row.provenance),
                 format!(
                     "declared causal set cannot be certified: `{}` \
-                     is outside the analyzable universe (a \
-                     module-scoped body), so this walk has no \
-                     starting point. Move the subject to the top \
-                     level to have its causal closure checked.",
+                     is outside the analyzable universe, so this \
+                     walk has no starting point.",
                     at.1.display
                 ),
             ));

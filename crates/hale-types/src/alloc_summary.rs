@@ -303,6 +303,15 @@ pub struct AllocSite {
     /// compound / array fields keep the conservative verdict (those
     /// leaves don't retire yet).
     pub retired_store: bool,
+    /// The site is written inside a loop body. `loop_depth` is how
+    /// deep the allocation repeats, which a `return` / `fail` payload
+    /// resets (it allocates once per call); this is where it sits.
+    pub in_loop: bool,
+    /// A struct literal written as a whole statement (`Child { … };`).
+    pub bare_stmt: bool,
+    /// A struct literal written as the whole right side of a
+    /// `self.<field> = …` replace: the assignment statement's span.
+    pub self_replace: Option<Span>,
     pub span: Span,
 }
 
@@ -316,6 +325,66 @@ impl AllocSite {
             SiteVerdict::AccumulatesUnbounded
         } else {
             SiteVerdict::AccumulatesBoundedLoop
+        }
+    }
+}
+
+/// How a call's callee is written. The edge's [`Callee`] is what the
+/// call resolves to; this is the spelling, which a resolved edge no
+/// longer shows (a cross-seed `alias::name` resolves to its mangled
+/// symbol, a typed method call to its locus's key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallSpelling {
+    /// `name(…)`.
+    Ident(String),
+    /// `a::b::name(…)`: the path, joined.
+    Path(String),
+    /// `receiver.name(…)`.
+    Method(String),
+    /// `receiver::name(…)`.
+    PathMethod(String),
+    /// Any other callee expression.
+    Expr,
+}
+
+impl CallSpelling {
+    pub fn of(callee: &Expr) -> CallSpelling {
+        match callee {
+            Expr::Ident(id) => CallSpelling::Ident(id.name.clone()),
+            Expr::Path(qn) => CallSpelling::Path(
+                qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+            ),
+            Expr::Field { name, .. } => CallSpelling::Method(name.name.clone()),
+            Expr::Path2 { name, .. } => CallSpelling::PathMethod(name.name.clone()),
+            _ => CallSpelling::Expr,
+        }
+    }
+
+    /// The allocating receives: a `recv` that returns a freshly
+    /// allocated result buffer (in the caller's scratch), where
+    /// `recv_into` with a reused buffer is the zero-alloc alternative.
+    /// Their spelling as written: the full path for the path-call form
+    /// (`std::io::udp::recv`); the method name for the method-call form
+    /// (`stream.recv_bytes(n)`), whose stdlib handle receiver may not
+    /// type, and which is kept to the two names specific enough to the
+    /// stdlib that a user method is unlikely to share them (a plain
+    /// `recv` counts in the path-call form only). The one list: the
+    /// hot-path lint and `@budget` both read it off the edge.
+    pub fn allocating_recv(&self) -> Option<String> {
+        match self {
+            CallSpelling::Path(p) => matches!(
+                p.as_str(),
+                "std::io::tcp::recv"
+                    | "std::io::tcp::recv_bytes"
+                    | "std::io::udp::recv"
+                    | "std::io::udp::recv_with_source"
+                    | "std::io::tls::recv_bytes"
+            )
+            .then(|| p.clone()),
+            CallSpelling::Method(m) => {
+                matches!(m.as_str(), "recv_bytes" | "recv_with_source").then(|| m.clone())
+            }
+            _ => None,
         }
     }
 }
@@ -412,6 +481,17 @@ pub struct CallEdge {
     /// group where a real call sequence would SUM; reachability and
     /// effect-union judgments walk every alternative as usual.
     pub dispatch_group: Option<u32>,
+    /// How the callee is written.
+    pub spelling: CallSpelling,
+    /// The call is written inside a loop body (`loop_depth` is reset
+    /// in a `return` / `fail` payload, as an [`AllocSite`]'s is).
+    pub in_loop: bool,
+    /// The call is the whole value of a `let` (or a tuple `let`): the
+    /// statement's span.
+    pub let_span: Option<Span>,
+    /// The call is an allocating receive
+    /// ([`CallSpelling::allocating_recv`]): as written.
+    pub allocating_recv: Option<String>,
     pub span: Span,
 }
 
@@ -525,6 +605,19 @@ pub struct FnSummary {
     /// the syscall. Knowing which unresolved names are parameters is
     /// what lets the walk treat them as indirect rather than absent.
     pub fn_params: Vec<String>,
+    /// The fn carries `@hot` (a lifecycle hook or a mode cannot).
+    pub hot: bool,
+    /// The row is a `mode` body.
+    pub mode: bool,
+    /// The declaration's position in the order the summary walks the
+    /// programs' declarations: program by program, a module's in place,
+    /// a locus's members in order.
+    pub decl_index: usize,
+    /// The struct literals stored whole into a `self` field with every
+    /// init scalar or static (`self.f = P { x: 1 }`): codegen copies
+    /// them over the existing value, so they allocate nothing and are
+    /// not in `sites`. Kept for a reader about the literal as written.
+    pub in_place_sites: Vec<AllocSite>,
 }
 
 /// GH #265: an effect a fn performs directly in its own body,
@@ -1243,7 +1336,7 @@ fn collect_sync_holding_loci(
     out: &mut BTreeSet<String>,
 ) {
     for program in programs {
-        for item in &program.items {
+        for item in flat_decls(&program.items) {
             let TopDecl::Locus(l) = item else { continue };
             for m in &l.members {
                 let LocusMember::Params(pb) = m else { continue };
@@ -1273,7 +1366,7 @@ impl AllocSummary {
     /// discipline sync inference gave the form.
     pub fn add_sync_forms(&mut self, programs: &[&Program], forms: &crate::form_rows::FormRows) {
         for program in programs {
-            for item in &program.items {
+            for item in flat_decls(&program.items) {
                 if let TopDecl::Locus(l) = item {
                     if forms.synchronizes(l) {
                         self.sync_forms.insert(l.name.name.clone());
@@ -1292,7 +1385,7 @@ impl AllocSummary {
         programs: &[&Program],
         forms: &crate::form_rows::FormRows,
     ) -> std::borrow::Cow<'_, AllocSummary> {
-        let adds = programs.iter().flat_map(|p| p.items.iter()).any(|item| {
+        let adds = programs.iter().flat_map(|p| flat_decls(&p.items)).any(|item| {
             matches!(item, TopDecl::Locus(l)
                 if forms.synchronizes(l) && !self.sync_forms.contains(&l.name.name))
         });
@@ -1358,16 +1451,21 @@ pub fn summarize_identified(
     let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
         crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
     };
-    // What the checked programs declare at their top level. A program
-    // that is stdlib source itself (`hale check` over a stdlib file)
-    // declares what the analysis copy beside it declares; the program's
-    // declaration is the row, and the copy's of the same name stays out.
+    // What the checked programs declare. A program that is stdlib source
+    // itself (`hale check` over a stdlib file) declares what the analysis
+    // copy beside it declares; the program's declaration is the row, and
+    // the copy's of the same name stays out.
+    //
+    // Every declaration pass below walks `module { … }` nesting
+    // (`flat_decls`): a module is a namespace, not an analysis boundary
+    // (GH #764), and the resolver keys a nested declaration by its bare
+    // name, so the summary keys it the same way.
     let mut declared_by_program: BTreeSet<String> = BTreeSet::new();
     for (program, ids) in identified {
         if is_stdlib_copy(ids) {
             continue;
         }
-        for item in &program.items {
+        for item in flat_decls(&program.items) {
             match item {
                 TopDecl::Fn(f) => declared_by_program.insert(f.name.name.clone()),
                 TopDecl::Locus(l) => declared_by_program.insert(l.name.name.clone()),
@@ -1392,9 +1490,10 @@ pub fn summarize_identified(
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
-    // from its params (D2); the last element is the identities of the
-    // program the body is in.
-    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot);
+    // from its params (D2); then the identities of the program the body
+    // is in, and whether it is an `@hot` fn and a mode. A body's place
+    // in the list is its `decl_index`.
+    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool));
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
@@ -1405,7 +1504,7 @@ pub fn summarize_identified(
     // conformer instead of binding to the default literal.
     let mut interface_names: BTreeSet<String> = BTreeSet::new();
     for p in programs {
-        for item in &p.items {
+        for item in flat_decls(&p.items) {
             match item {
                 TopDecl::Locus(l) => {
                     locus_type_names.insert(l.name.name.clone());
@@ -1439,7 +1538,7 @@ pub fn summarize_identified(
     // bound instead of ranking as a runtime `while`.
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     for program in programs {
-        for item in &program.items {
+        for item in flat_decls(&program.items) {
             if let TopDecl::Const(c) = item {
                 if let Some(v) =
                     const_int_eval(&c.value, &const_ints)
@@ -1518,7 +1617,7 @@ pub fn summarize_identified(
             }
         }
         for program in programs {
-            for item in &program.items {
+            for item in flat_decls(&program.items) {
                 let TopDecl::Locus(l) = item else { continue };
                 all.insert(l.name.name.clone());
                 if l.is_main {
@@ -1585,7 +1684,7 @@ pub fn summarize_identified(
             }
         }
         for program in programs {
-            for item in &program.items {
+            for item in flat_decls(&program.items) {
                 if let TopDecl::Fn(f) = item {
                     scan_lets(&f.body, &mut deferred);
                 }
@@ -1600,7 +1699,7 @@ pub fn summarize_identified(
 
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
-        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
                     {
@@ -1618,7 +1717,7 @@ pub fn summarize_identified(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -1699,6 +1798,7 @@ pub fn summarize_identified(
                                     fn_typed_params(&md.params),
                                     param_var_elem_types(&md.params),
                                     ids,
+                                    (false, true),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -1725,6 +1825,7 @@ pub fn summarize_identified(
                                     fn_typed_params(&decl.params),
                                     param_var_elem_types(&decl.params),
                                     ids,
+                                    (decl.hot, false),
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -1747,6 +1848,7 @@ pub fn summarize_identified(
                                     fn_typed_params(&lc.params),
                                     param_var_elem_types(&lc.params),
                                     ids,
+                                    (false, false),
                                 ));
                             }
                             _ => {}
@@ -1940,7 +2042,7 @@ pub fn summarize_identified(
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
-    for (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids) in &bodies {
+    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode))) in bodies.iter().enumerate() {
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
             .as_ref()
@@ -1978,6 +2080,11 @@ pub fn summarize_identified(
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
+            loops_as_written: 0,
+            bare_stmt: None,
+            self_replace: None,
+            let_call: None,
+            in_place_sites: Vec::new(),
         };
         w.walk_block(body, 0, Escape::Local);
         starts_of.insert(key.clone(), std::mem::take(&mut w.starts));
@@ -1996,6 +2103,10 @@ pub fn summarize_identified(
                 loops: w.loops,
                 effect_sites: w.effect_sites,
                 fn_params: fn_params.clone(),
+                hot: *hot,
+                mode: *mode,
+                decl_index,
+                in_place_sites: w.in_place_sites,
             },
         );
     }
@@ -2031,7 +2142,7 @@ pub fn summarize_identified(
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
     for (program, ids) in identified {
-        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
                     if is_stdlib_copy(ids) {
@@ -2127,7 +2238,7 @@ pub fn summarize_identified(
         let mut started: BTreeSet<String> = BTreeSet::new();
         let mut pending: Vec<String> = Vec::new();
         for (program, ids) in identified {
-            for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+            for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
                 let TopDecl::Locus(l) = item else { continue };
                 let held = param_starts.entry(l.name.name.clone()).or_default();
                 for m in &l.members {
@@ -2455,7 +2566,7 @@ impl AuthorPositions {
         let origin = |id: hale_syntax::ast::NodeId| ids.site_id(id).and_then(|s| ids.origin(s));
         let mut synthesized = BTreeMap::new();
         for p in programs {
-            for item in &p.items {
+            for item in flat_decls(&p.items) {
                 match item {
                     TopDecl::Fn(f) => {
                         if let Some(o) = origin(f.id) {
@@ -2665,6 +2776,20 @@ struct Walker<'a> {
     /// a whole-field replace of such a struct fully reclaims via anchor
     /// retirement (see `AllocSite::retired_store`).
     retirable_structs: &'a BTreeSet<String>,
+    /// The loops the current point is written inside, which a `return`
+    /// / `fail` payload does not reset (`AllocSite::in_loop`).
+    loops_as_written: u32,
+    /// The span of the struct literal the current statement is,
+    /// whole (`AllocSite::bare_stmt`).
+    bare_stmt: Option<Span>,
+    /// The struct literal on the right of the current `self.<field> =`
+    /// replace and the statement's span (`AllocSite::self_replace`).
+    self_replace: Option<(Span, Span)>,
+    /// The call that is the value of the current `let` and the
+    /// statement's span (`CallEdge::let_span`).
+    let_call: Option<(Span, Span)>,
+    /// `FnSummary::in_place_sites`.
+    in_place_sites: Vec<AllocSite>,
 }
 
 impl<'a> Walker<'a> {
@@ -2684,6 +2809,11 @@ impl<'a> Walker<'a> {
     }
 
     fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
+        let site = self.site(kind, escape, depth, span);
+        self.sites.push(site);
+    }
+
+    fn site(&self, kind: AllocKind, escape: Escape, depth: u32, span: Span) -> AllocSite {
         // Only a StoredToSelf escape carries a target field — that's the
         // `self.<field> = <alloc>` whole-value replace the solver bounds.
         let target_field = if escape == Escape::StoredToSelf {
@@ -2696,7 +2826,7 @@ impl<'a> Walker<'a> {
         let retired_store = target_field.is_some()
             && matches!(&kind, AllocKind::StructLit(n)
                 if self.retirable_structs.contains(n));
-        self.sites.push(AllocSite {
+        AllocSite {
             kind,
             escape,
             loop_depth: depth,
@@ -2705,8 +2835,11 @@ impl<'a> Walker<'a> {
             reclaim: ReclaimScope::of(escape),
             target_field,
             retired_store,
+            in_loop: self.loops_as_written > 0,
+            bare_stmt: false,
+            self_replace: None,
             span,
-        });
+        }
     }
 
     /// `fail` / `return` terminate the enclosing invocation, so their
@@ -2927,6 +3060,9 @@ impl<'a> Walker<'a> {
             reclaim: ReclaimScope::EnclosingLocus,
             target_field: None,
             retired_store: false,
+            in_loop: self.loops_as_written > 0,
+            bare_stmt: false,
+            self_replace: None,
             span,
         });
     }
@@ -2944,7 +3080,7 @@ impl<'a> Walker<'a> {
 
     fn walk_stmt(&mut self, stmt: &Stmt, depth: u32) {
         match stmt {
-            Stmt::Let { name, ty, value, id, .. } => {
+            Stmt::Let { name, ty, value, id, span, .. } => {
                 // D2: a typed `let v: T = …` extends the var→type map so a
                 // later `v.push(x)` can resolve `v`'s form.
                 if let Some(et) = ty.as_ref().and_then(|t| match t {
@@ -2985,10 +3121,16 @@ impl<'a> Walker<'a> {
                     self.var_types.insert(name.name.clone(), ty);
                 }
                 let esc = self.escaping.of_let(*id);
-                self.walk_expr(value, depth, esc);
+                self.walk_let_value(value, *span, depth, esc);
             }
-            Stmt::LetTuple { value, .. } => self.walk_expr(value, depth, Escape::Local),
-            Stmt::Assign { target, value, id, .. } => {
+            Stmt::LetTuple { value, span, .. } => self.walk_let_value(value, *span, depth, Escape::Local),
+            Stmt::Assign { target, value, id, span, .. } => {
+                if target.head.name == "self"
+                    && matches!(target.tail.as_slice(), [LValueSeg::Field(_)])
+                    && matches!(value, Expr::Struct { .. })
+                {
+                    self.self_replace = Some((value.span(), *span));
+                }
                 let mut esc = if target.head.name == "self" {
                     Escape::StoredToSelf
                 } else {
@@ -3019,6 +3161,7 @@ impl<'a> Walker<'a> {
                 }
                 self.walk_expr(value, depth, esc);
                 self.store_target = prev;
+                self.self_replace = None;
             }
             Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
             Stmt::Return(None, _) => {}
@@ -3090,7 +3233,9 @@ impl<'a> Walker<'a> {
                 self.loops.push(LoopInfo { kind, depth, span: *span });
                 self.loop_stack.push(bounded);
                 self.infinite_stack.push(false);
+                self.loops_as_written += 1;
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.loops_as_written -= 1;
                 self.loop_stack.pop();
                 self.infinite_stack.pop();
                 match shadowed {
@@ -3118,7 +3263,9 @@ impl<'a> Walker<'a> {
                 self.loops.push(LoopInfo { kind, depth, span: *span });
                 self.loop_stack.push(bounded);
                 self.infinite_stack.push(infinite);
+                self.loops_as_written += 1;
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.loops_as_written -= 1;
                 self.loop_stack.pop();
                 self.infinite_stack.pop();
             }
@@ -3131,7 +3278,13 @@ impl<'a> Walker<'a> {
                 // its allocations as local for now.
                 self.walk_block(body, depth, Escape::Local);
             }
-            Stmt::Expr(e) => self.walk_expr(e, depth, Escape::Local),
+            Stmt::Expr(e) => {
+                if let Expr::Struct { span, .. } = e {
+                    self.bare_stmt = Some(*span);
+                }
+                self.walk_expr(e, depth, Escape::Local);
+                self.bare_stmt = None;
+            }
             Stmt::Recovery { args, .. } => {
                 for a in args {
                     self.walk_expr(a, depth, Escape::Local);
@@ -3144,6 +3297,16 @@ impl<'a> Walker<'a> {
             }
             Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Break(_) | Stmt::Continue(_) => {}
         }
+    }
+
+    /// A `let`'s value: a call that is the whole value carries the
+    /// statement's span (`CallEdge::let_span`).
+    fn walk_let_value(&mut self, value: &Expr, stmt: Span, depth: u32, escape: Escape) {
+        if let Expr::Call { span, .. } = value {
+            self.let_call = Some((*span, stmt));
+        }
+        self.walk_expr(value, depth, escape);
+        self.let_call = None;
     }
 
     fn walk_if(&mut self, if_stmt: &IfStmt, depth: u32, escape: Escape) {
@@ -3204,8 +3367,13 @@ impl<'a> Walker<'a> {
                         *span,
                     );
                 }
-                if !inplace_no_heap {
-                    self.push_site(AllocKind::StructLit(name), escape, depth, *span);
+                let mut site = self.site(AllocKind::StructLit(name), escape, depth, *span);
+                site.bare_stmt = self.bare_stmt.take() == Some(*span);
+                site.self_replace = self.self_replace.take().filter(|(v, _)| v == span).map(|(_, s)| s);
+                if inplace_no_heap {
+                    self.in_place_sites.push(site);
+                } else {
+                    self.sites.push(site);
                 }
                 for si in inits {
                     self.walk_expr(&si.value, depth, escape);
@@ -3258,6 +3426,9 @@ impl<'a> Walker<'a> {
                         reclaim: ReclaimScope::EnclosingLocus,
                         target_field: None,
                         retired_store: false,
+                        in_loop: self.loops_as_written > 0,
+                        bare_stmt: false,
+                        self_replace: None,
                         span,
                     });
                 }
@@ -3293,8 +3464,13 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a, depth, Escape::Local);
                 }
             }
-            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
+            Expr::Field { receiver, .. } => self.walk_expr(receiver, depth, Escape::Local),
+            // The subscript is evaluated as any operand is: what it
+            // allocates or calls is the row's, `@hot`'s hard rejection
+            // included (E3a part C, review finding).
+            Expr::Index { receiver, index, .. } => {
                 self.walk_expr(receiver, depth, Escape::Local);
+                self.walk_expr(index, depth, Escape::Local);
             }
             Expr::Path2 { receiver, .. } => self.walk_expr(receiver, depth, Escape::Local),
             Expr::Tuple(xs, _) => {
@@ -3421,6 +3597,7 @@ impl<'a> Walker<'a> {
             Callee::Unresolved(n) => self.fn_params.iter().any(|p| p == n),
             _ => false,
         };
+        let spelling = CallSpelling::of(callee);
         self.calls.push(CallEdge {
             recv_ty,
             receiver_present,
@@ -3432,6 +3609,10 @@ impl<'a> Walker<'a> {
             receiver_slot: self_slot_receiver(callee),
             via_interface: None,
             dispatch_group: None,
+            allocating_recv: spelling.allocating_recv(),
+            spelling,
+            in_loop: self.loops_as_written > 0,
+            let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),
             span,
         });
     }
