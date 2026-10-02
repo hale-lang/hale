@@ -202,7 +202,15 @@ pub(crate) fn run_check_impl_labelled(
         }
     }
     if std::env::args().any(|a| a == "--dump-resource-budget") {
-        print!("{}", hale_types::dump_resource_budget(&bundle));
+        match snap.demand_alloc_summary() {
+            Ok(summary) => print!("{}", hale_types::dump_resource_budget(&bundle, summary)),
+            Err(b) => {
+                for d in &b.because {
+                    eprintln!("{}", d.message);
+                }
+                return 1;
+            }
+        }
         return 0;
     }
     // GH #382 phase 2: the topology artifact — the serialized model
@@ -592,7 +600,16 @@ pub(crate) fn run_check_impl_labelled(
                 bus_subjects: ct.bus_subjects,
                 fd_open_sites: ct.fd_open_sites,
             };
-            let violations = hale_types::check_resource_ceiling(&bundle, &ceiling);
+            let summary = match snap.demand_alloc_summary() {
+                Ok(summary) => summary,
+                Err(b) => {
+                    for d in &b.because {
+                        eprintln!("{}", d.message);
+                    }
+                    return 1;
+                }
+            };
+            let violations = hale_types::check_resource_ceiling(&bundle, summary, &ceiling);
             if violations.is_empty() {
                 println!("resource budget OK (within `{}`)", path);
                 return 0;
@@ -649,7 +666,9 @@ pub(crate) fn run_check_impl_labelled(
     }
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {
-        diags.extend(hale_types::resource_leak_warnings(&bundle));
+        if let Ok(summary) = snap.demand_alloc_summary() {
+            diags.extend(hale_types::resource_leak_warnings(summary));
+        }
     }
     // GH #436: opt-in fail-closed `@secret` containment. The default
     // `@secret` pass is a LINT (warnings, narrow traversal). This one

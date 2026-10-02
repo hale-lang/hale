@@ -144,7 +144,7 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
         // identity — joining on it lets one clause's diagnostic
         // stand in as another clause's answer (review round 4).
         let old: Vec<hale_types::frontier::CausesReport> =
-            hale_types::frontier::causes_reports(&programs_v, &bundle.snapshot, &graph);
+            hale_types::frontier::causes_reports(&programs_v, &hale_types::alloc_summary::derive_alloc_summary(&bundle), &graph);
         let bases: Vec<u32> =
             bundle.sources.iter().map(|f| f.base).collect();
         let judged = hale_types::judgment::judge_causes_witnessed(
@@ -1050,7 +1050,7 @@ fn main() { App { }; }
     let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
     let reports = hale_types::frontier::causes_reports(
         &vec![&program],
-        &bundle.snapshot,
+        &hale_types::alloc_summary::derive_alloc_summary(&bundle),
         &graph,
     );
     assert!(
@@ -1131,7 +1131,7 @@ fn main() { App { }; }
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
     let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
     let reports =
-        hale_types::frontier::causes_reports(&vec![&program], &bundle.snapshot, &graph);
+        hale_types::frontier::causes_reports(&vec![&program], &hale_types::alloc_summary::derive_alloc_summary(&bundle), &graph);
     assert_eq!(
         reports.len(),
         2,

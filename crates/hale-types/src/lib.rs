@@ -158,10 +158,11 @@ pub fn dump_alloc_summary(summary: &alloc_summary::AllocSummary) -> String {
 
 /// Render the per-program resource budget — pinned threads, cooperative
 /// pools, bus subjects (GH #18 item 5, count slice). Drives
-/// `--dump-resource-budget`.
-pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
+/// `--dump-resource-budget`. `summary` is the bundle's snapshot's
+/// (`demand_alloc_summary`).
+pub fn dump_resource_budget(bundle: &Bundle<'_>, summary: &alloc_summary::AllocSummary) -> String {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::budget_for_programs(&progs, &bundle.snapshot).render()
+    resource_budget::budget_for_programs(&progs, summary).render()
 }
 
 /// Bound-solver warnings: one per unbounded-accumulation allocation site
@@ -182,21 +183,22 @@ pub fn unbounded_alloc_warnings(
 
 /// Resource-leak warnings: an fd-acquiring call whose result is stored
 /// resident in an unbounded context (GH #18 item 5, leak stage). Opt-in
-/// via `--warn-resource-leak`.
-pub fn resource_leak_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
-    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::resource_leak_diags(&progs, &bundle.snapshot)
+/// via `--warn-resource-leak`. `summary` is the bundle's snapshot's.
+pub fn resource_leak_warnings(summary: &alloc_summary::AllocSummary) -> Vec<Diag> {
+    resource_budget::resource_leak_diags(summary)
 }
 
 /// Check a bundle's resource counts against declared ceilings (GH #18 item
 /// 5, the CI gate). Returns one violation message per over-budget resource
-/// (empty = within budget). Drives `--check-resource-budget`.
+/// (empty = within budget). Drives `--check-resource-budget`. `summary`
+/// is the bundle's snapshot's.
 pub fn check_resource_ceiling(
     bundle: &Bundle<'_>,
+    summary: &alloc_summary::AllocSummary,
     ceiling: &resource_budget::ResourceCeiling,
 ) -> Vec<String> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let budget = resource_budget::budget_for_programs(&progs, &bundle.snapshot);
+    let budget = resource_budget::budget_for_programs(&progs, summary);
     resource_budget::check_ceiling(&budget, ceiling)
 }
 

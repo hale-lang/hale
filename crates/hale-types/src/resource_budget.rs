@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use hale_syntax::ast::*;
 use hale_syntax::Diag;
 
-use crate::alloc_summary::{self, AllocKind, Callee, Escape};
+use crate::alloc_summary::{AllocKind, AllocSummary, Callee, Escape};
 
 /// Held-fd loci instantiated directly (vs via a call) — `tcp::Listener { }`
 /// holds a listening fd from birth. Matched on the *qualified* struct path
@@ -53,9 +53,12 @@ const FD_ACQUIRING_PATHS: &[&str] = &[
 /// unbounded loop — the fd accumulates. Reuses `alloc_summary`'s
 /// call-result escape tagging + unbounded-context dataflow (the gap that
 /// item 1's site-only escape tagging left open). Opt-in via
-/// `hale check --warn-resource-leak`.
-pub fn resource_leak_diags(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> Vec<Diag> {
-    let summary = alloc_summary::summarize_programs(programs, ids);
+/// `hale check --warn-resource-leak`. `summary` is the `alloc_summary`
+/// family's; the warnings read its own rows, so the stdlib's analysis
+/// copy (the TCP `Listener`'s hooks accept and store streams) is not the
+/// program's acquisition.
+pub fn resource_leak_diags(summary: &AllocSummary) -> Vec<Diag> {
+    let summary = summary.own_rows();
     let unbounded = summary.unbounded_invoked();
     let mut out = Vec::new();
     for f in summary.fns.values() {
@@ -148,8 +151,9 @@ pub fn check_ceiling(b: &ResourceBudget, c: &ResourceCeiling) -> Vec<String> {
     v
 }
 
-/// Walk the bundle and tally the structural resources.
-pub fn budget_for_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> ResourceBudget {
+/// Walk the bundle and tally the structural resources; the fd sites
+/// from `summary`'s own rows (the `alloc_summary` family's summary).
+pub fn budget_for_programs(programs: &[&Program], summary: &AllocSummary) -> ResourceBudget {
     let mut b = ResourceBudget::default();
     for program in programs {
         for item in &program.items {
@@ -177,8 +181,9 @@ pub fn budget_for_programs(programs: &[&Program], ids: &crate::snapshot::Snapsho
     // fd acquisition sites — reuse alloc_summary. Two forms, both
     // unambiguous (qualified paths → zero FP): fd-opening *calls*
     // (open/connect/accept) and direct held-fd *locus instantiations*
-    // (`tcp::Listener { }`).
-    let summary = alloc_summary::summarize_programs(programs, ids);
+    // (`tcp::Listener { }`). The program's own: the stdlib's analysis
+    // copy opens fds inside the loci the program starts.
+    let summary = summary.own_rows();
     let calls = summary
         .fns
         .values()
@@ -258,16 +263,18 @@ mod tests {
     use super::*;
     use hale_syntax::parse_source;
 
-    /// A parsed program and the identities minted over it.
-    fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
-        let mut program = parse_source(src).expect("parse");
-        let ids = crate::snapshot::mint([("app.hl", &mut program)], &[]);
-        (program, ids)
+    /// `f` over a parsed program and its allocation summary, the one a
+    /// bundle of it holds.
+    fn summarized<T>(src: &str, f: impl FnOnce(&Program, &AllocSummary) -> T) -> T {
+        let program = parse_source(src).expect("parse");
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert("app.hl".to_string(), &program);
+        let summary = crate::alloc_summary::derive_alloc_summary(&crate::symbol::Bundle::new(programs));
+        f(&program, &summary)
     }
 
     fn budget(src: &str) -> ResourceBudget {
-        let (program, ids) = minted(src);
-        budget_for_programs(&[&program], &ids)
+        summarized(src, |program, summary| budget_for_programs(&[program], summary))
     }
 
     #[test]
@@ -392,8 +399,7 @@ mod tests {
     // ---- leak detection (result-escape tagging) ----
 
     fn leaks(src: &str) -> Vec<String> {
-        let (program, ids) = minted(src);
-        resource_leak_diags(&[&program], &ids).iter().map(|d| d.message.clone()).collect()
+        summarized(src, |_, summary| resource_leak_diags(summary).iter().map(|d| d.message.clone()).collect())
     }
 
     #[test]

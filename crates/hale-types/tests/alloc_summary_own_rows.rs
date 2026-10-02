@@ -24,6 +24,15 @@
 //! landed): nothing the readers answer moves. So do they over every
 //! corpus program checked alone (2,257 when this landed, the stdlib's
 //! own source files among them).
+//!
+//! The frontier's `causes:` engine and the resource budget (E3a 8 of 9)
+//! read the same own rows in place of the plain summary they built (no
+//! stdlib, no renames). Over every corpus program checked alone the own
+//! rows are that plain summary; over the 170 targets, renames included,
+//! `--dump-resource-budget` and `--warn-resource-leak` are identical. The
+//! own rows are what keeps the copy out: read whole, the copy's bodies
+//! add 8 fd-acquiring sites to every program's budget, and a program
+//! that starts the TCP `Listener` (`http-hello`) reaches its hooks.
 
 use std::path::{Path, PathBuf};
 
@@ -156,6 +165,34 @@ fn the_own_rows_are_the_program_alone_on_every_corpus_program() {
     }
     assert!(moved.is_empty(), "the own rows differ from the program alone:\n{}", moved.join("\n"));
     assert!(checked > 2000, "the corpus is measured ({checked})");
+}
+
+/// `http-hello` starts the TCP `Listener`, so the summary reaches the
+/// Listener's hooks; its resource budget counts its own `Listener { }`
+/// alone, never the fd-acquiring sites in the copy's bodies, and no fd
+/// leak.
+#[test]
+fn the_resource_budget_counts_the_programs_own_fd_sites() {
+    let path = root().join("crates/hale-codegen/tests/fixtures/examples/http-hello");
+    let config = Config::check(true, false);
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, config).ok().expect("http-hello loads");
+    let summary = snap.demand_alloc_summary().expect("http-hello has a summary");
+    let bundle = snap.bundle();
+    let programs: Vec<_> = bundle.programs.values().copied().collect();
+    let reached = summary.reached.as_ref().expect("the copy is beside the program");
+    assert!(
+        reached.iter().any(|k| k.locus.as_deref() == Some("__StdIoTcpListener") && !summary.is_own(k)),
+        "http-hello starts the Listener, and its hooks are reached"
+    );
+    let budget = hale_types::resource_budget::budget_for_programs(&programs, summary);
+    assert_eq!(budget.fd_open_sites, 1, "the program's own Listener");
+    let mut whole = summary.clone();
+    whole.analysis_copy.clear();
+    whole.analysis_copy_loci.clear();
+    whole.analysis_copy_interfaces.clear();
+    let read_whole = hale_types::resource_budget::budget_for_programs(&programs, &whole);
+    assert_eq!(read_whole.fd_open_sites, 9, "the copy's bodies hold 8 more, which are not the program's");
+    assert!(hale_types::resource_budget::resource_leak_diags(summary).is_empty(), "no fd leak");
 }
 
 /// `dna/api` starts the HTTP loop and calls through stdlib handles: its
