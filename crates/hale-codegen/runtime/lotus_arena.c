@@ -6555,8 +6555,10 @@ typedef struct lotus_bus_cell {
     uint64_t rec_pub_id;
     /* F.40 L5 (decision line 19): a cooperative pool's run cell holds
      * its child's retention, a `lotus_run_ticket_t` (see "Run
-     * retention"); NULL on a bus delivery. Set only by the pool's post,
-     * read only by the pool's drains; it sits in the padding before
+     * retention"); NULL on a bus delivery and on every other builder's
+     * cell, so replay's ordering gate, which every queued drain shares,
+     * can ask whether a cell is a canceled run. Set only by the pool's
+     * post; it sits in the padding before
      * `payload_inline`, so the cell's size is unchanged. */
     void  *run_ticket;
     /* 16-byte aligned. The inline buffer holds a verbatim copy of a
@@ -6862,6 +6864,7 @@ static inline void lotus_bus_note_consume(void *subscriber_self,
  *
  * All of this is dead code unless lotus_replay_active. */
 #define LOTUS_REPLAY_HOLD_NS 1000000000LL /* 1s */
+static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell);
 static __thread lotus_bus_cell_t *t_rp_pending = NULL;
 static __thread size_t t_rp_pending_len = 0, t_rp_pending_cap = 0;
 static __thread int64_t t_rp_hold_since = 0;
@@ -6895,8 +6898,23 @@ static void lotus_rp_pending_push(const lotus_bus_cell_t *cell) {
     if (t_rp_pending_len == 1) t_rp_hold_since = lotus_rp_now_ns();
 }
 
+/* Decision line 19: a held run whose child was reclaimed while it
+ * was held is ended here, before any held cell's identity is read
+ * (its `self_ptr` is the reclaimed child) and before the timeout can
+ * release it as a divergence. */
+static void lotus_rp_pending_drop_canceled(void) {
+    size_t kept = 0;
+    for (size_t i = 0; i < t_rp_pending_len; i++) {
+        if (lotus_run_cell_drop_canceled(&t_rp_pending[i])) continue;
+        if (kept != i) t_rp_pending[kept] = t_rp_pending[i];
+        kept++;
+    }
+    t_rp_pending_len = kept;
+}
+
 static int lotus_rp_pending_take(uint64_t want_msg, uint32_t want_locus,
                                  lotus_bus_cell_t *out) {
+    lotus_rp_pending_drop_canceled();
     for (size_t i = 0; i < t_rp_pending_len; i++) {
         if (t_rp_pending[i].rec_pub_id == want_msg &&
             (uint32_t)(lotus_obs_pub_inst_id
@@ -6917,10 +6935,14 @@ static int lotus_rp_pending_take(uint64_t want_msg, uint32_t want_locus,
  * delivery identity is (target locus, msg_id) — two subscribers of
  * one publish on one consumer are distinguishable (review round 2,
  * finding 5). Returns 1 = dispatch *cell now (possibly swapped for
- * a held one), 0 = cell was parked; dequeue more (or wait). */
+ * a held one), 0 = cell was parked or dropped; dequeue more (or
+ * wait). A run its child's reclaim already canceled is dropped
+ * first, on every drain that gates: it has no recorded consume to
+ * match (decision line 19). */
 static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
     uint64_t exp_msg;
     uint32_t exp_locus;
+    if (lotus_run_cell_drop_canceled(cell)) return 0;
     if (!lotus_replay_expected_consume ||
         !lotus_replay_expected_consume(&exp_msg, &exp_locus)) {
         /* Recorded stream exhausted (or consumer unknown to the
@@ -6947,6 +6969,7 @@ static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
  * (returns 0) or — past the hold timeout — degrade by releasing the
  * oldest held cell into *out (returns 1). */
 static int lotus_replay_gate_idle(lotus_bus_cell_t *out) {
+    lotus_rp_pending_drop_canceled();
     if (t_rp_pending_len == 0) return 0;
     uint64_t exp_msg;
     uint32_t exp_locus;
@@ -7190,6 +7213,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->payload_heap = heap_buf;
     slot->deserialize  = g_bus_pending_wire_deser;
     slot->rec_pub_id   = g_bus_pending_rec_pub;
+    slot->run_ticket   = NULL;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
@@ -7813,6 +7837,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     cell.payload_heap = heap_buf;
     cell.deserialize  = g_bus_pending_wire_deser;
     cell.rec_pub_id   = g_bus_pending_rec_pub;
+    cell.run_ticket   = NULL;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -8300,6 +8325,32 @@ static int lotus_run_admit(lotus_run_ticket_t *t) {
     pthread_mutex_unlock(&g_run_tickets_lock);
     free(t);
     return !canceled;
+}
+
+/* Replay's ordering gate meets a run cell before the drain starts it:
+ * 1 when its child's reclaim already canceled it, and the cell is
+ * then ended here (ticket freed, `run_ticket` cleared) so that it is
+ * never compared with the recorded consume stream — the recording
+ * dropped it the same way, with no consume record. 0 for a live run
+ * or any other cell, which keeps its ticket LINKED: this is a look,
+ * not the admission. A live run the gate holds out of order stays
+ * protected for as long as it is held (a reclaim meanwhile cancels
+ * it, and the gate's next sweep ends it here); it is admitted only
+ * by `lotus_run_admit`, when the drain dispatches it. */
+static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell) {
+    lotus_run_ticket_t *t = (lotus_run_ticket_t *)cell->run_ticket;
+    if (!t) return 0;
+    pthread_mutex_lock(&g_run_tickets_lock);
+    int canceled = t->canceled;
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    if (!canceled) return 0;
+    free(t);
+    cell->run_ticket = NULL;
+    if (cell->payload_heap) {
+        free(cell->payload_heap);
+        cell->payload_heap = NULL;
+    }
+    return 1;
 }
 
 static void lotus_run_cancel_queued(void *child) {
@@ -9530,6 +9581,7 @@ static void lotus_async_resume_coro(lotus_coop_pool_t *p,
 /* Oldest held cell, unconditionally — used when the tape is dry
  * (no expected-consume constraint remains; free consumption). */
 static int lotus_rp_pending_pop_oldest(lotus_bus_cell_t *out) {
+    lotus_rp_pending_drop_canceled();
     if (t_rp_pending_len == 0) return 0;
     *out = t_rp_pending[0];
     memmove(&t_rp_pending[0], &t_rp_pending[1],

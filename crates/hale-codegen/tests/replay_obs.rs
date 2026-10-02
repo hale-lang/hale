@@ -1,4 +1,4 @@
-//! The `replay_obs` integration-test binary: 11 test files of this area, kept
+//! The `replay_obs` integration-test binary: 12 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -19,6 +19,8 @@ mod obs_net_seq;
 mod obs_protocol_header;
 #[path = "replay_asyncio.rs"]
 mod replay_asyncio;
+#[path = "replay_canceled_run.rs"]
+mod replay_canceled_run;
 #[path = "replay_determinism.rs"]
 mod replay_determinism;
 #[path = "replay_ingress.rs"]
