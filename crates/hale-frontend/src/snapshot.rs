@@ -62,6 +62,7 @@ use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
 use hale_types::capability::TargetRow;
 use hale_types::target::TargetSpec;
+use hale_types::binding_rows::BindingRows;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
@@ -94,13 +95,14 @@ use crate::source::SourceProvider;
 /// and lowered holds both shapes' graphs. `target_capability` counts the
 /// effective-target row, which no consumer demands yet; `sync_inference`
 /// counts the form rows ([`Snapshot::demand_forms`]).
-pub const FAMILIES: [&str; 18] = [
+pub const FAMILIES: [&str; 19] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
     "entrypoint",
     "target_capability",
     "top_scope",
+    "bindings",
     "sync_inference",
     "expression_typing",
     "bus_graph",
@@ -411,6 +413,7 @@ pub struct Snapshot {
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
     partial_scope: OnceCell<Result<Scope, Blocked>>,
+    bindings: OnceCell<Result<BindingRows, Blocked>>,
     forms: OnceCell<Result<FormRows, Blocked>>,
     /// The typing's diagnostics, and the effects certificate report its
     /// check produced ([`Snapshot::demand_effect_certificates`]).
@@ -586,6 +589,7 @@ impl Snapshot {
             target: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
+            bindings: OnceCell::new(),
             forms: OnceCell::new(),
             typing: OnceCell::new(),
             bus_graph: OnceCell::new(),
@@ -952,6 +956,23 @@ impl Snapshot {
         self.scope().map(|s| &s.top)
     }
 
+    /// The binding rows ([`hale_types::binding_rows`]): one per
+    /// `bindings { }` entry of the bundle, with the topic's wire key, the
+    /// role the ends decide, the transport kind, the codec, whether the
+    /// bundle produces the topic and the locus a transport's loss
+    /// surfaces through. The checker's binding rules, the model's
+    /// binding domains, the bus graph's bound-topic set and lowering's
+    /// prelude read them. Blocked with the scope (the topic rows).
+    pub fn demand_bindings(&self) -> Result<&BindingRows, &Blocked> {
+        self.bindings
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                self.count("bindings");
+                Ok(hale_types::binding_rows::derive_binding_rows(&self.bundle(), &scope.top))
+            })
+            .as_ref()
+    }
+
     /// The form rows ([`hale_types::form_rows`]): every `@form`
     /// declaration's written `sync` configuration and the discipline it
     /// gets, sync inference's pick for a `hashmap` form its author did
@@ -1027,6 +1048,7 @@ impl Snapshot {
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
                     effects: &effects,
                     entry: self.demand_entry().map_err(Clone::clone)?,
+                    bindings: self.demand_bindings().map_err(Clone::clone)?,
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bus: self.demand_bus_graph().map_err(Clone::clone)?,
@@ -1063,8 +1085,9 @@ impl Snapshot {
         self.bus_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 self.count("bus_graph");
-                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top))
+                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings))
             })
             .as_ref()
     }
@@ -1193,6 +1216,7 @@ impl Snapshot {
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
                     effects: self.demand_effects().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
+                    bindings: self.demand_bindings().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1286,6 +1310,7 @@ impl Snapshot {
                 }
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;
+                let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1294,6 +1319,7 @@ impl Snapshot {
                     self.config.api.as_deref(),
                     self.config.api_roles.as_deref(),
                     forms,
+                    bindings,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })
@@ -1948,6 +1974,76 @@ mod tests {
         // Lowering takes the first in declaration order (rule 1 refuses
         // the program before it builds).
         assert_eq!(root(&all).as_deref(), Some("Other"), "{all:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The binding rows (F.40 phase 3, P2): one row per `bindings { }`
+    /// entry, by the entry's minted site, with the role the ends decide
+    /// (a publish-only topic connects, a subscribe-only one listens, an
+    /// explicit role wins, a topic with neither end has none), the topic's
+    /// wire key, the loss locus of a `unix` transport and the bound-topic
+    /// set as the rows' projection. Demanded twice, built once, and the
+    /// bus graph reads the same set.
+    #[test]
+    fn the_binding_rows_decide_the_role_once() {
+        use hale_syntax::ast::TransportRole;
+        use hale_types::capability::Transport;
+        let d = scratch("bindings");
+        std::fs::write(
+            d.join("app.hl"),
+            "type Beat { n: Int; }\n\
+             topic Out { payload: Beat; subject: \"demo.out\"; }\n\
+             topic In { payload: Beat; subject: \"demo.in\"; }\n\
+             topic Both { payload: Beat; subject: \"demo.both\"; }\n\
+             topic Free { payload: Beat; subject: \"demo.free\"; }\n\
+             topic Ring { payload: Beat; subject: \"demo.ring\"; }\n\
+             locus Tap { bus { subscribe Both as on_both; } fn on_both(b: Beat) { } }\n\
+             main locus App {\n\
+                 params { t: Tap = Tap { }; }\n\
+                 bus { publish Out; subscribe In as on_in; publish Both; }\n\
+                 bindings {\n\
+                     Out: unix(\"/tmp/p2-out.sock\");\n\
+                     In: unix(\"/tmp/p2-in.sock\");\n\
+                     Both: unix(\"/tmp/p2-both.sock\", role: listen);\n\
+                     Free: unix(\"/tmp/p2-free.sock\");\n\
+                     Ring: shm_ring(\"/p2ring\", on_overflow: drop);\n\
+                 }\n\
+                 fn on_in(b: Beat) { }\n\
+             }\n\
+             fn main() { App { }; }\n",
+        )
+        .unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::check(true, false));
+        let rows = s.demand_bindings().expect("binding rows");
+        assert!(std::ptr::eq(rows, s.demand_bindings().unwrap()));
+        assert_eq!(s.builds()["bindings"], 1, "built once");
+        let row = |topic: &str| rows.rows.iter().find(|r| r.topic == topic).expect("a row per entry");
+        assert_eq!(rows.rows.len(), 5);
+        for r in &rows.rows {
+            assert!(r.site.is_some(), "{}: the load minted the entry", r.topic);
+            assert_eq!(r.entry(&s.bundle()).expect("the row names its entry").topic.name, r.topic);
+            assert!(r.is_main && !r.imported && !r.module_nested);
+        }
+        assert_eq!((row("Out").transport, row("Out").role), (Transport::Unix, Some(TransportRole::Connect)));
+        assert_eq!(row("Out").key(), "demo.out");
+        assert_eq!(row("Out").loss_locus, Some("__StdBusUnixConnectTransport"));
+        assert_eq!(row("In").role, Some(TransportRole::Listen));
+        assert_eq!(row("In").loss_locus, Some("__StdBusUnixListenTransport"));
+        assert_eq!(row("Both").role, Some(TransportRole::Listen), "an explicit role wins over the ends");
+        assert!(row("Both").publishes && row("Both").subscribes);
+        assert_eq!(row("Free").role, None, "no end: the checker's diagnostic, no role");
+        assert_eq!(row("Free").loss_locus, None);
+        assert_eq!((row("Ring").transport, row("Ring").role), (Transport::ShmRing, None));
+        assert!(row("Out").producer && !row("In").producer);
+        let bound = rows.bound_subjects();
+        assert!(bound.contains("Out") && bound.contains("demo.out"), "both grains: {bound:?}");
+        assert_eq!(rows.bound_names().len(), 5);
+        // The bus graph's gate reads the projection.
+        let graph = s.demand_bus_graph().expect("bus graph");
+        for wire in ["Out", "In", "Both"] {
+            let info = graph.subjects.get(wire).unwrap_or_else(|| panic!("{wire} is in the graph"));
+            assert!(!info.eligible, "{wire}: a bound subject is not devirtualized");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -23,7 +23,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 2 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
-| `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
+| `bindings` | Layer 3 | Migrating | derivation | `derive_binding_rows` | 2 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
@@ -557,7 +557,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 - `TopicRows::of(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×1, `crates/hale-types/src/resolve.rs` ×1
 - `by_wire(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×6, `crates/hale-types/src/check.rs` ×2
 
@@ -567,21 +567,21 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Inputs.** bindings blocks; topics; transport specs; purity (codecs)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_main_and_bindings`
+**Producer (today's authority, migrating).** `crates/hale-types/src/binding_rows.rs` · `derive_binding_rows`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `bound_topics` — the set of transport-bound topics, one of four copies (two more in the checker, one in bus_graph), disagreeing on imported mains. *Removed when:* one row.
-- `crates/hale-types/src/check.rs` · `collect_topic_pub_sub` — infers the binding role without calling the desugar's `binding_role_for`, which model_builder uses. *Removed when:* one role rule.
-- `crates/hale-syntax/src/desugar.rs` · `binding_role_for` — THE binding-role rule, by its own comment, applied at desugar and again by the model builder. *Removed when:* one role row.
 - `crates/hale-codegen/src/codegen.rs` · `emit_bindings_prelude` — codegen decides transport, adapter, codec and producer-vs-attach at emission, and refuses a role still `None`. *Removed when:* codegen reads the binding rows.
 - `crates/hale-types/src/check.rs` · `transport_satisfies` — the transport capability table. *Removed when:* a capability row in the matrix.
 
-**Consumers.** check; model (binds); codegen; api_surface
+**Consumers.** check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); model (main's binding thread domains: the role and the transport kind) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); bus graph (the bound-topic set, at both grains, is the rows' projection) (`crates/hale-types/src/bus_graph.rs` · `collect_bus_walk`); codegen; api_surface
 
 **Invariants.**
 
 - F.36 and F.37: binding failure is structural; codec purity is a law over rows
+- one row per snapshot (`Snapshot::demand_bindings`, the `bindings` count): one row per `bindings { }` entry of every locus of the bundle, an imported main's and a module-nested one's included, each with the entry's site, the topic and its wire key, the transport kind, the role, the codec, whether the bundle produces the topic and the stdlib locus a transport's loss surfaces through; the checker builds none (`CheckInputs::bindings`), and a bundle no snapshot holds builds it once
+- the role is decided once, over the topic's ends read by wire subject (`desugar::role_from_ends` over the row's `publishes` and `subscribes`): the entry's own role wins, otherwise publish-only is `Connect` and subscribe-only is `Listen`, and a `unix` entry with neither is the checker's diagnostic. The checker, the model and lowering read it; the desugar's in-place fill applies the same pure rule over the topic names before the topic rewrite erases them, and agrees with it over the corpus
+- the bound-topic set is the rows' projection (`bound_names`, `bound_subjects`): the `or wait` legality check, the api gates and the bus graph's eligibility gate read it, and none walks `bindings { }` itself. An imported main's entries are in the set, as they were in each of the walks it replaces
 
 **Missing data.** a missing required row is a compiler error
 
@@ -591,7 +591,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `binding_role_for(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1
+- `derive_binding_rows(` may be referenced from: `crates/hale-types/src/binding_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2
+- `role_from_ends(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×2, `crates/hale-types/src/binding_rows.rs` ×1
 
 ### `dispatch` — Migrating · derivation
 
