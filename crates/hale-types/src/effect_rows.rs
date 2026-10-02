@@ -18,6 +18,7 @@
 //! publishes (GH #476 Change 5f review).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use hale_syntax::ast::Program;
 
@@ -33,10 +34,10 @@ pub struct EffectRows {
     /// programs' and the stdlib analysis copy's), and every fn the
     /// purity walk keys that the summary does not.
     pub rows: BTreeMap<FnKey, EffectRow>,
-    /// The summary the walk read: the checked programs and the stdlib
-    /// analysis copy, cross-seed calls resolved through the bundle's
-    /// import renames.
-    pub summary: AllocSummary,
+    /// The summary the walk read: the snapshot's `alloc_summary` (the
+    /// checked programs and the stdlib analysis copy, cross-seed calls
+    /// resolved through the bundle's import renames), shared.
+    pub summary: Arc<AllocSummary>,
     /// The program's FFI fn names: a resolved call to one is a syscall.
     pub ffi: BTreeSet<String>,
     /// The load's one user effect-class table, the one every analysis
@@ -147,13 +148,15 @@ fn direct_effects(summary: &AllocSummary, key: &FnKey, ffi: &BTreeSet<String>) -
 
 /// The `effects` family's producer: one walk per fn of the summary,
 /// over the bundle's checked programs and the stdlib analysis copy.
-pub fn derive_effect_rows(bundle: &Bundle<'_>, top: &TopScope) -> EffectRows {
+/// The summary is the `alloc_summary` family's
+/// ([`crate::alloc_summary::derive_alloc_summary`]), shared, not
+/// rebuilt.
+pub fn derive_effect_rows(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    summary: Arc<AllocSummary>,
+) -> EffectRows {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let summary = crate::stdlib_bodies::summarize_with_stdlib_and_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    );
     let ffi = crate::effects::ffi_names(&programs);
     let classes = crate::effect_classes::EffectClassTable::of(&programs);
     let mut rows: BTreeMap<FnKey, EffectRow> = BTreeMap::new();

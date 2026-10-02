@@ -1111,7 +1111,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             AcquireStrategy::Fresh => {
                 if info.arena_elidable {
                     // Locus body is provably non-allocating
-                    // (see `locus_arena_elidable`). Point
+                    // (its elision row, `hale_types::alloc_routing`). Point
                     // `__arena` at the caller's current arena
                     // instead of a fresh malloc'd one — nothing
                     // will allocate against it, and the matching

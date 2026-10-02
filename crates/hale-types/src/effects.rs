@@ -707,7 +707,9 @@ fn effect_report_inner(
     ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<LoweredCertificate>) {
-    let (d, certs) = effect_report_grouped(programs, ids, import_renames);
+    let summary =
+        crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, ids, import_renames);
+    let (d, certs) = effect_report_grouped(programs, &summary);
     (d, certs.into_iter().map(|(row, _)| row).collect())
 }
 
@@ -726,21 +728,21 @@ pub type EffectCertificates = Vec<(LoweredCertificate, Vec<(Diag, bool)>)>;
 /// from its check (`Snapshot::demand_effect_certificates`).
 pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertificates {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    effect_report_grouped(&programs, &bundle.snapshot, &bundle.import_renames).1
+    let summary = crate::alloc_summary::derive_alloc_summary(bundle);
+    effect_report_grouped(&programs, &summary).1
 }
 
 /// GH #476 Change 5e: the same report with each certificate's own
 /// diagnostics attached — the evidence rows the model builder
 /// stores, produced by the ONE pass that also feeds `hale check`
 /// (`effect_diags_with_renames` reassembles the flat stream from
-/// this, so the two can never disagree).
+/// this, so the two can never disagree). `summary` is the
+/// `alloc_summary` family's: the check hands in its snapshot's.
 pub(crate) fn effect_report_grouped(
     programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
+    summary: &AllocSummary,
 ) -> (Vec<Diag>, EffectCertificates) {
-    let (pre, p1, tail, groups) =
-        effect_report_three_way(programs, ids, import_renames);
+    let (pre, p1, tail, groups) = effect_report_three_way(programs, summary);
     let mut flat = pre;
     flat.extend(p1);
     flat.extend(tail);
@@ -756,8 +758,7 @@ pub(crate) fn effect_report_grouped(
 #[doc(hidden)]
 pub fn effect_report_three_way(
     programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
+    summary: &AllocSummary,
 ) -> (
     Vec<Diag>,
     Vec<Diag>,
@@ -797,12 +798,10 @@ pub fn effect_report_three_way(
             }
         }
     }
-    let summary =
-        crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, ids, import_renames);
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut sink = DiagSink::new();
-    for d in placement_implied_diags(programs, &summary) {
+    for d in placement_implied_diags(programs, summary) {
         sink.push(d);
     }
     // #265 step 6: phase-indexed effect contracts on loci. Phase
@@ -811,7 +810,7 @@ pub fn effect_report_three_way(
     let ffi_all = ffi_names(programs);
     phase_effects_diags(
         programs,
-        &summary,
+        summary,
         &ffi_all,
         &mut rows,
         &mut ranges,
@@ -897,7 +896,7 @@ pub fn effect_report_three_way(
                     for c in classes {
                         let before = sink.len();
                         check_class(
-                            &summary, key, *span, *c, &ffi, table,
+                            summary, key, *span, *c, &ffi, table,
                             &mut sink,
                         );
                         ranges.push((rows.len(), before, sink.len()));
@@ -951,7 +950,7 @@ pub fn effect_report_three_way(
                         }
                         let before = sink.len();
                         check_class(
-                            &summary, key, *span, c, &ffi, table,
+                            summary, key, *span, c, &ffi, table,
                             &mut sink,
                         );
                         // Re-label with the contract that was actually
@@ -993,7 +992,7 @@ pub fn effect_report_three_way(
                 }
                 EffectAssert::PublishSet(allowed) => {
                     let before = sink.len();
-                    check_publish_set(&summary, key, *span, allowed, &mut sink);
+                    check_publish_set(summary, key, *span, allowed, &mut sink);
                     ranges.push((rows.len(), before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
@@ -1835,7 +1834,7 @@ pub fn effect_manifest_with_inference(
     programs: &[&Program],
     effects: &crate::effect_rows::EffectRows,
 ) -> Vec<EffectManifestRow> {
-    let summary = &effects.summary;
+    let summary: &crate::alloc_summary::AllocSummary = &effects.summary;
     let names = effects.classes.names();
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
         .into_iter()

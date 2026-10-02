@@ -1309,7 +1309,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         }
         // Arena-elision counterpart: when `__arena` was pointed
         // at the caller's arena at instantiation (see
-        // `locus_arena_elidable` + the matching branch in
+        // the locus's arena elision row + the matching branch in
         // `lower_locus_instantiation`'s Fresh-strategy path),
         // there's nothing to tear down — no bus subscriptions
         // (predicate rejects them), no capacity slots (rejected),

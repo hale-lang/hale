@@ -87,8 +87,9 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     // Old: the evaluator's law strata (undeclared-class validation +
     // the per-certificate stream), demangled like `hale check`.
     let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
+    let summary = hale_types::alloc_summary::derive_alloc_summary(&bundle);
     let (_pre, mut p1, _tail, groups) =
-        hale_types::effects::effect_report_three_way(&programs_v, &bundle.snapshot, &[]);
+        hale_types::effects::effect_report_three_way(&programs_v, &summary);
     hale_types::stdlib_bodies::demangle_imports(&mut p1, &[]);
     let mut group_diags: Vec<hale_syntax::Diag> = groups
         .into_iter()

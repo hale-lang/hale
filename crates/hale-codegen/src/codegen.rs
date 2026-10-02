@@ -1393,6 +1393,7 @@ pub fn build_resolved(
         topics: &resolved.top.topics,
         flows: &resolved.flows,
         specialized_flows: Vec::new(),
+        specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
         current_fn: None,
         current_user_fn_ret: None,
@@ -1402,11 +1403,8 @@ pub fn build_resolved(
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
-        nonalloc_free_fns: BTreeSet::new(),
-        nonalloc_free_fns_numeric_ret: BTreeSet::new(),
-        scratch_local_free_fns: BTreeSet::new(),
+        alloc_routing: &resolved.alloc_routing,
         current_user_fn_scratch_local: false,
-        elidable_methods: BTreeMap::new(),
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
         user_type_aliases: BTreeMap::new(),
@@ -3187,6 +3185,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// instantiation queue's own substitution (`(owner, child)`, the
     /// owner by its mangled name). Filled before any body is lowered.
     pub(crate) specialized_flows: Vec<(String, String)>,
+    /// The elision rows of the loci lowering synthesized (a generic
+    /// locus's monomorphs, by mangled name), which the view cannot hold:
+    /// `AllocRouting::specialize` over each synthesized declaration.
+    /// Filled before any locus is declared.
+    pub(crate) specialized_elision: BTreeMap<String, hale_types::alloc_routing::LocusElision>,
     /// Every send the intra-locus rewrite replaced with a direct handler
     /// call (the lowering view's relation): the call keeps the send's
     /// id, so lowering finds a rewritten publish by the call's id.
@@ -3228,25 +3231,18 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// locus's `LocusInfo` isn't in `user_loci` yet. The full
     /// info shows up in `user_loci` later in the same pass.
     pub(crate) pending_locus_names: BTreeSet<String>,
-    /// Free fns proven (by the `compute_nonalloc_free_fns` call-graph
-    /// fixpoint, run at lower_program start) to allocate nothing — so each
-    /// skips its per-call scratch arena, and a call to one allocates
-    /// nothing. `numeric_ret` is the subset returning a numeric scalar.
-    pub(crate) nonalloc_free_fns: BTreeSet<String>,
-    pub(crate) nonalloc_free_fns_numeric_ret: BTreeSet<String>,
-    /// GH #1148: free fns whose allocations cannot outlive the call except
-    /// through the return value (`compute_scratch_local_free_fns`); their
-    /// body allocates into its own subregion instead of the caller's arena.
-    pub(crate) scratch_local_free_fns: BTreeSet<String>,
-    /// Set while lowering the body of a fn in `scratch_local_free_fns`.
+    /// The view's allocation-routing rows (`hale_types::alloc_routing`):
+    /// GH #1148's scratch-local free fns, whose allocations cannot outlive
+    /// the call except through the return value, so their body allocates
+    /// into its own subregion instead of the caller's arena; and the
+    /// FORM-3 free fns proven to allocate nothing, each of which skips its
+    /// per-call scratch arena, a call to one allocating nothing; and per
+    /// locus, whether its arena is elided and which of its hooks, methods
+    /// and modes lower without their per-call scratch (`locus_elision`),
+    /// with the elidable-method sets the noalias-self proof reads.
+    pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
+    /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
-    /// Stage 2 (2026-06-28) method-scratch elision: per-locus
-    /// `name → (elidable fn-methods, numeric-scalar-returning subset)`,
-    /// computed by the `compute_elidable_methods` fixpoint at
-    /// `lower_program` start. Read by `method_scratch_elidable` to resolve
-    /// `self.m()` calls in a method body as non-allocating.
-    pub(crate) elidable_methods:
-        BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
     /// User-defined `type` declarations indexed by name. Filled
     /// in pass A0 of `lower_program`; carries the LLVM struct
     /// type and field map for plain data records (no methods).
@@ -4276,1032 +4272,6 @@ pub(crate) struct FnSig<'ctx> {
     pub(crate) ffi_js: bool,
 }
 
-/// FORM-3 (2026-05-13): syntactic classifier for fn bodies that
-/// provably don't allocate. Conservative — false negatives are
-/// fine (just leaves the existing subregion wrapping in place);
-/// false positives would skip the subregion when an allocation
-/// actually happens and the resulting allocation would land in
-/// the *caller's* arena rather than a per-call subregion. That's
-/// a correctness break, not just a perf bug — so the predicate
-/// errs strongly on the side of `false`.
-///
-/// Safe (returns true): literal values (incl. String — those are
-/// global statics, no per-use alloc), identifier reads, KwSelf,
-/// field reads, indexed reads on non-range indices, Unary on a
-/// safe operand, Binary on two safe operands when the op is
-/// numeric (Sub/Mul/Div/Mod/comparisons/bool/bitwise). If with
-/// non-allocating arms.
-///
-/// Unsafe (returns false): Add (could be String concat — no type
-/// info at AST walk), function/path/method calls (callee may
-/// allocate), struct/tuple/array/array-repeat/f-string literals
-/// (arena_alloc'd), match (codegen detail), `or` (the fallible
-/// machinery allocs), and anything not explicitly enumerated.
-/// Global interprocedural facts for the allocation classifier, computed
-/// once by `compute_nonalloc_free_fns` before any fn is lowered.
-struct AllocCtx<'a> {
-    /// Free fns proven to allocate nothing — their body, INCLUDING every fn
-    /// they call, is non-allocating. A call to one of these allocates
-    /// nothing, so it no longer forces the caller's per-call scratch arena
-    /// (the interprocedural step — modular helper-calls-helper code stops
-    /// paying a malloc/free per call).
-    nonalloc: &'a BTreeSet<String>,
-    /// Of `nonalloc`, the fns whose declared return is a non-allocating
-    /// numeric scalar — so `helper(x) + 1` (a call result inside an `Add`)
-    /// classifies as arithmetic.
-    numeric_ret: &'a BTreeSet<String>,
-    /// Method-elidability only: `self` fields of a non-allocating numeric
-    /// scalar type (Int / Uint / Float / Duration), so `self.x + 1` is
-    /// arithmetic. EMPTY on the free-fn / locus-arena paths (no `self`).
-    numeric_self_fields: &'a BTreeSet<String>,
-    /// Method-elidability only: scalar (by-value, non-heap) `self` fields —
-    /// the numeric set PLUS `Bool`. A write to one of these stores by value
-    /// (no deep-copy), so it's non-allocating. EMPTY off the method path.
-    scalar_self_fields: &'a BTreeSet<String>,
-    /// Method-elidability only (stage 2, 2026-06-28): fn-methods of the
-    /// CURRENT locus proven elidable — their scratch is skippable, which is
-    /// EXACTLY the property that a call `self.m(args)` allocates nothing
-    /// (non-allocating body + scalar/Unit return ⇒ no return deep-copy). So a
-    /// `self.m(args)` call with non-allocating args allocates nothing. EMPTY
-    /// off the method path (free-fn / locus-arena fixpoints).
-    elidable_self_methods: &'a BTreeSet<String>,
-    /// Of `elidable_self_methods`, the subset whose declared return is a
-    /// numeric scalar — so `self.helper(x) + 1` classifies as arithmetic.
-    /// EMPTY off the method path.
-    numeric_ret_self_methods: &'a BTreeSet<String>,
-    /// Scalar-param-field reads (2026-06-30): a map from an in-scope
-    /// PARAM/LOCAL name → the set of that variable's numeric-scalar
-    /// (Int/Uint/Float/Duration) field names, resolved from the variable's
-    /// declared struct/`type` shape. Lets `s.value` (a scalar field of a
-    /// flat struct param `s`) classify as a non-allocating numeric scalar,
-    /// so an enclosing `Add` like `self.sum + s.value` is arithmetic rather
-    /// than possible String concat. Only numeric-scalar fields are listed —
-    /// String/Bytes/Vec/nested-struct/interface fields are deliberately
-    /// absent (a read of one is still non-allocating, but it is NOT a
-    /// numeric scalar, so it can't make an `Add` arithmetic). DEFAULT-EMPTY
-    /// when no param/local type is resolvable — a missing entry just leaves
-    /// the read possibly-allocating (the safe default; a false
-    /// non-allocating would leak).
-    param_field_numeric: &'a BTreeMap<String, BTreeSet<String>>,
-    /// Fn-pointer PARAMS with a numeric-scalar declared return
-    /// (2026-07-02, fn-call protocol shave): a call through one of
-    /// these allocates nothing FROM THE CALLER'S PERSPECTIVE — the
-    /// callee opens/destroys its own scratch off the threaded
-    /// caller arena, and a scalar return means no deep-copy lands
-    /// in the caller's arena. (If the callee publishes, the cells
-    /// wait for the enclosing cell's next drain point — fn exit is
-    /// not a spec-required yield point.) Lets callback-style code
-    /// (`fn outer(x: Int, g: fn(Int) -> Int)`) stay elidable
-    /// instead of paying subregion + drain per call.
-    fnptr_numeric_ret: &'a BTreeSet<String>,
-}
-
-/// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
-/// arithmetic (never String concat) and which never allocate.
-fn type_expr_is_numeric_scalar(ty: &TypeExpr) -> bool {
-    matches!(
-        ty,
-        TypeExpr::Primitive(
-            PrimType::Int | PrimType::Uint | PrimType::Float | PrimType::Duration,
-            _,
-        )
-    )
-}
-
-/// Build, from the whole program AST, a map `user-type name → its
-/// numeric-scalar field names` (Int/Uint/Float/Duration). Used to recognize
-/// `s.value` (a scalar field of a flat-struct param/local `s`) as a
-/// non-allocating numeric scalar in the allocation classifier. Walks plain
-/// `type T { ... }` data records (the only shape whose field is read with a
-/// statically known scalar type by a `.field` GEP+load) and recurses into
-/// modules. Non-struct types (aliases, enums) contribute nothing; their
-/// fields are never numeric-scalar field reads in this sense.
-fn struct_numeric_field_map(
-    items: &[TopDecl],
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    fn walk(items: &[TopDecl], out: &mut BTreeMap<String, BTreeSet<String>>) {
-        for it in items {
-            match it {
-                TopDecl::Type(td) => {
-                    if let TypeDeclBody::Struct(fields) = &td.body {
-                        let nf: BTreeSet<String> = fields
-                            .iter()
-                            .filter(|f| type_expr_is_numeric_scalar(&f.ty))
-                            .map(|f| f.name.name.clone())
-                            .collect();
-                        if !nf.is_empty() {
-                            out.insert(td.name.name.clone(), nf);
-                        }
-                    }
-                }
-                TopDecl::Module(m) => walk(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    walk(items, &mut out);
-    out
-}
-
-/// Map a fn/method's params to `param name → numeric-scalar field names of
-/// its struct type`, consulting the precomputed `structs` map. Only params
-/// whose declared type is a single-segment `Named` referring to a known
-/// struct contribute an entry; everything else (primitive, generic, array,
-/// tuple, unresolved path) is omitted — a missing entry leaves a `param.field`
-/// read possibly-allocating (the conservative default). Locals are not tracked
-/// here (params are the resolvable surface); an unascribed `let s = mk()`
-/// field read therefore stays conservative.
-fn param_field_numeric_map(
-    params: &[Param],
-    structs: &BTreeMap<String, BTreeSet<String>>,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for p in params {
-        if let TypeExpr::Named { path, generic_args, .. } = &p.ty {
-            // Only a bare (non-generic) SINGLE-SEGMENT name maps to a flat
-            // user struct — matching how codegen keys `user_types` (by short
-            // name). A generic instantiation could be a collection; a
-            // path-qualified name could alias a same-named local struct, so
-            // both are conservatively skipped (the read stays
-            // possibly-allocating).
-            if generic_args.is_empty() && path.segments.len() == 1 {
-                if let Some(nf) = structs.get(&path.segments[0].name) {
-                    out.insert(p.name.name.clone(), nf.clone());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Compute, by a greatest-fixpoint over the call graph, the set of free fns
-/// that allocate nothing (and the subset returning a numeric scalar).
-///
-/// Candidates are non-fallible (the `fail` path allocs a payload) and
-/// non-FFI (opaque C). Start optimistic — assume every candidate is
-/// non-allocating — then demote any whose body provably allocates GIVEN the
-/// current assumptions, until stable. Optimism lets mutually-recursive
-/// numeric fns converge to non-allocating; it's sound because at the
-/// fixpoint every remaining fn's body is non-allocating with all of ITS
-/// callees non-allocating, so the set contains no allocator.
-/// Fn-pointer params whose declared return is a numeric scalar —
-/// `g: fn(Int) -> Int` — for the classifier's fnptr_numeric_ret set
-/// (2026-07-02 fn-call protocol shave).
-fn fnptr_numeric_param_set(params: &[Param]) -> BTreeSet<String> {
-    params
-        .iter()
-        .filter(|p| {
-            matches!(
-                &p.ty,
-                TypeExpr::Function { ret: Some(r), .. }
-                    if type_expr_is_numeric_scalar(r)
-            )
-        })
-        .map(|p| p.name.name.clone())
-        .collect()
-}
-
-/// GH #1148: the free fns whose allocations provably cannot outlive the
-/// call except through the return value — "scratch-local" fns. Their body
-/// allocates into the fn's own m49 subregion (destroyed at return, after
-/// the epilogue deep-copies the return value into the caller's arena),
-/// not into the caller's arena, which every other free fn uses because
-/// codegen has no general escape analysis (see `current_arena_ptr`).
-///
-/// Why it matters: a helper that walks a String by re-slicing a
-/// loop-carried local — `rest = rest[(nl + 1)..len(rest)]`, the shape of
-/// every line scanner — makes one fresh suffix copy per iteration. In
-/// the caller's arena none of them is reclaimed until the CALLER's scope
-/// ends, so a method that calls the helper once per line holds a cubic
-/// amount of garbage at once: a composed API head scanning a ~600-row
-/// record grew past its 512 MiB address-space bound in one command and
-/// died on the NULL the exhausted allocator returned (downstream
-/// handoff). In the fn's own subregion the same garbage lives for one
-/// call.
-///
-/// The class is a greatest fixpoint over a deliberately narrow shape, so
-/// that nothing the body allocates can be reachable from anywhere but the
-/// return value:
-///   * signature: not fallible, not FFI, not generic, not exported; every
-///     param and the return (if any) a by-value scalar or a String — no
-///     struct, locus, Bytes, array or fn pointer can carry a pointer in
-///     or out;
-///   * body: no struct or locus literal, no method call, no publish, no
-///     `self`; assignments only to bare locals; calls only to other fns
-///     of the class (by name, by import path, or by a `std::` path that
-///     names a Hale-source stdlib fn), to the value-returning builtins in
-///     `SCRATCH_LOCAL_BUILTINS`, or to runtime primitives in the pure
-///     `std::` namespaces of `SCRATCH_LOCAL_STD_NAMESPACES`.
-/// Anything else demotes the fn to the caller-arena default.
-///
-/// A Hale-source stdlib fn is held to the class like any other fn, not
-/// waved through by its namespace: `std::str::bytes_view` returns a
-/// struct carrying its argument, and that struct is deep-copied into the
-/// calling fn's arena. In the caller's arena the copy of a String that
-/// already lives there is skipped (`lotus_str_clone`'s same-arena
-/// passthrough); in a fresh subregion it is a real copy of the whole
-/// text per call.
-const SCRATCH_LOCAL_STD_NAMESPACES: &[&str] =
-    &["str", "math", "json", "crypto", "env"];
-
-/// Builtin callees (bare identifiers) that return a fresh value or
-/// nothing and retain no argument.
-const SCRATCH_LOCAL_BUILTINS: &[&str] = &[
-    "len", "to_string", "min", "max", "abs", "Int", "Float", "println",
-    "eprintln", "print", "eprint",
-];
-
-fn type_expr_is_scratch_value(ty: &TypeExpr) -> bool {
-    matches!(
-        ty,
-        TypeExpr::Primitive(
-            PrimType::Int
-                | PrimType::Uint
-                | PrimType::Float
-                | PrimType::Bool
-                | PrimType::Duration
-                | PrimType::String,
-            _,
-        )
-    )
-}
-
-/// What a qualified call path names, for the scratch-local classifier:
-/// the fn a stdlib or import path is renamed to, or `None` for a runtime
-/// primitive (a `std::` path with no Hale-source body).
-struct ScratchPaths<'a> {
-    imports: &'a BTreeMap<Vec<String>, String>,
-}
-
-impl ScratchPaths<'_> {
-    fn call_ok(&self, q: &hale_syntax::ast::QualifiedName, set: &BTreeSet<String>) -> bool {
-        let segs: Vec<String> = q.segments.iter().map(|s| s.name.clone()).collect();
-        if let Some(target) = self.imports.get(&segs) {
-            return set.contains(target);
-        }
-        if let Some((_, target)) = hale_stdlib::PATH_RENAMES
-            .iter()
-            .find(|(p, _)| p.len() == segs.len() && p.iter().zip(&segs).all(|(a, b)| a == b))
-        {
-            return set.contains(*target);
-        }
-        segs.len() >= 3
-            && segs[0] == "std"
-            && SCRATCH_LOCAL_STD_NAMESPACES.contains(&segs[1].as_str())
-    }
-}
-
-fn compute_scratch_local_free_fns(
-    items: &[TopDecl],
-    imports: &BTreeMap<Vec<String>, String>,
-) -> BTreeSet<String> {
-    let paths = ScratchPaths { imports };
-    let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
-        .filter_map(|it| match it {
-            TopDecl::Fn(f)
-                if f.fallible.is_none()
-                    && f.ffi.is_none()
-                    && !f.export
-                    && f.generics.is_empty()
-                    && f.params.iter().all(|p| type_expr_is_scratch_value(&p.ty))
-                    && f.ret.as_ref().map_or(true, type_expr_is_scratch_value) =>
-            {
-                Some(f)
-            }
-            _ => None,
-        })
-        .collect();
-    let mut set: BTreeSet<String> =
-        fns.iter().map(|f| f.name.name.clone()).collect();
-    loop {
-        let demote: Vec<String> = fns
-            .iter()
-            .filter(|f| set.contains(&f.name.name))
-            .filter(|f| !scratch_local_block(&f.body, &set, &paths))
-            .map(|f| f.name.name.clone())
-            .collect();
-        if demote.is_empty() {
-            return set;
-        }
-        for n in demote {
-            set.remove(&n);
-        }
-    }
-}
-
-fn scratch_local_block(b: &Block, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
-    b.stmts.iter().all(|s| scratch_local_stmt(s, set, paths))
-        && b.tail.as_deref().map_or(true, |e| scratch_local_expr(e, set, paths))
-}
-
-fn scratch_local_if(i: &IfStmt, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
-    scratch_local_expr(&i.cond, set, paths)
-        && scratch_local_block(&i.then_block, set, paths)
-        && match i.else_block.as_deref() {
-            None => true,
-            Some(ElseBranch::Else(b)) => scratch_local_block(b, set, paths),
-            Some(ElseBranch::ElseIf(inner)) => scratch_local_if(inner, set, paths),
-        }
-}
-
-fn scratch_local_stmt(s: &Stmt, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
-    match s {
-        Stmt::Let { value, .. } => scratch_local_expr(value, set, paths),
-        Stmt::Assign { target, value, .. } => {
-            target.head.name != "self"
-                && target.tail.is_empty()
-                && scratch_local_expr(value, set, paths)
-        }
-        Stmt::Return(e, _) => {
-            e.as_ref().map_or(true, |e| scratch_local_expr(e, set, paths))
-        }
-        Stmt::Expr(e) => scratch_local_expr(e, set, paths),
-        Stmt::If(i) => scratch_local_if(i, set, paths),
-        Stmt::While { cond, body, .. } => {
-            scratch_local_expr(cond, set, paths) && scratch_local_block(body, set, paths)
-        }
-        Stmt::For { iter, body, .. } => {
-            matches!(iter, Expr::Range { .. })
-                && scratch_local_expr(iter, set, paths)
-                && scratch_local_block(body, set, paths)
-        }
-        Stmt::Block(b) => scratch_local_block(b, set, paths),
-        Stmt::Break(_) | Stmt::Continue(_) => true,
-        _ => false,
-    }
-}
-
-fn scratch_local_expr(e: &Expr, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
-    match e {
-        Expr::Literal(_, _) | Expr::Ident(_) => true,
-        Expr::Field { receiver, .. } => {
-            !matches!(receiver.as_ref(), Expr::KwSelf(_))
-                && scratch_local_expr(receiver, set, paths)
-        }
-        Expr::Index { receiver, index, .. } => {
-            scratch_local_expr(receiver, set, paths) && scratch_local_expr(index, set, paths)
-        }
-        Expr::Range { lo, hi, .. } => {
-            scratch_local_expr(lo, set, paths) && scratch_local_expr(hi, set, paths)
-        }
-        Expr::Unary { operand, .. } => scratch_local_expr(operand, set, paths),
-        Expr::Binary { left, right, .. } => {
-            scratch_local_expr(left, set, paths) && scratch_local_expr(right, set, paths)
-        }
-        Expr::Tuple(parts, _) if parts.len() <= 1 => {
-            parts.iter().all(|p| scratch_local_expr(p, set, paths))
-        }
-        Expr::If(i) => scratch_local_if(i, set, paths),
-        Expr::Block(b) => scratch_local_block(b, set, paths),
-        Expr::Or { inner, disposition, .. } => {
-            scratch_local_expr(inner, set, paths)
-                && match disposition {
-                    OrDisposition::Substitute(sub) => scratch_local_expr(sub, set, paths),
-                    OrDisposition::Discard(_) => true,
-                    _ => false,
-                }
-        }
-        Expr::Call { callee, args, .. } => {
-            let callee_ok = match callee.as_ref() {
-                Expr::Ident(id) => {
-                    set.contains(&id.name)
-                        || SCRATCH_LOCAL_BUILTINS.contains(&id.name.as_str())
-                }
-                Expr::Path(q) => paths.call_ok(q, set),
-                _ => false,
-            };
-            callee_ok && args.iter().all(|a| scratch_local_expr(a, set, paths))
-        }
-        _ => false,
-    }
-}
-
-fn compute_nonalloc_free_fns(
-    items: &[TopDecl],
-) -> (BTreeSet<String>, BTreeSet<String>) {
-    // GH #884: module nesting flattened — a module-nested free fn
-    // is declared and lowered like any other, and the fixpoint is
-    // keyed by the bare name the call site spells.
-    let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
-        .filter_map(|it| match it {
-            TopDecl::Fn(f) if f.fallible.is_none() && f.ffi.is_none() => Some(f),
-            _ => None,
-        })
-        .collect();
-    let numeric_ret_of = |nonalloc: &BTreeSet<String>| -> BTreeSet<String> {
-        fns.iter()
-            .filter(|f| {
-                nonalloc.contains(&f.name.name)
-                    && f.ret.as_ref().is_some_and(|t| type_expr_is_numeric_scalar(t))
-            })
-            .map(|f| f.name.name.clone())
-            .collect()
-    };
-    let structs = struct_numeric_field_map(items);
-    let mut nonalloc: BTreeSet<String> =
-        fns.iter().map(|f| f.name.name.clone()).collect();
-    loop {
-        let numeric_ret = numeric_ret_of(&nonalloc);
-        let empty_self = BTreeSet::new();
-        let demote: Vec<String> = fns
-            .iter()
-            .filter(|f| nonalloc.contains(&f.name.name))
-            .filter(|f| {
-                // Per-fn scalar-param-field facts: which of this fn's
-                // struct-typed params' fields are numeric scalars.
-                let param_field_numeric =
-                    param_field_numeric_map(&f.params, &structs);
-                let fnptr_numeric_ret = fnptr_numeric_param_set(&f.params);
-                let ctx = AllocCtx {
-                    nonalloc: &nonalloc,
-                    numeric_ret: &numeric_ret,
-                    numeric_self_fields: &empty_self,
-                    scalar_self_fields: &empty_self,
-                    elidable_self_methods: &empty_self,
-                    numeric_ret_self_methods: &empty_self,
-                    param_field_numeric: &param_field_numeric,
-                    fnptr_numeric_ret: &fnptr_numeric_ret,
-                };
-                // Seed with the fn's numeric scalar params.
-                let seed: BTreeSet<String> = f
-                    .params
-                    .iter()
-                    .filter(|p| type_expr_is_numeric_scalar(&p.ty))
-                    .map(|p| p.name.name.clone())
-                    .collect();
-                !fn_body_definitely_non_allocating(&f.body.stmts, &ctx, &seed)
-            })
-            .map(|f| f.name.name.clone())
-            .collect();
-        if demote.is_empty() {
-            let numeric_ret = numeric_ret_of(&nonalloc);
-            return (nonalloc, numeric_ret);
-        }
-        for n in demote {
-            nonalloc.remove(&n);
-        }
-    }
-}
-
-/// Gate 1 for method-scratch elision (shared by stage 1's
-/// `method_scratch_elidable` and stage 2's `compute_elidable_methods`): a
-/// method is elision-eligible only if its declared return is `None` (Unit)
-/// or a by-value scalar primitive (Int / Uint / Float / Bool / Duration).
-/// Any heap return (String / Bytes / struct / array) keeps the scratch —
-/// eliding would dangle the return alias, and as a CALL TARGET its result
-/// would be a fresh heap value the caller can't treat as non-allocating.
-fn ret_is_scalar_or_unit(ret: Option<&TypeExpr>) -> bool {
-    matches!(
-        ret,
-        None | Some(TypeExpr::Primitive(
-            PrimType::Int
-                | PrimType::Uint
-                | PrimType::Float
-                | PrimType::Bool
-                | PrimType::Duration,
-            _,
-        ))
-    )
-}
-
-/// Stage 2 (2026-06-28): compute, per locus, the set of `fn` methods whose
-/// scratch is elidable — i.e. whose body allocates nothing AND whose return
-/// is a by-value scalar/Unit (no return deep-copy). That property is exactly
-/// "a call `self.m(args)` allocates nothing", so this set feeds the
-/// classifier's `self.m()` Call arm, letting a method that factors work into
-/// sibling self-methods drop its own per-call scratch too.
-///
-/// A greatest fixpoint, mirroring `compute_nonalloc_free_fns` but scoped to
-/// one locus's `self.m()` graph: start with every candidate (gate-1-eligible,
-/// non-fallible, non-FFI) optimistically elidable, then demote any whose body
-/// provably allocates GIVEN the current elidable set, until stable. Optimism
-/// lets mutually-recursive numeric self-methods converge; it's sound because
-/// at the fixpoint every remaining method's body is non-allocating with all
-/// of ITS `self.*` callees non-allocating, so the set contains no allocator.
-///
-/// `free_nonalloc` / `free_numeric_ret` are the already-computed free-fn
-/// facts (a self-method may also call proven-cheap free fns). Returns a map
-/// `locus name → (elidable fn-method names, the numeric-scalar-returning
-/// subset)`.
-fn compute_elidable_methods(
-    items: &[TopDecl],
-    free_nonalloc: &BTreeSet<String>,
-    free_numeric_ret: &BTreeSet<String>,
-) -> BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> {
-    let mut out: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> =
-        BTreeMap::new();
-    // Program-wide `type` struct numeric-scalar field map — lets a method's
-    // `s.value` (scalar field of a struct param) classify as numeric.
-    let structs = &struct_numeric_field_map(items);
-    // GH #884: module nesting flattened, as in
-    // `compute_nonalloc_free_fns`.
-    for it in hale_syntax::ast::flat_decls(items) {
-        let TopDecl::Locus(l) = it else { continue };
-        // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
-        // non-FFI `fn` methods. Heap-returning methods are never elidable and
-        // never a non-allocating call target.
-        // Aliasing stage 2 (2026-07-02): MODES join the candidate
-        // set under their synthetic names (bulk/harmonic/
-        // resolution) — they lower as ordinary locus methods and
-        // brain-tower pulls hit them hot, so both scratch elision
-        // and the noalias-self attribute want the same proof.
-        let fns: Vec<(&str, &[Param], Option<&TypeExpr>, &Block)> = l
-            .members
-            .iter()
-            .filter_map(|m| match m {
-                LocusMember::Fn(fd)
-                    if fd.fallible.is_none()
-                        && fd.ffi.is_none()
-                        && ret_is_scalar_or_unit(fd.ret.as_ref()) =>
-                {
-                    Some((
-                        fd.name.name.as_str(),
-                        fd.params.as_slice(),
-                        fd.ret.as_ref(),
-                        &fd.body,
-                    ))
-                }
-                LocusMember::Mode(md)
-                    if ret_is_scalar_or_unit(md.ret.as_ref()) =>
-                {
-                    let name = match md.kind {
-                        ModeKind::Bulk => "bulk",
-                        ModeKind::Harmonic => "harmonic",
-                        ModeKind::Resolution => "resolution",
-                    };
-                    Some((
-                        name,
-                        md.params.as_slice(),
-                        md.ret.as_ref(),
-                        &md.body,
-                    ))
-                }
-                _ => None,
-            })
-            .collect();
-        if fns.is_empty() {
-            continue;
-        }
-        // Self-field sets from the locus's `params { }` block (AST-level —
-        // same classification as stage 1's CodegenTy seeding): numeric scalar
-        // fields make `self.x + 1` arithmetic; scalar (numeric + Bool) fields
-        // make `self.x = ...` a by-value store.
-        let mut numeric_self_fields: BTreeSet<String> = BTreeSet::new();
-        let mut scalar_self_fields: BTreeSet<String> = BTreeSet::new();
-        for m in &l.members {
-            if let LocusMember::Params(pb) = m {
-                for p in &pb.params {
-                    match p.ty.as_ref() {
-                        Some(TypeExpr::Primitive(
-                            PrimType::Int
-                            | PrimType::Uint
-                            | PrimType::Float
-                            | PrimType::Duration,
-                            _,
-                        )) => {
-                            numeric_self_fields.insert(p.name.name.clone());
-                            scalar_self_fields.insert(p.name.name.clone());
-                        }
-                        Some(TypeExpr::Primitive(PrimType::Bool, _)) => {
-                            scalar_self_fields.insert(p.name.name.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        let numeric_ret_of = |elidable: &BTreeSet<String>| -> BTreeSet<String> {
-            fns.iter()
-                .filter(|(name, _, ret, _)| {
-                    elidable.contains(*name)
-                        && ret.is_some_and(|t| type_expr_is_numeric_scalar(t))
-                })
-                .map(|(name, _, _, _)| name.to_string())
-                .collect()
-        };
-        let mut elidable: BTreeSet<String> =
-            fns.iter().map(|(name, _, _, _)| name.to_string()).collect();
-        loop {
-            let numeric_ret_self = numeric_ret_of(&elidable);
-            let demote: Vec<String> = fns
-                .iter()
-                .filter(|(name, _, _, _)| elidable.contains(*name))
-                .filter(|(_, params, _, body)| {
-                    // Per-method scalar-param-field facts (e.g. `s.value` for
-                    // a `Sample` param) — `self.sum + s.value` is arithmetic.
-                    let param_field_numeric =
-                        param_field_numeric_map(params, structs);
-                    let fnptr_numeric_ret =
-                        fnptr_numeric_param_set(params);
-                    let ctx = AllocCtx {
-                        nonalloc: free_nonalloc,
-                        numeric_ret: free_numeric_ret,
-                        numeric_self_fields: &numeric_self_fields,
-                        scalar_self_fields: &scalar_self_fields,
-                        elidable_self_methods: &elidable,
-                        numeric_ret_self_methods: &numeric_ret_self,
-                        param_field_numeric: &param_field_numeric,
-                        fnptr_numeric_ret: &fnptr_numeric_ret,
-                    };
-                    // Seed with the method's numeric scalar params.
-                    let seed: BTreeSet<String> = params
-                        .iter()
-                        .filter(|p| type_expr_is_numeric_scalar(&p.ty))
-                        .map(|p| p.name.name.clone())
-                        .collect();
-                    !fn_body_definitely_non_allocating(&body.stmts, &ctx, &seed)
-                })
-                .map(|(name, _, _, _)| name.to_string())
-                .collect();
-            if demote.is_empty() {
-                let numeric_ret_self = numeric_ret_of(&elidable);
-                out.insert(l.name.name.clone(), (elidable, numeric_ret_self));
-                break;
-            }
-            for n in demote {
-                elidable.remove(&n);
-            }
-        }
-    }
-    out
-}
-
-fn fn_body_definitely_non_allocating(
-    stmts: &[Stmt],
-    ctx: &AllocCtx,
-    num: &BTreeSet<String>,
-) -> bool {
-    // `num` is the set of in-scope locals known to hold a non-allocating
-    // numeric scalar (Int / Uint / Float / Duration) — seeded by the
-    // caller (a free fn's numeric params) and extended by numeric `let`s
-    // as we walk. It's read by the type-aware `Add` classification: `a + b`
-    // allocates only as String concat, so when both operands are provably
-    // such scalars the `+` is arithmetic and allocates nothing. `ctx`
-    // carries the interprocedural facts (which free fns / calls are
-    // non-allocating). (2026-06-28 — closes the "factoring out a function
-    // costs a malloc/free" penalty: first the type-aware `+`, then calls to
-    // proven-non-allocating fns.)
-    let mut scope = num.clone();
-    for s in stmts {
-        if !stmt_definitely_non_allocating(s, ctx, &scope) {
-            return false;
-        }
-        if let Stmt::Let { name, ty, value, .. } = s {
-            if let_binds_nonalloc_numeric(ty.as_ref(), value, ctx, &scope) {
-                scope.insert(name.name.clone());
-            }
-        }
-    }
-    true
-}
-
-/// True iff `e` provably has a non-allocating numeric scalar type (Int /
-/// Uint / Float / Duration), so an enclosing `Add` is arithmetic, not
-/// String concatenation. Conservative — anything not resolvable to a
-/// numeric literal, a known-numeric local (in `num`), or numeric
-/// arithmetic over those is `false`, leaving the `Add` classified as
-/// allocating (the safe default).
-fn expr_is_nonalloc_numeric(
-    e: &Expr,
-    ctx: &AllocCtx,
-    num: &BTreeSet<String>,
-) -> bool {
-    match e {
-        Expr::Literal(Literal::Int(_), _)
-        | Expr::Literal(Literal::Float(_), _)
-        | Expr::Literal(Literal::Duration(_), _) => true,
-        Expr::Ident(id) => num.contains(&id.name),
-        // Method-elidability: `self.x` where `x` is a numeric scalar self
-        // field is itself a numeric scalar — so `self.x + 1` is arithmetic.
-        Expr::Field { receiver, name, .. }
-            if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-        {
-            ctx.numeric_self_fields.contains(&name.name)
-        }
-        // Scalar-param-field read (2026-06-30): `s.value` where `s` is a
-        // PARAM/LOCAL of a flat struct type and `value` is one of that
-        // struct's numeric-scalar (Int/Uint/Float/Duration) fields is itself
-        // a numeric scalar — so `self.sum + s.value` is arithmetic, not
-        // String concat. A scalar field load (GEP+load) never allocates, so
-        // this only ever REMOVES a false "possibly-allocating" signal. If the
-        // variable's type or the field's type is unresolvable, there's no
-        // map entry and the read stays possibly-allocating (the safe default).
-        Expr::Field { receiver, name, .. } => match receiver.as_ref() {
-            Expr::Ident(id) => ctx
-                .param_field_numeric
-                .get(&id.name)
-                .is_some_and(|nf| nf.contains(&name.name)),
-            _ => false,
-        },
-        Expr::Unary { operand, .. } => {
-            expr_is_nonalloc_numeric(operand, ctx, num)
-        }
-        Expr::Binary { op, left, right, .. } => {
-            matches!(
-                op,
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
-            ) && expr_is_nonalloc_numeric(left, ctx, num)
-                && expr_is_nonalloc_numeric(right, ctx, num)
-        }
-        // A call to a proven-non-allocating fn returning a numeric scalar
-        // (with non-allocating args) yields a numeric scalar — so
-        // `helper(x) + 1` is arithmetic. Both a free fn (`numeric_ret`) and,
-        // stage 2, a same-locus `self.m()` whose method is elidable and
-        // returns a numeric scalar (`numeric_ret_self_methods`).
-        Expr::Call { callee, args, .. } => {
-            let callee_numeric = match callee.as_ref() {
-                Expr::Ident(id) => {
-                    ctx.numeric_ret.contains(&id.name)
-                        // 2026-07-02: numeric-scalar-returning
-                        // fn-pointer param — see fnptr_numeric_ret.
-                        || ctx.fnptr_numeric_ret.contains(&id.name)
-                }
-                Expr::Field { receiver, name, .. }
-                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-                {
-                    ctx.numeric_ret_self_methods.contains(&name.name)
-                }
-                _ => false,
-            };
-            callee_numeric
-                && args
-                    .iter()
-                    .all(|a| expr_definitely_non_allocating(a, ctx, num))
-        }
-        // Parenthesized single value `( e )`.
-        Expr::Tuple(parts, _) if parts.len() == 1 => {
-            expr_is_nonalloc_numeric(&parts[0], ctx, num)
-        }
-        _ => false,
-    }
-}
-
-/// A numeric-scalar `let` binding — an explicit Int/Uint/Float/Duration
-/// ascription, or a RHS that's provably numeric. Its name then joins the
-/// numeric scope so later `Add`s over it classify correctly. (Typecheck
-/// guarantees the RHS matches an ascription, so trusting the ascription is
-/// sound even when the RHS is opaque, e.g. `let n: Int = f();`.)
-fn let_binds_nonalloc_numeric(
-    ty: Option<&TypeExpr>,
-    value: &Expr,
-    ctx: &AllocCtx,
-    num: &BTreeSet<String>,
-) -> bool {
-    if let Some(t) = ty {
-        if type_expr_is_numeric_scalar(t) {
-            return true;
-        }
-    }
-    expr_is_nonalloc_numeric(value, ctx, num)
-}
-
-fn stmt_definitely_non_allocating(
-    s: &Stmt,
-    ctx: &AllocCtx,
-    num: &BTreeSet<String>,
-) -> bool {
-    match s {
-        Stmt::Let { value, .. } => expr_definitely_non_allocating(value, ctx, num),
-        Stmt::Return(Some(e), _) => expr_definitely_non_allocating(e, ctx, num),
-        Stmt::Return(None, _) => true,
-        Stmt::Assign { target, value, .. } => {
-            // The target gates allocation independently of the value:
-            //  - a bare local (`x = …`, no tail) stores by value;
-            //  - a scalar `self` field (`self.f = …`, f a by-value field)
-            //    stores by value — no deep-copy;
-            //  - anything else (a heap `self` field deep-copies; an index
-            //    or nested write may touch heap) is conservatively
-            //    allocating.
-            let target_ok = if target.head.name == "self" {
-                matches!(
-                    target.tail.as_slice(),
-                    [LValueSeg::Field(f)] if ctx.scalar_self_fields.contains(&f.name)
-                )
-            } else {
-                target.tail.is_empty()
-            };
-            target_ok && expr_definitely_non_allocating(value, ctx, num)
-        }
-        Stmt::Expr(e) => expr_definitely_non_allocating(e, ctx, num),
-        Stmt::If(IfStmt {
-            cond,
-            then_block,
-            else_block,
-            ..
-        }) => {
-            expr_definitely_non_allocating(cond, ctx, num)
-                && fn_body_definitely_non_allocating(&then_block.stmts, ctx, num)
-                && match else_block.as_deref() {
-                    None => true,
-                    Some(ElseBranch::Else(b)) => {
-                        fn_body_definitely_non_allocating(&b.stmts, ctx, num)
-                    }
-                    Some(ElseBranch::ElseIf(if_stmt)) => {
-                        stmt_definitely_non_allocating(
-                            &Stmt::If(if_stmt.clone()),
-                            ctx,
-                            num,
-                        )
-                    }
-                }
-        }
-        Stmt::While { cond, body, .. } => {
-            expr_definitely_non_allocating(cond, ctx, num)
-                && fn_body_definitely_non_allocating(&body.stmts, ctx, num)
-        }
-        Stmt::Block(b) => fn_body_definitely_non_allocating(&b.stmts, ctx, num),
-        Stmt::Break(_) | Stmt::Continue(_) => true,
-        // Conservative: for-loops, match, recovery, send, fail,
-        // yield, let-tuple all touch machinery that may alloc.
-        _ => false,
-    }
-}
-
-/// GH #720 — stdlib path calls the FORM-3 classifier may treat as
-/// non-allocating. Deliberately a hand-verified allowlist rather
-/// than "anything PURE": `std::str::substring` is pure and
-/// allocates, so purity is the wrong predicate. Each entry below
-/// returns a numeric scalar and touches no arena, which is what
-/// the subregion exists to manage:
-///
-///   - `byte_at_unchecked` lowers to a GEP + load;
-///   - `byte_at` is `__str_byte_at` — a compare against the view's
-///     `n` plus that same load.
-///
-/// A wrong entry does not dangle — an elided body's allocations
-/// route to the caller's arena rather than being freed at return —
-/// but they then live as long as the CALLER's arena instead of the
-/// call, so a hot loop would grow instead of reusing. Add only
-/// scalar-returning, arena-free calls.
-const NONALLOC_STDLIB_PATHS: &[&[&str]] = &[
-    &["std", "str", "byte_at_unchecked"],
-    &["std", "str", "byte_at"],
-];
-
-fn path_call_is_nonalloc(q: &hale_syntax::ast::QualifiedName) -> bool {
-    let segs: Vec<&str> =
-        q.segments.iter().map(|s| s.name.as_str()).collect();
-    NONALLOC_STDLIB_PATHS.iter().any(|p| *p == segs.as_slice())
-}
-
-fn expr_definitely_non_allocating(
-    e: &Expr,
-    ctx: &AllocCtx,
-    num: &BTreeSet<String>,
-) -> bool {
-    match e {
-        Expr::Literal(_, _) => true,
-        Expr::Ident(_) => true,
-        Expr::KwSelf(_) => true,
-        Expr::Field { receiver, .. } => {
-            expr_definitely_non_allocating(receiver, ctx, num)
-        }
-        Expr::Index { receiver, index, .. } => {
-            // Index on a String with a Range is a slice (allocates).
-            // The cheap conservative cut: reject any Range-typed
-            // index, accept simple integer indices.
-            if matches!(index.as_ref(), Expr::Range { .. }) {
-                false
-            } else {
-                expr_definitely_non_allocating(receiver, ctx, num)
-                    && expr_definitely_non_allocating(index, ctx, num)
-            }
-        }
-        Expr::Unary { operand, .. } => {
-            expr_definitely_non_allocating(operand, ctx, num)
-        }
-        Expr::Binary { op, left, right, .. } => match op {
-            // `+` allocates only as String concat. When both operands are
-            // provably non-allocating numeric scalars it's arithmetic and
-            // allocates nothing — the type-aware Add classification
-            // (2026-06-28). Otherwise (String, or an operand whose type we
-            // can't resolve) stay conservative and treat it as allocating.
-            BinOp::Add => {
-                expr_is_nonalloc_numeric(left, ctx, num)
-                    && expr_is_nonalloc_numeric(right, ctx, num)
-            }
-            // All other BinOps are numeric / bool / bitwise; non-allocating
-            // when their operands are.
-            BinOp::Sub
-            | BinOp::Mul
-            | BinOp::Div
-            | BinOp::Mod
-            | BinOp::Eq
-            | BinOp::NotEq
-            | BinOp::Lt
-            | BinOp::Gt
-            | BinOp::LtEq
-            | BinOp::GtEq
-            | BinOp::And
-            | BinOp::Or
-            | BinOp::BitAnd
-            | BinOp::BitOr
-            | BinOp::BitXor
-            | BinOp::Shl
-            | BinOp::Shr => {
-                expr_definitely_non_allocating(left, ctx, num)
-                    && expr_definitely_non_allocating(right, ctx, num)
-            }
-        },
-        // A direct call to a proven-non-allocating free fn, with every
-        // argument non-allocating, allocates nothing (the callee's body
-        // allocates nothing and returns a scalar). Stage 2 (2026-06-28) adds
-        // same-locus `self.m(args)` where `m` is a proven-elidable fn-method
-        // of the current locus — its body allocates nothing and its
-        // scalar/Unit return needs no deep-copy, so the call allocates
-        // nothing. A call on any OTHER receiver (`x.m()`, cross-locus) stays
-        // conservative (needs type resolution — that's stage 3); std builtins
-        // / unresolved callees likewise.
-        Expr::Call { callee, args, .. } => {
-            let callee_nonalloc = match callee.as_ref() {
-                Expr::Ident(id) => {
-                    ctx.nonalloc.contains(&id.name)
-                        // 2026-07-02: numeric-scalar-returning
-                        // fn-pointer param — the callee scratches off
-                        // the threaded caller arena and a scalar
-                        // return leaves nothing behind. See
-                        // fnptr_numeric_ret.
-                        || ctx.fnptr_numeric_ret.contains(&id.name)
-                }
-                // GH #720: a stdlib path call from the
-                // non-allocating allowlist. Without this, ANY helper
-                // fn that inspects a byte — the shape every parser
-                // has — was classified allocating, so each call paid
-                // a subregion create/destroy that the inlined body
-                // then never used (measured: ~15ns per call, 24ms vs
-                // 2ms over a 1 MiB scan).
-                Expr::Path(q) => path_call_is_nonalloc(q),
-                Expr::Field { receiver, name, .. }
-                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-                {
-                    ctx.elidable_self_methods.contains(&name.name)
-                }
-                _ => false,
-            };
-            callee_nonalloc
-                && args
-                    .iter()
-                    .all(|a| expr_definitely_non_allocating(a, ctx, num))
-        }
-        Expr::If(if_stmt) => {
-            expr_definitely_non_allocating(&if_stmt.cond, ctx, num)
-                && fn_body_definitely_non_allocating(
-                    &if_stmt.then_block.stmts,
-                    ctx,
-                    num,
-                )
-                && match if_stmt.else_block.as_deref() {
-                    None => true,
-                    Some(ElseBranch::Else(b)) => {
-                        fn_body_definitely_non_allocating(&b.stmts, ctx, num)
-                    }
-                    Some(ElseBranch::ElseIf(inner)) => {
-                        expr_definitely_non_allocating(
-                            &Expr::If(Box::new(inner.clone())),
-                            ctx,
-                            num,
-                        )
-                    }
-                }
-        }
-        Expr::Block(b) => fn_body_definitely_non_allocating(&b.stmts, ctx, num),
-        // Empty tuple = Unit value, no alloc. Single-elem tuple
-        // is parenthesized expression; non-empty multi-elem
-        // tuples allocate a tuple struct.
-        Expr::Tuple(parts, _) if parts.is_empty() => true,
-        Expr::Tuple(parts, _) if parts.len() == 1 => {
-            expr_definitely_non_allocating(&parts[0], ctx, num)
-        }
-        // Conservative for everything else: Path, Path2, Struct,
-        // multi-Tuple, Array, ArrayRepeat, Match, Or, Sum, Prod, Approx,
-        // Range, FString (Literal::FString).
-        _ => false,
-    }
-}
-
-/// True iff `l`'s arena can be elided at instantiation —
-/// `__arena` points at the caller's current arena instead of a
-/// fresh `lotus_arena_create()`, and dissolve skips
-/// `lotus_arena_destroy`. Mirror of the FORM-3 fn-elision: when
-/// nothing in the locus's lifecycle or methods allocates, the
-/// per-locus arena is dead substrate, and the
-/// `malloc(arena_struct) + malloc(chunk) + ... + free` pair is
-/// pure overhead.
-///
-/// Conservative — rejects on any structural arena consumer
-/// (capacity slots, bus subscriptions, closures, failure
-/// handlers) or any method body that doesn't pass the FORM-3
-/// non-allocating predicate. The `Empty { }` shape passes;
-/// loci with bodies that do real work generally won't.
-///
-/// Applies to both `AcquireStrategy::Fresh` and
-/// `AcquireStrategy::Subregion` instantiations — the structural
-/// predicate (body non-allocating, no slots, no bus, no closures,
-/// no failure handler) holds independently of how `__arena` is
-/// acquired. RecpoolFixed/RecpoolSlab children stay on the
-/// original path (recpool slots have their own pre-allocated
-/// lifecycle).
 /// F.30 (2026-05-20): implicit coercion gate at fn-argument
 /// READ positions. A `BytesView` flows into a `Bytes`-typed
 /// param (and `StringView` into `String`) — typecheck-distinct,
@@ -5356,61 +4326,6 @@ pub(crate) fn literal_to_view_coerces(
         expr,
         Expr::Literal(Literal::String(_), _) | Expr::Literal(Literal::Bytes(_), _)
     )
-}
-
-pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
-    // Structural disqualifiers — these consume arena at
-    // instantiation regardless of method-body content.
-    for m in &l.members {
-        match m {
-            LocusMember::Capacity(c) if !c.slots.is_empty() => return false,
-            LocusMember::Bus(b) if !b.members.is_empty() => return false,
-            LocusMember::Closure(_) => return false,
-            LocusMember::Failure(_) => return false,
-            _ => {}
-        }
-    }
-    // Empty interprocedural context — this locus-arena classifier doesn't
-    // (yet) consult the free-fn non-allocating set, so a call in a method
-    // body stays conservative. The type-aware `Add` + numeric `let`s still
-    // apply via the local scope.
-    let empty = BTreeSet::new();
-    let empty_pf = BTreeMap::new();
-    let ec = AllocCtx {
-        nonalloc: &empty,
-        numeric_ret: &empty,
-        numeric_self_fields: &empty,
-        scalar_self_fields: &empty,
-        elidable_self_methods: &empty,
-        numeric_ret_self_methods: &empty,
-        param_field_numeric: &empty_pf,
-        fnptr_numeric_ret: &empty,
-    };
-    // All method-like bodies non-allocating.
-    for m in &l.members {
-        let body = match m {
-            LocusMember::Lifecycle(lc) => &lc.body,
-            LocusMember::Mode(md) => &md.body,
-            LocusMember::Fn(fd) => &fd.body,
-            _ => continue,
-        };
-        if !fn_body_definitely_non_allocating(&body.stmts, &ec, &BTreeSet::new()) {
-            return false;
-        }
-    }
-    // All param-default expressions non-allocating.
-    for m in &l.members {
-        if let LocusMember::Params(p) = m {
-            for param in &p.params {
-                if let ParamInit::Value(expr) = &param.init {
-                    if !expr_definitely_non_allocating(expr, &ec, &BTreeSet::new()) {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
 }
 
 /// True iff any method body of `l` references `self.children`.
@@ -6126,7 +5041,7 @@ pub(crate) struct LocusInfo<'ctx> {
     /// substrate: nothing in any lifecycle/mode/user-fn body
     /// allocates, no capacity slots, no bus subscriptions, no
     /// closures/failure handlers. Computed once at locus declare
-    /// time via `locus_arena_elidable`. When set:
+    /// time from the locus's elision row (`hale_types::alloc_routing`). When set:
     ///   - `AcquireStrategy::Fresh`: `__arena` borrows the
     ///     caller's current arena instead of calling
     ///     `lotus_arena_create()`.
@@ -8721,26 +7636,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn lower_program(&mut self) -> Result<(), CodegenError> {
-        // Allocation analysis: compute, by a call-graph fixpoint, which free
-        // fns allocate nothing — read at fn-declare time to skip the per-call
-        // scratch arena, and during body lowering to treat calls to them as
-        // non-allocating. Runs before any fn is declared.
-        let (nonalloc, numeric_ret) =
-            compute_nonalloc_free_fns(&self.program.items);
-        self.nonalloc_free_fns = nonalloc;
-        self.nonalloc_free_fns_numeric_ret = numeric_ret;
-        self.scratch_local_free_fns =
-            compute_scratch_local_free_fns(&self.program.items, &self.import_renames);
-
-        // Stage 2 (2026-06-28): per-locus fixpoint of elidable `fn` methods —
-        // a method whose scratch is skippable is exactly a method whose
-        // `self.m()` call allocates nothing, so a sibling method calling it
-        // can drop its scratch too. Consumes the free-fn facts above.
-        self.elidable_methods = compute_elidable_methods(
-            &self.program.items,
-            &self.nonalloc_free_fns,
-            &self.nonalloc_free_fns_numeric_ret,
-        );
+        // Where an allocation is routed is the view's rows
+        // (`alloc_routing`): which free fns allocate nothing (read at
+        // fn-declare time to skip the per-call scratch arena, and during
+        // body lowering to treat calls to them as non-allocating), which
+        // are scratch-local, and per locus the arena and method-scratch
+        // elision verdicts.
 
         // Locate fn main.
         //
@@ -9044,6 +7945,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     self.specialized_flows.push((mangled.clone(), child));
                 }
+                // The elision rows answer for it too: the same producer
+                // over the synthesized declaration.
+                let elision = self.alloc_routing.specialize(&synthesized);
+                self.specialized_elision.insert(mangled.clone(), elision);
                 // Walk synthesized locus's substituted member
                 // type positions for nested generic uses.
                 for member in &synthesized.members {
@@ -13905,13 +12810,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             );
         }
         // FORM-3: skip the per-call scratch arena when the body provably
-        // allocates nothing. The decision is the call-graph fixpoint
-        // (`compute_nonalloc_free_fns`, run at lower_program start into
-        // `self.nonalloc_free_fns`): it's type-aware (Int/Float/Duration `+`
-        // is arithmetic, not String concat) AND interprocedural (calls to
-        // other proven-non-allocating fns don't allocate). Fallible fns are
-        // excluded there (the `fail E` path arena-allocs a payload).
-        let non_allocating = self.nonalloc_free_fns.contains(&f.name.name);
+        // allocates nothing. The decision is the call-graph fixpoint, a row
+        // of the view (`alloc_routing.nonalloc`): it's type-aware
+        // (Int/Float/Duration `+` is arithmetic, not String concat) AND
+        // interprocedural (calls to other proven-non-allocating fns don't
+        // allocate). Fallible fns are excluded there (the `fail E` path
+        // arena-allocs a payload).
+        let non_allocating = self.alloc_routing.is_nonalloc(&f.name.name);
         self.user_fns.insert(
             f.name.name.clone(),
             FnSig {
@@ -14746,8 +13651,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.current_user_fn_caller_arena = Some(caller_arena_alloca);
         self.current_user_fn_arena = Some(fn_arena_alloca);
-        self.current_user_fn_scratch_local = !sig.non_allocating
-            && self.scratch_local_free_fns.contains(&f.name.name);
+        self.current_user_fn_scratch_local =
+            !sig.non_allocating && self.alloc_routing.is_scratch_local(&f.name.name);
         // GH #375: publish the caller's arena to the caller-arena
         // TLS at fn entry. The TLS is set-and-forget, and a callee
         // chain that exited (especially via a failure edge) can
@@ -14771,8 +13676,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // gate: over-matching only costs one call.
         //
         // GH #522: over-matching costs one call PER CALL, not one
-        // call. The syntactic half below is a substring search over
-        // `{:?}` of the body, so ANY call at all arms it — including
+        // call. The syntactic half is a search of the body for a call
+        // or a struct literal, so ANY call at all arms it — including
         // a call through a function pointer in a two-deep helper
         // chain, where the publish lands in a 10M-iteration loop and
         // measured +29% on `fn_modular` from v0.14.0 onward.
@@ -14790,10 +13695,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `lotus_arena_alloc` — reached only from an allocation.
         // `caller_arena_tls_unwind.rs` is the standing reproducer
         // and stays green.
-        let body_can_read_tls = !sig.non_allocating && {
-            let dbg = format!("{:?}", f.body);
-            dbg.contains("Call {") || dbg.contains("Struct {")
-        };
+        //
+        // The decision is the fn's row (`alloc_routing.caller_arena_publish`,
+        // a structural walk for a call or a struct literal anywhere in the
+        // body); a generic fn's monomorph, which the view does not hold,
+        // takes the same producer over its synthesized declaration.
+        let body_can_read_tls = self
+            .alloc_routing
+            .caller_arena_publish
+            .get(&f.name.name)
+            .copied()
+            .unwrap_or_else(|| self.alloc_routing.specialize_fn(f));
         if body_can_read_tls {
             let ptr_t2 = self.context.ptr_type(AddressSpace::default());
             let ca = self
@@ -33493,101 +32405,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
-    /// Method-scratch elision (stage 1, 2026-06-28): true iff this
-    /// method's per-call scratch subregion can be skipped entirely —
-    /// its body provably allocates nothing AND its return value is a
-    /// by-value scalar (or Unit), so no return deep-copy is needed.
-    /// When true the caller skips `open_method_scratch`, leaving
-    /// `current_method_scratch` None: allocations (there are none) would
-    /// fall through to `self.__arena`, destroy/close become no-ops, and
-    /// the return path takes the no-deep-copy "store the pointer
-    /// directly" branch (correct precisely because the body builds no
-    /// fresh heap value to return).
-    ///
-    /// Conservative: false-negatives just keep a redundant scratch;
-    /// a false-positive that skips a needed scratch/deep-copy is a
-    /// memory bug, so both gates must hold.
-    ///   1. `ret` is `None` or a scalar primitive (Int/Uint/Float/
-    ///      Bool/Duration). Any heap return (String/Bytes/struct/array)
-    ///      keeps the scratch — eliding would dangle the return alias.
-    ///   2. The body is non-allocating under the method-aware
-    ///      classifier (self numeric fields → arithmetic, scalar
-    ///      self-field writes → by-value).
-    pub(crate) fn method_scratch_elidable(
-        &self,
-        body: &Block,
-        params: &[Param],
-        ret: Option<&TypeExpr>,
-    ) -> bool {
-        // Gate 1: by-value scalar (or Unit) return only.
-        match ret {
-            None => {}
-            Some(TypeExpr::Primitive(
-                PrimType::Int
-                | PrimType::Uint
-                | PrimType::Float
-                | PrimType::Bool
-                | PrimType::Duration,
-                _,
-            )) => {}
-            Some(_) => return false,
-        }
-        // Gate 2: method-aware non-allocating body. Seed self-field
-        // sets from the current locus's field types.
-        let Some(cs) = self.current_self.as_ref() else {
-            return false;
-        };
-        let mut numeric_self_fields: BTreeSet<String> = BTreeSet::new();
-        let mut scalar_self_fields: BTreeSet<String> = BTreeSet::new();
-        for (fname, (_, ty)) in &cs.fields {
-            match ty {
-                CodegenTy::Int | CodegenTy::Float | CodegenTy::Duration => {
-                    numeric_self_fields.insert(fname.clone());
-                    scalar_self_fields.insert(fname.clone());
-                }
-                CodegenTy::Bool => {
-                    scalar_self_fields.insert(fname.clone());
-                }
-                _ => {}
-            }
-        }
-        let param_seed: BTreeSet<String> = params
-            .iter()
-            .filter(|p| type_expr_is_numeric_scalar(&p.ty))
-            .map(|p| p.name.name.clone())
-            .collect();
-        // Scalar-param-field facts (2026-06-30): a read of a numeric-scalar
-        // field of a struct-typed param (`s.value` for `s: Sample`) is a
-        // non-allocating numeric scalar, so `self.sum + s.value` is
-        // arithmetic — exactly what lets a quiet handler like
-        // `Aggregator.on_sample(s: Sample)` drop its per-call scratch. Built
-        // from the same whole-program `type` map the fixpoints use, keeping
-        // this on-the-fly decision consistent with them.
-        let structs = struct_numeric_field_map(&self.program.items);
-        let param_field_numeric = param_field_numeric_map(params, &structs);
-        // Stage 2: seed the same-locus elidable-method sets from the
-        // precomputed per-locus fixpoint (`self.elidable_methods`), so a
-        // `self.m(args)` call in this body resolves as non-allocating exactly
-        // when `m` reached the elidable fixpoint. The on-the-fly walk here
-        // agrees with the fixpoint because that set is already stable.
-        let empty_methods = BTreeSet::new();
-        let (elidable_self_methods, numeric_ret_self_methods) = self
-            .elidable_methods
-            .get(&cs.locus_name)
-            .map(|(e, n)| (e, n))
-            .unwrap_or((&empty_methods, &empty_methods));
-        let fnptr_numeric_ret = fnptr_numeric_param_set(params);
-        let ctx = AllocCtx {
-            nonalloc: &self.nonalloc_free_fns,
-            numeric_ret: &self.nonalloc_free_fns_numeric_ret,
-            numeric_self_fields: &numeric_self_fields,
-            scalar_self_fields: &scalar_self_fields,
-            elidable_self_methods,
-            numeric_ret_self_methods,
-            param_field_numeric: &param_field_numeric,
-            fnptr_numeric_ret: &fnptr_numeric_ret,
-        };
-        fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
+    /// The elision rows of the locus `name`: the view's
+    /// (`AllocRouting::loci`), or, for a monomorph lowering synthesized,
+    /// the specialization's.
+    pub(crate) fn locus_elision(&self, name: &str) -> &hale_types::alloc_routing::LocusElision {
+        self.alloc_routing
+            .loci
+            .get(name)
+            .or_else(|| self.specialized_elision.get(name))
+            .unwrap_or_else(|| panic!("no elision rows for locus `{name}`"))
+    }
+
+    /// Whether member `idx` of the locus `name` (a lifecycle hook, `fn`
+    /// method or mode) lowers without its per-call scratch subregion.
+    pub(crate) fn member_scratch_elided(&self, name: &str, idx: usize) -> bool {
+        self.locus_elision(name).scratch.get(&idx).copied().unwrap_or(false)
     }
 
     /// The epilogue every early exit from a locus method body emits
@@ -34179,7 +33011,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // ToolSpec { ... }, invoke_fn)` built the Entry inside the
         // callee's subregion, pushed it onto `reg.entries`, and the
         // caller's later `.get(0)` returned a stale pointer.
-        // GH #1148: a scratch-local fn (`compute_scratch_local_free_fns`)
+        // GH #1148: a scratch-local fn (the view's `alloc_routing` rows)
         // cannot leak an allocation past its return except through the
         // return value, which the epilogue deep-copies into the caller's
         // arena — so its body allocates into its own subregion, freed at

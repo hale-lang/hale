@@ -523,22 +523,38 @@ pub struct CheckInputs<'a> {
     /// exists.
     pub effects: &'a dyn Fn() -> Option<&'a crate::effect_rows::EffectRows>,
     pub entry: &'a crate::entry::EntryRow,
+    /// The allocation summary the effects certificate engine walks: the
+    /// `alloc_summary` family's, the one the effect rows read.
+    pub alloc_summary: &'a crate::alloc_summary::AllocSummary,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
-/// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`];
-/// the effect rows when a rule asks).
+/// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
+/// [`crate::alloc_summary::derive_alloc_summary`]; the effect rows when a
+/// rule asks).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
+    let alloc_summary =
+        std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
-    let effects = || Some(rows.get_or_init(|| crate::effect_rows::derive_effect_rows(bundle, top)));
+    let effects = || {
+        Some(rows.get_or_init(|| {
+            crate::effect_rows::derive_effect_rows(bundle, top, alloc_summary.clone())
+        }))
+    };
     let entry = crate::entry::entry_row(bundle);
-    let inputs = CheckInputs { top, handlers: &handlers, effects: &effects, entry: &entry };
+    let inputs = CheckInputs {
+        top,
+        handlers: &handlers,
+        effects: &effects,
+        entry: &entry,
+        alloc_summary: &alloc_summary,
+    };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
 
@@ -768,11 +784,8 @@ pub fn check_bundle_reporting(
         // @budget, over the shared callgraph witness engine. The flat
         // stream is `effect_diags_with_renames`'s; the grouped report
         // is kept for the certificate evidence.
-        let (mut flat, groups) = crate::effects::effect_report_grouped(
-            &programs_vec,
-            &bundle.snapshot,
-            &bundle.import_renames,
-        );
+        let (mut flat, groups) =
+            crate::effects::effect_report_grouped(&programs_vec, inputs.alloc_summary);
         crate::stdlib_bodies::demangle_imports(&mut flat, &bundle.import_renames);
         diags.extend(flat);
         certificates = groups;

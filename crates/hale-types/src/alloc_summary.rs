@@ -1096,6 +1096,21 @@ fn carried_by(
     acc
 }
 
+/// The `alloc_summary` family's producer: the summary of the bundle's
+/// checked programs with the stdlib's analysis copy beside them, each
+/// with its own identities, and cross-seed `alias::name` calls resolved
+/// through the bundle's import renames. A snapshot runs it once
+/// (`hale_frontend::snapshot::Snapshot::demand_alloc_summary`); a
+/// bundle no snapshot holds runs it once for itself.
+pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary {
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    crate::stdlib_bodies::summarize_with_stdlib_and_renames(
+        &programs,
+        &bundle.snapshot,
+        &bundle.import_renames,
+    )
+}
+
 /// The summary of `programs`, all minted with `ids` (the identities a
 /// body's escape tags read which declaration a use names from).
 pub fn summarize_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> AllocSummary {

@@ -69,7 +69,8 @@ fn over_seed<T: Send>(seed: &str, f: impl FnOnce(&Snapshot, &EffectRows, &Effect
                 let Ok(top) = snap.demand_scope() else { panic!("dna/{seed}: the scope is blocked") };
                 let mut blind = snap.bundle();
                 blind.import_renames.clear();
-                let blind_rows = derive_effect_rows(&blind, top);
+                let blind_summary = hale_types::alloc_summary::derive_alloc_summary(&blind);
+                let blind_rows = derive_effect_rows(&blind, top, std::sync::Arc::new(blind_summary));
                 f(&snap, rows, &blind_rows)
             })
             .unwrap()
