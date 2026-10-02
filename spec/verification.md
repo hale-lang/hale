@@ -99,8 +99,12 @@ coverage, cross-seed (`alias::Topic`) references, and self-pub/sub —
 so library seeds and external peers aren't falsely flagged. The
 intra-locus cycle error counts only *unconditional* sends as edges: a
 self-republish guarded by `if`/`match`/loop is a terminating state
-machine, not unbounded recursion, and is left alone. See
-`spec/semantics.md` type-check rules 9–10.
+machine, not unbounded recursion, and is left alone. The orphan,
+cycle and dead-receiver checks read one bus graph
+(`build_bus_graph`): its subjects compared by wire subject, its
+edges keyed by the declaration that wrote the handler, and a subject
+it cannot resolve recorded as a hole that no check fires on. See
+`spec/semantics.md` type-check rules 7, 9 and 10.
 
 The backpressure check's "input-pacing blocking call" is the *same*
 leaf set as the pool-blocking lint above — the registry's `block`

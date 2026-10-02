@@ -3277,6 +3277,13 @@ main locus App {
    `run()` non-blocking. (Corrected 2026-06-03: an earlier form
    rejected on placement alone and over-fired on event-driven
    non-main cooperative subscribers, which receive reliably.)
+   The rule is judged over the bus graph (rule 9): a topic the
+   locus publishes by its declared name and subscribes by its
+   literal subject is one subject under the graph's canonical key,
+   so that subscription is spared as a self-publish, and the error
+   lists the handlers of the subjects the locus subscribes and does
+   not publish. A subscription whose subject the graph cannot
+   resolve is compared as written. (F.40 phase 3, C4.)
 8. **Blocking syscall on a cooperative pool (warning).** A locus
    placed `cooperative(pool = X)` *without* `where async_io`
    whose `run()` calls a known-blocking stdlib op (tcp/tls recv,
@@ -3315,6 +3322,17 @@ main locus App {
    the same locus being both publisher and subscriber. The closed-
    world gate is why this is skipped for library seeds (no `main`):
    their consumers are downstream, out of the bundle. (GH #18 #4.)
+   Rules 9 and 10 and the dead-receiver rule (7) are judged over
+   the bus graph. The graph carries as columns what the walk
+   computed: whether a topic is bound to a transport, whether a
+   subject crosses a seed, whether a subscription is a wildcard;
+   rule 9's closed world is the entry row's. A subject is compared
+   under the graph's canonical key, its wire subject (spec/model.md
+   rule 8): a topic published by its declared name and subscribed
+   by its literal subject is one subject, wired at both ends. Where
+   the graph cannot resolve a subject (an unresolved path, an open
+   world), the rule does not fire: an unresolved subject is not a
+   proven orphan, and the row records the hole. (F.40 phase 3, C4.)
 10. **Bus cycles.** An edge `S →(L) D` exists when locus `L` subscribes
     subject `S` with a handler that sends to subject `D`. A cycle in
     this graph is a publish→subscribe→publish loop, and the dispatch
@@ -3330,6 +3348,17 @@ main locus App {
       self-republish guarded by an `if`/`match`/loop is a terminating
       state machine, not unbounded recursion, and is not flagged.
       (GH #18 #4.)
+
+    The graph's edges are keyed by declaration identity: a handler
+    body belongs to the declaration that wrote it, so two loci of one
+    name have their own edges, and the cycles follow the edges, not
+    the name — a cycle whose edges two declarations of one name
+    wrote is cross-locus, and neither declaration's intra-locus
+    check sees the other's edges. An edge joins canonical subjects
+    (rule 9): a send by a topic's declared name meets a subscription
+    by its literal subject, and a send whose subject the graph
+    cannot resolve (an unresolved path, a computed subject) forms no
+    edge. (F.40 phase 3, C4.)
 11. **Bus backpressure (warning).** A locus that publishes to the bus
     inside an **unbounded** `while true` loop carrying no flow-control
     or exit point — no cooperative `yield`, no `time::sleep`/`tick`
