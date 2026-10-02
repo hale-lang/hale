@@ -797,14 +797,16 @@ fn resolve_bus_subject(
             }
         }
         BusSubject::QualifiedTopic(qn) => {
-            // A7 (G16): cross-seed `subscribe alias::Foo as h;`.
-            // The typechecker can't reach the imported topic decl
-            // without seeing the merged + mangled program (cross-
-            // seed visibility lives at the codegen pre-pass that
-            // build_executable_with_imports runs after mangle).
-            // For typecheck-only consumers, accept the path and
-            // treat the payload as Unknown — the codegen-side
-            // resolution will catch unresolved paths.
+            // A7 (G16): cross-seed `subscribe alias::Foo as h;`. The
+            // desugar sequence resolves a path the build's import
+            // renames (or the stdlib's) name to the imported topic's
+            // own single-segment name before the check
+            // (`qualified_subjects`), so a path that reaches here is
+            // one no rename names: a bundle whose imports were never
+            // resolved (the LSP's per-directory bundle, a single file
+            // of a multi-file seed), or a path that names nothing.
+            // Accept it and treat the payload as Unknown — lowering
+            // reports a path that names nothing.
             if let Some(te) = ty {
                 diags.push(Diag::ty(
                     te.span(),

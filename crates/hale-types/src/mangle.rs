@@ -11,8 +11,9 @@
 //! discipline, but generated per imported library so users don't
 //! have to author the prefix themselves.
 //!
-//! Mangled form: `__lib_<alias>_<file_stem>_<name>`.
-//!   - `alias` is the importer-supplied namespace (`import "x" as foo;`).
+//! Mangled form: `__lib_<lib_id>__<file_stem>__<name>`, each part
+//! encoded so the tuple is injective ([`mangled`]).
+//!   - `lib_id` is the library's name, a function of its path.
 //!   - `file_stem` is the basename of the source file the decl lives
 //!     in, sans `.hl` — so two files in the same library can share a
 //!     name without colliding.
@@ -36,8 +37,8 @@ use hale_syntax::ast::*;
 use hale_syntax::Span;
 
 /// Rewrite `prog` in place so its top-level decls and any
-/// intra-seed references carry the `__lib_<alias>_<file_stem>_*`
-/// prefix. `file_stem` is the basename of the source file the
+/// intra-seed references carry their full name, `__lib_<lib_id>__<file_stem>__*`
+/// ([`mangled`]). `file_stem` is the basename of the source file the
 /// program was parsed from, without the `.hl` extension.
 ///
 /// This entry is correct only for single-file libraries (or
@@ -570,7 +571,7 @@ fn construction_alias_targets(
 ///
 /// The `renames` list comes from `hale_cli::ImportRenames`
 /// (Vec<(Vec<String>, String)>): each entry is
-/// `(["alias", "Name"], "__lib_<alias>_<stem>_Name")`.
+/// `(["alias", "Name"], "__lib_<lib_id>__<stem>__Name")`.
 pub fn apply_qualified_path_renames(
     prog: &mut Program,
     renames: &[(Vec<String>, String)],
@@ -1142,8 +1143,91 @@ fn rewrite_claim_topic_refs(
     }
 }
 
-fn mangled(lib_id: &str, file_stem: &str, name: &str) -> String {
-    format!("__lib_{}_{}_{}", lib_id, file_stem, name)
+/// The full name of declaration `name` in source file `file_stem` of
+/// library `lib_id` (its path's [`name_component`]s joined by `__`, a
+/// directory library's ending in `_`). The tuple is encoded
+/// injectively: `lib_id`, `__`, the encoded stem, `__`, the encoded
+/// name. No encoded component starts or ends with `_` or holds `__`,
+/// so a run of two underscores is a joiner and a run of three the
+/// directory mark before one.
+///
+/// The one other shape is the name a single-file library beside its
+/// entry always had: when the stem is letters and digits, the library
+/// is that file alone (`lib_id` is the stem's encoding) and `name`
+/// neither starts with `_` nor holds `__`, the name is
+/// `__lib_<stem>_<stem>_<name>`, as written. That shape never holds
+/// `__` after the prefix and the encoded one always does, and the
+/// stem ends at its first `_`, so the two never meet.
+pub fn mangled(lib_id: &str, file_stem: &str, name: &str) -> String {
+    let compatible = !file_stem.is_empty()
+        && file_stem.bytes().all(|b| b.is_ascii_alphanumeric())
+        && lib_id == name_component(file_stem.as_bytes())
+        && !name.is_empty()
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !name.starts_with('_')
+        && !name.contains("__");
+    if compatible {
+        return format!("__lib_{file_stem}_{file_stem}_{name}");
+    }
+    format!(
+        "__lib_{}__{}__{}",
+        lib_id,
+        name_component(file_stem.as_bytes()),
+        name_component(name.as_bytes())
+    )
+}
+
+/// The library `have` was mangled in, when it is declaration `name` of
+/// source file `file_stem`: the `lib_id` [`mangled`] answers `have` for.
+/// The encoding is injective, so there is at most one.
+pub fn mangled_library(have: &str, file_stem: &str, name: &str) -> Option<String> {
+    let suffix = format!("__{}__{}", name_component(file_stem.as_bytes()), name_component(name.as_bytes()));
+    let lib_id = match have.strip_prefix("__lib_").and_then(|r| r.strip_suffix(&suffix)) {
+        Some(lib_id) => lib_id.to_string(),
+        None => name_component(file_stem.as_bytes()),
+    };
+    (mangled(&lib_id, file_stem, name) == have).then_some(lib_id)
+}
+
+/// One component of a mangled name — a library path segment, a file
+/// stem, a declaration name — in identifier characters, injectively.
+/// An ASCII letter or digit is kept, except an `x` that starts the
+/// component; a `_` is kept when it does not start the component and
+/// is followed by a letter or digit other than `x`; every other byte
+/// is an escape, `xHH` (two lowercase hex digits) at the start and
+/// `_xHH` after it. The empty component is `x`.
+///
+/// So an encoded component never starts or ends with `_` and never
+/// holds `__`: a component starts with a letter or digit, its `_` is
+/// followed by a letter or digit, and an escape ends in a hex digit.
+/// Reading back, a leading `x` is an escape (or, alone, the empty
+/// component) and a later `_` is an escape before `x` and itself
+/// otherwise.
+pub fn name_component(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    if bytes.is_empty() {
+        return "x".to_string();
+    }
+    let mut out = String::with_capacity(bytes.len());
+    for (j, &b) in bytes.iter().enumerate() {
+        let kept = if j == 0 {
+            b.is_ascii_alphanumeric() && b != b'x'
+        } else {
+            b.is_ascii_alphanumeric()
+                || (b == b'_'
+                    && bytes
+                        .get(j + 1)
+                        .is_some_and(|n| n.is_ascii_alphanumeric() && *n != b'x'))
+        };
+        if kept {
+            out.push(b as char);
+        } else if j == 0 {
+            let _ = write!(out, "x{b:02x}");
+        } else {
+            let _ = write!(out, "_x{b:02x}");
+        }
+    }
+    out
 }
 
 fn top_decl_name(d: &TopDecl) -> Option<&str> {
@@ -2323,11 +2407,11 @@ mod tests {
             .filter_map(top_decl_name)
             .map(|s| s.to_string())
             .collect();
-        assert!(names.contains(&"__lib_toy_main_Point".to_string()), "names={:?}", names);
-        assert!(names.contains(&"__lib_toy_main_Greeter".to_string()));
-        assert!(names.contains(&"__lib_toy_main_DEFAULT_GREETING".to_string()));
-        assert!(names.contains(&"__lib_toy_main_greet".to_string()));
-        assert!(names.contains(&"__lib_toy_main_Sink".to_string()));
+        assert!(names.contains(&"__lib_toy__main__Point".to_string()), "names={:?}", names);
+        assert!(names.contains(&"__lib_toy__main__Greeter".to_string()));
+        assert!(names.contains(&"__lib_toy__main__DEFAULT_GREETING".to_string()));
+        assert!(names.contains(&"__lib_toy__main__greet".to_string()));
+        assert!(names.contains(&"__lib_toy__main__Sink".to_string()));
     }
 
     #[test]
@@ -2345,10 +2429,10 @@ mod tests {
         mangle_program(&mut prog, "toy", "greet");
 
         // The `Greeting { msg: ... }` Expr::Struct path should be rewritten.
-        let make_fn = find_fn(&prog, "__lib_toy_greet_make").expect("make renamed");
+        let make_fn = find_fn(&prog, "__lib_toy__greet__make").expect("make renamed");
         match &make_fn.ret {
             Some(TypeExpr::Named { path, .. }) => {
-                assert_eq!(path.segments[0].name, "__lib_toy_greet_Greeting");
+                assert_eq!(path.segments[0].name, "__lib_toy__greet__Greeting");
             }
             other => panic!("unexpected ret type: {:?}", other),
         }
@@ -2356,17 +2440,17 @@ mod tests {
         let ret_stmt = make_fn.body.stmts.iter().find(|s| matches!(s, Stmt::Return(_, _)));
         match ret_stmt {
             Some(Stmt::Return(Some(Expr::Struct { path, .. }), _)) => {
-                assert_eq!(path.segments[0].name, "__lib_toy_greet_Greeting");
+                assert_eq!(path.segments[0].name, "__lib_toy__greet__Greeting");
             }
             other => panic!("expected Struct return, got {:?}", other),
         }
 
         // The `make()` call site should be rewritten.
-        let caller = find_fn(&prog, "__lib_toy_greet_caller").expect("caller renamed");
+        let caller = find_fn(&prog, "__lib_toy__greet__caller").expect("caller renamed");
         let let_stmt = &caller.body.stmts[0];
         match let_stmt {
             Stmt::Let { value: Expr::Call { callee, .. }, .. } => match callee.as_ref() {
-                Expr::Ident(i) => assert_eq!(i.name, "__lib_toy_greet_make"),
+                Expr::Ident(i) => assert_eq!(i.name, "__lib_toy__greet__make"),
                 other => panic!("call callee not Ident: {:?}", other),
             },
             other => panic!("expected let stmt: {:?}", other),
@@ -2388,7 +2472,7 @@ mod tests {
         mangle_program(&mut prog, "toy", "main");
         // `println` should NOT have been rewritten — it's a builtin
         // call, not a seed top-level fn.
-        let driver = find_fn(&prog, "__lib_toy_main_driver").expect("driver renamed");
+        let driver = find_fn(&prog, "__lib_toy__main__driver").expect("driver renamed");
         let last_stmt = driver.body.stmts.last().expect("stmts non-empty");
         match last_stmt {
             Stmt::Expr(Expr::Call { callee, .. }) => match callee.as_ref() {
@@ -2412,11 +2496,11 @@ mod tests {
         "#;
         let mut prog = parse(src);
         mangle_program(&mut prog, "toy", "main");
-        // The top-level `greet` fn becomes `__lib_toy_main_greet`.
-        assert!(find_fn(&prog, "__lib_toy_main_greet").is_some());
+        // The top-level `greet` fn becomes `__lib_toy__main__greet`.
+        assert!(find_fn(&prog, "__lib_toy__main__greet").is_some());
         // Inside `caller`, the let-binding `greet` and the
         // subsequent Ident reference should NOT be rewritten.
-        let caller = find_fn(&prog, "__lib_toy_main_caller").expect("caller renamed");
+        let caller = find_fn(&prog, "__lib_toy__main__caller").expect("caller renamed");
         // Second statement: `let n = greet;`
         match &caller.body.stmts[1] {
             Stmt::Let { value: Expr::Ident(i), .. } => {
@@ -2439,21 +2523,21 @@ mod tests {
         "#;
         let mut prog = parse(src);
         mangle_program(&mut prog, "toy", "main");
-        let parent = find_locus(&prog, "__lib_toy_main_Parent").expect("Parent renamed");
+        let parent = find_locus(&prog, "__lib_toy__main__Parent").expect("Parent renamed");
         let cap = parent.members.iter().find_map(|m| match m {
             LocusMember::Capacity(c) => Some(c),
             _ => None,
         }).expect("capacity block");
         let slot = &cap.slots[0];
-        // elem_ty TypeExpr::Named { path: ["Item"] } → __lib_toy_main_Item
+        // elem_ty TypeExpr::Named { path: ["Item"] } → __lib_toy__main__Item
         match &slot.elem_ty {
             TypeExpr::Named { path, .. } => {
-                assert_eq!(path.segments[0].name, "__lib_toy_main_Item");
+                assert_eq!(path.segments[0].name, "__lib_toy__main__Item");
             }
             other => panic!("unexpected elem_ty: {:?}", other),
         }
-        // as_parent_for → __lib_toy_main_Child
-        assert_eq!(slot.as_parent_for.as_ref().unwrap().name, "__lib_toy_main_Child");
+        // as_parent_for → __lib_toy__main__Child
+        assert_eq!(slot.as_parent_for.as_ref().unwrap().name, "__lib_toy__main__Child");
     }
 
     #[test]
@@ -2477,32 +2561,32 @@ mod tests {
 
         // The topic decl renames.
         let topic_renamed = prog.items.iter().any(|d| matches!(d,
-            TopDecl::Topic(t) if t.name.name == "__lib_toy_main_Ticks"));
+            TopDecl::Topic(t) if t.name.name == "__lib_toy__main__Ticks"));
         assert!(topic_renamed, "topic decl should be mangled");
 
         // The publish-site subject ident renames.
-        let pub_locus = find_locus(&prog, "__lib_toy_main_Pub").expect("Pub renamed");
+        let pub_locus = find_locus(&prog, "__lib_toy__main__Pub").expect("Pub renamed");
         let pub_bus = pub_locus.members.iter().find_map(|m| match m {
             LocusMember::Bus(b) => Some(b),
             _ => None,
         }).expect("Pub.bus");
         match &pub_bus.members[0] {
             BusMember::Publish { subject: BusSubject::Topic(i), .. } => {
-                assert_eq!(i.name, "__lib_toy_main_Ticks",
+                assert_eq!(i.name, "__lib_toy__main__Ticks",
                     "publish topic ident should be mangled");
             }
             other => panic!("expected Publish topic-ref, got {:?}", other),
         }
 
         // The subscribe-site subject ident renames.
-        let sub_locus = find_locus(&prog, "__lib_toy_main_Sub").expect("Sub renamed");
+        let sub_locus = find_locus(&prog, "__lib_toy__main__Sub").expect("Sub renamed");
         let sub_bus = sub_locus.members.iter().find_map(|m| match m {
             LocusMember::Bus(b) => Some(b),
             _ => None,
         }).expect("Sub.bus");
         match &sub_bus.members[0] {
             BusMember::Subscribe { subject: BusSubject::Topic(i), .. } => {
-                assert_eq!(i.name, "__lib_toy_main_Ticks",
+                assert_eq!(i.name, "__lib_toy__main__Ticks",
                     "subscribe topic ident should be mangled");
             }
             other => panic!("expected Subscribe topic-ref, got {:?}", other),
@@ -2526,7 +2610,7 @@ mod tests {
         "#;
         let mut prog = parse(src);
         mangle_program(&mut prog, "toy", "main");
-        let locus = find_locus(&prog, "__lib_toy_main_Logger").expect("Logger renamed");
+        let locus = find_locus(&prog, "__lib_toy__main__Logger").expect("Logger renamed");
         let bus = locus.members.iter().find_map(|m| match m {
             LocusMember::Bus(b) => Some(b),
             _ => None,
@@ -2566,7 +2650,7 @@ mod tests {
         let mut prog = parse(src);
         mangle_program(&mut prog, "errlib", "err");
 
-        let wrap = find_fn(&prog, "__lib_errlib_err_wrap_it").expect("wrap_it renamed");
+        let wrap = find_fn(&prog, "__lib_errlib__err__wrap_it").expect("wrap_it renamed");
         // First stmt: `let _x = (raise_it() or fail LibError { ... });`
         // Pull the Or expr out and inspect the disposition payload.
         let let_value = match &wrap.body.stmts[0] {
@@ -2582,7 +2666,7 @@ mod tests {
                 Expr::Struct { path, .. } => {
                     assert_eq!(
                         path.segments[0].name,
-                        "__lib_errlib_err_LibError",
+                        "__lib_errlib__err__LibError",
                         "or-fail struct payload type should be mangled"
                     );
                 }
@@ -2614,7 +2698,7 @@ mod tests {
         let mut prog = parse(src);
         mangle_program(&mut prog, "errlib", "err");
 
-        let wrap = find_fn(&prog, "__lib_errlib_err_wrap_it").expect("wrap_it renamed");
+        let wrap = find_fn(&prog, "__lib_errlib__err__wrap_it").expect("wrap_it renamed");
         let let_value = match &wrap.body.stmts[0] {
             Stmt::Let { value, .. } => value,
             other => panic!("expected Let, got {:?}", other),
@@ -2628,7 +2712,7 @@ mod tests {
                 Expr::Call { callee, .. } => match callee.as_ref() {
                     Expr::Ident(i) => assert_eq!(
                         i.name,
-                        "__lib_errlib_err_make_err",
+                        "__lib_errlib__err__make_err",
                         "or-fail call callee should be mangled"
                     ),
                     other => panic!("expected Ident callee, got {:?}", other),
@@ -2657,7 +2741,7 @@ mod tests {
         let mut prog = parse(src);
         mangle_program(&mut prog, "toy", "main");
 
-        let go = find_fn(&prog, "__lib_toy_main_go").expect("go renamed");
+        let go = find_fn(&prog, "__lib_toy__main__go").expect("go renamed");
         let ret = match &go.body.stmts[0] {
             Stmt::Return(Some(e), _) => e,
             other => panic!("expected Return, got {:?}", other),
@@ -2680,13 +2764,13 @@ mod tests {
         // `core("x")` — the bare name is the free fn, and mangles.
         match rhs {
             Expr::Call { callee, .. } => match callee.as_ref() {
-                Expr::Ident(i) => assert_eq!(i.name, "__lib_toy_main_core"),
+                Expr::Ident(i) => assert_eq!(i.name, "__lib_toy__main__core"),
                 other => panic!("expected Ident callee, got {:?}", other),
             },
             other => panic!("expected Call, got {:?}", other),
         }
         // The decl itself still mangles.
-        assert!(find_fn(&prog, "__lib_toy_main_core").is_some());
+        assert!(find_fn(&prog, "__lib_toy__main__core").is_some());
     }
 
     #[test]
@@ -2703,10 +2787,10 @@ mod tests {
         let mut prog = parse(src);
         mangle_program(&mut prog, "toy", "main");
 
-        let pick = find_fn(&prog, "__lib_toy_main_pick").expect("pick renamed");
+        let pick = find_fn(&prog, "__lib_toy__main__pick").expect("pick renamed");
         match &pick.body.stmts[0] {
             Stmt::Return(Some(Expr::Path(q)), _) => {
-                assert_eq!(q.segments[0].name, "__lib_toy_main_Color");
+                assert_eq!(q.segments[0].name, "__lib_toy__main__Color");
                 assert_eq!(q.segments[1].name, "Red");
             }
             other => panic!("expected Return of a path, got {:?}", other),

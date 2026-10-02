@@ -117,38 +117,6 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
             .all(|(x, y)| x.name == y.name && x.ty == y.ty)
 }
 
-/// GH #831 — the declaration a CONSTRUCTION path names.
-///
-/// `type Row2 = Row;` makes `Row2` a second spelling of `Row`, not a
-/// nominal type of its own (GH #759, spec `types.md` § "Type
-/// aliases"), so a struct / locus literal (`Row2 { id: 1 }`) and an
-/// enum-variant path (`Row2::V`) spelled with the alias name build
-/// the target's declaration. `build_top_scope` has already expanded
-/// every chain, so this is one hop.
-///
-/// `None` — and the caller keeps the name as written, with whatever
-/// diagnostic it already produced — when the name is not an alias,
-/// or when its target is not a NAME: nothing is constructible from
-/// `type Thing = Int;` or `type TwoRows = [Row; 2];` with `{ }` or
-/// `::`. `resolve_construction_aliases` draws the same line over the
-/// same declarations, which is what keeps `check` and `build` from
-/// disagreeing about a literal.
-///
-/// Every entry point runs that pass in its desugar sequence before
-/// the check (F.40 phase 2.1b), so for a program a verb checks this
-/// hop finds no alias left to follow. It answers for a caller that
-/// checks a bundle without the sequence (`check_bundle` over a
-/// fragment).
-fn construction_target(top: &TopScope, name: &str) -> Option<String> {
-    match top.lookup(name) {
-        Some(TopSymbol::Type(TypeInfo {
-            kind: TypeKind::Alias(Ty::Named(target)),
-            ..
-        })) => Some(target.clone()),
-        _ => None,
-    }
-}
-
 /// True if the match arms cover every possible scrutinee
 /// value. v0 rules:
 ///   - Any arm without a guard whose pattern is wildcard `_`
@@ -159,7 +127,12 @@ fn construction_target(top: &TopScope, name: &str) -> Option<String> {
 ///     must be covered by an unguarded `EnumName::Variant`
 ///     constructor pattern.
 ///   - For everything else: a wildcard / binding is required.
-fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool {
+fn match_is_exhaustive(
+    scrut_ty: &Ty,
+    arms: &[MatchArm],
+    top: &TopScope,
+    known: &KnownNames,
+) -> bool {
     let unguarded = |a: &&MatchArm| a.guard.is_none();
     let has_catchall = arms.iter().filter(unguarded).any(|a| {
         matches!(a.pattern, Pattern::Wildcard(_) | Pattern::Binding(_))
@@ -203,39 +176,31 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool
             // `<template>_<arg>_<arg>...` so the prefix check
             // is unambiguous.
             let mangle_prefix = format!("{}_", name);
-            // GH #534: an importer's arm is `alias::Enum::Variant` —
-            // three segments whose middle is the enum's authored name,
-            // while the scrutinee is typed by the seed-mangled name
-            // `__lib_<id>_<stem>_Enum`. The checker holds no alias
-            // table (the same limitation the `__lib_` tail matching
-            // elsewhere documents), so match on the mangled tail.
+            // GH #534: an importer's arm is `alias::Enum::Variant`,
+            // while the scrutinee is typed by the declaration's merged
+            // name. The arm's `alias::Enum` is resolved through the
+            // scope's one import table (`KnownNames::import_target`,
+            // the table the scrutinee's qualified type resolved
+            // through), so the two compare by identity: the merged
+            // name encodes the declaration's, and its text is no
+            // suffix of anything the author wrote.
             for arm in arms.iter().filter(unguarded) {
                 if let Pattern::Constructor { path, .. } = &arm.pattern {
                     let segs: Vec<&str> =
                         path.segments.iter().map(|s| s.name.as_str()).collect();
                     let (enum_seg, variant_seg) = match segs.as_slice() {
                         [e, v] => (*e, *v),
-                        [_, e, v]
-                            if name.starts_with("__lib_")
-                                && name.ends_with(&format!("_{}", e)) =>
-                        {
-                            (name.as_str(), *v)
-                        }
+                        [a, e, v] => match known.import_target(&format!("{a}::{e}")) {
+                            Some(target) => (target, *v),
+                            None => continue,
+                        },
                         _ => continue,
                     };
                     {
-                        // GH #831: the arm may spell the enum with
-                        // an alias of it (`type C2 = Color; C2::Red
-                        // -> ...`). An alias is a second spelling,
-                        // so the arm covers the same variant —
-                        // without this, a match whose arms all use
-                        // the alias read as covering nothing, and
-                        // one with a `_` arm checked clean and then
-                        // failed to BUILD ("constructor pattern:
-                        // unknown enum").
-                        let resolved = construction_target(top, enum_seg);
-                        let enum_seg: &str =
-                            resolved.as_deref().unwrap_or(enum_seg);
+                        // GH #831: an arm spelled with an alias of the
+                        // enum (`type C2 = Color; C2::Red -> ...`) was
+                        // rewritten to the enum's own name by the
+                        // desugar sequence, before the check.
                         let matches_template_or_monomorph =
                             enum_seg == *name
                                 || enum_seg.starts_with(&mangle_prefix);
@@ -13002,7 +12967,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top) {
+        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
                 stmt.span,
                 format!(
@@ -13218,16 +13183,17 @@ impl<'a> Checker<'a> {
         let subject_str = match subject {
             Expr::Literal(Literal::String(s), _) => Some(s.clone()),
             Expr::Ident(id) => self.top.topics.named(&id.name).map(|_| id.name.clone()),
-            // A7 (G16): cross-seed `alias::Topic <- payload;`. The
-            // typechecker can't resolve cross-seed names directly
-            // (mangling happens at the codegen-side pre-pass), so
-            // we use the leaf segment as the subject — mirroring
-            // resolve_bus_subject's handling of QualifiedTopic in
-            // subscribe/publish declarations, which also stores the
-            // leaf name. The locus's bus_publishes entry for this
-            // topic has payload=Unknown, so the assignability check
-            // below is permissive; the codegen-side mangle resolves
-            // the full path and binds the wire subject.
+            // A7 (G16): cross-seed `alias::Topic <- payload;`. A path
+            // the build's renames name was resolved to the topic's
+            // own name by the desugar sequence and is the `Ident` arm
+            // above; one that reaches here names nothing this bundle
+            // knows (an unresolved import), so we use the leaf
+            // segment as the subject — mirroring resolve_bus_subject's
+            // handling of QualifiedTopic in subscribe/publish
+            // declarations, which also stores the leaf name. The
+            // locus's bus_publishes entry for this topic has
+            // payload=Unknown, so the assignability check below is
+            // permissive.
             Expr::Path(qn) if qn.segments.len() > 1 => {
                 qn.segments.last().map(|s| s.name.clone())
             }
@@ -14488,20 +14454,20 @@ impl<'a> Checker<'a> {
     /// (`check_struct_literal`). A `bindings { }` topic needs no site
     /// of its own: `check_main_and_bindings` already refuses a topic
     /// nothing declares, qualified or not.
-    /// GH #1028: the imported free fn a qualified path names, through
-    /// the same table codegen resolves it with (`import_renames`:
-    /// `["lib", "add3"]` -> the mangled symbol the library's seed
-    /// declared). With the path as the author wrote it, unscoped
-    /// (GH #746's `u$0` head reads `u`), for diagnostics.
+    /// GH #1028: the imported free fn a qualified path names. The path
+    /// is resolved to the declaration it names by the scope's one
+    /// import table (`KnownNames::import_target`, the table a
+    /// qualified TYPE resolves through: `lib::add3` -> the mangled
+    /// symbol the library's seed declared), and the signature is the
+    /// declaration's, read by that identity. The second value is the
+    /// path as the author wrote it, unscoped (GH #746's `u$0` head
+    /// reads `u`), for diagnostics.
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
         }
         let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-        let (_, mangled) = self
-            .import_renames
-            .iter()
-            .find(|(k, _)| k.iter().map(|s| s.as_str()).eq(key.iter().copied()))?;
+        let mangled = self.known.import_target(&key.join("::"))?;
         match self.top.lookup(mangled) {
             Some(TopSymbol::Fn(sig)) => {
                 let written: Vec<&str> = std::iter::once(unscoped_alias(key[0]))
@@ -14740,12 +14706,10 @@ impl<'a> Checker<'a> {
                 // Color = Color::Red;` fail with `expected Color,
                 // got ?`).
                 if qn.segments.len() == 2 {
-                    // GH #831: the head may be an alias of the enum
-                    // (`type C2 = Color; C2::Red`) — a second
-                    // spelling, so it constructs the same variant.
-                    let spelled = &qn.segments[0].name;
-                    let resolved = construction_target(self.top, spelled);
-                    let enum_name = resolved.as_ref().unwrap_or(spelled);
+                    // GH #831: a head that is an alias of the enum
+                    // (`type C2 = Color; C2::Red`) was rewritten to
+                    // the enum's own name by the desugar sequence.
+                    let enum_name = &qn.segments[0].name;
                     let variant_name = &qn.segments[1].name;
                     if let Some(TopSymbol::Type(TypeInfo {
                         kind: TypeKind::Enum(variants),
@@ -15383,9 +15347,7 @@ impl<'a> Checker<'a> {
                     if qn.segments.len() == 2 {
                         // GH #831: through an alias of the enum too,
                         // exactly as the payload-less form above.
-                        let spelled = &qn.segments[0].name;
-                        let resolved = construction_target(self.top, spelled);
-                        let enum_name = resolved.as_ref().unwrap_or(spelled);
+                        let enum_name = &qn.segments[0].name;
                         let variant_name = &qn.segments[1].name;
                         if let Some(TopSymbol::Type(TypeInfo {
                             kind: TypeKind::Enum(variants),
@@ -17284,17 +17246,14 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let spelled: &String =
+        // GH #831: `Row2 { id: 1 }` where `type Row2 = Row;` reached
+        // here as `Row { id: 1 }`: the desugar sequence resolved the
+        // alias before the check, so everything below — the monomorph
+        // path, the struct / locus / perspective dispatch, the field
+        // validation — runs against the declaration the chain ends at
+        // exactly as if the author had written its name.
+        let name: &String =
             qualified_resolved.as_ref().unwrap_or(&path.segments[0].name);
-        // GH #831: `Row2 { id: 1 }` where `type Row2 = Row;`. The
-        // alias is transparent in every type position already; a
-        // literal spelled with it builds the declaration the chain
-        // ends at. Everything below — the monomorph path, the
-        // struct / locus / perspective dispatch, the field
-        // validation — then runs against that declaration exactly as
-        // if the author had written its name.
-        let resolved_alias = construction_target(self.top, spelled);
-        let name: &String = resolved_alias.as_ref().unwrap_or(spelled);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type

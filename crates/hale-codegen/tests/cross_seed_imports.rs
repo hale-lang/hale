@@ -243,15 +243,15 @@ fn three_file_lib_exposes_decls_from_every_file() {
         .map(|(segs, mangled)| format!("{} -> {}", segs.join("::"), mangled))
         .collect();
     let has = |needle: &str| rename_strings.iter().any(|s| s.contains(needle));
-    assert!(has("__lib_lib_a_Alpha"), "no Alpha rename: {:?}", rename_strings);
-    assert!(has("__lib_lib_b_Beta"), "no Beta rename: {:?}", rename_strings);
+    assert!(has("__lib_lib__a__Alpha"), "no Alpha rename: {:?}", rename_strings);
+    assert!(has("__lib_lib__b__Beta"), "no Beta rename: {:?}", rename_strings);
     assert!(
-        has("__lib_lib_b_make_beta"),
+        has("__lib_lib__b__make_beta"),
         "no make_beta rename: {:?}",
         rename_strings
     );
     assert!(
-        has("__lib_lib_c_render"),
+        has("__lib_lib__c__render"),
         "no render rename: {:?}",
         rename_strings
     );
@@ -351,12 +351,12 @@ fn consumer_uses_greeter_and_formatted_from_lib_toy() {
         .map(|s| s.to_string())
         .collect();
     assert!(
-        lib_names.contains(&"__lib_toy_greet_Greeter".to_string()),
+        lib_names.contains(&"__lib_toy__greet__Greeter".to_string()),
         "Greeter not in mangled lib: {:?}",
         lib_names
     );
     assert!(
-        lib_names.contains(&"__lib_toy_format_Formatted".to_string()),
+        lib_names.contains(&"__lib_toy__format__Formatted".to_string()),
         "Formatted not in mangled lib: {:?}",
         lib_names
     );

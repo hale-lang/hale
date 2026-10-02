@@ -255,29 +255,62 @@ flat prefix so they never collide with the importer's symbols.
 The mangled form is:
 
 ```
-__lib_<lib_id>_<file_stem>_<name>
+__lib_<lib_id>__<file_stem>__<name>
 ```
 
-- **`<lib_id>`** is a stable, sanitized identifier for the lib
-  derived from its canonical path relative to the workspace
-  root (the nearest ancestor directory containing `hale.toml`
-  or `Cargo.toml`). Two consumers importing the same lib
-  produce the same `lib_id` regardless of which alias each
-  consumer chose, and regardless of which of the two spellings
-  of "Resolution order" above each consumer wrote. Non-identifier
-  characters in the path collapse to `_`; runs of underscores
-  collapse to one.
+Every part is encoded into identifier characters by one rule, the
+**component encoding**: an ASCII letter or digit is kept, except an
+`x` that starts the component; a `_` is kept when it does not start
+the component and is followed by a letter or digit other than `x`;
+every other byte is an escape, `xHH` (two lowercase hex digits) at
+the start of the component and `_xHH` after it. So an encoded
+component starts with a letter or digit, never ends with `_` and
+never holds `__`, and the tuple reads back unambiguously: a run of
+two underscores is a joiner, a run of three the directory mark
+followed by a joiner, and no two declarations of a build — of one
+library or of two — share a name.
+
+- **`<lib_id>`** is a function of the library's own path and
+  nothing else: its canonical path relative to the entry's
+  workspace root (the nearest ancestor directory of the entry
+  containing `hale.toml` or `Cargo.toml`) when the library lies
+  inside the workspace, otherwise relative to the entry seed's
+  directory (with leading `..` segments). Two consumers of one
+  workspace importing the same lib produce the same `lib_id`
+  regardless of which alias each consumer chose, which of the two
+  spellings of "Resolution order" above each wrote, the order of
+  their imports, or what else they import; a workspace moved or
+  cloned as a whole keeps every `lib_id`. Each path segment is one
+  encoded component and segments are joined by `__`. A
+  single-file library drops its `.hl`, and a directory library's
+  `lib_id` ends in one `_` (a single-file library's never does).
+  So `shared/messages/` is `shared__messages_`, `../one/util.hl`
+  is `x2e_x2e__one__util`, `lib-a/` is `lib_x2da_`, and `xml.hl`
+  is `x78ml`.
 - **`<file_stem>`** is the basename of the source file the decl
-  lives in, sans `.hl`. So two files in the same library can
-  share a decl name without colliding.
-- **`<name>`** is the original decl name as written in source.
+  lives in, sans `.hl`, encoded. So two files in the same library
+  can share a decl name without colliding, and a stem is never
+  read as part of a path: `b__util.hl` in library `a/` is
+  `__lib_a___b_x5f_util__Tag`, and `util.hl` in library `a/b/` is
+  `__lib_a__b___util__Tag`.
+- **`<name>`** is the decl name as written in source, encoded:
+  `s__who` is `s_x5f_who` and `_who` is `x5fwho`.
 
 Example: `<repo>/shared/messages/messages.hl` declaring `type
 Order { ... }`, imported by app A as `msgs` and by app B as `m`,
-both produce `__lib_shared_messages_messages_Order` in the
+both produce `__lib_shared__messages___messages__Order` in the
 merged program. The shared identity is the natural shape for
 DTO seeds exchanged on a bus — both apps see Order as
 symbol-identical, and the wire bytes match by construction.
+
+One shape is kept as it always was, unencoded. In a single-file
+library named by its file name alone (see the compatibility
+boundary below) whose file stem is letters and digits, a
+declaration whose name neither starts with `_` nor holds `__` is
+`__lib_<stem>_<stem>_<name>` — `util.hl` declaring `make_err` is
+`__lib_util_util_make_err`. That shape never holds `__` after the
+prefix and the encoded one always does, and its stem ends at the
+first `_`, so the two never meet.
 
 Mangling is recursive: every reference to an imported decl
 inside the imported seed itself — bare names in fn bodies,
@@ -291,7 +324,7 @@ lexical scope rules; the mangler tracks scope so a local named
 
 The user never writes the mangled form. Their import-site
 references go through a per-build path-rename table that maps
-`<alias>::<Name>` → `__lib_<lib_id>_<stem>_<Name>`, analogous to
+`<alias>::<Name>` → `__lib_<lib_id>__<stem>__<Name>`, analogous to
 the static `STDLIB_PATH_RENAMES` and `MOA_PATH_RENAMES` tables.
 The codegen's `Cx::mangled_for_path` method consults all three
 tables in order: static stdlib, static moa, per-build imports.
@@ -299,15 +332,36 @@ The `<alias>` is the importer's local namespace choice (used
 only at the call-site reference layer); the `<lib_id>` is the
 lib's canonical identity.
 
-Collision avoidance: two different libs live at different paths,
-get different `<lib_id>`s, never collide regardless of what
-aliases their importers picked.
+Collision avoidance: two different libs of one build have
+different paths relative to the same anchors — a path inside the
+workspace never starts with `..` and one outside it always does —
+and the encoding is injective, so they get different `<lib_id>`s
+whatever aliases their importers picked and in whatever order they
+are imported. There is no fallback name and no collision to
+resolve. (Until 2026-10-01 a lib outside any workspace was named by
+its file name alone, and the second of two such libs with one file
+name took a digest of its absolute path: which lib kept the plain
+name depended on import order, and a clone of the tree got other
+names.)
 
-`<lib_id>` fallback when no workspace root is in scope (e.g., a
-one-off `hale build foo.hl` outside any toml-rooted repo):
-the lib's directory base name (or file stem for single-file
-imports), sanitized. Less collision-safe but the only stable
-thing available; rare in practice.
+The compatibility boundary: exactly these names are unchanged from
+before 2026-10-01. A single-file library whose path from its anchor
+is its own file name — `import "util"` beside an entry outside any
+workspace, or a `util.hl` at the workspace root — whose file stem
+is letters and digits keeps the name of each declaration that
+neither starts with `_` nor holds `__` (`__lib_util_util_who`,
+`__lib_util_util_make_err`). Every other name changed: a
+declaration of that library starting with `_` or holding `__` is
+encoded (`__lib_util__util__x5fwho`); a library beside the entry
+whose stem holds a `_` takes the encoded shape
+(`__lib_my_util__my_util__who`), since `a.hl` declaring `a_a_b` and
+`a_a.hl` declaring `b` would otherwise share `__lib_a_a_a_a_b`; and
+every other library takes the encoded relative path, joined to the
+encoded stem and name by `__`: a workspace library's `/` separators
+became `__` (`shared_messages` is now `shared__messages_`), a
+directory library gained its trailing `_`, and a library outside
+the workspace is named by its path from the entry seed's directory
+rather than by its file name.
 
 The mangling shape mirrors the existing hand-spelled
 `__StdLangMorpheme` / `__MoaBraidId` prefixes the bundled

@@ -129,6 +129,32 @@ fn a_method_on_a_handle_an_imported_factory_returned() {
 }
 
 #[test]
+fn every_alias_of_a_library_reaches_the_one_declaration() {
+    // F.40 phase 3, C2: the path names the library's declaration
+    // through the scope's one import table, whichever alias spells it,
+    // and the refusal names the path as the author wrote it. The
+    // correct call through the first alias is clean in the same seed.
+    refused(
+        "two_aliases",
+        "import \"../lib\" as lib;\nimport \"../lib\" as other;\n\
+         fn main() { let a = lib::add3(1, 2, 3); let b = other::add3(1, 2); println(a + b); }\n",
+        "fn `other::add3` takes at least 3 arguments, got 2",
+    );
+}
+
+#[test]
+fn an_alias_of_nothing_is_not_an_imported_fn() {
+    // A path whose head is no import, or whose name the library does
+    // not declare, resolves to no declaration: it is refused as an
+    // unresolved path, never as a call of some fn's arity.
+    refused(
+        "missing_name",
+        "import \"../lib\" as lib;\nfn main() { let x = lib::add4(1, 2, 3); println(x); }\n",
+        "add4",
+    );
+}
+
+#[test]
 fn correct_cross_seed_calls_stay_clean() {
     let d = tree(
         "ok",
