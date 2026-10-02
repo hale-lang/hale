@@ -515,18 +515,16 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "generics",
         layer: Layer::Declarations,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Derivation,
         answers: "Which monomorph a generic call instantiates and how its bindings unify.",
         inputs: &["generic declarations", "call arguments", "the mangled token vocabulary"],
         producer: Some(site(CHECK, "unify_generic_ty")),
-        legacy: &[
-            legacy(CG, "unify_generic_param_bindings", "a Ty-level mirror of the checker's unification, by its own comment", "codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them)"),
-            legacy(CG, "infer_generic_fn_args", "codegen infers generic arguments again from lowered types", "same"),
-        ],
-        consumers: &[consumer_at("check (a mangled monomorph name: the table's row)", CHECK, "resolve_generic_monomorph"), consumer("codegen")],
+        legacy: &[],
+        consumers: &[consumer_at("check (a mangled monomorph name: the table's row)", CHECK, "resolve_generic_monomorph"), consumer_at("codegen (a generic fn call's type arguments and specialization: the call's typed-body row, and the monomorph table's row for them)", CG, "generic_call_instance"), consumer("codegen")],
         invariants: &[
             "one unification; the monomorph set is a row lowering reads",
+            "lowering infers no generic argument: a generic fn call's type arguments are its typed-body row (inside a specialization, the row typed for that monomorph) and the specialization's name is the monomorph table's; a hole, or a call with no row, is refused at the call",
             "one monomorph table per snapshot (the typed-body table's `monomorphs`), keyed by the template's site and its type arguments, never by a name string: its producer parses a mangled name once, for each name the program spells (a written instantiation as the checker resolves it, an annotation, a struct literal's path), against the bundle's templates by identity; the checker's lookups read the row",
             "a generic call inside a generic fn's body is typed again for each of the fn's monomorphs, the template's parameters bound to its arguments, and recorded under them; that walk reports nothing",
         ],

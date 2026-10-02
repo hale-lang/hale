@@ -377,13 +377,13 @@ fn mangle_token_to_ty(
     }
 }
 
-/// M3 stage 3: Ty-level mirror of codegen's m62
-/// `unify_generic_param_bindings`. Binds generic names appearing in
-/// `param_te` against the actual arg type. Top-level generic names
-/// bind directly; Array/Bounded recurse on the element. Generic
-/// names nested under generic-ARG'd Named types (Box<T> in param
-/// position) stay unbound here — permissive, codegen's own unifier
-/// still runs. Returns Err((name, existing, new)) on a conflict.
+/// M3 stage 3: the one generic unification. Binds generic names
+/// appearing in `param_te` against the actual arg type; the bindings
+/// are the call's typed-body row, which lowering reads (F.40 phase 3,
+/// E4). Top-level generic names bind directly; Array/Bounded recurse
+/// on the element. Generic names nested under generic-ARG'd Named
+/// types (Box<T> in param position) stay unbound here — permissive.
+/// Returns Err((name, existing, new)) on a conflict.
 fn unify_generic_ty(
     param_te: &TypeExpr,
     arg: &Ty,

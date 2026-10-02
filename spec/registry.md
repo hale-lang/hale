@@ -15,7 +15,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
-| `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 2 | Which monomorph a generic call instantiates and how its bindings unify. |
+| `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
@@ -285,26 +285,22 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `typed_bodies(` may be referenced from: `crates/hale-types/src/typed_bodies.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
-### `generics` — Migrating · derivation
+### `generics` — Canonical · derivation
 
 **Answers.** Which monomorph a generic call instantiates and how its bindings unify.
 
 **Inputs.** generic declarations; call arguments; the mangled token vocabulary
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `unify_generic_ty`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-codegen/src/codegen.rs` · `unify_generic_param_bindings` — a Ty-level mirror of the checker's unification, by its own comment. *Removed when:* codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them).
-- `crates/hale-codegen/src/codegen.rs` · `infer_generic_fn_args` — codegen infers generic arguments again from lowered types. *Removed when:* same.
+**Producer.** `crates/hale-types/src/check.rs` · `unify_generic_ty`
 
 **Also owned.** `crates/hale-types/src/check.rs` · `monomorph_table`; `crates/hale-types/src/check.rs` · `specialize_generic_fns`
 
-**Consumers.** check (a mangled monomorph name: the table's row) (`crates/hale-types/src/check.rs` · `resolve_generic_monomorph`); codegen
+**Consumers.** check (a mangled monomorph name: the table's row) (`crates/hale-types/src/check.rs` · `resolve_generic_monomorph`); codegen (a generic fn call's type arguments and specialization: the call's typed-body row, and the monomorph table's row for them) (`crates/hale-codegen/src/codegen.rs` · `generic_call_instance`); codegen
 
 **Invariants.**
 
 - one unification; the monomorph set is a row lowering reads
+- lowering infers no generic argument: a generic fn call's type arguments are its typed-body row (inside a specialization, the row typed for that monomorph) and the specialization's name is the monomorph table's; a hole, or a call with no row, is refused at the call
 - one monomorph table per snapshot (the typed-body table's `monomorphs`), keyed by the template's site and its type arguments, never by a name string: its producer parses a mangled name once, for each name the program spells (a written instantiation as the checker resolves it, an annotation, a struct literal's path), against the bundle's templates by identity; the checker's lookups read the row
 - a generic call inside a generic fn's body is typed again for each of the fn's monomorphs, the template's parameters bound to its arguments, and recorded under them; that walk reports nothing
 
