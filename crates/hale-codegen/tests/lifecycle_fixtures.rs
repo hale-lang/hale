@@ -29,9 +29,10 @@
 //! obligations with their entry and completion edges, order-insensitive
 //! across threads and ordered within a domain. A fixture whose trace
 //! shows today's departure from the plan is in [`TRACE_KNOWN_OPEN`],
-//! with the inventory row and the violation the trace shows; when the
-//! fix lands the violation goes, the assertion fails, and so does the
-//! entry. A pending line's fixture is held to the laws alone.
+//! with the inventory row and every violation the defect causes; any
+//! other violation fails the fixture, and when the fix lands the listed
+//! ones go, the assertion fails, and so does the entry. A pending
+//! line's fixture is held to the laws alone.
 //!
 //! [`CONTROLS`] are the negative controls: a step removed or reordered
 //! (`LOTUS_LIFECYCLE_SKIP` in the trace build, or today's own order for
@@ -336,24 +337,83 @@ const PLANS: &[(&str, &str)] = &[
 ];
 
 /// Fixtures whose trace departs from their plan today: (file,
-/// inventory row, the violation the trace shows, as it starts). Each is
-/// asserted to show it; when the fix lands it does not, and the entry
-/// has to go.
-const TRACE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
-    ("l04_dissolve_route_reclaim.hl", "C25", "missing: Flowing.FailureDelivery"),
-    ("l04_dissolve_route_cascade.hl", "C31", "missing: Kid.FailureDelivery"),
+/// inventory row, the departures the trace shows). The departures are
+/// the row's defect and its documented consequences, whole violations
+/// with the instance number written `_` (the runtime mints it); the
+/// trace is asserted to show exactly these, so a violation outside the
+/// list fails the fixture as it would any other, and when the fix lands
+/// they go, the assertion fails, and so does the entry.
+const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
+    // The failure raised at Flowing's dissolve takes the structural
+    // exit: the process ends inside that dissolve, so nothing owed after
+    // it is reached.
+    (
+        "l04_dissolve_route_reclaim.hl",
+        "C25",
+        &[
+            "missing: Flowing.FailureDelivery",
+            "missing: Flowing.Reclaim",
+            "missing: App.Drain",
+            "missing: App.Dissolve",
+            "missing: App.Reclaim",
+        ],
+    ),
+    // The same exit, inside the cascade's dissolve of Kid.
+    (
+        "l04_dissolve_route_cascade.hl",
+        "C31",
+        &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
+    ),
     // Line 7: the host joins the pools and only then aborts the waits,
-    // and the join never returns.
-    ("l07_pool_or_wait_teardown.hl", "R34", "edge: -.PoolJoin@EagerTeardown.Entered"),
-    ("l12_pinned_fields_drain.hl", "C9", "missing: Inner.Drain"),
-    ("l13_resume_pool_child.hl", "C43", "domain: Kid.Run"),
-    // Line 18: the step the outcome cannot show.
-    ("l18_eager_pre_drain.hl", "C13", "missing: -.PreDrain@EagerTeardown"),
-    ("rd_restart_during_teardown.hl", "C42", "count: Kid.Restart"),
+    // and the join never returns, so the abort never comes.
+    (
+        "l07_pool_or_wait_teardown.hl",
+        "R34",
+        &[
+            "edge: -.PoolJoin@EagerTeardown.Entered (process) with -.WaitAbort@EagerTeardown.Completed not reached",
+            "missing: -.WaitAbort@EagerTeardown",
+        ],
+    ),
+    // Inner is never drained, so Outer's drain starts without it.
+    (
+        "l12_pinned_fields_drain.hl",
+        "C9",
+        &["missing: Inner.Drain", "edge: Outer.Drain.Entered (inst _ inc 0) with Inner.Drain.Completed not reached"],
+    ),
+    ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
+    // Line 18: the step the outcome cannot show, and Sub's drain that
+    // should follow it.
+    (
+        "l18_eager_pre_drain.hl",
+        "C13",
+        &[
+            "missing: -.PreDrain@EagerTeardown",
+            "edge: Sub.Drain.Entered (inst _ inc 0) with -.PreDrain@EagerTeardown.Completed not reached",
+        ],
+    ),
+    // The restart performed during teardown begins a second
+    // incarnation, born and run.
+    (
+        "rd_restart_during_teardown.hl",
+        "C42",
+        &[
+            "count: Kid.Restart has 1 subjects, owes 0",
+            "count: Kid.Birth has 2 subjects, owes 1",
+            "count: Kid.Run has 2 subjects, owes 1",
+        ],
+    ),
     // Join progress: the late failure completes only because its
     // handler runs in place on the child's thread (decision L0-1).
-    ("jp_late_failure_pinned_join.hl", "C36", "domain: Late.FailureDelivery"),
-    ("jp_late_failure_pool_join.hl", "C36", "domain: Late.FailureDelivery"),
+    (
+        "jp_late_failure_pinned_join.hl",
+        "C36",
+        &["domain: Late.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main"],
+    ),
+    (
+        "jp_late_failure_pool_join.hl",
+        "C36",
+        &["domain: Late.FailureDelivery (inst _ inc 0) ran on pool:side, claimed main"],
+    ),
 ];
 
 /// A negative control: a run in which a step is removed or reordered,
@@ -1057,8 +1117,12 @@ fn every_fixture_is_listed_and_formatted() {
         fixture(file);
         assert!(!plan(text).owed.is_empty(), "{file}: an empty plan");
     }
-    for (file, _, _) in TRACE_KNOWN_OPEN {
+    for (file, _, departures) in TRACE_KNOWN_OPEN {
         assert!(PLANS.iter().any(|(p, _)| p == file), "{file} is TRACE_KNOWN_OPEN but has no plan");
+        assert!(!departures.is_empty(), "{file} is TRACE_KNOWN_OPEN with no departure");
+        for d in *departures {
+            assert_eq!(normalized(d), *d, "{file}: a departure names its instance as `_`");
+        }
     }
 }
 
@@ -1091,19 +1155,42 @@ fn every_planned_kind_has_a_negative_control() {
     }
 }
 
+/// A violation with its instance numbers written `_`: `(inst 3 inc 0)`
+/// is `(inst _ inc 0)`.
+fn normalized(violation: &str) -> String {
+    let mut out = String::new();
+    let mut rest = violation;
+    while let Some(i) = rest.find("(inst ") {
+        let (head, tail) = rest.split_at(i + "(inst ".len());
+        out.push_str(head);
+        let digits = tail.len() - tail.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        out.push_str(if digits > 0 { "_" } else { "" });
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The trace oracle over one run: clean, or, for a known-open trace,
-/// showing the violation its entry names.
+/// showing exactly the departures its entry names.
 fn assert_trace(file: &str, ran: &Ran) {
     let v = trace_violations(file, ran);
-    let shown: Vec<String> = v.iter().map(Violation::to_string).collect();
+    let shown: Vec<String> = v.iter().map(|v| normalized(&v.to_string())).collect();
     eprintln!("{file}: trace oracle: {shown:#?}");
-    if let Some((_, row, shows)) = TRACE_KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) {
-        assert!(
-            shown.iter().any(|s| s.starts_with(shows)),
-            "{file}: the trace no longer shows `{shows}`: the fix for inventory row {row} has landed, so its TRACE_KNOWN_OPEN entry has to go; it shows {shown:#?}"
-        );
-    } else {
+    let Some((_, row, departures)) = TRACE_KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) else {
         assert!(shown.is_empty(), "{file}: the trace oracle fails: {shown:#?}");
+        return;
+    };
+    let unmatched: Vec<&String> = shown.iter().filter(|s| !departures.contains(&s.as_str())).collect();
+    assert!(
+        unmatched.is_empty(),
+        "{file}: the trace oracle fails beyond inventory row {row}'s departures: {unmatched:#?}"
+    );
+    for d in *departures {
+        assert!(
+            shown.iter().any(|s| s == d),
+            "{file}: the trace no longer shows `{d}`: the fix for inventory row {row} has landed, so its TRACE_KNOWN_OPEN entry has to change or go; it shows {shown:#?}"
+        );
     }
 }
 
