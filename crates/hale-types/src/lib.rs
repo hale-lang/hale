@@ -40,6 +40,7 @@ pub mod frontier;
 pub mod check;
 pub mod handler_routing;
 pub mod lifecycle;
+pub mod lowering_laws;
 pub mod claim_lowering;
 pub mod claims;
 pub mod desugar_sequence;
@@ -300,6 +301,7 @@ pub fn check_bundle_opts_scoped(
     let entry = entry::entry_row(bundle);
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
+    let placement = placement::derive_placement(bundle, &top, &entry);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -310,6 +312,7 @@ pub fn check_bundle_opts_scoped(
             bindings: &bindings,
             alloc_summary: &alloc_summary,
             forms: &forms,
+            placement: &placement,
         },
         allow_unowned_subscriber,
         strict_callees,

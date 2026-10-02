@@ -535,6 +535,10 @@ pub struct CheckInputs<'a> {
     /// included. The F.31 cross-pool check, the instance-aliasing rule
     /// and the effects certificate engine read them.
     pub forms: &'a crate::form_rows::FormRows,
+    /// The placement table (F.40 phase 3, P1): the laws that replaced
+    /// lowering's backstops ([`crate::lowering_laws`]) read which
+    /// instance runs pinned and what it realizes.
+    pub placement: &'a crate::placement::PlacementTable,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -559,6 +563,7 @@ pub fn check_bundle(
     let entry = crate::entry::entry_row(bundle);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
+    let placement = crate::placement::derive_placement(bundle, top, &entry);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -567,6 +572,7 @@ pub fn check_bundle(
         bindings: &bindings,
         alloc_summary: &alloc_summary,
         forms: &forms,
+        placement: &placement,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -715,6 +721,15 @@ pub fn check_bundle_reporting(
     // thread but the last and leaks its arena. Placement describes a
     // static topology; the loop is rejected.
     check_pinned_locus_in_loop(bundle, top, inputs.entry, &mut diags);
+    // F.40 phase 3, C7: the laws that replaced lowering's backstops,
+    // the one entry the harness's lowering view demands too.
+    diags.extend(crate::lowering_laws::lowering_laws(
+        bundle,
+        &crate::lowering_laws::LoweringLawInputs {
+            placement: inputs.placement,
+            bindings: inputs.bindings,
+        },
+    ));
     // GH #890: a placement entry is carried by the locus LITERAL
     // lowered for its field and by nothing else, so a field built any
     // other way (a factory call the commonest) leaves the entry
@@ -9639,11 +9654,9 @@ impl<'a> Checker<'a> {
     ///      primitives or structs.
     ///   3. No duplicate field keys.
     ///
-    ///   4. Rule 6: a locus placed `pinned` declares neither
-    ///      `accept()` nor a closure with `epoch birth` or `epoch
-    ///      dissolve` (judged at the entry, with its span; codegen
-    ///      keeps a spanless backstop for harness builds that skip
-    ///      the checker).
+    /// Rule 6 reads what each pinned instance realizes, so it is
+    /// judged over the placement table (`crate::lowering_laws`), not
+    /// here by the field's written type.
     fn check_placement_block(
         &mut self,
         info: &crate::symbol::LocusInfo,
@@ -9706,56 +9719,10 @@ impl<'a> Checker<'a> {
                             ),
                         ));
                     }
-                    // Rule 6 (F.31): a locus placed `pinned` owns its
-                    // own OS thread, so it cannot accept children
-                    // (their cascade would cross threads) and cannot
-                    // declare a closure that fires inside the cascade
-                    // (epoch birth or dissolve, dissolve being the
-                    // default when no clause is written, routed by the
-                    // owner's thread). A tick, duration, explicit or
-                    // inline closure fires on the pinned thread itself
-                    // and ships (example 40's pinned heartbeat, the
-                    // pinned restart tests, DNA's nerves connection).
-                    // The restriction belongs to the placement entry,
-                    // not the declaration: the same locus placed
-                    // cooperative is fine. Judged here, with the
-                    // entry's span, since F.40 phase 0; until then the
-                    // only evaluator was a spanless refusal at
-                    // lowering, so `hale check` and the LSP accepted a
-                    // program `hale build` refused.
-                    if is_locus && matches!(entry.spec, PlacementSpec::Pinned { .. }) {
-                        let conflict = match self.top.lookup(name) {
-                            Some(TopSymbol::Locus(li)) if li.accept_param.is_some() => {
-                                Some("declares `accept()`: a pinned locus owns its own \
-                                      thread and cannot accept children")
-                            }
-                            Some(TopSymbol::Locus(li))
-                                if li.closures.iter().any(|c| {
-                                    matches!(
-                                        c.epoch,
-                                        hale_syntax::ast::EpochSpec::Birth
-                                            | hale_syntax::ast::EpochSpec::Dissolve
-                                    )
-                                }) =>
-                            {
-                                Some("declares a closure whose epoch is `birth` or \
-                                      `dissolve` (dissolve is the default): the \
-                                      lifecycle cascade cannot route it across a pinned \
-                                      locus's thread")
-                            }
-                            _ => None,
-                        };
-                        if let Some(why) = conflict {
-                            self.diags.push(Diag::ty(
-                                entry.span,
-                                format!(
-                                    "placement entry `{}`: `{}` is placed `pinned` but {}; \
-                                     place it `cooperative`, or drop the feature (rule 6)",
-                                    entry.field.name, name, why
-                                ),
-                            ));
-                        }
-                    }
+                    // Rule 6 (a pinned locus accepts no children and
+                    // declares no cascade closure) is judged over the
+                    // placement table's rows, by what each pinned
+                    // instance realizes: `crate::lowering_laws`.
                 }
                 Ty::Unknown => {
                     // Cross-seed / stdlib locus — be permissive,

@@ -229,16 +229,34 @@ fn two_universes_one_numeric_id_stay_two_identities() {
 
 // ---------------------------------------------------- the producer
 
-/// The table is a family of the snapshot: demanded, it runs once, and
-/// a check demands it not at all (no consumer reads it yet).
+/// The table is a family of the snapshot: demanded, it runs once. The
+/// check demands it (rule 6 reads it, F.40 phase 3, C7), and a later
+/// demand reads the same table.
 #[test]
 fn the_table_is_demanded_once_per_snapshot() {
     let s = clean("two_instances.hl");
-    assert_eq!(s.builds()["placement"], 0, "the check reads no placement table");
+    assert_eq!(s.builds()["placement"], 1, "the check reads the placement table, once");
     let first: *const PlacementTable = table(&s);
     let again: *const PlacementTable = table(&s);
     assert_eq!(first, again);
     assert_eq!(s.builds()["placement"], 1);
+}
+
+/// Rule 6's reach (C7): a field the checker types `Unknown` is a
+/// `std::` locus, and the pinned row realizes the stdlib's own
+/// declaration, by its stdlib-universe site, which is where the law
+/// reads the locus's members. No stdlib locus declares `accept` or a
+/// cascade closure today, so the program checks clean.
+#[test]
+fn a_pinned_stdlib_locus_realizes_its_stdlib_declaration() {
+    let s = clean("pinned_stdlib.hl");
+    let t = table(&s);
+    let (_, row) = one(t, "s");
+    assert!(matches!(row.decided_by, Decision::Entry { .. }));
+    assert!(matches!(t.domain(row.domain).kind, DomainKind::Pinned { .. }));
+    let realizes = row.realizes.as_ref().expect("the pinned row realizes a declaration");
+    assert_eq!(realizes.site.universe, SiteUniverse::StdlibAnalysis);
+    assert_eq!(realizes.lowered, "__StdLogStdoutSink");
 }
 
 /// Case 1: one type, three instances, three domains; each nested `K`

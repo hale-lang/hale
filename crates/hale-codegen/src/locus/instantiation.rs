@@ -3870,27 +3870,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and the deferred-dissolve flush (which signals
         // shutdown) can both reach it.
         //
-        // Still gated: accept (children of pinned would need
-        // cross-thread cascade-dissolve coordination which adds
-        // significant complexity beyond m28b), closures.
+        // A pinned locus accepts no children and declares no birth
+        // or dissolve closure (rule 6): the law judges it over the
+        // placement table before lowering, at every entry point
+        // (`hale_types::lowering_laws`), so lowering does not.
         if is_pinned {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
-            if info.methods.contains_key("accept") {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares `accept()`; pinned coordinators \
-                     wait on a future cross-thread cascade-dissolve milestone",
-                    locus_name
-                )));
-            }
-            if info.birth_closures_fn.is_some()
-                || info.dissolve_closures_fn.is_some()
-            {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares closures; cross-thread closure \
-                     routing not yet supported",
-                    locus_name
-                )));
-            }
             // GH #826 backstop. This branch's join record — the
             // deferred-dissolve slot below and the `pthread_t`
             // alloca it carries — is ONE alloca per instantiation

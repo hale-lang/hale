@@ -140,6 +140,7 @@ checker	K-1	__StdHttpServer	known-old-bug	8	crates/hale-codegen/tests/http_serve
 checker	K-1	__StdIoTcpListener	known-old-bug	7	crates/hale-cli/tests/target_model.rs
 checker	K-1	__StdIoUdpReader	known-old-bug	1	crates/hale-types/tests/fixtures/placement/two_universes
 checker	K-1	__StdLogLogger	known-old-bug	1	tests/hale/log_fields_test.hl
+checker	K-1	__StdLogStdoutSink	known-old-bug	1	crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
 checker	K-1	__StdProcessChild	known-old-bug	1	dna/tests/oidc_head_test.hl
 checker	K-1	__lib_dna_api_knowledge_memory_LocalKnowledge	known-old-bug	1	dna/api/practice_review
 checker	K-1	__lib_dna_api_main_Api	known-old-bug	1	dna/api/practice_review
@@ -812,6 +813,7 @@ model	M-2	__StdHttpServer	spec-disagreement	8	crates/hale-codegen/tests/http_ser
 model	M-2	__StdIoTcpListener	spec-disagreement	6	crates/hale-cli/tests/target_model.rs
 model	M-2	__StdIoUdpReader	spec-disagreement	1	crates/hale-types/tests/fixtures/placement/two_universes
 model	M-2	__StdLogLogger	spec-disagreement	1	tests/hale/log_fields_test.hl
+model	M-2	__StdLogStdoutSink	spec-disagreement	1	crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
 model	M-2	__StdMetricsHistogramList	spec-disagreement	2	dna/api/project_service
 model	M-2	__StdMetricsMap	spec-disagreement	2	dna/api/project_service
 model	M-2	__StdMetricsRegistry	spec-disagreement	1	dna/host
@@ -1532,6 +1534,7 @@ receiver	K-1	__StdHttpServer	known-old-bug	8	crates/hale-codegen/tests/http_serv
 receiver	K-1	__StdIoTcpListener	known-old-bug	7	crates/hale-cli/tests/target_model.rs
 receiver	K-1	__StdIoUdpReader	known-old-bug	1	crates/hale-types/tests/fixtures/placement/two_universes
 receiver	K-1	__StdLogLogger	known-old-bug	1	tests/hale/log_fields_test.hl
+receiver	K-1	__StdLogStdoutSink	known-old-bug	1	crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
 receiver	K-1	__StdProcessChild	known-old-bug	1	dna/tests/oidc_head_test.hl
 receiver	K-1	__lib_dna_api_knowledge_memory_LocalKnowledge	known-old-bug	1	dna/api/practice_review
 receiver	K-1	__lib_dna_api_main_Api	known-old-bug	1	dna/api/practice_review

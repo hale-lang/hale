@@ -222,8 +222,9 @@ impl Config {
     /// lowering is not gated on a check. The harness runs no checker —
     /// a test that wants the check calls it itself, and the agreement
     /// sweep (`corpus_check_build_agreement`) compares the two — so its
-    /// snapshot lowers what it is handed. The check is still a family
-    /// of it, computed only when demanded.
+    /// snapshot lowers what it is handed, once the laws that replaced
+    /// lowering's own refusals pass ([`hale_types::lowering_laws`]). The
+    /// check is still a family of it, computed only when demanded.
     pub fn harness(target: Target) -> Self {
         Config { check_gates_lowering: false, ..Config::build(target) }
     }
@@ -1062,6 +1063,7 @@ impl Snapshot {
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
+                    placement: self.demand_placement().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1184,8 +1186,9 @@ impl Snapshot {
     /// from the entry row's lowering root, after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
-    /// total over a program that does not typecheck. No consumer reads it
-    /// yet (F.40 phase 3, P1).
+    /// total over a program that does not typecheck. The check reads it
+    /// for the laws that replaced lowering's backstops, and the harness's
+    /// lowering view demands those laws (F.40 phase 3, C7).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {
@@ -1264,23 +1267,45 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The laws that replaced lowering's backstops
+    /// ([`hale_types::lowering_laws`], the `law_backstops` family) over
+    /// the rows they read, for a view the check does not gate: the
+    /// check runs the same laws among its rules, so a gated view has
+    /// them already. Blocked with the rows.
+    fn demand_lowering_laws(&self) -> Result<Vec<Diag>, Blocked> {
+        let inputs = hale_types::lowering_laws::LoweringLawInputs {
+            placement: self.demand_placement().map_err(Clone::clone)?,
+            bindings: self.demand_bindings().map_err(Clone::clone)?,
+        };
+        let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
+        hale_types::finish_check_diags(&mut diags);
+        Ok(diags)
+    }
+
     /// The view codegen lowers: the check first, then
     /// [`hale_types::resolved::resolve_program`] over the snapshot's
     /// program, source map, renames and api config — the two lowering
     /// rewrites as relations, the stdlib merge, the mint over the
     /// merged program, and the tables. A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
-    /// The harness's snapshot ([`Config::harness`]) is not gated.
+    /// The harness's snapshot ([`Config::harness`]) is not gated on the
+    /// check, only on the laws that replaced lowering's backstops.
     pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {
         self.lowering
             .get_or_init(|| {
-                if self.config.check_gates_lowering {
+                let errors: Vec<Diag> = if self.config.check_gates_lowering {
                     let checked = self.demand_check().map_err(Clone::clone)?;
-                    let errors: Vec<Diag> =
-                        checked.diags.iter().filter(|d| d.is_error()).cloned().collect();
-                    if !errors.is_empty() {
-                        return Err(Blocked { family: "lowering_view", because: errors, refused: None });
-                    }
+                    checked.diags.iter().filter(|d| d.is_error()).cloned().collect()
+                } else {
+                    // The harness lowers without the check, but never
+                    // without the laws that replaced lowering's own
+                    // refusals (F.40 phase 3, C7): lowering judges none
+                    // of them, so an ungated view would lower what they
+                    // refuse.
+                    self.demand_lowering_laws()?.into_iter().filter(|d| d.is_error()).collect()
+                };
+                if !errors.is_empty() {
+                    return Err(Blocked { family: "lowering_view", because: errors, refused: None });
                 }
                 // A whole seed's load holds one program; the editor's
                 // holds one per file, merged here as a directory build

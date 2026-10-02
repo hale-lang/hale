@@ -230,6 +230,7 @@ const BINDING_ROWS: &str = "crates/hale-types/src/binding_rows.rs";
 const LIFECYCLE: &str = "crates/hale-types/src/lifecycle.rs";
 const LIFECYCLE_TRACE: &str = "crates/hale-types/src/lifecycle/trace.rs";
 const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
+const LOWERING_LAWS: &str = "crates/hale-types/src/lowering_laws.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -1149,7 +1150,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "collect_main_placement", "codegen's DeploymentPlan, keyed by field name and locus type name", "codegen reads the table"),
             legacy(CG_DEPLOY, "DeploymentPlan", "the plan type lowering reads today", "becomes the layer-5 table"),
         ],
-        consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
+        consumers: &[consumer_at("check (rule 6, the lowering laws)", LOWERING_LAWS, "pinned_features"), consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
         invariants: &[
             "placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains",
             "the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once",
@@ -1163,11 +1164,14 @@ pub const FAMILIES: &[Family] = &[
             "placement is a choice point: v1's declared placement is the single candidate",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds no table)", "crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds one table, for rule 6)", "crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)"],
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
         owned: &[],
         seams: &[
-            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 1), (SNAPSHOT, 1)] },
+            // the definition, the snapshot's demand, and the two check
+            // entries no snapshot holds (the tests' `check_bundle` and
+            // `check_bundle_opts_scoped`), which build it for rule 6
+            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 1)] },
             Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (FORM_ROWS, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
         ],
@@ -1306,16 +1310,20 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Lowering,
         state: State::Migrating,
         kind: Kind::Law,
-        answers: "The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops.",
-        inputs: &["the AST", "the lowering context"],
-        producer: None,
+        answers: "The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements, placement entries, pinned loci in loops.",
+        inputs: &["the AST", "the placement table", "the binding rows"],
+        producer: Some(site(LOWERING_LAWS, "lowering_laws")),
         legacy: &[
-            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (rule 6's checker evaluator landed in phase 0; the backstop stays for harness builds that skip the checker); for a placed locus the checker types as Unknown, for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), and for an adapter locus instantiated inline in a `bindings { }` block (which lowering pins without a placement entry), it is the only evaluator", "phase 3, when one pipeline guarantees the checker ran before lowering and the refusals become dead: every verb checks before it lowers, but the test harness's adapter `build_executable_with_options` builds through a harness snapshot that does not gate lowering on a check (`Config::harness`), and over three hundred test files build through it (at the phase-2 close)"),
+            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (self-containment, cross-pool bare statements, placement entries consumed by a literal, pinned loci in loops), kept for harness builds that skip the checker", "phase 3, C7: each moves to `lowering_laws` once a law covers every program it refused, and is deleted"),
         ],
-        consumers: &[consumer("codegen harness builds")],
-        invariants: &["a law is judged once, with a span"],
+        consumers: &[consumer_at("the check (every verb and the LSP)", CHECK, "lowering_laws"), consumer_at("the harness's lowering view (`Config::harness`), which is not gated on the check", SNAPSHOT, "lowering_laws")],
+        invariants: &[
+            "a law is judged once, with a span",
+            "lowering judges no rule `lowering_laws` states: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so a refusal reaches no entry point unlocated (C7)",
+            "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`)", "crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check)","crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
         spec: &["spec/semantics.md rules 6, 17, 18; GH #813, #876"],
         owned: &[],
         seams: &[],
@@ -1545,10 +1553,10 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/6",
-        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) at the placement entry",
+        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
-        evaluator: Some(site(CHECK, "is placed `pinned` but")),
-        state: State::Migrating,
+        evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/7",

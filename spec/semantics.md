@@ -3250,13 +3250,21 @@ main locus App {
    permitted (a pinned heartbeat with `epoch duration`, a pinned
    connection with an inline closure). These restrictions belong
    to the placement site, not the declaration: the typechecker
-   walks each placement entry and applies them to the named
-   locus type, at the entry's span, and a locus that uses
-   neither feature can be placed either cooperative or pinned at
-   the deployment's discretion. (F.40 phase 0: until then the
-   rule was stated as "no closure declarations" while lowering
-   refused only birth and dissolve closures; the rule now says
-   what ships, and the typechecker judges it.)
+   applies them to every instance that runs pinned — a `pinned`
+   entry's field (each of its replicas) and an adapter inline in
+   `bindings { }`, which has a thread of its own with no entry —
+   and judges the locus the instance realizes (a construction
+   site's override literal, a `std::` locus), at the entry's
+   span. A locus that uses neither feature can be placed either
+   cooperative or pinned at the deployment's discretion. (F.40
+   phase 0: until then the rule was stated as "no closure
+   declarations" while lowering refused only birth and dissolve
+   closures; the rule now says what ships, and the typechecker
+   judges it. Phase 3, C7: it is judged over the placement
+   table's rows, so the adapter, an `accept()` with no parameter
+   and a field whose written type the entry walk could not
+   resolve are judged too, and lowering keeps no refusal of its
+   own.)
 7. **Dead bus receiver (error).** A locus that declares
    `bus { subscribe ... }`, is placed `cooperative(pool = X)` with
    `X != main` (and not `where async_io`), **and** whose `run()`

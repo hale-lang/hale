@@ -317,6 +317,12 @@ const UNWRITABLE: &[(&str, &str)] = &[
     ("*/replica/main", "placement rule 15"),
     ("*/replica/pool", "placement rule 15"),
     ("*/replica/cross_pool", "placement rule 15"),
+    // Rule 6 judges the locus a pinned row realizes, so the birth
+    // closure behind an interface or a perspective slot is refused too
+    // (beside rule 3), and rule 6 is the one this table names first
+    // (F.40 phase 3, C7).
+    ("params_settle/iface_field/pinned", "placement rule 6"),
+    ("params_settle/persp_slot/pinned", "placement rule 6"),
     // A placement entry names a locus-typed field; an interface or a
     // perspective is not one.
     ("*/iface_field/pinned", "placement rule 3"),
