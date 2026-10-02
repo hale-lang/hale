@@ -975,6 +975,9 @@ impl Snapshot {
                 // The effect rows on request: a codec binding's purity
                 // assertion demands them, nothing else in the check does.
                 let effects = || self.demand_effects().ok();
+                // The placement table on request: the rules that ask
+                // where a field of the deployed root runs demand it.
+                let placement = || self.demand_placement().ok();
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
@@ -982,6 +985,7 @@ impl Snapshot {
                     entry: self.demand_entry().map_err(Clone::clone)?,
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
+                    placement: &placement,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1103,8 +1107,9 @@ impl Snapshot {
     /// from the entry row's lowering root, after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
-    /// total over a program that does not typecheck. No consumer reads it
-    /// yet (F.40 phase 3, P1).
+    /// total over a program that does not typecheck. The check reads it
+    /// for the rules that ask where a field of the deployed root runs (the
+    /// blocking, starvation and birth-order rules, F.40 phase 3, E2).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {

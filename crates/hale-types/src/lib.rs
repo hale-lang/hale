@@ -296,6 +296,8 @@ pub fn check_bundle_opts_scoped(
     };
     let entry = entry::entry_row(bundle);
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
+    let table = std::cell::OnceCell::new();
+    let placement = || Some(table.get_or_init(|| placement::placement_of_bundle(bundle, &top, &entry)));
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -305,6 +307,7 @@ pub fn check_bundle_opts_scoped(
             entry: &entry,
             alloc_summary: &alloc_summary,
             forms: &forms,
+            placement: &placement,
         },
         allow_unowned_subscriber,
         strict_callees,

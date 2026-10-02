@@ -517,6 +517,29 @@ pub fn derive_placement(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow) -
     build(bundle, top, entry)
 }
 
+/// The table of a bundle no snapshot holds: the check's entries over a
+/// bare bundle ([`crate::check::check_bundle`],
+/// [`crate::check_bundle_opts_scoped`]). A bundle a mint numbered is
+/// read as it is, with its entry row. One nothing minted (a test's
+/// `Bundle::new`) names no site, and the producer would give it an empty
+/// table, so its programs are minted here, over a copy, and the table is
+/// derived from the copy with the copy's entry row. The rows name fields
+/// and domains, which the copy and the bundle share.
+pub fn placement_of_bundle(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow) -> PlacementTable {
+    if !bundle.snapshot.is_empty() {
+        return derive_placement(bundle, top, entry);
+    }
+    let mut owned: Vec<(String, Program)> = bundle.programs.iter().map(|(k, p)| (k.clone(), (*p).clone())).collect();
+    let ids = crate::snapshot::mint(owned.iter_mut().map(|(k, p)| (k.as_str(), p)), &bundle.sources);
+    let mut copy = Bundle::new(owned.iter().map(|(k, p)| (k.clone(), p)).collect());
+    copy.import_renames = bundle.import_renames.clone();
+    copy.sources = bundle.sources.clone();
+    copy.target_has_async_io = bundle.target_has_async_io;
+    copy.target_label = bundle.target_label;
+    copy.snapshot = ids;
+    derive_placement(&copy, top, &crate::entry::entry_row(&copy))
+}
+
 fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> PlacementTable {
     let stdlib = match (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
         (Some(p), Some(ids)) => Some((p, ids)),

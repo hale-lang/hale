@@ -531,13 +531,19 @@ pub struct CheckInputs<'a> {
     /// included. The F.31 cross-pool check, the instance-aliasing rule
     /// and the effects certificate engine read them.
     pub forms: &'a crate::form_rows::FormRows,
+    /// The placement table, demanded only when a rule reads it: the
+    /// blocking, starvation and birth-order rules ask where each field
+    /// of the deployed root runs. `None` only if the table is blocked,
+    /// which it never is once the scope the check reads exists.
+    pub placement: &'a dyn Fn() -> Option<&'a crate::placement::PlacementTable>,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
-/// [`crate::form_rows::form_rows`]; the effect rows when a rule asks).
+/// [`crate::form_rows::form_rows`]; the effect rows and the placement
+/// table when a rule asks).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -554,6 +560,8 @@ pub fn check_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
+    let table = std::cell::OnceCell::new();
+    let placement = || Some(table.get_or_init(|| crate::placement::placement_of_bundle(bundle, top, &entry)));
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -561,6 +569,7 @@ pub fn check_bundle(
         entry: &entry,
         alloc_summary: &alloc_summary,
         forms: &forms,
+        placement: &placement,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -750,7 +759,19 @@ pub fn check_bundle_reporting(
     // discover that by overflowing its own stack in
     // `lower_locus_instantiation`. See `check_self_containing_locus`.
     check_self_containing_locus(bundle, &mut diags);
-    check_cooperative_pool_blocking(bundle, &top.topics, &mut diags);
+    // F.40 phase 3, E2: the three rules that ask where a root field
+    // runs read the placement table's rows for the root lowering
+    // deploys. The blocking check first; the starvation law leaves a
+    // pool the dead-receiver error already reported.
+    {
+        let root = PlacedRoot::of(bundle, inputs.entry, inputs.placement);
+        let errored_pools =
+            check_cooperative_pool_blocking(bundle, &top.topics, root.as_ref(), &mut diags);
+        if let Some(root) = &root {
+            check_pool_starvation(root, &errored_pools, &mut diags);
+            check_birth_order(root, &mut diags);
+        }
+    }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
@@ -2707,6 +2728,116 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
+/// Where a field of the deployed root runs, as the blocking,
+/// starvation and birth-order rules ask it: a pinned thread, or a
+/// cooperative pool (`main` included) with its I/O mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FieldPlace {
+    Pinned,
+    Pool { name: String, async_io: bool },
+}
+
+/// The deployed root and its placement rows: the scope of the three
+/// rules that ask where a root field runs (F.40 phase 3, E2). The root
+/// is the entry row's `lowering_root`, the `main locus` whose threads
+/// lowering spawns, and a field's place is the placement table's answer,
+/// not a reading of the declaration's `placement { }` block again.
+struct PlacedRoot<'a, 'p> {
+    decl: &'a LocusDecl,
+    table: &'p crate::placement::PlacementTable,
+    /// Every locus declaration by name, `module { }` contents included
+    /// (GH #825): what a root field's single-segment type names.
+    loci: BTreeMap<&'a str, &'a LocusDecl>,
+}
+
+impl<'a, 'p> PlacedRoot<'a, 'p> {
+    /// `None` when lowering deploys no root, or the table is blocked:
+    /// the rules then have nothing to read and claim nothing.
+    fn of(
+        bundle: &Bundle<'a>,
+        entry: &crate::entry::EntryRow,
+        placement: &dyn Fn() -> Option<&'p crate::placement::PlacementTable>,
+    ) -> Option<PlacedRoot<'a, 'p>> {
+        let decl = entry.lowering_root.as_ref()?.decl(bundle)?;
+        let table = placement()?;
+        let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+        for program in bundle.programs.values() {
+            walk_decls(&program.items, &mut |item| {
+                if let TopDecl::Locus(l) = item {
+                    loci.insert(l.name.name.as_str(), l);
+                }
+            });
+        }
+        Some(PlacedRoot { decl, table, loci })
+    }
+
+    /// The root's params fields, in declaration order.
+    fn fields(&self) -> impl Iterator<Item = &'a ParamDecl> {
+        self.decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Params(params) => Some(params.params.iter()),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// The local locus a field's single-segment type names.
+    fn field_locus(&self, pd: &ParamDecl) -> Option<(&'a str, &'a LocusDecl)> {
+        let Some(TypeExpr::Named { path, .. }) = &pd.ty else { return None };
+        if path.segments.len() != 1 {
+            return None;
+        }
+        self.loci.get_key_value(path.segments[0].name.as_str()).map(|(n, d)| (*n, *d))
+    }
+
+    /// Where the field runs: the domain of every row the root's own
+    /// templates (its construction literals, or the entry's implicit
+    /// one) build at `[field]`, with the placement entry that decided
+    /// it, if one did. `None` when the table holds no row there (a field
+    /// that is no locus) or the rows disagree: an unknown, which
+    /// disables a rule for the field and is never defaulted to `main`.
+    fn place(&self, field: &str) -> Option<(FieldPlace, Option<crate::placement::SiteRef>)> {
+        use crate::placement::{Decision, DomainKind, Origin};
+        let root = self.table.root.as_ref()?;
+        let mut out: Option<(FieldPlace, Option<crate::placement::SiteRef>)> = None;
+        for (k, r) in &self.table.instances {
+            let of_root = match k.origin {
+                Origin::Entry(_) => true,
+                Origin::Construction(lit) => root.constructions.iter().any(|c| c.literal == lit),
+                Origin::Binding(_) => false,
+            };
+            if !of_root || k.path.len() != 1 || k.path[0].field != field {
+                continue;
+            }
+            let entry = match &r.decided_by {
+                Decision::Entry { entry, .. } => Some(*entry),
+                _ => None,
+            };
+            let place = match &self.table.domain(r.domain).kind {
+                DomainKind::Pinned { .. } => FieldPlace::Pinned,
+                DomainKind::Main => FieldPlace::Pool { name: "main".to_string(), async_io: false },
+                DomainKind::Pool { name, async_io, .. } => FieldPlace::Pool { name: name.clone(), async_io: *async_io },
+            };
+            match &out {
+                None => out = Some((place, entry)),
+                Some((p, e)) if *p == place && *e == entry => {}
+                Some(_) => return None,
+            }
+        }
+        out
+    }
+}
+
+/// The `run()` body a locus declares.
+fn run_body_of(decl: &LocusDecl) -> Option<&Block> {
+    decl.members.iter().find_map(|m| match m {
+        LocusMember::Lifecycle(LifecycleDecl { kind: LifecycleKind::Run, body, .. }) => Some(body),
+        _ => None,
+    })
+}
+
 /// Flag blocking calls on cooperative pools. Two outcomes:
 ///   * a non-main cooperative SUBSCRIBER whose `run()` blocks is a
 ///     **dead receiver** (error) — the blocking call starves the
@@ -2715,495 +2846,382 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 ///     **warning** — it stalls co-scheduled loci on the pool.
 /// An event-driven subscriber (no blocking call — handlers + a sleep
 /// loop, or `where async_io`) is flagged by neither: it receives fine.
+///
+/// The fields it reads are the deployed root's that a placement entry
+/// put on a classic cooperative pool, in the entries' order. Returns
+/// the pools where the dead-receiver error fired, which the starvation
+/// law ([`check_pool_starvation`]) leaves alone.
 fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
     topics: &crate::topic_identity::TopicRows,
+    root: Option<&PlacedRoot<'_, '_>>,
     diags: &mut Vec<Diag>,
-) {
-    // GH #825: all three passes flatten `module { … }`. The index of
-    // free fns is what the interprocedural blocking call graph is
-    // built from, so a module-nested helper that blocks has to be in
-    // it or a top-level `run()` calling it looks clean.
-    let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+) -> BTreeSet<String> {
+    // Pools where the dead-receiver ERROR fired — the pool-
+    // starvation warning is suppressed there; the error already says
+    // the pool thread is monopolized.
+    let mut errored_pools: BTreeSet<String> = BTreeSet::new();
+    let Some(root) = root else { return errored_pools };
+    // GH #825: the index of free fns flattens `module { … }`. It is
+    // what the interprocedural blocking call graph is built from, so a
+    // module-nested helper that blocks has to be in it or a top-level
+    // `run()` calling it looks clean.
     let mut free_fns: BTreeMap<String, &Block> = BTreeMap::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| match item {
-            TopDecl::Locus(l) => {
-                local_loci.insert(l.name.name.as_str(), l);
-            }
-            TopDecl::Fn(f) => {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Fn(f) = item {
                 free_fns.insert(f.name.name.clone(), &f.body);
             }
-            _ => {}
         });
     }
     // Interprocedural call graph for the warning path: free fns that
     // block (directly or via another blocking free fn).
     let blocking_free = blocking_free_fns(&free_fns);
 
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            let TopDecl::Locus(main) = item else { return };
-            if !main.is_main {
-                return;
-            }
-            // The placement block is optional: phase 1 (blocking-call
-            // diagnostics) needs entries, but phase 2 (run() starvation)
-            // also covers fields with no entry (they default to pool
-            // `main`).
-            let pb = main.members.iter().find_map(|m| match m {
-                LocusMember::Placement(pb) => Some(pb),
-                _ => None,
-            });
-            // field name -> single-segment locus type name.
-            let mut field_locus: BTreeMap<&str, &str> = BTreeMap::new();
-            for m in &main.members {
-                let LocusMember::Params(params) = m else { continue };
-                for pd in &params.params {
-                    if let Some(TypeExpr::Named { path, .. }) = &pd.ty {
-                        if path.segments.len() == 1 {
-                            field_locus.insert(
-                                pd.name.name.as_str(),
-                                path.segments[0].name.as_str(),
-                            );
-                        }
-                    }
-                }
-            }
+    // An entry placed the field on a classic cooperative pool: `where
+    // async_io` parks blocking I/O — not a stall — and a field with no
+    // entry is not this rule's.
+    let mut placed: Vec<(crate::placement::SiteRef, &ParamDecl, String)> = Vec::new();
+    for pd in root.fields() {
+        if let Some((FieldPlace::Pool { name, async_io: false }, Some(entry))) = root.place(&pd.name.name) {
+            placed.push((entry, pd, name));
+        }
+    }
+    placed.sort_by(|a, b| a.0.cmp(&b.0));
 
-            // Pools where the dead-receiver ERROR fired — the pool-
-            // starvation warning (phase 2) is suppressed there; the
-            // error already says the pool thread is monopolized.
-            let mut errored_pools: BTreeSet<String> = BTreeSet::new();
-
-            for entry in pb.map(|pb| pb.entries.as_slice()).unwrap_or(&[]) {
-                let PlacementSpec::Cooperative { pool, .. } = &entry.spec else {
-                    continue;
-                };
-                // `where async_io` parks blocking I/O — not a stall.
-                if entry
-                    .constraints
-                    .iter()
-                    .any(|c| matches!(c.kind, PlacementConstraint::AsyncIo))
-                {
-                    continue;
+    for (_, pd, pool_name) in &placed {
+        let field_name = &pd.name.name;
+        let Some((locus_name, decl)) = root.field_locus(pd) else {
+            continue;
+        };
+        let Some(run_body) = run_body_of(decl) else {
+            continue;
+        };
+        // The locus's own methods (named fns + lifecycle
+        // bodies) form the intra-locus call graph for the
+        // interprocedural warning.
+        let mut methods: BTreeMap<String, &Block> = BTreeMap::new();
+        for m in &decl.members {
+            match m {
+                LocusMember::Fn(f) => {
+                    methods.insert(f.name.name.clone(), &f.body);
                 }
-                let Some(locus_name) = field_locus.get(entry.field.name.as_str())
-                else {
-                    continue;
-                };
-                let Some(decl) = local_loci.get(locus_name) else {
-                    continue;
-                };
-                let Some(run_body) = decl.members.iter().find_map(|m| match m {
-                    LocusMember::Lifecycle(LifecycleDecl {
-                        kind: LifecycleKind::Run,
-                        body,
-                        ..
-                    }) => Some(body),
-                    _ => None,
-                }) else {
-                    continue;
-                };
-                // The locus's own methods (named fns + lifecycle
-                // bodies) form the intra-locus call graph for the
-                // interprocedural warning.
-                let mut methods: BTreeMap<String, &Block> = BTreeMap::new();
-                for m in &decl.members {
-                    match m {
-                        LocusMember::Fn(f) => {
-                            methods.insert(f.name.name.clone(), &f.body);
-                        }
-                        LocusMember::Lifecycle(LifecycleDecl {
-                            kind, body, ..
-                        }) => {
-                            methods.insert(format!("{:?}", kind), body);
-                        }
-                        _ => {}
-                    }
-                }
-                let blocking_self =
-                    blocking_self_methods(&methods, &blocking_free);
-
-                // WARNING trigger: blocking reachable from run() either
-                // directly or through a helper fn / self-method.
-                let Some((deep_call, deep_span)) = find_blocking_deep_in_block(
-                    run_body,
-                    &blocking_free,
-                    &blocking_self,
-                ) else {
-                    // Event-driven (nothing blocking reachable): the
-                    // pool thread stays free, the bus dispatch runs,
-                    // cells arrive. Nothing to flag — even a non-main
-                    // cooperative subscriber receives fine this way.
-                    continue;
-                };
-                // DEAD-RECEIVER trigger stays direct-call-only — its
-                // call-graph surface is deliberately NOT widened (it
-                // over-fired once; see below).
-                let direct = find_blocking_in_block(run_body);
-                let pool_name =
-                    pool.as_ref().map(|i| i.name.as_str()).unwrap_or("main");
-                // Handlers for topics this locus does NOT itself publish
-                // (a self-publish→subscribe is a devirtualized direct
-                // call, not a bus receive).
-                let dead = external_subscription_handlers(decl, topics);
-                if pool_name != "main" && !dead.is_empty() && direct.is_some() {
-                    let (call, span) = direct.expect("is_some checked");
-                    errored_pools.insert(pool_name.to_string());
-                    // DEAD RECEIVER (error). A non-main cooperative
-                    // subscriber whose run() blocks: cross-process
-                    // dispatch reaches a cooperative locus only when its
-                    // pool thread is free to run the dispatch, and a
-                    // blocking call monopolizes it, so these handlers
-                    // never fire. (Corrected 2026-06-03 from the
-                    // placement-only rule, which over-fired on
-                    // event-driven subscribers — `Reader`/`Dispatcher`
-                    // received fine for 16h+ in production.)
-                    diags.push(Diag::ty(
-                        span,
-                        format!(
-                            "locus `{}` (field `{}`) subscribes to bus topics \
-                             ({}) but its `run()` makes the blocking call `{}` \
-                             while placed `cooperative(pool = {})`. The \
-                             blocking call monopolizes the pool's thread, so \
-                             the dispatch that would deliver those cells never \
-                             runs — the handlers can't fire. (An event-driven \
-                             subscriber that yields — handlers plus a \
-                             `time::sleep` loop, or `where async_io` — receives \
-                             fine; the problem is the blocking call, not the \
-                             placement.) Use `pinned` (its own thread + a \
-                             mailbox drained at sleep/yield), or keep `run()` \
-                             non-blocking.",
-                            locus_name,
-                            entry.field.name,
-                            dead.join(", "),
-                            call,
-                            pool_name,
-                        ),
-                    ));
-                } else {
-                    // Blocking on a cooperative pool stalls co-scheduled
-                    // loci (and the pool's bus drain), even when this
-                    // locus isn't itself a subscriber. Interprocedural:
-                    // `deep_call` may name a helper fn / self-method that
-                    // blocks transitively, not just a literal stdlib op.
-                    diags.push(Diag::warn(
-                        deep_span,
-                        format!(
-                            "locus `{}` (field `{}`) is placed `cooperative(pool \
-                             = {})` and reaches the blocking call `{}` in its \
-                             `run()`. A blocking call holds the pool's OS thread \
-                             for its whole duration, stalling every other locus \
-                             scheduled on `{}` (and the pool's bus drain). Use \
-                             `pinned` (its own thread — the prescribed shape for \
-                             blocking I/O), or `cooperative(pool = {}) where \
-                             async_io` (which parks on I/O readiness instead of \
-                             blocking the thread).",
-                            locus_name,
-                            entry.field.name,
-                            pool_name,
-                            deep_call,
-                            pool_name,
-                            pool_name,
-                        ),
-                    ));
-                }
-            }
-
-            // === phase 2: pool starvation ======================
-            //
-            // Two (or more) statically non-returning `run()` bodies on
-            // one cooperative pool: the pool runs each `run()` cell to
-            // completion in birth order, so the first-born runs forever
-            // and the later `run()` bodies never start. Distinct from
-            // the blocking-call diagnostics above — the archetypal
-            // shape (a `sleep` metronome) contains no blocking call,
-            // and the starved locus needn't be a subscriber. A locus
-            // can legitimately draw both warnings (blocking AND
-            // starving a sibling); they name different defects.
-            let mut by_pool: BTreeMap<String, Vec<(String, Span)>> =
-                BTreeMap::new();
-            for m in &main.members {
-                let LocusMember::Params(params) = m else { continue };
-                for pd in &params.params {
-                    let field = pd.name.name.as_str();
-                    let entry = pb.and_then(|pb| {
-                        pb.entries.iter().find(|e| e.field.name == field)
-                    });
-                    let pool_name: String = match entry.map(|e| (&e.spec, e)) {
-                        Some((PlacementSpec::Pinned { .. }, _)) => continue,
-                        Some((PlacementSpec::Cooperative { pool, .. }, e)) => {
-                            // `where async_io` run-cells are parkable
-                            // coros — co-scheduled runs interleave at
-                            // park points, so no starvation claim.
-                            if e.constraints.iter().any(|c| {
-                                matches!(c.kind, PlacementConstraint::AsyncIo)
-                            }) {
-                                continue;
-                            }
-                            pool.as_ref()
-                                .map(|i| i.name.clone())
-                                .unwrap_or_else(|| "main".to_string())
-                        }
-                        // No placement entry: fields default to pool
-                        // `main` (mirrors compute_pool_of_locus_type).
-                        None => "main".to_string(),
-                    };
-                    // Stdlib loci with known non-terminating run()
-                    // (typecheck can't see their bodies).
-                    if let Some(TypeExpr::Named { path, .. }) = &pd.ty {
-                        let segs: Vec<&str> = path
-                            .segments
-                            .iter()
-                            .map(|s| s.name.as_str())
-                            .collect();
-                        if is_known_long_running_stdlib(&segs) {
-                            by_pool.entry(pool_name).or_default().push((
-                                format!(
-                                    "locus `{}` (field `{}`)",
-                                    segs.join("::"),
-                                    field
-                                ),
-                                pd.span,
-                            ));
-                            continue;
-                        }
-                    }
-                    let Some(locus_name) = field_locus.get(field) else {
-                        continue;
-                    };
-                    let Some(decl) = local_loci.get(locus_name) else {
-                        continue;
-                    };
-                    let Some(run_body) = decl.members.iter().find_map(|m| {
-                        match m {
-                            LocusMember::Lifecycle(LifecycleDecl {
-                                kind: LifecycleKind::Run,
-                                body,
-                                ..
-                            }) => Some(body),
-                            _ => None,
-                        }
-                    }) else {
-                        continue;
-                    };
-                    let Some(span) = run_statically_nonreturning(run_body, decl)
-                    else {
-                        continue;
-                    };
-                    by_pool.entry(pool_name).or_default().push((
-                        format!("locus `{}` (field `{}`)", locus_name, field),
-                        span,
-                    ));
-                }
-            }
-            // The main locus itself runs on pool `main`; its run()
-            // begins only after params-init completes, so it is
-            // birth-ordered last.
-            let mut main_starved_on_main = false;
-            if let Some(main_run) = main.members.iter().find_map(|m| match m {
                 LocusMember::Lifecycle(LifecycleDecl {
-                    kind: LifecycleKind::Run,
-                    body,
-                    ..
-                }) => Some(body),
-                _ => None,
-            }) {
-                if let Some(span) = run_statically_nonreturning(main_run, main) {
-                    by_pool.entry("main".to_string()).or_default().push((
-                        format!("the main locus `{}`", main.name.name),
-                        span,
-                    ));
-                    main_starved_on_main = true;
+                    kind, body, ..
+                }) => {
+                    methods.insert(format!("{:?}", kind), body);
                 }
+                _ => {}
             }
-            for (pool_name, members) in &by_pool {
-                if members.len() < 2 || errored_pools.contains(pool_name) {
-                    continue;
-                }
-                let names = members
-                    .iter()
-                    .map(|(d, _)| d.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let (first_name, first_span) = &members[0];
-                let main_note = if pool_name == "main" && main_starved_on_main {
-                    format!(
-                        " For pool `main` the last of these is the main \
-                         locus's own `run()`, which begins only after \
-                         params-init — boot appears to complete, then the \
-                         process sits idle."
-                    )
-                } else {
-                    String::new()
-                };
-                diags.push(Diag::warn(
-                    *first_span,
-                    format!(
-                        "cooperative pool `{}` is shared by {}, whose `run()` \
-                         bodies all statically never return (terminal `while` \
-                         loop with no `break`/`return`/`terminate`). A \
-                         cooperative pool runs each `run()` to completion in \
-                         birth order: {}'s `run()` starts first and never \
-                         finishes, so the later `run()` bodies never start. \
-                         Bus handlers still fire at sleep/yield drains, which \
-                         makes the starvation look like a healthy idle.{} Use \
-                         `pinned` (its own thread + a mailbox drained at \
-                         sleep/yield) for all but one of them, or keep the \
-                         extra `run()` bodies non-blocking and event-driven \
-                         (handlers plus a bounded loop).",
-                        pool_name, names, first_name, main_note,
-                    ),
-                ));
-            }
+        }
+        let blocking_self =
+            blocking_self_methods(&methods, &blocking_free);
 
-            // === birth-order trap (2026-08-03, downstream handoff) ===
-            //
-            // Strictly worse than the pool-starvation warning above,
-            // and not implied by it. That one needs TWO non-returning
-            // `run()` bodies and claims only that the later `run()`
-            // never starts. This one needs ONE: a locus field whose
-            // `run()` runs INLINE on the main thread (default
-            // placement, or an explicit `cooperative(pool = main)`)
-            // and never returns means every param declared after it
-            // is never even BORN — its `birth()` never runs, so the
-            // subscriptions it registers, the sockets it binds and
-            // the children it accepts silently never exist.
-            //
-            // Measured 2026-08-03 (all four placements):
-            //   default                    -> blocks later births
-            //   cooperative(pool = main)    -> blocks later births
-            //   cooperative(pool = io)      -> posted to a worker, no
-            //   pinned                      -> own thread, no
-            // The LATER field's own placement is irrelevant — the
-            // instantiation itself runs inline on main, so even a
-            // `pinned` sibling declared after the blocker is stuck.
-            // Only the blocker's placement matters.
-            //
-            // This is what a downstream handoff reported as "a bus
-            // handler's write to a `self` param isn't observed by
-            // `run()`", which we in turn mis-filed as a cooperative-
-            // child handler-cadence question. It is neither: the
-            // drain is fine and the cadence is fine; the publisher
-            // simply had not been born yet.
-            {
-                // Params in declaration order, tagged with whether
-                // each one blocks the births that follow it.
-                let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
-                for m in &main.members {
-                    let LocusMember::Params(params) = m else { continue };
-                    for pd in &params.params {
-                        let field = pd.name.name.as_str();
-                        let entry = pb.and_then(|pb| {
-                            pb.entries.iter().find(|e| e.field.name == field)
-                        });
-                        // Only an inline-on-main run() blocks. A
-                        // pinned or off-main-pool field runs
-                        // elsewhere; `where async_io` parks.
-                        let inline_on_main = match entry.map(|e| (&e.spec, e)) {
-                            Some((PlacementSpec::Pinned { .. }, _)) => false,
-                            Some((PlacementSpec::Cooperative { pool, .. }, e)) => {
-                                !e.constraints.iter().any(|c| {
-                                    matches!(c.kind, PlacementConstraint::AsyncIo)
-                                }) && pool
-                                    .as_ref()
-                                    .map(|i| i.name == "main")
-                                    .unwrap_or(true)
-                            }
-                            None => true,
-                        };
-                        let segs: Vec<&str> = match &pd.ty {
-                            Some(TypeExpr::Named { path, .. }) => path
-                                .segments
-                                .iter()
-                                .map(|s| s.name.as_str())
-                                .collect(),
-                            _ => Vec::new(),
-                        };
-                        let display = if segs.is_empty() {
-                            field.to_string()
-                        } else {
-                            format!("{}: {}", field, segs.join("::"))
-                        };
-                        // Non-returning: a proven-terminal loop in a
-                        // local locus, or a stdlib locus on the
-                        // known-long-running allowlist (whose body
-                        // typecheck cannot see).
-                        let nonreturning = if is_known_long_running_stdlib(&segs) {
-                            true
-                        } else {
-                            field_locus
-                                .get(field)
-                                .and_then(|n| local_loci.get(n))
-                                .and_then(|decl| {
-                                    decl.members
-                                        .iter()
-                                        .find_map(|m| match m {
-                                            LocusMember::Lifecycle(
-                                                LifecycleDecl {
-                                                    kind: LifecycleKind::Run,
-                                                    body,
-                                                    ..
-                                                },
-                                            ) => Some((body, *decl)),
-                                            _ => None,
-                                        })
-                                        .and_then(|(body, decl)| {
-                                            run_statically_nonreturning(
-                                                body, decl,
-                                            )
-                                        })
-                                })
-                                .is_some()
-                        };
-                        ordered.push((
-                            field,
-                            pd.span,
-                            inline_on_main && nonreturning,
-                            display,
-                        ));
-                    }
-                }
-                // Report the FIRST blocker only: every later one is a
-                // consequence of it, not an independent defect.
-                if let Some(i) = ordered.iter().position(|(_, _, b, _)| *b) {
-                    let starved: Vec<&str> = ordered[i + 1..]
-                        .iter()
-                        .map(|(_, _, _, d)| d.as_str())
-                        .collect();
-                    if !starved.is_empty() {
-                        let (field, span, _, _) = &ordered[i];
-                        diags.push(Diag::warn(
-                            *span,
-                            format!(
-                                "params field `{}` runs inline on the main \
-                                 thread and its `run()` statically never \
-                                 returns (terminal `while` loop with no \
-                                 `break`/`return`/`terminate`), so the \
-                                 params declared after it are never BORN: \
-                                 {}. Their `birth()` bodies never run, so \
-                                 any subscription they register, socket \
-                                 they bind or child they accept silently \
-                                 never exists — the process looks like it \
-                                 booted and then idles. Either declare \
-                                 them BEFORE `{}`, or move `{}` off the \
-                                 main thread with `placement {{ {}: \
-                                 pinned; }}` (own thread) or \
-                                 `cooperative(pool = io)` (posted to a \
-                                 worker); both let the remaining params \
-                                 finish being born.",
-                                field,
-                                starved.join(", "),
-                                field,
-                                field,
-                                field,
-                            ),
-                        ));
-                    }
-                }
+        // WARNING trigger: blocking reachable from run() either
+        // directly or through a helper fn / self-method.
+        let Some((deep_call, deep_span)) = find_blocking_deep_in_block(
+            run_body,
+            &blocking_free,
+            &blocking_self,
+        ) else {
+            // Event-driven (nothing blocking reachable): the
+            // pool thread stays free, the bus dispatch runs,
+            // cells arrive. Nothing to flag — even a non-main
+            // cooperative subscriber receives fine this way.
+            continue;
+        };
+        // DEAD-RECEIVER trigger stays direct-call-only — its
+        // call-graph surface is deliberately NOT widened (it
+        // over-fired once; see below).
+        let direct = find_blocking_in_block(run_body);
+        let pool_name = pool_name.as_str();
+        // Handlers for topics this locus does NOT itself publish
+        // (a self-publish→subscribe is a devirtualized direct
+        // call, not a bus receive).
+        let dead = external_subscription_handlers(decl, topics);
+        if pool_name != "main" && !dead.is_empty() && direct.is_some() {
+            let (call, span) = direct.expect("is_some checked");
+            errored_pools.insert(pool_name.to_string());
+            // DEAD RECEIVER (error). A non-main cooperative
+            // subscriber whose run() blocks: cross-process
+            // dispatch reaches a cooperative locus only when its
+            // pool thread is free to run the dispatch, and a
+            // blocking call monopolizes it, so these handlers
+            // never fire. (Corrected 2026-06-03 from the
+            // placement-only rule, which over-fired on
+            // event-driven subscribers — `Reader`/`Dispatcher`
+            // received fine for 16h+ in production.)
+            diags.push(Diag::ty(
+                span,
+                format!(
+                    "locus `{}` (field `{}`) subscribes to bus topics \
+                     ({}) but its `run()` makes the blocking call `{}` \
+                     while placed `cooperative(pool = {})`. The \
+                     blocking call monopolizes the pool's thread, so \
+                     the dispatch that would deliver those cells never \
+                     runs — the handlers can't fire. (An event-driven \
+                     subscriber that yields — handlers plus a \
+                     `time::sleep` loop, or `where async_io` — receives \
+                     fine; the problem is the blocking call, not the \
+                     placement.) Use `pinned` (its own thread + a \
+                     mailbox drained at sleep/yield), or keep `run()` \
+                     non-blocking.",
+                    locus_name,
+                    field_name,
+                    dead.join(", "),
+                    call,
+                    pool_name,
+                ),
+            ));
+        } else {
+            // Blocking on a cooperative pool stalls co-scheduled
+            // loci (and the pool's bus drain), even when this
+            // locus isn't itself a subscriber. Interprocedural:
+            // `deep_call` may name a helper fn / self-method that
+            // blocks transitively, not just a literal stdlib op.
+            diags.push(Diag::warn(
+                deep_span,
+                format!(
+                    "locus `{}` (field `{}`) is placed `cooperative(pool \
+                     = {})` and reaches the blocking call `{}` in its \
+                     `run()`. A blocking call holds the pool's OS thread \
+                     for its whole duration, stalling every other locus \
+                     scheduled on `{}` (and the pool's bus drain). Use \
+                     `pinned` (its own thread — the prescribed shape for \
+                     blocking I/O), or `cooperative(pool = {}) where \
+                     async_io` (which parks on I/O readiness instead of \
+                     blocking the thread).",
+                    locus_name,
+                    field_name,
+                    pool_name,
+                    deep_call,
+                    pool_name,
+                    pool_name,
+                ),
+            ));
+        }
+    }
+    errored_pools
+}
+
+/// Pool starvation, a law over the deployed root's placement rows: two
+/// (or more) statically non-returning `run()` bodies on one cooperative
+/// pool. The pool runs each `run()` cell to completion in birth order,
+/// so the first-born runs forever and the later `run()` bodies never
+/// start. Distinct from the blocking-call diagnostics — the archetypal
+/// shape (a `sleep` metronome) contains no blocking call, and the
+/// starved locus needn't be a subscriber. A locus can legitimately draw
+/// both warnings (blocking AND starving a sibling); they name different
+/// defects. Not reported on a pool where the dead-receiver error fired
+/// (`errored_pools`): that error already says the thread is monopolized.
+fn check_pool_starvation(
+    root: &PlacedRoot<'_, '_>,
+    errored_pools: &BTreeSet<String>,
+    diags: &mut Vec<Diag>,
+) {
+    let main = root.decl;
+    let mut by_pool: BTreeMap<String, Vec<(String, Span)>> = BTreeMap::new();
+    for pd in root.fields() {
+        let field = pd.name.name.as_str();
+        let pool_name: String = match root.place(field) {
+            // No row (no locus), or rows that disagree: no claim.
+            None | Some((FieldPlace::Pinned, _)) => continue,
+            // `where async_io` run-cells are parkable coros —
+            // co-scheduled runs interleave at park points, so no
+            // starvation claim.
+            Some((FieldPlace::Pool { async_io: true, .. }, _)) => continue,
+            // A field with no entry runs on pool `main`.
+            Some((FieldPlace::Pool { name, .. }, _)) => name,
+        };
+        // Stdlib loci with known non-terminating run()
+        // (typecheck can't see their bodies).
+        if let Some(TypeExpr::Named { path, .. }) = &pd.ty {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            if is_known_long_running_stdlib(&segs) {
+                by_pool
+                    .entry(pool_name)
+                    .or_default()
+                    .push((format!("locus `{}` (field `{}`)", segs.join("::"), field), pd.span));
+                continue;
             }
-        });
+        }
+        let Some((locus_name, decl)) = root.field_locus(pd) else {
+            continue;
+        };
+        let Some(run_body) = run_body_of(decl) else {
+            continue;
+        };
+        let Some(span) = run_statically_nonreturning(run_body, decl) else {
+            continue;
+        };
+        by_pool
+            .entry(pool_name)
+            .or_default()
+            .push((format!("locus `{}` (field `{}`)", locus_name, field), span));
+    }
+    // The main locus itself runs on pool `main`; its run() begins only
+    // after params-init completes, so it is birth-ordered last.
+    let mut main_starved_on_main = false;
+    if let Some(main_run) = run_body_of(main) {
+        if let Some(span) = run_statically_nonreturning(main_run, main) {
+            by_pool
+                .entry("main".to_string())
+                .or_default()
+                .push((format!("the main locus `{}`", main.name.name), span));
+            main_starved_on_main = true;
+        }
+    }
+    for (pool_name, members) in &by_pool {
+        if members.len() < 2 || errored_pools.contains(pool_name) {
+            continue;
+        }
+        let names = members
+            .iter()
+            .map(|(d, _)| d.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (first_name, first_span) = &members[0];
+        let main_note = if pool_name == "main" && main_starved_on_main {
+            format!(
+                " For pool `main` the last of these is the main \
+                 locus's own `run()`, which begins only after \
+                 params-init — boot appears to complete, then the \
+                 process sits idle."
+            )
+        } else {
+            String::new()
+        };
+        diags.push(Diag::warn(
+            *first_span,
+            format!(
+                "cooperative pool `{}` is shared by {}, whose `run()` \
+                 bodies all statically never return (terminal `while` \
+                 loop with no `break`/`return`/`terminate`). A \
+                 cooperative pool runs each `run()` to completion in \
+                 birth order: {}'s `run()` starts first and never \
+                 finishes, so the later `run()` bodies never start. \
+                 Bus handlers still fire at sleep/yield drains, which \
+                 makes the starvation look like a healthy idle.{} Use \
+                 `pinned` (its own thread + a mailbox drained at \
+                 sleep/yield) for all but one of them, or keep the \
+                 extra `run()` bodies non-blocking and event-driven \
+                 (handlers plus a bounded loop).",
+                pool_name, names, first_name, main_note,
+            ),
+        ));
+    }
+}
+
+/// The birth-order trap (2026-08-03, downstream handoff), a law over
+/// the deployed root's placement rows.
+///
+/// Strictly worse than the pool-starvation warning, and not implied by
+/// it. That one needs TWO non-returning `run()` bodies and claims only
+/// that the later `run()` never starts. This one needs ONE: a locus
+/// field whose `run()` runs INLINE on the main thread (default
+/// placement, or an explicit `cooperative(pool = main)`) and never
+/// returns means every param declared after it is never even BORN — its
+/// `birth()` never runs, so the subscriptions it registers, the sockets
+/// it binds and the children it accepts silently never exist.
+///
+/// Measured 2026-08-03 (all four placements):
+///   default                    -> blocks later births
+///   cooperative(pool = main)    -> blocks later births
+///   cooperative(pool = io)      -> posted to a worker, no
+///   pinned                      -> own thread, no
+/// The LATER field's own placement is irrelevant — the instantiation
+/// itself runs inline on main, so even a `pinned` sibling declared
+/// after the blocker is stuck. Only the blocker's placement matters.
+///
+/// This is what a downstream handoff reported as "a bus handler's write
+/// to a `self` param isn't observed by `run()`", which we in turn
+/// mis-filed as a cooperative-child handler-cadence question. It is
+/// neither: the drain is fine and the cadence is fine; the publisher
+/// simply had not been born yet.
+fn check_birth_order(root: &PlacedRoot<'_, '_>, diags: &mut Vec<Diag>) {
+    // Params in declaration order, tagged with whether
+    // each one blocks the births that follow it.
+    let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
+    for pd in root.fields() {
+        let field = pd.name.name.as_str();
+        // Only an inline-on-main run() blocks. A
+        // pinned or off-main-pool field runs
+        // elsewhere; `where async_io` parks. A field
+        // the table holds no agreed row for blocks
+        // nothing.
+        let inline_on_main = matches!(
+            root.place(field),
+            Some((FieldPlace::Pool { ref name, async_io: false }, _)) if name == "main"
+        );
+        let segs: Vec<&str> = match &pd.ty {
+            Some(TypeExpr::Named { path, .. }) => path
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let display = if segs.is_empty() {
+            field.to_string()
+        } else {
+            format!("{}: {}", field, segs.join("::"))
+        };
+        // Non-returning: a proven-terminal loop in a
+        // local locus, or a stdlib locus on the
+        // known-long-running allowlist (whose body
+        // typecheck cannot see).
+        let nonreturning = if is_known_long_running_stdlib(&segs) {
+            true
+        } else {
+            root.field_locus(pd)
+                .and_then(|(_, decl)| {
+                    run_body_of(decl).and_then(|body| run_statically_nonreturning(body, decl))
+                })
+                .is_some()
+        };
+        ordered.push((
+            field,
+            pd.span,
+            inline_on_main && nonreturning,
+            display,
+        ));
+    }
+    // Report the FIRST blocker only: every later one is a
+    // consequence of it, not an independent defect.
+    if let Some(i) = ordered.iter().position(|(_, _, b, _)| *b) {
+        let starved: Vec<&str> = ordered[i + 1..]
+            .iter()
+            .map(|(_, _, _, d)| d.as_str())
+            .collect();
+        if !starved.is_empty() {
+            let (field, span, _, _) = &ordered[i];
+            diags.push(Diag::warn(
+                *span,
+                format!(
+                    "params field `{}` runs inline on the main \
+                     thread and its `run()` statically never \
+                     returns (terminal `while` loop with no \
+                     `break`/`return`/`terminate`), so the \
+                     params declared after it are never BORN: \
+                     {}. Their `birth()` bodies never run, so \
+                     any subscription they register, socket \
+                     they bind or child they accept silently \
+                     never exists — the process looks like it \
+                     booted and then idles. Either declare \
+                     them BEFORE `{}`, or move `{}` off the \
+                     main thread with `placement {{ {}: \
+                     pinned; }}` (own thread) or \
+                     `cooperative(pool = io)` (posted to a \
+                     worker); both let the remaining params \
+                     finish being born.",
+                    field,
+                    starved.join(", "),
+                    field,
+                    field,
+                    field,
+                ),
+            ));
+        }
     }
 }
 

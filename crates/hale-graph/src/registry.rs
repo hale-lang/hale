@@ -595,7 +595,6 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "let has_socket_binding", "whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen", "same"),
             // The checker's own readers of `main` that E0 did not switch.
             legacy(CHECK, "check_placement_entry_consumed", "rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error)", "reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4"),
-            legacy(CHECK, "check_cooperative_pool_blocking", "the blocking check reads the placement and params of EVERY `is_main` declaration, module-nested and imported ones included, with no mark or name filter", "reads `lowering_root`, since the starvation it reports is on the threads lowering spawns; reads the entry with L4"),
             legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
             legacy(CHECK, "check_pool_affinity", "validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4)"),
             legacy(CHECK, "let api_bound", "`check_bus_graph`'s orphan lint is lifted when ANY `is_main` declaration carries an `api:` binding: a module-nested one, or an imported one whose api entry is inert (GH #1104 piece 5)", "reads the entry, whose binding is the one that binds (L4)"),
@@ -646,7 +645,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
-        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1)] }],
+        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (PLACEMENT, 1)] }],
     },
     Family {
         name: "ownership",
@@ -1083,18 +1082,17 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Law,
         answers: "Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it.",
-        inputs: &["run bodies", "params order", "placement"],
+        inputs: &["run bodies", "params order", "placement (the table's rows for the deployed root's fields)"],
         producer: Some(site(CHECK, "run_statically_nonreturning")),
         legacy: &[
             legacy(CHECK, "check_nested_long_running_child", "a second `long-running` predicate (a hand table naming std::http::Server) that disagrees with the first", "one predicate"),
-            legacy(CHECK, "check_cooperative_pool_blocking", "the starvation and birth-order phases live inside the blocking check", "laws over rows"),
         ],
         consumers: &[consumer("check")],
         invariants: &["one definition of long-running"],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/birth_order_trap.rs", "crates/hale-codegen/tests/birth_order_trap.rs"],
         spec: &["spec/semantics.md"],
-        owned: &[],
+        owned: &[site(CHECK, "check_pool_starvation"), site(CHECK, "check_birth_order")],
         seams: &[],
     },
     Family {
@@ -1125,7 +1123,7 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(PLACEMENT, "derive_placement")),
         legacy: &[
             legacy(CHECK, "compute_pool_of_locus_type", "the checker's per-type map, first wins, seeded from the lowering root's tower alone and blind past a qualified, contract-typed or generic field (K-1 to K-7); sync inference builds it again per program before the mint (K-5)", "the table: the checker reads it in P1's checker-switch PR, and sync inference after the mint in C1"),
-            legacy(CHECK, "enclosing_field_placement", "owner-relative placement, one of four in-checker derivations (two more inline in the blocking and single-thread checks)", "one placement table per snapshot (phase: placement lane)"),
+            legacy(CHECK, "enclosing_field_placement", "owner-relative placement, the checker's second derivation beside `compute_pool_of_locus_type` (the blocking check's three inline ones read the table since E2)", "one placement table per snapshot (phase: placement lane)"),
             legacy(BUS_GRAPH, "collect_subscriber_placements", "per type, first wins", "same"),
             legacy(OWNERSHIP_GRAPH, "collect_placements", "a verbatim copy of the previous", "same"),
             legacy(MODEL_BUILDER, "PlacedIn", "the model's arrangement, per instance with replicas", "projected from the table"),
@@ -1134,7 +1132,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "collect_main_placement", "codegen's DeploymentPlan, keyed by field name and locus type name", "codegen reads the table"),
             legacy(CG_DEPLOY, "DeploymentPlan", "the plan type lowering reads today", "becomes the layer-5 table"),
         ],
-        consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
+        consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer_at("check (the blocking, starvation and birth-order rules: where each field of the deployed root runs)", CHECK, "PlacedRoot"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
         invariants: &[
             "placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains",
             "the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once",
@@ -1148,11 +1146,12 @@ pub const FAMILIES: &[Family] = &[
             "placement is a choice point: v1's declared placement is the single candidate",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds no table)", "crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and the check's one demand)", "crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)"],
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
         owned: &[],
         seams: &[
-            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 1), (SNAPSHOT, 1)] },
+            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 3), (SNAPSHOT, 1)] },
+            Seam { symbol: "placement_of_bundle(", allowed: &[(PLACEMENT, 1), (CHECK, 1), (TLIB, 1)] },
             Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (FORM_ROWS, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
         ],
@@ -1361,7 +1360,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
             legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),
         ],
-        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)")],
+        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)"), consumer_at("the placement table of a bundle nothing minted (the check's bare-bundle entries mint a copy: the producer names minted sites only)", PLACEMENT, "placement_of_bundle")],
         invariants: &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
@@ -1374,7 +1373,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs", "crates/hale-types/tests/snapshot.rs (each_use_resolves_to_the_declaration_in_scope)", "crates/hale-types/tests/demand_gate.rs (each_snapshot_resolves_its_uses_once)", "crates/hale-syntax/tests/sites.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[site(SITES, "SiteKind"), site(TY_SNAPSHOT, "resolve_uses"), site(TY_SNAPSHOT, "declaration_of"), site(TY_SNAPSHOT, "number")],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1), (STDLIB_BODIES, 1), (ALLOC, 1)] }],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1), (STDLIB_BODIES, 1), (ALLOC, 1), (PLACEMENT, 1)] }],
     },
     Family {
         name: "demand",
