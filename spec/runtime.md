@@ -1739,7 +1739,13 @@ its `KNOWN_OPEN` table.
   `accept` and `birth()` run on the instantiating thread, its
   `run()` on the pool's worker, and its `dissolve()` on the
   teardown thread (`l03_pool_birth_domain.hl`); § "Placement
-  classes", Phase 4 v1 limit, says otherwise.
+  classes", Phase 4 v1 limit, says otherwise. One case is decided:
+  a locus field nested under a pool-placed field is in that pool
+  (the placement table gives it its owner's pool), and its `run()`
+  runs on the pool's worker, as a placed locus's does. Not yet
+  shipped (inventory row C12): no pool is chosen for its `run()`,
+  which runs inline on the instantiating thread (the lifecycle
+  matrix's cross-pool grandchild cells).
 - **Line 4, the failure route bound at birth, in every spine.**
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
@@ -1801,13 +1807,22 @@ its `KNOWN_OPEN` table.
   does not own acquires no drain obligation. Not yet shipped
   (inventory rows C9, C18): a pinned locus's thread runs its
   `drain()` with no field drains, and its fields are dissolved after
-  the join without one (`l12_pinned_fields_drain.hl`).
+  the join without one (`l12_pinned_fields_drain.hl`, and the
+  lifecycle matrix's pinned grandchild cells); and a field typed by
+  an interface or a perspective is torn down through its recorded
+  reclaim, its drain, dissolve and reclaim together, after its
+  owner's `dissolve()` (inventory row C32; the matrix's
+  interface-field and perspective-slot cells).
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown
   the resumed run may end in line 19's not-started outcome. Not yet
   shipped (inventory row C43): the resume calls `run()` inline on
-  the settling thread (`l13_resume_pool_child.hl`).
+  the settling thread (`l13_resume_pool_child.hl`). A locus that
+  declares no `run()` owes none on any incarnation, and the trace
+  shows none. Not yet shipped (inventory row C48): its resumed
+  incarnation enters a `Run`, the empty one the desugar gives it,
+  where its first never does (`l01_neg_same_pool_held.hl`).
 - **Line 14, order.** There is no runtime state machine: order is
   the order the compiler emits, and latches keep a step from
   running twice (§ "Lifecycle", "Order by construction"). Shipped

@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::lifecycle::{
-    FailureSource, LifecyclePlan, Obligation, ObligationKind as K, PathGuard, Point, Spine, Status, Template,
-    DECISION_LINES,
+    FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationKind as K, PathGuard, Point, Spine, Status,
+    Template, Terminal, DECISION_LINES,
 };
 use hale_types::placement::{DomainKind, SiteUniverse};
 
@@ -198,6 +198,52 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert_eq!((drain.line, drain.status), (Some("12"), Status::KnownOpen { inventory_row: "C9" }));
     let outer_drain = one(p, "Outer", K::Drain);
     assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule.status == Status::KnownOpen { inventory_row: "C9" }));
+}
+
+/// Line 12 for a field typed by an interface: it drains before its
+/// owner, a rule its recorded reclaim does not keep today (C32).
+#[test]
+fn a_contract_typed_field_owes_its_drain_before_its_owners() {
+    let s = snapshot(
+        "interface Probe { fn v() -> Int; }\nlocus Kid { fn v() -> Int { return 1; } }\nmain locus App { params { k: Probe = Kid { }; } }\nfn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    let kid_drain = p.obligations.iter().position(|o| o.kind == K::Drain && o.site.as_ref().is_some_and(|s| s.decl.lowered == "Kid"));
+    let order = one(p, "App", K::Drain)
+        .edges
+        .entry
+        .iter()
+        .find(|pr| Some(pr.event.obligation.0 as usize) == kid_drain)
+        .expect("the owner's drain waits for its field's");
+    assert_eq!((order.rule.line, order.rule.status), (Some("12"), Status::KnownOpen { inventory_row: "C32" }));
+}
+
+/// Line 3: a field nested under a pool-placed field owes its run() to
+/// that pool, and runs it inline today (C12).
+#[test]
+fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
+    let s = snapshot(
+        "locus Kid { run() { } }\nlocus Mid { params { k: Kid = Kid { }; } }\nmain locus App {\n    params { m: Mid = Mid { }; }\n    placement { m: cooperative(pool = side); }\n}\nfn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    let on = one(p, "Kid", K::Run).runs_on.expect("the table gives it a pool");
+    assert!(matches!(&p.domains[on.domain.0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
+    assert_eq!((on.rule.line, on.rule.status), (Some("3"), Status::KnownOpen { inventory_row: "C12" }));
+}
+
+/// Line 13: a locus that declares no run() owes none when it resumes;
+/// the row says so, known open (C48), and owes no event.
+#[test]
+fn a_resumed_locus_with_no_run_owes_none() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_neg_same_pool_held.hl"));
+    let p = plan(&s);
+    // One per failure path that restarts it.
+    let runs = rows(p, "Late", K::Run);
+    assert!(!runs.is_empty());
+    for run in runs {
+        assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::KnownOpen { inventory_row: "C48" }));
+        assert_eq!(run.terminals, vec![Terminal::NotStarted(NotStarted::NoRun)]);
+    }
 }
 
 /// Line 14 and GH #736: an accepted flow is torn down by the reclaim its
