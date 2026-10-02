@@ -1,0 +1,19 @@
+// Decision line 3, the control: a body literal whose enclosing locus
+// has templates on one domain (Birth, Run).
+//
+// `l03_body_literal_two_domains.hl` with `Worker` left on main: both
+// `Mid` literals are built there, every contribution of the `Leaf`
+// template agrees, and its birth and run claim the one domain, as they
+// did when the template kept only its first Mid as its owner.
+//
+// Expected terminal outcome: both Leafs born on main, judged by the
+// harness from the trace: `born-on-main`.
+
+locus Leaf { run() { println("ev leaf-run"); } }
+locus Mid { fn make() { Leaf { }; } }
+locus Worker { run() { let m = Mid { }; m.make(); } }
+main locus App {
+    params { worker: Worker = Worker { }; }
+    run() { let m = Mid { }; m.make(); }
+}
+fn main() { App { }; }

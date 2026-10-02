@@ -1692,7 +1692,10 @@ fixture under `crates/hale-codegen/tests/fixtures/lifecycle/` that
 pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 `KNOWN_OPEN` table and fails once the outcome changes, so the
 entry has to go with the fix. Each fixture also runs under the
-lifecycle trace (§ "The lifecycle trace"), held to its line's plan;
+lifecycle trace (§ "The lifecycle trace"), held to the plan the
+table's producer (`hale_types::lifecycle::derive`) derives for its
+program, on its line's rules (three of line 19's, whose shapes the
+producer does not derive yet, to a hand-written plan);
 a departure the trace shows and the outcome cannot (a missing step,
 a step on the wrong thread) is in the same file's
 `TRACE_KNOWN_OPEN` table. A line still waiting on a condition
@@ -1700,7 +1703,7 @@ says so and records today's behaviour. The same rules are evidenced
 across shapes by the lifecycle matrix
 (`crates/hale-codegen/tests/lifecycle_matrix.rs`): a generated
 program for each failure phase, tree position and domain, held to
-its outcome, its trace plan and AddressSanitizer, with the cells
+its outcome, the producer's plan for it and AddressSanitizer, with the cells
 that fail today, the inventory row each fails at (two, for a cell
 that shows two known defects), and the departures each shows, in
 its `KNOWN_OPEN` table.
@@ -1739,7 +1742,13 @@ its `KNOWN_OPEN` table.
   `accept` and `birth()` run on the instantiating thread, its
   `run()` on the pool's worker, and its `dissolve()` on the
   teardown thread (`l03_pool_birth_domain.hl`); § "Placement
-  classes", Phase 4 v1 limit, says otherwise.
+  classes", Phase 4 v1 limit, says otherwise. One case is decided:
+  a locus field nested under a pool-placed field is in that pool
+  (the placement table gives it its owner's pool), and its `run()`
+  runs on the pool's worker, as a placed locus's does. Not yet
+  shipped (inventory row C12): no pool is chosen for its `run()`,
+  which runs inline on the instantiating thread (the lifecycle
+  matrix's cross-pool grandchild cells).
 - **Line 4, the failure route bound at birth, in every spine.**
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
@@ -1801,13 +1810,22 @@ its `KNOWN_OPEN` table.
   does not own acquires no drain obligation. Not yet shipped
   (inventory rows C9, C18): a pinned locus's thread runs its
   `drain()` with no field drains, and its fields are dissolved after
-  the join without one (`l12_pinned_fields_drain.hl`).
+  the join without one (`l12_pinned_fields_drain.hl`, and the
+  lifecycle matrix's pinned grandchild cells); and a field typed by
+  an interface or a perspective is torn down through its recorded
+  reclaim, its drain, dissolve and reclaim together, after its
+  owner's `dissolve()` (inventory row C32; the matrix's
+  interface-field and perspective-slot cells).
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown
   the resumed run may end in line 19's not-started outcome. Not yet
   shipped (inventory row C43): the resume calls `run()` inline on
-  the settling thread (`l13_resume_pool_child.hl`).
+  the settling thread (`l13_resume_pool_child.hl`). A locus that
+  declares no `run()` owes none on any incarnation, and the trace
+  shows none. Not yet shipped (inventory row C48): its resumed
+  incarnation enters a `Run`, the empty one the desugar gives it,
+  where its first never does (`l01_neg_same_pool_held.hl`).
 - **Line 14, order.** There is no runtime state machine: order is
   the order the compiler emits, and latches keep a step from
   running twice (§ "Lifecycle", "Order by construction"). Shipped

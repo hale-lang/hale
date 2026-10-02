@@ -168,11 +168,23 @@ pub struct Owed {
     /// entries).
     pub multiplicity: Multiplicity,
     pub count: Count,
-    /// The end it reaches: `Completed`, or a named terminal.
+    /// The end it reaches: `Completed`, a named terminal, or `Ended`
+    /// (any end: some subjects complete and some do not).
     pub ends: Point,
     /// A domain claim: every event of it ran on a thread whose label
-    /// starts with this (`main`, `pool:side`, `pinned`).
-    pub domain: Option<String>,
+    /// starts with one of these (`main`, `pool:side`, `pinned`). One,
+    /// or several where its occurrences are built under parents on
+    /// different domains, each on its own parent's.
+    pub domain: Option<Vec<String>>,
+}
+
+/// A claim as the notation writes it: the one label, or the set,
+/// `{main,pool:side}`.
+pub fn claim_label(claim: &[String]) -> String {
+    match claim {
+        [one] => one.clone(),
+        many => format!("{{{}}}", many.join(",")),
+    }
 }
 
 impl Owed {
@@ -329,12 +341,13 @@ impl Expected {
                     _ => {}
                 }
                 if let Some(claim) = &owed.domain {
-                    if let Some(e) = g.entered.iter().chain(&g.ends).find(|e| !e.domain.starts_with(claim.as_str())) {
+                    let claimed = |e: &&&TraceEvent| claim.iter().any(|c| e.domain.starts_with(c.as_str()));
+                    if let Some(e) = g.entered.iter().chain(&g.ends).find(|e| !claimed(e)) {
                         out.push(Violation::Domain {
                             owed: label.clone(),
                             subject: subject.clone(),
                             ran_on: e.domain.clone(),
-                            claimed: claim.clone(),
+                            claimed: claim_label(claim),
                         });
                     }
                 }

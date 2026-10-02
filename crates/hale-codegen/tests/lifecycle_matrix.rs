@@ -45,8 +45,13 @@
 //!
 //! Each cell's program names the obligations it exercises in its
 //! header, as the fixtures do, with its expected outcome word; its
-//! expected trace plan is derived from L1's plan for the lines it
-//! touches ([`plan_for`]).
+//! expected trace plan is the one the producer derives for the program
+//! (`hale_types::lifecycle::derive`, [`derived_plan`]), rendered along
+//! the cell's run ([`run_path`]: where `Subj` fails, whether the
+//! failure is held, whether the teardown cancels `Subj`'s queued run,
+//! how many body literals the program builds, and
+//! `Subj` and its handler's owner as what the cell holds) and held to
+//! [`MATRIX_LINES`]' known-open rules.
 //!
 //! ## Cells that are not programs
 //!
@@ -90,12 +95,14 @@
 //! asserted to show exactly that profile, so a departure outside it
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
-//! it has been seen to show, and a run shows exactly one of them. 18
-//! cells in three families:
+//! it has been seen to show, and a run shows exactly one of them. 44
+//! cells in five families:
 //! a handler run in place off the owner's domain (C36, L5's), a pinned
-//! locus's fields undrained (C9), and a pinned locus's `birth_check`
-//! never evaluated (C38). `handler/grandchild/pinned` shows both C9 and
-//! C36.
+//! locus's fields undrained (C9), a pinned locus's `birth_check` never
+//! evaluated (C38), a contract-typed field drained after its owner's
+//! dissolve (C32), and a field nested under a pool-placed field run
+//! inline off its pool (C12). `handler/grandchild/pinned` shows both C9
+//! and C36; the failing cross-pool grandchildren C36 and C12.
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -137,8 +144,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable_with_options;
-use hale_types::lifecycle::trace::{self, Trace, Violation};
-use hale_types::lifecycle::ObligationKind;
+use hale_frontend::snapshot::{Config, Snapshot, Target};
+use hale_types::lifecycle::project::{self, Focus, PathFailure, RunPath};
+use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
+use hale_types::lifecycle::{FailureSource, ObligationKind};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -232,12 +241,6 @@ impl Position {
     /// while the owner's params are open.
     fn is_field(self) -> bool {
         !matches!(self, Position::AcceptedChild | Position::HandlerBorn | Position::LetLiteral)
-    }
-
-    /// The subject is a field of the deployment root, so a placement
-    /// entry can name it.
-    fn is_placeable(self) -> bool {
-        matches!(self, Position::RootChild | Position::IfaceField | Position::PerspSlot | Position::Replica)
     }
 
     fn instances(self) -> usize {
@@ -397,20 +400,66 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     ("handler/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("handler/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
     ("handler/root_child/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_SIDE]]),
-    ("handler/grandchild/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
+    // `Subj`, a field of the pool-placed `Mid`, runs on main: C12 as
+    // well as C36.
+    (
+        "handler/grandchild/cross_pool",
+        &[("C36", IN_PLACE), ("C12", NESTED_INLINE)],
+        &[&[RAN_ON_MAIN_FOR_SIDE, RUN_ON_MAIN_FOR_SIDE]],
+    ),
     ("drain/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("drain/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
-    ("drain/grandchild/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
+    (
+        "drain/grandchild/cross_pool",
+        &[("C36", IN_PLACE), ("C12", NESTED_INLINE)],
+        &[&[RAN_ON_MAIN_FOR_SIDE, RUN_ON_MAIN_FOR_SIDE]],
+    ),
+    // A field nested under a pool-placed field runs inline.
+    ("run/grandchild/cross_pool", &[("C12", NESTED_INLINE)], &[&[RUN_ON_MAIN_FOR_SIDE]]),
+    ("none/grandchild/cross_pool", &[("C12", NESTED_INLINE)], &[&[RUN_ON_MAIN_FOR_SIDE]]),
     // A pinned locus's own fields.
-    ("params_settle/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN]]),
-    ("birth/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN]]),
-    ("run/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN]]),
+    ("params_settle/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
+    ("birth/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
+    ("run/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
     // `Subj`'s handler, on main, delivers the failure in place there
     // while its owner `Mid` is pinned: C36 as well as C9.
-    ("handler/grandchild/pinned", &[("C9", UNDRAINED), ("C36", IN_PLACE)], &[&[NO_DRAIN, RAN_ON_MAIN_FOR_PINNED]]),
+    (
+        "handler/grandchild/pinned",
+        &[("C9", UNDRAINED), ("C36", IN_PLACE)],
+        &[&[NO_DRAIN, MID_DRAIN_ORDER, RAN_ON_MAIN_FOR_PINNED]],
+    ),
     // The drain that would raise the failure never runs.
-    ("drain/grandchild/pinned", &[("C9", UNDRAINED)], &[&[UNHEARD, NO_DRAIN, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
-    ("none/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN]]),
+    (
+        "drain/grandchild/pinned",
+        &[("C9", UNDRAINED)],
+        &[&[UNHEARD, NO_DRAIN, MID_DRAIN_ORDER, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]],
+    ),
+    ("none/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
+    // A contract-typed field drains after its owner's dissolve.
+    ("params_settle/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("params_settle/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("birth/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("birth/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("run/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("run/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("handler/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("handler/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("drain/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("drain/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("none/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("none/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("params_settle/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("params_settle/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("birth/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("birth/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("run/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("run/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("handler/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("handler/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("drain/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("drain/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("none/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    ("none/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
     ("birth/root_child/pinned", &[("C38", NO_BIRTH_CHECK)], &[&[UNHEARD, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
     ("birth/replica/pinned", &[("C38", NO_BIRTH_CHECK)], &[&[UNHEARD_2, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD_2]]),
 ];
@@ -432,6 +481,15 @@ const RAN_ON_MAIN_FOR_PINNED: &str = "trace: domain: Subj.FailureDelivery (inst 
 
 const UNDRAINED: &str = "a pinned locus's own fields are never drained, so `Mid`'s field `Subj` is dissolved without its drain";
 const NO_DRAIN: &str = "trace: missing: Subj.Drain";
+// Line 12's second half, as `l12_pinned_fields_drain.hl` pins it: the
+// owner's drain starts with its field's never reached.
+const MID_DRAIN_ORDER: &str = "trace: edge: Mid.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
+
+const CONTRACT_LATE: &str = "an interface- or perspective-typed field is torn down through its recorded reclaim, its whole spine after its owner's dissolve, so `Own`'s drain starts before `Subj`'s (decision line 12)";
+const OWN_DRAIN_ORDER: &str = "trace: edge: Own.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
+
+const NESTED_INLINE: &str = "a field nested under a pool-placed field carries that pool in the placement table, and its run() runs inline on the instantiating thread (decision line 3)";
+const RUN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.Run (inst _ inc 0) ran on main, claimed pool:side";
 
 // Inventory C38 said the check agrees; it is never evaluated on a pinned
 // locus. The checker does not refuse it: L4's birth spine runs the check
@@ -456,7 +514,6 @@ struct Program {
     src: String,
     /// The receiver-literal spelling of a `let_literal` cell.
     twin: Option<String>,
-    plan: String,
     outcome: &'static str,
 }
 
@@ -670,20 +727,21 @@ fn source(c: Cell, twin: bool, header: &str) -> String {
 }
 
 /// The obligation kinds a plan names, in declaration order.
-fn kinds_of(plan: &str) -> Vec<&'static str> {
-    let exp = lifecycle_plan::plan(plan);
-    let mut kinds: Vec<ObligationKind> = exp.owed.iter().map(|o| o.kind).collect();
+fn kinds_of(plan: &Expected) -> Vec<&'static str> {
+    let mut kinds: Vec<ObligationKind> = plan.owed.iter().map(|o| o.kind).collect();
     kinds.sort();
     kinds.dedup();
     kinds.into_iter().map(ObligationKind::name).collect()
 }
 
-fn header(c: Cell, plan: &str, outcome: &str) -> String {
+/// The header names the obligations the producer's plan holds the cell
+/// to; a cell the front end refuses has none.
+fn header(c: Cell, kinds: &[&str], outcome: &str) -> String {
     [
         "// Lifecycle matrix cell ",
         &cell_id(c),
         " (",
-        &kinds_of(plan).join(", "),
+        &kinds.join(", "),
         ").\n//\n// `Subj` ",
         c.phase.prose(),
         "; it is ",
@@ -702,7 +760,6 @@ fn render(c: Cell) -> Result<Program, &'static str> {
     if let Some(why) = no_path(c) {
         return Err(why);
     }
-    let plan = plan_for(c);
     let outcome = if raises(c) {
         "delivered-once"
     } else if c.phase.fails() {
@@ -710,42 +767,17 @@ fn render(c: Cell) -> Result<Program, &'static str> {
     } else {
         "clean"
     };
-    let head = header(c, &plan, outcome);
+    // The plan does not read the header's comments.
+    let kinds = plan_of(c, &source(c, false, "")).map(|p| kinds_of(&p)).unwrap_or_default();
+    let head = header(c, &kinds, outcome);
     let src = source(c, false, &head);
     let twin = (c.position == Position::LetLiteral).then(|| source(c, true, &head));
-    Ok(Program { src, twin, plan, outcome })
+    Ok(Program { src, twin, outcome })
 }
 
 // ===================================================================
 // The plan
 // ===================================================================
-
-/// The domain the subject's `run()` is claimed on, when the cell
-/// determines it: its own placement, or the one thread its whole tree
-/// is built on.
-fn subj_run_domain(c: Cell) -> Option<&'static str> {
-    match c.domain {
-        Domain::Main => Some("main"),
-        Domain::Pool => Some("pool:side"),
-        Domain::Pinned if c.position == Position::Grandchild => None,
-        Domain::Pinned => Some("pinned"),
-        Domain::CrossPool if c.position.is_placeable() => Some("pool:side"),
-        Domain::CrossPool => None,
-    }
-}
-
-/// The handler owner's domain: where a failure's delivery completes
-/// (decision L0-1).
-fn owner_domain(c: Cell) -> &'static str {
-    match c.domain {
-        Domain::Main => "main",
-        Domain::Pool => "pool:side",
-        Domain::Pinned if c.position.is_field() && c.position != Position::Grandchild => "main",
-        Domain::Pinned => "pinned",
-        Domain::CrossPool if c.position == Position::Grandchild => "pool:side",
-        Domain::CrossPool => "main",
-    }
-}
 
 /// Whether the failure is raised while the handler owner's params are
 /// open on the thread that settles them, so it is held and delivered
@@ -797,72 +829,58 @@ fn raises(c: Cell) -> bool {
     c.phase.fails() && !(run_canceled(c) && matches!(c.phase, Phase::Run | Phase::Handler))
 }
 
-/// The cell's plan, from L1's plans for the lines it touches.
-fn plan_for(c: Cell) -> String {
-    let n = c.position.instances();
-    let subj = if n == 1 { "Subj".to_string() } else { format!("Subj*{n}") };
-    let owner = handler_owner(c);
-    let mut steps: Vec<String> = vec!["Birth".into()];
-    let run = match subj_run_domain(c) {
-        Some(d) => format!("Run!{d}"),
-        None => "Run".into(),
+/// The decision lines a cell's run is held to: the ones a failure's
+/// delivery, the hold that keeps the failed child, and the teardown that
+/// follows are about, and line 3's known-open rule for a field nested
+/// under a pool-placed one (its pending ones are never held).
+const MATRIX_LINES: &[&str] = &["1", "3", "4", "8", "9", "12", "JP", "L0-1"];
+
+/// A cell's run through the producer's plan: where `Subj` fails, whether
+/// the failure is held, whether its teardown cancels its queued run, and
+/// how many of each body literal the program builds.
+fn run_path(c: Cell) -> RunPath {
+    let mut p = RunPath::default();
+    let source = match c.phase {
+        Phase::ParamsSettle => Some(FailureSource::BirthClosure),
+        Phase::Birth => Some(FailureSource::BirthCheck),
+        Phase::Run => Some(FailureSource::Run),
+        Phase::Handler => Some(FailureSource::Handler),
+        Phase::Drain => Some(FailureSource::Drain),
+        Phase::None => None,
     };
-    let delivery = if held(c) {
-        // A held failure's delivery completes on the settling thread;
-        // where that is for an owner placed off main waits on line 1.
-        if c.domain == Domain::Main { "FailureDelivery!main ConstructionDelivery".to_string() } else { "FailureDelivery ConstructionDelivery".to_string() }
-    } else {
-        format!("FailureDelivery!{}", owner_domain(c))
-    };
-    // A canceled run has no entry to order; its own line below.
-    let canceled = run_canceled(c);
-    match c.phase {
-        Phase::ParamsSettle | Phase::Birth => steps.push(delivery.clone()),
-        Phase::Run | Phase::Handler if canceled => {}
-        Phase::Run | Phase::Handler => {
-            steps.push(run.clone());
-            steps.push(delivery.clone());
-        }
-        Phase::Drain => {
-            if !canceled {
-                steps.push(run.clone());
-            }
-            steps.push("Drain".into());
-            steps.push(delivery.clone());
-        }
-        Phase::None if canceled => {}
-        Phase::None => steps.push(run.clone()),
+    if let Some(source) = source.filter(|_| raises(c)) {
+        p.failures.push(PathFailure { decl: "Subj".into(), source, held: held(c), in_teardown: false, restarts: 0 });
     }
-    if c.phase != Phase::Drain {
-        steps.push("Drain".into());
+    if run_canceled(c) {
+        p.canceled.insert("Subj".into(), c.position.instances() as u32);
     }
-    steps.push("Dissolve".into());
-    steps.push("Reclaim".into());
-    let mut lines = vec![
-        format!("{owner}: Birth Drain Dissolve Reclaim"),
-        format!("{subj}: {}", steps.join(" ")),
-    ];
-    if raises(c) {
-        // The failed child is kept until its handler completes
-        // (`lotus_failure_hold`, decision line 8).
-        lines.push("edge Subj.FailureDelivery.Completed -> Subj.Reclaim.Entered".into());
+    p.occurrences.insert("Subj".into(), c.position.instances() as u32);
+    if !own_is_root(c) {
+        p.occurrences.insert("Own".into(), 1);
     }
-    if canceled {
-        // The teardown that reclaims the subject cancels its queued run
-        // and names it, on the worker, inside the reclaim's bracket.
-        lines.push(format!("{subj}: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side"));
-        lines.push("edge Subj.Run.Ended -> Subj.Reclaim.Completed".into());
-        lines.push("edge Subj.Reclaim.Entered -> Subj.Cancellation.Entered".into());
-        lines.push("edge Subj.Cancellation.Completed -> Subj.Reclaim.Completed".into());
+    if c.position == Position::HandlerBorn {
+        p.occurrences.insert("Trig".into(), 1);
     }
-    if raises(c) && held(c) {
-        lines[0] = format!("{owner}: ParamsSettle Birth Drain Dissolve Reclaim");
-        lines.push(format!("edge {owner}.ParamsSettle.Completed -> Subj.FailureDelivery.Completed"));
-        lines.push(format!("edge Subj.FailureDelivery.Completed -> {owner}.Birth.Entered"));
-    }
-    // Children before their owner's arena (decision line 14).
-    lines.push(format!("edge Subj.Reclaim.Completed -> {owner}.Reclaim.Entered"));
-    lines.join("\n")
+    p.scope = Some(["Subj", handler_owner(c)].iter().map(|d| d.to_string()).collect());
+    p
+}
+
+/// The plan the producer derives for a cell's program, on its run: what
+/// the trace is held to.
+fn derived_plan(c: Cell, program: &hale_syntax::ast::Program) -> Expected {
+    let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::harness(Target::host()))
+        .unwrap_or_else(|_| panic!("{}: no snapshot", cell_id(c)));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{}: the lifecycle plan is blocked", cell_id(c)));
+    project::expected(plan, Focus::Lines(MATRIX_LINES), &run_path(c)).unwrap_or_else(|e| panic!("{}: {e}", cell_id(c)))
+}
+
+/// The same plan for a source the front end may refuse: `None` where it
+/// does not parse or has no plan.
+fn plan_of(c: Cell, src: &str) -> Option<Expected> {
+    let program = hale_syntax::parse_source(src).ok()?;
+    let snap = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())).ok()?;
+    let plan = snap.demand_lifecycle().ok()?;
+    project::expected(plan, Focus::Lines(MATRIX_LINES), &run_path(c)).ok()
 }
 
 // ===================================================================
@@ -1013,6 +1031,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let id = cell_id(c);
     let Form::Program(p) = form(c) else { panic!("{id} is not a program") };
     let program = front_end(&p.src).expect("judged already");
+    let plan = derived_plan(c, &program);
     let mut failures = Vec::new();
     let bin = harness::unique_bin(&["lcmatrix_", &slug(c)].concat());
     let _ = std::fs::write(bin.with_extension("hl"), &p.src);
@@ -1022,7 +1041,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let ran = run_bin(&bin, &[]);
     let _ = std::fs::remove_file(&bin);
     if verbose(c) {
-        dump(&id, &p, &ran);
+        dump(&id, &p, &plan, &ran);
     }
 
     // --- 1: the outcome word ---------------------------------------
@@ -1033,7 +1052,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
 
     // --- 2: the trace ----------------------------------------------
     let mut v: Vec<Violation> = trace::laws(&ran.trace, ran.complete());
-    v.extend(lifecycle_plan::plan(&p.plan).check(&ran.trace, ran.complete()));
+    v.extend(plan.check(&ran.trace, ran.complete()));
     failures.extend(v.iter().map(|v| format!("trace: {v}")));
 
     // --- 4: the differential ---------------------------------------
@@ -1083,8 +1102,14 @@ fn verbose(c: Cell) -> bool {
     std::env::var("HALE_MATRIX_CELL").is_ok_and(|f| f.split(',').any(|s| cell_id(c).contains(s)))
 }
 
-fn dump(id: &str, p: &Program, ran: &Ran) {
-    eprintln!("==== {id}\n{}\n---- plan\n{}\n---- stdout\n{}---- stderr\n{}---- trace", p.src, p.plan, ran.stdout, ran.stderr);
+fn dump(id: &str, p: &Program, plan: &Expected, ran: &Ran) {
+    eprintln!(
+        "==== {id}\n{}\n---- plan\n{}\n---- stdout\n{}---- stderr\n{}---- trace",
+        p.src,
+        lifecycle_plan::render(plan),
+        ran.stdout,
+        ran.stderr
+    );
     for e in &ran.trace.events {
         eprintln!(
             "{} {} {} {} {} {} {:?}",
@@ -1315,7 +1340,8 @@ fn every_cell_is_written_or_named() {
                     let formatted = hale_syntax::fmt::format_source(src).unwrap_or_else(|e| panic!("{}: fmt: {e:?}", cell_id(*c)));
                     assert!(formatted == *src, "{} is not `hale fmt` clean; formatted:\n{formatted}\ngenerated:\n{src}", cell_id(*c));
                 }
-                assert!(!lifecycle_plan::plan(&p.plan).owed.is_empty(), "{}: an empty plan", cell_id(*c));
+                let program = front_end(&p.src).expect("judged already");
+                assert!(!derived_plan(*c, &program).owed.is_empty(), "{}: an empty plan", cell_id(*c));
                 // The header names the cell, its obligations and its
                 // expected outcome, as a fixture's does.
                 let head = format!("// Lifecycle matrix cell {} (", cell_id(*c));

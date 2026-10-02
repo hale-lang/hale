@@ -25,14 +25,21 @@
 //! trace (`BuildOptions::lifecycle_trace`; spec/runtime.md § The
 //! lifecycle trace), and beside the outcome word its trace is checked:
 //! against the laws every trace owes (`lifecycle::trace::laws`), and,
-//! for a line with an adopted rule, against [`PLANS`], the line's
-//! obligations with their entry and completion edges, order-insensitive
-//! across threads and ordered within a domain. A fixture whose trace
+//! for a line with an adopted rule, against the plan the producer
+//! derives for the fixture's program (`hale_types::lifecycle::derive`,
+//! [`derived_plan`]): the obligations with their entry and completion
+//! edges, order-insensitive across threads and ordered within a domain,
+//! rendered for the run by `lifecycle::project` along [`run_path`] (the
+//! failures the run raises and where, how many body literals it builds,
+//! where it ends early, and the lines whose known-open rules it is held
+//! to; facts of the run, not of the program). A fixture whose trace
 //! shows today's departure from the plan is in [`TRACE_KNOWN_OPEN`],
 //! with the inventory row and every violation the defect causes; any
 //! other violation fails the fixture, and when the fix lands the listed
 //! ones go, the assertion fails, and so does the entry. A pending
-//! line's fixture is held to the laws alone.
+//! line's fixture is held to the laws alone. The fixtures in
+//! [`UNDERIVED`] have no derived plan yet and are held to their
+//! hand-written one.
 //!
 //! [`CONTROLS`] are the negative controls: a step removed or reordered
 //! (`LOTUS_LIFECYCLE_SKIP` in the trace build, or today's own order for
@@ -44,9 +51,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
 use hale_codegen::build_executable_with_options;
-use hale_types::lifecycle::trace::{self, Trace, Violation};
-use hale_types::lifecycle::{NotStarted, ObligationKind, Point, ShutdownCause, Spine, Terminal};
+use hale_frontend::frontend::LoadMode;
+use hale_frontend::snapshot::{Config, Snapshot};
+use hale_frontend::source::Disk;
+use hale_types::lifecycle::project::{self, Focus, Inside, PathFailure, RunPath};
+use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
+use hale_types::lifecycle::{FailureSource, NotStarted, ObligationKind, Point, ShutdownCause, Spine, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -55,7 +68,7 @@ mod build_opts;
 #[path = "support/lifecycle_plan.rs"]
 mod lifecycle_plan;
 
-use lifecycle_plan::{normalized, plan};
+use lifecycle_plan::{normalized, plan, render};
 
 /// Every fixture finishes in well under a second; a hang is a known-open
 /// outcome of its own (`timeout`), not a stalled suite.
@@ -109,6 +122,11 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l01_neg_it_waits_worker_queue.hl", line: "1", adopted: Some("delivered-at-settle-queue-ran"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l02_tick_after_posted_run.hl", line: "2", adopted: None, run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l03_pool_birth_domain.hl", line: "3", adopted: None, run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l03_field_parents_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
+    Fixture { file: "l03_field_parents_two_domains_nested.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: twig_born },
+    Fixture { file: "l03_field_parents_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
+    Fixture { file: "l03_body_literal_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
+    Fixture { file: "l03_body_literal_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l04_dissolve_route_reclaim.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: outcome_or_exit },
     Fixture { file: "l04_dissolve_route_cascade.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: handled_once },
     Fixture { file: "l05_accept_position.hl", line: "5", adopted: Some("accept-after-params-before-birth"), run: RunMode::Plain, judge: outcome_line },
@@ -163,159 +181,11 @@ const PENDING: &[(&str, &str)] = &[
     ("l17_pinned_join_deferred.hl", "final-dropped"),
 ];
 
-/// Each adopted line's plan, as the trace oracle reads it (a fixture on
-/// a pending line has none), in the notation
+/// The hand-written plans of the fixtures in [`UNDERIVED`], which the
+/// producer does not derive yet, in the notation
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
-    (
-        "l01_held_failure_settle.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Boom: Birth Run FailureDelivery ConstructionDelivery Drain Dissolve Reclaim
-         edge App.ParamsSettle.Completed -> Boom.FailureDelivery.Completed
-         edge Boom.FailureDelivery.Completed -> App.Birth.Entered
-         edge Boom.Reclaim.Completed -> App.Reclaim.Entered",
-    ),
-    (
-        "l01_neg_same_pool_held.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Spawner: Birth Run!pool:side Drain Dissolve Reclaim
-         Owner: ParamsSettle!pool:side Birth Run Drain Dissolve Reclaim
-         Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Run Drain Dissolve Reclaim
-         edge Owner.ParamsSettle.Completed -> Late.FailureDelivery.Completed
-         edge Late.FailureDelivery.Completed -> Owner.Birth.Entered
-         edge Late.FailureDelivery.Completed -> Late.Restart.Entered",
-    ),
-    (
-        "l01_neg_it_waits_worker_queue.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Failer: Birth Run!pool:side FailureDelivery ConstructionDelivery Drain Dissolve Reclaim
-         Quick: Birth Run!pool:side Drain Dissolve Reclaim
-         Slow: Birth Run!main Drain Dissolve Reclaim
-         edge App.ParamsSettle.Completed -> Failer.FailureDelivery.Completed
-         edge Failer.FailureDelivery.Completed -> App.Birth.Entered",
-    ),
-    (
-        "l04_dissolve_route_reclaim.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Flowing: Accept Birth Run Drain Dissolve FailureDelivery Reclaim
-         edge Flowing.FailureDelivery.Completed -> Flowing.Reclaim.Entered",
-    ),
-    (
-        "l04_dissolve_route_cascade.hl",
-        "App: ParamsSettle Birth Drain Dissolve Reclaim
-         Kid: Birth Drain Dissolve FailureDelivery Reclaim
-         edge Kid.FailureDelivery.Completed -> Kid.Reclaim.Entered",
-    ),
-    (
-        "l05_accept_position.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid: Accept Birth Drain Dissolve Reclaim
-         edge Kid.Accept.Completed -> Kid.Birth.Entered",
-    ),
-    // Line 6's readiness has no trace event yet; the plan holds the rest.
-    ("l06_readiness_main.hl", "App: Birth Run Drain Dissolve Reclaim\n Sub: Birth Drain Dissolve Reclaim"),
-    ("l06_readiness_pool.hl", "App: Birth Run Drain Dissolve Reclaim\n Sub: Birth Drain Dissolve Reclaim"),
-    (
-        "l07_pool_or_wait_teardown.hl",
-        "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
-         edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered",
-    ),
-    (
-        "l08_birth_failure_kept.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid: Birth FailureDelivery Drain Dissolve Reclaim
-         edge Kid.Birth.Completed -> Kid.FailureDelivery.Entered
-         edge Kid.FailureDelivery.Completed -> Kid.Reclaim.Entered",
-    ),
-    (
-        "l09_delivery_at_epoch.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid: Birth Run FailureDelivery Drain Dissolve Reclaim
-         edge Kid.FailureDelivery.Completed -> Kid.Run.Completed",
-    ),
-    // The violation exits the process inside the cascade's Dissolve.
-    (
-        "l10_dissolve_closures_first.hl",
-        "App: ParamsSettle Birth Drain Dissolve
-         Kid: Birth Drain Dissolve
-         edge App.Dissolve.Completed -> Kid.Dissolve.Entered",
-    ),
-    (
-        "l11_let_bound_drain.hl",
-        "Kid: Birth Run Drain@DeferredEntry Dissolve@DeferredEntry Reclaim
-         -: PreDrain@MainFallThrough
-         edge Kid.Run.Completed -> -.PreDrain@MainFallThrough.Entered
-         edge -.PreDrain@MainFallThrough.Completed -> Kid.Drain@DeferredEntry.Entered",
-    ),
-    (
-        "l12_pinned_fields_drain.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Outer: Birth!pinned Run!pinned Drain!pinned Dissolve!pinned PinnedJoin!main Reclaim
-         Inner: Birth Drain Dissolve Reclaim
-         edge Inner.Drain.Completed -> Outer.Drain.Entered
-         edge Outer.Dissolve.Completed -> Outer.PinnedJoin.Completed",
-    ),
-    (
-        "l13_resume_pool_child.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Kid: Birth FailureDelivery ConstructionDelivery Run!pool:side Drain Dissolve Reclaim
-         edge App.ParamsSettle.Completed -> Kid.FailureDelivery.Completed
-         edge Kid.FailureDelivery.Completed -> Kid.Run.Entered",
-    ),
-    // Line 14's verification: each child torn down once, by its run
-    // end's reclaim, and before its owner's arena goes.
-    (
-        "l14_reclaim_exactly_once.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid*3: Accept Birth Run Drain@Reclaim Dissolve@Reclaim Reclaim@Reclaim
-         edge Kid.Run.Completed -> Kid.Drain@Reclaim.Entered
-         edge Kid.Reclaim@Reclaim.Completed -> App.Reclaim.Entered",
-    ),
-    (
-        "l15_sigint_flag.hl",
-        "App: Birth Drain Dissolve Reclaim
-         Loop: Birth!pinned Run!pinned Drain!pinned Dissolve!pinned PinnedJoin!main Reclaim
-         edge Loop.Run.Completed -> Loop.Drain.Entered
-         edge Loop.Dissolve.Completed -> Loop.PinnedJoin.Completed",
-    ),
-    (
-        "l18_eager_pre_drain.hl",
-        "Hub: Birth Run Drain Dissolve Reclaim
-         Sub: Birth Drain Dissolve Reclaim
-         -: PreDrain@EagerTeardown
-         edge Hub.Run.Completed -> -.PreDrain@EagerTeardown.Entered
-         edge -.PreDrain@EagerTeardown.Completed -> Sub.Drain.Entered",
-    ),
-    // R20a: the started run parked in accept() is abandoned at the pool
-    // join and named; the worker's quiescence is the join's completion.
-    (
-        "l19_parked_started_coroutine.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         __StdIoTcpListener: Birth Run=CanceledAfterStart!pool:io Cancellation!pool:io Drain Dissolve Reclaim
-         -: PoolJoin@EagerTeardown
-         edge __StdIoTcpListener.Cancellation.Completed -> -.PoolJoin@EagerTeardown.Completed
-         edge __StdIoTcpListener.Run.Ended -> __StdIoTcpListener.Drain.Entered",
-    ),
-    (
-        "l19_self_post_overflow.hl",
-        "App: Birth Drain Dissolve Reclaim
-         Spawner: Birth Run!pool:side Drain Dissolve Reclaim
-         Kid*20: Birth Run!pool:side Drain Dissolve Reclaim
-         edge Kid.Run.Completed -> Kid.Drain.Entered",
-    ),
-    // R19: each queued run is canceled by the teardown that reclaims its
-    // child, named inside that reclaim's bracket, and never started.
-    (
-        "l19_queued_run_canceled.hl",
-        "Own: Birth Drain Dissolve Reclaim
-         Host: Birth Run Drain Dissolve Reclaim
-         Kid*2: Birth Drain Dissolve Reclaim
-         Kid*2: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side
-         edge Kid.Run.Ended -> Kid.Reclaim.Completed
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered
-         edge Kid.Cancellation.Completed -> Kid.Reclaim.Completed",
-    ),
     // R19 across pools: the run queued on `side` is canceled by the
     // reclaim on main, inside its bracket. The replacement's run is the
     // judge's, since one plan step cannot owe two ends.
@@ -346,31 +216,199 @@ const PLANS: &[(&str, &str)] = &[
          Kid: Cancellation!main
          edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
     ),
-    (
-        "l19_resumed_run_at_shutdown.hl",
-        "App: ParamsSettle Birth Drain Dissolve Reclaim
-         Kid: Birth FailureDelivery ConstructionDelivery Run Drain Dissolve Reclaim
-         edge Kid.Run.Ended -> Kid.Dissolve.Entered",
-    ),
-    (
-        "rd_restart_during_teardown.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Kid: Birth Run FailureDelivery Restart*0 Drain Dissolve Reclaim",
-    ),
-    (
-        "jp_late_failure_pinned_join.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Late: Birth!pinned Run!pinned FailureDelivery!main Drain!pinned Dissolve!pinned PinnedJoin Reclaim
-         edge Late.FailureDelivery.Completed -> Late.PinnedJoin.Completed",
-    ),
-    (
-        "jp_late_failure_pool_join.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Late: Birth Run!pool:side FailureDelivery!main Drain Dissolve Reclaim
-         -: PoolJoin@EagerTeardown
-         edge Late.FailureDelivery.Completed -> -.PoolJoin@EagerTeardown.Completed",
-    ),
 ];
+
+/// Each adopted line's run, as the producer's plan reads it
+/// (`hale_types::lifecycle::project`): the lines whose known-open rules
+/// the fixture is held to, and the run's path through the plan (which
+/// failures it raises and where, how many instances a body literal
+/// builds, a run a shutdown abandons or a teardown cancels, where the
+/// run ends early). Facts
+/// of the run the producer cannot know from the program. A fixture on a
+/// pending line has none and is held to the laws; an UNDERIVED one has
+/// none and is held to its hand-written plan.
+fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
+    let fails = |decl: &str, source: FailureSource, held: bool, in_teardown: bool, restarts: u32| PathFailure {
+        decl: decl.to_string(),
+        source,
+        held,
+        in_teardown,
+        restarts,
+    };
+    let count = |pairs: &[(&str, u32)]| -> BTreeMap<String, u32> { pairs.iter().map(|(d, n)| (d.to_string(), *n)).collect() };
+    let mut p = RunPath::default();
+    let lines: &'static [&'static str] = match file {
+        "l01_held_failure_settle.hl" => {
+            p.failures.push(fails("Boom", FailureSource::Run, true, false, 0));
+            &["1"]
+        }
+        "l01_neg_same_pool_held.hl" => {
+            p.failures.push(fails("Late", FailureSource::BirthClosure, true, false, 1));
+            p.occurrences = count(&[("Owner", 1), ("Late", 1)]);
+            // Line 13: the resumed Late declares no run() (C48).
+            &["1", "13"]
+        }
+        "l01_neg_it_waits_worker_queue.hl" => {
+            p.failures.push(fails("Failer", FailureSource::Run, true, false, 0));
+            &["1"]
+        }
+        "l04_dissolve_route_reclaim.hl" => {
+            p.failures.push(fails("Flowing", FailureSource::Dissolve, false, false, 0));
+            p.occurrences = count(&[("Flowing", 1)]);
+            &["4"]
+        }
+        "l04_dissolve_route_cascade.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
+            &["4"]
+        }
+        // One field template, its occurrences built under the two Parents
+        // on main and on pool `side`, where the Parent statement's
+        // teardown cancels the one run queued behind it; or both on main,
+        // the control.
+        "l03_field_parents_two_domains.hl" => {
+            p.occurrences = count(&[("Parent", 2), ("Leaf", 2)]);
+            p.canceled = count(&[("Leaf", 1)]);
+            &["3"]
+        }
+        "l03_field_parents_two_domains_nested.hl" => {
+            p.occurrences = count(&[("Parent", 2), ("Leaf", 2), ("Twig", 2)]);
+            p.canceled = count(&[("Twig", 1)]);
+            &["3"]
+        }
+        "l03_field_parents_one_domain.hl" => {
+            p.occurrences = count(&[("Parent", 2), ("Leaf", 2)]);
+            &["3"]
+        }
+        // One body-literal template, built by a method of the two Mids on
+        // main and on pool `side`, each run inline at its statement; or
+        // both on main, the control.
+        "l03_body_literal_two_domains.hl" => {
+            p.occurrences = count(&[("Mid", 2), ("Leaf", 2)]);
+            &["3"]
+        }
+        "l03_body_literal_one_domain.hl" => {
+            p.occurrences = count(&[("Mid", 2), ("Leaf", 2)]);
+            &["3"]
+        }
+        "l05_accept_position.hl" => {
+            p.occurrences = count(&[("Kid", 1)]);
+            &["5"]
+        }
+        "l06_readiness_main.hl" | "l06_readiness_pool.hl" => &["6"],
+        // Line 7 today: the pool join never returns.
+        "l07_pool_or_wait_teardown.hl" => {
+            p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(Spine::EagerTeardown) });
+            &["7"]
+        }
+        "l08_birth_failure_kept.hl" => {
+            p.failures.push(fails("Kid", FailureSource::BirthClosure, false, false, 0));
+            p.occurrences = count(&[("Kid", 1)]);
+            &["8"]
+        }
+        "l09_delivery_at_epoch.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Run, false, false, 0));
+            p.occurrences = count(&[("Kid", 1)]);
+            &["9"]
+        }
+        // Line 10's fixture runs on line 4's open path (C31): the
+        // violation takes the structural exit inside the cascade's
+        // dissolve of Kid.
+        "l10_dissolve_closures_first.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
+            p.ends_inside = Some(Inside { decl: Some("Kid".into()), kind: ObligationKind::Dissolve, spine: None });
+            &["10"]
+        }
+        "l11_let_bound_drain.hl" => &["11"],
+        "l12_pinned_fields_drain.hl" => &["12"],
+        "l13_resume_pool_child.hl" => {
+            p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
+            &["13"]
+        }
+        "l14_reclaim_exactly_once.hl" => {
+            p.occurrences = count(&[("Kid", 3)]);
+            &["14"]
+        }
+        "l15_sigint_flag.hl" => &["15"],
+        "l18_eager_pre_drain.hl" => &["18"],
+        "l19_parked_started_coroutine.hl" => {
+            p.abandoned.insert("__StdIoTcpListener".to_string());
+            &["19"]
+        }
+        "l19_self_post_overflow.hl" => {
+            p.occurrences = count(&[("Kid", 20)]);
+            &["19"]
+        }
+        // R19's retention: each Kid's run, queued behind the teardown
+        // that reclaims it, is canceled before it starts.
+        "l19_queued_run_canceled.hl" => {
+            p.occurrences = count(&[("Own", 1), ("Host", 1), ("Kid", 2)]);
+            p.canceled.insert("Kid".to_string(), 2);
+            &["19"]
+        }
+        "l19_resumed_run_at_shutdown.hl" => {
+            p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
+            &["19"]
+        }
+        "rd_restart_during_teardown.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Run, false, true, 0));
+            &["RD"]
+        }
+        "jp_late_failure_pinned_join.hl" | "jp_late_failure_pool_join.hl" => {
+            p.failures.push(fails("Late", FailureSource::Run, false, true, 0));
+            &["JP", "L0-1"]
+        }
+        // A pending line's fixture, or an UNDERIVED one: no run path.
+        _ => return None,
+    };
+    Some((lines, p))
+}
+
+/// Fixtures with a plan the producer does not derive yet, held to their
+/// hand-written one alone: (file, what the producer does not state).
+/// L5's second part wrote them after the producer. Each needs a fact a
+/// run path cannot carry or a row the producer does not emit: R19a's
+/// cancellation at a reclaim off the run's pool, the instances of one
+/// declaration whose runs end differently in one run (the trace names
+/// an instance by its declaration), and a main locus built more than
+/// once, each literal with its own teardown.
+const UNDERIVED: &[(&str, &str)] = &[
+    (
+        "l19_cross_pool_queued_run_canceled.hl",
+        "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
+    ),
+    (
+        "l19_full_ring.hl",
+        "200 App literals, each torn down where it stands; Kid's runs complete once, then are canceled on main or refused",
+    ),
+    ("l19_empty_ring_last_check.hl", "two App literals; the first Kid's run completes, the second's is canceled on main"),
+];
+
+/// The plan the producer derives for a fixture's program, on its run's
+/// path: what the trace oracle holds the run to. `None` for a fixture
+/// with no run path.
+fn derived_plan(file: &str) -> Option<Expected> {
+    let (lines, run) = run_path(file)?;
+    let path = dir().join(file);
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false))
+        .unwrap_or_else(|_| panic!("{file} does not load"));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{file}: the lifecycle plan is blocked"));
+    Some(project::expected(plan, Focus::Lines(lines), &run).unwrap_or_else(|e| panic!("{file}: {e}")))
+}
+
+/// Whether the trace oracle holds a fixture's run to a plan: a run path,
+/// or a hand-written plan while it is [`UNDERIVED`].
+fn has_plan(file: &str) -> bool {
+    run_path(file).is_some() || PLANS.iter().any(|(p, _)| *p == file)
+}
+
+/// The plan the trace oracle holds a fixture's run to: its hand-written
+/// one while it is [`UNDERIVED`], else the producer's ([`derived_plan`]).
+fn fixture_plan(file: &str) -> Option<Expected> {
+    match PLANS.iter().find(|(p, _)| *p == file) {
+        Some((_, text)) => Some(plan(text)),
+        None => derived_plan(file),
+    }
+}
 
 /// Fixtures whose trace departs from their plan today: (file,
 /// inventory row, the departures the trace shows). The departures are
@@ -410,6 +448,8 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
             "missing: -.WaitAbort@EagerTeardown",
         ],
     ),
+    // Late declares no run(), and its resumed incarnation enters one.
+    ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
     // Inner is never drained, so Outer's drain starts without it.
     (
         "l12_pinned_fields_drain.hl",
@@ -463,7 +503,8 @@ struct Control {
     /// `LOTUS_LIFECYCLE_SKIP` for the trace build's runtime; empty when
     /// the reordering is today's own (a rule not yet shipped).
     skip: &'static str,
-    /// The plan; `None` is the fixture's own in [`PLANS`].
+    /// The plan, written by hand; `None` is the fixture's own, the one
+    /// the producer derives ([`derived_plan`]).
     plan: Option<&'static str>,
     /// The violation the oracle reports, as it starts.
     fails_with: &'static str,
@@ -475,6 +516,11 @@ struct Control {
 /// Line 7's rule over a pool that terminates (`l16`'s worker).
 const LINE_7_PLAN: &str = "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
      edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered";
+
+/// The held failure's restart, without line 13's resumed run (C48,
+/// which the fixture's own plan pins).
+const RESTART_PLAN: &str = "Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Drain Dissolve Reclaim
+     edge Late.FailureDelivery.Completed -> Late.Restart.Entered";
 
 /// The worker's teardown waits for its run to end: the pool join is
 /// what orders the two across threads.
@@ -584,7 +630,7 @@ const CONTROLS: &[Control] = &[
         covers: ObligationKind::Restart,
         fixture: "l01_neg_same_pool_held.hl",
         skip: "Restart.Completed",
-        plan: None,
+        plan: Some(RESTART_PLAN),
         fails_with: "unended: Late.Restart",
         baseline_passes: false,
     },
@@ -683,10 +729,13 @@ fn control(name: &str) -> &'static Control {
 fn assert_control(name: &str) {
     let c = control(name);
     let f = fixture(c.fixture);
-    let text = c.plan.unwrap_or_else(|| PLANS.iter().find(|(p, _)| *p == c.fixture).map(|(_, t)| *t).expect("a plan"));
+    let held_to = match c.plan {
+        Some(text) => plan(text),
+        None => fixture_plan(c.fixture).expect("a plan"),
+    };
     let check = |ran: &Ran| -> Vec<String> {
         let mut v = trace::laws(&ran.trace, ran.complete());
-        v.extend(plan(text).check(&ran.trace, ran.complete()));
+        v.extend(held_to.check(&ran.trace, ran.complete()));
         v.iter().map(Violation::to_string).collect()
     };
     let env: Vec<(&str, &str)> = if c.skip.is_empty() { vec![] } else { vec![("LOTUS_LIFECYCLE_SKIP", c.skip)] };
@@ -706,11 +755,11 @@ fn assert_control(name: &str) {
 }
 
 /// What the trace oracle says about a run of `file`: the laws, then the
-/// plan's violations.
+/// violations of the plan it is held to ([`fixture_plan`]).
 fn trace_violations(file: &str, ran: &Ran) -> Vec<Violation> {
     let mut v = trace::laws(&ran.trace, ran.complete());
-    if let Some((_, text)) = PLANS.iter().find(|(f, _)| *f == file) {
-        v.extend(plan(text).check(&ran.trace, ran.complete()));
+    if let Some(held_to) = fixture_plan(file) {
+        v.extend(held_to.check(&ran.trace, ran.complete()));
     }
     v
 }
@@ -1085,6 +1134,35 @@ fn completed_or_named(r: &Ran) -> String {
     }
 }
 
+/// Where each occurrence of `decl` was born: on its own parent's domain,
+/// one on main and one on pool `side`, or both on main.
+fn born_where(r: &Ran, decl: &str) -> String {
+    if r.timed_out || r.code != Some(0) {
+        return exit_word(r);
+    }
+    let mut on: Vec<&str> = r
+        .trace
+        .events
+        .iter()
+        .filter(|e| e.kind == ObligationKind::Birth && e.point == Point::Entered && e.decl.as_deref() == Some(decl))
+        .map(|e| e.domain.as_str())
+        .collect();
+    on.sort();
+    match on[..] {
+        ["main", side] if side.starts_with("pool:side") => "born-on-each-parents-domain".to_string(),
+        ["main", "main"] => "born-on-main".to_string(),
+        _ => format!("{decl} born on {on:?}"),
+    }
+}
+
+fn leaf_born(r: &Ran) -> String {
+    born_where(r, "Leaf")
+}
+
+fn twig_born(r: &Ran) -> String {
+    born_where(r, "Twig")
+}
+
 fn restart_during_teardown(r: &Ran) -> String {
     if r.timed_out {
         return "timeout".to_string();
@@ -1133,18 +1211,23 @@ fn every_fixture_is_listed_and_formatted() {
     for f in FIXTURES.iter().filter(|f| f.adopted.is_none()) {
         assert!(PENDING.iter().any(|(p, _)| *p == f.file), "{} has no adopted outcome and no PENDING entry", f.file);
     }
-    // Every adopted line has a plan; a pending fixture has none; every
-    // plan parses and names steps that exist.
+    // Every adopted line has a plan, the producer's through a run path
+    // or, while it is UNDERIVED, a hand-written one, never both; a
+    // pending fixture has none; every plan owes something.
     for f in FIXTURES {
-        let has_plan = PLANS.iter().any(|(p, _)| *p == f.file);
-        assert_eq!(has_plan, f.adopted.is_some(), "{}: a plan is owed exactly by an adopted line", f.file);
+        assert_eq!(has_plan(f.file), f.adopted.is_some(), "{}: a plan is owed exactly by an adopted line", f.file);
+        if let Some(held_to) = fixture_plan(f.file) {
+            assert!(!held_to.owed.is_empty(), "{}: an empty plan", f.file);
+        }
     }
-    for (file, text) in PLANS {
-        fixture(file);
-        assert!(!plan(text).owed.is_empty(), "{file}: an empty plan");
+    let hand_written: Vec<&str> = PLANS.iter().map(|(p, _)| *p).collect();
+    let underived: Vec<&str> = UNDERIVED.iter().map(|(p, _)| *p).collect();
+    assert_eq!(hand_written, underived, "the hand-written plans are exactly the UNDERIVED fixtures'");
+    for file in underived {
+        assert!(run_path(file).is_none(), "{file} is UNDERIVED but has a run path: its hand-written plan goes");
     }
     for (file, _, departures) in TRACE_KNOWN_OPEN {
-        assert!(PLANS.iter().any(|(p, _)| p == file), "{file} is TRACE_KNOWN_OPEN but has no plan");
+        assert!(has_plan(file), "{file} is TRACE_KNOWN_OPEN but has no plan");
         assert!(!departures.is_empty(), "{file} is TRACE_KNOWN_OPEN with no departure");
         for d in *departures {
             assert_eq!(normalized(d), *d, "{file}: a departure names its instance as `_`");
@@ -1157,8 +1240,11 @@ fn every_fixture_is_listed_and_formatted() {
 /// passes it.
 #[test]
 fn every_planned_kind_has_a_negative_control() {
-    let mut planned: Vec<ObligationKind> =
-        PLANS.iter().flat_map(|(_, text)| plan(text).owed.into_iter().map(|o| o.kind)).collect();
+    let mut planned: Vec<ObligationKind> = FIXTURES
+        .iter()
+        .filter_map(|f| fixture_plan(f.file))
+        .flat_map(|p| p.owed.into_iter().map(|o| o.kind))
+        .collect();
     planned.sort();
     planned.dedup();
     for kind in planned {
@@ -1169,7 +1255,7 @@ fn every_planned_kind_has_a_negative_control() {
         match c.plan {
             Some(text) => assert!(!plan(text).owed.is_empty(), "control {}: an empty plan", c.name),
             None => {
-                assert!(PLANS.iter().any(|(p, _)| *p == c.fixture), "control {}: {} has no plan", c.name, c.fixture);
+                assert!(has_plan(c.fixture), "control {}: {} has no plan", c.name, c.fixture);
                 assert!(
                     !TRACE_KNOWN_OPEN.iter().any(|(p, _, _)| *p == c.fixture),
                     "control {}: {} fails its own plan already",
@@ -1179,6 +1265,127 @@ fn every_planned_kind_has_a_negative_control() {
             }
         }
     }
+}
+
+/// The projected expectations of the field-template fixtures, in the
+/// notation: a template reached under parents on main and on pool
+/// `side` claims the set for its birth and run, two levels down as one,
+/// where the template that kept its first parent's context only claimed
+/// `Birth*2!pool:side Run*2!pool:side`, false of the occurrence on main;
+/// the side occurrence's run is canceled behind its parent's teardown
+/// and the main one's completes (`=Ended`). The edges between the
+/// Parents and their fields are not held: two occurrences of each, and
+/// the trace does not say which is whose. The control, both parents on
+/// main, claims main alone and renders byte for byte what it did before.
+const FIELD_PLANS: &[(&str, &str)] = &[
+    (
+        "l03_field_parents_two_domains.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
+         Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed\n\
+         edge Leaf.Reclaim.Entered -> Leaf.Cancellation.Entered",
+    ),
+    (
+        "l03_field_parents_two_domains_nested.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
+         Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
+         Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Twig.Run.Ended -> Twig.Reclaim.Completed\n\
+         edge Twig.Reclaim.Entered -> Twig.Cancellation.Entered",
+    ),
+    (
+        "l03_field_parents_one_domain.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Parent: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+    ),
+];
+
+/// The projected expectations of the body-literal fixtures: a literal a
+/// method of `Mid` builds, with Mids on main and on pool `side`, claims
+/// the set for its birth and run, where the template that kept its
+/// first enclosing Mid as its only owner claimed neither (the scope's
+/// two domains named no one). Each occurrence's run() runs inline at its
+/// statement and ends before its drain, on side as on main: a body
+/// literal's run is never posted behind its owner's teardown. The
+/// control, both Mids on main, renders byte for byte what it did before.
+const BODY_PLANS: &[(&str, &str)] = &[
+    (
+        "l03_body_literal_two_domains.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
+         Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+    ),
+    (
+        "l03_body_literal_one_domain.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         Mid: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+    ),
+];
+
+#[test]
+fn a_body_literal_under_enclosing_templates_claims_their_domains() {
+    let mut differ = Vec::new();
+    for (file, want) in BODY_PLANS {
+        let got = render(&derived_plan(file).expect("a plan"));
+        if got != *want {
+            differ.push(format!("{file}:\n{got}"));
+        }
+    }
+    assert!(differ.is_empty(), "the projected plans differ:\n{}", differ.join("\n\n"));
+}
+
+#[test]
+fn a_field_reached_under_two_parents_claims_their_domains() {
+    let mut differ = Vec::new();
+    for (file, want) in FIELD_PLANS {
+        let got = render(&derived_plan(file).expect("a plan"));
+        if got != *want {
+            differ.push(format!("{file}:\n{got}"));
+        }
+    }
+    assert!(differ.is_empty(), "the projected plans differ:\n{}", differ.join("\n\n"));
 }
 
 /// The trace oracle over one run: clean, or, for a known-open trace,
@@ -1240,6 +1447,11 @@ fixture_tests! {
     l01_neg_it_waits_worker_queue => "l01_neg_it_waits_worker_queue.hl",
     l02_tick_after_posted_run => "l02_tick_after_posted_run.hl",
     l03_pool_birth_domain => "l03_pool_birth_domain.hl",
+    l03_field_parents_two_domains => "l03_field_parents_two_domains.hl",
+    l03_field_parents_two_domains_nested => "l03_field_parents_two_domains_nested.hl",
+    l03_field_parents_one_domain => "l03_field_parents_one_domain.hl",
+    l03_body_literal_two_domains => "l03_body_literal_two_domains.hl",
+    l03_body_literal_one_domain => "l03_body_literal_one_domain.hl",
     l04_dissolve_route_reclaim => "l04_dissolve_route_reclaim.hl",
     l04_dissolve_route_cascade => "l04_dissolve_route_cascade.hl",
     l05_accept_position => "l05_accept_position.hl",

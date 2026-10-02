@@ -1,0 +1,19 @@
+// Decision line 3, the control: a field template reached under two
+// parents on one domain (Birth, Run).
+//
+// `l03_field_parents_two_domains.hl` with `Worker` left on main: both
+// `Parent` literals are built there, every contribution of the `Leaf`
+// template agrees, and its birth and run claim the one domain, as they
+// did before the template kept each parent's contribution.
+//
+// Expected terminal outcome: both Leafs born on main, judged by the
+// harness from the trace: `born-on-main`.
+
+locus Leaf { run() { println("ev leaf-run"); } }
+locus Parent { params { leaf: Leaf = Leaf { }; } }
+locus Worker { run() { Parent { }; } }
+main locus App {
+    params { worker: Worker = Worker { }; }
+    run() { Parent { }; }
+}
+fn main() { App { }; }
