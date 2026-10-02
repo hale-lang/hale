@@ -230,6 +230,7 @@ const ENTRY: &str = "crates/hale-types/src/entry.rs";
 const BINDING_ROWS: &str = "crates/hale-types/src/binding_rows.rs";
 const LIFECYCLE: &str = "crates/hale-types/src/lifecycle.rs";
 const LIFECYCLE_TRACE: &str = "crates/hale-types/src/lifecycle/trace.rs";
+const LIFECYCLE_DERIVE: &str = "crates/hale-types/src/lifecycle/derive.rs";
 const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
@@ -893,6 +894,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows)", CHECK, "check_accept_release"),
             consumer_at("resolved program (the lowering view's rows, over the merged program)", TY_RESOLVED, "flows::survey("),
             consumer_at("a declaration's dependents (X2: a flow child and its `release` owners are neighbours, `Snapshot::declaration_dependents`)", SNAPSHOT, "flows::survey("),
+            consumer_at("the lifecycle plan (an accepted flow is torn down by the reclaim its run's end runs, a resident by its owner's cascade: the snapshot's rows over the checked programs)", SNAPSHOT, "flows::survey("),
             consumer_at("codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read)", CG, "is_flow"),
             consumer_at("codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies)", CG, "specialize("),
         ],
@@ -905,7 +907,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/release_reclaims_flow.rs", "crates/hale-codegen/tests/release_two_parents.rs", "crates/hale-codegen/tests/release_generic_owner.rs", "tests/hale/release_generic_owner_test.hl", "crates/hale-types/src/flows.rs (a_clause_names_the_locus_lowering_names, a_template_clause_names_the_specialization_s_argument)"],
         spec: &["spec/semantics.md § release(c) and flow children"],
         owned: &[],
-        seams: &[Seam { symbol: "flows::survey(", allowed: &[(CHECK, 1), (TY_RESOLVED, 1), (V_CHECK, 1), (SNAPSHOT, 1)] }],
+        seams: &[Seam { symbol: "flows::survey(", allowed: &[(CHECK, 1), (TY_RESOLVED, 1), (V_CHECK, 1), (SNAPSHOT, 2)] }],
     },
     Family {
         name: "restart",
@@ -1302,8 +1304,16 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown.",
-        inputs: &["ownership", "placement", "handler_routing", "flows", "restart", "the runtime protocol (lotus_failure_hold / await / defer_reclaim)"],
-        producer: None,
+        inputs: &[
+            "placement (the instance templates: the static towers, replicas apart, and the dynamic sites with their domains and bounds; the domains)",
+            "handler_routing (the owner's handler for each child, and whether it restarts)",
+            "flows (an accepted flow is reclaimed at its run's end, a resident by its owner's cascade)",
+            "bus_graph (which instances subscribe)",
+            "the declarations each template realizes (run, the closures' epochs, birth_check, violate sites, accept, on_failure, the params bracket)",
+            "the decision lines (`hale_types::lifecycle::DECISION_LINES`) and the inventory rows they name",
+            "the runtime protocol (lotus_failure_hold / await / defer_reclaim)",
+        ],
+        producer: Some(site(LIFECYCLE_DERIVE, "derive_lifecycle")),
         legacy: &[
             legacy(CG_INST, "lower_locus_instantiation_inner", "the birth sequence is the order of emit calls in a 4,900-line function; its eager teardown spine is one of two copies", "an explicit action plan (compiler- and runtime-owned actions with domain, prerequisites, liveness, completion) read by emission"),
             legacy(CG, "emit_deferred_entry_teardown", "the deferred teardown spine, the second copy; #1208's pool join was added here after four other sites already had it", "same"),
@@ -1323,12 +1333,15 @@ pub const FAMILIES: &[Family] = &[
             "every obligation ends in exactly one of its named terminal alternatives; lifetime (what stays alive until which event) and progress (what makes it reach a terminal) are separate fields",
             "each rule says whether it is shipped, adopted, known open at an inventory row, or pending on a named condition",
             "the runtime's protocol is checked by its trace, not trusted: a trace build reports the hold, the settle and each held delivery, and the trace oracle holds them to the plan's edges (delivered after the owner's settle, before its birth), with negative controls that remove or reorder a step and fail it, over the lifecycle fixtures, every runnable example and every cell of the lifecycle matrix",
+            "one plan per snapshot, over the placement table's instance templates: a held row and the rows projected under it are their source's and owe nothing of their own, a hole owes nothing, and a dynamic literal's own fields are instances of their field literals in its domains; no check builds the plan",
+            "a failure's rows are guarded, one set per source an instance can raise (a birth-epoch closure, the birth_check, a violate in run(), in a handler or in drain(), a dissolve-epoch closure): its delivery in place, the held alternative where the owner's params can still be open, and the recovery decision and the restart, performed or refused under teardown; a path through the plan picks one",
+            "existence, each edge and each domain claim carry their own rule and status, so a row shipped to exist can carry a claim known open (decision L0-1 at C36) or pending (line 3); a domain is claimed only where the placement table and the rule resolve one",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs", "crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)", "crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one; the trace oracle holds each run to its line's plan, TRACE_KNOWN_OPEN names today's departures, CONTROLS fail it)", "crates/hale-types/src/lifecycle/trace.rs (the trace's parser and oracle)", "crates/hale-codegen/tests/corpus_oracle.rs (corpus_traces_keep_the_lifecycle_laws: every runnable example, traced)", "crates/hale-codegen/tests/lifecycle_matrix.rs (failure phase × tree position × domain, a generated program per cell held to its outcome, its trace plan, ASan on the sample and the let-bound differential; KNOWN_OPEN names today's failing cells; HALE_MATRIX=full runs every cell)"],
+        tests: &["crates/hale-types/tests/lifecycle_plan.rs (the plan through the snapshot: demanded once and built by no check; its laws over every corpus program the snapshot scopes, edges naming its own rows and acyclic on events, birth and teardown owed once per template, every line a decision line, every delivery to an owner of known domain naming its domain; the rows lines 1, 7, 12, 14, 18 and RD are about)", "crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs", "crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)", "crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one; the trace oracle holds each run to its line's plan, TRACE_KNOWN_OPEN names today's departures, CONTROLS fail it)", "crates/hale-types/src/lifecycle/trace.rs (the trace's parser and oracle)", "crates/hale-codegen/tests/corpus_oracle.rs (corpus_traces_keep_the_lifecycle_laws: every runnable example, traced)", "crates/hale-codegen/tests/lifecycle_matrix.rs (failure phase × tree position × domain, a generated program per cell held to its outcome, its trace plan, ASan on the sample and the let-bound differential; KNOWN_OPEN names today's failing cells; HALE_MATRIX=full runs every cell)"],
         spec: &["spec/runtime.md (failure delivery; pool join rule b)", "spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart)", "spec/runtime.md § The lifecycle trace (a debug aid, not a contract)", "spec/semantics.md § lifecycle"],
         owned: &[site(LIFECYCLE, "LifecyclePlan"), site(LIFECYCLE_TRACE, "Expected")],
-        seams: &[],
+        seams: &[Seam { symbol: "derive_lifecycle(", allowed: &[(LIFECYCLE_DERIVE, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "bus_inert",

@@ -24,6 +24,9 @@
 //!   that summary.
 //! - [`Snapshot::demand_placement`]: the placement table, which thread
 //!   domain each instance of the deployed root's tower runs in.
+//! - [`Snapshot::demand_lifecycle`]: the lifecycle plan, the obligations
+//!   each instance template and the process owe, over the placement
+//!   table, the handler rows, the flow rows and the bus graph.
 //! - [`Snapshot::demand_model`]: the application model, over the scope
 //!   and those three.
 //! - [`Snapshot::demand_typing`]: the check's first stage, everything
@@ -81,6 +84,7 @@ use hale_types::effects::EffectCertificates;
 use hale_types::entry::EntryRow;
 use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
+use hale_types::lifecycle::LifecyclePlan;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
@@ -113,7 +117,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 20] = [
+pub const FAMILIES: [&str; 21] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -130,6 +134,7 @@ pub const FAMILIES: [&str; 20] = [
     "alloc_summary",
     "effects",
     "placement",
+    "lifecycle_order",
     "model",
     "claims",
     "intra_locus",
@@ -481,6 +486,7 @@ pub struct Snapshot {
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
+    lifecycle: OnceCell<Result<LifecyclePlan, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     /// The typing stage, and how many of its diagnostics are the
     /// check's own (the scope's and the typing's, finished) before the
@@ -666,6 +672,7 @@ impl Snapshot {
             alloc_summary: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
+            lifecycle: OnceCell::new(),
             model: OnceCell::new(),
             typing_stage: OnceCell::new(),
             laws: OnceCell::new(),
@@ -1458,6 +1465,37 @@ impl Snapshot {
                     bus,
                     placement,
                     flows: &flows,
+                }))
+            })
+            .as_ref()
+    }
+
+    /// The lifecycle plan ([`hale_types::lifecycle::derive`]): per
+    /// instance template the placement table names, and per action, the
+    /// obligation, with its guard, holder and domain, its entry and
+    /// completion edges, its terminals, what it retains and the progress
+    /// it owes, each rule with its decision line's status; and the
+    /// process's own. Over the placement table, the handler rows, the
+    /// flow rows of the checked programs and the bus graph, each
+    /// demanded. Blocked with the scope; like its inputs it reads
+    /// declarations and bodies, not types. No check builds it, and no
+    /// consumer outside the tests reads it yet (F.40 phase 3, L1).
+    pub fn demand_lifecycle(&self) -> Result<&LifecyclePlan, &Blocked> {
+        self.lifecycle
+            .get_or_init(|| {
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                let handlers = self.demand_handlers().map_err(Clone::clone)?;
+                let bus = self.demand_bus_graph().map_err(Clone::clone)?;
+                self.count("lifecycle_order");
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                let flows = hale_types::flows::survey(&programs, &bundle.import_renames);
+                Ok(hale_types::lifecycle::derive::derive_lifecycle(&hale_types::lifecycle::derive::LifecycleInputs {
+                    bundle: &bundle,
+                    placement,
+                    handlers,
+                    flows: &flows,
+                    bus,
                 }))
             })
             .as_ref()

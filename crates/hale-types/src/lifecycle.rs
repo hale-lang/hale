@@ -1,12 +1,12 @@
-//! The `lifecycle_order` family's schema (F.40 phase 3, L1): the
-//! lifecycle as a table of obligations.
+//! The `lifecycle_order` family (F.40 phase 3, L1): the lifecycle as a
+//! table of obligations.
 //!
-//! Types only. The producer (one plan per snapshot, demanded like the
-//! entry row) waits for P1's placement producer, whose instance key
-//! this schema shares; the executable plans wait with it. What this
-//! module fixes is what a row says, so the producer, the trace oracle
+//! This module fixes what a row says, so the producer, the trace oracle
 //! (L2), the matrix (L3) and emission (L4) are written against one
-//! shape.
+//! shape. The producer is [`derive::derive_lifecycle`], one plan per
+//! snapshot (`Snapshot::demand_lifecycle`), over P1's placement table,
+//! whose identities this schema shares, the handler rows, the flow rows
+//! and the bus graph.
 //!
 //! An obligation is something the compiler emits or the runtime
 //! performs that some domain owes some instance: params settle, a held
@@ -30,7 +30,11 @@
 //! fields with the literal taken at each guarded step, a replica index.
 //! A literal outside the static tower (a method body, a let-bound
 //! literal, an accepted child) is its literal site, as P1's dynamic
-//! sites are.
+//! sites are. Both are placement's own types: every site a row names is
+//! a [`SiteRef`], carrying the universe that minted it (the snapshot's,
+//! or the stdlib analysis copy's). A process-level row (a pool join, a
+//! wait-abort, a pre-drain) has no source site: a spine owes it the
+//! process.
 //!
 //! The runtime has the second level: which live object, and which
 //! incarnation of it ([`RuntimeSubject`]). An instance is one execution
@@ -134,79 +138,24 @@
 //! tick on a posted `run()` or for where lifecycle methods run on a
 //! pool, so their rows record the shipped domains and wait.
 
-use hale_graph::ids::SiteId;
-
-use crate::ty::Ty;
-
+pub mod derive;
 pub mod trace;
 
 // ------------------------------------------------------------ identity
 
+/// P1's identities, shared: a row is keyed by the placement table's
+/// declaration and template, every site a [`SiteRef`] carrying the
+/// universe that minted it.
+pub use crate::placement::{DeclRef, InstanceKey, Origin, SiteRef, Step, Template};
+
 /// A row's static identity: the declaration built and the template
 /// that builds it. Two specializations of one generic share
-/// [`DeclRef::site`] and differ in [`DeclRef::args`], so they are two
-/// source sites with two sets of rows.
+/// [`DeclRef::site`] and differ in [`DeclRef::lowered`], so they are
+/// two source sites with two sets of rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceSite {
     pub decl: DeclRef,
     pub template: Template,
-}
-
-/// The locus declaration an instance realizes: an override literal's,
-/// not the field's declared type (P1's `DeclRef`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeclRef {
-    /// The declaration's site; for a monomorph, the template's.
-    pub site: SiteId,
-    /// The substitution; empty unless generic.
-    pub args: Vec<Ty>,
-    /// The name lowering keys on (`__StdIoTcpListener`, `Cache_Int_String`).
-    pub lowered: String,
-}
-
-/// Where the instance comes from.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Template {
-    /// In a construction template's static tower, or an adapter's
-    /// binding entry: P1's instance key.
-    Static(InstanceKey),
-    /// A literal outside the static tower: in a method or fn body,
-    /// let-bound, accepted, bubbled. Every instance of it shares the
-    /// literal's rows; how many can be live is P1's bound on the site.
-    Dynamic { literal: SiteId },
-}
-
-/// P1's static instance key, field for field
-/// (`notes/f40-placement-correspondence.md` § 1, Schema): a key names
-/// a template, never a runtime instance. When P1's producer lands, its
-/// `placement::InstanceKey` replaces this type and this module
-/// re-exports it; until then the two are written to be the same.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InstanceKey {
-    pub origin: Origin,
-    /// The fields from the origin's top; empty is the top itself.
-    pub path: Vec<Step>,
-    /// `Some(i)` on a `replicas = K > 1` field and every row under it.
-    pub replica: Option<u32>,
-}
-
-/// The scope that constructs a static tower.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Origin {
-    /// A root literal: one template per literal site.
-    Construction(SiteId),
-    /// An adapter literal in the root's `bindings { }`: built once, in
-    /// the bindings prelude.
-    Binding(SiteId),
-}
-
-/// One field of a key's path.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Step {
-    pub field: String,
-    /// The literal taken, when the field's initializer chooses among
-    /// literals; `None` when it has one.
-    pub alternative: Option<SiteId>,
 }
 
 /// The runtime level: one live object and one incarnation of it.
@@ -274,16 +223,28 @@ pub struct Occurrence {
 /// One obligation of the plan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Obligation {
-    pub site: SourceSite,
+    /// The instance template that owes it; `None` for a process-level
+    /// obligation (a pool join, a wait-abort, a pre-drain, the process
+    /// drain), which a spine owes the process.
+    pub site: Option<SourceSite>,
     pub kind: ObligationKind,
     /// For [`ObligationKind::Closures`] and a failure raised by one:
     /// the epoch.
     pub epoch: Option<Epoch>,
+    /// For a failure's rows (its delivery, the construction-time
+    /// delivery, the recovery decision, the restart, the resume): which
+    /// failure of the instance they follow.
+    pub source: Option<FailureSource>,
     /// The paths on which the obligation exists. A child that fails
     /// at params settle never reaches `run()`; a restart repeats the
     /// guarded subsequence; no row is unconditional over every path.
     pub guard: PathGuard,
     pub holder: Holder,
+    /// The domain the holder's role resolves to in this deployment,
+    /// with the rule that says so; `None` where the role does not
+    /// resolve to one domain (the events span two, the domain is a
+    /// hole, or the rule is pending).
+    pub runs_on: Option<RunsOn>,
     pub edges: Edges,
     /// The named terminal alternatives, every one this obligation can
     /// end in. A path ends in exactly one.
@@ -291,22 +252,115 @@ pub struct Obligation {
     pub multiplicity: Multiplicity,
     pub lifetime: Vec<Retention>,
     pub progress: Progress,
+    /// The decision line whose rule makes the obligation exist on its
+    /// guard's path, and [`Obligation::status`] is that rule's status;
+    /// `None` for an action no line is about (the lifecycle the spec
+    /// has always stated).
+    pub line: Option<&'static str>,
     pub status: Status,
+}
+
+/// What raised the failure a row follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FailureSource {
+    /// A birth-epoch closure.
+    BirthClosure,
+    /// The `birth_check`.
+    BirthCheck,
+    /// A `violate` in `run()`, or a tick or duration closure after it.
+    Run,
+    /// A `violate` in a bus handler, or a closure evaluated after one.
+    Handler,
+    /// A `violate` in `drain()`.
+    Drain,
+    /// A dissolve-epoch closure.
+    Dissolve,
+}
+
+impl FailureSource {
+    pub const ALL: &'static [FailureSource] = &[
+        FailureSource::BirthClosure,
+        FailureSource::BirthCheck,
+        FailureSource::Run,
+        FailureSource::Handler,
+        FailureSource::Drain,
+        FailureSource::Dissolve,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FailureSource::BirthClosure => "BirthClosure",
+            FailureSource::BirthCheck => "BirthCheck",
+            FailureSource::Run => "Run",
+            FailureSource::Handler => "Handler",
+            FailureSource::Drain => "Drain",
+            FailureSource::Dissolve => "Dissolve",
+        }
+    }
+}
+
+/// A resolved domain claim: every event of the obligation runs on this
+/// domain, by this rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunsOn {
+    pub domain: crate::placement::DomainId,
+    pub rule: Rule,
+}
+
+/// The rule an edge or a claim states, and its status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rule {
+    /// The decision line, or `None` for an order no line is about.
+    pub line: Option<&'static str>,
+    pub status: Status,
+}
+
+impl Rule {
+    /// An order the code keeps and no decision line is about.
+    pub const SHIPPED: Rule = Rule { line: None, status: Status::Shipped };
+
+    pub const fn line(line: &'static str, status: Status) -> Rule {
+        Rule { line: Some(line), status }
+    }
 }
 
 /// An obligation's position in its plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObligationId(pub u32);
 
-/// One snapshot's plan: every obligation, indexed by [`ObligationId`].
+/// One snapshot's plan: every obligation, indexed by [`ObligationId`],
+/// the instance templates that owe them, and the placement table's
+/// domains its claims name.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LifecyclePlan {
     pub obligations: Vec<Obligation>,
+    /// Every instance template a row names, once, in the order the
+    /// producer visited them.
+    pub instances: Vec<Instance>,
+    /// The placement table's domains, indexed by `DomainId`.
+    pub domains: Vec<crate::placement::Domain>,
+}
+
+/// One instance template of a plan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instance {
+    pub site: SourceSite,
+    /// How many occurrences of it can be live at once (P1's bound on
+    /// its template or its site).
+    pub bound: crate::placement::Bound,
+    /// Built in an `on_failure` body: it occurs only on a path where the
+    /// handler runs.
+    pub in_handler: bool,
 }
 
 impl LifecyclePlan {
     pub fn get(&self, id: ObligationId) -> Option<&Obligation> {
         self.obligations.get(id.0 as usize)
+    }
+
+    /// Every obligation with its id.
+    pub fn iter(&self) -> impl Iterator<Item = (ObligationId, &Obligation)> {
+        self.obligations.iter().enumerate().map(|(i, o)| (ObligationId(i as u32), o))
     }
 }
 
@@ -508,6 +562,9 @@ pub enum PathGuard {
     FailedInBirth,
     /// The instance failed in `run()` or after a handler.
     FailedInRun,
+    /// The instance failed in its own teardown: in `drain()`, or in a
+    /// dissolve-epoch closure.
+    FailedInTeardown,
     /// A restart was performed: the guarded subsequence repeats in
     /// the next incarnation.
     Restart,
@@ -633,14 +690,22 @@ pub enum DomainRole {
 pub struct Edges {
     /// Events that happen before this obligation is entered. A
     /// prerequisite is a completion unless it names an entry.
-    pub entry: Vec<Event>,
+    pub entry: Vec<Prerequisite>,
     /// Events that happen before this obligation completes or reaches
     /// any terminal.
-    pub completion: Vec<Event>,
+    pub completion: Vec<Prerequisite>,
     /// For a nested action: the action it runs inside, entered and not
     /// completed. Its entry edge names that action's entry, and that
     /// action's completion edges name this one's terminal.
     pub within: Option<ObligationId>,
+}
+
+/// One edge into an obligation: the event that happens before it, and
+/// the rule that orders the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prerequisite {
+    pub event: Event,
+    pub rule: Rule,
 }
 
 /// A point in one obligation's life.
