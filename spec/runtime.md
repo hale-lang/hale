@@ -1697,7 +1697,13 @@ lifecycle trace (§ "The lifecycle trace"), held to its line's plan;
 a departure the trace shows and the outcome cannot (a missing step,
 a step on the wrong thread) is in the same file's
 `TRACE_KNOWN_OPEN` table. A line still waiting on a condition
-says so and records today's behaviour.
+says so and records today's behaviour. The same rules are evidenced
+across shapes by the lifecycle matrix
+(`crates/hale-codegen/tests/lifecycle_matrix.rs`): a generated
+program for each failure phase, tree position and domain, held to
+its outcome, its trace plan and AddressSanitizer, with the cells
+that fail today, and the inventory row each fails at, in its
+`KNOWN_OPEN` table.
 
 - **Line 1, construction-time delivery.** Construction, readiness
   and failure delivery are one protocol, and its settlement is
