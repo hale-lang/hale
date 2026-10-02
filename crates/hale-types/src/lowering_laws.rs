@@ -14,8 +14,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_syntax::ast::{EpochSpec, LifecycleKind, LocusDecl, LocusMember, Program, TopDecl};
-use hale_syntax::Diag;
+use hale_syntax::ast::{
+    Block, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember,
+    MatchArmBody, MatchStmt, OrDisposition, ParamInit, Program, RecoveryModifier, Stmt, StructInit, TopDecl,
+    TypeExpr,
+};
+use hale_syntax::{Diag, Span};
 
 use crate::binding_rows::BindingRows;
 use crate::placement::{Decision, DomainKind, Origin, PlacementTable, SiteRef, SiteUniverse};
@@ -36,7 +40,342 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     let mut diags = Vec::new();
     pinned_features(bundle, inputs, &mut diags);
     pinned_root_in_a_loop(bundle, inputs, &mut diags);
+    placement_entry_consumed(bundle, inputs, &mut diags);
     diags
+}
+
+/// Rule 18 (GH #890): every `placement { }` entry is consumed by the
+/// locus literal lowered for its field.
+///
+/// A placement entry is carried to lowering as an override on the locus
+/// LITERAL lowered for its field, and nothing else takes it. So a field
+/// whose value arrives any other way — a factory call, a fallible call,
+/// a conditional, a reference to an instance somebody else built —
+/// leaves the entry untaken: no thread is spawned, no pool is joined,
+/// and the entry the author wrote is dropped. Applying it afterwards is
+/// not available (the pinned path spawns a thread that runs the whole
+/// lifecycle, and a factory's literal has already run birth and `run()`
+/// by the time the value returns), so the entry is refused at its source,
+/// pointing at the literal form that carries it.
+///
+/// The value an entry places is the init a root literal supplies for the
+/// field, or the params default when a literal leaves it (or when no
+/// literal builds the root, and the entry builds it from its defaults);
+/// both spellings are judged, and a default every literal overrides is
+/// dead text, not a dropped placement. Read off the placement table: the
+/// root is the lowering root, and its literals are the table's
+/// constructions of it, every literal of the root declaration as
+/// resolved (an imported seed's `main` is not the root, and a literal of
+/// another locus that shares its name is not one of them).
+fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+    let Some(root) = &inputs.placement.root else { return };
+    let decls = declarations(bundle);
+    let Some(main) = decls.get(&root.realizes.site).copied() else { return };
+    let Some(pb) = main.members.iter().find_map(|m| match m {
+        LocusMember::Placement(pb) => Some(pb),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(params) = main.members.iter().find_map(|m| match m {
+        LocusMember::Params(p) => Some(p),
+        _ => None,
+    }) else {
+        return;
+    };
+    // Each construction's field inits.
+    let wanted: BTreeSet<SiteRef> = root.constructions.iter().map(|c| c.literal).collect();
+    let mut found = RootLiterals { ids: &bundle.snapshot, wanted: &wanted, sites: Vec::new() };
+    for program in bundle.programs.values() {
+        found.items(&program.items);
+    }
+    let sites = found.sites;
+
+    for entry in &pb.entries {
+        let field = entry.field.name.as_str();
+        // An unknown or non-locus field is `check_placement_block`'s to
+        // report; saying it twice helps nobody.
+        let Some(param) = params.params.iter().find(|p| p.name.name == field) else {
+            continue;
+        };
+        // The literal form to suggest: the declared type as written (a
+        // stdlib locus is a qualified path, and its literal is spelled
+        // the same way), or `T` when the type is inferred from the
+        // default and there is nothing to quote.
+        let ty_name = match &param.ty {
+            Some(TypeExpr::Named { path, .. }) if !path.segments.is_empty() => {
+                path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
+            }
+            _ => "T".to_string(),
+        };
+        // The site inits for this field, and whether any site leaves the
+        // field to its default.
+        let mut overrides: Vec<&Expr> = Vec::new();
+        let mut any_site_takes_default = false;
+        for inits in &sites {
+            match inits.iter().find(|i| i.name.name == field) {
+                Some(init) => overrides.push(&init.value),
+                None => any_site_takes_default = true,
+            }
+        }
+        for init in overrides {
+            if !matches!(init, Expr::Struct { .. }) {
+                diags.push(placement_unconsumed_diag(field, &ty_name, init, entry.span, true));
+            }
+        }
+        // The default is live when some site omits the field, and when
+        // no literal builds the root at all (the entry's implicit
+        // template, or a library seed checked on its own: the default is
+        // the only initialiser there is).
+        if !(any_site_takes_default || sites.is_empty()) {
+            continue;
+        }
+        // No default and no site init: the missing-required-param rule
+        // owns that program, not this one.
+        let ParamInit::Value(default) = &param.init else { continue };
+        if !matches!(default, Expr::Struct { .. }) {
+            diags.push(placement_unconsumed_diag(field, &ty_name, default, entry.span, false));
+        }
+    }
+}
+
+/// The rule 18 diagnostic, for an initialiser written at a root literal
+/// (`at_site`) or in the params default.
+fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span: Span, at_site: bool) -> Diag {
+    let shape = match init {
+        Expr::Call { .. } => "a call",
+        Expr::Or { .. } => "a fallible call",
+        Expr::If(_) | Expr::Match(_) => "a conditional",
+        Expr::Ident(_)
+        | Expr::Path(_)
+        | Expr::Field { .. }
+        | Expr::Path2 { .. }
+        | Expr::Index { .. }
+        | Expr::KwSelf(_) => "a reference to an instance built elsewhere",
+        _ => "an expression that is not a locus literal",
+    };
+    Diag::ty(
+        init.span(),
+        format!(
+            "placement entry `{}` names a field no locus literal initialises: {} is {}. A placement \
+             is carried by the locus LITERAL lowered for the field — a factory's literal is lowered \
+             inside the factory, out of this entry's reach — so the entry would be silently dropped \
+             and `{}` would run wherever an unplaced field runs. Write the literal {} (`{}`), and \
+             move the factory's other work into the locus's own params or `birth()`.",
+            field,
+            if at_site { format!("the value supplied for `{}` here", field) } else { format!("`{}`'s default", field) },
+            shape,
+            field,
+            if at_site { "at this site" } else { "in the field" },
+            if at_site {
+                format!("{}: {} {{ }}", field, ty_name)
+            } else {
+                format!("{}: {} = {} {{ }};", field, ty_name, ty_name)
+            },
+        ),
+    )
+    .with_related(entry_span, format!("`{}` is placed here", field))
+}
+
+/// The field inits of the literals the placement table lists as the
+/// root's constructions, found where the table's scopes find them: every
+/// fn body (its parameters' defaults included) and every locus member
+/// body, at any nesting.
+struct RootLiterals<'a, 'b> {
+    ids: &'b Snapshot,
+    wanted: &'b BTreeSet<SiteRef>,
+    sites: Vec<&'a [StructInit]>,
+}
+
+impl<'a> RootLiterals<'a, '_> {
+    fn items(&mut self, items: &'a [TopDecl]) {
+        for item in items {
+            match item {
+                TopDecl::Fn(fd) => self.fn_decl(fd),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(fd) => self.fn_decl(fd),
+                            LocusMember::Lifecycle(ld) => self.block(&ld.body),
+                            LocusMember::Mode(md) => self.block(&md.body),
+                            LocusMember::Failure(fd) => self.block(&fd.body),
+                            LocusMember::BirthCheck(bc) => {
+                                self.expr(&bc.cond);
+                                if let Some(p) = &bc.payload {
+                                    self.expr(p);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Module(m) => self.items(&m.items),
+                _ => {}
+            }
+        }
+    }
+
+    fn fn_decl(&mut self, fd: &'a FnDecl) {
+        for p in &fd.params {
+            if let Some(d) = &p.default {
+                self.expr(d);
+            }
+        }
+        self.block(&fd.body);
+    }
+
+    fn block(&mut self, b: &'a Block) {
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        if let Some(t) = &b.tail {
+            self.expr(t);
+        }
+    }
+
+    fn if_chain(&mut self, i: &'a IfStmt) {
+        self.expr(&i.cond);
+        self.block(&i.then_block);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b),
+            Some(ElseBranch::ElseIf(n)) => self.if_chain(n),
+            None => {}
+        }
+    }
+
+    fn match_stmt(&mut self, m: &'a MatchStmt) {
+        self.expr(&m.scrutinee);
+        for arm in &m.arms {
+            if let Some(g) = &arm.guard {
+                self.expr(g);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => self.expr(e),
+                MatchArmBody::Block(b) => self.block(b),
+            }
+        }
+    }
+
+    fn disposition(&mut self, d: &'a OrDisposition) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
+        }
+    }
+
+    fn stmt(&mut self, s: &'a Stmt) {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => self.expr(value),
+            Stmt::Assign { target, value, .. } => {
+                self.expr(value);
+                for seg in &target.tail {
+                    if let LValueSeg::Index(ix) = seg {
+                        self.expr(ix);
+                    }
+                }
+            }
+            Stmt::If(i) => self.if_chain(i),
+            Stmt::Match(m) => self.match_stmt(m),
+            Stmt::For { iter, body, .. } => {
+                self.expr(iter);
+                self.block(body);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond);
+                self.block(body);
+            }
+            Stmt::Return(e, _) => {
+                if let Some(e) = e {
+                    self.expr(e);
+                }
+            }
+            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Expr(e) => self.expr(e),
+            Stmt::Block(b) => self.block(b),
+            Stmt::Recovery { args, modifier, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+                if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
+                    self.expr(e);
+                }
+            }
+            Stmt::Violate { payload, .. } => {
+                if let Some(p) = payload {
+                    self.expr(p);
+                }
+            }
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject);
+                self.expr(value);
+                if let Some(d) = or_disposition {
+                    self.disposition(d);
+                }
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                self.expr(max);
+                self.block(body);
+            }
+            Stmt::Reperspective { .. }
+            | Stmt::Yield(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Terminate(_) => {}
+        }
+    }
+
+    fn expr(&mut self, e: &'a Expr) {
+        match e {
+            Expr::Struct { inits, id, .. } => {
+                if self.ids.site_id(*id).is_some_and(|s| self.wanted.contains(&SiteRef::user(s))) {
+                    self.sites.push(inits.as_slice());
+                }
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee);
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+            Expr::Index { receiver, index, .. } => {
+                self.expr(receiver);
+                self.expr(index);
+            }
+            Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+                for p in parts {
+                    self.expr(p);
+                }
+            }
+            Expr::Block(b) => self.block(b),
+            Expr::If(i) => self.if_chain(i),
+            Expr::Match(m) => self.match_stmt(m),
+            Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.expr(inner),
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+            Expr::ArrayRepeat { val, .. } => self.expr(val),
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                self.disposition(disposition);
+            }
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        }
+    }
 }
 
 /// Rule 17 (GH #826): a root literal whose template pins a field is not

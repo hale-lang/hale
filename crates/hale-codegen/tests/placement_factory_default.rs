@@ -22,12 +22,14 @@
 //! factory's literal has already run birth and `run()` before the
 //! value comes back. So the shape is refused.
 //!
-//! `check_placement_entry_consumed` refuses it with a located
-//! diagnostic — that is the user-facing half, tested in
-//! `hale-types/tests/placement.rs`. This file pins the codegen
-//! backstop: `build_executable` does not run the checker, so an
-//! embedder that bypasses it must be refused here rather than emit a
-//! program whose stated placement quietly does nothing.
+//! Rule 18 refuses it with a located diagnostic — the user-facing
+//! half, tested in `hale-types/tests/placement.rs`. It is a law over
+//! the placement table (`hale_types::lowering_laws`, F.40 phase 3, C7)
+//! that the harness's lowering view demands too, since
+//! `build_executable` does not run the checker: this file pins that a
+//! harness build is refused before lowering, with the law's wording,
+//! rather than emit a program whose stated placement quietly does
+//! nothing. Lowering keeps no refusal of its own.
 
 use hale_codegen::build_executable_with_options;
 
@@ -74,8 +76,8 @@ fn factory_default_under_a_placement_entry_is_refused() {
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();
     assert!(
-        msg.contains("placement") && msg.contains("not a locus literal"),
-        "expected the GH #890 refusal, got: {msg}"
+        msg.contains("placement entry `a` names a field no locus literal initialises: `a`'s default is a call"),
+        "expected the rule 18 law's refusal, got: {msg}"
     );
 }
 
@@ -107,24 +109,21 @@ fn locus_literal_default_under_a_placement_entry_still_builds() {
 /// whose initialiser never reaches `lower_locus_instantiation` left a
 /// pinned `ScheduleClass` behind and the next instantiation anywhere
 /// took it. `DefaultInit::Const` is that shape: `const_param` lowers
-/// no expression, and the GH #890 backstop only fires for an
-/// initialiser it can see, so a `placement { }` entry on a
-/// scalar-defaulted field is neither consumed nor refused. The
-/// checker rejects placement on a non-locus field, but
-/// `build_executable` does not run the checker — which is what this
-/// whole file is about.
+/// no expression, and lowering's own GH #890 refusal only fired for an
+/// initialiser it could see, so a `placement { }` entry on a
+/// scalar-defaulted field was neither consumed nor refused by a
+/// harness build, which skips the checker.
 ///
-/// The oracle is the IR: a locus instantiated pinned gets a thread
-/// entry of its own (`__pinned_main_<Locus>`), so if the stale override
-/// reaches the loop's `Other` literal the module carries
-/// `__pinned_main_Other`, and the fix is its absence. (Until F.40
-/// phase 3, C7 the oracle was lowering's GH #826 refusal of a pinned
-/// locus in a loop; that rule is now a law judged before lowering, over
-/// the placement table, which places no `Other`.)
+/// Since F.40 phase 3, C7 rule 18 is a law the harness demands too,
+/// and it refuses this program before lowering: the scalar default is
+/// not a locus literal. So no entry point lowers a placed field whose
+/// initialiser lowers no literal, and the override's per-field scope
+/// (the fix) has no program left to reach it. The program is pinned
+/// as the law's: the shape that leaked the override is refused.
 /// The program is assembled without a raw string literal so
 /// `hale_corpus::embedded` does not harvest it.
 #[test]
-fn a_placement_entry_does_not_reach_a_later_instantiation() {
+fn a_placement_entry_on_a_scalar_field_is_refused_before_lowering() {
     let src = [
         "locus Worker {\n",
         "    run() { print(\"worker\"); }\n",
@@ -158,22 +157,12 @@ fn a_placement_entry_does_not_reach_a_later_instantiation() {
     .concat();
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_slot_scope_921");
-    let ll = bin.with_extension("ll");
-    let options = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &options).expect("build");
-    let ir = std::fs::read_to_string(&ll).expect("read IR");
-    let _ = std::fs::remove_file(&ll);
-    assert!(
-        !ir.contains("__pinned_main_Other"),
-        "a placement entry on an earlier field must not pin a later \
-         instantiation: `Other` was lowered pinned"
-    );
-    let out = std::process::Command::new(&bin).output().expect("run");
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+        .expect_err("a placement entry on a scalar field must not reach lowering");
     let _ = std::fs::remove_file(&bin);
-    assert!(out.status.success(), "non-zero exit");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let msg = err.to_string();
     assert!(
-        stdout.contains("o=1") && stdout.contains("o=2"),
-        "both iterations should run: {stdout:?}"
+        msg.contains("placement entry `slot` names a field no locus literal initialises: `slot`'s default"),
+        "expected the rule 18 law's refusal, got: {msg}"
     );
 }

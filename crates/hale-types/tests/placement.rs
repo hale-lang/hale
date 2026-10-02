@@ -2156,7 +2156,9 @@ fn pinned_loop_diagnostic_points_at_the_placement_entry() {
 //
 // The rule is not factory-shaped: EVERY entry must be consumed by
 // exactly one instantiation, whether the value comes from the params
-// default or from the init at the instantiation site.
+// default or from the init at the instantiation site. Judged since F.40
+// phase 3, C7 over the placement table's root and its constructions
+// (`hale_types::lowering_laws`), which the harness demands too.
 
 const UNCONSUMED: &str = "names a field no locus literal initialises";
 
@@ -2413,6 +2415,30 @@ fn main() { }
     assert!(
         !msgs.iter().any(|m| m.contains(UNCONSUMED)),
         "an imported seed's main is not the deployment root: {:?}",
+        msgs
+    );
+}
+
+/// F.40 phase 3, C7: rule 18 judges the placement table's constructions
+/// of the root, every literal of the root declaration wherever a scope
+/// holds it. The walk it replaced did not descend into a block
+/// statement, so this program checked clean and lowering then refused
+/// it without a span. (Spelled without a raw string so the corpus does
+/// not harvest it.)
+#[test]
+fn a_factory_supplied_at_a_site_inside_a_block_statement_is_rejected() {
+    let src = "locus Worker { run() { } }\n\
+               fn make_worker() -> Worker { return Worker { }; }\n\
+               main locus App { params { a: Worker; } placement { a: pinned; } }\n\
+               fn main() {\n\
+               \x20   {\n\
+               \x20       App { a: make_worker() };\n\
+               \x20   }\n\
+               }\n";
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED) && m.contains("the value supplied for `a` here is a call")),
+        "expected rule 18 at the site inside the block, got: {:?}",
         msgs
     );
 }

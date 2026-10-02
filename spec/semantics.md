@@ -3479,9 +3479,12 @@ main locus App {
     registered its subscriptions against the global queue) before
     the value returns. Scope matches rule 17's: an imported seed's
     main locus is renamed `__lib_*`, is not the deployment root, and
-    its entries never reach the plan. Codegen keeps a matching
-    refusal for embedders that bypass the checker. (GH #890,
-    2026-09-20.)
+    its entries never reach the plan; the instantiation sites judged
+    are the placement table's constructions of the root, every
+    literal of the root declaration as resolved. The test harness's
+    build, which skips the rest of the check, judges it too, so
+    lowering keeps no refusal of its own. (GH #890, 2026-09-20;
+    F.40 phase 3, C7.)
 
 19. **Uncarriable bus payload (error).** An `of type T` clause on a
     `publish` / `subscribe` must name a type the bus can carry — a

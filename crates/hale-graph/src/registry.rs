@@ -598,7 +598,6 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
             legacy(CG, "let has_socket_binding", "whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen", "same"),
             // The checker's own readers of `main` that E0 did not switch.
-            legacy(CHECK, "check_placement_entry_consumed", "rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error)", "reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4"),
             legacy(CHECK, "check_cooperative_pool_blocking", "the blocking check reads the placement and params of EVERY `is_main` declaration, module-nested and imported ones included, with no mark or name filter", "reads `lowering_root`, since the starvation it reports is on the threads lowering spawns; reads the entry with L4"),
             legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
             legacy(CHECK, "check_pool_affinity", "validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4)"),
@@ -1150,7 +1149,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "collect_main_placement", "codegen's DeploymentPlan, keyed by field name and locus type name", "codegen reads the table"),
             legacy(CG_DEPLOY, "DeploymentPlan", "the plan type lowering reads today", "becomes the layer-5 table"),
         ],
-        consumers: &[consumer_at("check (rule 6, the lowering laws)", LOWERING_LAWS, "pinned_features"), consumer_at("check (rule 17, the lowering laws: the root's constructions and their bounds)", LOWERING_LAWS, "pinned_root_in_a_loop"),consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
+        consumers: &[consumer_at("check (rule 6, the lowering laws)", LOWERING_LAWS, "pinned_features"), consumer_at("check (rule 17, the lowering laws: the root's constructions and their bounds)", LOWERING_LAWS, "pinned_root_in_a_loop"), consumer_at("check (rule 18, the lowering laws: the root and its constructions)", LOWERING_LAWS, "placement_entry_consumed"), consumer("check (rules 2-5, 13-16; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
         invariants: &[
             "placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains",
             "the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once",
@@ -1310,11 +1309,11 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Lowering,
         state: State::Migrating,
         kind: Kind::Law,
-        answers: "The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements, placement entries consumed by a literal.",
+        answers: "The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements.",
         inputs: &["the AST", "the placement table", "the binding rows"],
         producer: Some(site(LOWERING_LAWS, "lowering_laws")),
         legacy: &[
-            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (self-containment, cross-pool bare statements, placement entries consumed by a literal), kept for harness builds that skip the checker", "phase 3, C7: each moves to `lowering_laws` once a law covers every program it refused, and is deleted"),
+            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (self-containment, cross-pool bare statements), kept for harness builds that skip the checker", "phase 3, C7: each moves to `lowering_laws` once a law covers every program it refused, and is deleted"),
         ],
         consumers: &[consumer_at("the check (every verb and the LSP)", CHECK, "lowering_laws"), consumer_at("the harness's lowering view (`Config::harness`), which is not gated on the check", SNAPSHOT, "lowering_laws")],
         invariants: &[
@@ -1322,9 +1321,10 @@ pub const FAMILIES: &[Family] = &[
             "lowering judges no rule `lowering_laws` states: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so a refusal reaches no entry point unlocated (C7)",
             "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)",
             "rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)",
+            "rule 18 is judged per entry of the lowering root (the placement table's root) over the inits its constructions supply, or the params default when one leaves the field or none builds the root (C7, 3)",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`)", "crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check)", "crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness)", "crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`)", "crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check)", "crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness)", "crates/hale-codegen/tests/placement_factory_default.rs (rule 18 at the harness)", "crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
         spec: &["spec/semantics.md rules 6, 17, 18; GH #813, #876"],
         owned: &[],
         seams: &[],
@@ -1640,8 +1640,8 @@ pub const RULES: &[Rule] = &[
         id: "semantics/placement/18",
         gist: "every placement entry is consumed exactly once",
         family: "placement",
-        evaluator: Some(site(CHECK, "check_placement_entry_consumed")),
-        state: State::Migrating,
+        evaluator: Some(site(LOWERING_LAWS, "placement_entry_consumed")),
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/19",
