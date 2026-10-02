@@ -761,6 +761,27 @@ is silent (the parent's `run()` simply never executes), so the
 type-side rejection is load-bearing: it converts a class of
 hard-to-diagnose runtime bugs into a clear compile-time signal.
 
+The rule asks whether a `run()` is **long-running**, which is not
+whether it **never returns**, and the two are two definitions, two
+columns of each locus's run row (`hale_types::flows::RunRow`, read
+through the flow rows):
+
+- **long-running**: the `run()` body has a statement of its own. A
+  nested child's `run()` runs to completion before its parent's
+  begins, so any body delays the parent whether or not it returns: a
+  child whose `run()` is `std::time::sleep(1m)` is long-running and
+  draws this error. This rule reads it.
+- **never returns**: the `run()` body's last statement is a `while`
+  with no exit whose condition never flips false (`while true`,
+  `while !self.draining`, or a Bool params flag no member assigns,
+  whose default keeps the loop live). Only such a body starves the
+  cells a cooperative pool runs after it: the pool-starvation warning
+  and the birth-order trap read it.
+
+Every body that never returns is long-running; the converse does not
+hold. A stdlib locus, whose body the checker does not see, is both
+when it is on the known-long-running allowlist.
+
 #### `where async_io` — green-I/O cooperative pools (F.35)
 
 The sibling-in-main fix puts each long-running child on its own
@@ -1818,7 +1839,10 @@ fixture under `crates/hale-codegen/tests/fixtures/lifecycle/` that
 pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 `KNOWN_OPEN` table and fails once the outcome changes, so the
 entry has to go with the fix. Each fixture also runs under the
-lifecycle trace (§ "The lifecycle trace"), held to its line's plan;
+lifecycle trace (§ "The lifecycle trace"), held to the plan the
+table's producer (`hale_types::lifecycle::derive`) derives for its
+program, on its line's rules (three of line 19's, whose shapes the
+producer does not derive yet, to a hand-written plan);
 a departure the trace shows and the outcome cannot (a missing step,
 a step on the wrong thread) is in the same file's
 `TRACE_KNOWN_OPEN` table. A line still waiting on a condition
@@ -1826,7 +1850,7 @@ says so and records today's behaviour. The same rules are evidenced
 across shapes by the lifecycle matrix
 (`crates/hale-codegen/tests/lifecycle_matrix.rs`): a generated
 program for each failure phase, tree position and domain, held to
-its outcome, its trace plan and AddressSanitizer, with the cells
+its outcome, the producer's plan for it and AddressSanitizer, with the cells
 that fail today, the inventory row each fails at (two, for a cell
 that shows two known defects), and the departures each shows, in
 its `KNOWN_OPEN` table.
@@ -1933,13 +1957,22 @@ its `KNOWN_OPEN` table.
   does not own acquires no drain obligation. Not yet shipped
   (inventory rows C9, C18): a pinned locus's thread runs its
   `drain()` with no field drains, and its fields are dissolved after
-  the join without one (`l12_pinned_fields_drain.hl`).
+  the join without one (`l12_pinned_fields_drain.hl`, and the
+  lifecycle matrix's pinned grandchild cells); and a field typed by
+  an interface or a perspective is torn down through its recorded
+  reclaim, its drain, dissolve and reclaim together, after its
+  owner's `dissolve()` (inventory row C32; the matrix's
+  interface-field and perspective-slot cells).
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown
   the resumed run may end in line 19's not-started outcome. Not yet
   shipped (inventory row C43): the resume calls `run()` inline on
-  the settling thread (`l13_resume_pool_child.hl`).
+  the settling thread (`l13_resume_pool_child.hl`). A locus that
+  declares no `run()` owes none on any incarnation, and the trace
+  shows none. Not yet shipped (inventory row C48): its resumed
+  incarnation enters a `Run`, the empty one the desugar gives it,
+  where its first never does (`l01_neg_same_pool_held.hl`).
 - **Line 14, order.** There is no runtime state machine: order is
   the order the compiler emits, and latches keep a step from
   running twice (§ "Lifecycle", "Order by construction"). Shipped
@@ -1996,10 +2029,17 @@ its `KNOWN_OPEN` table.
   | started, returned | completed |
   | started, abandoned by an asynchronous shutdown | canceled after start; the worker's quiescence is witnessed separately, by the pool join |
 
-  Admission and the worker's closure are linearized on the pool's
-  queue: a post enqueued before the worker's last
-  empty-and-shutdown check is admitted, and a post after it is
-  rejected. Run admission is separate from the admission of a
+  Admission is decided on the pool's queue: a post that finds room
+  in the ring is admitted, and one that meets a full ring once the
+  pool's shutdown is set is rejected, not started for the pool's
+  shutdown (`PoolShutdown`). A cell admitted after the worker's last
+  empty-and-shutdown check is never dequeued: its child's reclaim
+  cancels it (not started, with an acknowledgement), or, when no
+  reclaim reached the child first, the pools' teardown frees it, not
+  started for that teardown (`PoolTeardown`). Nothing is silent: every
+  run that does not start is named on one of these paths, and a run
+  post that cannot allocate aborts, as the lifecycle runtime's other
+  allocations do. Run admission is separate from the admission of a
   failure decision, which shutdown never refuses while its child
   waits (join progress, below). Whatever the outcome, the child is
   torn down exactly once. A started run abandoned by an async pool's
@@ -2010,28 +2050,47 @@ its `KNOWN_OPEN` table.
   No release build observes a run's terminal, so the name lives
   there. An admitted run is retained against its child's teardown:
   from admission until the worker starts it or a teardown cancels it,
-  the run holds its child. A teardown on a worker cancels the runs
-  queued on it for the dying child before reclaiming it, each ending
-  not started with an acknowledgement, so a child torn down by its
-  owner on the worker its `run()` was posted to is reclaimed without
-  that run starting, and is torn down once; a run that started before
-  the teardown began is ordered against it by the join, as before.
-  Shipped (F.40 phase 3, L5): the cancellation is named in the trace
-  build where the reclaim makes it, before the child's struct is
-  released, and the release build runs the same path
-  (`l19_queued_run_canceled.hl`, and the lifecycle matrix's pool
-  cells, which assert the named terminal). Before it, the run started
+  the run holds its child. The child's Reclaim begins by canceling
+  the runs still queued for it, on whatever pool, each ending not
+  started with an acknowledgement, before its arena (or an elided
+  arena's struct) is released: every reclaim path makes the call,
+  past its latch, so a queued run finds the child whole or finds its
+  run canceled, never a released arena. The ticket's lock
+  linearizes the cancellation against admission: a worker that
+  takes the run first holds the child for it, and a reclaim that
+  cancels first wins. A child torn down by its owner on the worker
+  its `run()` was posted to is reclaimed without that run starting,
+  and so is one whose run waits on another pool's worker; each is
+  torn down once. A run that started before the teardown began is
+  ordered against it by the join, as before. Shipped (F.40 phase 3,
+  L5): the cancellation is named in the trace build on the thread
+  that reclaims, inside the Reclaim's bracket, and the release build
+  runs the same path (`l19_queued_run_canceled.hl`;
+  `l19_cross_pool_queued_run_canceled.hl`, a run queued on pool
+  `side` for a child its owner replaces on main, also run under
+  AddressSanitizer; the lifecycle matrix's pool cells, which assert
+  the named terminal). Before it, the run started
   on the freed struct (a heap-use-after-free under AddressSanitizer;
   an accepted child was torn down twice), or, for a subscriber, was
-  freed unrun with no terminal named. Not yet shipped: the post's ABI
-  is `void`, and a run refused at shutdown or freed unrun when the
-  pools are torn down is silent (inventory row R19). The regressions:
-  a full ring and an empty ring after the last check
-  (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
-  only until L5's handshake can drive them), self-post overflow
-  (`l19_self_post_overflow.hl`, every admitted run completes
-  today), a resumed run (`l19_resumed_run_at_shutdown.hl`), and the
-  parked started coroutine.
+  freed unrun with no terminal named. A run refused at shutdown and a
+  cell freed unrun when the pools are torn down are named the same
+  way, by the trace build where the runtime ends them, on the release
+  build's path (L5; before it both were silent). The refused run was
+  never admitted, so its Run's terminal stands alone on the posting
+  thread; the freed cell's is bracketed by the teardown's
+  cancellation. The post's ABI stays `void`: the caller does not
+  learn the outcome, the trace names it. The regressions: a full ring
+  (`l19_full_ring.hl`: after the first `App` literal's teardown has
+  joined the pools, each later one's placed field posts its run to
+  a pool with no worker; the first 64 cells are canceled by their
+  children's reclaims, and once they fill the 64-cell ring every
+  later post is refused), an empty ring after the last check
+  (`l19_empty_ring_last_check.hl`; with the reclaim's cancel removed
+  by the trace build's negative control, the pools' teardown names
+  the cell instead), self-post overflow (`l19_self_post_overflow.hl`,
+  every admitted run completes today), a resumed run
+  (`l19_resumed_run_at_shutdown.hl`), and the parked started
+  coroutine.
 - **Restart during drain.** A restart the handler asks for after
   its owner has entered teardown, or while the process drains, is
   not performed. The recovery decision (what the handler asked
@@ -2103,12 +2162,18 @@ so a struct recycled at the same address is a new instance. The
 events: `ParamsSettle` (the bracket's entry, and its settle),
 `Accept`, `Birth`, `Run` (and `Run Terminal(CanceledAfterStart)` for
 a started run whose parked coroutine a pool worker abandons at
-shutdown, with that `Cancellation`), `FailureDelivery` (entered
+shutdown, with that `Cancellation`; a run that never starts ends
+`Terminal(NotStarted(...))`: `Acknowledged` when its child's
+`Reclaim` cancels it, with that `Cancellation`, inside the reclaim;
+`Shutdown(PoolShutdown)` when the post is refused at shutdown, on
+the posting thread; `Shutdown(PoolTeardown)`, with a
+`Cancellation`, when the pools' teardown frees its cell), `FailureDelivery` (entered
 where the failure is raised, completed when the handler returns,
 in place or at settle), `ConstructionDelivery` (a held failure,
 from the hold to its handler's return at settle), `Restart`, `Drain`,
 `Dissolve` (the dissolve-epoch closures and `dissolve()`),
-`Reclaim` (the arena's release past the `__arena` latch), `PreDrain`,
+`Reclaim` (past the `__arena` latch: the queued runs' cancellation,
+then the arena's release), `PreDrain`,
 `WaitAbort`, `PoolJoin` and `PinnedJoin`. Readiness, subscription and
 the run's admission have no events yet.
 
@@ -2129,7 +2194,9 @@ into `Event`s and checks them against what a run owes.
 a comma list of steps a negative control removes: a kind's name
 skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
-place while the params are open); `<Kind>.<Point>` drops that one
+place while the params are open; for `Cancellation`, a reclaim
+cancels no queued run, which only a fixture whose cells no worker
+will dequeue may use); `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan
@@ -2441,9 +2508,10 @@ teardown therefore leaves an artifact that is attributable and
 exact up to one torn frame at the tail. Default recording rides
 the page cache (survives a process crash, not power loss).
 `LOTUS_OBS_RECORD_DURABLE=1` is the power-loss grade: every
-flushed sweep passes `fdatasync`, the parent directory is synced
+flushed sweep synchronizes the file (`fdatasync` on Linux,
+`F_FULLFSYNC` on macOS), the parent directory is synced
 at file creation (a fresh NAME is not durable until its directory
-entry is), the finalize trailer itself is `fdatasync`'d before
+entry is), the finalize trailer itself is synchronized before
 close (a clean exit followed by power loss must not demote a
 finalized recording to a truncated one), and the grade is
 recorded in the header's policy flags (bit 1).
@@ -3464,7 +3532,7 @@ its behavior as described in this document.
 | `LOTUS_OBS_SLOTS=<N>` | 4096 | Slots per ring: a power of two, at least 64; anything else falls back to the default. |
 | `LOTUS_OBS_WIRE=1` | off | Puts the `(origin, seq)` edge identity on the wire: the udp magic prefix and the framed transport's origin widening. That is a wire-format change a pre-header receiver cannot parse, so the whole fleet opts in together; it is what cross-process edges need (iris handoff-4 P16). |
 | `LOTUS_OBS_RECORD=<path>` | unset | Lossless recording (GH #296): write the run's tape to `<path>`; implies observation. See *Lossless recording mode*. |
-| `LOTUS_OBS_RECORD_DURABLE=1` | off | Push every flushed drain sweep of the recording through `fdatasync`; the default rides the page cache (survives a process crash, not power loss). |
+| `LOTUS_OBS_RECORD_DURABLE=1` | off | Synchronize every flushed drain sweep of the recording (`fdatasync` on Linux, `F_FULLFSYNC` on macOS); the default rides the page cache (survives a process crash, not power loss). |
 | `LOTUS_OBS_RECORD_ENV=full` | withheld | Record the value of every environment read, not just its name, existence and length; the artifact header says which policy applied. |
 | `LOTUS_REPLAY=<path>` | unset | Replay a recording (`hale replay` sets it): the run is judged against the tape. |
 | `LOTUS_REPLAY_FEED=<path>` | unset | Feed mode (`hale replay --feed`): the recording is input, not law. Mutually exclusive with `LOTUS_REPLAY`. |

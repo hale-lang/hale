@@ -102,7 +102,7 @@
 //! evaluated (C38), a contract-typed field drained after its owner's
 //! dissolve (C32), and a field nested under a pool-placed field run
 //! inline off its pool (C12). `handler/grandchild/pinned` shows C9 after its subtree initializes
-//! on the pinned thread; the failing cross-pool grandchildren C36 and C12.
+//! on the pinned thread; the pool subtree also initializes on its worker (C50).
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -400,13 +400,11 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     ("handler/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("handler/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
     ("handler/root_child/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_SIDE]]),
-    // `Subj`, a field of the pool-placed `Mid`, runs on main: C12 as
-    // well as C36.
-    (
-        "handler/grandchild/cross_pool",
-        &[("C36", IN_PLACE), ("C12", NESTED_INLINE)],
-        &[&[RAN_ON_MAIN_FOR_SIDE, RUN_ON_MAIN_FOR_SIDE]],
-    ),
+    // `handler/grandchild/cross_pool` left with C50: `Mid`'s subtree
+    // initializes on the pool's worker, `Subj`'s inline `run()` and the
+    // handler its publication reaches included, so the failure is
+    // delivered there, `Mid`'s domain. It ran on main while that tree
+    // was built on main.
     ("drain/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("drain/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
     (
@@ -790,12 +788,13 @@ fn held(c: Cell) -> bool {
     let born_on_it = !(c.domain == Domain::Pinned && c.position != Position::Grandchild);
     // A run() inline on the instantiating thread runs inside the params
     // loop (the fixture l01_held_failure_settle): on main; for a
-    // grandchild whose cross-pool parent's params run on main (inventory
-    // C9); and for a grandchild under a pinned parent, whose params
-    // initialize on that parent's own thread, which opens and settles
-    // them (the review of PR #1319). On a pool worker the field's run()
-    // is posted, and where a pool locus's lifecycle runs waits on
-    // decision line 3.
+    // grandchild under a pinned parent, whose params initialize on that
+    // parent's own thread, which opens and settles them (the review of
+    // PR #1319); and for a grandchild under a cross-pool parent, whose
+    // params initialize on the pool's worker, which opens and settles
+    // them (C49). A field of a locus a pool's worker builds has its
+    // run() posted, and where a pool-placed locus's own lifecycle runs
+    // waits on decision line 3.
     let run_inline =
         c.domain == Domain::Main || (c.position == Position::Grandchild && c.domain != Domain::Pool);
     born_on_it && (at_birth || (c.phase == Phase::Run && run_inline))

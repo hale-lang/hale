@@ -531,7 +531,7 @@ impl ObligationKind {
     /// The inventory rows the kind stands for.
     pub fn rows(self) -> &'static [&'static str] {
         match self {
-            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "C48", "R1", "R5"],
+            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "C48", "C49", "R1", "R5"],
             ObligationKind::ConstructionDelivery => &["C11", "R2", "R3", "R4", "R5"],
             ObligationKind::Accept => &["C2", "C7", "R6"],
             ObligationKind::Subscribe => &["C8", "C48", "C49", "R50"],
