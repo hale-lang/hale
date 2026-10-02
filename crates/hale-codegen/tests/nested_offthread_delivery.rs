@@ -5,10 +5,10 @@
 //! field's thread: its methods, and so its bus handlers, run where its
 //! owner runs (spec/semantics.md § Placement block, nested instances
 //! inherit; spec/types.md, the pool belongs to the instance). The legacy
-//! placement labels (`bus_graph::collect_subscriber_placements`, and the
-//! ownership graph's verbatim copy) read only the root's `placement { }`
-//! entries, by the written type of the field, so a nested locus is
-//! labelled `SameThread` (row B-1), and so is an adapter in `bindings
+//! placement labels (the bus graph's, until it read the placement table,
+//! and the ownership graph's copy) read only the root's `placement { }`
+//! entries, by the written type of the field, so a nested locus was
+//! labelled `SameThread` (row B-1), and so was an adapter in `bindings
 //! { }`, whose instance runs on a thread of its own (row B-7). This file
 //! measures what a handler actually sees.
 //!
@@ -478,31 +478,21 @@ fn quiet_flavor(case: Case) -> &'static str {
     row.flavor.as_str()
 }
 
-/// What each run fails with today, against the spec. A nested
-/// subscriber registers with its anchor's route (U-6): the pinned
-/// owner's mailbox (A), the pool owner's pool (B). So every deferred
-/// delivery runs on the anchor's thread, in both arms. What is left is
-/// the legacy label: the gate still calls the quiet receiver
-/// `SameThread` (B-1) and bakes its subject as a direct-inline call,
-/// whose accessor skips an entry that carries a route, so in the
-/// devirtualized arm the quiet receiver is never called and its count
-/// stays 0 until the deadline (the design's hazard B, now reached by A
-/// as well). The bus graph's switch to the placement table closes it.
-const KNOWN_OPEN: &[(Case, Variant, Arm, &str)] = &[
-    (Case::A, Variant::Quiet, Arm::Devirt, r#"the run did not finish: exit Some(5), Some("TIMEOUT count saw=0")"#),
-    (Case::B, Variant::Quiet, Arm::Devirt, r#"the run did not finish: exit Some(5), Some("TIMEOUT count saw=0")"#),
-];
+/// What each run fails with today, against the spec: nothing. A nested
+/// subscriber registers with its anchor's route (U-6), so every
+/// deferred delivery runs on the anchor's thread, and the bus graph's
+/// labels read the placement table (B-1, B-7), so no subject with an
+/// off-main end is a direct call. A run that regresses fails by name;
+/// an outcome found open again is listed here, asserted to fail exactly
+/// as it does.
+const KNOWN_OPEN: &[(Case, Variant, Arm, &str)] = &[];
 
-/// The quiet receivers' plan flavor today, where it is the direct call:
-/// the legacy label calls the nested receiver (A, B), the nested
-/// publisher (C) and the adapter (the adapter case) `SameThread`, so the
-/// gate admits a call that runs the handler on the publisher's thread.
-const KNOWN_OPEN_FLAVORS: &[(Case, &str)] = &[
-    (Case::A, "static_direct"),
-    (Case::B, "static_direct"),
-    (Case::C, "static_direct"),
-    (Case::Adapter, "static_direct"),
-];
+/// The quiet receivers' plan flavor where it is still the direct call:
+/// none. Measured on the parent of the route correction, all four were
+/// `static_direct` (the legacy label called the nested receiver of A and
+/// B, the nested publisher of C and the adapter `SameThread`); reading
+/// the table, all four are `static_bucket`.
+const KNOWN_OPEN_FLAVORS: &[(Case, &str)] = &[];
 
 fn check_case(case: Case) {
     let mut failures = Vec::new();

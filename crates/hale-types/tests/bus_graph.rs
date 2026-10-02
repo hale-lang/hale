@@ -926,3 +926,212 @@ fn main() { App { }; }
     expected.sort();
     assert_eq!(on_graph, expected);
 }
+
+// --- placement labels read the placement table (F.40 phase 3, P1 3 of 6) ---
+//
+// The rows are the placement correspondence's (`notes/f40-placement-
+// correspondence.md` § 2.2). Each program loads as `hale check` loads it,
+// so the graph reads the snapshot's table.
+
+use hale_types::bus_graph::Placement;
+
+/// The snapshot `hale check` would build for `src`, checked clean.
+fn snapshot_of(src: &str) -> hale_frontend::snapshot::Snapshot {
+    use hale_frontend::snapshot::{Config, Snapshot};
+    let program = parse_source(src).expect("parse failed");
+    let s = Snapshot::from_program(program, Vec::new(), Config::check(false, false))
+        .unwrap_or_else(|_| panic!("the program does not load"));
+    let checked = s.demand_check().unwrap_or_else(|_| panic!("the check is blocked"));
+    let errors: Vec<&str> = checked.diags.iter().filter(|d| d.is_error()).map(|d| d.message.as_str()).collect();
+    assert!(errors.is_empty(), "the program must check clean: {errors:?}");
+    s
+}
+
+/// The label of `locus`'s subscription on `subject`, and the subject's
+/// direct-call gate.
+fn label(s: &hale_frontend::snapshot::Snapshot, subject: &str, locus: &str) -> (Placement, bool) {
+    let g = s.demand_bus_graph().unwrap_or_else(|_| panic!("the bus graph is blocked"));
+    let info = g.subjects.get(subject).unwrap_or_else(|| panic!("no subject `{subject}`: {:?}", g.subjects.keys()));
+    let site = info.subscribers.iter().find(|x| x.locus == locus).unwrap_or_else(|| panic!("no subscriber `{locus}`"));
+    (site.placement.clone(), info.direct_call_eligible)
+}
+
+/// The label the table gives `decl`, by the name lowering keys on.
+fn type_label(s: &hale_frontend::snapshot::Snapshot, decl: &str) -> Placement {
+    let t = s.demand_placement().unwrap_or_else(|_| panic!("placement is blocked"));
+    hale_types::bus_graph::type_placements(t).get(decl).cloned().unwrap_or(Placement::SameThread)
+}
+
+/// A quiet subscriber on a flat payload, published from the root on
+/// main: every leg of the direct-call gate but placement holds.
+fn nested_under(placement: &str) -> String {
+    format!(
+        r#"
+type P {{ n: Int; }}
+topic T {{ payload: P; }}
+
+locus Kid {{
+    params {{ got: Int = 0; }}
+    bus {{ subscribe T as on_t; }}
+    fn on_t(p: P) {{ self.got = self.got + 1; }}
+}}
+
+locus Owner {{
+    params {{ k: Kid = Kid {{ }}; }}
+}}
+
+main locus App {{
+    params {{ o: Owner = Owner {{ }}; }}
+    placement {{ o: {placement}; }}
+    bus {{ publish T; }}
+    run() {{ T <- P {{ n: 1 }}; }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+/// B-1: a locus nested under a root field placed off main runs on that
+/// field's thread, so it is not same-thread, and its subject is no
+/// direct call. The legacy label read the root's entries by the written
+/// type of the field alone and called `Kid` `SameThread`.
+#[test]
+fn a_nested_subscriber_under_a_placed_owner_is_not_same_thread() {
+    assert_eq!(label(&snapshot_of(&nested_under("pinned")), "T", "Kid"), (Placement::Pinned, false));
+    assert_eq!(
+        label(&snapshot_of(&nested_under("cooperative(pool = io)")), "T", "Kid"),
+        (Placement::CrossPool("io".into()), false)
+    );
+    // The control: under a root field on main, the gate holds.
+    assert_eq!(
+        label(&snapshot_of(&nested_under("cooperative(pool = main)")), "T", "Kid"),
+        (Placement::SameThread, true)
+    );
+}
+
+/// B-4: an imported `__lib_` root is never deployed, so its entries
+/// label nothing (the legacy label read every `placement { }` block,
+/// first wins, and called `W` pinned).
+#[test]
+fn an_imported_roots_placement_labels_nothing() {
+    let src = r#"
+type P { n: Int; }
+topic T { payload: P; }
+
+locus W {
+    params { got: Int = 0; }
+    bus { subscribe T as on_t; publish T; }
+    fn on_t(p: P) { self.got = self.got + 1; }
+}
+
+main locus __lib_App {
+    params { w: W = W { }; }
+    placement { w: pinned; }
+}
+
+fn main() { W { }; }
+"#;
+    assert_eq!(label(&snapshot_of(src), "T", "W"), (Placement::SameThread, true));
+}
+
+/// B-3 and B-5: a root field typed by a qualified stdlib path is placed
+/// by the declaration it builds (`__StdIoTcpListener`), not by its last
+/// segment; so a user `locus Listener` beside it is labelled by its own
+/// instances. The legacy label keyed both by `Listener` and gave the
+/// user's the stdlib field's pool.
+#[test]
+fn a_qualified_field_labels_its_declaration_by_identity() {
+    let src = r#"
+type P { n: Int; }
+topic T { payload: P; }
+
+fn ignore_conn(s: std::io::tcp::Stream) { }
+
+locus Listener {
+    params { got: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(p: P) { self.got = self.got + 1; }
+}
+
+main locus App {
+    params {
+        l: std::io::tcp::Listener = std::io::tcp::Listener {
+            host: "127.0.0.1", port: 0, max_accepts: -1, on_connection: ignore_conn,
+        };
+        u: Listener = Listener { };
+    }
+    placement { l: cooperative(pool = io) where async_io; }
+    bus { publish T; }
+    run() { T <- P { n: 1 }; }
+}
+
+fn main() { App { }; }
+"#;
+    let s = snapshot_of(src);
+    assert_eq!(type_label(&s, "__StdIoTcpListener"), Placement::CrossPool("io".into()), "B-3");
+    assert_eq!(label(&s, "T", "Listener"), (Placement::SameThread, true), "B-5");
+}
+
+/// B-6: one type, two instances in two domains: the label is the set's,
+/// and the gate holds only when every instance runs on main.
+#[test]
+fn a_type_with_an_instance_off_main_is_not_same_thread() {
+    let src = r#"
+type P { n: Int; }
+topic T { payload: P; }
+
+locus W {
+    params { got: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(p: P) { self.got = self.got + 1; }
+}
+
+main locus App {
+    params { a: W = W { }; b: W = W { }; }
+    placement { a: pinned; }
+    bus { publish T; }
+    run() { T <- P { n: 1 }; }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(label(&snapshot_of(src), "T", "W"), (Placement::Pinned, false));
+}
+
+/// B-7: an adapter in the root's `bindings { }` runs on a thread of its
+/// own (GH #1032; measured by `nested_offthread_delivery.rs`'s adapter
+/// case), so it is pinned, and a subject it publishes is no direct call.
+#[test]
+fn an_adapter_is_not_same_thread() {
+    let src = r#"
+type P { n: Int; }
+type Wire { n: Int; }
+topic Beat { payload: Wire; subject: "beat"; }
+topic T { payload: P; }
+
+locus Probe {
+    params { got: Int = 0; }
+    bus { subscribe T as on_t; publish T; }
+    fn send(subject: String, bytes: Bytes) { }
+    fn on_t(p: P) { self.got = self.got + 1; }
+}
+
+locus Sink {
+    params { got: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(p: P) { self.got = self.got + 1; }
+}
+
+main locus App {
+    params { s: Sink = Sink { }; }
+    bindings { Beat: Probe { }; }
+    bus { publish Beat; }
+}
+
+fn main() { App { }; }
+"#;
+    let s = snapshot_of(src);
+    assert_eq!(label(&s, "T", "Probe"), (Placement::Pinned, false));
+    assert_eq!(label(&s, "T", "Sink").0, Placement::SameThread, "the subscriber on main keeps its label");
+}

@@ -7,8 +7,6 @@
 //! (`Snapshot::demand_placement`) with each legacy producer the snapshot
 //! can reach, one column each, every key prefixed by its column:
 //!
-//! - `bus`: `collect_subscriber_placements`, per type (no row is
-//!   `SameThread`, as the graph defines it);
 //! - `ownership`: the ownership graph's verbatim copy, `collect_placements`;
 //! - `model`: the arrangement's `PlacedIn`, per instance path;
 //! - `desugar`: `collect_off_owner_thread_fields`, per `Owner.field`;
@@ -49,7 +47,7 @@ use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_graph::shadow::{gate_message, program_id, Class, Divergence, Kind, Report};
 use hale_syntax::ast::{flat_decls, LocusDecl, LocusMember, TopDecl, TypeExpr};
-use hale_types::bus_graph::{collect_subscriber_placements, Placement};
+use hale_types::bus_graph::Placement;
 use hale_types::placement::legacy::collect_placements;
 use hale_types::placement::{
     Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
@@ -65,6 +63,7 @@ fn placement_key(p: &Placement) -> String {
         Placement::SameThread => "main".into(),
         Placement::CrossPool(name) => format!("pool:{name}"),
         Placement::Pinned => "pinned".into(),
+        Placement::Unknown => "unknown".into(),
     }
 }
 
@@ -490,18 +489,12 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
     for w in labelled.values_mut() {
         w.extend(global.iter().cloned());
     }
-    for (name, labels, slice) in [
-        (
-            "bus",
-            collect_subscriber_placements(&bundle),
-            "the direct-call gate, SubscriberSite::placement, check_bounded_bus, hale/busGraph",
-        ),
-        (
-            "ownership",
-            collect_placements(&bundle),
-            "the ownership graph's edge classes (SameTower / CrossPool), lowering's bubble plans",
-        ),
-    ] {
+    // (The bus graph's labels read the table since P1 3 of 6: no column.)
+    for (name, labels, slice) in [(
+        "ownership",
+        collect_placements(&bundle),
+        "the ownership graph's edge classes (SameTower / CrossPool), lowering's bubble plans",
+    )] {
         let map_old: BTreeMap<String, String> = labels
             .keys()
             .filter(|k| !by_type.contains_key(*k))
@@ -835,9 +828,9 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
     (
         "B-7",
         Class::KnownOldBug,
-        "an adapter locus in `bindings { }` is pinned on its own thread; the bus graph labels it SameThread, and the \
-         checker's map has no row for it. Runtime confirmation pending: § 4's adapter test, the correction in the \
-         graph-switch PR. § 2.2, § 10.2",
+        "an adapter locus in `bindings { }` is pinned on its own thread; the legacy bus graph labelled it SameThread \
+         (corrected when it read the table, P1 3 of 6), and the checker's map has no row for it. Confirmed at runtime \
+         by § 4's adapter case (`nested_offthread_delivery.rs`). § 2.2, § 10.2",
     ),
     (
         "O-1/O-2",

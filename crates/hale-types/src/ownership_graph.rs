@@ -1312,13 +1312,13 @@ fn classify_edge(
     }
 }
 
-// === Placement (mirrors bus_graph::collect_subscriber_placements) ==
+// === Placement (the bus graph's former per-type labels) ============
 
 /// Map each locus *type* to the [`Placement`] it receives where placed
-/// as a `main locus` field. Same shape as
-/// `bus_graph::collect_subscriber_placements`: a `placement { }` entry
-/// keys on the owner's `params` field name, and that field's declared
-/// type names the placed child locus. First-placement-wins.
+/// as a `main locus` field: a `placement { }` entry keys on the owner's
+/// `params` field name, and that field's declared type names the placed
+/// child locus. First-placement-wins. The bus graph's copy of this walk
+/// was replaced by the placement table (F.40 phase 3, P1 3 of 6).
 pub(crate) fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
     let mut out: BTreeMap<String, Placement> = BTreeMap::new();
 

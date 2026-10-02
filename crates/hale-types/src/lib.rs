@@ -344,7 +344,7 @@ fn check_numbered_bundle(
     let placement = placement::derive_placement(bundle, &top, &entry);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bundle_bus_graph(bundle, &top, &bindings);
+    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
     let target = capability::target_row(bundle);
     let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let (checked, effect_certificates) = check::check_bundle_reporting(
@@ -438,21 +438,23 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bundle_bus_graph(bundle, &top, &bindings);
+    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
     let ownership = bundle_ownership_graph(bundle, &top);
     model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership)
 }
 
-/// The bus graph of a bundle no snapshot holds, over its scope: what
-/// the test entries' check and model read ([`check_bundle_opts_scoped`],
+/// The bus graph of a bundle no snapshot holds, over its scope and its
+/// placement table ([`placement::bundle_placement`]): what the test
+/// entries' check and model read ([`check_bundle_opts_scoped`],
 /// [`check::check_bundle`], [`derive_application_model`]). Every verb
 /// reads its snapshot's (`Snapshot::demand_bus_graph`).
 pub(crate) fn bundle_bus_graph(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     bindings: &binding_rows::BindingRows,
+    placement: &placement::PlacementTable,
 ) -> bus_graph::BusGraph {
-    bus_graph::build_bus_graph(bundle, top, bindings)
+    bus_graph::build_bus_graph(bundle, top, bindings, placement)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds

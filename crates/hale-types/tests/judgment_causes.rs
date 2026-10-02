@@ -137,7 +137,7 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
 
         let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
         let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top));
+        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
         // PER-ASSERTION outcomes. A function may carry several
         // `causes:` clauses and every one of them anchors its
         // diagnostic at the same fn-name span, so a span is not an
@@ -1047,7 +1047,7 @@ fn main() { App { }; }
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top));
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
     let reports = hale_types::frontier::causes_reports(
         &vec![&program],
         &hale_types::alloc_summary::derive_alloc_summary(&bundle),
@@ -1129,7 +1129,7 @@ fn main() { App { }; }
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top));
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
     let reports =
         hale_types::frontier::causes_reports(&vec![&program], &hale_types::alloc_summary::derive_alloc_summary(&bundle), &graph);
     assert_eq!(

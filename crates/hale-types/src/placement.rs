@@ -530,6 +530,62 @@ impl PlacementTable {
         self.instances.values().filter_map(|r| r.built_by.as_ref()).collect()
     }
 
+    /// Per declaration, by the name lowering keys on, where its instances
+    /// run: the registry's "a type's answer is the set of its instances'
+    /// domains". The domains of every row that realizes it (a held
+    /// instance's source rows skipped: they answer where it was built, not
+    /// where it runs) and of every dynamic site that builds it. Two shapes
+    /// run where the table cannot say, and mark the answer unknown, never
+    /// main: a dynamic site whose enclosing scope's domains are unknown, and
+    /// a row of a template the entry builds whose top realizes what an
+    /// unlinked held row holds (K-9: that template may be the held row's
+    /// source, whose instance runs in the holder's domain). A declaration
+    /// nothing builds has no entry.
+    pub fn domains_by_type(&self) -> BTreeMap<String, TypeDomains> {
+        let handed_off = self.handed_off();
+        let unlinked: BTreeSet<&str> = self
+            .holes
+            .iter()
+            .filter_map(|h| match (&h.at, &h.kind) {
+                (HoleAt::Instance(k), HoleKind::Reuse { .. }) => self.instances.get(k),
+                _ => None,
+            })
+            .filter(|r| r.built_by.is_none())
+            .filter_map(|r| r.realizes.as_ref().map(|d| d.lowered.as_str()))
+            .collect();
+        let maybe_held: BTreeSet<Origin> = self
+            .entry_literals
+            .iter()
+            .map(|c| Origin::Construction(c.literal))
+            .filter(|o| {
+                self.instances
+                    .get(&InstanceKey { origin: *o, path: Vec::new(), replica: None })
+                    .and_then(|r| r.realizes.as_ref())
+                    .is_some_and(|d| unlinked.contains(d.lowered.as_str()))
+            })
+            .collect();
+        let mut out: BTreeMap<String, TypeDomains> = BTreeMap::new();
+        for (k, r) in &self.instances {
+            if handed_off.contains(k) {
+                continue;
+            }
+            let Some(d) = &r.realizes else { continue };
+            let e = out.entry(d.lowered.clone()).or_default();
+            e.known.insert(r.domain);
+            e.unknown |= maybe_held.contains(&k.origin);
+        }
+        for s in &self.dynamic {
+            let Some(d) = &s.realizes else { continue };
+            let e = out.entry(d.lowered.clone()).or_default();
+            if s.domains.is_empty() {
+                e.unknown = true;
+            } else {
+                e.known.extend(s.domains.iter().copied());
+            }
+        }
+        out
+    }
+
     /// Where instances run: every row but the [`PlacementTable::handed_off`]
     /// ones, indexed for the questions a consumer asks of a declaration's
     /// instances and of an instance's fields.
@@ -602,6 +658,33 @@ impl<'t> Running<'t> {
     pub fn instance(&self, key: &'t InstanceKey) -> &'t InstanceKey {
         self.table.instances[key].built_by.as_ref().unwrap_or(key)
     }
+}
+
+/// Where the instances of one declaration run ([`PlacementTable::domains_by_type`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypeDomains {
+    /// The domains the table knows an instance runs in.
+    pub known: BTreeSet<DomainId>,
+    /// Some instance runs in a domain the table cannot say. Unknown is
+    /// never main: it disables a proof that needs a domain.
+    pub unknown: bool,
+}
+
+impl TypeDomains {
+    /// Every instance runs on main: the one answer that admits a
+    /// same-thread proof. A declaration nothing builds runs nowhere, and
+    /// admits it vacuously.
+    pub fn only_main(&self) -> bool {
+        !self.unknown && self.known.iter().all(|d| *d == PlacementTable::MAIN)
+    }
+}
+
+/// The placement table for a bundle without a snapshot owner. The
+/// shared identity adapter mints an unminted bundle on a copy; the
+/// ordinary producer then reads that copy's entry and source sites.
+/// Snapshot consumers pass their table directly.
+pub fn bundle_placement(bundle: &Bundle<'_>, top: &TopScope) -> PlacementTable {
+    crate::with_identities(bundle, |minted| derive_placement(minted, top, &crate::entry::entry_row(minted)))
 }
 
 // ----------------------------------------------------- the producer

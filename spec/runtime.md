@@ -448,6 +448,17 @@ arranged instance does not answer for the instances the model
 admits it cannot see. Plan subjects are WIRE subjects; `hale
 model dump` prints the plan and the same-domain count.
 
+The gates' placement leg reads the placement table (F.40 phase 3,
+P1): a type is same-thread only when every instance of it runs on
+main, so `static_direct` needs every publisher and every subscriber
+type to be. An instance nested under a root field placed off main
+runs on that field's thread, an adapter in `bindings { }` on its
+own, and an instance the table cannot place (a literal in a scope
+whose domain is unknown) is never taken for main; each keeps its
+subject on a queued flavor. The same answer decides where a
+subscriber's `bounded(N, …)` is legal (main-queue registrations
+only, `spec/decisions.md` F.37).
+
 **Binding roles and replica indices in the model.** A binding's
 role is the authored `role:` kwarg when present and otherwise the
 inferred one — publish-only is `connect`, subscribe-only is

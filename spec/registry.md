@@ -40,7 +40,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `bare_fallible` | Layer 4 | Canonical | law | `bare_fallible_calls` | 0 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Canonical | law | `run_statically_nonreturning` | 0 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
-| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
+| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 6 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 4 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | `derive_lifecycle` | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
@@ -452,7 +452,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/placement.rs` ×1
 
 ### `ownership` — Migrating · derivation
 
@@ -507,7 +507,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Answers.** The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates.
 
-**Inputs.** topics; bus blocks; sends; bindings; placement (for gates)
+**Inputs.** topics; bus blocks; sends; bindings; placement (the table: every label, and so the direct-call gate)
 
 **Producer (today's authority, migrating).** `crates/hale-types/src/bus_graph.rs` · `build_bus_graph`
 
@@ -529,10 +529,11 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - the intra-locus rewrite is a relation on the graph, never an erased publisher (boundary 7)
 - lowering reads the relation (`LoweringView::intra_locus`) by the call's id, which the call that replaces a send keeps (`IntraLocusRewrite::send`); it never classifies a call as a rewritten publish from the call's shape
 - rule 10 calls a cycle synchronous only where the relation holds every send of it (`BusEdge::send`, the snapshot's `intra_locus` stage, the one lowering continues from); a same-declaration cycle with a send the relation does not hold is carried by the queue, and the subjects' spelling never decides which
+- a placement label is the placement table's answer for the type, by the name lowering keys on: `SameThread` only when every instance runs on main (a nested instance inherits its owner's domain, an adapter is pinned, an instance the table cannot place is `Unknown` and never main); the graph reads no `placement { }` block itself
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/bus_graph.rs; crates/hale-types/tests/bus_rules_over_graph.rs; crates/hale-types/tests/bus_payload_handler.rs; crates/hale-codegen/tests/bus_devirt_differential.rs
+**Focused tests.** crates/hale-types/tests/bus_graph.rs (the B rows: nested, imported root, qualified field, last-segment collision, two domains, adapter); crates/hale-types/tests/bus_rules_over_graph.rs; crates/hale-types/tests/bus_payload_handler.rs; crates/hale-codegen/tests/bus_devirt_differential.rs; crates/hale-codegen/tests/nested_offthread_delivery.rs (the dispatch-plan flavor of a nested subscriber, a nested publisher and an adapter's publication)
 
 **Spec.** spec/semantics.md rules 7, 9-12, 19; spec/verification.md § Bus-graph property checks
 
@@ -1081,7 +1082,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/bus_graph.rs` · `collect_subscriber_placements` — per type, first wins. *Removed when:* same.
 - `crates/hale-types/src/ownership_graph.rs` · `collect_placements` — a verbatim copy of the previous. *Removed when:* same.
 - `crates/hale-types/src/model_builder.rs` · `PlacedIn` — the model's arrangement, per instance with replicas. *Removed when:* projected from the table.
 - `crates/hale-types/src/resource_budget.rs` · `budget_for_programs` — counts placement entries, ignores replicas. *Removed when:* reads the table.
@@ -1089,7 +1089,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — codegen's DeploymentPlan, keyed by field name and locus type name. *Removed when:* codegen reads the table.
 - `crates/hale-codegen/src/deployment.rs` · `DeploymentPlan` — the plan type lowering reads today. *Removed when:* becomes the layer-5 table.
 
-**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`); codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to) (`crates/hale-types/src/resolved.rs` · `route_anchors`); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`); codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to) (`crates/hale-types/src/resolved.rs` · `route_anchors`); bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains) (`crates/hale-types/src/bus_graph.rs` · `type_placements`); check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded) (`crates/hale-types/src/check.rs` · `check_bounded_bus`); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 
@@ -1115,7 +1115,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `bundle_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1
 - `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 - `route_anchors(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2
 

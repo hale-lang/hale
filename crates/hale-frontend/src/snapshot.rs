@@ -1302,14 +1302,16 @@ impl Snapshot {
     }
 
     /// The bus graph over the checked programs, with the scope's topic
-    /// rows: the model's subjects, endpoints and dispatch gates.
+    /// rows: the model's subjects, endpoints and dispatch gates. Its
+    /// placement labels read the snapshot's placement table.
     pub fn demand_bus_graph(&self) -> Result<&BusGraph, &Blocked> {
         self.bus_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("bus_graph");
-                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings))
+                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings, placement))
             })
             .as_ref()
     }
