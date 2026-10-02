@@ -38,6 +38,16 @@
 //! alone (no longer invoked unboundedly by loops nothing starts). No
 //! effect row, manifest row or certificate reads the fixpoint. The old
 //! answer is the corrected summary with `reached` cleared.
+//!
+//! **The run-to-exit rule reads the program's own entries.** A program
+//! with a `main` and no long-lived entry (`run`, a bus handler) has no
+//! leak sites. The rule read every fn of the summary, and the stdlib's
+//! analysis copy always carries `run` hooks, so it never applied. Now it
+//! reads the program's own fns only (`AllocSummary::analysis_copy` names
+//! the copy's). 77 targets are run-to-exit programs: each loses the 21
+//! leak sites of the copy's own fns, and two lose two of `main`'s own.
+//! No site is added and no other target moves. The old answer is the
+//! corrected summary with `analysis_copy` cleared.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -46,7 +56,7 @@ use std::sync::Arc;
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
-use hale_types::alloc_summary::{summarize_identified, AllocSummary, Callee, FnKey};
+use hale_types::alloc_summary::{summarize_identified, AllocSummary, Callee, EntryKind, FnKey, LeakSite};
 use hale_types::effect_rows::derive_effect_rows;
 
 fn root() -> PathBuf {
@@ -264,6 +274,10 @@ struct Unreached {
 fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     let names: BTreeSet<String> = stdlib.iter().map(FnKey::display).collect();
     over_target(target, |_, now| {
+        // This correction alone: the later one cleared on both sides.
+        let mut now = now.clone();
+        now.analysis_copy.clear();
+        let now = &now;
         let mut old = now.clone();
         old.reached = None;
         let reached = now.reached.as_ref().expect("the summary holds the stdlib's copy");
@@ -460,6 +474,60 @@ fn reached_is_route_test() {
             "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1951..1963",
             "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @1951..1963",
         ],
+    );
+}
+
+/// What the run-to-exit correction removes in one target, as the leak
+/// sites of the copy's fns (counted) and of the program's own (listed);
+/// `None` when it moves nothing. Panics if it adds a site, or moves one
+/// in a program with a long-lived entry of its own or no `main`.
+fn run_to_exit(target: &str) -> Option<(usize, Vec<String>)> {
+    over_target(target, |_, now| {
+        let mut old = now.clone();
+        old.analysis_copy.clear();
+        let site = |l: &LeakSite| {
+            format!("{} {:?} @{}..{} {:?}", l.owner.display(), l.kind, l.span.start.0, l.span.end.0, l.reason)
+        };
+        let is: BTreeSet<String> = now.leak_sites().iter().map(site).collect();
+        let gone: Vec<LeakSite> = old.leak_sites().into_iter().filter(|l| !is.contains(&site(l))).collect();
+        assert!(is.len() + gone.len() == old.leak_sites().len(), "{target}: the correction added a leak site");
+        if gone.is_empty() {
+            return None;
+        }
+        let own_entry = |e: EntryKind| now.fns.values().any(|f| now.is_own(&f.key) && f.entry == Some(e));
+        assert!(
+            own_entry(EntryKind::Main) && !own_entry(EntryKind::Run) && !own_entry(EntryKind::BusHandler),
+            "{target}: a site moved in a program that is not run-to-exit"
+        );
+        assert!(is.is_empty(), "{target}: a run-to-exit program keeps a leak site");
+        let copy = gone.iter().filter(|l| !now.is_own(&l.owner)).count();
+        let own = gone.iter().filter(|l| now.is_own(&l.owner)).map(site).collect();
+        Some((copy, own))
+    })
+    .flatten()
+}
+
+/// Every run-to-exit program loses the copy's 21 sites; two also lose
+/// their own `main`'s in-loop sites; no other target moves.
+#[test]
+fn own_entries_run_to_exit_programs() {
+    let mut moved = 0;
+    let mut own = Vec::new();
+    for t in targets() {
+        let Some((copy, mine)) = run_to_exit(&t) else { continue };
+        moved += 1;
+        assert_eq!(copy, 21, "{t}: the copy's leak sites");
+        own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
+    }
+    assert_eq!(moved, 77, "the run-to-exit programs among the targets");
+    assert_eq!(
+        own,
+        [
+            "tests/hale/api_context_test.hl: main StringConcat @12358..12422 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @12358..12393 InUnboundedLoop",
+            "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
+            "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
+        ]
     );
 }
 

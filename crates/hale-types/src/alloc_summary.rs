@@ -647,6 +647,9 @@ pub struct AllocSummary {
     /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
     /// every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
+    /// The fns of the stdlib's analysis copy summarized beside the
+    /// program; empty when every fn is the program's.
+    pub analysis_copy: BTreeSet<FnKey>,
 }
 
 impl AllocSummary {
@@ -657,6 +660,12 @@ impl AllocSummary {
             .locus
             .as_ref()
             .is_some_and(|l| self.bounded_loci.contains(l))
+    }
+
+    /// Whether the fn `key` is the program's own, not the stdlib's
+    /// analysis copy's.
+    pub fn is_own(&self, key: &FnKey) -> bool {
+        !self.analysis_copy.contains(key)
     }
 }
 
@@ -908,16 +917,17 @@ impl AllocSummary {
         // would otherwise never surface the lib's real leaks
         // (pond/websocket's per-message stores were the case in
         // point).
-        let has_long_lived_entry = self.fns.values().any(|f| {
+        // The program's own entries, never the stdlib's analysis copy's:
+        // the copy always carries `run` hooks, so counting them would
+        // switch the rule off for every program.
+        let own = || self.fns.values().filter(|f| self.is_own(&f.key));
+        let has_long_lived_entry = own().any(|f| {
             matches!(
                 f.entry,
                 Some(EntryKind::Run) | Some(EntryKind::BusHandler)
             )
         });
-        let has_main = self
-            .fns
-            .values()
-            .any(|f| matches!(f.entry, Some(EntryKind::Main)));
+        let has_main = own().any(|f| matches!(f.entry, Some(EntryKind::Main)));
         if has_main && !has_long_lived_entry {
             return Vec::new();
         }
@@ -1856,7 +1866,9 @@ pub fn summarize_identified(
         };
         w.walk_block(body, 0, Escape::Local);
         starts_of.insert(key.clone(), std::mem::take(&mut w.starts));
-        if !is_stdlib_copy(ids) {
+        if is_stdlib_copy(ids) {
+            summary.analysis_copy.insert(key.clone());
+        } else {
             own.insert(key.clone());
         }
         summary.fns.insert(
