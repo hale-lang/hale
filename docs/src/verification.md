@@ -115,6 +115,11 @@ with how the runtime dispatches:
   forever-looping locus shares pool `main`. Bus handlers keep firing
   at sleep/yield drains, which makes the hang look like a healthy
   idle; the warning names every offender — warning.
+
+  These three judge the `main locus` the build deploys, each field
+  by the locus it actually builds (through an alias too); a library's
+  `main locus` you import is not deployed by your build, so it is not
+  judged.
 - **Nested long-running child** — a non-`main` locus holding a
   params field of a locus type whose `run()` never returns; the fix
   is hoisting it to a `main` sibling with its own placement —

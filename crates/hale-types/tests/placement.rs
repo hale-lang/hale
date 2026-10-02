@@ -672,6 +672,42 @@ fn main() {
     assert_eq!(cross_pool(src), Vec::<String>::new());
 }
 
+/// K-8: a root field that holds an instance built elsewhere runs in its
+/// holder's domain, whatever an entry names for it: the entry decides
+/// nothing (GH #890 refuses it, as before), so the root's call into the
+/// field is not cross-pool. The legacy owner-relative read
+/// (`enclosing_field_placement`) took the entry's pool and drew the F.31
+/// error beside that refusal.
+#[test]
+fn a_held_root_field_runs_in_its_holders_domain() {
+    let src = r#"
+locus W {
+    fn poke() { }
+}
+
+main locus App {
+    params {
+        w: W = W { };
+    }
+    placement {
+        w: pinned;
+    }
+    run() {
+        self.w.poke();
+    }
+}
+
+fn main() {
+    let held = W { };
+    App { w: held };
+}
+"#;
+    assert_eq!(cross_pool(src), Vec::<String>::new());
+    let errs = errors(src);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains(UNCONSUMED), "{}", errs[0]);
+}
+
 // ---------------------------------------------------------------
 // Dead bus receiver (a downstream handoff 2026-06-02): a locus that
 // subscribes to the bus but is placed cooperative on a non-main

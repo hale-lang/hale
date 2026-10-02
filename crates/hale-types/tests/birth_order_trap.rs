@@ -161,3 +161,40 @@ fn reports_only_the_first_blocker() {
         hits[0]
     );
 }
+
+// F.40 phase 3, P1: the blocking check reads where each root field runs,
+// and what it realizes, from the placement table.
+
+/// K-6: a field typed by an alias realizes the declaration the alias
+/// names, so its non-returning `run()` traps the births after it. The
+/// legacy read took the written single name, which names no locus.
+#[test]
+fn fires_through_an_alias() {
+    let src = format!(
+        "type Slow = Forever;\n{}\nmain locus App {{\n    params {{ f: Slow = Forever {{ }}; l: Later = Later {{ }}; }}\n}}\nfn main() {{ App {{ }}; }}\n",
+        BLOCKER
+    );
+    let hits: Vec<String> = msgs(&src).into_iter().filter(|m| m.contains("never BORN")).collect();
+    assert_eq!(
+        hits,
+        ["params field `f` runs inline on the main thread and its `run()` statically never returns (terminal \
+          `while` loop with no `break`/`return`/`terminate`), so the params declared after it are never BORN: \
+          l: Later. Their `birth()` bodies never run, so any subscription they register, socket they bind or \
+          child they accept silently never exists — the process looks like it booted and then idles. Either \
+          declare them BEFORE `f`, or move `f` off the main thread with `placement { f: pinned; }` (own \
+          thread) or `cooperative(pool = io)` (posted to a worker); both let the remaining params finish \
+          being born."],
+    );
+}
+
+/// K-2's principle: a `main locus` lowering does not deploy (an imported
+/// one, here by its `__lib_` name) births nothing, so it traps nothing.
+/// The legacy walk read every `main locus` the bundle declared.
+#[test]
+fn silent_under_a_root_lowering_does_not_deploy() {
+    let src = format!(
+        "{}\nmain locus __lib_App {{\n    params {{ f: Forever = Forever {{ }}; l: Later = Later {{ }}; }}\n}}\nfn main() {{ }}\n",
+        BLOCKER
+    );
+    assert!(!fires(&src), "{:#?}", msgs(&src));
+}

@@ -2105,16 +2105,8 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 pub mod legacy {
     use std::collections::BTreeMap;
 
-    use hale_syntax::ast::LocusDecl;
-
     use crate::bus_graph::Placement;
-    use crate::check::PoolId;
     use crate::symbol::Bundle;
-
-    /// F.31's owner-relative answer at `self.f`.
-    pub fn enclosing_field_placement(enclosing_locus: &LocusDecl, field_name: &str) -> Option<PoolId> {
-        crate::check::enclosing_field_placement(enclosing_locus, field_name)
-    }
 
     /// The ownership graph's per-type labels.
     pub fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
