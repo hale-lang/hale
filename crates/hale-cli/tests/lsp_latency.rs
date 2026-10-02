@@ -13,9 +13,11 @@
 //! `publishDiagnostics` for the file and to the last one before a fence
 //! request sent behind the event is answered: the typing stage's
 //! publication, and the final one, which differs only for a program
-//! whose laws add a finding. Medians of five sessions. Set
+//! whose laws add a finding. Medians of five sessions; with a base
+//! binary, its sessions and this one's alternate. Set
 //! `HALE_LSP_LATENCY_BASE` to another `hale` binary to time it beside
-//! this one (a before-and-after on one machine).
+//! this one (a before-and-after on one machine). The same events taken
+//! apart by stage, in process, are [`lsp_latency_by_stage`] (X3).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -159,9 +161,16 @@ fn lsp_latency_first_and_final_publication() {
     }
     println!("| binary | program | {} |", EVENTS.map(|e| format!("{e}: first / final")).join(" | "));
     println!("|---|---|---|---|---|---|");
-    for (label, bin) in &bins {
-        for p in programs {
-            let runs: Vec<[(f64, f64, usize); 4]> = (0..5).map(|_| session(bin, &root.join(p))).collect();
+    for p in programs {
+        // The binaries' sessions alternate (X3), so a machine whose load
+        // changes over the run loads both alike.
+        let mut runs: Vec<Vec<[(f64, f64, usize); 4]>> = vec![Vec::new(); bins.len()];
+        for _ in 0..5 {
+            for ((_, bin), runs) in bins.iter().zip(&mut runs) {
+                runs.push(session(bin, &root.join(p)));
+            }
+        }
+        for ((label, _), runs) in bins.iter().zip(&runs) {
             let cell = |event: usize| {
                 let first = median(runs.iter().map(|r| r[event].0).collect());
                 let last = median(runs.iter().map(|r| r[event].1).collect());
@@ -169,6 +178,93 @@ fn lsp_latency_first_and_final_publication() {
             };
             let cells: Vec<String> = (0..EVENTS.len()).map(cell).collect();
             println!("| {label} | {p} | {} |", cells.join(" | "));
+        }
+    }
+}
+
+/// The stages a pass of the editor runs, in order: the load, the families
+/// the typing stage reads, each demanded on its own so it is timed on its
+/// own, the typing stage itself (the checker, the reuse's plan, the build
+/// rules, the advisory), the placement of its diagnostics (their
+/// demangling, X3), then the laws and the final placement.
+const STAGES: [&str; 9] = ["load", "entry", "scope", "forms", "handlers", "alloc summary", "typing", "place", "laws"];
+
+/// The same events in process, each pass taken apart into [`STAGES`]
+/// (F.40 phase 3, X3): the snapshot loaded through the session's parse
+/// cache and offered the event before's, as the server does. A session's
+/// process-wide state (the stdlib's analysis copy, parsed once per
+/// process) is warm after the first session, so the open reads lower
+/// here than from a fresh server. Medians of five sessions.
+#[test]
+#[ignore = "a measurement: run with --ignored --nocapture"]
+fn lsp_latency_by_stage() {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::parse_cache::ParseCache;
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_frontend::source::Overlay;
+    let root = repo_root();
+    println!("| program | event | {} | first | final | reuse |", STAGES.join(" | "));
+    println!("|---|---|{}---|---|---|", "---|".repeat(STAGES.len()));
+    for p in ["dna/host/main.hl", "crates/hale-codegen/tests/fixtures/examples/hello-world/main.hl"] {
+        let file = root.join(p);
+        let text = std::fs::read_to_string(&file).expect("the program");
+        let texts = [
+            text.clone(),
+            body_edited(&text, " let x2_probe: Int = 1;"),
+            body_edited(&text, " let x2_probe: Int = 2;"),
+            format!("{text}\n"),
+        ];
+        let mut runs: Vec<Vec<([f64; STAGES.len()], String)>> = Vec::new();
+        for _ in 0..5 {
+            let cache = ParseCache::new();
+            let mut previous: Option<Snapshot> = None;
+            let mut events = Vec::new();
+            for t in &texts {
+                let overlays = std::collections::BTreeMap::from([(file.clone(), t.clone())]);
+                let mut ms = [0.0; STAGES.len()];
+                let mut t0 = Instant::now();
+                let mut lap = |stage: usize| {
+                    ms[stage] = t0.elapsed().as_secs_f64() * 1000.0;
+                    t0 = Instant::now();
+                };
+                let Ok(Ok(snap)) = Snapshot::load(&file, LoadMode::Editor, &Overlay::new(&overlays).reusing(&cache), Config::editor())
+                    .map(Snapshot::linked)
+                else {
+                    panic!("{p} loads and links")
+                };
+                let snap = match previous.take() {
+                    Some(previous) => snap.reusing_typing(previous),
+                    None => snap,
+                };
+                lap(0);
+                let _ = snap.demand_entry();
+                lap(1);
+                let _ = snap.demand_scope();
+                lap(2);
+                let _ = snap.demand_forms();
+                lap(3);
+                let _ = snap.demand_handlers();
+                lap(4);
+                let _ = snap.demand_alloc_summary();
+                lap(5);
+                let mut first = snap.demand_typing().expect("typed").diags.clone();
+                lap(6);
+                snap.demangler().demangle_diags(&mut first);
+                lap(7);
+                let mut last = snap.demand_check().expect("checked").diags.clone();
+                snap.demangler().demangle_diags(&mut last);
+                lap(8);
+                events.push((ms, format!("{:?}", snap.typing_reuse().expect("typed"))));
+                previous = Some(snap);
+            }
+            runs.push(events);
+        }
+        for (event, name) in EVENTS.iter().enumerate() {
+            let at = |stage: usize| median(runs.iter().map(|r| r[event].0[stage]).collect());
+            let first = median(runs.iter().map(|r| r[event].0[..STAGES.len() - 1].iter().sum()).collect());
+            let last = median(runs.iter().map(|r| r[event].0.iter().sum()).collect());
+            let cells: Vec<String> = (0..STAGES.len()).map(|s| format!("{:.0}", at(s))).collect();
+            println!("| {p} | {name} | {} | {first:.0} | {last:.0} | {} |", cells.join(" | "), runs[0][event].1);
         }
     }
 }
