@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 11 canonical, 29 migrating (with 124 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 11 canonical, 29 migrating (with 123 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -40,7 +40,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
-| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 6 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
+| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 5 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 7 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
@@ -1053,12 +1053,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/bus_graph.rs` · `collect_subscriber_placements` — per type, first wins. *Removed when:* same.
 - `crates/hale-types/src/ownership_graph.rs` · `collect_placements` — a verbatim copy of the previous. *Removed when:* same.
-- `crates/hale-types/src/model_builder.rs` · `PlacedIn` — the model's arrangement, per instance with replicas. *Removed when:* projected from the table.
 - `crates/hale-types/src/resource_budget.rs` · `budget_for_programs` — counts placement entries, ignores replicas. *Removed when:* reads the table.
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — codegen's DeploymentPlan, keyed by field name and locus type name. *Removed when:* codegen reads the table.
 - `crates/hale-codegen/src/deployment.rs` · `DeploymentPlan` — the plan type lowering reads today. *Removed when:* becomes the layer-5 table.
 
-**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check's three phases, blocking calls, pool starvation and the birth-order trap: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); the intra-locus rewrite (a publish into a field off its owner's thread stays on the bus: `PlacementTable::off_owner_fields`) (`crates/hale-types/src/resolved.rs` · `resolve_program`); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check's three phases, blocking calls, pool starvation and the birth-order trap: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (the arrangement: instances, owners, placed_in and affined_to, the table's rows projected, user-only) (`crates/hale-types/src/model_builder.rs` · `derive_application_model_over`); the intra-locus rewrite (a publish into a field off its owner's thread stays on the bus: `PlacementTable::off_owner_fields`) (`crates/hale-types/src/resolved.rs` · `resolve_program`); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 
@@ -1070,14 +1069,15 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - unknown is a hole, not a default: an unresolved declaration, an unenumerable initializer, a held instance (`Reuse`) and a dynamic site of unknown domain each carry their policy, and none is main
 - a held instance's subtree lives in its holder's domain: the held row keeps its `Reuse` hole and its owner's domain, the source's actual rows (never the declaration's defaults) are projected under it, inherited, and each of those rows names its own source row, the one it was built as (`built_by`); where the source is not linked, nothing below the held row is asserted, and an instance there runs in an unknown domain; a question of where an instance runs skips the source's rows, a count of instances skips the held ones
 - every site the table names carries the universe that minted it (`SiteRef`); lowering joins the stdlib's into its merged mint once, totally and injectively
-- the checker builds no table: the snapshot demands it and hands it to the check (`CheckInputs::placement`) and to the form rows; a bundle no snapshot holds (the test entries `check_bundle`, `check_bundle_opts_scoped`, `derive_application_model`, `effect_certificates`) builds it once, over a minted bundle (an unminted one names no site and gets an empty table, which judges nothing)
+- the checker builds no table: the snapshot demands it and hands it to the check (`CheckInputs::placement`) and to the form rows; a bundle no snapshot holds (the test entries `check_bundle`, `check_bundle_opts_scoped`, `derive_application_model`, `effect_certificates`) builds it once, over a minted bundle (an unminted one names no site and gets an empty table, which judges nothing), except that the model's test entry (`derive_application_model`, and the check's claims through it) mints a copy of an unminted bundle first, since the model's arrangement is the table's rows
+- the model's arrangement is the table's rows projected (`placed_in.push(` and `affined_to.push(` have one writer): the deployed root's templates, each instance where it runs, user declarations only; the table, not the arrangement, answers every placement question
 - a consumer asks where instances run of `PlacementTable::running` (the handed-off rows skipped): a type's answer is the domains of its instances, compared per instance, never collapsed to one per type; an enclosing locus with no static instance is a hole that disables the F.31 proof, never a default to main or to pinned
 - F.38: placement is semantics-free, so a backend may Approximate it
 - placement is a choice point: v1's declared placement is the single candidate
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-types/tests/placement_pairings.rs; crates/hale-codegen/tests/pool_affinity.rs; crates/hale-codegen/tests/placement_where_async_io.rs; crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that demands it once); crates/hale-types/tests/shadow_placement.rs (the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration); crates/hale-types/tests/form_rows.rs (sync inference per instance, K-5)
+**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-types/tests/placement_pairings.rs; crates/hale-codegen/tests/pool_affinity.rs; crates/hale-codegen/tests/placement_where_async_io.rs; crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that demands it once); crates/hale-types/tests/shadow_placement.rs (the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration); crates/hale-types/tests/form_rows.rs (sync inference per instance, K-5); crates/hale-types/tests/intra_locus_pool_safety.rs (the intra-locus rewrite keeps a publish into a field off its owner's thread on the bus, through the lowering view); crates/hale-types/tests/model_arrangement.rs (the model's arrangement as the table's rows: M-1, M-3, M-5, M-7, M-9, U-4 and U-5, each against the old build's ids and hashes)
 
 **Spec.** spec/semantics.md § Placement block (F.31); spec/decisions.md F.31, F.35, F.38
 
@@ -1085,6 +1085,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
 - `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
+- `placed_in.push(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
+- `affined_to.push(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
 
 ### `target_capability` — Migrating · capability
 
@@ -1259,11 +1261,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - one constructor; no artifact → model, no plan → model, no hand-authored model
 - hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other
 - demand-gated: a no-claims check builds no model (GH #476 criterion 1); demand_gate.rs pins it as per-family accounting over `Snapshot::builds` (the `demand` family): the LSP's diagnostics path builds none, `hale check` of a program with claims builds one, which `--dump-model` reuses
-- the model builds none of the families it reads beside the program (2.3): the scope with its topic rows, the bus graph, the ownership graph, the handler rows and the effect rows (with the stdlib-merged summary their walk read) arrive as `ModelInputs`, each demanded once from the snapshot over the checked programs; the allocation summary and the placement it still re-runs for itself are listed under their families
+- the model builds none of the families it reads beside the program (2.3): the scope with its topic rows, the bus graph, the ownership graph, the handler rows, the effect rows (with the stdlib-merged summary their walk read), the form rows and the placement table arrive as `ModelInputs`, each demanded once from the snapshot over the checked programs; the allocation summary it still re-runs for itself is listed under its family
+- the arrangement is the placement table's rows projected, under three identity contracts kept apart: shape identity (the arrangement is outside the shape half, so no change to it moves `shape_hash`); observation entity ids (they stamp subjects, locus declarations and the deployed root's bindings, never instances); and arrangement-instance correspondence (`LocusInstanceId` is the index in path order, stable across no change of the arrangement; a consumer joins instances by path, and a replica index is the replica row's own, never a descendant's)
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/demand_gate.rs; crates/hale-model/tests/architecture.rs; crates/hale-types/tests/topology_projection.rs
+**Focused tests.** crates/hale-types/tests/demand_gate.rs; crates/hale-model/tests/architecture.rs; crates/hale-types/tests/topology_projection.rs; crates/hale-types/tests/model_arrangement.rs (the arrangement's three identity contracts, each pinned against the build before the switch)
 
 **Spec.** spec/model.md
 
