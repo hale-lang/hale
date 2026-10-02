@@ -1621,12 +1621,19 @@ assume the others in a build:
     parser or api codec owning none — and no other site, whoever's
     code calls it; the check's warnings and the editor's
     `hale/allocSummary` decide with the same rule);
-    run-to-exit programs (a `main` with no `run` loop and no bus handler)
-    warn nothing — a script owes the proof nothing. Warnings print but
+    run-to-exit programs (a `main` with no `run` loop and no bus handler
+    of the program's own) warn nothing — a script owes the proof nothing.
+    The survey judges the program's own sites over the whole program:
+    calls into imported seeds and into the stdlib's Hale-source bodies
+    are followed, so a site reached unboundedly through them (a stdlib
+    loop the program starts that dispatches to its handler through an
+    interface) is reported; a stdlib loop the program never starts
+    invokes nothing. Warnings print but
     never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;
     `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
     spelling).
-  `--dump-alloc-summary` prints the raw per-fn summary. A per-method allocation summary + call-graph
+  `--dump-alloc-summary` prints the raw per-fn summary of the program's
+  own fns and loci, judged the same way. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
   a per-message handler is reclaimed at the per-delivery method-scratch
   destroy, so it isn't flagged), call-result escape tagging, and

@@ -2,13 +2,15 @@
 //! pinned (F.40 phase 3, E3a part B).
 //!
 //! The snapshot's summary (`Snapshot::demand_alloc_summary`) holds the
-//! checked programs with the stdlib's analysis copy beside them. Its
-//! readers today are the check's effects certificate engine and the
-//! effect rows; the dump, the advisory, the model, the budgets and the
-//! frontier move onto it after these corrections. Each correction is
-//! pinned here per target, on what those readers answer, against the old
-//! answer reproduced from the corrected summary, and alone: the later
-//! corrections' fields are cleared on both sides of an earlier one's pin.
+//! checked programs with the stdlib's analysis copy beside them. When
+//! these corrections landed its readers were the check's effects
+//! certificate engine and the effect rows; the dump, the advisory, the
+//! model, the budgets and the frontier moved onto it after them. Each
+//! correction is pinned here per target, on the whole summary (its dump
+//! with the copy's rows, its leak sites) and on what those readers
+//! answer, against the old answer reproduced from the corrected summary,
+//! and alone: the later corrections' fields are cleared on both sides of
+//! an earlier one's pin.
 //!
 //! **Each seed's names resolve in its own scope.** The summary used to
 //! resolve a bare free-fn name against every program it held, so a
@@ -176,9 +178,12 @@ fn own_scope_no_other_target_changes() {
 fn own_scope_let_block_scope_test() {
     let stdlib = stdlib_fns();
     over_target("tests/hale/let_block_scope_test.hl", |snap, now| {
-        // This correction alone: the later ones cleared on both sides.
+        // This correction alone: the later ones cleared on both sides,
+        // and the whole summary's rows rendered.
         let mut now = now.clone();
         now.reached = None;
+        now.analysis_copy.clear();
+        now.analysis_copy_loci.clear();
         let now = &now;
         let (old, edges) = shared_scope(now, &stdlib);
         assert_eq!(
@@ -274,9 +279,11 @@ struct Unreached {
 fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     let names: BTreeSet<String> = stdlib.iter().map(FnKey::display).collect();
     over_target(target, |_, now| {
-        // This correction alone: the later one cleared on both sides.
+        // This correction alone: the later one cleared on both sides,
+        // and the whole summary's rows rendered.
         let mut now = now.clone();
         now.analysis_copy.clear();
+        now.analysis_copy_loci.clear();
         let now = &now;
         let mut old = now.clone();
         old.reached = None;

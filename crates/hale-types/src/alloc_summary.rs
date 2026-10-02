@@ -650,6 +650,8 @@ pub struct AllocSummary {
     /// The fns of the stdlib's analysis copy summarized beside the
     /// program; empty when every fn is the program's.
     pub analysis_copy: BTreeSet<FnKey>,
+    /// The loci of the stdlib's analysis copy, likewise.
+    pub analysis_copy_loci: BTreeSet<String>,
 }
 
 impl AllocSummary {
@@ -666,6 +668,11 @@ impl AllocSummary {
     /// analysis copy's.
     pub fn is_own(&self, key: &FnKey) -> bool {
         !self.analysis_copy.contains(key)
+    }
+
+    /// Whether the locus `name` is the program's own.
+    pub fn is_own_locus(&self, name: &str) -> bool {
+        !self.analysis_copy_loci.contains(name)
     }
 }
 
@@ -972,7 +979,9 @@ impl AllocSummary {
         out
     }
 
-    /// Human-readable dump for `--dump-alloc-summary`.
+    /// Human-readable dump for `--dump-alloc-summary`: the program's own
+    /// fns and loci, judged over the whole summary (the stdlib's analysis
+    /// copy beside them included).
     pub fn render(&self) -> String {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
@@ -989,16 +998,18 @@ impl AllocSummary {
         }
         let mut out = String::new();
         out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
-        let entries: Vec<&FnSummary> = self.fns.values().filter(|f| f.entry.is_some()).collect();
+        let own_fns: Vec<&FnSummary> = self.fns.values().filter(|f| self.is_own(&f.key)).collect();
         out.push_str(&format!(
             "# {} fns, {} entry points, {} invoked-unboundedly\n\n",
-            self.fns.len(),
-            entries.len(),
-            unbounded.len()
+            own_fns.len(),
+            own_fns.iter().filter(|f| f.entry.is_some()).count(),
+            unbounded.iter().filter(|k| self.is_own(k)).count()
         ));
+        let own_shapes: Vec<&LocusShape> =
+            self.locus_shapes.values().filter(|s| self.is_own_locus(&s.name)).collect();
         // D1: per-locus storage shape — the capacity slots, `@form`, and
         // projection cap the bound solver (D2) will read.
-        for shape in self.locus_shapes.values() {
+        for shape in own_shapes.iter().copied() {
             if shape.capacity_slots.is_empty()
                 && shape.form.is_none()
                 && shape.recognition_cap.is_none()
@@ -1021,12 +1032,12 @@ impl AllocSummary {
                 out.push_str(&format!("    proj  recognition(cap={})\n", cap));
             }
         }
-        if !self.locus_shapes.values().all(|s| {
+        if !own_shapes.iter().all(|s| {
             s.capacity_slots.is_empty() && s.form.is_none() && s.recognition_cap.is_none()
         }) {
             out.push('\n');
         }
-        for f in self.fns.values() {
+        for f in own_fns {
             let mut tags = Vec::new();
             if let Some(e) = f.entry {
                 tags.push(format!(
@@ -1312,6 +1323,7 @@ pub fn summarize_identified(
     let mut sync_forms: BTreeSet<String> = BTreeSet::new();
     let mut carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet> = BTreeMap::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
+    let mut analysis_copy_loci: BTreeSet<String> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
@@ -1534,6 +1546,9 @@ pub fn summarize_identified(
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
+                    if is_stdlib_copy(ids) {
+                        analysis_copy_loci.insert(locus.clone());
+                    }
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
                     }
@@ -1822,6 +1837,7 @@ pub fn summarize_identified(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
+    summary.analysis_copy_loci = analysis_copy_loci;
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
@@ -2234,6 +2250,25 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
     }
 }
 
+/// The unbounded-allocation advisory's sites: every leak site of the
+/// program's own fns ([`AllocSummary::leak_sites`], [`AllocSummary::is_own`])
+/// with an author position ([`AuthorPositions`]). The one entry the
+/// check's warnings, the editor's diagnostics and the editor's
+/// `hale/allocSummary` read.
+pub fn advisory_leak_sites(
+    summary: &AllocSummary,
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
+) -> Vec<LeakSite> {
+    let positions = AuthorPositions::of(programs, ids, sources);
+    summary
+        .leak_sites()
+        .into_iter()
+        .filter(|ls| summary.is_own(&ls.owner) && positions.has(ls))
+        .collect()
+}
+
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.
 ///
 /// `include_all` selects the scope (GH #18 item 1, Phase B):
@@ -2243,20 +2278,20 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
 ///   survey.
 ///
 /// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`,
-/// and a site with no author position is dropped here
-/// ([`AuthorPositions`]); `sources` is the bundle's file table.
+/// and a site of the stdlib's analysis copy or with no author position is
+/// dropped here ([`advisory_leak_sites`]). `summary` is the bundle's
+/// ([`derive_alloc_summary`], a snapshot's `demand_alloc_summary`);
+/// `programs`, `ids` and `sources` are the bundle's programs, identities
+/// and file table.
 pub fn unbounded_alloc_diags(
+    summary: &AllocSummary,
     programs: &[&Program],
     ids: &crate::snapshot::Snapshot,
     sources: &[crate::symbol::SourceFile],
     include_all: bool,
 ) -> Vec<Diag> {
-    let summary = summarize_programs(programs, ids);
-    let positions = AuthorPositions::of(programs, ids, sources);
-    summary
-        .leak_sites()
+    advisory_leak_sites(summary, programs, ids, sources)
         .iter()
-        .filter(|ls| positions.has(ls))
         .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
             let where_ = match ls.reason {
@@ -3699,6 +3734,18 @@ mod tests {
         summarize_programs(&[&program], &ids)
     }
 
+    /// The advisory over `programs` alone, every one minted with `ids`:
+    /// no stdlib copy beside them, no renames.
+    fn plain_advisory(
+        programs: &[&Program],
+        ids: &crate::snapshot::Snapshot,
+        sources: &[crate::symbol::SourceFile],
+        include_all: bool,
+    ) -> Vec<Diag> {
+        let summary = summarize_programs(programs, ids);
+        unbounded_alloc_diags(&summary, programs, ids, sources, include_all)
+    }
+
     fn fns(s: &AllocSummary, key: &FnKey) -> FnSummary {
         s.fns.get(key).cloned().unwrap_or_else(|| {
             panic!("no summary for {:?}; keys = {:?}", key, s.fns.keys().collect::<Vec<_>>())
@@ -4270,7 +4317,7 @@ mod tests {
         let (program, ids) = minted(src);
         // Survey mode (`--warn-unbounded-alloc`) reports the leak even
         // though locus `C` carries no `@bounded` opt-in.
-        let diags = unbounded_alloc_diags(&[&program], &ids, &[], true);
+        let diags = plain_advisory(&[&program], &ids, &[], true);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unbounded allocation"));
     }
@@ -4285,7 +4332,7 @@ mod tests {
             fn main() { }
         "#;
         let (program, ids) = minted(src);
-        let scoped = unbounded_alloc_diags(&[&program], &ids, &[], false);
+        let scoped = plain_advisory(&[&program], &ids, &[], false);
         assert_eq!(scoped.len(), 1, "@bounded locus reports by default");
         assert!(scoped[0].message.contains("unbounded allocation"));
     }
@@ -4303,11 +4350,11 @@ mod tests {
         "#;
         let (program, ids) = minted(src);
         assert!(
-            unbounded_alloc_diags(&[&program], &ids, &[], true).is_empty(),
+            plain_advisory(&[&program], &ids, &[], true).is_empty(),
             "@unbounded suppresses the site under the survey flag"
         );
         assert!(
-            unbounded_alloc_diags(&[&program], &ids, &[], false).is_empty(),
+            plain_advisory(&[&program], &ids, &[], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
         );
     }
@@ -4336,7 +4383,7 @@ mod tests {
         };
         let all = summarize(src).leak_sites();
         assert_eq!(all.len(), 2, "both loops leak before the rule: {all:?}");
-        let diags = unbounded_alloc_diags(&[&program], &ids, &[file], true);
+        let diags = plain_advisory(&[&program], &ids, &[file], true);
         assert_eq!(diags.len(), 1, "only the author's site reports: {diags:?}");
         assert!(diags[0].message.contains("`author_fn`"), "{}", diags[0].message);
 
@@ -4347,7 +4394,7 @@ mod tests {
         let harness = crate::snapshot::Snapshot::default();
         let reported = |base: u32| {
             let generated = hale_syntax::parse_source_at(synth, base).expect("parse");
-            unbounded_alloc_diags(&[&program, &generated], &harness, &[], true).len()
+            plain_advisory(&[&program, &generated], &harness, &[], true).len()
         };
         assert_eq!(reported(1 << 20), 3, "at an author offset, S's site reports");
         assert_eq!(
@@ -4361,7 +4408,7 @@ mod tests {
 
     fn leak_msgs(src: &str) -> Vec<String> {
         let (program, ids) = minted(src);
-        unbounded_alloc_diags(&[&program], &ids, &[], true)
+        plain_advisory(&[&program], &ids, &[], true)
             .into_iter()
             .map(|d| d.message)
             .collect()

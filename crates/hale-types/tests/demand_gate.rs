@@ -136,8 +136,10 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     let d = seed("editor", NO_CLAIMS);
     let s = editor(&d.join("app.hl"), NO_CLAIMS);
     assert_clean(&s);
-    // What `check_and_publish` reads beside the check.
-    let _ = hale_types::unbounded_alloc_warnings(&s.bundle(), true);
+    // What `check_and_publish` reads beside the check: the advisory over
+    // the snapshot's summary, the one the check built.
+    let summary = s.demand_alloc_summary().expect("the summary the check read");
+    let _ = hale_types::unbounded_alloc_warnings(&s.bundle(), summary, true);
     let builds = s.builds();
     assert_eq!(
         builds["model"], 0,

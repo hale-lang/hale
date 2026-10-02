@@ -136,7 +136,15 @@ pub(crate) fn run_check_impl_labelled(
     // call graph and exit. A diagnostic view of the scaffold; no
     // bound-proving yet.
     if std::env::args().any(|a| a == "--dump-alloc-summary") {
-        print!("{}", hale_types::dump_alloc_summary(&bundle));
+        match snap.demand_alloc_summary() {
+            Ok(summary) => print!("{}", hale_types::dump_alloc_summary(summary)),
+            Err(b) => {
+                for d in &b.because {
+                    eprintln!("{}", d.message);
+                }
+                return 1;
+            }
+        }
         return 0;
     }
     // GH #18 item 5: dump the per-program resource budget (pinned threads,
@@ -630,7 +638,11 @@ pub(crate) fn run_check_impl_labelled(
     // Warnings print but never fail the build (only errors do).
     let survey_all =
         !std::env::args().any(|a| a == "--no-warn-unbounded-alloc");
-    diags.extend(hale_types::unbounded_alloc_warnings(&bundle, survey_all));
+    // Over the snapshot's summary: the one the check's certificate
+    // engine read, blocked only with the scope.
+    if let Ok(summary) = snap.demand_alloc_summary() {
+        diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, survey_all));
+    }
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {
         diags.extend(hale_types::resource_leak_warnings(&bundle));

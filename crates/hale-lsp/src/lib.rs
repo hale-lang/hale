@@ -751,7 +751,9 @@ fn seed_diagnostics(
     match snap.demand_check() {
         Ok(checked) => {
             let mut diags = checked.diags.clone();
-            diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), true));
+            if let Ok(summary) = snap.demand_alloc_summary() {
+                diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), summary, true));
+            }
             // What `hale check` does last: every name in the author's
             // spelling, and an advisory about a seed the target imports
             // left to that seed's own check.
@@ -2493,35 +2495,35 @@ fn alloc_summary(
 }
 
 /// `hale/allocSummary` over one snapshot: the survey over the programs
-/// the snapshot scoped, the bundle the diagnostics pass's
-/// unbounded-allocation warnings read. A seed with a hole has none. A
-/// site is listed exactly when the diagnostics would place it: the same
-/// `AuthorPositions` rule decides both.
+/// the snapshot scoped, judged over the snapshot's allocation summary,
+/// the one the diagnostics pass's unbounded-allocation warnings read. A
+/// seed with a hole has none. A site is listed exactly when the
+/// diagnostics would place it: both read `advisory_leak_sites`.
 fn alloc_summary_of(snap: &Snapshot) -> Value {
-    if snap.demand_scope().is_err() {
+    let Ok(summary) = snap.demand_alloc_summary() else {
         return json!({ "leakSites": [], "parseErrors": true });
-    }
+    };
     let progs: Vec<&Program> = snap.programs().values().collect();
-    let summary = hale_types::alloc_summary::summarize_programs(&progs, snap.identities());
-    let positions =
-        hale_types::alloc_summary::AuthorPositions::of(&progs, snap.identities(), snap.source_map());
-    let sites: Vec<Value> = summary
-        .leak_sites()
-        .iter()
-        .filter(|site| positions.has(site))
-        .map(|site| {
-            json!({
-                "fn": site.owner.display(),
-                "kind": format!("{:?}", site.kind),
-                "escape": format!("{:?}", site.escape),
-                "reason": format!("{:?}", site.reason),
-                "location": merged_span_to_location(snap, site.span),
-            })
+    let sites: Vec<Value> = hale_types::alloc_summary::advisory_leak_sites(
+        summary,
+        &progs,
+        snap.identities(),
+        snap.source_map(),
+    )
+    .iter()
+    .map(|site| {
+        json!({
+            "fn": site.owner.display(),
+            "kind": format!("{:?}", site.kind),
+            "escape": format!("{:?}", site.escape),
+            "reason": format!("{:?}", site.reason),
+            "location": merged_span_to_location(snap, site.span),
         })
-        .collect();
+    })
+    .collect();
     json!({
         "leakSites": sites,
-        "text": hale_types::dump_alloc_summary(&snap.bundle()),
+        "text": hale_types::dump_alloc_summary(summary),
     })
 }
 
