@@ -128,6 +128,16 @@ impl BindingRows {
         self.rows.iter().find(|r| r.site == Some(site))
     }
 
+    /// The row of an entry of a program the rows were minted over (the
+    /// lowering view's merged program keeps the ids the bundle minted).
+    /// By the id's index alone, which one counter makes unique.
+    pub fn for_entry(&self, entry: &BindingEntry) -> Option<&BindingRow> {
+        if entry.id.is_none() {
+            return None;
+        }
+        self.rows.iter().find(|r| r.site.is_some_and(|s| s.index == entry.id.0))
+    }
+
     /// The bound-topic set, by the names entries write: what the `or
     /// wait` legality check and the gate walk ask.
     pub fn bound_names(&self) -> BTreeSet<String> {
