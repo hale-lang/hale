@@ -11289,6 +11289,19 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // A qualified subject names a topic by its import:
+                // one that names no declaration is the cross-seed
+                // twin of the resolver's "unknown topic".
+                for bm in &bb.members {
+                    let (verb, subject) = match bm {
+                        BusMember::Subscribe { subject, .. } => ("subscribe", subject),
+                        BusMember::Publish { subject, .. } => ("publish", subject),
+                    };
+                    let BusSubject::QualifiedTopic(qn) = subject else { continue };
+                    if let Some(msg) = self.unresolved_bus_subject(verb, qn) {
+                        self.diags.push(Diag::ty(qn.span, msg));
+                    }
+                }
             }
             LocusMember::Contract(_) => {
                 // Already lowered by the resolver.
@@ -14262,6 +14275,51 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// A `subscribe` or `publish` of `alias::Topic` that no
+    /// declaration answers: what to say about it, or nothing.
+    ///
+    /// The import mangler collapses a resolvable path to the imported
+    /// topic before the check, and the build resolves what is left
+    /// through [`crate::resolved::lookup_qualified_path`]; a path that
+    /// lookup cannot answer reaches lowering as a subject with no
+    /// topic and no payload, which the build refuses without a span.
+    /// So in a whole program it is the located error a local unknown
+    /// topic gets, worded alike. The tolerance is
+    /// [`Self::unresolved_qualified`]'s: one file of a multi-file seed,
+    /// and an import this bundle never resolved (GH #724), where the
+    /// path stays a hole of the bus graph and rule 9 stays silent.
+    fn unresolved_bus_subject(&self, verb: &str, path: &QualifiedName) -> Option<String> {
+        if !self.strict_idents || path.segments.len() < 2 {
+            return None;
+        }
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let head = segs[0];
+        if self.unresolved_import_aliases.contains(head)
+            || crate::resolved::lookup_qualified_path(&segs, self.import_renames).is_some()
+        {
+            return None;
+        }
+        let alias = unscoped_alias(head);
+        let written: Vec<&str> = std::iter::once(alias).chain(segs[1..].iter().copied()).collect();
+        let written = written.join("::");
+        let topic = segs[segs.len() - 1];
+        let imported = self
+            .import_renames
+            .iter()
+            .any(|(key, _)| key.first().map(String::as_str) == Some(head));
+        Some(if imported {
+            format!(
+                "{verb} references unknown topic `{written}` (the library imported as \
+                 `{alias}` declares no `topic {topic}`)"
+            )
+        } else {
+            format!(
+                "{verb} references unknown topic `{written}` (`{alias}` is not an import \
+                 of this seed, so no `topic {topic}` declaration is in scope)"
+            )
+        })
     }
 
     fn check_qualified_path(&mut self, path: &QualifiedName) {

@@ -203,9 +203,17 @@ provides.
 Both hold in every position a path can stand in — a type
 annotation, a call, a `Name { }` literal, a const, an enum variant
 — and a `bindings { }` entry naming a topic nothing declares has
-always reported itself the same way. `build`, `run` and `test`
-print the same finding, so a gate that runs `hale check` and a
-build that runs later agree about the program.
+always reported itself the same way. A `subscribe` or `publish` of
+`alias::Topic` gets the wording a local topic nobody declared gets,
+with the alias and the missing topic named:
+
+```text
+/tmp/app/main.hl:5:19: type error: subscribe references unknown topic `b::Nope` (the library imported as `b` declares no `topic Nope`)
+```
+
+`build`, `run` and `test` print the same finding, so a gate that
+runs `hale check` and a build that runs later agree about the
+program.
 
 A third shape belongs here: a stdlib call with the `std::` prefix
 left off. `env::args_count()` is not an import of anything, and the

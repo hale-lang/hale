@@ -149,6 +149,8 @@ fn an_unresolved_subject_is_a_hole_not_an_orphan() {
 // --- rule 9: the walk's facts are columns ---------------------------
 
 const COLUMNS: &str = r#"
+import "../other" as other;
+
 type Tick { n: Int; }
 type Line { s: String = ""; }
 topic Beat { payload: Tick; subject: "beat"; }
@@ -160,9 +162,9 @@ locus Producer {
     birth() { Beat <- Tick { n: 1 }; }
 }
 locus Logger {
-    bus { subscribe "log.**" as on_log of type Line; subscribe other::Shared as on_shared of type Tick; }
+    bus { subscribe "log.**" as on_log of type Line; subscribe other::Shared as on_shared; }
     fn on_log(l: Line) { }
-    fn on_shared(t: Tick) { }
+    fn on_shared(t: other::Tick) { }
 }
 locus Gateway {
     fn send(subject: String, bytes: Bytes) { }
@@ -176,10 +178,18 @@ fn main() { App { }; }
 
 /// Each fact rule 9 reads is a column of the subject's row: `beat` is
 /// bound, `log.app` is covered by a `**` subscription, `shared` may be
-/// named by the unresolved cross-seed path `other::Shared` (a hole of
-/// its own), and `feed` carries none of them. The cross-seed
-/// subscription spells its payload: a hole has no topic to copy one
-/// from, and the build lowers no subscription without one.
+/// named by the cross-seed path `other::Shared` (a hole of its own),
+/// and `feed` carries none of them.
+///
+/// `other::Shared` is a real imported topic: the seed imported as
+/// `other` declares it, and the workspace of both seeds checks clean
+/// and builds (`hale-cli`'s `unresolved_qualified.rs` runs this program
+/// beside that seed). The bundle here holds this seed alone, as an
+/// editor's per-directory bundle does, so the import is one the bundle
+/// never resolved (GH #724): the checker keeps the path a hole without
+/// a word, and the graph records it and reads its leaf as the
+/// cross-seed fact. A path that names no declaration in a whole program
+/// is an error instead (`a_qualified_subject_naming_no_declaration_is_refused`).
 #[test]
 fn the_walks_bound_cross_seed_and_wildcard_facts_are_columns() {
     let g = graph(COLUMNS);
@@ -193,12 +203,45 @@ fn the_walks_bound_cross_seed_and_wildcard_facts_are_columns() {
     assert_eq!(*feed, Default::default(), "an untouched topic is a row with no facts");
     assert!(!g.wires.contains_key("log.**"), "a pattern is a column, not a row");
     assert_eq!(g.holes.iter().map(|h| h.written.as_str()).collect::<Vec<_>>(), ["other::Shared"]);
+    // The program checks clean: the hole is the unresolved import's.
+    let prog = parse_source(COLUMNS).expect("parse failed");
+    let errors: Vec<String> =
+        check_program(&prog).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:?}");
     // Rule 9 reads them: the bound, covered and cross-seed subjects are
     // not orphans; the untouched topic is dead wiring.
     let msgs = check(COLUMNS);
     assert_eq!(
         orphans(&msgs),
         ["bus topic `Feed` is declared but neither published nor subscribed — it's dead wiring."],
+        "{msgs:?}"
+    );
+}
+
+/// In a whole program a qualified subject that names no declaration is
+/// the resolver's "unknown topic", located at the path, in both verbs:
+/// the build would otherwise lower a subject with no topic and no
+/// payload and refuse it without a span. Here no seed is imported as
+/// `other`; `hale-cli`'s `unresolved_qualified.rs` pins the library
+/// that lacks the name.
+#[test]
+fn a_qualified_subject_naming_no_declaration_is_refused() {
+    let src = COLUMNS.replace("import \"../other\" as other;\n", "");
+    let msgs = check(&src);
+    assert!(
+        msgs.iter().any(|m| m
+            == "subscribe references unknown topic `other::Shared` (`other` is not an import \
+                of this seed, so no `topic Shared` declaration is in scope)"),
+        "{msgs:?}"
+    );
+    let msgs = check(&src.replace("subscribe other::Shared as on_shared;", "").replace(
+        "publish Shared;",
+        "publish other::Shared;",
+    ));
+    assert!(
+        msgs.iter().any(|m| m
+            == "publish references unknown topic `other::Shared` (`other` is not an import \
+                of this seed, so no `topic Shared` declaration is in scope)"),
         "{msgs:?}"
     );
 }
@@ -265,12 +308,18 @@ fn the_dead_receiver_lists_the_handlers_of_subjects_it_does_not_publish() {
     assert!(dead_receiver(&msgs).is_empty(), "{msgs:?}");
 }
 
-/// A subscription the graph cannot resolve (a qualified path no import
-/// names) is compared as written: it is not a self-publish of anything
-/// the locus publishes, so its handler is listed.
+/// A subscription the graph cannot resolve (a qualified path through an
+/// import the bundle never resolved) is compared as written: it is not
+/// a self-publish of anything the locus publishes, so its handler is
+/// listed.
 #[test]
 fn an_unresolved_subscription_is_compared_as_written() {
-    let msgs = check(&gateway(r#"publish T; subscribe other::T as on_other;"#));
+    let src = format!(
+        "import \"../other\" as other;\n{}",
+        gateway(r#"publish T; subscribe other::T as on_other;"#)
+    );
+    let msgs = check(&src);
+    assert!(!msgs.iter().any(|m| m.contains("unknown topic")), "{msgs:?}");
     let dead = dead_receiver(&msgs);
     assert_eq!(dead.len(), 1, "{msgs:?}");
     assert!(dead[0].starts_with("locus `Gateway` (field `gw`) subscribes to bus topics (on_other) "), "{dead:?}");

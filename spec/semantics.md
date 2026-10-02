@@ -3330,9 +3330,15 @@ main locus App {
    under the graph's canonical key, its wire subject (spec/model.md
    rule 8): a topic published by its declared name and subscribed
    by its literal subject is one subject, wired at both ends. Where
-   the graph cannot resolve a subject (an unresolved path, an open
-   world), the rule does not fire: an unresolved subject is not a
-   proven orphan, and the row records the hole. (F.40 phase 3, C4.)
+   the graph cannot resolve a subject (a topic name no declaration
+   answers, a qualified path through an import the bundle never
+   resolved, an open world), the rule does not fire: an unresolved
+   subject is not a proven orphan, and the row records the hole.
+   The silence is about the orphan judgment, not about admitting the
+   reference: in a whole program a qualified subject that names no
+   declaration is a located "unknown topic" error at the check
+   (spec/projects.md, "An unresolvable qualified name is a located
+   error"), as a local one is. (F.40 phase 3, C4.)
 10. **Bus cycles.** An edge `S →(L) D` exists when locus `L` subscribes
     subject `S` with a handler that sends to subject `D`. A cycle in
     this graph is a publish→subscribe→publish loop, and the dispatch
