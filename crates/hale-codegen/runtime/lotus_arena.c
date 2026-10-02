@@ -6876,9 +6876,53 @@ static inline void lotus_bus_note_consume(void *subscriber_self,
  * All of this is dead code unless lotus_replay_active. */
 #define LOTUS_REPLAY_HOLD_NS 1000000000LL /* 1s */
 static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell);
+struct lotus_run_ticket;
+static void lotus_run_ticket_end_unrun(struct lotus_run_ticket *t,
+                                       const char *cause, int admitted);
 static __thread lotus_bus_cell_t *t_rp_pending = NULL;
 static __thread size_t t_rp_pending_len = 0, t_rp_pending_cap = 0;
 static __thread int64_t t_rp_hold_since = 0;
+
+/* The hold buffer belongs to its consumer thread, for the thread's
+ * whole life: a drain that empties it keeps the capacity for the next
+ * hold. So it is freed where that life ends, at the thread's exit, by
+ * a pthread-key destructor armed when the thread first allocates it
+ * (the chunk pool's reclamation does the same). Without it, a pool
+ * worker or a pinned thread joined at teardown took the only pointer
+ * to the buffer with its TLS, and LeakSanitizer reported it on every
+ * replay that held a cell. The main thread runs no key destructor;
+ * its TLS is still live at exit, so the buffer stays reachable there.
+ *
+ * Every drain a thread exits from (the pool's, classic or async, and
+ * the pinned mailbox's) releases what it holds before it returns
+ * shutdown-and-empty, so the buffer is empty here. Should a cell be
+ * held anyway, it was never dispatched, and it ends as one the pools'
+ * teardown frees undequeued: its payload freed and, for a run,
+ * `NotStarted(Shutdown(PoolTeardown))` unless a reclaim canceled it
+ * first (decision line 19), never dropped with the buffer. */
+static pthread_key_t g_rp_pending_free_key;
+static pthread_once_t g_rp_pending_free_once = PTHREAD_ONCE_INIT;
+static int g_rp_pending_free_key_ok = 0;
+
+static void lotus_rp_pending_thread_free(void *unused) {
+    (void)unused;
+    for (size_t i = 0; i < t_rp_pending_len; i++) {
+        lotus_bus_cell_t *cell = &t_rp_pending[i];
+        if (cell->payload_heap) free(cell->payload_heap);
+        lotus_run_ticket_end_unrun(
+            (struct lotus_run_ticket *)cell->run_ticket, "PoolTeardown", 1);
+    }
+    free(t_rp_pending);
+    t_rp_pending = NULL;
+    t_rp_pending_len = 0;
+    t_rp_pending_cap = 0;
+}
+
+static void lotus_rp_pending_free_key_create(void) {
+    g_rp_pending_free_key_ok =
+        pthread_key_create(&g_rp_pending_free_key,
+                           lotus_rp_pending_thread_free) == 0;
+}
 static _Atomic uint64_t g_rp_order_divergences = 0;
 uint64_t lotus_replay_order_divergences(void) {
     return atomic_load_explicit(&g_rp_order_divergences,
@@ -6901,6 +6945,15 @@ static void lotus_rp_pending_push(const lotus_bus_cell_t *cell) {
                     "hale replay: hold-buffer allocation failed\n");
             fflush(NULL);
             _exit(65);
+        }
+        if (!t_rp_pending) {
+            /* The thread's first hold: arm its exit-time free (a key
+             * destructor fires only for a non-NULL value). */
+            pthread_once(&g_rp_pending_free_once,
+                         lotus_rp_pending_free_key_create);
+            if (g_rp_pending_free_key_ok) {
+                pthread_setspecific(g_rp_pending_free_key, (void *)1);
+            }
         }
         t_rp_pending = g;
         t_rp_pending_cap = ncap;
