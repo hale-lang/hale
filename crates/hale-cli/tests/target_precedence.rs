@@ -740,6 +740,79 @@ fn a_call_through_an_unresolved_local_in_own_code_is_a_hole() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The review of #1318, round 4: a call through a local the bindings
+/// cannot follow was a hole only where the program's own uses were read,
+/// and the call to nothing in every fn's requirements, so the same `via`
+/// was refused at its `f()` in the program and admitted behind an import.
+/// The hole is in every node's requirements: imported, it is refused at
+/// the crossing call, at `lib::via()` and through a second seed fn at
+/// `lib::outer()`, with the witness down to `f()`. A binding that resolves
+/// is witnessed through its target. The host admits each.
+#[test]
+fn a_call_through_an_unresolved_local_in_an_imported_fn_is_refused_at_the_crossing() {
+    if !wasm_toolchain() {
+        eprintln!(
+            "SKIP a_call_through_an_unresolved_local_in_an_imported_fn_is_refused_at_the_crossing: no wasm32 clang \
+             or wasm-ld"
+        );
+        return;
+    }
+    let hole = "the callee is a function value the summary cannot resolve";
+    let via = format!(
+        "fn pure() -> Int {{ return 1; }}\n{PID}fn via() -> Int {{\n    let f = if len(\"ab\") == 2 {{ pid }} else {{ pure \
+         }};\n    return f();\n}}\n"
+    );
+    let outer = "fn outer() -> Int {\n    return via();\n}\n";
+    let own = format!("{via}\nfn main() {{ println(via()); }}\n");
+    // In the program, `pid`'s own body is refused where it is written too.
+    seeded_case("unresolved_own_fn", None, &own, |at, selector| {
+        vec![
+            format!("{}:26 `std::process::pid` is unavailable under {selector}: {PROCESS}", at + 2),
+            format!("{}:12 cannot establish what `f()` requires on wasm32: {hole}", at + 6),
+        ]
+    });
+    let dir = case_dir("unresolved_own_fn_host");
+    std::fs::write(dir.join("main.hl"), &own).unwrap();
+    let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+    assert_eq!(code, 0, "the host admits it:\n{check}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let resolved = format!("{PID}fn via() -> Int {{\n    let f = pid;\n    return f();\n}}\n{outer}");
+    let nested = format!("{via}{outer}");
+    let cases: [(&str, &str, &str, String); 3] = [
+        (
+            "unresolved_via",
+            &via,
+            "fn main() { println(lib::via()); }\n",
+            format!("cannot establish what `lib::via` requires on wasm32: {hole} — witness: `lib::via` → `f()`"),
+        ),
+        (
+            "unresolved_outer",
+            &nested,
+            "fn main() { println(lib::outer()); }\n",
+            format!(
+                "cannot establish what `lib::outer` requires on wasm32: {hole} — witness: `lib::outer` → `lib::via` \
+                 → `f()`"
+            ),
+        ),
+        (
+            "resolved_outer",
+            &resolved,
+            "fn main() { println(lib::outer()); }\n",
+            format!(
+                "`std::process` is unavailable under {{selector}}: {PROCESS} — witness: `lib::outer` → `lib::via` → \
+                 `f` → `lib::pid` → `std::process::pid`"
+            ),
+        ),
+    ];
+    for (tag, lib, main, want) in cases {
+        seeded_case(tag, Some(lib), main, |at, selector| {
+            vec![format!("{}:21 {}", at + 1, want.replace("{selector}", selector))]
+        });
+        host_admits(tag, lib, main);
+    }
+}
+
 const WIDTH: &str = "fn width() -> Int { return 1; }\n";
 
 /// The host admits `main` importing `lib` as `kidlib`.

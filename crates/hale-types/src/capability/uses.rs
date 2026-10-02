@@ -174,6 +174,13 @@ fn hole_of(e: &CallEdge) -> Option<&'static str> {
     if e.opaque_method_call() {
         return Some("its receiver's type is not known here");
     }
+    // A call through a local the summary does not follow to a fn, which
+    // every other reader of the edge takes for the call to nothing it
+    // always was: a hole in every body, the program's own and an imported
+    // one alike.
+    if e.unresolved_local {
+        return Some(UNRESOLVED_VALUE);
+    }
     None
 }
 
@@ -340,19 +347,6 @@ impl<'a> Graph<'a> {
         }
     }
 
-    /// What a call edge in the program's own body asks for: its
-    /// [`Graph::edge`], and a hole for a call through a local the summary
-    /// does not follow to a fn, which every other reader of the edge
-    /// takes for the call to nothing it always was.
-    fn own_edge(&self, e: &CallEdge) -> Edge {
-        match (self.edge(e), &e.callee) {
-            (Edge::Nothing, Callee::Unresolved(name)) if e.unresolved_local => {
-                Edge::Hole(format!("{name}()"), UNRESOLVED_VALUE)
-            }
-            (edge, _) => edge,
-        }
-    }
-
     /// Every fn's requirements, and every member node's, as a fixpoint
     /// over the graph.
     fn requirements(&self) -> BTreeMap<FnKey, Req> {
@@ -507,7 +501,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
             continue;
         }
         for e in &fs.calls {
-            match g.own_edge(e) {
+            match g.edge(e) {
                 Edge::Needs(cap, link) => uses.push(CapabilityUse {
                     need: Need::Capability(cap),
                     kind: if e.receiver_present { UseKind::Receiver } else { UseKind::Call },
