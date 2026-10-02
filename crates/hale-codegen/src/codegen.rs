@@ -9427,7 +9427,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         let i32_t = self.context.i32_type();
-        let mut any_connect_binding = false;
+        let mut connect_transport: Option<&'static str> = None;
 
         for (entry, row) in entries {
             // Resolve subject: the row's canonical key, the topic name
@@ -9459,10 +9459,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             )));
                         }
                     };
+                    // The locus the entry instantiates as its transport,
+                    // named by the row; a connect entry's is the one
+                    // whose loss main's `on_failure` handles.
+                    let transport = row.loss_locus.ok_or_else(|| row_disagrees(&row.topic))?;
                     if !listen {
-                        any_connect_binding = true;
+                        connect_transport = Some(transport);
                     }
                     self.emit_unix_transport_binding(
+                        transport,
                         &subject,
                         &entry.topic.name,
                         path,
@@ -9685,16 +9690,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the loss dispatcher. Without the handler, the C drain
         // falls straight through to the structural exit — no
         // dispatcher needed. The handler is main's routing row for
-        // the connect transport's locus type (picked by that name).
-        if any_connect_binding {
+        // the locus the connect entry's row names as its transport.
+        if let Some(transport) = connect_transport {
             let main_handler = self
                 .deployment.main_locus_name
                 .as_ref()
-                .and_then(|n| {
-                    self.failure_handler_for(n, "__StdBusUnixConnectTransport")
-                });
+                .and_then(|n| self.failure_handler_for(n, transport));
             if let Some(handler) = main_handler {
-                self.emit_transport_loss_dispatch(handler)?;
+                self.emit_transport_loss_dispatch(handler, transport)?;
             }
         }
         Ok(())
@@ -9745,17 +9748,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// the #227 register-call shape this replaces.
     fn emit_unix_transport_binding(
         &mut self,
+        locus_name: &str,
         subject: &str,
         topic_name: &str,
         path: &str,
         listen: bool,
         span: hale_syntax::Span,
     ) -> Result<(), CodegenError> {
-        let locus_name = if listen {
-            "__StdBusUnixListenTransport"
-        } else {
-            "__StdBusUnixConnectTransport"
-        };
         let url = format!("unix://{}", path);
         let str_init = |name: &str, value: &str| StructInit {
             name: Ident::new(name, span),
@@ -9909,13 +9908,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn emit_transport_loss_dispatch(
         &mut self,
         main_handler: inkwell::values::FunctionValue<'ctx>,
+        transport: &str,
     ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let void_t = self.context.void_type();
         let info = self
             .user_loci
-            .get("__StdBusUnixConnectTransport")
+            .get(transport)
             .cloned()
             .expect("connect transport locus declared");
 
@@ -9993,7 +9993,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let locus_str = self
             .builder
             .build_global_string_ptr(
-                "__StdBusUnixConnectTransport",
+                transport,
                 "loss.viol.locus",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
