@@ -173,6 +173,43 @@ fn each_column_holds_the_checker_s_answer_by_identity() {
     assert!(table.fallible_call(calls[0]).is_none(), "`first` cannot fail");
 }
 
+/// A generic locus's closure: the template's `self.x` is `T`, which
+/// the checker types `Unknown` (a hole), and each monomorph the program
+/// writes gets its rows with the field's type substituted, found by the
+/// template's site and the monomorph's arguments.
+#[test]
+fn a_generic_locus_s_accumulators_are_specialized_per_monomorph() {
+    let src = "locus Acc<T> {\n    params { x: T; }\n    \
+               closure total { sum(self.x) ~~ 0 within 1000; epoch tick; }\n}\n\
+               fn main() {\n    let a: Acc<Int> = Acc { x: 3 };\n    let b: Acc<Float> = Acc { x: 1.5 };\n}\n";
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
+        panic!("not refused")
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let TopDecl::Locus(acc) = decl(s.program().unwrap(), "Acc") else { unreachable!() };
+    let total = acc
+        .members
+        .iter()
+        .find_map(|m| match m {
+            LocusMember::Closure(c) => Some(c.id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(table.accumulators(total)[0].elem, Some(Typed::Hole(_))),
+        "the template's `self.x` is a `T`: {:?}",
+        table.accumulators(total)
+    );
+    for (name, want) in [("Acc_Int", hale_syntax::ast::PrimType::Int), ("Acc_Float", hale_syntax::ast::PrimType::Float)] {
+        let mono = table.monomorphs().named(name).expect("written");
+        assert_eq!(mono.template, acc.id);
+        let rows = table.specialized_accumulators(total, mono);
+        assert_eq!(rows.len(), 1, "{name}");
+        assert_eq!(rows[0].elem, Some(Typed::Known(Ty::Prim(want))), "{name}");
+    }
+}
+
 /// A site the checker could not type is a hole with its reason.
 #[test]
 fn an_unpinned_generic_call_is_a_hole() {

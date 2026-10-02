@@ -1410,6 +1410,7 @@ pub fn build_resolved(
         flows: &resolved.flows,
         forms: &resolved.forms,
         bindings: &resolved.bindings,
+        typed: &resolved.typed,
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3214,6 +3215,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `bindings { }` entry. Lowering reads an entry's decisions here
     /// and derives none.
     pub(crate) bindings: &'p hale_types::binding_rows::BindingRows,
+    /// The typed-body table (the lowering view's, F.40 phase 3, E4):
+    /// what the checker typed, by declaration identity. Lowering reads
+    /// the checker's answers here instead of typing again, and refuses
+    /// a hole at its span.
+    pub(crate) typed: &'p hale_types::typed_bodies::TypedBodies,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -3628,7 +3634,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// expressions; cleared after. When set, `lower_expr`'s Call
     /// match arm intercepts `sum(...)` calls and emits a load
     /// from the next accumulator slot (per `next_idx`) instead
-    /// of doing the call. Slot order matches `collect_sum_calls`
+    /// of doing the call. Slot order matches `accumulator_sites`
     /// order in declare_locus_struct, so the Nth `sum` encountered
     /// during lowering corresponds to the Nth slot.
     pub(crate) accumulator_ctx: Option<AccumulatorCtx<'ctx>>,
@@ -4234,12 +4240,11 @@ pub(crate) struct EnumVariantInfo {
 ///   Substitute = sum / count cast to Float. Output type = Float
 ///   always (avoids Int/Float-mean coercion edge cases; means are
 ///   inherently real-valued).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum AccumulatorKind {
-    Sum,
-    Count,
-    Mean,
-}
+///
+/// The vocabulary and its slot order are the typed-body table's
+/// (`hale_types::typed_bodies::accumulator_sites`), which carries each
+/// accumulated expression's element type from the checker.
+pub(crate) use hale_types::typed_bodies::AccumulatorKind;
 
 /// m46 / m46-vocab: one slot per accumulator call detected in a
 /// closure's assertion. Each slot owns one or two struct fields
@@ -33361,93 +33366,77 @@ pub(crate) fn codegen_ty_size_bytes<'ctx>(
     }
 }
 
-/// m46 / m46-vocab (closure accumulators): walk an expression
-/// tree, append every accumulator-builtin call's (kind,
-/// inner_expr_or_none) to `out` in tree traversal order.
-///
-/// Three forms recognized:
-/// - `Expr::Sum(inner)` (parser-dedicated AST variant for `sum(x)`)
-/// - `Call(Ident("count"), [])` for the no-arg count accumulator
-/// - `Call(Ident("mean"), [arg])` for the running mean
-///
-/// Doesn't recurse into an accumulator's own argument — nested
-/// accumulators are rejected at type-inference time anyway.
-pub(crate) fn collect_sum_calls(expr: &Expr, out: &mut Vec<(AccumulatorKind, Option<Expr>)>) {
-    match expr {
-        Expr::Sum(inner, _) => {
-            out.push((AccumulatorKind::Sum, Some((**inner).clone())));
-        }
-        Expr::Call { callee, args, .. } => {
-            if let Expr::Ident(id) = callee.as_ref() {
-                if id.name == "count" && args.is_empty() {
-                    out.push((AccumulatorKind::Count, None));
-                    return;
-                }
-                if id.name == "mean" && args.len() == 1 {
-                    out.push((AccumulatorKind::Mean, Some(args[0].clone())));
-                    return;
-                }
-            }
-            collect_sum_calls(callee, out);
-            for a in args {
-                collect_sum_calls(a, out);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_sum_calls(left, out);
-            collect_sum_calls(right, out);
-        }
-        Expr::Unary { operand, .. } => collect_sum_calls(operand, out),
-        Expr::Field { receiver, .. } => collect_sum_calls(receiver, out),
-        Expr::Index { receiver, index, .. } => {
-            collect_sum_calls(receiver, out);
-            collect_sum_calls(index, out);
-        }
-        _ => {}
-    }
-}
-
-/// m46: infer the CodegenTy of an accumulator's inner expression.
-/// v0 supports `self.X` reads only, where X is a numeric param —
-/// type comes straight from the locus's param map (`fields`).
-/// Anything else errors with a concrete message naming the closure
-/// + locus so the user knows where to look.
-pub(crate) fn infer_accumulator_inner_type(
+/// m46: the element type of an accumulator's slot — the type the
+/// checker gave the accumulated expression, read from the typed-body
+/// table (F.40 phase 3, E4: `row`, the closure's row at the
+/// accumulator's slot). Lowering accumulates a `self.X` read only (v0),
+/// of a field the locus lays out (`fields`), and only a numeric one;
+/// anything else errors with a message naming the closure and the
+/// locus. A hole, or a closure the table holds no row for, is refused
+/// at the accumulated expression.
+pub(crate) fn accumulator_element_type(
     locus_name: &str,
     closure_name: &str,
     inner: &Expr,
+    row: Option<&hale_types::typed_bodies::AccumulatorRow>,
     fields: &BTreeMap<String, (u32, CodegenTy)>,
 ) -> Result<CodegenTy, CodegenError> {
-    if let Expr::Field { receiver, name, .. } = inner {
-        if let Expr::KwSelf(_) = receiver.as_ref() {
-            let (_, ty) = fields.get(&name.name).ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
-                     references unknown field",
-                    closure_name, locus_name, name.name
-                ))
-            })?;
-            match ty {
-                CodegenTy::Int
-                | CodegenTy::Float
-                | CodegenTy::Decimal
-                | CodegenTy::Duration => return Ok(ty.clone()),
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
-                         requires a numeric type (Int / Float / Decimal / \
-                         Duration); got {:?}",
-                        closure_name, locus_name, name.name, other
-                    )))
-                }
-            }
+    use hale_types::typed_bodies::Typed;
+    let field = match inner {
+        Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => name,
+        _ => {
+            return Err(CodegenError::Unsupported(format!(
+                "closure `{}` on locus `{}`: accumulator inner expr must be `self.X` \
+                 in v0 (got a more complex form); reduce to a single field reference",
+                closure_name, locus_name
+            )))
         }
+    };
+    if !fields.contains_key(&field.name) {
+        return Err(CodegenError::Unsupported(format!(
+            "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
+             references unknown field",
+            closure_name, locus_name, field.name
+        )));
     }
-    Err(CodegenError::Unsupported(format!(
-        "closure `{}` on locus `{}`: accumulator inner expr must be `self.X` \
-         in v0 (got a more complex form); reduce to a single field reference",
-        closure_name, locus_name
-    )))
+    let elem = match row.and_then(|r| r.elem.as_ref()) {
+        Some(Typed::Known(t)) => t,
+        Some(Typed::Hole(h)) => {
+            return Err(CodegenError::UnsupportedAt(
+                format!(
+                    "closure `{}` on locus `{}`: accumulator `sum(self.{})` has no \
+                     element type: {}",
+                    closure_name, locus_name, field.name, h.reason
+                ),
+                h.span,
+            ))
+        }
+        None => {
+            return Err(CodegenError::UnsupportedAt(
+                format!(
+                    "closure `{}` on locus `{}`: accumulator `sum(self.{})` has no \
+                     typed-body row: the checker did not walk this closure",
+                    closure_name, locus_name, field.name
+                ),
+                inner.span(),
+            ))
+        }
+    };
+    match elem {
+        hale_types::ty::Ty::Prim(PrimType::Int) => Ok(CodegenTy::Int),
+        hale_types::ty::Ty::Prim(PrimType::Float) => Ok(CodegenTy::Float),
+        hale_types::ty::Ty::Prim(PrimType::Decimal) => Ok(CodegenTy::Decimal),
+        hale_types::ty::Ty::Prim(PrimType::Duration) => Ok(CodegenTy::Duration),
+        other => Err(CodegenError::Unsupported(format!(
+            "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
+             requires a numeric type (Int / Float / Decimal / \
+             Duration); got `{}`",
+            closure_name,
+            locus_name,
+            field.name,
+            other.display()
+        ))),
+    }
 }
 
 /// LLVM produces architecture-specific triples; expose a way

@@ -105,6 +105,12 @@ pub struct LoweringView {
     /// transport, role, adapter, codec and producer-versus-attach here,
     /// and the bus graph's bound-topic set is their projection.
     pub bindings: crate::binding_rows::BindingRows,
+    /// The typed-body table (F.40 phase 3, E4): the snapshot's, what the
+    /// checker typed over the program this view lowers, keyed by the
+    /// identities the merge kept. Lowering reads the checker's answers
+    /// here instead of typing again; the merged stdlib, which the check
+    /// does not walk, has no rows.
+    pub typed: crate::typed_bodies::TypedBodies,
     /// Whether the program can ever have a bus cell in flight, so
     /// lowering can elide every drain (`crate::bus_inert`).
     pub bus_inert: bool,
@@ -222,6 +228,7 @@ pub fn resolve_program(
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
     bindings: &crate::binding_rows::BindingRows,
+    typed: &crate::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
     resolve_rewritten(
         &rewrite_intra_locus(program),
@@ -231,6 +238,7 @@ pub fn resolve_program(
         api_roles,
         forms,
         bindings,
+        typed,
     )
 }
 
@@ -256,7 +264,10 @@ pub fn resolve_program(
 /// with a `bindings { }` entry then has no row for lowering to read.
 /// `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
-/// gets its written discipline. The error is the message codegen
+/// gets its written discipline. `typed` is the snapshot's typed-body
+/// table (`Snapshot::demand_typed_bodies`); a caller with none passes
+/// `&TypedBodies::default()`, and lowering refuses every site that reads
+/// a row. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
@@ -267,6 +278,7 @@ pub fn resolve_rewritten(
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
     bindings: &crate::binding_rows::BindingRows,
+    typed: &crate::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
     let mut program_owned = stage.program.clone();
@@ -474,6 +486,7 @@ pub fn resolve_rewritten(
         flows,
         forms,
         bindings: bindings.clone(),
+        typed: typed.clone(),
         bus_inert,
         bus,
         plan,

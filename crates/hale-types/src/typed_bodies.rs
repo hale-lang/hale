@@ -187,6 +187,10 @@ pub struct FallibleCall {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypedBody {
     pub accumulators: Vec<AccumulatorRow>,
+    /// A generic locus's closure: its accumulators for each of the
+    /// template's monomorphs, by the monomorph's type arguments, each
+    /// `self.X` typed with the field's declared type substituted.
+    pub specialized_accumulators: Vec<(Vec<Ty>, Vec<AccumulatorRow>)>,
     /// By call site.
     pub generic_calls: BTreeMap<u32, Typed<GenericCall>>,
     /// By call site.
@@ -329,6 +333,16 @@ impl TypedBodies {
     /// order; empty for a closure the checker did not walk.
     pub fn accumulators(&self, closure: NodeId) -> &[AccumulatorRow] {
         self.body(closure).map_or(&[], |b| b.accumulators.as_slice())
+    }
+
+    /// The accumulators of the closure declared at `closure` in the
+    /// specialization `mono` of its generic locus: the template's rows
+    /// with each `self.X` typed for the monomorph's arguments. Empty for
+    /// a monomorph the checker specialized no rows for.
+    pub fn specialized_accumulators(&self, closure: NodeId, mono: &Monomorph) -> &[AccumulatorRow] {
+        self.body(closure)
+            .and_then(|b| b.specialized_accumulators.iter().find(|(args, _)| *args == mono.args))
+            .map_or(&[], |(_, rows)| rows.as_slice())
     }
 
     /// The row of the generic call at `call`.

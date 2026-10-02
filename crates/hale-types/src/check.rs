@@ -703,6 +703,7 @@ pub fn check_bundle_typing(
             typed: &mut typed,
             body: NodeId::NONE,
             expr_types: None,
+            locus_decl: None,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -7681,6 +7682,9 @@ struct Checker<'a> {
     /// each expression, by node, so its accumulators read the types of
     /// the very expressions they accumulate.
     expr_types: Option<Vec<(*const Expr, Ty)>>,
+    /// The locus declaration being walked, if any: a generic one's
+    /// accumulator rows are specialized per monomorph.
+    locus_decl: Option<&'a LocusDecl>,
 }
 
 #[derive(Default)]
@@ -7779,11 +7783,16 @@ impl<'a> Checker<'a> {
 
     fn check_top_decl(&mut self, decl: &'a TopDecl) {
         let prev_body = self.body;
+        let prev_locus = self.locus_decl;
         if let Some(id) = Self::top_decl_body(decl) {
             self.body = id;
         }
+        if let TopDecl::Locus(l) = decl {
+            self.locus_decl = Some(l);
+        }
         self.check_top_decl_at(decl);
         self.body = prev_body;
+        self.locus_decl = prev_locus;
     }
 
     fn check_top_decl_at(&mut self, decl: &'a TopDecl) {
@@ -13248,9 +13257,48 @@ impl<'a> Checker<'a> {
                 AccumulatorRow { kind: site.kind, span: site.span, elem }
             })
             .collect();
-        if !rows.is_empty() {
-            self.typed.body(self.body).accumulators = rows;
+        if rows.is_empty() {
+            return;
         }
+        // A generic locus's closure: its `self.X` reads are typed again
+        // for each of the template's monomorphs, the field's declared
+        // type with the monomorph's arguments substituted, as a field
+        // read through the monomorph types (`field_ty`).
+        let mut specialized: Vec<(Vec<Ty>, Vec<AccumulatorRow>)> = Vec::new();
+        if let Some(l) = self.locus_decl.filter(|l| !l.generics.is_empty() && !l.id.is_none()) {
+            let sites = crate::typed_bodies::accumulator_sites(assertion);
+            for m in self.typed.monomorphs.rows().iter().filter(|m| m.template == l.id) {
+                let bindings: BTreeMap<String, Ty> =
+                    l.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+                let rows: Vec<AccumulatorRow> = rows
+                    .iter()
+                    .zip(&sites)
+                    .map(|(row, site)| {
+                        let field = match site.inner {
+                            Some(Expr::Field { receiver, name, .. }) if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                                name
+                            }
+                            _ => return row.clone(),
+                        };
+                        let declared = l.members.iter().find_map(|mem| match mem {
+                            LocusMember::Params(pb) => {
+                                pb.params.iter().find(|p| p.name.name == field.name).and_then(|p| p.ty.as_ref())
+                            }
+                            _ => None,
+                        });
+                        let elem = match declared.map(|te| substitute_generic_ty(te, &bindings, self.known)) {
+                            Some(Ty::Unknown) | None => row.elem.clone(),
+                            Some(t) => Some(Typed::Known(t)),
+                        };
+                        AccumulatorRow { elem, ..row.clone() }
+                    })
+                    .collect();
+                specialized.push((m.args.clone(), rows));
+            }
+        }
+        let body = self.typed.body(self.body);
+        body.accumulators = rows;
+        body.specialized_accumulators = specialized;
     }
 
     /// GH #436: `@sealed` — a sealed locus's `params` are reachable

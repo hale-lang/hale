@@ -323,7 +323,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
             }
             assert_eq!(builds["lowering_view"], u32::from(*lowers), "{consumer}: `lowering_view`");
-            assert_eq!(builds["typed_bodies"], 0, "{consumer}: nothing reads the typed-body table yet");
+            assert_eq!(builds["typed_bodies"], u32::from(*lowers), "{consumer}: lowering reads the typed-body table");
             assert_at_most_once(s, consumer);
         }
         let _ = std::fs::remove_dir_all(&d);
@@ -378,7 +378,9 @@ fn each_snapshot_resolves_its_uses_once() {
 }
 
 /// The harness's snapshot: a bare program, shaped by the one load and
-/// lowered without a check (`Config::harness`).
+/// lowered without a check gating it (`Config::harness`). Lowering
+/// reads the typed-body table (F.40 phase 3, E4), so the typing runs
+/// for it, once, and its diagnostics gate nothing.
 #[test]
 fn the_harness_snapshot_lowers_without_a_check() {
     let program = hale_syntax::parse_source(NO_CLAIMS).expect("the fixture parses");
@@ -391,10 +393,29 @@ fn the_harness_snapshot_lowers_without_a_check() {
     // Lowering reads the form rows (F.40 phase 3, C1), which read the
     // scope: both are demanded once, where the load's sync inference
     // pre-pass used to build a scope of its own outside the counts.
-    for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "top_scope", "sync_inference", "lowering_view"] {
+    // And the typed-body table, the typing's record: the typing and the
+    // families the checker reads run once for it.
+    for family in [
+        "seed_loading",
+        "desugar_sequence",
+        "snapshot_identity",
+        "top_scope",
+        "sync_inference",
+        "entrypoint",
+        "bindings",
+        "handler_routing",
+        "ownership",
+        "bus_graph",
+        "alloc_summary",
+        "placement",
+        "intra_locus",
+        "expression_typing",
+        "typed_bodies",
+        "lowering_view",
+    ] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["expression_typing", "bus_graph", "ownership", "handler_routing", "effects", "model", "claims"] {
+    for family in ["effects", "model", "claims"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");
