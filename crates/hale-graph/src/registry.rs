@@ -226,6 +226,7 @@ const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
+const BINDING_ROWS: &str = "crates/hale-types/src/binding_rows.rs";
 const LIFECYCLE: &str = "crates/hale-types/src/lifecycle.rs";
 const LIFECYCLE_TRACE: &str = "crates/hale-types/src/lifecycle/trace.rs";
 const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
@@ -733,7 +734,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Topic declarations", "spec/semantics.md § Phase 3: routing keys"],
         owned: &[site(TOPIC_ID, "TopicRows::of"), site(TOPIC_ID, "by_wire")],
         seams: &[
-            Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (TY_RESOLVED, 1)] },
             Seam { symbol: "TopicRows::of(", allowed: &[(TOPIC_ID, 1), (RESOLVE, 1)] },
             Seam { symbol: "by_wire(", allowed: &[(TOPIC_ID, 6), (CHECK, 2)] },
         ],
@@ -745,21 +746,32 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload.",
         inputs: &["bindings blocks", "topics", "transport specs", "purity (codecs)"],
-        producer: Some(site(CHECK, "check_main_and_bindings")),
+        producer: Some(site(BINDING_ROWS, "derive_binding_rows")),
         legacy: &[
-            legacy(CHECK, "bound_topics", "the set of transport-bound topics, one of four copies (two more in the checker, one in bus_graph), disagreeing on imported mains", "one row"),
-            legacy(CHECK, "collect_topic_pub_sub", "infers the binding role without calling the desugar's `binding_role_for`, which model_builder uses", "one role rule"),
-            legacy(DESUGAR, "binding_role_for", "THE binding-role rule, by its own comment, applied at desugar and again by the model builder", "one role row"),
             legacy(CG, "emit_bindings_prelude", "codegen decides transport, adapter, codec and producer-vs-attach at emission, and refuses a role still `None`", "codegen reads the binding rows"),
             legacy(CHECK, "transport_satisfies", "the transport capability table", "a capability row in the matrix"),
         ],
-        consumers: &[consumer("check"), consumer("model (binds)"), consumer("codegen"), consumer("api_surface")],
-        invariants: &["F.36 and F.37: binding failure is structural; codec purity is a law over rows"],
+        consumers: &[
+            consumer_at("check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set)", CHECK, "check_main_and_bindings"),
+            consumer_at("model (main's binding thread domains: the role and the transport kind)", MODEL_BUILDER, "ModelInputs"),
+            consumer_at("bus graph (the bound-topic set, at both grains, is the rows' projection)", BUS_GRAPH, "collect_bus_walk"),
+            consumer("codegen"),
+            consumer("api_surface"),
+        ],
+        invariants: &[
+            "F.36 and F.37: binding failure is structural; codec purity is a law over rows",
+            "one row per snapshot (`Snapshot::demand_bindings`, the `bindings` count): one row per `bindings { }` entry of every locus of the bundle, an imported main's and a module-nested one's included, each with the entry's site, the topic and its wire key, the transport kind, the role, the codec, whether the bundle produces the topic and the stdlib locus a transport's loss surfaces through; the checker builds none (`CheckInputs::bindings`), and a bundle no snapshot holds builds it once",
+            "the role is decided once, over the topic's ends read by wire subject (`desugar::role_from_ends` over the row's `publishes` and `subscribes`): the entry's own role wins, otherwise publish-only is `Connect` and subscribe-only is `Listen`, and a `unix` entry with neither is the checker's diagnostic. The checker, the model and lowering read it; the desugar's in-place fill applies the same pure rule over the topic names before the topic rewrite erases them, and agrees with it over the corpus",
+            "the bound-topic set is the rows' projection (`bound_names`, `bound_subjects`): the `or wait` legality check, the api gates and the bus graph's eligibility gate read it, and none walks `bindings { }` itself. An imported main's entries are in the set, as they were in each of the walks it replaces",
+        ],
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/binding_imported_main.rs", "crates/hale-codegen/tests/bindings_codec_clause.rs"],
         spec: &["spec/decisions.md F.36, F.37", "spec/semantics.md § Operational constraints (Form K)"],
         owned: &[],
-        seams: &[Seam { symbol: "binding_role_for(", allowed: &[(DESUGAR, 1), (MODEL_BUILDER, 1)] }],
+        seams: &[
+            Seam { symbol: "derive_binding_rows(", allowed: &[(BINDING_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2)] },
+            Seam { symbol: "role_from_ends(", allowed: &[(DESUGAR, 2), (BINDING_ROWS, 1)] },
+        ],
     },
     Family {
         name: "dispatch",

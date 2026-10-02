@@ -23,6 +23,7 @@
 
 pub mod alloc_routing;
 pub mod alloc_summary;
+pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
 pub mod budget_check;
@@ -297,6 +298,7 @@ pub fn check_bundle_opts_scoped(
         }))
     };
     let entry = entry::entry_row(bundle);
+    let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
@@ -305,6 +307,7 @@ pub fn check_bundle_opts_scoped(
             handlers: &handlers,
             effects: &effects,
             entry: &entry,
+            bindings: &bindings,
             alloc_summary: &alloc_summary,
             forms: &forms,
         },
@@ -330,7 +333,7 @@ pub fn check_bundle_opts_scoped(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms);
+        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms, &bindings);
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
@@ -360,7 +363,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
-    model_over_scope(bundle, &top, &handlers, summary, &forms)
+    let bindings = binding_rows::derive_binding_rows(bundle, &top);
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bindings)
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
@@ -372,8 +376,9 @@ fn model_over_scope(
     handlers: &handler_routing::HandlerRouting,
     alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
     forms: &form_rows::FormRows,
+    bindings: &binding_rows::BindingRows,
 ) -> hale_model::ApplicationModel {
-    let bus_graph = bus_graph::build_bus_graph(bundle, top);
+    let bus_graph = bus_graph::build_bus_graph(bundle, top, bindings);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
@@ -385,6 +390,7 @@ fn model_over_scope(
             handlers,
             effects: &effects,
             forms,
+            bindings,
         },
     )
 }

@@ -1702,7 +1702,7 @@ impl ShmRingOverflow {
 /// Direction-of-traffic for point-to-point substrate transports.
 /// Broker-shaped or user-supplied adapters carry direction in
 /// their own params blocks, not at the binding-spec level.
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum TransportRole {
     Connect,
     Listen,

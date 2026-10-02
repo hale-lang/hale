@@ -96,6 +96,11 @@ pub struct LoweringView {
     /// included, and the merged stdlib's as written. Lowering lays each
     /// map out by its row's effective discipline.
     pub forms: crate::form_rows::FormRows,
+    /// The binding rows (F.40 phase 3, P2): one per `bindings { }`
+    /// entry, the snapshot's. Lowering's prelude reads the entry's
+    /// transport, role, adapter, codec and producer-versus-attach here,
+    /// and the bus graph's bound-topic set is their projection.
+    pub bindings: crate::binding_rows::BindingRows,
     /// Whether the program can ever have a bus cell in flight, so
     /// lowering can elide every drain (`crate::bus_inert`).
     pub bus_inert: bool,
@@ -177,7 +182,10 @@ impl LoweringView {
 /// and `api_roles` are the build's `--api` path and the roles its
 /// environment binds, the ones the sequence shaped the api surface
 /// with, recorded on the envelope for lowering to hold its options
-/// to. `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
+/// to. `bindings` is the snapshot's binding rows (`Snapshot::demand_bindings`);
+/// a caller with none passes `&BindingRows::default()`, and a program
+/// with a `bindings { }` entry then has no row for lowering to read.
+/// `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
 /// gets its written discipline. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
@@ -189,6 +197,7 @@ pub fn resolve_program(
     api: Option<&str>,
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
+    bindings: &crate::binding_rows::BindingRows,
 ) -> Result<LoweringView, String> {
     // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
     // — cross-seed topic refs the parser admits — to plain
@@ -352,7 +361,7 @@ pub fn resolve_program(
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
         let bubble = graph.bubble_plans();
-        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top);
+        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings);
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
         // on its subject, which the rewrite named by topic and the
@@ -417,6 +426,7 @@ pub fn resolve_program(
         handlers,
         flows,
         forms,
+        bindings: bindings.clone(),
         bus_inert,
         bus,
         plan,
