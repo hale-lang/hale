@@ -20,12 +20,18 @@
 //! calls, the requirements of the fns it calls, and the lifecycle of
 //! every locus it constructs (its `birth`, `run`, handlers and
 //! `dissolve`), each with the chain from the fn down to the primitive.
+//! What a locus beyond the horizon runs that the summary keys no body
+//! for — each params initializer and its `on_failure` handler — is a
+//! node of the graph too, walked by the graph's own walk, so its
+//! construction carries those requirements as well.
 //!
 //! **The horizon.** The program's own sources are the horizon: a use is
 //! located at the first site in them. A wrapper the program writes is
 //! judged at the use in its own body, once, and its callers carry
 //! nothing; a fn beyond the horizon (an imported seed's, the stdlib's)
-//! is judged at the call that crosses into it, with its summary.
+//! is judged at the call that crosses into it, with its summary, and a
+//! locus beyond it at its construction. The horizon relocates a refusal;
+//! it never erases a requirement.
 //!
 //! **Holes.** A call the graph cannot resolve — a method on a receiver
 //! whose type the walk cannot name, a call through a function-typed
@@ -39,9 +45,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, LocusMember, MatchArmBody,
-    MatchStmt, OrDisposition, ParamInit, PlacementConstraint, PlacementSpec, Program, Stmt, TopDecl,
-    TransportSpec,
+    flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember, MatchArmBody,
+    MatchStmt, OrDisposition, ParamInit, PlacementConstraint, PlacementSpec, Program, QualifiedName, Stmt,
+    TopDecl, TransportSpec, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
@@ -171,17 +177,89 @@ struct Graph<'a> {
     std_loci: BTreeMap<String, &'static str>,
     /// Merged and stdlib names to the spelling the author writes.
     demangle: Vec<(String, String)>,
+    /// Per locus beyond the horizon, what its existence runs that the
+    /// summary keys no body for — each params initializer and its
+    /// `on_failure` handler — as a node of the graph: its key, its link
+    /// and what the graph's own walk met in it.
+    members: BTreeMap<String, Vec<(FnKey, String, Vec<Met>)>>,
 }
 
 impl<'a> Graph<'a> {
-    fn new(summary: &'a AllocSummary, m: &'a CapabilityMatrix, import_renames: &[(Vec<String>, String)]) -> Self {
+    fn new(
+        summary: &'a AllocSummary,
+        m: &'a CapabilityMatrix,
+        import_renames: &[(Vec<String>, String)],
+        programs: &[&Program],
+    ) -> Self {
         let renames = import_renames.iter().map(|(k, v)| (k.join("::"), v.clone())).collect();
         let std_loci = hale_stdlib::PATH_RENAMES
             .iter()
             .filter_map(|(path, mangled)| std_namespace(m, &path.join("::")).map(|ns| (mangled.to_string(), ns)))
             .collect();
         let demangle = crate::stdlib_bodies::demangle_table(import_renames);
-        Graph { summary, m, renames, std_loci, demangle }
+        let mut g = Graph { summary, m, renames, std_loci, demangle, members: BTreeMap::new() };
+        // The imported seeds' loci are in the bundle under their merged
+        // names; the stdlib's are its analysis copy's.
+        let stdlib = crate::stdlib_bodies::program().filter(|_| !summary.analysis_copy_loci.is_empty());
+        let mut members = BTreeMap::new();
+        for p in programs.iter().copied().chain(stdlib) {
+            for item in flat_decls(&p.items) {
+                let TopDecl::Locus(l) = item else { continue };
+                if g.own_locus(&l.name.name) || members.contains_key(&l.name.name) {
+                    continue;
+                }
+                members.insert(l.name.name.clone(), g.member_nodes(l));
+            }
+        }
+        g.members = members;
+        g
+    }
+
+    /// The nodes of a locus beyond the horizon that the summary keys no
+    /// body for. The walk resolves a method through the declared types
+    /// it can name (`self`, a params field, the handler's params, a
+    /// literal); a receiver it cannot type leaves a hole, so a
+    /// requirement it cannot establish stays a refusal on a target that
+    /// rejects one.
+    fn member_nodes(&self, l: &LocusDecl) -> Vec<(FnKey, String, Vec<Met>)> {
+        let locus = l.name.name.clone();
+        let mut fields = BTreeMap::new();
+        for member in &l.members {
+            if let LocusMember::Params(pb) = member {
+                for prm in &pb.params {
+                    let ty = match (&prm.ty, &prm.init) {
+                        (Some(t), _) => type_name(t),
+                        (None, ParamInit::Value(Expr::Struct { path, .. })) => Some(qualified(path)),
+                        (None, _) => None,
+                    };
+                    fields.insert(prm.name.name.clone(), ty);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for member in &l.members {
+            match member {
+                LocusMember::Params(pb) => {
+                    for prm in &pb.params {
+                        if let ParamInit::Value(e) = &prm.init {
+                            let mut w = Walker::beyond(self, &locus, &fields, BTreeMap::new());
+                            w.expr(e);
+                            let link = format!("params {{ {} }}", prm.name.name);
+                            out.push((FnKey::method(locus.clone(), link.clone()), link, w.met));
+                        }
+                    }
+                }
+                LocusMember::Failure(f) => {
+                    let params = f.params.iter().map(|p| (p.name.name.clone(), type_name(&p.ty))).collect();
+                    let mut w = Walker::beyond(self, &locus, &fields, params);
+                    w.block(&f.body);
+                    let link = "on_failure()".to_string();
+                    out.push((FnKey::method(locus.clone(), link.clone()), link, w.met));
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// A name as the author spells it.
@@ -210,14 +288,19 @@ impl<'a> Graph<'a> {
     }
 
     /// The fns that run because a locus exists: its lifecycle hooks and
-    /// handlers (every entry the summary keys on it).
-    fn implied(&self, locus: &str) -> Vec<(&'a FnKey, String)> {
-        self.summary
+    /// handlers (every entry the summary keys on it) and, beyond the
+    /// horizon, its params initializers and `on_failure` handler (its
+    /// [`Graph::members`]). A construction relocates their requirements
+    /// to the literal; it never erases one.
+    fn implied(&self, locus: &str) -> Vec<(FnKey, String)> {
+        let hooks = self
+            .summary
             .fns
             .iter()
             .filter(|(k, f)| k.locus.as_deref() == Some(locus) && f.entry.is_some())
-            .map(|(k, _)| (k, format!("{}()", k.fn_name)))
-            .collect()
+            .map(|(k, _)| (k.clone(), format!("{}()", k.fn_name)));
+        let members = self.members.get(locus).into_iter().flatten().map(|(k, link, _)| (k.clone(), link.clone()));
+        hooks.chain(members).collect()
     }
 
     /// What one call edge asks for directly, and the fn it reaches.
@@ -243,14 +326,15 @@ impl<'a> Graph<'a> {
         }
     }
 
-    /// Every fn's requirements, as a fixpoint over the graph.
-    fn requirements(&self) -> BTreeMap<&'a FnKey, Req> {
-        let mut req: BTreeMap<&'a FnKey, Req> = BTreeMap::new();
-        // Each fn's out-edges to other fns, with the links they add.
-        let mut out: BTreeMap<&'a FnKey, Vec<(&'a FnKey, Vec<String>)>> = BTreeMap::new();
+    /// Every fn's requirements, and every member node's, as a fixpoint
+    /// over the graph.
+    fn requirements(&self) -> BTreeMap<FnKey, Req> {
+        let mut req: BTreeMap<FnKey, Req> = BTreeMap::new();
+        // Each node's out-edges to other nodes, with the links they add.
+        let mut out: BTreeMap<FnKey, Vec<(FnKey, Vec<String>)>> = BTreeMap::new();
         for (key, fs) in &self.summary.fns {
-            let r = req.entry(key).or_default();
-            let edges = out.entry(key).or_default();
+            let r = req.entry(key.clone()).or_default();
+            let edges = out.entry(key.clone()).or_default();
             for e in &fs.calls {
                 match self.edge(e) {
                     Edge::Needs(cap, link) => {
@@ -262,8 +346,9 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Edge::Calls(k) => {
-                        if let Some((callee, _)) = self.summary.fns.get_key_value(&k) {
-                            edges.push((callee, vec![callee.display()]));
+                        if self.summary.fns.contains_key(&k) {
+                            let link = k.display();
+                            edges.push((k, vec![link]));
                         }
                     }
                     Edge::Nothing => {}
@@ -278,12 +363,39 @@ impl<'a> Graph<'a> {
                 }
             }
         }
+        for (key, _, met) in self.members.values().flatten() {
+            let r = req.entry(key.clone()).or_default();
+            let edges = out.entry(key.clone()).or_default();
+            for m in met {
+                match m {
+                    Met::Needs(cap, link, _) => {
+                        r.caps.entry(*cap).or_insert_with(|| vec![link.clone()]);
+                    }
+                    Met::Hole(name, why) => {
+                        if r.hole.is_none() {
+                            r.hole = Some((vec![name.clone()], why));
+                        }
+                    }
+                    Met::Calls(k, _) => {
+                        if self.summary.fns.contains_key(k) {
+                            edges.push((k.clone(), vec![k.display()]));
+                        }
+                    }
+                    Met::Constructs(written, _) => {
+                        let locus = self.locus_of(written);
+                        for (hook, link) in self.implied(&locus) {
+                            edges.push((hook, vec![locus.clone(), link]));
+                        }
+                    }
+                }
+            }
+        }
         loop {
             let mut changed = false;
             for (key, edges) in &out {
                 for (callee, links) in edges {
                     let Some(from) = req.get(callee).cloned() else { continue };
-                    let r = req.get_mut(key).expect("every fn has a row");
+                    let r = req.get_mut(key).expect("every node has a row");
                     for (cap, chain) in from.caps {
                         if !r.caps.contains_key(&cap) {
                             r.caps.insert(cap, links.iter().cloned().chain(chain).collect());
@@ -351,7 +463,8 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
         summary
     };
     let m = super::derive_capability_matrix();
-    let g = Graph::new(summary, &m, &bundle.import_renames);
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let g = Graph::new(summary, &m, &bundle.import_renames, &programs);
     let req = g.requirements();
     let mut uses = Vec::new();
 
@@ -408,25 +521,42 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
 
     // ---- constructions and calls in what the summary keys no body
     // for: the program's own params initializers and `on_failure`
-    // handlers.
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    // handlers. (A locus beyond the horizon carries its own to every
+    // construction of it: `Graph::members`.)
     for p in &programs {
         for item in flat_decls(&p.items) {
             let TopDecl::Locus(l) = item else { continue };
             if !g.own_locus(&l.name.name) {
                 continue;
             }
+            let mut w = Walker::own(&g);
             for member in &l.members {
                 match member {
                     LocusMember::Params(pb) => {
                         for prm in &pb.params {
                             if let ParamInit::Value(e) = &prm.init {
-                                initializer(&mut uses, &g, &req, e);
+                                w.expr(e);
                             }
                         }
                     }
-                    LocusMember::Failure(f) => block(&mut uses, &g, &req, &f.body),
+                    LocusMember::Failure(f) => w.block(&f.body),
                     _ => {}
+                }
+            }
+            for met in w.met {
+                match met {
+                    Met::Needs(cap, path, span) => uses.push(CapabilityUse {
+                        need: Need::Capability(cap),
+                        kind: UseKind::Call,
+                        span,
+                        chain: vec![path],
+                        holes: Vec::new(),
+                    }),
+                    Met::Calls(k, span) if !g.own(&k) => {
+                        crossing(&mut uses, &req, &k, UseKind::Crossing, span, vec![k.display()], None)
+                    }
+                    Met::Constructs(written, span) => construction(&mut uses, &g, &req, &written, span),
+                    Met::Calls(..) | Met::Hole(..) => {}
                 }
             }
         }
@@ -568,7 +698,7 @@ fn decl(cap: Capability, kind: UseKind, span: Span, what: &str, holes: Vec<(&'st
 /// The uses a call into `k`, beyond the horizon, carries: its summary.
 fn crossing(
     uses: &mut Vec<CapabilityUse>,
-    req: &BTreeMap<&FnKey, Req>,
+    req: &BTreeMap<FnKey, Req>,
     k: &FnKey,
     kind: UseKind,
     span: Span,
@@ -601,175 +731,265 @@ fn crossing(
 
 /// The uses a construction of a locus beyond the horizon carries: the
 /// summaries of what its existence runs.
-fn construction(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<&FnKey, Req>, written: &str, span: Span) {
+fn construction(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<FnKey, Req>, written: &str, span: Span) {
     let locus = g.locus_of(written);
     if g.own_locus(&locus) {
         return;
     }
     for (hook, link) in g.implied(&locus) {
-        crossing(uses, req, hook, UseKind::Construction, span, vec![locus.clone(), link], None);
+        crossing(uses, req, &hook, UseKind::Construction, span, vec![locus.clone(), link], None);
     }
 }
 
-/// The calls and constructions in a params initializer.
-fn initializer(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<&FnKey, Req>, e: &Expr) {
-    match e {
-        Expr::Struct { path, inits, span, .. } => {
-            let written = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-            construction(uses, g, req, &written, *span);
-            for i in inits {
-                initializer(uses, g, req, &i.value);
+/// What the graph's own walk meets in a body the summary keys none for
+/// (a params initializer, an `on_failure` handler).
+#[derive(Debug, Clone)]
+enum Met {
+    /// A call spelled with a stdlib path: the primitive's namespace,
+    /// with the path.
+    Needs(Capability, String, Span),
+    /// A call to a fn the summary keys.
+    Calls(FnKey, Span),
+    /// A literal, as its path is written.
+    Constructs(String, Span),
+    /// A method whose receiver's type the walk cannot name (beyond the
+    /// horizon only: it is the construction's to locate).
+    Hole(String, &'static str),
+}
+
+/// A declared type's name as written (`std::http::Server`, a merged
+/// name), or `None` for a builtin type, which has no methods a target is
+/// asked for.
+fn type_name(t: &TypeExpr) -> Option<String> {
+    match t {
+        TypeExpr::Named { path, .. } => Some(qualified(path)),
+        _ => None,
+    }
+}
+
+fn qualified(qn: &QualifiedName) -> String {
+    qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
+}
+
+/// The graph's own walk of a body the summary keys none for.
+struct Walker<'w, 'a> {
+    g: &'w Graph<'a>,
+    /// Beyond the horizon, the declared types a method's receiver
+    /// resolves through: the locus (`self`), its params fields and the
+    /// handler's params. `None` in the program's own sources, whose
+    /// methods are judged in their own bodies.
+    receivers: Option<Receivers<'w>>,
+    met: Vec<Met>,
+}
+
+struct Receivers<'w> {
+    locus: &'w str,
+    fields: &'w BTreeMap<String, Option<String>>,
+    params: BTreeMap<String, Option<String>>,
+}
+
+impl<'w, 'a> Walker<'w, 'a> {
+    fn own(g: &'w Graph<'a>) -> Self {
+        Walker { g, receivers: None, met: Vec::new() }
+    }
+
+    fn beyond(
+        g: &'w Graph<'a>,
+        locus: &'w str,
+        fields: &'w BTreeMap<String, Option<String>>,
+        params: BTreeMap<String, Option<String>>,
+    ) -> Self {
+        Walker { g, receivers: Some(Receivers { locus, fields, params }), met: Vec::new() }
+    }
+
+    /// A method call beyond the horizon: the locus's method its
+    /// receiver's declared type names, a stdlib handle's namespace, or a
+    /// hole when the walk cannot name the type.
+    fn method(&mut self, receiver: &Expr, name: &str, span: Span) {
+        let Some(r) = &self.receivers else { return };
+        let ty = match receiver {
+            Expr::KwSelf(_) => Some(Some(r.locus.to_string())),
+            Expr::Ident(id) => r.params.get(&id.name).cloned(),
+            Expr::Field { receiver, name: field, .. } if matches!(**receiver, Expr::KwSelf(_)) => {
+                r.fields.get(&field.name).cloned()
+            }
+            Expr::Struct { path, .. } => Some(Some(qualified(path))),
+            _ => None,
+        };
+        match ty {
+            None => self.met.push(Met::Hole(name.to_string(), "its receiver's type is not known here")),
+            Some(None) => {}
+            Some(Some(ty)) => {
+                let ty = self.g.locus_of(&ty);
+                let k = FnKey::method(ty.clone(), name.to_string());
+                if self.g.summary.fns.contains_key(&k) {
+                    self.met.push(Met::Calls(k, span));
+                } else if let Some(ns) = self.g.std_loci.get(&ty) {
+                    self.met.push(Met::Needs(Capability::StdNamespace(ns), format!("{ty}::{name}"), span));
+                }
             }
         }
-        Expr::Call { callee, args, .. } => {
-            match callee.as_ref() {
-                Expr::Path(qn) => {
-                    let path = qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-                    if let Some(ns) = std_namespace(g.m, &path) {
-                        uses.push(CapabilityUse {
-                            need: Need::Capability(Capability::StdNamespace(ns)),
-                            kind: UseKind::Call,
-                            span: qn.span,
-                            chain: vec![path],
-                            holes: Vec::new(),
-                        });
-                    } else if let Some(mangled) = g.renames.get(&path) {
-                        let k = FnKey::free_fn(mangled.clone());
-                        if !g.own(&k) {
-                            crossing(uses, req, &k, UseKind::Crossing, qn.span, vec![k.display()], None);
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Struct { path, inits, span, .. } => {
+                self.met.push(Met::Constructs(qualified(path), *span));
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Call { callee, args, .. } => {
+                match callee.as_ref() {
+                    Expr::Path(qn) => {
+                        let path = qualified(qn);
+                        if let Some(ns) = std_namespace(self.g.m, &path) {
+                            self.met.push(Met::Needs(Capability::StdNamespace(ns), path, qn.span));
+                        } else if let Some(mangled) = self.g.renames.get(&path) {
+                            self.met.push(Met::Calls(FnKey::free_fn(mangled.clone()), qn.span));
                         }
                     }
+                    // A bare call beyond the horizon names its seed's own
+                    // fn by the merged (unspeakable) name; a builtin's is
+                    // speakable.
+                    Expr::Ident(id) if self.receivers.is_some() && id.name.starts_with("__") => {
+                        let k = FnKey::free_fn(id.name.clone());
+                        if self.g.summary.fns.contains_key(&k) {
+                            self.met.push(Met::Calls(k, id.span));
+                        }
+                    }
+                    Expr::Field { receiver, name, span } | Expr::Path2 { receiver, name, span } => {
+                        self.method(receiver, &name.name, *span);
+                        // A method's receiver is evaluated: `xs[i].m()`
+                        // runs `i`.
+                        self.expr(receiver);
+                    }
+                    other => self.expr(other),
                 }
-                // A method's receiver is evaluated: `xs[i].m()` runs `i`.
-                other => initializer(uses, g, req, other),
+                for a in args {
+                    self.expr(a);
+                }
             }
-            for a in args {
-                initializer(uses, g, req, a);
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
             }
-        }
-        Expr::Binary { left, right, .. } => {
-            initializer(uses, g, req, left);
-            initializer(uses, g, req, right);
-        }
-        Expr::Approx { left, right, tolerance, .. } => {
-            initializer(uses, g, req, left);
-            initializer(uses, g, req, right);
-            initializer(uses, g, req, tolerance);
-        }
-        Expr::Range { lo, hi, .. } => {
-            initializer(uses, g, req, lo);
-            initializer(uses, g, req, hi);
-        }
-        Expr::Unary { operand, .. } => initializer(uses, g, req, operand),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => initializer(uses, g, req, receiver),
-        Expr::Index { receiver, index, .. } => {
-            initializer(uses, g, req, receiver);
-            initializer(uses, g, req, index);
-        }
-        Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
-            for x in xs {
-                initializer(uses, g, req, x);
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
             }
-        }
-        Expr::ArrayRepeat { val, .. } | Expr::Sum(val, _) | Expr::Prod(val, _) => initializer(uses, g, req, val),
-        Expr::Or { inner, disposition, .. } => {
-            initializer(uses, g, req, inner);
-            if let OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) = disposition {
-                initializer(uses, g, req, x);
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
             }
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+            Expr::Index { receiver, index, .. } => {
+                self.expr(receiver);
+                self.expr(index);
+            }
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
+                for x in xs {
+                    self.expr(x);
+                }
+            }
+            Expr::ArrayRepeat { val, .. } | Expr::Sum(val, _) | Expr::Prod(val, _) => self.expr(val),
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                if let OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) = disposition {
+                    self.expr(x);
+                }
+            }
+            Expr::Block(b) => self.block(b),
+            Expr::If(i) => self.if_stmt(i),
+            Expr::Match(m) => self.match_stmt(m),
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
         }
-        Expr::Block(b) => block(uses, g, req, b),
-        Expr::If(i) => if_stmt(uses, g, req, i),
-        Expr::Match(m) => match_stmt(uses, g, req, m),
-        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
     }
-}
 
-/// The calls and constructions in a body the summary does not key (an
-/// `on_failure` handler's).
-fn block(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<&FnKey, Req>, b: &Block) {
-    for s in &b.stmts {
-        match s {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } => {
-                initializer(uses, g, req, value)
-            }
-            Stmt::Assign { value, target, .. } => {
-                for seg in &target.tail {
-                    if let LValueSeg::Index(e) = seg {
-                        initializer(uses, g, req, e);
+    fn block(&mut self, b: &Block) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } => self.expr(value),
+                Stmt::Assign { value, target, .. } => {
+                    for seg in &target.tail {
+                        if let LValueSeg::Index(e) = seg {
+                            self.expr(e);
+                        }
+                    }
+                    self.expr(value);
+                }
+                Stmt::If(i) => self.if_stmt(i),
+                Stmt::Match(m) => self.match_stmt(m),
+                Stmt::For { iter, body, .. } => {
+                    self.expr(iter);
+                    self.block(body);
+                }
+                Stmt::While { cond, body, .. } => {
+                    self.expr(cond);
+                    self.block(body);
+                }
+                Stmt::Return(e, _) => {
+                    if let Some(e) = e {
+                        self.expr(e);
                     }
                 }
-                initializer(uses, g, req, value);
-            }
-            Stmt::If(i) => if_stmt(uses, g, req, i),
-            Stmt::Match(m) => match_stmt(uses, g, req, m),
-            Stmt::For { iter, body, .. } => {
-                initializer(uses, g, req, iter);
-                block(uses, g, req, body);
-            }
-            Stmt::While { cond, body, .. } => {
-                initializer(uses, g, req, cond);
-                block(uses, g, req, body);
-            }
-            Stmt::Return(e, _) => {
-                if let Some(e) = e {
-                    initializer(uses, g, req, e);
+                Stmt::Violate { payload, .. } => {
+                    if let Some(e) = payload {
+                        self.expr(e);
+                    }
                 }
-            }
-            Stmt::Violate { payload, .. } => {
-                if let Some(e) = payload {
-                    initializer(uses, g, req, e);
+                Stmt::Recovery { args, .. } => {
+                    for a in args {
+                        self.expr(a);
+                    }
                 }
-            }
-            Stmt::Recovery { args, .. } => {
-                for a in args {
-                    initializer(uses, g, req, a);
+                Stmt::Send { subject, value, or_disposition, .. } => {
+                    self.expr(subject);
+                    self.expr(value);
+                    if let Some(OrDisposition::Substitute(x) | OrDisposition::Fail(x, _)) = or_disposition {
+                        self.expr(x);
+                    }
                 }
-            }
-            Stmt::Send { subject, value, or_disposition, .. } => {
-                initializer(uses, g, req, subject);
-                initializer(uses, g, req, value);
-                if let Some(OrDisposition::Substitute(x) | OrDisposition::Fail(x, _)) = or_disposition {
-                    initializer(uses, g, req, x);
+                Stmt::ShmWrite { max, body, .. } => {
+                    self.expr(max);
+                    self.block(body);
                 }
+                Stmt::Block(b) => self.block(b),
+                Stmt::Expr(e) => self.expr(e),
+                Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Yield(_)
+                | Stmt::Terminate(_)
+                | Stmt::Reperspective { .. } => {}
             }
-            Stmt::ShmWrite { max, body, .. } => {
-                initializer(uses, g, req, max);
-                block(uses, g, req, body);
-            }
-            Stmt::Block(b) => block(uses, g, req, b),
-            Stmt::Expr(e) => initializer(uses, g, req, e),
-            Stmt::Break(_)
-            | Stmt::Continue(_)
-            | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+        }
+        if let Some(t) = &b.tail {
+            self.expr(t);
         }
     }
-    if let Some(t) = &b.tail {
-        initializer(uses, g, req, t);
-    }
-}
 
-fn if_stmt(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<&FnKey, Req>, i: &IfStmt) {
-    initializer(uses, g, req, &i.cond);
-    block(uses, g, req, &i.then_block);
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => block(uses, g, req, b),
-        Some(ElseBranch::ElseIf(e)) => if_stmt(uses, g, req, e),
-        None => {}
-    }
-}
-
-fn match_stmt(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<&FnKey, Req>, m: &MatchStmt) {
-    initializer(uses, g, req, &m.scrutinee);
-    for arm in &m.arms {
-        if let Some(guard) = &arm.guard {
-            initializer(uses, g, req, guard);
+    fn if_stmt(&mut self, i: &IfStmt) {
+        self.expr(&i.cond);
+        self.block(&i.then_block);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b),
+            Some(ElseBranch::ElseIf(e)) => self.if_stmt(e),
+            None => {}
         }
-        match &arm.body {
-            MatchArmBody::Expr(e) => initializer(uses, g, req, e),
-            MatchArmBody::Block(b) => block(uses, g, req, b),
+    }
+
+    fn match_stmt(&mut self, m: &MatchStmt) {
+        self.expr(&m.scrutinee);
+        for arm in &m.arms {
+            if let Some(guard) = &arm.guard {
+                self.expr(guard);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => self.expr(e),
+                MatchArmBody::Block(b) => self.block(b),
+            }
         }
     }
 }

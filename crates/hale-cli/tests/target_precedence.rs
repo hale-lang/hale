@@ -438,6 +438,152 @@ fn an_imported_wrappers_index_operand_is_refused_at_the_crossing_call() {
     }
 }
 
+/// One case of a seed `kidlib/kid.hl` and a `main.hl` written after the
+/// selection's declaration: refused with `want(line offset, selector)`
+/// at every entry point, the seed's own file printing nothing. `None`
+/// for `lib`: the program declares everything itself.
+fn seeded_case(tag: &str, lib: Option<&str>, main: &str, want: impl Fn(usize, &str) -> Vec<String>) {
+    for (decl, cli, selector) in SELECTIONS {
+        let dir = case_dir(tag);
+        if let Some(lib) = lib {
+            std::fs::create_dir_all(dir.join("kidlib")).unwrap();
+            std::fs::write(dir.join("kidlib/kid.hl"), lib).unwrap();
+        }
+        let file = dir.join("main.hl");
+        let import = if lib.is_some() { "import \"kidlib\" as lib;\n" } else { "" };
+        std::fs::write(&file, format!("{import}{decl}{main}")).unwrap();
+        let offset = import.lines().count() + decl.lines().count();
+        let want = want(offset, selector).into_iter().collect();
+        refused_at_every_entry_point(&file, cli, &want, lib.map(|_| "kid.hl"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Admitted by check, build and the editor under every selection and
+/// on the host.
+fn admitted_everywhere(tag: &str, lib: &str, main: &str) {
+    for (decl, cli, _) in SELECTIONS.into_iter().chain([("", None, "the host")]) {
+        let dir = case_dir(tag);
+        std::fs::create_dir_all(dir.join("kidlib")).unwrap();
+        std::fs::write(dir.join("kidlib/kid.hl"), lib).unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, format!("import \"kidlib\" as lib;\n{decl}{main}")).unwrap();
+        let mut tail = vec![file.to_str().unwrap()];
+        tail.extend(cli.map(|t| ["--target", t]).iter().flatten());
+        let (check, code) = hale(&[&["check"], tail.as_slice()].concat());
+        assert_eq!(code, 0, "{decl}{cli:?}: {check}");
+        let (build, _) = hale(&[&["build"], tail.as_slice()].concat());
+        assert!(cli_refusals(&build, &file).is_empty(), "{decl}{cli:?}: {build}");
+        let editor = if cli.is_some() { editor_refusals_on_wasm32(&file) } else { editor_refusals(&file) };
+        assert!(editor.is_empty(), "{decl}{cli:?}: {editor:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+const KID: &str = "locus Kid {\n    params { n: Int = std::process::pid(); }\n    run() { println(self.n); }\n}\n";
+
+/// The review of #1318: the horizon relocates a refusal to the
+/// construction; it never erases a requirement. A params default has no
+/// summary body, so the same locus was refused declared in the program
+/// and admitted imported. Declared, it is refused at its default; imported,
+/// at the `lib::Kid { }` construction, naming the capability and the
+/// witness through the default — and at the call into a seed fn that
+/// constructs it. The host admits all three.
+#[test]
+fn a_default_is_refused_declared_and_imported() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_default_is_refused_declared_and_imported: no wasm32 clang or wasm-ld");
+        return;
+    }
+    seeded_case("default_own", None, &format!("{KID}\nfn main() {{ Kid {{ }}; }}\n"), |at, selector| {
+        vec![format!("{}:23 `std::process::pid` is unavailable under {selector}: {PROCESS}", at + 2)]
+    });
+    seeded_case("default_imported", Some(KID), "fn main() { lib::Kid { }; }\n", |at, selector| {
+        vec![format!(
+            "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Kid` → \
+             `params {{ n }}` → `std::process::pid`",
+            at + 1
+        )]
+    });
+    let maker = format!("{KID}\nfn make() {{\n    Kid {{ }};\n}}\n");
+    seeded_case("default_imported_fn", Some(&maker), "fn main() { lib::make(); }\n", |at, selector| {
+        vec![format!(
+            "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::make` → `lib::Kid` \
+             → `params {{ n }}` → `std::process::pid`",
+            at + 1
+        )]
+    });
+    for (lib, main) in [(None, format!("{KID}\nfn main() {{ Kid {{ }}; }}\n")), (Some(KID), "fn main() { lib::Kid { }; }\n".into())] {
+        let dir = case_dir("default_host");
+        if let Some(lib) = lib {
+            std::fs::create_dir_all(dir.join("kidlib")).unwrap();
+            std::fs::write(dir.join("kidlib/kid.hl"), lib).unwrap();
+        }
+        let import = if lib.is_some() { "import \"kidlib\" as lib;\n" } else { "" };
+        std::fs::write(dir.join("main.hl"), format!("{import}{main}")).unwrap();
+        let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+        assert_eq!(code, 0, "the host admits it:\n{check}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+const ONCE: &str = "locus Once {\n    params { runs: Int = 0; }\n    closure fuse { captures: runs; epoch inline; }\n    \
+                    run() {\n        self.runs = self.runs + 1;\n        if self.runs < 2 { violate fuse; }\n    }\n}\n\n";
+
+/// The same boundary for an `on_failure` handler, which the summary
+/// keys no body for either: declared, refused at the call in the
+/// handler; imported, at the construction, through `on_failure()` —
+/// down a method the handler calls on a params field, resolved through
+/// the field's declared type.
+#[test]
+fn an_on_failure_body_is_refused_declared_and_imported() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP an_on_failure_body_is_refused_declared_and_imported: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let keeper = format!(
+        "{ONCE}locus Keeper {{\n    params {{ early: Once = Once {{ }}; }}\n    \
+         on_failure(c: Once, err: ClosureViolation) {{\n        std::process::exit(1);\n    }}\n}}\n"
+    );
+    seeded_case("failure_own", None, &format!("{keeper}\nfn main() {{ Keeper {{ }}; }}\n"), |at, selector| {
+        vec![format!("{}:9 `std::process::exit` is unavailable under {selector}: {PROCESS}", at + 13)]
+    });
+    seeded_case("failure_imported", Some(&keeper), "fn main() { lib::Keeper { }; }\n", |at, selector| {
+        vec![format!(
+            "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Keeper` → \
+             `on_failure()` → `std::process::exit`",
+            at + 1
+        )]
+    });
+    let minder = format!(
+        "{ONCE}locus Helper {{\n    params {{ v: Int = 0; }}\n    fn ping() -> Int {{ return std::process::pid(); }}\n}}\n\n\
+         locus Minder {{\n    params {{ early: Once = Once {{ }}; h: Helper = Helper {{ }}; seen: Int = 0; }}\n    \
+         on_failure(c: Once, err: ClosureViolation) {{\n        self.seen = self.h.ping();\n    }}\n}}\n"
+    );
+    seeded_case("failure_method", Some(&minder), "fn main() { lib::Minder { }; }\n", |at, selector| {
+        vec![format!(
+            "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Minder` → \
+             `on_failure()` → `lib::Helper::ping` → `std::process::pid`",
+            at + 1
+        )]
+    });
+}
+
+/// The control: an imported default that asks the target for nothing is
+/// admitted wherever the program is.
+#[test]
+fn a_portable_imported_default_is_admitted() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_portable_imported_default_is_admitted: no wasm32 clang or wasm-ld");
+        return;
+    }
+    admitted_everywhere(
+        "default_portable",
+        "locus Calm {\n    params { n: Int = len(\"abc\"); }\n    run() { println(self.n); }\n}\n",
+        "fn main() { lib::Calm { }; }\n",
+    );
+}
+
 /// `hale run` executes what it builds, and a declared program builds a
 /// wasm32 module: refused, as `--target wasm32` is.
 #[test]
