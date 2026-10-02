@@ -147,10 +147,14 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWa
                                                 w.cross_seed.insert(key.clone());
                                             }
                                             w.publishers.record(key.clone());
+                                            let subject = Subject::of(subject, topics);
+                                            if let Some(d) = w.decls.last_mut() {
+                                                d.publishes.push(subject.clone());
+                                            }
                                             w.pub_sites.push(RawPub {
                                                 locus: locus.clone(),
                                                 key,
-                                                subject: Subject::of(subject, topics),
+                                                subject,
                                                 span: *span,
                                             });
                                         }
@@ -170,11 +174,15 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWa
                                                 w.cross_seed.insert(key.clone());
                                             }
                                             w.subscribers.record(key.clone());
+                                            let subject = Subject::of(subject, topics);
+                                            if let Some(d) = w.decls.last_mut() {
+                                                d.subscribes.push((subject.clone(), handler.name.clone()));
+                                            }
                                             w.sub_sites.push(RawSub {
                                                 locus: locus.clone(),
                                                 handler: handler.name.clone(),
                                                 key,
-                                                subject: Subject::of(subject, topics),
+                                                subject,
                                                 span: *span,
                                                 qualified,
                                                 keyed: key_filter.is_some(),
@@ -258,9 +266,28 @@ pub struct LocusDeclRow {
     /// depth (a module's contents under the module's index).
     pub program: String,
     pub path: Vec<usize>,
+    /// Its `publish` subjects, in member order.
+    pub publishes: Vec<Subject>,
+    /// Its `subscribe` subjects with their handlers, in member order.
+    pub subscribes: Vec<(Subject, String)>,
 }
 
 impl LocusDeclRow {
+    /// The handlers of the subscriptions whose subject the declaration
+    /// does not also publish, in member order: its genuine cross-context
+    /// receives (spec/semantics.md rule 7). A self-publish→subscribe is
+    /// devirtualized to a direct call, not a bus receive. Subjects are
+    /// compared under the canonical key, so a topic published by its
+    /// name and subscribed by its literal subject is a self-publish; an
+    /// unresolved subject is compared as written.
+    pub fn external_handlers(&self) -> Vec<&str> {
+        self.subscribes
+            .iter()
+            .filter(|(subject, _)| !self.publishes.contains(subject))
+            .map(|(_, handler)| handler.as_str())
+            .collect()
+    }
+
     /// The declaration this row names, in the bundle the graph was
     /// built over.
     pub fn decl<'b>(&self, bundle: &Bundle<'b>) -> Option<&'b LocusDecl> {
@@ -668,6 +695,12 @@ pub struct BusGraph {
 }
 
 impl BusGraph {
+    /// The row of a locus declaration of `bundle`, the bundle the graph
+    /// was built over: the declaration itself, not its name.
+    pub fn decl_row(&self, bundle: &Bundle<'_>, decl: &LocusDecl) -> Option<&LocusDeclRow> {
+        self.decls.iter().find(|row| row.decl(bundle).is_some_and(|d| std::ptr::eq(d, decl)))
+    }
+
     /// Rule 10's query (spec/semantics.md rule 10): the first cycle
     /// reachable from subject `root` over the edges `keep` admits,
     /// depth-first with each subject's edges in graph order, as the

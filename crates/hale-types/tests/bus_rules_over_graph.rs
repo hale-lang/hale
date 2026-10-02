@@ -201,7 +201,78 @@ fn the_walks_bound_cross_seed_and_wildcard_facts_are_columns() {
     );
 }
 
-// --- rule 10: edges by declaration ----------------------------------
+// --- rule 7: the dead receiver reads the declaration's row ----------
+
+/// A non-main cooperative gateway whose `run()` blocks, with the given
+/// `bus { }` members.
+fn gateway(bus: &str) -> String {
+    format!(
+        r#"
+type Tick {{ n: Int; }}
+topic T {{ payload: Tick; subject: "t"; }}
+
+locus Gateway {{
+    bus {{ {bus} }}
+    fn on_t(t: Tick) {{ }}
+    fn on_other(t: Tick) {{ }}
+    run() {{
+        let b = std::bytes::BytesBuilder {{ initial_cap: 64 }};
+        let n = std::io::tls::recv_into(0, b, 64);
+    }}
+}}
+
+main locus App {{
+    params {{ gw: Gateway = Gateway {{ }}; }}
+    placement {{ gw: cooperative(pool = ws); }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn dead_receiver(msgs: &[String]) -> Vec<&String> {
+    msgs.iter().filter(|m| m.contains("subscribes to bus topics")).collect()
+}
+
+/// Published by the declared name, subscribed by the literal subject:
+/// one subject under the canonical key, so the subscription is a
+/// self-publish and the error lists only the other subject's handler.
+/// The rule said the same before the migration (its own key was the
+/// wire); the graph's split by `BusSubject::canonical()` would have
+/// listed `on_t` too.
+#[test]
+fn the_dead_receiver_lists_the_handlers_of_subjects_it_does_not_publish() {
+    let msgs = check(&gateway(
+        r#"publish T; subscribe "t" as on_t of type Tick; subscribe "other" as on_other of type Tick;"#,
+    ));
+    assert_eq!(
+        dead_receiver(&msgs),
+        ["locus `Gateway` (field `gw`) subscribes to bus topics (on_other) but its `run()` makes \
+          the blocking call `std::io::tls::recv_into` while placed `cooperative(pool = ws)`. The \
+          blocking call monopolizes the pool's thread, so the dispatch that would deliver those \
+          cells never runs — the handlers can't fire. (An event-driven subscriber that yields — \
+          handlers plus a `time::sleep` loop, or `where async_io` — receives fine; the problem \
+          is the blocking call, not the placement.) Use `pinned` (its own thread + a mailbox \
+          drained at sleep/yield), or keep `run()` non-blocking."],
+        "{msgs:?}"
+    );
+    // With the self-published subscription alone there is no receive
+    // to starve: the rule does not fire.
+    let msgs = check(&gateway(r#"publish T; subscribe "t" as on_t of type Tick;"#));
+    assert!(dead_receiver(&msgs).is_empty(), "{msgs:?}");
+}
+
+/// A subscription the graph cannot resolve (a qualified path no import
+/// names) is compared as written: it is not a self-publish of anything
+/// the locus publishes, so its handler is listed.
+#[test]
+fn an_unresolved_subscription_is_compared_as_written() {
+    let msgs = check(&gateway(r#"publish T; subscribe other::T as on_other;"#));
+    let dead = dead_receiver(&msgs);
+    assert_eq!(dead.len(), 1, "{msgs:?}");
+    assert!(dead[0].starts_with("locus `Gateway` (field `gw`) subscribes to bus topics (on_other) "), "{dead:?}");
+}
 
 fn cycles(msgs: &[String]) -> Vec<&String> {
     msgs.iter().filter(|m| m.contains("bus cycle")).collect()

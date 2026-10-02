@@ -721,7 +721,7 @@ pub fn check_bundle_reporting(
     // discover that by overflowing its own stack in
     // `lower_locus_instantiation`. See `check_self_containing_locus`.
     check_self_containing_locus(bundle, &mut diags);
-    check_cooperative_pool_blocking(bundle, &top.topics, &mut diags);
+    check_cooperative_pool_blocking(bundle, inputs.bus, &mut diags);
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
@@ -1789,64 +1789,6 @@ fn find_blocking_deep_in_expr(
     }
 }
 
-/// Warn when a locus placed `cooperative(pool = X)` without
-/// `where async_io` calls a known-blocking stdlib op in its `run()`.
-/// Such a call holds the pool's OS thread, starving co-scheduled loci
-/// (this silently bricked a downstream team's metrics server when a
-/// blocking gateway was moved onto a shared pool). A warning, not an
-/// error — a single-purpose blocking server with nothing co-scheduled
-/// is legitimate; the smell is real but situational.
-/// A comparable key for a bus subject — used to tell whether a
-/// subscription is to a topic the locus also publishes. The key is the
-/// wire identity (spec/model.md rule 8): a literal subject is its own
-/// wire subject, a topic reference its row's; a qualified path, which
-/// no row of this bundle names by its written segments, is the path.
-fn bus_subject_key(s: &BusSubject, topics: &crate::topic_identity::TopicRows) -> String {
-    match s {
-        BusSubject::Literal { subject, .. } => subject.clone(),
-        BusSubject::Topic(id) => topics
-            .named(&id.name)
-            .map_or_else(|| id.name.clone(), |t| t.wire.clone()),
-        BusSubject::QualifiedTopic(qn) => qn
-            .segments
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect::<Vec<_>>()
-            .join("::"),
-    }
-}
-
-/// Handler names for the locus's `subscribe` entries on topics it
-/// does NOT itself publish — i.e. genuine cross-context receives. A
-/// self-publish→self-subscribe is devirtualized to a direct
-/// `self.handler(...)` call (same instance, same thread), not a bus
-/// receive, so it's excluded.
-fn external_subscription_handlers(
-    decl: &LocusDecl,
-    topics: &crate::topic_identity::TopicRows,
-) -> Vec<String> {
-    let mut published: BTreeSet<String> = BTreeSet::new();
-    let mut handlers: Vec<(String, String)> = Vec::new(); // (subject_key, handler)
-    for m in &decl.members {
-        let LocusMember::Bus(b) = m else { continue };
-        for bm in &b.members {
-            match bm {
-                BusMember::Publish { subject, .. } => {
-                    published.insert(bus_subject_key(subject, topics));
-                }
-                BusMember::Subscribe { subject, handler, .. } => {
-                    handlers.push((bus_subject_key(subject, topics), handler.name.clone()));
-                }
-            }
-        }
-    }
-    handlers
-        .into_iter()
-        .filter(|(subj, _)| !published.contains(subj))
-        .map(|(_, h)| h)
-        .collect()
-}
-
 // ===================================================================
 // Perf lint (downstream handoff 2026-07-16): hot-path allocation
 // anti-patterns. Steer the naive shape toward the allocation-free one
@@ -2688,7 +2630,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// loop, or `where async_io`) is flagged by neither: it receives fine.
 fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
-    topics: &crate::topic_identity::TopicRows,
+    bus: &crate::bus_graph::BusGraph,
     diags: &mut Vec<Diag>,
 ) {
     // GH #825: all three passes flatten `module { … }`. The index of
@@ -2817,8 +2759,12 @@ fn check_cooperative_pool_blocking(
                     pool.as_ref().map(|i| i.name.as_str()).unwrap_or("main");
                 // Handlers for topics this locus does NOT itself publish
                 // (a self-publish→subscribe is a devirtualized direct
-                // call, not a bus receive).
-                let dead = external_subscription_handlers(decl, topics);
+                // call, not a bus receive), read off the declaration's
+                // row of the bus graph (F.40 phase 3, C4).
+                let dead = bus
+                    .decl_row(bundle, decl)
+                    .map(|row| row.external_handlers())
+                    .unwrap_or_default();
                 if pool_name != "main" && !dead.is_empty() && direct.is_some() {
                     let (call, span) = direct.expect("is_some checked");
                     errored_pools.insert(pool_name.to_string());

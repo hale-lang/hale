@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 11 canonical, 29 migrating (with 129 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 11 canonical, 29 migrating (with 128 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -21,7 +21,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 32 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
-| `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 5 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
+| `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 4 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
@@ -500,7 +500,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/check.rs` · `check_bus_graph` — rule 9 runs `collect_bus_walk` itself. *Removed when:* phase 3, as a judgment migration: the graph does not carry the walk's bound, cross-seed and wildcard facts rule 9 reads (measured on the 2.3 checker branch).
 - `crates/hale-types/src/check.rs` · `check_bus_cycles` — rule 10 keeps its own adjacency (`BusAdj`) instead of reading the graph. *Removed when:* phase 3, as a judgment migration: rule 10 reads each declaration's own handler bodies where the graph keys by name (measured on the 2.3 checker branch).
-- `crates/hale-types/src/check.rs` · `external_subscription_handlers` — handler discovery joined with `::` where the graph uses the last segment. *Removed when:* phase 3, as a judgment migration: the graph's canonical key splits a topic published by name and subscribed by its literal subject into two subjects, which changes the dead-receiver error's handler list (measured on the 2.3 checker branch).
 - `crates/hale-types/src/lib.rs` · `derive_application_model` — the model of a bundle no snapshot holds (the test entry's: `claim_law_diags`, the hale-types tests, the artifact's bundle entry) builds the bus graph, the ownership graph and the handler rows for itself, once each; every verb's model reads its snapshot's. *Removed when:* those callers hold a snapshot.
 - `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the snapshot builds a second over the checked programs for the model and hale/busGraph (`demand_bus_graph`), and the checker's rule 9 walks the bus itself. *Removed when:* phase 3, one graph per snapshot, when the lowering view's graphs fold into the snapshot: the check still runs over the checked programs, not the resolved one, so lowering's graph (with the intra-locus and topic rewrites recorded on it) and the snapshot's are built over two program forms (at the phase-2 close).
 
