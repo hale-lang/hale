@@ -1451,6 +1451,8 @@ pub fn build_resolved(
         ownership_forwarding_sets: bubble.forwarding,
         ownership_bubble_crosspool_plan: bubble.crosspool,
         ownership_accepts: ownership.accepts.clone(),
+        ownership_accept_rows: &ownership.accept_rows,
+        specialized_accepts: BTreeMap::new(),
         handlers: handlers.clone(),
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
@@ -3489,6 +3491,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// is not a bubble.
     pub(crate) ownership_accepts:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// The ownership graph's `accept` rows, by the declaring locus's
+    /// identity: a generic template's, which the synthesis loop
+    /// specializes for each monomorph (`specialized_accepts`).
+    pub(crate) ownership_accept_rows: &'p hale_types::ownership_graph::AcceptRows,
+    /// The child loci each specialization lowering created accepts (a
+    /// generic locus's monomorphs, by mangled name): its template's
+    /// accept rows, asked for by the template's identity, with the
+    /// instantiation queue's own substitution. Filled before any body
+    /// is lowered.
+    pub(crate) specialized_accepts:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// Which `on_failure` handler a failing child reaches: one row per
     /// handler, the child type resolved once (F.40 phase 1.4). The
     /// handler table, the failure route and restart-in-place
@@ -4814,15 +4827,18 @@ pub(crate) struct LocusInfo<'ctx> {
     /// with `tick_closures_fn`.
     pub(crate) tick_wrapper_fn: Option<FunctionValue<'ctx>>,
     /// `on_failure(child: ChildL, err: ClosureViolation)` handlers
-    /// declared on this locus: one entry per handler row, in ordinal
-    /// order, stored as (the row's child locus name, llvm_fn). When a
-    /// child fails its closure, the violation routes to the handler
-    /// the routing row selects (`Cx::failure_handler_for`: the first
-    /// declared for the child's locus type) instead of dprintf+exit.
-    pub(crate) failure_handlers: Vec<(String, FunctionValue<'ctx>)>,
-    /// The name the handler rows key this locus by: its own, or, for a
-    /// monomorph, its generic template's.
-    pub(crate) routing_name: String,
+    /// declared on this locus: the handler fn of each routing row,
+    /// keyed by the row's site, stored as (the row's child locus name,
+    /// llvm_fn). When a child fails its closure, the violation routes
+    /// to the handler the routing row selects
+    /// (`Cx::failure_handler_for`: the first declared for the child's
+    /// locus type) instead of dprintf+exit.
+    pub(crate) failure_handlers:
+        BTreeMap<hale_types::handler_routing::SiteId, (String, FunctionValue<'ctx>)>,
+    /// The declaration the handler rows key this locus by: its own, or,
+    /// for a monomorph, its generic template's (a monomorph keeps the
+    /// template's id).
+    pub(crate) decl: NodeId,
     /// When this locus declares `accept(child: T)` AND a method
     /// body iterates `for child in self.children`, every accept
     /// dispatch appends the child's self_ptr to a growable
@@ -7979,6 +7995,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     self.specialized_flows.push((mangled.clone(), child));
                 }
+                // So do the accept rows: the template's, by its identity,
+                // with the same substitution.
+                let accepts = self
+                    .ownership_accept_rows
+                    .specialize(template, |t| Self::substitute_type_expr(t, &subst));
+                self.specialized_accepts.insert(mangled.clone(), accepts);
                 // The elision rows answer for it too: the same producer
                 // over the synthesized declaration.
                 let elision = self.alloc_routing.specialize(&synthesized);

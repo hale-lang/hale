@@ -23,17 +23,25 @@
 //! declaration joins it to its row by that identity
 //! ([`HandlerRow::is_row_of`]); the span is the fallback for the
 //! unminted bundle alone, since two declarations may share one.
+//!
+//! The parent's identity is a column too (`parent_id`), and the rows
+//! are indexed by it: a reader holding a locus declaration asks for its
+//! rows by the declaration's id ([`HandlerRouting::handlers_of_decl`]).
+//! A monomorph keeps its template's id, so it finds its template's rows
+//! by that id, never by a scan of the templates for one whose id
+//! matches.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_graph::ids::SiteId;
+pub use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusMember, LValueSeg,
-    MatchArmBody, OrDisposition, Program, RecoveryModifier,
+    MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
 
+use crate::placement::SiteRef;
 use crate::snapshot::Snapshot;
 
 /// The child type a handler names, resolved.
@@ -63,7 +71,16 @@ impl ChildRef {
 pub struct HandlerRow {
     /// The locus that declares the handler.
     pub parent: String,
+    /// The parent declaration's snapshot identity (`None` when
+    /// unminted).
+    pub parent_id: Option<SiteId>,
     pub child: ChildRef,
+    /// The declaration of the locus `child` resolves to (a monomorph's
+    /// template's), qualified by the store that minted it: a program's
+    /// in the snapshot the rows were built against, a stdlib locus's in
+    /// the analysis copy. `None` for an external child, and for an
+    /// unminted one.
+    pub child_decl: Option<crate::placement::SiteRef>,
     /// The child type as written, its path joined by `::`: what a
     /// reader who has no row for the resolved locus names it by.
     pub written: String,
@@ -108,6 +125,9 @@ pub struct HandlerRouting {
     rows: Vec<HandlerRow>,
     /// parent → its rows' indices, in ordinal order.
     by_parent: BTreeMap<String, Vec<usize>>,
+    /// The parent declaration's site index → its rows' indices, in
+    /// ordinal order (minted rows only).
+    by_parent_decl: BTreeMap<u32, Vec<usize>>,
     /// (parent, child name) → the first row's index: the handler that
     /// runs.
     first: BTreeMap<(String, String), usize>,
@@ -138,6 +158,28 @@ impl HandlerRouting {
             .map(|&i| &self.rows[i])
     }
 
+    /// The rows of the locus declared at `decl`, in ordinal order: by
+    /// the declaration's identity, so a monomorph (which keeps its
+    /// template's id) reads its template's rows. Empty for an unminted
+    /// declaration.
+    pub fn handlers_of_decl<'a>(
+        &'a self,
+        decl: NodeId,
+    ) -> impl Iterator<Item = &'a HandlerRow> + 'a {
+        (!decl.is_none())
+            .then(|| self.by_parent_decl.get(&decl.0))
+            .flatten()
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.rows[i])
+    }
+
+    /// The handler a failing child of type `child` reaches in the locus
+    /// declared at `decl`: the first one it declares for that type.
+    pub fn route_decl(&self, decl: NodeId, child: &str) -> Option<&HandlerRow> {
+        self.handlers_of_decl(decl).find(|r| r.child.name() == child)
+    }
+
     /// Whether some handler, in any parent, restarts a child of locus
     /// type `child` in place: such a child keeps a copy of the params
     /// it was built with.
@@ -151,6 +193,9 @@ impl HandlerRouting {
     fn push(&mut self, row: HandlerRow) {
         let i = self.rows.len();
         self.by_parent.entry(row.parent.clone()).or_default().push(i);
+        if let Some(p) = row.parent_id {
+            self.by_parent_decl.entry(p.index).or_default().push(i);
+        }
         self.first
             .entry((row.parent.clone(), row.child.name().to_string()))
             .or_insert(i);
@@ -164,6 +209,19 @@ impl HandlerRouting {
 pub struct DeclaredNames {
     pub loci: BTreeSet<String>,
     pub aliases: BTreeMap<String, TypeExpr>,
+    /// Each declared locus's declaration: the first a program
+    /// declares, else the bundled stdlib analysis copy's.
+    pub decls: BTreeMap<String, DeclAt>,
+}
+
+/// Where a locus a child type resolves to is declared, by the id the
+/// store that minted it gave the declaration: the programs handed in
+/// (the snapshot's), or the bundled stdlib's analysis copy, which is
+/// minted alone and numbers its own sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclAt {
+    Program(NodeId),
+    Stdlib(NodeId),
 }
 
 impl DeclaredNames {
@@ -178,14 +236,19 @@ impl DeclaredNames {
             for item in hale_syntax::ast::flat_decls(&std.items) {
                 if let TopDecl::Locus(l) = item {
                     out.loci.insert(l.name.name.clone());
+                    out.decls.entry(l.name.name.clone()).or_insert(DeclAt::Stdlib(l.id));
                 }
             }
         }
+        let mut own: BTreeSet<String> = BTreeSet::new();
         for p in programs {
             for item in hale_syntax::ast::flat_decls(&p.items) {
                 match item {
                     TopDecl::Locus(l) => {
                         out.loci.insert(l.name.name.clone());
+                        if own.insert(l.name.name.clone()) {
+                            out.decls.insert(l.name.name.clone(), DeclAt::Program(l.id));
+                        }
                     }
                     TopDecl::Type(t) if t.generics.is_empty() => {
                         if let TypeDeclBody::Alias(te) = &t.body {
@@ -225,20 +288,35 @@ pub fn child_locus_name(
     declared: &DeclaredNames,
     import_renames: &[(Vec<String>, String)],
 ) -> ChildRef {
+    child_locus(te, declared, import_renames).0
+}
+
+/// [`child_locus_name`]'s resolution, with the declaration the locus
+/// is: its own, or a monomorph's template's (a monomorph keeps its
+/// template's identity). `None` for an external child.
+pub fn child_locus(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+) -> (ChildRef, Option<DeclAt>) {
     match resolve(te, declared, import_renames, &mut Vec::new()) {
-        Some(name) => ChildRef::Locus(name),
-        None => ChildRef::External(written_name(te)),
+        Some((name, decl)) => {
+            let at = declared.decls.get(&decl).copied();
+            (ChildRef::Locus(name), at)
+        }
+        None => (ChildRef::External(written_name(te)), None),
     }
 }
 
-/// The locus name `te` denotes if it denotes one: `None` for a type no
-/// declared locus answers to.
+/// The locus name `te` denotes if it denotes one, with the name of the
+/// declaration that locus is (a monomorph's template): `None` for a
+/// type no declared locus answers to.
 fn resolve(
     te: &TypeExpr,
     declared: &DeclaredNames,
     renames: &[(Vec<String>, String)],
     seen: &mut Vec<String>,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let TypeExpr::Named { path, generic_args, .. } = te else {
         return None;
     };
@@ -248,7 +326,8 @@ fn resolve(
             if !declared.loci.contains(name) {
                 return None;
             }
-            return crate::mangle::mangle_generic_name(name, generic_args).ok();
+            let mangled = crate::mangle::mangle_generic_name(name, generic_args).ok()?;
+            return Some((mangled, name.clone()));
         }
         name.clone()
     } else {
@@ -264,7 +343,7 @@ fn resolve(
             resolve(target, declared, renames, seen)
         }
         Some(_) => None,
-        None => declared.loci.contains(&name).then_some(name),
+        None => declared.loci.contains(&name).then(|| (name.clone(), name)),
     }
 }
 
@@ -311,9 +390,19 @@ pub fn handler_rows(
                 continue;
             }
             let (ops, retry_bound) = recovery_ops(&fd.body);
+            let (child, at) = child_locus(&fd.params[0].ty, &declared, import_renames);
+            let child_decl = match at {
+                Some(DeclAt::Program(n)) => snapshot.site_id(n).map(SiteRef::user),
+                Some(DeclAt::Stdlib(n)) => crate::stdlib_bodies::identities()
+                    .and_then(|ids| ids.site_id(n))
+                    .map(SiteRef::stdlib),
+                None => None,
+            };
             routing.push(HandlerRow {
                 parent: l.name.name.clone(),
-                child: child_locus_name(&fd.params[0].ty, &declared, import_renames),
+                parent_id: snapshot.site_id(l.id),
+                child,
+                child_decl,
                 written: written_name(&fd.params[0].ty),
                 error_type: written_name(&fd.params[1].ty),
                 ordinal,

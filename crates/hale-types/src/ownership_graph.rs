@@ -195,6 +195,69 @@ pub struct OwnershipGraph {
     /// child locus type → the set of locus types that instantiate it
     /// in a method body (the ancestor-edge relation).
     pub instantiated_by: BTreeMap<String, BTreeSet<String>>,
+    /// The `accept` rows by the declaring locus's identity, each with
+    /// its param type as written: what a specialization of a generic
+    /// template accepts ([`AcceptRows::specialize`]).
+    pub accept_rows: AcceptRows,
+}
+
+/// One `accept` param, by the locus that declares it.
+#[derive(Debug, Clone)]
+pub struct AcceptRow {
+    /// The declaring locus's identity (a monomorph keeps its
+    /// template's).
+    pub owner_id: NodeId,
+    pub owner: String,
+    /// The param's type as written: a generic template's names its
+    /// parameters.
+    pub ty: TypeExpr,
+    /// The `accept` declaration's span: the unminted fallback's
+    /// containment test.
+    pub span: Span,
+}
+
+/// Every locus's `accept` rows, with what their types resolve against.
+#[derive(Debug, Clone, Default)]
+pub struct AcceptRows {
+    rows: Vec<AcceptRow>,
+    declared: DeclaredNames,
+    renames: Vec<(Vec<String>, String)>,
+}
+
+impl AcceptRows {
+    pub fn rows(&self) -> &[AcceptRow] {
+        &self.rows
+    }
+
+    /// The child loci a specialization of `template` accepts: the
+    /// template's rows, asked for by its identity, each type passed
+    /// through `substitute` (the consumer's substitution of the
+    /// template's parameters by the specialization's arguments) and
+    /// resolved by `child_locus_name` the way a concrete locus's are. A
+    /// template no entry point minted is matched by its name and span.
+    pub fn specialize(
+        &self,
+        template: &LocusDecl,
+        substitute: impl Fn(&TypeExpr) -> TypeExpr,
+    ) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for r in &self.rows {
+            let same = if r.owner_id.is_none() || template.id.is_none() {
+                r.owner == template.name.name
+                    && template.span.start <= r.span.start
+                    && r.span.end <= template.span.end
+            } else {
+                r.owner_id.0 == template.id.0
+            };
+            if !same {
+                continue;
+            }
+            if let ChildRef::Locus(name) = child_locus_name(&substitute(&r.ty), &self.declared, &self.renames) {
+                out.insert(name);
+            }
+        }
+        out
+    }
 }
 
 impl OwnershipGraph {
@@ -723,6 +786,7 @@ struct OwnershipWalk {
     declarations: Vec<LocusDeclRow>,
     declared: DeclaredNames,
     has_entry_point: bool,
+    accept_rows: AcceptRows,
 }
 
 /// Walk every locus once, collecting accepts + method-body
@@ -768,6 +832,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
     // Pass 2: per-locus facts.
     let mut facts: BTreeMap<String, LocusFacts> = BTreeMap::new();
     let mut declarations: Vec<LocusDeclRow> = Vec::new();
+    let mut accept_rows: Vec<AcceptRow> = Vec::new();
     struct WalkCx<'a> {
         locus_types: &'a BTreeSet<String>,
         declared: &'a DeclaredNames,
@@ -779,6 +844,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         cx: &WalkCx<'_>,
         facts: &mut BTreeMap<String, LocusFacts>,
         declarations: &mut Vec<LocusDeclRow>,
+        accept_rows: &mut Vec<AcceptRow>,
     ) {
         let (locus_types, declared, renames) = (cx.locus_types, cx.declared, cx.renames);
         for item in items {
@@ -819,6 +885,12 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                             LocusMember::Lifecycle(ld) => {
                                 if ld.kind == LifecycleKind::Accept {
                                     for p in &ld.params {
+                                        accept_rows.push(AcceptRow {
+                                            owner_id: l.id,
+                                            owner: l.name.name.clone(),
+                                            ty: p.ty.clone(),
+                                            span: ld.span,
+                                        });
                                         if let ChildRef::Locus(name) =
                                             child_locus_name(&p.ty, declared, renames)
                                         {
@@ -887,21 +959,26 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                         s.enclosing_decl = decl;
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations),
+                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows),
                 _ => {}
             }
         }
     }
     let cx = WalkCx { locus_types: &locus_types, declared: &declared, renames, snapshot: &bundle.snapshot };
     for program in &programs {
-        walk(&program.items, &cx, &mut facts, &mut declarations);
+        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows);
     }
 
     OwnershipWalk {
         facts,
         declarations,
-        declared,
+        declared: declared.clone(),
         has_entry_point,
+        accept_rows: AcceptRows {
+            rows: accept_rows,
+            declared,
+            renames: renames.to_vec(),
+        },
     }
 }
 
@@ -1066,6 +1143,7 @@ pub fn build_ownership_graph(
         declarations: walk.declarations,
         accepts,
         instantiated_by,
+        accept_rows: walk.accept_rows,
     }
 }
 

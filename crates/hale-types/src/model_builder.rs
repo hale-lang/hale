@@ -569,6 +569,11 @@ pub fn derive_application_model_over(
         }
     }
     let mut fn_rows: BTreeMap<String, FnInfo> = BTreeMap::new();
+    // The failure handlers' rows, keyed by the handler's site (the
+    // routing row's identity, `HandlerRow::is_row_of`), each with its
+    // name: two handlers are two rows whatever their signatures spell.
+    // A handler nothing minted keys by its name, in `fn_rows`.
+    let mut handler_fn_rows: BTreeMap<u32, (String, FnInfo)> = BTreeMap::new();
     {
         // depth > 0 = inside a module: the behavior summary's body
         // walk does not recurse into modules, so those bodies are
@@ -651,34 +656,36 @@ pub fn derive_application_model_over(
                         // on_failure handlers ARE executable hooks;
                         // the summary never walks them, so they
                         // enter the universe with an UnanalyzedBody
-                        // hole. Uniqueness: one handler per
-                        // (child, err) signature.
+                        // hole. The row is the handler's, by its
+                        // site; its name spells the (child, err)
+                        // signature.
                         let sig = fd
                             .params
                             .iter()
                             .map(|pa| te_name_of(&pa.ty))
                             .collect::<Vec<_>>()
                             .join(",");
-                        fn_rows.insert(
-                            format!("{}::on_failure({})", ld, sig),
-                            FnInfo {
-                                kind: FunctionKind::FailureHandler,
-                                locus: Some(ld.clone()),
-                                display: format!(
-                                    "{}::on_failure({})",
-                                    ld_display,
-                                    fd.params
-                                        .iter()
-                                        .map(|pa| name(&te_name_of(
-                                            &pa.ty
-                                        )))
-                                        .collect::<Vec<_>>()
-                                        .join(",")
-                                ),
-                                span: Some(fd.span),
-                                unanalyzed: true,
-                            },
-                        );
+                        let handler_name = format!("{}::on_failure({})", ld, sig);
+                        let row = FnInfo {
+                            kind: FunctionKind::FailureHandler,
+                            locus: Some(ld.clone()),
+                            display: format!(
+                                "{}::on_failure({})",
+                                ld_display,
+                                fd.params
+                                    .iter()
+                                    .map(|pa| name(&te_name_of(&pa.ty)))
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            span: Some(fd.span),
+                            unanalyzed: true,
+                        };
+                        if fd.id.is_none() {
+                            fn_rows.insert(handler_name, row);
+                        } else {
+                            handler_fn_rows.insert(fd.id.0, (handler_name, row));
+                        }
                         continue;
                     }
                     _ => continue,
@@ -722,10 +729,25 @@ pub fn derive_application_model_over(
         .filter(|k| user_key(k))
         .map(fn_name)
         .collect();
-    let fn_id: BTreeMap<&String, FunctionId> = fn_rows
-        .keys()
+    // The function universe in id order: every row ranked by its name
+    // (the handler rows' names among the others'; a name two handler
+    // rows share ranks them by site). `fn_id` answers a name for the
+    // rows keyed by one, never for a handler's.
+    let mut fn_universe: Vec<(&String, &FnInfo, Option<u32>)> = fn_rows
+        .iter()
+        .map(|(n, info)| (n, info, None))
+        .chain(handler_fn_rows.iter().map(|(site, (n, info))| (n, info, Some(*site))))
+        .collect();
+    fn_universe.sort_by(|a, b| (a.0, a.2).cmp(&(b.0, b.2)));
+    let fn_universe: Vec<(FunctionId, &String, &FnInfo)> = fn_universe
+        .into_iter()
         .enumerate()
-        .map(|(i, k)| (k, FunctionId(i as u32)))
+        .map(|(i, (n, info, _))| (FunctionId(i as u32), n, info))
+        .collect();
+    let fn_id: BTreeMap<&String, FunctionId> = fn_universe
+        .iter()
+        .filter(|(_, n, _)| fn_rows.contains_key(*n))
+        .map(|(id, n, _)| (*n, *id))
         .collect();
 
     // Phases (distinct names) + phase_of.
@@ -1775,13 +1797,34 @@ pub fn derive_application_model_over(
     //
     // The rows are the bundle's, demanded once per snapshot: a child
     // declared in a sibling file is a locus here as it is to lowering.
+    //
+    // Parent and child join the locus table by declaration identity:
+    // the row's parent site, and the site of the declaration its child
+    // resolves to (a monomorph's template's). A child declared outside
+    // the snapshot's programs (a stdlib locus, which the model has no
+    // declaration for) is external, by its written name. A bundle no
+    // entry point minted has no sites, and joins by name.
+    let mut locus_by_site: BTreeMap<u32, LocusDeclId> = BTreeMap::new();
+    for l in &ast.loci {
+        if !l.id.is_none() {
+            locus_by_site.insert(l.id.0, locus_id[&l.name.name]);
+        }
+    }
     for (authored, row) in inputs.handlers.rows().iter().enumerate() {
-        let parent = locus_id[&row.parent];
-        let declared = match &row.child {
-            ChildRef::Locus(n) => {
+        let parent = match row.parent_id {
+            Some(site) => locus_by_site[&site.index],
+            None => locus_id[&row.parent],
+        };
+        let declared = match (&row.child, row.child_decl) {
+            (ChildRef::External(_), _) => None,
+            (ChildRef::Locus(_), Some(d)) => match d.universe {
+                crate::placement::SiteUniverse::User => locus_by_site.get(&d.id.index),
+                crate::placement::SiteUniverse::StdlibAnalysis => None,
+            },
+            (ChildRef::Locus(_), None) if row.id.is_some() => None,
+            (ChildRef::Locus(n), None) => {
                 locus_id.get(n).or_else(|| locus_id.get(&row.written))
             }
-            ChildRef::External(_) => None,
         };
         let child = match declared {
             Some(id) => SupervisedRef::Locus(*id),
@@ -2120,7 +2163,8 @@ pub fn derive_application_model_over(
             direct_effects.insert(fn_name(k), classes);
         }
     }
-    for (n, info) in &fn_rows {
+    for &(fid, n, info) in &fn_universe {
+        debug_assert_eq!(e.functions.len(), fid.index());
         let pid = match info.span {
             Some(sp) => intern_span(&mut records, sp),
             None => intern_synth(&mut records, "fn (summary key)"),
@@ -2251,13 +2295,13 @@ pub fn derive_application_model_over(
 
     let mut r = Relations::default();
     // member_of + phase_of from the fn rows.
-    for (n, info) in &fn_rows {
+    for &(fid, n, info) in &fn_universe {
         if let Some(ld) = &info.locus {
             if let Some(lid) = locus_id.get(ld) {
                 let pid =
                     intern_synth(&mut records, "locus membership");
                 r.member_of.push(MemberOf {
-                    function: fn_id[n],
+                    function: fid,
                     locus: *lid,
                     provenance: pid,
                 });
@@ -2266,7 +2310,7 @@ pub fn derive_application_model_over(
         if let Some((phase, _)) = phase_of_pairs.get(n) {
             let pid = intern_synth(&mut records, "phase relation");
             r.phase_of.push(PhaseOf {
-                function: fn_id[n],
+                function: fid,
                 phase: phase_id[phase],
                 provenance: pid,
             });
@@ -2395,7 +2439,7 @@ pub fn derive_application_model_over(
     // Unanalyzed bodies (module scope, on_failure): declared
     // executable entities whose calls/publishes/effects the summary
     // never walked — typed holes keep the capabilities honest.
-    for (n, info) in &fn_rows {
+    for &(fid, _, info) in &fn_universe {
         if info.unanalyzed {
             let pid = match info.span {
                 Some(sp) => intern_span(&mut records, sp),
@@ -2403,7 +2447,7 @@ pub fn derive_application_model_over(
             };
             holes
                 .entry((
-                    EntityRef::Function(fn_id[n]),
+                    EntityRef::Function(fid),
                     HoleKind::UnanalyzedBody,
                     "body not walked by the behavior analysis"
                         .to_string(),

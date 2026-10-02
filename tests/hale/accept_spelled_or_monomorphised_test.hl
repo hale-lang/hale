@@ -4,8 +4,9 @@
 // and the graph resolves the type with the one child resolver
 // (`child_locus_name`, F.40 phase 1.4), so an alias and generic
 // arguments name the locus lowering sees. The graph's rows are per
-// declaration: a monomorph (`Holder<Int>` lowered as `Holder_Int`) has
-// none and keeps the lowering's own read. Each parent here counts its
+// declaration: a monomorph (`Holder<Int>` lowered as `Holder_Int`)
+// reads its template's, asked for by the template's identity and
+// specialized by its type arguments. Each parent here counts its
 // accepts.
 
 locus Child {

@@ -168,8 +168,8 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         // declaration finds its routing row by identity
         // (`HandlerRow::is_row_of`; a monomorph's members are its
         // template's, ids included, and the span is only the fallback
-        // for a declaration nothing minted) and lowers into the fn at
-        // the row's ordinal in the handler table, never into another
+        // for a declaration nothing minted) and lowers into the fn the
+        // handler table holds for the row's site, never into another
         // handler's fn (#1199).
         let failure_decls = l.members.iter().filter_map(|m| match m {
             LocusMember::Failure(fd) => Some(fd),
@@ -178,18 +178,18 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         for failure_decl in failure_decls {
             let row = self
                 .handlers
-                .handlers_of(&info.routing_name)
+                .handlers_of_decl(info.decl)
                 .find(|r| r.is_row_of(failure_decl))
                 .ok_or_else(|| {
                     CodegenError::Unsupported(format!(
                         "locus `{}` declares an on_failure handler the \
-                         handler routing has no row for (rows of `{}`)",
-                        l.name.name, info.routing_name
+                         handler routing has no row for",
+                        l.name.name
                     ))
                 })?;
-            let (child_locus_name, ff) = info
-                .failure_handlers
-                .get(row.ordinal as usize)
+            let (child_locus_name, ff) = row
+                .id
+                .and_then(|site| info.failure_handlers.get(&site))
                 .cloned()
                 .ok_or_else(|| {
                     CodegenError::Unsupported(format!(
