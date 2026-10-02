@@ -287,7 +287,12 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    are; an override is still evaluated where the literal is,
    except a locus it builds as the field's value, which is part
    of the pinned subtree (`runtime.md` § "Placement classes",
-   m27 + m28a).
+   m27 + m28a). For a field placed on `cooperative(pool = X)`
+   the same holds on X's worker, as the first job of that field:
+   its defaults and every locus nested under it are computed
+   there, and the literal completes once they are (the pool side
+   of m27 + m28a); the field's own `birth()` still runs where
+   the literal is.
 2. The nearest enclosing ancestor that declares `accept(c: I)`
    for the child's interface is the **owner** (innermost-wins —
    interest-based ownership / accept bubbling; see below and

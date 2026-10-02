@@ -286,6 +286,20 @@ is evaluated where the literal is; a helper the override builds
 (`Gateway { reg: std::metrics::Registry { namespace: "edge" } }`)
 is still the gateway's, built on its thread.
 
+A locus placed on a pool (`cooperative(pool = io)`) gets the same
+start on `io`'s worker: its params, and every helper nested under
+it with that helper's `birth()` and inline `run()`, are built on
+the worker as the locus's first job there, and the literal returns
+once they are. A helper that waits in that `run()` for a message to
+itself gets it: a `std::time::sleep` there lets the worker handle
+`io`'s queued messages. The pool locus's own `birth()` still runs
+where the literal is, and its `run()` is posted to the worker after
+that, as before. Two locus fields on one pool are built in turn,
+one after the other. The build waits behind whatever the worker is
+already running, so a locus placed after a sibling whose `run()`
+never returns on the same pool (without `where async_io`) is never
+built, and the program stops there.
+
 ## The bus crosses threads for you
 
 When a cooperative locus on one pool publishes to a subscriber on

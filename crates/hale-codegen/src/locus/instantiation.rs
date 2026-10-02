@@ -2407,8 +2407,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (`thread_init`, below), so a nested child that waits during
         // its initialization for a delivery through the mailbox is
         // drained by the thread the delivery is routed to.
-        let thread_init = matches!(info.schedule_class, ScheduleClass::Pinned(_));
-        let anchor_route = if thread_init {
+        //
+        // The pool side (inventory C49): a root placed on a worker pool
+        // initializes its params on the pool's worker the same way, as
+        // the first job of that root (`pool_init`), so its nested bodies
+        // run on the thread its nested handlers run on. A target without
+        // threads runs its pools' cells on the one thread it has.
+        let on_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
+        let pool_init = if on_pinned || self.is_wasm { None } else { pool_anchor.clone() };
+        let thread_init = on_pinned || pool_init.is_some();
+        let anchor_route = if on_pinned {
             match info.mailbox_field_idx {
                 Some(mb_idx) => {
                     let create_fn = self
@@ -2591,10 +2599,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // thread creates the thread after it (`finish_pinned_init`) and
         // waits for the params. Inside, `self_ptr` is the init's own
         // parameter; any other value of the instantiating function the
-        // loop reads is captured into the thread's argument block.
+        // loop reads is captured into the thread's argument block. A
+        // root on a worker pool is lowered the same way, into
+        // `__pool_init_<L>`, which the instantiating thread posts to the
+        // pool and waits for (C49).
         let caller_self_ptr = self_ptr;
         let mut pinned_init = if thread_init {
-            let p = self.begin_pinned_init(locus_name, &info)?;
+            let p = self.begin_pinned_init(locus_name, &info, pool_init.clone())?;
             if let Some(pis) = self.params_init_self.as_mut() {
                 pis.self_ptr = p.self_param;
             }
@@ -3318,10 +3329,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         // The pinned locus's init ends here: back in the instantiating
-        // function, its thread is created and awaited.
+        // function, its thread is created and awaited (a pool root's
+        // init is posted to its pool and awaited).
         let self_ptr = caller_self_ptr;
         let pinned_start = match pinned_init {
-            Some(p) => Some(self.finish_pinned_init(p, locus_name, &info, self_ptr)?),
+            Some(p) => self.finish_pinned_init(p, locus_name, &info, self_ptr)?,
             None => None,
         };
         self.current_arena_override = prev_arena_override;
@@ -4777,7 +4789,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .left()
                             .expect("lotus_coop_pool_lookup returns ptr")
                             .into_pointer_value()
-                    } else if owned_beyond_scope {
+                    } else if owned_beyond_scope && !self.pool_init {
                         let current_fn = self
                             .module
                             .get_function("lotus_coop_pool_current")
@@ -5176,11 +5188,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 }
 
 /// A pinned locus's params-init, lowered into a function its own thread
-/// runs (the review of PR #1319, correcting U-6): what
+/// runs (the review of PR #1319, correcting U-6), or a pool-placed
+/// root's, which its pool's worker runs (C49): what
 /// [`Cx::begin_pinned_init`] took of the instantiating function's
 /// lowering state, given back by [`Cx::finish_pinned_init`].
 pub(crate) struct PinnedInit<'ctx> {
     init_fn: inkwell::values::FunctionValue<'ctx>,
+    /// The pool a pool-placed root's init is posted to; `None` for a
+    /// pinned locus.
+    pool: Option<String>,
+    saved_pool_init: bool,
     /// The locus, as the init function's first parameter.
     pub(crate) self_param: PointerValue<'ctx>,
     saved_block: inkwell::basic_block::BasicBlock<'ctx>,
@@ -5219,8 +5236,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.get_function(name).unwrap_or_else(|| {
             let ty = if name == "lotus_pinned_start_create" {
                 ptr_t.fn_type(&[], false)
-            } else if name == "lotus_pinned_start_await_ready" {
+            } else if name == "lotus_pinned_start_await_ready" || name == "lotus_pool_start_await_ready" {
                 self.context.void_type().fn_type(&[ptr_t.into(), ptr_t.into()], false)
+            } else if name == "lotus_pool_start_post" {
+                self.context.void_type().fn_type(&[ptr_t.into(); 5], false)
             } else {
                 self.context.void_type().fn_type(&[ptr_t.into()], false)
             };
@@ -5236,21 +5255,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// init, on the locus's thread), no loop, and not in `main`. A
     /// nested subscription registers against the locus's mailbox,
     /// read back from its slot.
+    ///
+    /// With `pool`, a root placed on that worker pool (C49): the same
+    /// lowering into `__pool_init_<L>(self, start)`, which the pool's
+    /// worker runs as the root's first job. A nested subscription
+    /// registers against the pool, as before, and a nested cooperative
+    /// `run()` runs inline (`Cx::pool_init`).
     pub(crate) fn begin_pinned_init(
         &mut self,
         locus_name: &str,
         info: &LocusInfo<'ctx>,
+        pool: Option<String>,
     ) -> Result<PinnedInit<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let saved_block = self
             .builder
             .get_insert_block()
             .expect("a pinned instantiation inside an active block");
+        let init_name = match pool {
+            Some(_) => format!("__pool_init_{}", locus_name),
+            None => format!("__pinned_init_{}", locus_name),
+        };
         let init_fn = self.module.add_function(
-            &format!("__pinned_init_{}", locus_name),
+            &init_name,
             self.context.void_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
             Some(inkwell::module::Linkage::Internal),
         );
+        let saved_pool_init = std::mem::replace(&mut self.pool_init, pool.is_some());
         let saved_di = (self.di_current_loc, self.di_current_pos);
         let entry = self.context.append_basic_block(init_fn, "entry");
         self.builder.position_at_end(entry);
@@ -5277,6 +5308,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         Ok(PinnedInit {
             init_fn,
+            pool,
+            saved_pool_init,
             self_param,
             saved_block,
             saved_di,
@@ -5303,6 +5336,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         std::mem::swap(&mut self.current_fn, &mut p.saved_fn);
         std::mem::swap(&mut self.loops, &mut p.saved_loops);
         std::mem::swap(&mut self.in_main, &mut p.saved_in_main);
+        std::mem::swap(&mut self.pool_init, &mut p.saved_pool_init);
         std::mem::swap(&mut self.anchor_route, &mut p.route);
         p.parent = std::mem::replace(&mut self.current_instantiation_parent, Some(caller_self));
         self.builder.position_at_end(p.saved_block);
@@ -5321,6 +5355,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         std::mem::swap(&mut self.current_fn, &mut p.saved_fn);
         std::mem::swap(&mut self.loops, &mut p.saved_loops);
         std::mem::swap(&mut self.in_main, &mut p.saved_in_main);
+        std::mem::swap(&mut self.pool_init, &mut p.saved_pool_init);
         std::mem::swap(&mut self.anchor_route, &mut p.route);
         self.current_instantiation_parent = p.parent.take();
         self.deferred_dissolves.push(std::mem::take(&mut p.init_frame));
@@ -5335,13 +5370,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// function the init reads (`capture_into_init`), the thread is
     /// created with its affinity, and the instantiating thread waits
     /// until the params are initialized.
+    ///
+    /// For a pool-placed root (C49) the argument block is the same, and
+    /// instead of a thread the init is posted to the pool as one job
+    /// (`lotus_pool_start_post`), which the instantiating thread waits
+    /// for the same way (`lotus_pool_start_await_ready`, which also frees
+    /// the gate); no thread to give a body, so `None`.
     pub(crate) fn finish_pinned_init(
         &mut self,
         p: PinnedInit<'ctx>,
         locus_name: &str,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
-    ) -> Result<PinnedStart<'ctx>, CodegenError> {
+    ) -> Result<Option<PinnedStart<'ctx>>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         self.flush_dissolve_frame_kind(false)?;
@@ -5351,6 +5392,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_fn = p.saved_fn;
         self.loops = p.saved_loops;
         self.in_main = p.saved_in_main;
+        self.pool_init = p.saved_pool_init;
         self.builder.position_at_end(p.saved_block);
         self.di_current_loc = p.saved_di.0;
         self.di_current_pos = p.saved_di.1;
@@ -5359,12 +5401,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => self.builder.unset_current_debug_location(),
         }
         let caller_fn = p.saved_block.get_parent().expect("block in a function");
-        let (start_ty, captures) = self.capture_into_init(p.init_fn, caller_fn, locus_name)?;
+        let what = if p.pool.is_some() { "pool-placed locus" } else { "pinned locus" };
+        let (start_ty, captures) = self.capture_into_init(p.init_fn, caller_fn, locus_name, what)?;
+        let tag = if p.pool.is_some() { "pool" } else { "pinned" };
 
-        let start = self.alloca_in_entry(start_ty.into(), &format!("{}.pinned.start", locus_name))?;
+        let start = self.alloca_in_entry(start_ty.into(), &format!("{}.{}.start", locus_name, tag))?;
         let gate = self
             .builder
-            .build_call(self.pinned_start_fn("lotus_pinned_start_create"), &[], &format!("{}.pinned.gate", locus_name))
+            .build_call(self.pinned_start_fn("lotus_pinned_start_create"), &[], &format!("{}.{}.gate", locus_name, tag))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
@@ -5375,9 +5419,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, v) in slots.into_iter().enumerate() {
             let slot = self
                 .builder
-                .build_struct_gep(start_ty, start, i as u32, &format!("{}.pinned.start.{}", locus_name, i))
+                .build_struct_gep(start_ty, start, i as u32, &format!("{}.{}.start.{}", locus_name, tag, i))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.build_store(slot, v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        if let Some(pool) = &p.pool {
+            let name = self.global_string(pool);
+            let lookup_fn = self.module.get_function("lotus_coop_pool_lookup").expect("lotus_coop_pool_lookup declared");
+            let pool_ptr = self
+                .builder
+                .build_call(lookup_fn, &[name.into()], &format!("{}.pool.lookup", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_coop_pool_lookup returns ptr")
+                .into_pointer_value();
+            let init_ptr = p.init_fn.as_global_value().as_pointer_value();
+            self.builder
+                .build_call(
+                    self.pinned_start_fn("lotus_pool_start_post"),
+                    &[pool_ptr.into(), init_ptr.into(), self_ptr.into(), start.into(), gate.into()],
+                    "",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let queue = self.start_wait_queue(locus_name, tag)?;
+            self.builder
+                .build_call(self.pinned_start_fn("lotus_pool_start_await_ready"), &[gate.into(), queue.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(None);
         }
 
         let thread_main = self.module.add_function(
@@ -5404,26 +5474,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.emit_pinned_affinity(&info.schedule_class, tid_alloca, locus_name)?;
-        // The wait drains the instantiating thread's own mailbox as a
-        // yield there would: the program-wide queue (owner-guarded, so
-        // only main runs it) and its TLS pinned mailbox. A bundle that
-        // can enqueue nothing passes no queue (`Cx::bus_inert`).
-        let queue = if self.bus_inert {
-            ptr_t.const_null()
-        } else {
-            let queue_global = self
-                .module
-                .get_global("lotus.bus_queue.global")
-                .expect("bus queue global declared");
-            self.builder
-                .build_load(ptr_t, queue_global.as_pointer_value(), &format!("{}.pinned.queue", locus_name))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value()
-        };
+        let queue = self.start_wait_queue(locus_name, tag)?;
         self.builder
             .build_call(self.pinned_start_fn("lotus_pinned_start_await_ready"), &[gate.into(), queue.into()], "")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok(PinnedStart { thread_main, init_fn: p.init_fn, start_ty, gate, tid_alloca })
+        Ok(Some(PinnedStart { thread_main, init_fn: p.init_fn, start_ty, gate, tid_alloca }))
+    }
+
+    /// The readiness wait's queue argument. The wait drains the
+    /// instantiating thread's own mailbox as a yield there would: the
+    /// program-wide queue (owner-guarded, so only main runs it) and its
+    /// TLS pinned mailbox. A bundle that can enqueue nothing passes no
+    /// queue (`Cx::bus_inert`).
+    fn start_wait_queue(&mut self, locus_name: &str, tag: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        if self.bus_inert {
+            return Ok(ptr_t.const_null());
+        }
+        let queue_global = self.module.get_global("lotus.bus_queue.global").expect("bus queue global declared");
+        Ok(self
+            .builder
+            .build_load(ptr_t, queue_global.as_pointer_value(), &format!("{}.{}.queue", locus_name, tag))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value())
     }
 
     /// The values of the instantiating function `caller` that the code
@@ -5444,7 +5517,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         init: inkwell::values::FunctionValue<'ctx>,
         caller: inkwell::values::FunctionValue<'ctx>,
         locus_name: &str,
+        what: &str,
     ) -> Result<(inkwell::types::StructType<'ctx>, Vec<inkwell::values::BasicValueEnum<'ctx>>), CodegenError> {
+        let on = if what == "pinned locus" { "its own thread" } else { "its pool's worker" };
         use inkwell::llvm_sys::core::{
             LLVMGetBasicBlockParent, LLVMGetInstructionParent, LLVMGetNumOperands, LLVMGetOperand,
             LLVMGetParamParent, LLVMGetTypeKind, LLVMIsAArgument, LLVMIsAInstruction, LLVMSetOperand,
@@ -5473,10 +5548,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             let parent = LLVMGetBasicBlockParent(LLVMValueAsBasicBlock(op));
                             if parent != init_ref {
                                 return Err(CodegenError::Unsupported(format!(
-                                    "pinned locus `{}`: its params initialize on its own thread, \
+                                    "{} `{}`: its params initialize on {}, \
                                      and an initializer branches out of them (a `return`, a \
                                      propagated failure or a `break` of the enclosing function)",
-                                    locus_name
+                                    what, locus_name, on
                                 )));
                             }
                             continue;
@@ -5497,9 +5572,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     if owner != caller_ref {
                         return Err(CodegenError::LlvmEmit(format!(
-                            "pinned locus `{}`: its params-init reads a value of a function \
+                            "{} `{}`: its params-init reads a value of a function \
                              other than the one instantiating it",
-                            locus_name
+                            what, locus_name
                         )));
                     }
                     let at = match captured.iter().position(|v| *v == op) {

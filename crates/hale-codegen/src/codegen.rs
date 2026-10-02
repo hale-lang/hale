@@ -1526,6 +1526,7 @@ pub fn build_resolved(
         cooperative_pool_for_next_locus_instantiation: None,
         current_cooperative_pool: None,
         anchor_route: None,
+        pool_init: false,
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
         restart_fns: BTreeMap::new(),
@@ -3940,6 +3941,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// program-wide queue only main drains. `None` outside any
     /// anchor's params: main's queue, as before.
     pub(crate) anchor_route: Option<AnchorRoute<'ctx>>,
+    /// True while lowering a pool-placed root's params init
+    /// (`__pool_init_<L>`, inventory C49), which the pool's worker runs:
+    /// a nested cooperative `run()` there runs inline, in the params
+    /// loop, as it does everywhere else a params loop runs, instead of
+    /// being posted to the pool the worker is on.
+    pub(crate) pool_init: bool,
     /// F.31 Phase 4b: synthesized `__coop_pool_run_<L>` fn ptrs.
     /// Each wrapper takes `(self_ptr, _payload_ptr)` matching
     /// the pool-handler signature and calls the locus's run()

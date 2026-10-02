@@ -54,7 +54,8 @@
 //! its `birth()` and its `run()` run on, inside them, and answers the
 //! count with both: under a pinned anchor they are the anchor's thread,
 //! since the anchor's subtree initializes there (the review of PR
-//! #1319, correcting U-6).
+//! #1319, correcting U-6), and under a pool anchor its `birth()` is the
+//! pool's worker, since the root's subtree initializes there (C49).
 //!
 //! The registration route that puts a nested handler on its anchor's
 //! thread (the correspondence's U-6) is pinned at IR level, with the
@@ -69,6 +70,19 @@
 //! platform, so the runtime's whole translation unit is compiled for
 //! the host and for wasm32. A temporary locus of a pinned
 //! default is dissolved when the init ends, on the anchor's thread.
+//!
+//! **The pool side (inventory C49).** A root placed on a worker pool
+//! initializes its subtree on the pool's worker, as the root's first job,
+//! and the instantiating thread waits for it the same way. The review's
+//! program runs under a pool root beside a pinned one, verbatim and
+//! measured (every body of the nested child and its handler on one
+//! thread: the pool's worker, which a root `Probe` on the same pool
+//! reports, or the pinned anchor's); a child two levels down; two pool
+//! roots on one pool, initialized in post order on the one worker; a
+//! root on an `async_io` pool, whose init never parks; and the round
+//! trip through main, with its negative control. The IR pins the post,
+//! the wait and the run's post in the instantiating function, and the
+//! nested registration and birth in `__pool_init_<L>`.
 //!
 //! The outcomes measured today that contradict the spec are listed in
 //! [`KNOWN_OPEN`] and [`KNOWN_OPEN_FLAVORS`], each asserted to FAIL in
@@ -241,14 +255,13 @@ fn expected(case: Case) -> Expect {
 /// The domain the receiver's own `birth()` and `run()` run in, measured
 /// inside them: a nested receiver's under a pinned anchor is the
 /// anchor's, since the anchor's subtree initializes on its thread (the
-/// review of PR #1319); a root receiver's is main's. Under a pool anchor
-/// it is not asserted: the receiver has no `run()` (its owner has one),
-/// and where a pool-placed tree is born is decision line 3, still
-/// pending (inventory C10).
+/// review of PR #1319), and under a pool anchor the pool's worker, since
+/// the anchor's subtree initializes there (C49); a root receiver's is
+/// main's. Under the pool anchor the receiver has no `run()` (its owner
+/// has one), so only its `birth()` is held.
 fn expected_bodies(case: Case) -> Option<Expect> {
     match case {
-        Case::A => Some(Expect::Anchor),
-        Case::B => None,
+        Case::A | Case::B => Some(Expect::Anchor),
         Case::C | Case::Adapter => Some(Expect::Main),
     }
 }
@@ -366,6 +379,9 @@ struct Observed {
     /// The threads the receiver's `birth()` and `run()` ran on, from its
     /// last count (0 for a body it does not have).
     bodies: Option<(i64, i64)>,
+    /// Whether the receiver has a `run()` (not under a pool anchor,
+    /// whose own `run()` reports).
+    recv_runs: bool,
     done: bool,
     timeout: Option<String>,
     status: Option<i32>,
@@ -440,7 +456,7 @@ fn run(case: Case, variant: Variant, arm: Arm) -> Observed {
     };
     let stdout = reader.join().unwrap_or_default();
     let _ = std::fs::remove_file(&bin);
-    parse(&stdout, status)
+    Observed { recv_runs: case != Case::B, ..parse(&stdout, status) }
 }
 
 /// The thread a report came from, named relative to the run's anchor
@@ -520,6 +536,10 @@ fn judge(o: &Observed, variant: Variant, expect: Expect, bodies: Option<Expect>)
             return Err("the receiver never reported its birth() and run() threads".into());
         };
         for (body, t) in [("birth()", btid), ("run()", rtid)] {
+            // A receiver with no `run()` reports 0 for it.
+            if body == "run()" && t == 0 && !o.recv_runs {
+                continue;
+            }
             if t != body_want {
                 return Err(format!(
                     "the receiver's {body} ran on {}, expected {}",
@@ -634,6 +654,7 @@ fn the_oracle_reports_a_handler_on_the_wrong_thread() {
         seen: (1..=5).map(|seq| (1, seq, control[0])).collect(),
         counts: vec![(1, 5, control[0])],
         bodies: o.bodies,
+        recv_runs: o.recv_runs,
         main: o.main,
         ready: o.ready.clone(),
         done: o.done,
@@ -1145,6 +1166,297 @@ fn the_runtime_compiles_for_wasm32() {
     runtime_syntax_check(clang, &["--target=wasm32", "-mbulk-memory", "-Wno-builtin-requires-header"]);
 }
 
+/// The pool side of the startup (inventory C49). A root placed on a
+/// worker pool initializes its subtree on the pool's worker, as the
+/// first job of that root, and the instantiating thread waits for it as
+/// it waits for a pinned anchor. `Probe`, a root on the same pool with
+/// no subtree, reports the worker's thread from its posted `run()`.
+const POOL_PROBE: &str = r#"
+locus Probe { run() { println("WORKER tid=" + to_string(pthread_self())); } }
+"#;
+
+/// Where a startup program's anchor runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Anchor {
+    Pinned,
+    Pool,
+    /// The pool, declared `where async_io`.
+    AsyncPool,
+}
+
+/// `field`'s placement entry under `anchor`.
+fn placed(anchor: Anchor, field: &str) -> String {
+    match anchor {
+        Anchor::Pinned => format!("{field}: pinned;"),
+        Anchor::Pool => format!("{field}: cooperative(pool = side);"),
+        Anchor::AsyncPool => format!("{field}: cooperative(pool = side) where async_io;"),
+    }
+}
+
+/// The probe's placement: the pool the anchor shares, or, beside a
+/// pinned anchor, a classic one.
+fn probe_placed(anchor: Anchor) -> String {
+    placed(if anchor == Anchor::AsyncPool { Anchor::AsyncPool } else { Anchor::Pool }, "p")
+}
+
+/// A root `App` over `fields` (each anchored by `anchor`) and the probe,
+/// declared last, below `decls`.
+fn startup_app(decls: &str, fields: &[(&str, &str)], anchor: Anchor) -> String {
+    let params: String = fields
+        .iter()
+        .map(|(f, init)| format!("{f}: {} = {init}; ", init.split(' ').next().unwrap_or_default()))
+        .collect();
+    let placement: String = fields.iter().map(|(f, _)| placed(anchor, f) + " ").collect();
+    format!(
+        "{STARTUP_KID}\n{POOL_PROBE}\n{decls}\nmain locus App {{\n    params {{ {params}p: Probe = Probe {{ }}; }}\n    placement {{ {placement}{} }}\n    run() {{ println(\"APP_READY main=\" + to_string(pthread_self())); }}\n}}\n\nfn main() {{ App {{ }}; }}\n",
+        probe_placed(anchor)
+    )
+}
+
+/// Every `KID_READY` line ran its `birth()`, its handler and its `run()`
+/// on one thread, not main's: under a pool anchor the worker's, under a
+/// pinned one not the worker's either. The threads, in order.
+fn assert_kids_on(stdout: &str, anchor: Anchor, what: &str) -> Vec<i64> {
+    let worker = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("WORKER ").and_then(|_| field(l, "tid")))
+        .unwrap_or_else(|| panic!("{what}: no WORKER\n{stdout}"));
+    let anchors = assert_kids_on_their_anchor(stdout, what);
+    for t in &anchors {
+        match anchor {
+            Anchor::Pinned => assert_ne!(*t, worker, "{what}: a pinned anchor's Kid ran on the pool's worker\n{stdout}"),
+            Anchor::Pool | Anchor::AsyncPool => {
+                assert_eq!(*t, worker, "{what}: the Kid's bodies left the pool's worker\n{stdout}")
+            }
+        }
+    }
+    anchors
+}
+
+/// The reviewer's startup program (C49) under a pool root and under a
+/// pinned one, side by side, in both arms and under ASan. Verbatim it
+/// exits 0 with the nested child ready before the root's `run()`; its
+/// witnessing variant measures the thread inside `Kid`'s `birth()`,
+/// handler and `run()`: one thread, the pool's worker under the pool
+/// root, the anchor's own under the pinned one, never main. Before this
+/// correction the pool root's `Kid` ran `birth()` and `run()` on main
+/// while its handler ran on the worker (inventory C49, the review's
+/// measurement).
+#[test]
+fn the_reviewers_program_initializes_a_pool_roots_subtree_on_its_worker() {
+    for anchor in [Anchor::Pinned, Anchor::Pool] {
+        let verbatim = STARTUP_HANDSHAKE.replace("placement { o: pinned; }", &format!("placement {{ {} }}", placed(anchor, "o")));
+        assert!(verbatim.contains(&placed(anchor, "o")), "the placement was substituted");
+        let measured = startup_app("locus Owner { params { k: Kid = Kid { who: 1 }; } }", &[("o", "Owner { }")], anchor);
+        for arm in [Arm::Devirt, Arm::NoDevirt] {
+            let what = format!("{anchor:?} {arm:?}");
+            let (code, stdout, stderr) = run_startup(&format!("review_{anchor:?}"), &verbatim, arm, true);
+            eprintln!("MEASURE review {what}: exit {code:?}\n{stdout}");
+            assert!(!stderr.contains("AddressSanitizer"), "{what}: ASan reported:\n{stderr}");
+            assert_eq!(code, Some(0), "{what}: exit\n{stdout}\n{stderr}");
+            assert_eq!(stdout.lines().collect::<Vec<_>>(), ["KID_READY", "APP_READY"], "{what}\n{stderr}");
+
+            let (code, stdout, stderr) = run_startup(&format!("review_measured_{anchor:?}"), &measured, arm, true);
+            eprintln!("MEASURE review, measured {what}: exit {code:?}\n{stdout}");
+            assert!(!stderr.contains("AddressSanitizer"), "{what}: ASan reported:\n{stderr}");
+            assert_eq!(code, Some(0), "{what}: exit\n{stdout}\n{stderr}");
+            assert!(stdout.starts_with("KID_READY "), "{what}: the Kid is ready before anything else prints\n{stdout}");
+            assert_eq!(assert_kids_on(&stdout, anchor, &what).len(), 1);
+            assert!(stdout.contains("KID_GONE who=1 got=1 "), "{what}\n{stdout}");
+        }
+    }
+}
+
+/// A `Kid` two levels below a pool root, in both arms under ASan: ready
+/// on the worker, every lifecycle body and its handler there, before the
+/// root's `run()`.
+#[test]
+fn a_child_two_levels_below_a_pool_root_initializes_on_its_worker() {
+    let src = startup_app(
+        "locus Mid { params { k: Kid = Kid { who: 1 }; } }\nlocus Owner { params { m: Mid = Mid { }; } }",
+        &[("o", "Owner { }")],
+        Anchor::Pool,
+    );
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) = run_startup("pool_deep", &src, arm, true);
+        eprintln!("MEASURE pool deep {arm:?}: exit {code:?}\n{stdout}");
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(code, Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        assert!(stdout.starts_with("KID_READY "), "{arm:?}\n{stdout}");
+        assert_eq!(assert_kids_on(&stdout, Anchor::Pool, &format!("{arm:?}")).len(), 1);
+        assert!(stdout.contains("KID_GONE who=1 got=1 "), "{arm:?}\n{stdout}");
+    }
+}
+
+/// Two pool roots on one pool, in both arms under ASan. The inits run in
+/// post order, each complete before the next root's is posted: `Kid` 1 is
+/// ready before `Kid` 2, both before the root's `run()`, both on the one
+/// worker. `Kid` 2's publication reaches `Kid` 1 there too, at a yield of
+/// the second init (its count ends at 2), and `Kid` 2 itself (1).
+#[test]
+fn two_pool_roots_on_one_pool_initialize_in_post_order() {
+    let src = startup_app(
+        "locus Owner { params { w: Int = 0; k: Kid = Kid { who: self.w }; } }",
+        &[("a", "Owner { w: 1 }"), ("b", "Owner { w: 2 }")],
+        Anchor::Pool,
+    );
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) = run_startup("pool_two", &src, arm, true);
+        eprintln!("MEASURE pool two roots {arm:?}: exit {code:?}\n{stdout}");
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(code, Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        let ready: Vec<i64> = stdout.lines().filter(|l| l.starts_with("KID_READY ")).map(|l| kid_threads(l).0).collect();
+        assert_eq!(ready, [1, 2], "{arm:?}: the inits run in post order\n{stdout}");
+        let order: Vec<&str> = stdout.lines().map(|l| l.split(' ').next().unwrap_or("")).collect();
+        assert_eq!(order[..2], ["KID_READY", "KID_READY"], "{arm:?}\n{stdout}");
+        let app = order.iter().position(|w| *w == "APP_READY").expect("APP_READY");
+        assert!(app > 1, "{arm:?}: the root's run() follows both inits\n{stdout}");
+        let threads = assert_kids_on(&stdout, Anchor::Pool, &format!("{arm:?}"));
+        assert_eq!(threads[0], threads[1], "{arm:?}: one pool, one worker\n{stdout}");
+        for (who, got) in [(1, 2), (2, 1)] {
+            let gone = stdout
+                .lines()
+                .find(|l| l.starts_with(&format!("KID_GONE who={who} ")))
+                .unwrap_or_else(|| panic!("{arm:?}: Kid {who} never dissolved\n{stdout}"));
+            assert_eq!(field(gone, "got"), Some(got), "{arm:?}: {gone}");
+            assert_eq!(field(gone, "handler"), Some(threads[0]), "{arm:?}: Kid {who}'s handlers left the worker: {gone}");
+        }
+    }
+}
+
+/// The `Kid` of the `async_io` case: its handler, run at a yield of the
+/// init, dumps the pool's residency, so the init's own state is visible:
+/// a parked init would be a parked coroutine.
+const ASYNC_KID: &str = r#"
+locus Owner { params { k: Kid = Kid { who: 1 }; } }
+"#;
+
+/// A root on an `async_io` pool, in both arms under ASan. The init job
+/// runs on the worker's own stack, never on a coroutine, so it never
+/// parks: `Kid`'s `sleep` in its `run()` blocks the worker in slices,
+/// draining the pool's own queue at each, instead of parking it. The
+/// handler that drain runs dumps the pool's residency and finds nothing
+/// parked; a parked init would be listed as one parked coroutine. Every
+/// body of `Kid` runs on the worker.
+#[test]
+fn a_root_on_an_async_io_pool_initializes_on_its_worker_without_parking() {
+    let src = startup_app(ASYNC_KID, &[("o", "Owner { }")], Anchor::AsyncPool)
+        .replace("        if self.htid == 0 { self.htid = pthread_self(); }", "        if self.htid == 0 { self.htid = pthread_self(); std::process::dump_pool_residency(); }");
+    assert!(src.contains("dump_pool_residency"), "the dump was inserted");
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) = run_startup("pool_async", &src, arm, true);
+        eprintln!("MEASURE pool async_io {arm:?}: exit {code:?}\n{stdout}\n{stderr}");
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(code, Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        assert!(stdout.starts_with("KID_READY "), "{arm:?}\n{stdout}");
+        assert_eq!(assert_kids_on(&stdout, Anchor::AsyncPool, &format!("{arm:?}")).len(), 1);
+        let dump: Vec<&str> = stderr.lines().filter(|l| l.contains("[side] ")).collect();
+        assert_eq!(dump.len(), 1, "{arm:?}: one dump, from the handler\n{stderr}");
+        assert!(
+            dump[0].starts_with("  [side] mode=async_io parked=0 "),
+            "{arm:?}: the init is not parked while its yield runs a cell: {}",
+            dump[0]
+        );
+    }
+}
+
+/// The round trip through main during a pool root's init, in both arms
+/// under ASan: `Kid`, nested in a pool root, publishes `Ping` to `Echo` on
+/// main and waits for the `Pong`. Main, waiting for the init, drains its
+/// own queue, so `Echo`'s handler runs there; the `Pong`, routed to the
+/// pool, reaches `Kid` at a yield of the init, on the worker.
+#[test]
+fn a_nested_child_under_a_pool_root_waiting_for_a_reply_from_the_instantiating_thread_receives() {
+    let src = STARTUP_REPLY.replace("placement { o: pinned; }", "placement { o: cooperative(pool = side); }");
+    assert!(src.contains("pool = side"), "the placement was substituted");
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) = run_startup("pool_reply", &src, arm, true);
+        eprintln!("MEASURE pool reply {arm:?}: exit {code:?}\n{stdout}");
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(code, Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        let order: Vec<&str> = stdout.lines().map(|l| l.split(' ').next().unwrap_or("")).collect();
+        assert_eq!(order, ["KID_READY", "APP_READY"], "{arm:?}\n{stdout}");
+        let kid = stdout.lines().next().expect("KID_READY");
+        let main = stdout.lines().find_map(|l| l.strip_prefix("APP_READY ").and_then(|_| field(l, "main")));
+        assert_eq!(field(kid, "echo"), main, "{arm:?}: Echo's handler ran on main: {kid}");
+        assert_eq!(field(kid, "handler"), field(kid, "run"), "{arm:?}: Kid's handler ran on the worker with its run(): {kid}");
+        assert_ne!(field(kid, "run"), main, "{arm:?}: Kid ran on the pool's worker: {kid}");
+    }
+}
+
+/// Its negative control: with the readiness wait's drain off, main blocks
+/// while `Kid` waits for `Echo`, and `Kid`'s deadline fires: exit 3.
+#[test]
+fn without_the_drain_the_round_trip_during_a_pool_roots_init_times_out() {
+    let src = STARTUP_REPLY.replace("placement { o: pinned; }", "placement { o: cooperative(pool = side); }");
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) =
+            run_startup_env("pool_reply_nodrain", &src, arm, false, &[("LOTUS_TEST_PINNED_START_NO_DRAIN", "1")]);
+        eprintln!("MEASURE pool reply, no drain {arm:?}: exit {code:?}\n{stdout}");
+        assert_eq!(code, Some(3), "{arm:?}: exit\n{stdout}\n{stderr}");
+        assert_eq!(stdout.lines().collect::<Vec<_>>(), ["STARTUP_TIMEOUT"], "{arm:?}\n{stderr}");
+    }
+}
+
+/// No wait on itself (spec/runtime.md § "Lifecycle obligations", line
+/// 1): `Failer`, a pool root, fails in its `run()` on the worker while
+/// main still holds `App`'s params open (`Slow` keeps them open), so the
+/// worker waits for the decision main gives at settle. Main meanwhile
+/// posts `Holder`'s init to that worker and waits for it. The worker,
+/// waiting on main, runs the init in place: `Inner` is born on the
+/// worker, inside `Failer`'s wait, and the decision follows at settle.
+const POOL_INIT_DURING_HELD_FAILURE: &str = r#"
+@ffi("c") fn pthread_self() -> Int;
+
+locus Failer {
+    params { name: String = ""; tid: Int = 0; }
+    closure fuse { captures: name; epoch inline; }
+    run() { self.tid = pthread_self(); violate fuse; }
+}
+
+locus Inner {
+    params { btid: Int = 0; }
+    birth() { self.btid = pthread_self(); }
+}
+
+locus Holder { params { i: Inner = Inner { }; } }
+
+locus Slow { run() { std::time::sleep(100ms); } }
+
+main locus App {
+    params {
+        f: Failer = Failer { name: "f" };
+        h: Holder = Holder { };
+        slow: Slow = Slow { };
+        fired: Int = 0;
+    }
+    placement { f: cooperative(pool = side); h: cooperative(pool = side); }
+    on_failure(c: Failer, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() {
+        println("HELD fired=" + to_string(self.fired) + " failer=" + to_string(self.f.tid) + " inner=" + to_string(self.h.i.btid) + " main=" + to_string(pthread_self()));
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+/// The init a worker runs while it waits on the instantiating thread, in
+/// both arms under ASan: no deadlock, one delivery, and `Inner`'s
+/// `birth()` on the worker that ran `Failer`'s `run()`.
+#[test]
+fn a_worker_waiting_on_the_instantiating_thread_runs_the_init_it_waits_for() {
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) = run_startup("pool_held", POOL_INIT_DURING_HELD_FAILURE, arm, true);
+        eprintln!("MEASURE pool init during a held failure {arm:?}: exit {code:?}\n{stdout}");
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(code, Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        let line = stdout.lines().find(|l| l.starts_with("HELD ")).unwrap_or_else(|| panic!("{arm:?}: no HELD\n{stdout}"));
+        assert_eq!(field(line, "fired"), Some(1), "{arm:?}: {line}");
+        assert_eq!(field(line, "inner"), field(line, "failer"), "{arm:?}: Inner was born on the worker: {line}");
+        assert_ne!(field(line, "inner"), field(line, "main"), "{arm:?}: not on main: {line}");
+    }
+}
+
 /// The IR of `case`'s witnessing program.
 fn ir_of(case: Case) -> String {
     let src = program(case, Variant::Witness);
@@ -1261,6 +1573,37 @@ fn a_nested_registration_carries_its_anchors_route() {
             "`{handler}` routes to the anchor's pool, by name:\n{line}"
         );
     }
+    // The pool side (C49): the instantiating function creates the start
+    // gate, posts the root's params init to its pool with the argument
+    // block, waits for it (draining the program-wide queue), and only
+    // then posts the root's run() behind it; the nested receiver is built,
+    // registered with the pool and born in the init, which the worker runs.
+    let main = function(&b, "main");
+    let order = [
+        at(&main, "%Owner.pool.gate = call ptr @lotus_pinned_start_create()", "the start gate"),
+        at(
+            &main,
+            "call void @lotus_pool_start_post(ptr %Owner.pool.lookup, ptr @__pool_init_Owner, ptr ",
+            "the init posted to the pool",
+        ),
+        at(
+            &main,
+            "call void @lotus_pool_start_await_ready(ptr %Owner.pool.gate, ptr %Owner.pool.queue)",
+            "the readiness wait, draining the program-wide queue",
+        ),
+        at(&main, "ptr @__coop_pool_run_Owner, ", "the root's run() posted"),
+    ];
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "gate, init post, wait, run post, in that order: {order:?}");
+    assert!(
+        !main.iter().any(|l| l.contains("@lotus_bus_register") && l.contains("ptr @__hwrap_Recv_on_")),
+        "the nested receiver registers on the worker, not in the instantiating function"
+    );
+    assert!(!main.iter().any(|l| l.contains("call void @Recv.birth(")), "the nested receiver is born on the worker");
+    let init = function(&b, "__pool_init_Owner");
+    let registered = at(&init, "ptr @__hwrap_Recv_on_tick, ", "the nested registration");
+    let born = at(&init, "call void @Recv.birth(", "the nested birth()");
+    assert!(registered < born, "the nested receiver registers, then is born, in the init:\n{}", init.join("\n"));
+    assert!(!b.contains("@__pinned_main_Owner"), "a pool root starts no thread");
 
     let c = ir_of(Case::C);
     assert!(!c.contains("lotus_bus_retire_mailbox"), "no route anchor, no retire");
