@@ -160,7 +160,7 @@ locus Producer {
     birth() { Beat <- Tick { n: 1 }; }
 }
 locus Logger {
-    bus { subscribe "log.**" as on_log of type Line; subscribe other::Shared as on_shared; }
+    bus { subscribe "log.**" as on_log of type Line; subscribe other::Shared as on_shared of type Tick; }
     fn on_log(l: Line) { }
     fn on_shared(t: Tick) { }
 }
@@ -177,7 +177,9 @@ fn main() { App { }; }
 /// Each fact rule 9 reads is a column of the subject's row: `beat` is
 /// bound, `log.app` is covered by a `**` subscription, `shared` may be
 /// named by the unresolved cross-seed path `other::Shared` (a hole of
-/// its own), and `feed` carries none of them.
+/// its own), and `feed` carries none of them. The cross-seed
+/// subscription spells its payload: a hole has no topic to copy one
+/// from, and the build lowers no subscription without one.
 #[test]
 fn the_walks_bound_cross_seed_and_wildcard_facts_are_columns() {
     let g = graph(COLUMNS);
