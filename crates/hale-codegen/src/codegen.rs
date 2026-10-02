@@ -4814,15 +4814,18 @@ pub(crate) struct LocusInfo<'ctx> {
     /// with `tick_closures_fn`.
     pub(crate) tick_wrapper_fn: Option<FunctionValue<'ctx>>,
     /// `on_failure(child: ChildL, err: ClosureViolation)` handlers
-    /// declared on this locus: one entry per handler row, in ordinal
-    /// order, stored as (the row's child locus name, llvm_fn). When a
-    /// child fails its closure, the violation routes to the handler
-    /// the routing row selects (`Cx::failure_handler_for`: the first
-    /// declared for the child's locus type) instead of dprintf+exit.
-    pub(crate) failure_handlers: Vec<(String, FunctionValue<'ctx>)>,
-    /// The name the handler rows key this locus by: its own, or, for a
-    /// monomorph, its generic template's.
-    pub(crate) routing_name: String,
+    /// declared on this locus: the handler fn of each routing row,
+    /// keyed by the row's site, stored as (the row's child locus name,
+    /// llvm_fn). When a child fails its closure, the violation routes
+    /// to the handler the routing row selects
+    /// (`Cx::failure_handler_for`: the first declared for the child's
+    /// locus type) instead of dprintf+exit.
+    pub(crate) failure_handlers:
+        BTreeMap<hale_types::handler_routing::SiteId, (String, FunctionValue<'ctx>)>,
+    /// The declaration the handler rows key this locus by: its own, or,
+    /// for a monomorph, its generic template's (a monomorph keeps the
+    /// template's id).
+    pub(crate) decl: NodeId,
     /// When this locus declares `accept(child: T)` AND a method
     /// body iterates `for child in self.children`, every accept
     /// dispatch appends the child's self_ptr to a growable

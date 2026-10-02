@@ -23,13 +23,20 @@
 //! declaration joins it to its row by that identity
 //! ([`HandlerRow::is_row_of`]); the span is the fallback for the
 //! unminted bundle alone, since two declarations may share one.
+//!
+//! The parent's identity is a column too (`parent_id`), and the rows
+//! are indexed by it: a reader holding a locus declaration asks for its
+//! rows by the declaration's id ([`HandlerRouting::handlers_of_decl`]).
+//! A monomorph keeps its template's id, so it finds its template's rows
+//! by that id, never by a scan of the templates for one whose id
+//! matches.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_graph::ids::SiteId;
+pub use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusMember, LValueSeg,
-    MatchArmBody, OrDisposition, Program, RecoveryModifier,
+    MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
@@ -63,6 +70,9 @@ impl ChildRef {
 pub struct HandlerRow {
     /// The locus that declares the handler.
     pub parent: String,
+    /// The parent declaration's snapshot identity (`None` when
+    /// unminted).
+    pub parent_id: Option<SiteId>,
     pub child: ChildRef,
     /// The child type as written, its path joined by `::`: what a
     /// reader who has no row for the resolved locus names it by.
@@ -108,6 +118,9 @@ pub struct HandlerRouting {
     rows: Vec<HandlerRow>,
     /// parent → its rows' indices, in ordinal order.
     by_parent: BTreeMap<String, Vec<usize>>,
+    /// The parent declaration's site index → its rows' indices, in
+    /// ordinal order (minted rows only).
+    by_parent_decl: BTreeMap<u32, Vec<usize>>,
     /// (parent, child name) → the first row's index: the handler that
     /// runs.
     first: BTreeMap<(String, String), usize>,
@@ -138,6 +151,28 @@ impl HandlerRouting {
             .map(|&i| &self.rows[i])
     }
 
+    /// The rows of the locus declared at `decl`, in ordinal order: by
+    /// the declaration's identity, so a monomorph (which keeps its
+    /// template's id) reads its template's rows. Empty for an unminted
+    /// declaration.
+    pub fn handlers_of_decl<'a>(
+        &'a self,
+        decl: NodeId,
+    ) -> impl Iterator<Item = &'a HandlerRow> + 'a {
+        (!decl.is_none())
+            .then(|| self.by_parent_decl.get(&decl.0))
+            .flatten()
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.rows[i])
+    }
+
+    /// The handler a failing child of type `child` reaches in the locus
+    /// declared at `decl`: the first one it declares for that type.
+    pub fn route_decl(&self, decl: NodeId, child: &str) -> Option<&HandlerRow> {
+        self.handlers_of_decl(decl).find(|r| r.child.name() == child)
+    }
+
     /// Whether some handler, in any parent, restarts a child of locus
     /// type `child` in place: such a child keeps a copy of the params
     /// it was built with.
@@ -151,6 +186,9 @@ impl HandlerRouting {
     fn push(&mut self, row: HandlerRow) {
         let i = self.rows.len();
         self.by_parent.entry(row.parent.clone()).or_default().push(i);
+        if let Some(p) = row.parent_id {
+            self.by_parent_decl.entry(p.index).or_default().push(i);
+        }
         self.first
             .entry((row.parent.clone(), row.child.name().to_string()))
             .or_insert(i);
@@ -313,6 +351,7 @@ pub fn handler_rows(
             let (ops, retry_bound) = recovery_ops(&fd.body);
             routing.push(HandlerRow {
                 parent: l.name.name.clone(),
+                parent_id: snapshot.site_id(l.id),
                 child: child_locus_name(&fd.params[0].ty, &declared, import_renames),
                 written: written_name(&fd.params[0].ty),
                 error_type: written_name(&fd.params[1].ty),

@@ -1252,8 +1252,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 duration_wrapper_fn: None,
                 duration_last_fire_field_idxs,
                 explicit_closures_fn: None,
-                failure_handlers: Vec::new(),
-                routing_name: l.name.name.clone(),
+                failure_handlers: BTreeMap::new(),
+                decl: l.id,
                 children_field_idx,
                 child_count_field_idx,
                 child_cap_field_idx,
@@ -2066,57 +2066,47 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // on_failure(child: ChildL, err: ClosureViolation): the handlers
         // closures route to when an unabsorbed violation reaches the
         // parent. The table is the routing rows' (F.40 phase 1.4): one
-        // fn per row, in ordinal order, so a fn's index in the table IS
-        // its row's ordinal. Building it pairs each row with its
-        // declaration by position (the rows are made in declaration
-        // order) and checks the pair by identity (`is_row_of`, the
-        // span only for an unminted declaration); every reader then
-        // goes by the row's ordinal: the body
-        // pass (method.rs) and a route (`failure_handler_for`). The
-        // rows are per declaration, so a monomorph reads its template's
-        // (it keeps the template's identity).
+        // fn per row, keyed by the row's site, so the handler fn is a
+        // column of the row. The rows are asked for by this
+        // declaration's identity (`handlers_of_decl`); a monomorph
+        // keeps its template's id, so it reads its template's rows.
+        // Each declaration finds its row by identity (`is_row_of`), and
+        // every reader then goes by the row's site: the body pass
+        // (method.rs) and a route (`failure_handler_for`).
         //
         // Sig: void(parent_self, child_self, violation). The first
         // handler keeps the plain `<L>.on_failure` symbol; later ones
         // carry their child type (LLVM uniquifies a repeat).
-        let routing_name = if failure_decls > 0
-            && self.handlers.handlers_of(&l.name.name).next().is_none()
-        {
-            self.generic_locus_templates
-                .values()
-                .find(|t| !l.id.is_none() && t.id.0 == l.id.0)
-                .map(|t| t.name.name.clone())
-                .unwrap_or_else(|| l.name.name.clone())
-        } else {
-            l.name.name.clone()
-        };
         let rows: Vec<hale_types::handler_routing::HandlerRow> =
-            self.handlers.handlers_of(&routing_name).cloned().collect();
+            self.handlers.handlers_of_decl(l.id).cloned().collect();
         if rows.len() != failure_decls {
             return Err(CodegenError::Unsupported(format!(
                 "locus `{}` declares {} on_failure handler(s) but the \
-                 handler routing has {} row(s) for `{}`",
+                 handler routing has {} row(s) for its declaration",
                 l.name.name,
                 failure_decls,
                 rows.len(),
-                routing_name
             )));
         }
-        let mut failure_handlers: Vec<(String, FunctionValue<'ctx>)> = Vec::new();
-        for (row, fd) in rows.iter().zip(l.members.iter().filter_map(|m| match m {
+        let mut failure_handlers: BTreeMap<
+            hale_types::handler_routing::SiteId,
+            (String, FunctionValue<'ctx>),
+        > = BTreeMap::new();
+        for fd in l.members.iter().filter_map(|m| match m {
             LocusMember::Failure(fd) => Some(fd),
             _ => None,
-        })) {
-            if row.ordinal as usize != failure_handlers.len() || !row.is_row_of(fd) {
+        }) {
+            let Some((row, site)) = rows
+                .iter()
+                .find(|r| r.is_row_of(fd))
+                .and_then(|r| Some((r, r.id?)))
+            else {
                 return Err(CodegenError::Unsupported(format!(
-                    "locus `{}` on_failure handler {} is not routing row {} \
-                     of `{}`",
-                    l.name.name,
-                    failure_handlers.len(),
-                    row.ordinal,
-                    routing_name
+                    "locus `{}` declares an on_failure handler the handler \
+                     routing has no minted row for",
+                    l.name.name
                 )));
-            }
+            };
             let child_locus_name = match &row.child {
                 ChildRef::Locus(n) => n.clone(),
                 ChildRef::External(written) => {
@@ -2147,7 +2137,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 format!("{}.on_failure.{}", l.name.name, child_locus_name)
             };
             let func = self.module.add_function(&fn_name, fn_ty, None);
-            failure_handlers.push((child_locus_name, func));
+            failure_handlers.insert(site, (child_locus_name, func));
         }
 
         // Stash the methods + accept_param onto the existing
@@ -2173,7 +2163,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.duration_wrapper_fn = duration_wrapper_fn;
         info.explicit_closures_fn = explicit_closures_fn;
         info.failure_handlers = failure_handlers;
-        info.routing_name = routing_name;
         Ok(())
     }
 

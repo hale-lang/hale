@@ -39,18 +39,17 @@ use crate::stdlib::str::StrStdlib;
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The `on_failure` fn a failing child of locus type `child`
     /// reaches in `parent`: the routing row (the first handler
-    /// `parent` declares for that type) looked up by its ordinal in
-    /// the parent's handler table.
+    /// `parent`'s declaration declares for that type, asked for by the
+    /// declaration's identity) and the handler fn the parent's table
+    /// holds for the row's site.
     pub(crate) fn failure_handler_for(
         &self,
         parent: &str,
         child: &str,
     ) -> Option<FunctionValue<'ctx>> {
         let info = self.user_loci.get(parent)?;
-        let row = self.handlers.route(&info.routing_name, child)?;
-        info.failure_handlers
-            .get(row.ordinal as usize)
-            .map(|(_, f)| *f)
+        let row = self.handlers.route_decl(info.decl, child)?;
+        info.failure_handlers.get(&row.id?).map(|(_, f)| *f)
     }
 
     /// Resolve the (parent_self, on_failure_fn) pair for a child
