@@ -1,0 +1,24 @@
+// Case 5: aliased types, at the root and one level down. An alias is
+// transparent: each row realizes the declaration the alias names.
+type Held = Holder;
+
+type Twig = Leaf;
+
+locus Leaf { }
+
+locus Holder {
+    params {
+        t: Twig = Leaf { };
+    }
+}
+
+main locus App {
+    params {
+        h: Held = Holder { };
+    }
+    placement {
+        h: pinned;
+    }
+}
+
+fn main() { App { }; }

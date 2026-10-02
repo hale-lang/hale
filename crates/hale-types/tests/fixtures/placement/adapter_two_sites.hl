@@ -1,0 +1,60 @@
+// Case 9, the root built at two sites: still one adapter row, built
+// once by the bindings prelude, and a second root field row.
+type Note {
+    n: Int = 0;
+}
+
+type Wire {
+    subject: String = "";
+    data: Bytes = b"";
+}
+
+topic Lost {
+    payload: Note;
+    subject: "lost";
+}
+
+topic Q {
+    payload: Wire;
+    subject: "q";
+}
+
+locus Fwd {
+    bus {
+        publish Q;
+    }
+    fn send(subject: String, bytes: Bytes) { Q <- Wire { subject: subject, data: bytes }; }
+}
+
+locus Worker {
+    params {
+        seen: Int = 0;
+    }
+    bus {
+        subscribe Q as on_q;
+    }
+    fn on_q(w: Wire) { self.seen = self.seen + 1; }
+}
+
+main locus App {
+    params {
+        p: Worker = Worker { };
+    }
+    placement {
+        p: pinned;
+    }
+    bindings {
+        Lost: Fwd { };
+    }
+    bus {
+        publish Lost;
+    }
+    run() { Lost <- Note { n: 1 }; }
+}
+
+fn again() { App { }; }
+
+fn main() {
+    App { };
+    again();
+}

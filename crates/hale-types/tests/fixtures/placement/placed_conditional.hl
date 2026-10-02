@@ -1,0 +1,29 @@
+// The choices the checker refuses, so no table row ever holds them: a
+// conditional supplied for a placed field (rule 18), and `if` arms
+// that build two different declarations.
+interface Shape {
+    fn size() -> Int;
+}
+
+locus Leaf {
+    fn size() -> Int { return 1; }
+}
+
+locus Pair {
+    fn size() -> Int { return 2; }
+}
+
+main locus App {
+    params {
+        w: Leaf = Leaf { };
+        s: Shape = Leaf { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() {
+    let c = true;
+    App { w: if c { Leaf { } } else { Leaf { } }, s: if c { Leaf { } } else { Pair { } } };
+}

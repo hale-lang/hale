@@ -1,0 +1,7 @@
+// Case 8, without the seed's own `main`: the only `main locus` is the
+// import's, so the table is empty.
+import "../lib" as lib;
+
+fn main() {
+    let w = lib::Worker { };
+}

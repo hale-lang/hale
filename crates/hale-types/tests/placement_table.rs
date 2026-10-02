@@ -5,7 +5,7 @@
 //! load, the desugar sequence, the mint — from a fixture under
 //! `fixtures/placement/`, never from a bundle the test mints itself.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use hale_frontend::frontend::LoadMode;
@@ -13,7 +13,10 @@ use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_frontend::source::Disk;
 use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, TopDecl};
 use hale_syntax::sites::SiteKind;
-use hale_types::placement::{join_lowering, provenance, DeclRef, LoweringRef, SiteRef, SiteUniverse};
+use hale_types::placement::{
+    join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, InstanceKey, InstanceRow,
+    LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
+};
 use hale_types::snapshot::STDLIB_SEED;
 
 fn fixture(name: &str) -> PathBuf {
@@ -26,6 +29,68 @@ fn build(seed: &Path) -> Snapshot {
     match Snapshot::load(seed, LoadMode::WholeSeed, &Disk, Config::build(Target::host())) {
         Ok(s) => s,
         Err(_) => panic!("{} does not load", seed.display()),
+    }
+}
+
+/// `hale check <seed>`'s load.
+fn check(seed: &Path) -> Snapshot {
+    match Snapshot::load(seed, LoadMode::WholeSeed, &Disk, Config::check(seed.is_dir(), false)) {
+        Ok(s) => s,
+        Err(_) => panic!("{} does not load", seed.display()),
+    }
+}
+
+fn errors(s: &Snapshot) -> Vec<String> {
+    let checked = s.demand_check().unwrap_or_else(|_| panic!("the check is blocked"));
+    checked.diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+}
+
+/// A fixture that checks clean, and its table.
+fn clean(name: &str) -> Snapshot {
+    let s = check(&fixture(name));
+    let e = errors(&s);
+    assert!(e.is_empty(), "{name} must check clean: {e:?}");
+    s
+}
+
+fn table(s: &Snapshot) -> &PlacementTable {
+    s.demand_placement().unwrap_or_else(|_| panic!("placement is blocked"))
+}
+
+/// A key's path as `field.field`, an alternative step marked `?`, and
+/// its replica as `[i]`.
+fn path(k: &InstanceKey) -> String {
+    let p: Vec<String> =
+        k.path.iter().map(|s| format!("{}{}", s.field, if s.alternative.is_some() { "?" } else { "" })).collect();
+    match k.replica {
+        Some(i) => format!("{}[{i}]", p.join(".")),
+        None => p.join("."),
+    }
+}
+
+/// The rows at `p` (every origin, every alternative).
+fn rows<'t>(t: &'t PlacementTable, p: &str) -> Vec<(&'t InstanceKey, &'t InstanceRow)> {
+    t.instances.iter().filter(|(k, _)| path(k) == p).collect()
+}
+
+fn one<'t>(t: &'t PlacementTable, p: &str) -> (&'t InstanceKey, &'t InstanceRow) {
+    let r = rows(t, p);
+    assert_eq!(r.len(), 1, "one row at `{p}`, not {}", r.len());
+    r[0]
+}
+
+fn lowered(r: &InstanceRow) -> &str {
+    r.realizes.as_ref().map(|d| d.lowered.as_str()).unwrap_or("<hole>")
+}
+
+fn is_pinned(t: &PlacementTable, d: DomainId) -> bool {
+    matches!(t.domain(d).kind, DomainKind::Pinned { .. })
+}
+
+fn pool_name(t: &PlacementTable, d: DomainId) -> Option<&str> {
+    match &t.domain(d).kind {
+        DomainKind::Pool { name, .. } => Some(name),
+        _ => None,
     }
 }
 
@@ -159,4 +224,421 @@ fn two_universes_one_numeric_id_stay_two_identities() {
     assert_eq!(merged_reader.kind, SiteKind::Locus);
     assert_eq!(merged_reader.span, reader.span);
     assert_ne!(joined[&stdlib_decl.site], reader_id, "the merged mint numbers the stdlib past the user's sites");
+}
+
+// ---------------------------------------------------- the producer
+
+/// The table is a family of the snapshot: demanded, it runs once, and
+/// a check demands it not at all (no consumer reads it yet).
+#[test]
+fn the_table_is_demanded_once_per_snapshot() {
+    let s = clean("two_instances.hl");
+    assert_eq!(s.builds()["placement"], 0, "the check reads no placement table");
+    let first: *const PlacementTable = table(&s);
+    let again: *const PlacementTable = table(&s);
+    assert_eq!(first, again);
+    assert_eq!(s.builds()["placement"], 1);
+}
+
+/// Case 1: one type, three instances, three domains; each nested `K`
+/// inherits its own owner's.
+#[test]
+fn two_instances_of_one_type_have_two_domains() {
+    let s = clean("two_instances.hl");
+    let t = table(&s);
+    let (_, a) = one(t, "a");
+    let (_, b) = one(t, "b");
+    let (_, c) = one(t, "c");
+    assert!(lowered(a) == "W" && lowered(b) == "W" && lowered(c) == "W");
+    assert!(is_pinned(t, a.domain));
+    assert_eq!(pool_name(t, b.domain), Some("io"));
+    assert_eq!(c.domain, PlacementTable::MAIN);
+    assert_eq!(c.decided_by, Decision::Default);
+    let w_domains: BTreeSet<DomainId> = [a.domain, b.domain, c.domain].into_iter().collect();
+    assert_eq!(w_domains.len(), 3);
+    for (owner, field) in [(a, "a.k"), (b, "b.k"), (c, "c.k")] {
+        let (k, row) = one(t, field);
+        assert_eq!(lowered(row), "K");
+        assert_eq!(row.domain, owner.domain, "`{field}` inherits its owner's domain");
+        assert_eq!(row.owner_relative, OwnerRelative::SameAsOwner);
+        assert!(matches!(&row.decided_by, Decision::Inherited { from } if from.path.len() == 1 && k.path.len() == 2));
+    }
+}
+
+/// Case 2: three deep, on a pool, pinned, and pinned with three
+/// replicas: each replica its own domain, `[i]` on every nested key.
+#[test]
+fn replicas_are_k_domains_each_nesting_its_own_tree() {
+    let s = clean("nested_inheritance.hl");
+    let t = table(&s);
+    let (_, p) = one(t, "p");
+    assert_eq!(pool_name(t, p.domain), Some("io"));
+    assert_eq!(one(t, "p.s").1.domain, p.domain, "the subscriber under a pool owner runs on the pool");
+    let (_, q) = one(t, "q");
+    assert!(is_pinned(t, q.domain));
+    assert_eq!(one(t, "q.s").1.domain, q.domain, "the subscriber under a pinned owner runs on its thread");
+    let mut replicas = BTreeSet::new();
+    for i in 0..3 {
+        let (k, r) = one(t, &format!("r[{i}]"));
+        assert!(is_pinned(t, r.domain));
+        assert!(matches!(&t.domain(r.domain).kind, DomainKind::Pinned { anchor, .. } if anchor == k));
+        replicas.insert(r.domain);
+        let (sk, sr) = one(t, &format!("r.s[{i}]"));
+        assert_eq!(sk.replica, Some(i));
+        assert_eq!(sr.domain, r.domain, "replica {i}'s subscriber runs on replica {i}'s thread");
+    }
+    assert_eq!(replicas.len(), 3, "each replica is its own domain");
+    assert!(rows(t, "r").is_empty(), "a replicated field has no unindexed row");
+}
+
+/// Case 3: the declaration built is the literal's, not the field's
+/// declared type, and the override's literal is the row's literal.
+#[test]
+fn overrides_realize_the_literal_that_was_built() {
+    let s = clean("overrides.hl");
+    let t = table(&s);
+    let (_, gw) = one(t, "gw");
+    let (_, router) = one(t, "gw.router");
+    assert_eq!(lowered(router), "RouterV2", "the construction literal's override, not the default RouterV1");
+    let lit = provenance(router.literal.unwrap(), s.identities(), hale_types::stdlib_bodies::identities().unwrap())
+        .expect("minted");
+    let fn_main = s.sources().values().next().unwrap().find("fn main").unwrap() as u32;
+    assert!(lit.span.start.0 > fn_main, "the override written in `fn main`, not `Gateway`'s default");
+    assert_eq!(router.domain, gw.domain);
+    let (_, j) = one(t, "j");
+    assert_eq!(lowered(j), "Churner", "a contract-typed param realizes the impl built");
+}
+
+/// Case 4: a qualified stdlib field and a user locus named like its
+/// last segment are two declarations in two universes.
+#[test]
+fn a_qualified_field_and_its_last_segment_twin_are_two_declarations() {
+    let s = clean("qualified.hl");
+    let t = table(&s);
+    let (_, l) = one(t, "l");
+    let (_, own) = one(t, "own");
+    let ld = l.realizes.as_ref().unwrap();
+    assert_eq!(ld.lowered, "__StdIoTcpListener");
+    assert_eq!(ld.site.universe, SiteUniverse::StdlibAnalysis);
+    assert_eq!(pool_name(t, l.domain), Some("io"));
+    let od = own.realizes.as_ref().unwrap();
+    assert_eq!((od.lowered.as_str(), od.site.universe), ("Listener", SiteUniverse::User));
+    assert_eq!(own.domain, PlacementTable::MAIN, "the user's `Listener` is placed by its own instance");
+}
+
+/// Case 5: rule 3 admits an aliased placed field, and each row realizes
+/// the declaration its alias names.
+#[test]
+fn an_alias_realizes_the_declaration_it_names() {
+    let s = clean("aliased.hl");
+    let t = table(&s);
+    let (_, h) = one(t, "h");
+    assert_eq!(lowered(h), "Holder");
+    assert!(is_pinned(t, h.domain));
+    let (_, twig) = one(t, "h.t");
+    assert_eq!(lowered(twig), "Leaf");
+    assert_eq!(twig.domain, h.domain);
+}
+
+/// Case 6: a generic locus as a params field is refused by the checker
+/// (`generic_monomorph_agreement.rs` pins the build's refusal too), so
+/// the shape never reaches a consumer. The table, total over a program
+/// that does not typecheck, still keys the two specializations apart.
+#[test]
+fn a_generic_locus_field_is_refused_before_any_consumer() {
+    let s = check(&fixture("generic.hl"));
+    let e = errors(&s);
+    assert!(e.iter().any(|m| m.contains("param `c`: declared `Cache_Int_String`")), "{e:?}");
+    let t = table(&s);
+    let c = one(t, "c").1.realizes.clone().unwrap();
+    let d = one(t, "d").1.realizes.clone().unwrap();
+    assert_eq!(c.site, d.site, "one template");
+    assert_eq!((c.lowered.as_str(), d.lowered.as_str()), ("Cache_Int_String", "Cache_Int_Int"));
+    assert_eq!((c.args.len(), d.args.len()), (2, 2));
+    assert_ne!(c, d);
+}
+
+/// Case 7: a module-qualified field resolves; a seed whose only `main`
+/// is module-nested has rows, because lowering deploys it, and its root
+/// is not the entry.
+#[test]
+fn a_module_nested_main_is_the_root_and_not_the_entry() {
+    let s = clean("module_qualified.hl");
+    let t = table(&s);
+    assert_eq!(lowered(one(t, "k").1), "K");
+    assert!(t.root.as_ref().unwrap().is_entry);
+
+    let s = check(&fixture("module_nested_main.hl"));
+    let t = table(&s);
+    let root = t.root.as_ref().expect("lowering deploys the nested main");
+    assert!(!root.is_entry);
+    assert!(root.decl.module_nested);
+    let (_, w) = one(t, "w");
+    assert!(is_pinned(t, w.domain));
+}
+
+/// Case 8: an imported `main` is never the root.
+#[test]
+fn an_imported_main_is_never_the_root() {
+    let s = clean("imported/no_own_main");
+    let t = table(&s);
+    assert!(t.root.is_none() && t.instances.is_empty(), "the only `main` is the import's");
+    assert_eq!(t.domains.len(), 1, "no pinned domain from the library's entry");
+
+    let s = clean("imported/own_main");
+    let t = table(&s);
+    let root = t.root.as_ref().unwrap();
+    assert_eq!(root.decl.name, "Mine");
+    let (_, w) = one(t, "w");
+    assert!(lowered(w).starts_with("__lib_") && lowered(w).ends_with("_Worker"));
+    assert_eq!(w.domain, PlacementTable::MAIN, "the library's pinned entry places nothing here");
+    assert!(is_pinned(t, one(t, "l").1.domain));
+    let pinned = t.domains.iter().filter(|d| matches!(d.kind, DomainKind::Pinned { .. })).count();
+    assert_eq!(pinned, 1);
+}
+
+/// Case 9: an inline adapter is a row of its own origin, decided by its
+/// binding and pinned on a domain anchored at itself; built once
+/// however many constructions the root has.
+#[test]
+fn an_inline_adapter_is_a_pinned_binding_row() {
+    let s = clean("adapter.hl");
+    let t = table(&s);
+    let (k, fwd) = t.instances.iter().find(|(k, _)| matches!(k.origin, Origin::Binding(_))).expect("an adapter row");
+    assert!(k.path.is_empty() && fwd.owner.is_none());
+    assert_eq!(lowered(fwd), "Fwd");
+    assert!(matches!(fwd.decided_by, Decision::Binding { .. }));
+    assert!(matches!(&t.domain(fwd.domain).kind, DomainKind::Pinned { anchor, .. } if anchor == k));
+    let (_, p) = one(t, "p");
+    assert!(is_pinned(t, p.domain));
+    assert_ne!(p.domain, fwd.domain, "two pinned domains, disjoint");
+
+    let s = clean("adapter_two_sites.hl");
+    let t = table(&s);
+    let adapters = t.instances.keys().filter(|k| matches!(k.origin, Origin::Binding(_))).count();
+    assert_eq!(adapters, 1, "the bindings prelude builds the adapter once");
+    assert_eq!(t.root.as_ref().unwrap().constructions.len(), 2);
+    let ps = rows(t, "p");
+    assert_eq!(ps.len(), 2, "a root field row per construction");
+    let pinned: BTreeSet<DomainId> =
+        t.domains.iter().filter(|d| matches!(d.kind, DomainKind::Pinned { .. })).map(|d| d.id).collect();
+    assert_eq!(pinned.len(), 3);
+}
+
+/// Case 10: dynamic sites, each with the domains its enclosing scope
+/// runs in and its bound; the root built by a factory called in a loop
+/// is one template, unbounded.
+#[test]
+fn dynamic_sites_carry_their_domains_and_bounds() {
+    let s = clean("dynamic.hl");
+    let t = table(&s);
+    let root = t.root.as_ref().unwrap();
+    assert_eq!(root.constructions.len(), 1);
+    assert!(matches!(&root.constructions[0].bound, Bound::Unbounded(why) if why.contains("loop")));
+    let user: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
+    let job = user.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Job")).expect("Job");
+    assert!(matches!(&job.enclosing, Enclosing::Locus(d) if d.lowered == "App"));
+    assert_eq!(job.domains, [PlacementTable::MAIN].into_iter().collect());
+    assert!(matches!(&job.bound, Bound::Unbounded(why) if why == "built in a loop"));
+    let child = user.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Child")).expect("Child");
+    assert!(matches!(&child.enclosing, Enclosing::Locus(d) if d.lowered == "Hub"));
+    assert_eq!(child.domains, [PlacementTable::MAIN].into_iter().collect());
+    assert!(matches!(child.bound, Bound::Unbounded(_)));
+    assert_eq!(user.len(), 2, "the construction literal is a template, not a dynamic site");
+}
+
+/// Case 11: two constructions of one root are two templates; a choice
+/// among literals is one guarded step per alternative.
+#[test]
+fn two_constructions_are_two_templates() {
+    let s = clean("two_constructions.hl");
+    let t = table(&s);
+    let root = t.root.as_ref().unwrap();
+    assert_eq!(root.constructions.len(), 3);
+    let gws = rows(t, "gw");
+    assert_eq!(gws.len(), 3);
+    let domains: BTreeSet<DomainId> = gws.iter().map(|(_, r)| r.domain).collect();
+    assert_eq!(domains.len(), 3, "each construction's `gw` its own pinned domain");
+    let routers: BTreeSet<&str> = rows(t, "gw.router").iter().map(|(_, r)| lowered(r)).collect();
+    assert_eq!(routers, ["RouterV1", "RouterV2", "RouterV3"].into_iter().collect());
+    for (k, r) in rows(t, "gw.router") {
+        let owner = &t.instances[r.owner.as_ref().unwrap()];
+        assert_eq!(r.domain, owner.domain);
+        assert_eq!(k.origin, r.owner.as_ref().unwrap().origin, "a key's origin decides every row under it");
+    }
+    let alts = rows(t, "side?");
+    assert_eq!(alts.len(), 2);
+    assert!(alts.iter().all(|(k, r)| r.guarded && k.path[0].alternative == r.literal));
+    let under: BTreeSet<&str> = rows(t, "side?.router").iter().map(|(_, r)| lowered(r)).collect();
+    assert_eq!(under, ["RouterV1", "RouterV2"].into_iter().collect());
+    assert!(rows(t, "side?.router").iter().all(|(_, r)| r.guarded));
+    assert!(rows(t, "side").iter().all(|(_, r)| !r.guarded));
+}
+
+/// The choices the checker refuses: a conditional for a placed field
+/// (rule 18), and `if` arms of two declarations.
+#[test]
+fn a_choice_at_a_placed_field_is_refused() {
+    let s = check(&fixture("placed_conditional.hl"));
+    let e = errors(&s);
+    assert!(e.iter().any(|m| m.contains("placement entry `w`") && m.contains("conditional")), "{e:?}");
+    assert!(e.iter().any(|m| m.contains("mismatched types")), "{e:?}");
+}
+
+/// Checkpoint 4: an alternative one step under a replicated field. Every
+/// row under replica `i` carries `Some(i)`, every row on or under the
+/// choice is guarded, and the replicas stay three domains.
+#[test]
+fn an_alternative_under_replicas_keeps_its_replica_and_its_guard() {
+    let s = clean("alternatives_under_replicas.hl");
+    let t = table(&s);
+    for i in 0..3u32 {
+        let (_, v) = one(t, &format!("v[{i}]"));
+        assert_eq!(rows(t, &format!("v.inner?[{i}]")).len(), 2);
+        let under: Vec<_> = t.instances.iter().filter(|(k, _)| k.replica == Some(i) && k.path.len() >= 2).collect();
+        assert_eq!(under.len(), 2 + 1 + 1 + 2, "two boxes, a leaf slot, a pair slot and the pair's two leaves");
+        assert!(under.iter().all(|(_, r)| r.guarded && r.domain == v.domain));
+    }
+    let threads = t.domains.iter().filter(|d| matches!(d.kind, DomainKind::Pinned { .. })).count();
+    assert_eq!(threads, 3, "three replicas, three threads, whatever the alternatives");
+}
+
+/// Case 12, the table's half: the stdlib rows are minted by the analysis
+/// copy and say so, the colliding user declaration keeps its own key,
+/// and every site the table names resolves into lowering's merged mint
+/// exactly once.
+#[test]
+fn the_table_names_each_universe_and_joins_lowering_once() {
+    let snap = build(&fixture("two_universes"));
+    let t = table(&snap);
+    let (_, c) = one(t, "c");
+    let (_, u) = one(t, "u");
+    let (_, buf) = one(t, "u.buf");
+    let cd = c.realizes.as_ref().unwrap();
+    let ud = u.realizes.as_ref().unwrap();
+    assert_eq!(cd.site.id, ud.site.id, "the collision reaches the table");
+    assert_eq!((cd.site.universe, ud.site.universe), (SiteUniverse::User, SiteUniverse::StdlibAnalysis));
+    assert_eq!(lowered(buf), "__StdBytesBytesBuilder");
+    assert_eq!(buf.literal.unwrap().universe, SiteUniverse::StdlibAnalysis);
+    assert_eq!(buf.domain, u.domain, "the stdlib default inherits the stdlib locus's domain");
+    let decls: BTreeSet<&DeclRef> = t.instances.values().filter_map(|r| r.realizes.as_ref()).collect();
+    assert!(decls.contains(cd) && decls.contains(ud));
+
+    let lowering = snap.demand_lowering().unwrap_or_else(|b| panic!("lowering blocked: {:?}", b.refused));
+    let mut refs: Vec<LoweringRef<'_>> = Vec::new();
+    for (k, r) in &t.instances {
+        if let Some(d) = &r.realizes {
+            refs.push(LoweringRef::Decl(d));
+        }
+        refs.extend(r.literal.map(LoweringRef::Site));
+        refs.extend(k.path.iter().filter_map(|s| s.alternative).map(LoweringRef::Site));
+    }
+    let joined = join_lowering(&refs, snap.identities(), &lowering.merged, &lowering.snapshot)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let distinct: BTreeSet<SiteRef> = refs
+        .iter()
+        .map(|r| match r {
+            LoweringRef::Decl(d) => d.site,
+            LoweringRef::Site(s) => *s,
+        })
+        .collect();
+    assert_eq!(joined.len(), distinct.len(), "total over the table's refs");
+    assert_eq!(joined.values().collect::<BTreeSet<_>>().len(), distinct.len(), "injective");
+}
+
+/// The fixtures every law test walks: those that check clean.
+const CLEAN: [&str; 14] = [
+    "two_instances.hl",
+    "nested_inheritance.hl",
+    "overrides.hl",
+    "qualified.hl",
+    "aliased.hl",
+    "module_qualified.hl",
+    "imported/no_own_main",
+    "imported/own_main",
+    "adapter.hl",
+    "adapter_two_sites.hl",
+    "dynamic.hl",
+    "two_constructions.hl",
+    "alternatives_under_replicas.hl",
+    "two_universes",
+];
+
+/// The table's laws, over every fixture that checks clean: every owner
+/// is a row; a nested row inherits its owner's domain unless an entry or
+/// a binding decides it, and only a root field has an entry; replica
+/// rows are exactly `0..K`; two rows share a pinned domain only when one
+/// is under the other; one pool domain per name; no accepting owner is
+/// anchored in a pinned domain (rule 6); and a clean program's static
+/// rows have no hole.
+#[test]
+fn the_table_keeps_its_laws_over_every_fixture() {
+    for name in CLEAN {
+        let s = clean(name);
+        let t = table(&s);
+        let mut pools: BTreeMap<&str, DomainId> = BTreeMap::new();
+        for d in &t.domains {
+            if let DomainKind::Pool { name: p, .. } = &d.kind {
+                assert!(pools.insert(p, d.id).is_none(), "{name}: pool `{p}` is one domain");
+            }
+        }
+        let accepting: BTreeSet<String> = s
+            .programs()
+            .values()
+            .flat_map(|p| flat_decls(&p.items))
+            .filter_map(|i| match i {
+                TopDecl::Locus(l)
+                    if l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Lifecycle(lc) if lc.kind == hale_syntax::ast::LifecycleKind::Accept)
+                    }) =>
+                {
+                    Some(l.name.name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for (k, r) in &t.instances {
+            match &r.owner {
+                None => assert!(k.path.is_empty(), "{name}: only an origin's top has no owner"),
+                Some(o) => {
+                    let owner = t.instances.get(o).unwrap_or_else(|| panic!("{name}: `{}`'s owner is a row", path(k)));
+                    match &r.decided_by {
+                        Decision::Entry { .. } => assert!(
+                            k.path.len() == 1 && matches!(k.origin, Origin::Construction(_)),
+                            "{name}: entries decide root fields only"
+                        ),
+                        Decision::Inherited { from } => {
+                            assert_eq!(from, o);
+                            assert_eq!(r.domain, owner.domain, "{name}: `{}` inherits", path(k));
+                        }
+                        Decision::Default => assert_eq!(r.domain, PlacementTable::MAIN),
+                        Decision::Binding { .. } => panic!("{name}: a binding decides only an adapter's top"),
+                    }
+                    assert_eq!(r.owner_relative == OwnerRelative::OffOwner, r.domain != owner.domain);
+                    assert_eq!(k.origin, o.origin);
+                }
+            }
+            if let DomainKind::Pinned { anchor, .. } = &t.domain(r.domain).kind {
+                assert!(
+                    anchor == k
+                        || (k.origin == anchor.origin && k.replica == anchor.replica && k.path.starts_with(&anchor.path)),
+                    "{name}: `{}` shares a pinned domain only under its anchor",
+                    path(k)
+                );
+                assert!(!accepting.contains(lowered(r)), "{name}: an accepting owner is never in a pinned domain");
+            }
+        }
+        let mut families: BTreeMap<(Origin, String), BTreeSet<u32>> = BTreeMap::new();
+        for k in t.instances.keys().filter(|k| k.path.len() == 1) {
+            if let Some(i) = k.replica {
+                families.entry((k.origin, k.path[0].field.clone())).or_default().insert(i);
+            }
+        }
+        for ((_, f), idx) in &families {
+            assert_eq!(idx.iter().copied().collect::<Vec<_>>(), (0..idx.len() as u32).collect::<Vec<_>>(), "{name}: `{f}`");
+        }
+        let static_holes: Vec<_> =
+            t.holes.iter().filter(|h| matches!(h.at, hale_types::placement::HoleAt::Instance(_))).collect();
+        assert!(static_holes.is_empty(), "{name}: {static_holes:?}");
+    }
 }

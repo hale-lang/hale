@@ -1,0 +1,38 @@
+// Case 6: generic specialization. One template, two substitutions, two
+// lowered names, one placed pinned with a subscription and one on a
+// pool.
+type Tick {
+    n: Int = 0;
+}
+
+topic Ticks {
+    payload: Tick;
+    subject: "ticks";
+}
+
+locus Cache<K, V> {
+    params {
+        cap: Int = 4;
+    }
+    bus {
+        subscribe Ticks as on_tick;
+    }
+    fn on_tick(t: Tick) { self.cap = self.cap + t.n; }
+}
+
+main locus App {
+    params {
+        c: Cache<Int, String> = Cache { cap: 2 };
+        d: Cache<Int, Int> = Cache { cap: 2 };
+    }
+    placement {
+        c: pinned;
+        d: cooperative(pool = io);
+    }
+    bus {
+        publish Ticks;
+    }
+    run() { Ticks <- Tick { n: 1 }; }
+}
+
+fn main() { App { }; }

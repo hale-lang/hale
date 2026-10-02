@@ -36,15 +36,38 @@
 //! table counts them ([`Construction::bound`], [`DynamicSite::bound`]) and
 //! never keys them. An incarnation is the runtime's, and the table never
 //! mints one.
+//!
+//! ## The producer
+//!
+//! [`derive_placement`] runs once per snapshot (`Snapshot::demand_placement`,
+//! counted as `placement`), after the desugar sequence and the mint, so every
+//! site it names is one a mint numbered. It is seeded from the entry row's
+//! lowering root, never its entry: the table describes what lowering deploys.
+//! Per construction literal of the root it walks the static tower (the
+//! root's params fields as that literal builds them, then their params
+//! fields, each with the literal that built it), with the adapters of the
+//! root's `bindings { }` as origins of their own; then it lists every locus
+//! literal outside the tower as a dynamic site, with the domains its
+//! enclosing scope runs in and how many occurrences can be live.
+//!
+//! The pre-mint pool map sync inference reads
+//! ([`crate::check::compute_pool_of_locus_type`], run per program before the
+//! sequence and the mint) is untouched and never converted into rows.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_graph::ids::SiteId;
-use hale_syntax::ast::{flat_decls, NodeId, Program, TopDecl};
+use hale_syntax::ast::{
+    flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
+    OrDisposition, ParamInit, PinAffinity, PlacementConstraint, PlacementSpec, Program, RecoveryModifier, Stmt,
+    StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDeclBody, TypeExpr,
+};
 use hale_syntax::sites::{for_each_site_in_item, SiteKind};
 
-use crate::entry::MainLocus;
+use crate::entry::{EntryRow, MainLocus};
+use crate::resolve::TopScope;
 use crate::snapshot::{Site, Snapshot};
+use crate::symbol::Bundle;
 use crate::ty::Ty;
 
 // ------------------------------------------------------------ identity
@@ -392,7 +415,1259 @@ impl PlacementTable {
     }
 }
 
-// ------------------------------------------------- the lowering join
+// ----------------------------------------------------- the producer
+
+/// The `placement` family's producer: one table over the bundle's checked
+/// programs and the stdlib analysis copy, seeded from the entry row's
+/// lowering root. `bundle` must be minted (its identities hold the
+/// programs' sites); a bundle nothing minted names no site and gets an
+/// empty table.
+pub fn derive_placement(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow) -> PlacementTable {
+    build(bundle, top, entry)
+}
+
+fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> PlacementTable {
+    let stdlib = match (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
+        (Some(p), Some(ids)) => Some((p, ids)),
+        _ => None,
+    };
+    let decls = Decls::of(bundle, stdlib);
+    let scopes = Scopes::of(bundle, stdlib, &decls);
+    let mut b = Builder {
+        decls: &decls,
+        top,
+        user_ids: &bundle.snapshot,
+        table: PlacementTable {
+            domains: vec![Domain { id: PlacementTable::MAIN, kind: DomainKind::Main }],
+            ..PlacementTable::default()
+        },
+        pools: BTreeMap::new(),
+        static_literals: BTreeSet::new(),
+    };
+    if let Some(root) = entry.lowering_root.as_ref() {
+        b.root(bundle, entry, root, &scopes);
+    }
+    b.dynamic_sites(&scopes);
+    b.table
+}
+
+/// One locus declaration the producer can realize.
+struct DeclEntry<'a> {
+    decl: &'a LocusDecl,
+    site: SiteRef,
+    /// The modules that enclose it, outermost first.
+    module: Vec<String>,
+}
+
+/// What a written name denotes.
+enum Named<'d, 'a> {
+    Locus(&'d DeclEntry<'a>),
+    /// An interface (or perspective): a contract-typed slot, which holds
+    /// whichever implementation was built.
+    Contract,
+    /// A type, a primitive spelled as a name, or anything else that is no
+    /// locus: not a placement fact at all.
+    NotALocus,
+    /// A name the producer cannot resolve.
+    Unknown,
+}
+
+/// The declarations of both universes, by the names lowering reads.
+struct Decls<'a> {
+    user: Vec<DeclEntry<'a>>,
+    stdlib: Vec<DeclEntry<'a>>,
+    user_by_name: BTreeMap<&'a str, Vec<usize>>,
+    stdlib_by_name: BTreeMap<&'a str, usize>,
+    /// `type A = T;` targets, each universe's.
+    user_aliases: BTreeMap<&'a str, &'a TypeExpr>,
+    stdlib_aliases: BTreeMap<&'a str, &'a TypeExpr>,
+    /// Interface and perspective names, both universes.
+    contracts: BTreeSet<&'a str>,
+    /// Every other declared type name (struct and enum types), both
+    /// universes: a literal naming one builds no locus.
+    types: BTreeSet<&'a str>,
+    /// `alias::Name` → the merged declaration name.
+    renames: BTreeMap<String, String>,
+    /// Every free fn, by universe and name.
+    fns: BTreeSet<(SiteUniverse, String)>,
+}
+
+impl<'a> Decls<'a> {
+    fn of(bundle: &Bundle<'a>, stdlib: Option<(&'a Program, &'a Snapshot)>) -> Decls<'a> {
+        let mut d = Decls {
+            user: Vec::new(),
+            stdlib: Vec::new(),
+            user_by_name: BTreeMap::new(),
+            stdlib_by_name: BTreeMap::new(),
+            user_aliases: BTreeMap::new(),
+            stdlib_aliases: BTreeMap::new(),
+            contracts: BTreeSet::new(),
+            types: BTreeSet::new(),
+            renames: bundle.import_renames.iter().map(|(segs, m)| (segs.join("::"), m.clone())).collect(),
+            fns: BTreeSet::new(),
+        };
+        for program in bundle.programs.values() {
+            d.collect(&program.items, &bundle.snapshot, SiteUniverse::User, &mut Vec::new());
+        }
+        if let Some((program, ids)) = stdlib {
+            d.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, &mut Vec::new());
+        }
+        d
+    }
+
+    fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, module: &mut Vec<String>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    let Some(id) = ids.site_id(l.id) else { continue };
+                    let entry = DeclEntry { decl: l, site: SiteRef { universe, id }, module: module.clone() };
+                    match universe {
+                        SiteUniverse::User => {
+                            self.user_by_name.entry(l.name.name.as_str()).or_default().push(self.user.len());
+                            self.user.push(entry);
+                        }
+                        SiteUniverse::StdlibAnalysis => {
+                            self.stdlib_by_name.entry(l.name.name.as_str()).or_insert(self.stdlib.len());
+                            self.stdlib.push(entry);
+                        }
+                    }
+                }
+                TopDecl::Type(t) => match &t.body {
+                    TypeDeclBody::Alias(te) if t.generics.is_empty() => {
+                        let aliases = match universe {
+                            SiteUniverse::User => &mut self.user_aliases,
+                            SiteUniverse::StdlibAnalysis => &mut self.stdlib_aliases,
+                        };
+                        aliases.entry(t.name.name.as_str()).or_insert(te);
+                    }
+                    _ => {
+                        self.types.insert(t.name.name.as_str());
+                    }
+                },
+                TopDecl::Interface(i) => {
+                    self.contracts.insert(i.name.name.as_str());
+                }
+                TopDecl::Fn(fd) => {
+                    self.fns.insert((universe, fd.name.name.clone()));
+                }
+                TopDecl::Perspective(p) => {
+                    self.contracts.insert(p.name.name.as_str());
+                }
+                TopDecl::Module(m) => {
+                    module.push(m.name.name.clone());
+                    self.collect(&m.items, ids, universe, module);
+                    module.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn entry(&self, universe: SiteUniverse, i: usize) -> &DeclEntry<'a> {
+        match universe {
+            SiteUniverse::User => &self.user[i],
+            SiteUniverse::StdlibAnalysis => &self.stdlib[i],
+        }
+    }
+
+    /// The user declaration named `name`: the top-level one when a module
+    /// declares the name too, as the flat scope reads it.
+    fn user_named(&self, name: &str) -> Option<&DeclEntry<'a>> {
+        let all = self.user_by_name.get(name)?;
+        all.iter().map(|i| &self.user[*i]).min_by_key(|e| e.module.len())
+    }
+
+    fn stdlib_named(&self, name: &str) -> Option<&DeclEntry<'a>> {
+        self.stdlib_by_name.get(name).map(|i| &self.stdlib[*i])
+    }
+
+    /// What `segs` denotes, written in `from`'s universe.
+    fn resolve(&self, segs: &[&str], from: SiteUniverse) -> Named<'_, 'a> {
+        self.resolve_at(segs, from, 0)
+    }
+
+    fn resolve_at(&self, segs: &[&str], from: SiteUniverse, depth: u32) -> Named<'_, 'a> {
+        if depth > 16 {
+            return Named::Unknown;
+        }
+        match segs {
+            [] => Named::Unknown,
+            ["std", ..] => match crate::ownership::stdlib_mangled_for_path(segs) {
+                Some(mangled) => match self.stdlib_named(mangled) {
+                    Some(e) => Named::Locus(e),
+                    None if self.contracts.contains(mangled) => Named::Contract,
+                    None => Named::NotALocus,
+                },
+                None => Named::Unknown,
+            },
+            [name] => {
+                let aliases = match from {
+                    SiteUniverse::User => &self.user_aliases,
+                    SiteUniverse::StdlibAnalysis => &self.stdlib_aliases,
+                };
+                if let Some(TypeExpr::Named { path, .. }) = aliases.get(name) {
+                    let target: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                    return self.resolve_at(&target, from, depth + 1);
+                }
+                let found = match from {
+                    SiteUniverse::User => self.user_named(name).or_else(|| self.stdlib_named(name)),
+                    SiteUniverse::StdlibAnalysis => self.stdlib_named(name).or_else(|| self.user_named(name)),
+                };
+                match found {
+                    Some(e) => Named::Locus(e),
+                    None if self.contracts.contains(name) => Named::Contract,
+                    None if self.types.contains(name) || aliases.contains_key(name) => Named::NotALocus,
+                    None => Named::Unknown,
+                }
+            }
+            _ => {
+                if let Some(mangled) = self.renames.get(&segs.join("::")) {
+                    let mangled = mangled.clone();
+                    return self.resolve_at(&[mangled.as_str()], SiteUniverse::User, depth + 1);
+                }
+                // A module-qualified path: the declaration of that name
+                // whose enclosing modules end with the path's head.
+                let (last, head) = segs.split_last().expect("non-empty");
+                let found = self.user_by_name.get(last).and_then(|all| {
+                    all.iter().map(|i| &self.user[*i]).find(|e| {
+                        e.module.len() >= head.len()
+                            && e.module[e.module.len() - head.len()..].iter().map(String::as_str).eq(head.iter().copied())
+                    })
+                });
+                match found {
+                    Some(e) => Named::Locus(e),
+                    None => Named::Unknown,
+                }
+            }
+        }
+    }
+}
+
+fn segments(path: &hale_syntax::ast::QualifiedName) -> Vec<&str> {
+    path.segments.iter().map(|s| s.name.as_str()).collect()
+}
+
+fn written(segs: &[&str]) -> String {
+    segs.join("::")
+}
+
+/// `ty` with `subst`'s type parameters replaced.
+fn substitute(ty: &TypeExpr, subst: &BTreeMap<String, TypeExpr>) -> TypeExpr {
+    match ty {
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 && generic_args.is_empty() && subst.contains_key(&path.segments[0].name) =>
+        {
+            subst[&path.segments[0].name].clone()
+        }
+        TypeExpr::Named { path, generic_args, span } => TypeExpr::Named {
+            path: path.clone(),
+            generic_args: generic_args.iter().map(|a| substitute(a, subst)).collect(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+/// The literals an initializer chooses among: the literal itself, or
+/// the literal arm of each branch of an `if` / `match` (and a block's
+/// tail). `None` when any arm is something else (a call, a name).
+fn alternatives(e: &Expr) -> Option<Vec<&Expr>> {
+    fn block<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) -> Option<()> {
+        if !b.stmts.is_empty() {
+            return None;
+        }
+        arms(b.tail.as_deref()?, out)
+    }
+    fn if_chain<'e>(i: &'e IfStmt, out: &mut Vec<&'e Expr>) -> Option<()> {
+        block(&i.then_block, out)?;
+        match i.else_block.as_deref()? {
+            ElseBranch::Else(b) => block(b, out),
+            ElseBranch::ElseIf(n) => if_chain(n, out),
+        }
+    }
+    fn arms<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) -> Option<()> {
+        match e {
+            Expr::Struct { .. } => {
+                out.push(e);
+                Some(())
+            }
+            Expr::Block(b) => block(b, out),
+            Expr::If(i) => if_chain(i, out),
+            Expr::Match(m) => {
+                for arm in &m.arms {
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => arms(e, out)?,
+                        MatchArmBody::Block(b) => block(b, out)?,
+                    }
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    arms(e, &mut out)?;
+    Some(out)
+}
+
+/// A resolved CPU set for an affinity, against the root's topology.
+fn core_set(affinity: &PinAffinity, topology: Option<&TopologyBlock>) -> Option<CoreSet> {
+    let cores = match affinity {
+        PinAffinity::Any => return None,
+        PinAffinity::Cores(spec) => spec.expand(),
+        PinAffinity::Node(n) => topology?.node_cores(*n)?,
+        PinAffinity::L3(name) => topology?.l3_cores(&name.name)?,
+    };
+    Some(CoreSet(cores))
+}
+
+/// The NUMA node an affinity binds a pinned instance's arena to.
+fn numa_node(affinity: &PinAffinity, topology: Option<&TopologyBlock>) -> Option<i64> {
+    match affinity {
+        PinAffinity::Node(n) => topology?.node_cores(*n).map(|_| *n),
+        PinAffinity::L3(name) => topology?.node_of_l3(&name.name),
+        PinAffinity::Any | PinAffinity::Cores(_) => None,
+    }
+}
+
+/// The root's placement decisions, by field.
+struct RootEntries<'a> {
+    decl: SiteRef,
+    entries: BTreeMap<&'a str, (&'a hale_syntax::ast::PlacementEntry, SiteRef)>,
+    topology: Option<&'a TopologyBlock>,
+}
+
+/// One field's position in the walk: the owner's key and domain, and
+/// whether the owner is live only under an alternative.
+struct Owner<'k> {
+    key: &'k InstanceKey,
+    domain: DomainId,
+    guarded: bool,
+}
+
+struct Builder<'d, 'a> {
+    decls: &'d Decls<'a>,
+    top: &'d TopScope,
+    user_ids: &'d Snapshot,
+    table: PlacementTable,
+    /// Pool domains by name.
+    pools: BTreeMap<String, DomainId>,
+    /// Every literal the static tower visited: not a dynamic site.
+    static_literals: BTreeSet<SiteRef>,
+}
+
+impl<'d, 'a> Builder<'d, 'a> {
+    fn new_domain(&mut self, kind: DomainKind) -> DomainId {
+        let id = DomainId(self.table.domains.len() as u32);
+        self.table.domains.push(Domain { id, kind });
+        id
+    }
+
+    fn pool(&mut self, name: &str, async_io: bool, affinity: Option<CoreSet>) -> DomainId {
+        if let Some(id) = self.pools.get(name).copied() {
+            if let DomainKind::Pool { async_io: a, affinity: aff, .. } = &mut self.table.domains[id.0 as usize].kind {
+                *a |= async_io;
+                if aff.is_none() {
+                    *aff = affinity;
+                }
+            }
+            return id;
+        }
+        let id = self.new_domain(DomainKind::Pool { name: name.to_string(), async_io, affinity });
+        self.pools.insert(name.to_string(), id);
+        id
+    }
+
+    fn decl_ref(&self, e: &DeclEntry<'a>, declared: Option<&TypeExpr>) -> (DeclRef, bool) {
+        let name = e.decl.name.name.clone();
+        if e.decl.generics.is_empty() {
+            return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, true);
+        }
+        let args: Vec<TypeExpr> = match declared {
+            Some(TypeExpr::Named { generic_args, .. }) if generic_args.len() == e.decl.generics.len() => {
+                generic_args.clone()
+            }
+            _ => return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, false),
+        };
+        let lowered = crate::mangle::mangle_generic_name(&name, &args).unwrap_or(name);
+        let tys = args.iter().map(|a| crate::resolve::resolve_type_expr(a, &self.top.names)).collect();
+        (DeclRef { site: e.site, args: tys, lowered }, true)
+    }
+
+    fn hole(&mut self, at: HoleAt, kind: HoleKind) {
+        self.table.holes.push(Hole { at, kind });
+    }
+
+    fn root(&mut self, bundle: &Bundle<'a>, entry: &EntryRow, root: &MainLocus, scopes: &Scopes<'a>) {
+        let Some(site) = root.site.map(SiteRef::user) else { return };
+        let Some(decl) = self.decls.user.iter().find(|e| e.site == site) else { return };
+        let decl: &'d DeclEntry<'a> = decl;
+        let l = decl.decl;
+        let is_entry = entry.entry().is_some_and(|e| e.site == root.site);
+        let mut entries = RootEntries { decl: site, entries: BTreeMap::new(), topology: None };
+        for m in &l.members {
+            match m {
+                LocusMember::Placement(pb) => {
+                    for e in &pb.entries {
+                        if let Some(id) = bundle.snapshot.site_id(e.id) {
+                            entries.entries.entry(e.field.name.as_str()).or_insert((e, SiteRef::user(id)));
+                        }
+                    }
+                }
+                LocusMember::Topology(tb) => entries.topology = Some(tb),
+                _ => {}
+            }
+        }
+        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound)> = Vec::new();
+        for s in &scopes.scopes {
+            for lit in &s.literals {
+                if lit.decl == Some(site) && s.universe == SiteUniverse::User {
+                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop)));
+                }
+            }
+        }
+        constructions.sort_by_key(|(s, _, _)| *s);
+        let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
+        self.table.root = Some(RootRow {
+            decl: root.clone(),
+            realizes: realizes.clone(),
+            is_entry,
+            constructions: constructions
+                .iter()
+                .map(|(literal, _, bound)| Construction { literal: *literal, bound: bound.clone() })
+                .collect(),
+        });
+        for (literal, inits, _) in &constructions {
+            self.static_literals.insert(*literal);
+            let key = InstanceKey { origin: Origin::Construction(*literal), path: Vec::new(), replica: None };
+            self.table.instances.insert(
+                key.clone(),
+                InstanceRow {
+                    realizes: Some(realizes.clone()),
+                    literal: Some(*literal),
+                    owner: None,
+                    domain: PlacementTable::MAIN,
+                    decided_by: Decision::Default,
+                    owner_relative: OwnerRelative::SameAsOwner,
+                    guarded: false,
+                },
+            );
+            let owner = Owner { key: &key, domain: PlacementTable::MAIN, guarded: false };
+            let mut stack = vec![site];
+            self.fields(decl, inits, &BTreeMap::new(), &owner, Some(&entries), &mut stack);
+            // Invariant 5: every entry decides a field family in this
+            // template, or it is a hole.
+            for (field, (_, entry_site)) in &entries.entries {
+                let decided = self.table.instances.keys().any(|k| {
+                    k.origin == Origin::Construction(*literal) && k.path.len() == 1 && k.path[0].field == *field
+                });
+                if !decided && !self.table.holes.iter().any(|h| h.at == HoleAt::Entry(*entry_site)) {
+                    self.hole(HoleAt::Entry(*entry_site), HoleKind::EntryDecidesNothing { field: field.to_string() });
+                }
+            }
+        }
+        // The adapters of the root's `bindings { }`: an origin each,
+        // built once in the bindings prelude, pinned-equivalent.
+        for m in &l.members {
+            let LocusMember::Bindings(bb) = m else { continue };
+            for e in &bb.entries {
+                let TransportSpec::Adapter { locus, inits, .. } = &e.transport else { continue };
+                let Some(entry_site) = bundle.snapshot.site_id(e.id).map(SiteRef::user) else { continue };
+                let key = InstanceKey { origin: Origin::Binding(entry_site), path: Vec::new(), replica: None };
+                let domain = self.new_domain(DomainKind::Pinned { anchor: key.clone(), affinity: None, numa_node: None });
+                let realized = match self.decls.resolve(&[locus.name.as_str()], SiteUniverse::User) {
+                    Named::Locus(d) => Some(d),
+                    _ => None,
+                };
+                if realized.is_none() {
+                    self.hole(
+                        HoleAt::Instance(key.clone()),
+                        HoleKind::UnresolvedDeclaration { written: locus.name.clone() },
+                    );
+                }
+                self.table.instances.insert(
+                    key.clone(),
+                    InstanceRow {
+                        realizes: realized.map(|d| self.decl_ref(d, None).0),
+                        literal: Some(entry_site),
+                        owner: None,
+                        domain,
+                        decided_by: Decision::Binding { entry: entry_site },
+                        owner_relative: OwnerRelative::SameAsOwner,
+                        guarded: false,
+                    },
+                );
+                if let Some(d) = realized {
+                    let owner = Owner { key: &key, domain, guarded: false };
+                    let mut stack = vec![d.site];
+                    self.fields(d, inits, &BTreeMap::new(), &owner, None, &mut stack);
+                }
+            }
+        }
+    }
+
+    /// The params fields of `decl` as a literal with `inits` builds it,
+    /// each a row under `owner`, and their fields below them. `root` is
+    /// set when `decl` is the root and `owner` a construction's top: its
+    /// fields are the ones a `placement { }` entry decides.
+    fn fields(
+        &mut self,
+        decl: &'d DeclEntry<'a>,
+        inits: &'a [StructInit],
+        subst: &BTreeMap<String, TypeExpr>,
+        owner: &Owner<'_>,
+        root: Option<&RootEntries<'a>>,
+        stack: &mut Vec<SiteRef>,
+    ) {
+        if stack.len() > 64 {
+            return;
+        }
+        let universe = decl.site.universe;
+        for m in &decl.decl.members {
+            let LocusMember::Params(pb) = m else { continue };
+            for p in &pb.params {
+                let field = p.name.name.as_str();
+                let init: Option<&'a Expr> = inits
+                    .iter()
+                    .find(|i| i.name.name == field)
+                    .map(|i| &i.value)
+                    .or(match &p.init {
+                        ParamInit::Value(e) => Some(e),
+                        ParamInit::Inferred => None,
+                    });
+                let declared: Option<TypeExpr> = p.ty.as_ref().map(|t| substitute(t, subst));
+                let declared_named = match &declared {
+                    Some(TypeExpr::Named { path, .. }) => self.decls.resolve(&segments(path), universe),
+                    _ => Named::NotALocus,
+                };
+                let declared_is_slot = matches!(declared_named, Named::Locus(_) | Named::Contract);
+                let alts = init.and_then(alternatives);
+                // Each alternative: (its literal's site, the declaration
+                // it names, its inits, the path as written).
+                let mut built: Vec<(Option<SiteRef>, Option<&'d DeclEntry<'a>>, &'a [StructInit], String)> = Vec::new();
+                match &alts {
+                    Some(lits) => {
+                        let mut any_locus = false;
+                        let mut any_unknown = false;
+                        for lit in lits {
+                            let Expr::Struct { path, inits, id, .. } = lit else { continue };
+                            let segs = segments(path);
+                            let site = self.site_of(*id, universe);
+                            match self.decls.resolve(&segs, universe) {
+                                Named::Locus(d) => {
+                                    any_locus = true;
+                                    built.push((site, Some(d), inits, written(&segs)));
+                                }
+                                Named::Unknown | Named::Contract => {
+                                    any_unknown = true;
+                                    built.push((site, None, inits, written(&segs)));
+                                }
+                                Named::NotALocus => {}
+                            }
+                        }
+                        if !any_locus && !(any_unknown && declared_is_slot) {
+                            continue;
+                        }
+                    }
+                    None if declared_is_slot => {}
+                    None => continue,
+                }
+                let choice = built.len() > 1;
+                let entry = root.and_then(|r| r.entries.get(field).map(|(e, s)| (r, *e, *s)));
+                if alts.is_none() {
+                    built.push((None, None, &[], String::new()));
+                }
+                for (literal, realized, lit_inits, path_written) in built {
+                    if let Some(l) = literal {
+                        self.static_literals.insert(l);
+                    }
+                    let step = Step { field: field.to_string(), alternative: if choice { literal } else { None } };
+                    let guarded = owner.guarded || choice;
+                    // The field's family: one row, or one per replica.
+                    let mut family: Vec<(Option<u32>, DomainId, Decision)> = Vec::new();
+                    match entry {
+                        Some((r, e, entry_site)) => {
+                            let decision = Decision::Entry { decl: r.decl, entry: entry_site };
+                            match &e.spec {
+                                PlacementSpec::Pinned { affinity, replicas } => {
+                                    let k = replicas.unwrap_or(1).max(1) as u32;
+                                    let cores = core_set(affinity, r.topology);
+                                    let node = numa_node(affinity, r.topology);
+                                    for i in 0..k {
+                                        let replica = (k > 1).then_some(i);
+                                        let affinity = match (&cores, k > 1) {
+                                            (Some(CoreSet(c)), true) if !c.is_empty() => {
+                                                Some(CoreSet(vec![c[i as usize % c.len()]]))
+                                            }
+                                            (cores, _) => cores.clone(),
+                                        };
+                                        let anchor = InstanceKey {
+                                            origin: owner.key.origin,
+                                            path: vec![step.clone()],
+                                            replica,
+                                        };
+                                        let d = self.new_domain(DomainKind::Pinned { anchor, affinity, numa_node: node });
+                                        family.push((replica, d, decision.clone()));
+                                    }
+                                }
+                                PlacementSpec::Cooperative { pool, affinity } => {
+                                    let d = match pool.as_ref().map(|p| p.name.as_str()) {
+                                        None | Some("main") => PlacementTable::MAIN,
+                                        Some(name) => {
+                                            let async_io =
+                                                e.constraints.iter().any(|c| matches!(c.kind, PlacementConstraint::AsyncIo));
+                                            let cores = core_set(affinity, r.topology).filter(|c| !c.0.is_empty());
+                                            self.pool(name, async_io, cores)
+                                        }
+                                    };
+                                    family.push((None, d, decision));
+                                }
+                            }
+                        }
+                        None if root.is_some() => family.push((None, PlacementTable::MAIN, Decision::Default)),
+                        None => family.push((owner.key.replica, owner.domain, Decision::Inherited { from: owner.key.clone() })),
+                    }
+                    for (replica, domain, decided_by) in family {
+                        let mut path = owner.key.path.clone();
+                        path.push(step.clone());
+                        let key = InstanceKey { origin: owner.key.origin, path, replica: replica.or(owner.key.replica) };
+                        let (realizes, args_known) = match realized {
+                            Some(d) => {
+                                let (r, known) = self.decl_ref(d, declared.as_ref());
+                                (Some(r), known)
+                            }
+                            None => (None, true),
+                        };
+                        if literal.is_none() {
+                            self.hole(HoleAt::Instance(key.clone()), HoleKind::UnenumerableInitializer);
+                        }
+                        // A literal naming nothing resolvable, or no literal at
+                        // all: the declared type is what is left to read.
+                        let realizes = match (realizes, literal.is_none(), &declared_named) {
+                            (Some(r), _, _) => Some(r),
+                            (None, true, Named::Locus(d)) => Some(self.decl_ref(d, declared.as_ref()).0),
+                            (None, _, _) => {
+                                let w = if path_written.is_empty() {
+                                    match &declared {
+                                        Some(TypeExpr::Named { path, .. }) => written(&segments(path)),
+                                        _ => String::from("an unnamed type"),
+                                    }
+                                } else {
+                                    path_written.clone()
+                                };
+                                self.hole(HoleAt::Instance(key.clone()), HoleKind::UnresolvedDeclaration { written: w });
+                                None
+                            }
+                        };
+                        if !args_known {
+                            self.hole(HoleAt::Instance(key.clone()), HoleKind::UnresolvedArguments);
+                        }
+                        let owner_relative =
+                            if domain == owner.domain { OwnerRelative::SameAsOwner } else { OwnerRelative::OffOwner };
+                        self.table.instances.insert(
+                            key.clone(),
+                            InstanceRow {
+                                realizes: realizes.clone(),
+                                literal,
+                                owner: Some(owner.key.clone()),
+                                domain,
+                                decided_by,
+                                owner_relative,
+                                guarded,
+                            },
+                        );
+                        // Below a literal the producer resolved, the walk
+                        // goes on; a hole stops it (nothing below an
+                        // unknown literal is enumerated).
+                        let (Some(d), Some(_)) = (realized, literal) else { continue };
+                        if stack.contains(&d.site) {
+                            continue;
+                        }
+                        let below: BTreeMap<String, TypeExpr> = match &realizes {
+                            Some(r) if !r.args.is_empty() => match &declared {
+                                Some(TypeExpr::Named { generic_args, .. }) => d
+                                    .decl
+                                    .generics
+                                    .iter()
+                                    .map(|g| g.name.name.clone())
+                                    .zip(generic_args.iter().cloned())
+                                    .collect(),
+                                _ => BTreeMap::new(),
+                            },
+                            _ => BTreeMap::new(),
+                        };
+                        stack.push(d.site);
+                        let next = Owner { key: &key, domain, guarded };
+                        self.fields(d, lit_inits, &below, &next, None, stack);
+                        stack.pop();
+                    }
+                }
+            }
+        }
+    }
+
+    fn site_of(&self, id: NodeId, universe: SiteUniverse) -> Option<SiteRef> {
+        let ids = match universe {
+            SiteUniverse::User => self.user_ids,
+            SiteUniverse::StdlibAnalysis => crate::stdlib_bodies::identities()?,
+        };
+        ids.site_id(id).map(|id| SiteRef { universe, id })
+    }
+
+    /// Every locus literal outside the static tower, with the domains its
+    /// enclosing scope runs in and its bound. A scope of the stdlib is
+    /// listed only once the program reaches it: a stdlib locus some row
+    /// or reached literal realizes, a stdlib fn a reached scope calls.
+    fn dynamic_sites(&mut self, scopes: &Scopes<'a>) {
+        let n = scopes.scopes.len();
+        // The domains each scope runs in; `None` once unknown.
+        let mut dom: Vec<Result<BTreeSet<DomainId>, String>> = vec![Ok(BTreeSet::new()); n];
+        let mut reached: Vec<bool> = scopes.scopes.iter().map(|s| s.universe == SiteUniverse::User).collect();
+        for (i, s) in scopes.scopes.iter().enumerate() {
+            match &s.kind {
+                ScopeKind::Fn { is_main: true, .. } => {
+                    dom[i] = Ok([PlacementTable::MAIN].into_iter().collect());
+                }
+                ScopeKind::Locus { decl } => {
+                    let set: BTreeSet<DomainId> = self
+                        .table
+                        .instances
+                        .values()
+                        .filter(|r| r.realizes.as_ref().is_some_and(|d| d.site == *decl))
+                        .map(|r| r.domain)
+                        .collect();
+                    if !set.is_empty() {
+                        reached[i] = true;
+                    }
+                    dom[i] = Ok(set);
+                }
+                ScopeKind::Fn { .. } => {}
+            }
+            if !s.escapes.is_empty() {
+                // handled below, per target
+            }
+        }
+        for s in &scopes.scopes {
+            for f in &s.escapes {
+                if let Some(t) = scopes.fn_named(s.universe, f) {
+                    dom[t] = Err(format!("`{f}` is passed as a value, so its callers are not all known"));
+                }
+            }
+        }
+        // To a fixpoint: a literal's declaration runs where the literal
+        // runs; a callee runs where its caller does.
+        loop {
+            let mut changed = false;
+            for (i, s) in scopes.scopes.iter().enumerate() {
+                if !reached[i] {
+                    continue;
+                }
+                let here = dom[i].clone();
+                let targets = s
+                    .literals
+                    .iter()
+                    .filter_map(|l| l.decl.and_then(|d| scopes.locus_scope(d)))
+                    .chain(s.calls.iter().filter_map(|(f, _)| scopes.fn_named(s.universe, f)));
+                for t in targets.collect::<Vec<_>>() {
+                    if !reached[t] {
+                        reached[t] = true;
+                        changed = true;
+                    }
+                    let next = match (&dom[t], &here) {
+                        (Err(_), _) => continue,
+                        (Ok(_), Err(why)) => Err(why.clone()),
+                        (Ok(have), Ok(add)) => {
+                            if add.is_subset(have) {
+                                continue;
+                            }
+                            Ok(have.union(add).copied().collect())
+                        }
+                    };
+                    dom[t] = next;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (i, s) in scopes.scopes.iter().enumerate() {
+            if !reached[i] {
+                continue;
+            }
+            let (domains, unknown) = match &dom[i] {
+                Ok(set) if !set.is_empty() => (set.clone(), None),
+                Ok(_) => (
+                    BTreeSet::new(),
+                    Some(match &s.kind {
+                        ScopeKind::Locus { .. } => "the enclosing locus has no instance the table places".to_string(),
+                        ScopeKind::Fn { .. } => "the enclosing fn has no caller the table places".to_string(),
+                    }),
+                ),
+                Err(why) => (BTreeSet::new(), Some(why.clone())),
+            };
+            for l in &s.literals {
+                if self.static_literals.contains(&l.site) || l.decl.is_none() && !l.unknown {
+                    continue;
+                }
+                if self.table.root.as_ref().is_some_and(|r| r.constructions.iter().any(|c| c.literal == l.site)) {
+                    continue;
+                }
+                let realizes = l.decl.and_then(|d| scopes.decl_entry(self.decls, d)).map(|e| self.decl_ref(e, None).0);
+                if realizes.is_none() {
+                    self.hole(HoleAt::Dynamic(l.site), HoleKind::UnresolvedDeclaration { written: l.written.clone() });
+                }
+                if let Some(why) = &unknown {
+                    self.hole(HoleAt::Dynamic(l.site), HoleKind::UnknownDomains { reason: why.clone() });
+                }
+                let enclosing = match &s.kind {
+                    ScopeKind::Fn { site, .. } => Enclosing::Fn(*site),
+                    ScopeKind::Locus { decl } => match scopes.decl_entry(self.decls, *decl) {
+                        Some(e) => Enclosing::Locus(self.decl_ref(e, None).0),
+                        None => continue,
+                    },
+                };
+                self.table.dynamic.push(DynamicSite {
+                    literal: l.site,
+                    realizes,
+                    enclosing,
+                    domains: domains.clone(),
+                    bound: scopes.bound(s, l.in_loop),
+                });
+            }
+        }
+        self.table.dynamic.sort_by_key(|d| d.literal);
+    }
+}
+
+// ------------------------------------------------- scopes and bounds
+
+/// A locus literal in a body.
+struct Literal<'a> {
+    site: SiteRef,
+    /// The locus declaration it names, when it names one.
+    decl: Option<SiteRef>,
+    /// It names nothing the producer resolves (neither a locus nor a
+    /// type): a hole, not a skipped struct literal.
+    unknown: bool,
+    inits: &'a [StructInit],
+    in_loop: bool,
+    written: String,
+}
+
+enum ScopeKind {
+    /// A free fn: its name, its site, whether it is a top-level `fn main`.
+    Fn { name: String, site: SiteRef, is_main: bool },
+    /// Every body of one locus declaration: they run where its
+    /// instances do.
+    Locus { decl: SiteRef },
+}
+
+/// One scope's bodies: the literals in them, the free fns they call,
+/// and the free fns they name as values.
+struct Scope<'a> {
+    universe: SiteUniverse,
+    kind: ScopeKind,
+    literals: Vec<Literal<'a>>,
+    calls: Vec<(String, bool)>,
+    escapes: BTreeSet<String>,
+}
+
+/// How many times a scope can run: finite, or unbounded with a reason.
+#[derive(Clone)]
+enum Count {
+    Finite(u32),
+    Unbounded(String),
+}
+
+struct Scopes<'a> {
+    scopes: Vec<Scope<'a>>,
+    fns: BTreeMap<(SiteUniverse, String), usize>,
+    loci: BTreeMap<SiteRef, usize>,
+    counts: Vec<Count>,
+}
+
+impl<'a> Scopes<'a> {
+    fn of(
+        bundle: &'a Bundle<'a>,
+        stdlib: Option<(&'a Program, &'a Snapshot)>,
+        decls: &Decls<'a>,
+    ) -> Scopes<'a> {
+        let mut s = Scopes { scopes: Vec::new(), fns: BTreeMap::new(), loci: BTreeMap::new(), counts: Vec::new() };
+        for program in bundle.programs.values() {
+            s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls, true);
+        }
+        if let Some((program, ids)) = stdlib {
+            s.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, decls, true);
+        }
+        let mut callers: BTreeMap<(SiteUniverse, &str), Vec<(usize, bool)>> = BTreeMap::new();
+        for (j, caller) in s.scopes.iter().enumerate() {
+            for (callee, in_loop) in &caller.calls {
+                callers.entry((caller.universe, callee.as_str())).or_default().push((j, *in_loop));
+            }
+        }
+        let mut memo: Vec<Option<Count>> = vec![None; s.scopes.len()];
+        for i in 0..s.scopes.len() {
+            s.count(i, &callers, &mut memo, &mut Vec::new());
+        }
+        s.counts = memo.into_iter().map(|c| c.expect("every scope counted")).collect();
+        s
+    }
+
+    fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, decls: &Decls<'a>, top: bool) {
+        for item in items {
+            match item {
+                TopDecl::Fn(fd) => {
+                    let Some(id) = ids.site_id(fd.id) else { continue };
+                    let site = SiteRef { universe, id };
+                    let mut w = BodyWalk::new(ids, universe, decls);
+                    for p in &fd.params {
+                        if let Some(d) = &p.default {
+                            w.expr(d);
+                        }
+                    }
+                    w.block(&fd.body);
+                    let is_main = top && universe == SiteUniverse::User && fd.name.name == "main";
+                    self.fns.entry((universe, fd.name.name.clone())).or_insert(self.scopes.len());
+                    self.scopes.push(w.finish(ScopeKind::Fn { name: fd.name.name.clone(), site, is_main }));
+                }
+                TopDecl::Locus(l) => {
+                    let Some(id) = ids.site_id(l.id) else { continue };
+                    let decl = SiteRef { universe, id };
+                    let mut w = BodyWalk::new(ids, universe, decls);
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(fd) => {
+                                for p in &fd.params {
+                                    if let Some(d) = &p.default {
+                                        w.expr(d);
+                                    }
+                                }
+                                w.block(&fd.body);
+                            }
+                            LocusMember::Lifecycle(ld) => w.block(&ld.body),
+                            LocusMember::Mode(md) => w.block(&md.body),
+                            LocusMember::Failure(fd) => w.block(&fd.body),
+                            LocusMember::BirthCheck(bc) => {
+                                w.expr(&bc.cond);
+                                if let Some(p) = &bc.payload {
+                                    w.expr(p);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.loci.insert(decl, self.scopes.len());
+                    self.scopes.push(w.finish(ScopeKind::Locus { decl }));
+                }
+                TopDecl::Module(m) => self.collect(&m.items, ids, universe, decls, false),
+                _ => {}
+            }
+        }
+    }
+
+    fn fn_named(&self, universe: SiteUniverse, name: &str) -> Option<usize> {
+        self.fns.get(&(universe, name.to_string())).copied()
+    }
+
+    fn locus_scope(&self, decl: SiteRef) -> Option<usize> {
+        self.loci.get(&decl).copied()
+    }
+
+    fn decl_entry<'d>(&self, decls: &'d Decls<'a>, decl: SiteRef) -> Option<&'d DeclEntry<'a>> {
+        let all = match decl.universe {
+            SiteUniverse::User => &decls.user,
+            SiteUniverse::StdlibAnalysis => &decls.stdlib,
+        };
+        all.iter().position(|e| e.site == decl).map(|i| decls.entry(decl.universe, i))
+    }
+
+    /// How many times scope `i` can run: `fn main` once; a fn the sum of
+    /// its call sites' counts; a locus body, a fn named as a value, a
+    /// recursive fn or a call in a loop without bound.
+    fn count(
+        &self,
+        i: usize,
+        callers: &BTreeMap<(SiteUniverse, &str), Vec<(usize, bool)>>,
+        memo: &mut Vec<Option<Count>>,
+        visiting: &mut Vec<usize>,
+    ) -> Count {
+        if let Some(c) = &memo[i] {
+            return c.clone();
+        }
+        let s = &self.scopes[i];
+        let c = match &s.kind {
+            ScopeKind::Fn { is_main: true, .. } => Count::Finite(1),
+            ScopeKind::Locus { .. } => {
+                Count::Unbounded("built in a locus body, which can run any number of times".to_string())
+            }
+            ScopeKind::Fn { name, .. } => {
+                if self.scopes.iter().any(|o| o.universe == s.universe && o.escapes.contains(name)) {
+                    Count::Unbounded(format!("built in `{name}`, which is passed as a value"))
+                } else if visiting.contains(&i) {
+                    // Not memoized: the answer belongs to the cycle's entry.
+                    return Count::Unbounded(format!("built in `{name}`, which is recursive"));
+                } else {
+                    visiting.push(i);
+                    let mut total = Count::Finite(0);
+                    for (j, in_loop) in callers.get(&(s.universe, name.as_str())).into_iter().flatten() {
+                        let add = if *in_loop {
+                            Count::Unbounded(format!("built in `{name}`, which is called in a loop"))
+                        } else {
+                            self.count(*j, callers, memo, visiting)
+                        };
+                        total = match (total, add) {
+                            (Count::Finite(a), Count::Finite(b)) => Count::Finite(a.saturating_add(b)),
+                            (Count::Unbounded(why), _) | (_, Count::Unbounded(why)) => {
+                                total = Count::Unbounded(why);
+                                break;
+                            }
+                        };
+                    }
+                    visiting.pop();
+                    total
+                }
+            }
+        };
+        memo[i] = Some(c.clone());
+        c
+    }
+
+    fn bound(&self, s: &Scope<'a>, in_loop: bool) -> Bound {
+        if in_loop {
+            return Bound::Unbounded("built in a loop".to_string());
+        }
+        let i = self
+            .scopes
+            .iter()
+            .position(|o| std::ptr::eq(o, s))
+            .expect("a scope of this table");
+        match &self.counts[i] {
+            Count::Finite(0) => Bound::AtMost(0),
+            Count::Finite(1) => Bound::Once,
+            Count::Finite(n) => Bound::AtMost(*n),
+            Count::Unbounded(why) => Bound::Unbounded(why.clone()),
+        }
+    }
+}
+
+/// One scope's walk over its bodies.
+struct BodyWalk<'a, 'd> {
+    ids: &'d Snapshot,
+    universe: SiteUniverse,
+    decls: &'d Decls<'a>,
+    loop_depth: u32,
+    literals: Vec<Literal<'a>>,
+    calls: Vec<(String, bool)>,
+    escapes: BTreeSet<String>,
+}
+
+impl<'a, 'd> BodyWalk<'a, 'd> {
+    fn new(ids: &'d Snapshot, universe: SiteUniverse, decls: &'d Decls<'a>) -> Self {
+        BodyWalk {
+            ids,
+            universe,
+            decls,
+            loop_depth: 0,
+            literals: Vec::new(),
+            calls: Vec::new(),
+            escapes: BTreeSet::new(),
+        }
+    }
+
+    fn finish(self, kind: ScopeKind) -> Scope<'a> {
+        Scope { universe: self.universe, kind, literals: self.literals, calls: self.calls, escapes: self.escapes }
+    }
+
+    fn block(&mut self, b: &'a Block) {
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        if let Some(t) = &b.tail {
+            self.expr(t);
+        }
+    }
+
+    fn looped(&mut self, b: &'a Block) {
+        self.loop_depth += 1;
+        self.block(b);
+        self.loop_depth -= 1;
+    }
+
+    fn if_chain(&mut self, i: &'a IfStmt) {
+        self.expr(&i.cond);
+        self.block(&i.then_block);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b),
+            Some(ElseBranch::ElseIf(n)) => self.if_chain(n),
+            None => {}
+        }
+    }
+
+    fn disposition(&mut self, d: &'a OrDisposition) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
+        }
+    }
+
+    fn stmt(&mut self, s: &'a Stmt) {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => self.expr(value),
+            Stmt::Assign { target, value, .. } => {
+                self.expr(value);
+                for seg in &target.tail {
+                    if let LValueSeg::Index(ix) = seg {
+                        self.expr(ix);
+                    }
+                }
+            }
+            Stmt::If(i) => self.if_chain(i),
+            Stmt::Match(m) => {
+                self.expr(&m.scrutinee);
+                for arm in &m.arms {
+                    if let Some(g) = &arm.guard {
+                        self.expr(g);
+                    }
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => self.expr(e),
+                        MatchArmBody::Block(b) => self.block(b),
+                    }
+                }
+            }
+            Stmt::For { iter, body, .. } => {
+                self.expr(iter);
+                self.looped(body);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.loop_depth += 1;
+                self.expr(cond);
+                self.block(body);
+                self.loop_depth -= 1;
+            }
+            Stmt::Return(Some(e), _) | Stmt::Fail { value: e, .. } | Stmt::Expr(e) => self.expr(e),
+            Stmt::Block(b) => self.block(b),
+            Stmt::Recovery { args, modifier, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+                if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
+                    self.expr(e);
+                }
+            }
+            Stmt::Violate { payload: Some(p), .. } => self.expr(p),
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject);
+                self.expr(value);
+                if let Some(d) = or_disposition {
+                    self.disposition(d);
+                }
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                self.expr(max);
+                self.block(body);
+            }
+            _ => {}
+        }
+    }
+
+    fn expr(&mut self, e: &'a Expr) {
+        match e {
+            Expr::Ident(i) => {
+                // A name that is a free fn, read as a value.
+                if self.decls_has_fn(&i.name) {
+                    self.escapes.insert(i.name.clone());
+                }
+            }
+            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Call { callee, args, .. } => {
+                match &**callee {
+                    Expr::Ident(i) => self.calls.push((i.name.clone(), self.loop_depth > 0)),
+                    Expr::Path(qn) => {
+                        if let Some(last) = qn.segments.last() {
+                            self.calls.push((last.name.clone(), self.loop_depth > 0));
+                        }
+                    }
+                    other => self.expr(other),
+                }
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+            Expr::Index { receiver, index, .. } => {
+                self.expr(receiver);
+                self.expr(index);
+            }
+            Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+                for p in parts {
+                    self.expr(p);
+                }
+            }
+            Expr::Struct { path, inits, id, .. } => {
+                let segs = segments(path);
+                let (decl, unknown) = match self.decls.resolve(&segs, self.universe) {
+                    Named::Locus(d) => (Some(d.site), false),
+                    Named::Unknown => (None, true),
+                    Named::Contract | Named::NotALocus => (None, false),
+                };
+                if let Some(id) = self.ids.site_id(*id) {
+                    if decl.is_some() || unknown {
+                        self.literals.push(Literal {
+                            site: SiteRef { universe: self.universe, id },
+                            decl,
+                            unknown,
+                            inits,
+                            in_loop: self.loop_depth > 0,
+                            written: written(&segs),
+                        });
+                    }
+                }
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Block(b) => self.block(b),
+            Expr::If(i) => self.if_chain(i),
+            Expr::Match(m) => {
+                self.expr(&m.scrutinee);
+                for arm in &m.arms {
+                    if let Some(g) = &arm.guard {
+                        self.expr(g);
+                    }
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => self.expr(e),
+                        MatchArmBody::Block(b) => self.block(b),
+                    }
+                }
+            }
+            Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.expr(inner),
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+            Expr::ArrayRepeat { val, .. } => self.expr(val),
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                self.disposition(disposition);
+            }
+        }
+    }
+
+    fn decls_has_fn(&self, name: &str) -> bool {
+        self.decls.fns.contains(&(self.universe, name.to_string()))
+    }
+}
 
 /// A ref the lowering view resolves: a declaration, which joins by its
 /// lowered name, or any other site, which joins by position.

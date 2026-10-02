@@ -1,0 +1,16 @@
+// Case 7, first half: a root field typed and built by a
+// module-qualified path.
+module m {
+    locus K { }
+}
+
+main locus App {
+    params {
+        k: m::K = m::K { };
+    }
+    placement {
+        k: pinned;
+    }
+}
+
+fn main() { App { }; }
