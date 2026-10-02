@@ -437,7 +437,11 @@ declared anywhere in the program. `DispatchPlan::derive(
 &ApplicationModel)` owns that derivation: the bus graph's
 per-subject eligibility gates decide the flavor (a single ladder,
 `DispatchFlavor::of`, which the backend calls rather than
-re-deciding), and the Change-8 arrangement supplies each row's
+re-deciding; `static_direct` takes three legs: every publisher and
+subscriber same-thread, every handler quiet, and the gate's
+`payload_flat` column, a payload struct whose every field is an
+inline scalar — a direct-eligible subject with a managed payload is
+`static_bucket`), and the Change-8 arrangement supplies each row's
 publisher/subscriber **thread domains** and `same_domain` — "every
 publish site and every subscriber of this subject sit in one
 domain", the precondition the future placement-driven flavors
@@ -3273,7 +3277,7 @@ build.
 | `LOTUS_NO_OWNERSHIP_BUBBLE` | `no_ownership_bubble` | Force the pre-bubble ownership lowering: no bubble plans, no forwarding sets, no threading fields. | off |
 | `LOTUS_DISABLE_PREFETCH` | `disable_prefetch` | Compile the runtime without its prefetch hints. | off |
 | `LOTUS_DI_TRACE` (*set*) | `di_trace` | Narrate debug-location decisions on stderr. | off |
-| `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject on stderr. | off |
+| `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject, with its gate's `payload_flat` column, and the codec's flatness at each publish to a literal subject, on stderr. | off |
 | `HALE_LIFECYCLE_TRACE` | `lifecycle_trace` | The lifecycle trace: one line per obligation event on stderr (§ "The lifecycle trace"). A debug build; native host targets only. | off |
 | `HALE_TIME` (*set*) | `time_phases` | Print per-phase wall times of the build on stderr. | off |
 | `HALE_CC_WARNINGS` | `cc_warnings` | Let the runtime's C warnings through instead of `-w`. For work on the runtime itself. | off |

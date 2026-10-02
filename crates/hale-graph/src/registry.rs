@@ -250,7 +250,6 @@ const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";
 const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
 const CG_RESTART: &str = "crates/hale-codegen/src/locus/restart.rs";
 const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
-const CG_WIRE: &str = "crates/hale-codegen/src/bus/wire.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
@@ -788,16 +787,15 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement.",
-        inputs: &["bus_graph (gates)", "placement (domains)", "the flat-payload predicate", "--no-bus-devirt"],
+        inputs: &["bus_graph (gates, the payload_flat column among them)", "placement (domains)", "--no-bus-devirt"],
         producer: Some(site(M_DISPATCH, "fn derive")),
         legacy: &[
             legacy(TY_RESOLVED, "from_gates", "the resolved program derives lowering's plan with an empty domain map (#464's widening is a separate optimization); the model derives its own with the arrangement's domains for `same_domain`", "phase 3, one plan: lowering's plan takes the arrangement's domains only with #464's widening, an optimization with its own bench gate not yet taken on, so the two plans still differ by their domain maps (at the phase-2 close)"),
-            legacy(CG_WIRE, "bus_payload_is_flat", "the third leg of the direct-call gate exists only in codegen", "a gate column"),
         ],
         consumers: &[consumer_at("codegen", CG, "build_resolved"), consumer_at("codegen", "crates/hale-codegen/src/bus/dispatch.rs", "bus_devirt"), consumer_at("exec_digest (the resolved program's plan)", OPTIONS, "resolved.plan.digest()"), consumer("model dump")],
-        invariants: &["which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)", "lowering reads one plan, derived once per snapshot in the resolved program; the execution digest frames that plan", "the model's plan agrees with it on the flavor of every subject both carry (shadowed over the corpus at phase 1.5)"],
+        invariants: &["which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)", "lowering reads one plan, derived once per snapshot in the resolved program; the execution digest frames that plan", "the model's plan agrees with it on the flavor of every subject both carry (shadowed over the corpus at phase 1.5)", "the direct tier takes all three gate legs, same-thread, quiet and the payload_flat column (`bus_graph::payload_is_flat`, codegen's flatness rule over resolved types); codegen reads the flavor and refuses a plan whose column disagrees with the lowered payload, and the codec's own flatness equals the column at every publish over the corpus"],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs"],
+        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs", "crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)"],
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38"],
         owned: &[],
         seams: &[

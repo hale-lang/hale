@@ -10,6 +10,7 @@ crates/hale-cli/tests/cross_seed_qualified_serves.rs#2 cb403528917b1d2f
 crates/hale-cli/tests/cross_seed_qualified_serves.rs#3 cb403528917b1d2f
 crates/hale-cli/tests/cross_seed_qualified_serves.rs#4 cb403528917b1d2f
 crates/hale-cli/tests/debug_info.rs#0 a8a553c534907f76
+crates/hale-cli/tests/dispatch_payload_flat.rs#0 50015feb67e66ffe
 crates/hale-cli/tests/dispatch_plan_cli.rs#0 e9ff5fe335d31b65
 crates/hale-cli/tests/dna_apply.rs#0 f2c1228edb650960
 crates/hale-cli/tests/dna_design.rs#0 f2c1228edb650960

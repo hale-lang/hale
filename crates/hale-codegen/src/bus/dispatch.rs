@@ -704,6 +704,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         // still pass the serializer (remote fanout needs it). See
         // `bus_payload_is_flat`.
         let payload_is_flat = self.bus_payload_is_flat(&payload_ty);
+        // `HALE_DISPATCH_TRACE`: the codec's flatness at this publish,
+        // beside the plan rows' `payload_flat` column, so the two can
+        // be held equal over a corpus.
+        if self.dispatch_trace {
+            if let Expr::Literal(Literal::String(s), _) = subject {
+                eprintln!("[hale-dispatch] publish {s} flat={payload_is_flat}");
+            }
+        }
         // m47-payloads-followup: bus payload is either a
         // user-type struct pointer OR a has-payload enum
         // pointer. Both lower to a ptr value + a sized storage
@@ -1369,10 +1377,10 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             let id_iv = i32_t.const_int(id as u64, false);
             // Direct-call devirt (build #1b slice-2): when the subject's
             // every subscriber is same-thread + QUIET (the BusGraph
-            // `direct_call_eligible` gate, surfaced in
-            // `bus_devirt_direct`) AND its payload is FLAT (the third
-            // gate leg — checked here because flatness is a lowered-
-            // payload property), collapse the deferred enqueue into a
+            // `direct_call_eligible` gate) AND its payload is FLAT (the
+            // third gate leg, the gate's `payload_flat` column), both
+            // read off the plan's flavor (`bus_devirt_direct`), collapse
+            // the deferred enqueue into a
             // SYNCHRONOUS direct call to each subscriber handler. The
             // flat payload is pointer-free POD, so the publisher's live
             // storage carries the exact bytes the deferred path would
@@ -1382,10 +1390,25 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             // quarantined / keyed entries — so the only difference from
             // the deferred static path is WHEN the (isolated, quiet)
             // handler runs, which is unobservable. A non-flat payload
-            // on an otherwise-direct subject falls through to the
-            // static enqueue below (managed payloads keep the wire /
-            // per-subscriber-arena path).
-            if static_direct && payload_is_flat {
+            // on an otherwise-direct subject is a static bucket in the
+            // plan, so it takes the static enqueue below (managed
+            // payloads keep the wire / per-subscriber-arena path). The
+            // codec's own flatness over the lowered payload has to
+            // agree with the column: a direct call with a managed
+            // payload would hand the handler the publisher's live
+            // storage.
+            if static_direct && !payload_is_flat {
+                let name = match subject {
+                    Expr::Literal(Literal::String(s), _) => s.as_str(),
+                    _ => "?",
+                };
+                return Err(CodegenError::Unsupported(format!(
+                    "the dispatch plan lowers `{name}` as a direct call, which needs a flat payload, \
+                     but this publish carries a managed one (the gate's payload_flat column and the \
+                     lowered payload disagree)"
+                )));
+            }
+            if static_direct {
                 // Direct-INLINE (slice-3): when this direct subject has a
                 // SINGLE distinct subscriber handler (one subscriber
                 // locus-type, any # of instances), bake that handler as a

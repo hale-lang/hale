@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 11 canonical, 29 migrating (with 123 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 11 canonical, 29 migrating (with 122 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -24,7 +24,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 2 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
-| `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
+| `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 1 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
@@ -597,14 +597,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Answers.** How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement.
 
-**Inputs.** bus_graph (gates); placement (domains); the flat-payload predicate; --no-bus-devirt
+**Inputs.** bus_graph (gates, the payload_flat column among them); placement (domains); --no-bus-devirt
 
 **Producer (today's authority, migrating).** `crates/hale-model/src/dispatch_plan.rs` · `fn derive`
 
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/resolved.rs` · `from_gates` — the resolved program derives lowering's plan with an empty domain map (#464's widening is a separate optimization); the model derives its own with the arrangement's domains for `same_domain`. *Removed when:* phase 3, one plan: lowering's plan takes the arrangement's domains only with #464's widening, an optimization with its own bench gate not yet taken on, so the two plans still differ by their domain maps (at the phase-2 close).
-- `crates/hale-codegen/src/bus/wire.rs` · `bus_payload_is_flat` — the third leg of the direct-call gate exists only in codegen. *Removed when:* a gate column.
 
 **Consumers.** codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`); codegen (`crates/hale-codegen/src/bus/dispatch.rs` · `bus_devirt`); exec_digest (the resolved program's plan) (`crates/hale-cli/src/shared/options.rs` · `resolved.plan.digest()`); model dump
 
@@ -613,10 +612,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)
 - lowering reads one plan, derived once per snapshot in the resolved program; the execution digest frames that plan
 - the model's plan agrees with it on the flavor of every subject both carry (shadowed over the corpus at phase 1.5)
+- the direct tier takes all three gate legs, same-thread, quiet and the payload_flat column (`bus_graph::payload_is_flat`, codegen's flatness rule over resolved types); codegen reads the flavor and refuses a plan whose column disagrees with the lowered payload, and the codec's own flatness equals the column at every publish over the corpus
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/dispatch_plan_cli.rs; crates/hale-codegen/tests/bus_devirt_direct.rs
+**Focused tests.** crates/hale-cli/tests/dispatch_plan_cli.rs; crates/hale-codegen/tests/bus_devirt_direct.rs; crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)
 
 **Spec.** spec/model.md § Derived products; spec/decisions.md F.38
 

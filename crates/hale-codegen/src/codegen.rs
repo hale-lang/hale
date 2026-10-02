@@ -1293,7 +1293,7 @@ pub fn build_resolved(
     };
     if options.dispatch_trace {
         for s in &plan.subjects {
-            eprintln!("[hale-dispatch] {} {}", s.subject, s.flavor.as_str());
+            eprintln!("[hale-dispatch] {} {} payload_flat={}", s.subject, s.flavor.as_str(), s.payload_flat);
         }
     }
     // Deterministic ids: static subjects in wire-string order (the plan
@@ -1487,6 +1487,7 @@ pub fn build_resolved(
         deferred_dissolves: Vec::new(),
         in_main: false,
         head_aborted_waits: false,
+        dispatch_trace: options.dispatch_trace,
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
@@ -3434,11 +3435,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the differential-test control arm).
     pub(crate) bus_devirt_ids: std::collections::BTreeMap<String, u32>,
     /// Direct-call devirt (build #1b slice-2): the SUBSET of
-    /// `bus_devirt_ids` whose every subscriber is same-thread AND whose
-    /// every handler is provably QUIET (the `direct_call_eligible`
-    /// flag off the `BusGraph`). A compile-time-literal publish on such
-    /// a subject — when its payload is ALSO flat (the third gate leg,
-    /// ANDed in at the publish site via `bus_payload_is_flat`) — lowers
+    /// `bus_devirt_ids` the plan lowers `static_direct`: every subscriber
+    /// same-thread, every handler provably QUIET (the
+    /// `direct_call_eligible` flag off the `BusGraph`) and the payload
+    /// flat (the third gate leg, the gate's `payload_flat` column). A
+    /// compile-time-literal publish on such a subject lowers
     /// to a SYNCHRONOUS direct call (`lotus_bus_dispatch_static_direct`)
     /// instead of the deferred static enqueue: the cooperative-queue
     /// round-trip is collapsed away. A subject in this set still uses
@@ -3568,6 +3569,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// head aborted the waits (ahead of the pool join it emits), so the
     /// frame teardown does not abort them a second time.
     head_aborted_waits: bool,
+    /// `BuildOptions::dispatch_trace`: the publish sites print the
+    /// codec's payload flatness beside the plan's rows.
+    pub(crate) dispatch_trace: bool,
     /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
     /// pushed. Identifies "we are at main's top frame" so a
     /// recorded-assertion-failure branch only routes through main's
