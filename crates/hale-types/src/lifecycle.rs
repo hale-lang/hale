@@ -107,7 +107,7 @@
 //! 3     Accept Birth Run Dissolve                Pending (no option chosen); KnownOpen C12
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
-//! 6     Subscribe Readiness                      Shipped; KnownOpen C8
+//! 6     Subscribe Readiness                      Shipped; Shipped (L4)
 //! 7     WaitAbort PoolJoin                       KnownOpen R34
 //! 8     FailureDelivery Birth                    Shipped
 //! 9     FailureDelivery Closures                 Shipped
@@ -1011,7 +1011,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::Subscribe, K::Readiness],
         statuses: &[
             (Status::Shipped, "registration before birth()"),
-            (Status::KnownOpen { inventory_row: "C8" }, "delivery eligible only once birth() completes"),
+            (
+                Status::Shipped,
+                "delivery eligible only once birth() completes; what is published before is parked, never dropped (L4)",
+            ),
         ],
     },
     DecisionLine {

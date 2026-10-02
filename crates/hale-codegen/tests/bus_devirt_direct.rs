@@ -50,9 +50,20 @@ fn calls_inline_direct(ir: &str) -> bool {
 }
 /// Slice-2 HELPER form: the non-inlined `lotus_bus_dispatch_static_direct`
 /// runtime helper — kept for MULTI-distinct-handler direct subjects,
-/// which can't bake one constant.
+/// which can't bake one constant. The baked form calls it too, from the
+/// one block its readiness guard takes while a subscriber's birth has
+/// not completed (decision line 6, F.40 phase 3 L4); that call is not
+/// the helper form.
 fn calls_direct_helper(ir: &str) -> bool {
-    ir.contains("call void @lotus_bus_dispatch_static_direct(")
+    let mut block = "";
+    ir.lines().any(|l| {
+        if let Some((label, _)) = l.split_once(':') {
+            if !l.starts_with(' ') && !label.is_empty() && !label.contains(' ') {
+                block = label;
+            }
+        }
+        l.contains("call void @lotus_bus_dispatch_static_direct(") && block != "bus.direct.unready.helper"
+    })
 }
 fn calls_deferred_static(ir: &str) -> bool {
     // The non-`_direct` static enqueue. Match the exact `(` so the

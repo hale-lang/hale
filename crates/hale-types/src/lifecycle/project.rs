@@ -26,8 +26,8 @@
 //! it against a held instance's row.
 //!
 //! What is rendered: the kinds the trace build records (spec/runtime.md
-//! § The lifecycle trace; readiness, subscription, the run's admission,
-//! the closures and the recovery decision have no events yet); one
+//! § The lifecycle trace; the run's admission, the closures and the
+//! recovery decision have no events yet); one
 //! line per declaration in the order its rows are owed, the process's
 //! rows each on their own; a spine where the instance's own spine tears
 //! it down and a line in focus is about that spine (the deferred entry,
@@ -128,6 +128,8 @@ pub const TRACED: &[super::ObligationKind] = &[
     K::ParamsSettle,
     K::ConstructionDelivery,
     K::Accept,
+    K::Subscribe,
+    K::Readiness,
     K::Birth,
     K::Run,
     K::FailureDelivery,

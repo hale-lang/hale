@@ -1412,6 +1412,7 @@ pub fn build_resolved(
         user_loci: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
+        lifecycle: resolved.lifecycle(),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -3258,6 +3259,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// and modes lower without their per-call scratch (`locus_elision`),
     /// with the elidable-method sets the noalias-self proof reads.
     pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
+    /// The view's lifecycle plan (`LoweringView::lifecycle`): the
+    /// emitters read each spine's obligations, in order, from it
+    /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
+    pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
     /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
     /// User-defined `type` declarations indexed by name. Filled

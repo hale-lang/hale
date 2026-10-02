@@ -151,8 +151,6 @@ const FIXTURES: &[Fixture] = &[
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    ("l06_readiness_main.hl", "C8", "delivered-during-birth"),
-    ("l06_readiness_pool.hl", "C8", "delivered-during-birth"),
     ("l07_pool_or_wait_teardown.hl", "R34", "hang-in-pool-join"),
     ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
@@ -592,6 +590,28 @@ const CONTROLS: &[Control] = &[
         skip: "PinnedJoin",
         plan: None,
         fails_with: "missing: Loop.PinnedJoin",
+        baseline_passes: false,
+    },
+    // Line 6 (L4): without the readiness step the window never closes,
+    // so what birth() published stays parked and is never heard.
+    Control {
+        name: "readiness_removed",
+        covers: ObligationKind::Readiness,
+        fixture: "l06_readiness_main.hl",
+        skip: "Readiness",
+        plan: None,
+        fails_with: "missing: Sub.Readiness",
+        baseline_passes: false,
+    },
+    // The registration is ordered before the birth: the same run, held
+    // to a plan that claims it after.
+    Control {
+        name: "subscribe_after_birth_in_the_plan",
+        covers: ObligationKind::Subscribe,
+        fixture: "l06_readiness_main.hl",
+        skip: "",
+        plan: Some("Sub: Birth Subscribe"),
+        fails_with: "order: Sub.Subscribe before Sub.Birth",
         baseline_passes: false,
     },
     // The oracle reads order within a domain: the same run, held to a
@@ -1296,5 +1316,7 @@ control_tests! {
     dissolve_removed,
     pre_drain_removed,
     pinned_join_removed,
+    readiness_removed,
+    subscribe_after_birth_in_the_plan,
     order_reversed_in_the_plan,
 }

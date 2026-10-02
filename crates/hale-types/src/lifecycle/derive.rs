@@ -1001,18 +1001,21 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         let birth = self.push(o);
         r.birth = Some(birth);
-        if subscribe.is_some() {
-            let mut o = self.row(i, K::Readiness, Holder { spine: Spine::Instantiation, domain: DomainRole::Own });
+        // Readiness (line 6): delivery eligible once birth() has
+        // completed, on the thread that ran it; what was published to the
+        // instance before then is retained, never dropped (L4's birth
+        // spine).
+        let readiness = subscribe.map(|_| {
+            let mut o = self.row(i, K::Readiness, Holder { spine: birth_holder.spine, domain: DomainRole::Own });
             o.line = Some("6");
-            o.status = Status::KnownOpen { inventory_row: "C8" };
-            o.edges.entry.push(after(birth, Point::Completed, open("6", "C8")));
+            o.edges.entry.push(after(birth, Point::Completed, shipped("6")));
             o.lifetime.push(Retention {
                 resource: Resource::Cell,
                 until: Event { obligation: birth, point: Point::Completed },
-                status: Status::KnownOpen { inventory_row: "C8" },
+                status: Status::Shipped,
             });
-            self.push(o);
-        }
+            self.push(o)
+        });
         // The birth-epoch closures and the birth_check (lines 8, 9).
         self.failures(i, &mut r, &[FailureSource::BirthClosure, FailureSource::BirthCheck]);
         // The run: admitted to its pool (line 19), then executed.
@@ -1033,6 +1036,9 @@ impl<'b, 'a> Builder<'b, 'a> {
                 ];
                 o.multiplicity = Multiplicity::OncePerTrigger;
                 o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
+                if let Some(ready) = readiness {
+                    o.edges.entry.push(after(ready, Point::Completed, shipped("6")));
+                }
                 self.push(o);
             }
             let mut o = self.row(i, K::Run, run_holder);
@@ -1048,6 +1054,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 Self::on(own, Rule::SHIPPED)
             };
             o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
+            // The run starts with its instance's delivery eligible (line 6).
+            if let Some(ready) = readiness {
+                o.edges.entry.push(after(ready, Point::Completed, shipped("6")));
+            }
             o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
             if self.is_pool(own) {
                 o.terminals.push(Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)));
@@ -1237,8 +1247,9 @@ impl<'b, 'a> Builder<'b, 'a> {
                 FailureSource::Dissolve => r.dissolve,
             };
             // Where the existence rule is not yet kept.
+            // A pinned locus's birth_check runs on its thread, after
+            // birth() and before run() (C38, closed by L4's birth spine).
             let (line, status) = match source {
-                FailureSource::BirthCheck if pinned => ("8", Status::KnownOpen { inventory_row: "C38" }),
                 FailureSource::Dissolve if flow => ("4", Status::KnownOpen { inventory_row: "C25" }),
                 FailureSource::Dissolve if in_fn_main_cascade => ("4", Status::KnownOpen { inventory_row: "C31" }),
                 FailureSource::BirthClosure | FailureSource::BirthCheck => ("8", Status::Shipped),

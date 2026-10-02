@@ -1323,8 +1323,21 @@ fn intra_rewrite_locus(
     out: &mut Vec<IntraLocusRewrite>,
 ) {
     let locus_name = l.name.name.clone();
+    // Decision line 6 (F.40 phase 3, L4): delivery to an instance is
+    // eligible once its birth() has completed. A send in birth() to the
+    // locus's own subscription would be a direct call into the handler
+    // mid-birth; it takes the bus instead, which parks the cell until
+    // the instance is ready.
+    let after_birth: BTreeMap<String, EligibleRewrite> = eligible
+        .iter()
+        .filter(|(_, r)| r.access_chain.len() != 1)
+        .map(|(t, r)| (t.clone(), r.clone()))
+        .collect();
     for member in &mut l.members {
         match member {
+            LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Birth => {
+                intra_rewrite_block(&mut lc.body, &locus_name, &after_birth, out);
+            }
             LocusMember::Lifecycle(lc) => {
                 intra_rewrite_block(&mut lc.body, &locus_name, eligible, out);
             }

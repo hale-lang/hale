@@ -8,10 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    BirthCheckDecl, CapacitySlotKind, Expr, Literal, LocusMember,
+    CapacitySlotKind, Expr, Literal,
     CoreSpec, ProjectionClass, RecognitionSubMode, ScheduleClass,
-    StructInit, TopDecl,
+    StructInit,
 };
+use hale_types::lifecycle::ObligationKind;
 use inkwell::types::BasicType;
 use inkwell::values::PointerValue;
 use inkwell::AddressSpace;
@@ -3572,6 +3573,99 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // The birth spine (F.40 phase 3, L4): the steps this instance
+        // owes from here to its run's start, in the order the lifecycle
+        // plan places them for its declaration (`birth_spine.rs`). The
+        // instantiating thread emits each where the plan puts it; a
+        // pinned locus's thread function emits its own (birth, its
+        // checks, readiness, run) below, in the same order.
+        let is_long_lived = !info.subscriptions.is_empty();
+        let is_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
+        let pinned_subscriptions = is_pinned && !info.subscriptions.is_empty();
+        let accepted_by_owner = match (owner_self_ptr, owner_locus_name.as_ref()) {
+            (Some(_), Some(owner_name)) => self
+                .user_loci
+                .get(owner_name)
+                .and_then(|p| p.accept_param.as_ref())
+                .is_some_and(|(_, child)| child == locus_name),
+            _ => false,
+        };
+        // Line 6: a subscriber's delivery is eligible once its birth()
+        // has completed, where the plan owes it readiness.
+        let readiness = !info.subscriptions.is_empty() && self.owes_readiness(locus_name);
+        let mut kinds = Vec::new();
+        if accepted_by_owner {
+            kinds.push(ObligationKind::Accept);
+        }
+        if !info.subscriptions.is_empty() {
+            kinds.push(ObligationKind::Subscribe);
+        }
+        kinds.push(ObligationKind::Birth);
+        if readiness {
+            kinds.push(ObligationKind::Readiness);
+        }
+        kinds.push(ObligationKind::Run);
+        let birth_spine = self.birth_spine_order(locus_name, &kinds)?;
+        // The registrations are the instantiating thread's, emitted
+        // before the birth (a pinned locus's thread starts after them).
+        let at = |k: ObligationKind| birth_spine.iter().position(|s| *s == k);
+        for k in [ObligationKind::Accept, ObligationKind::Subscribe] {
+            if at(k).is_some_and(|i| Some(i) > at(ObligationKind::Birth)) {
+                return Err(CodegenError::Unsupported(format!(
+                    "`{locus_name}`: the lifecycle plan places {} after the birth, and the instantiating thread registers before it",
+                    k.name()
+                )));
+            }
+        }
+        if is_pinned {
+            if info.methods.contains_key("accept") {
+                return Err(CodegenError::Unsupported(format!(
+                    "pinned locus `{}` declares `accept()`; pinned coordinators \
+                     wait on a future cross-thread cascade-dissolve milestone",
+                    locus_name
+                )));
+            }
+            if info.birth_closures_fn.is_some()
+                || info.dissolve_closures_fn.is_some()
+            {
+                return Err(CodegenError::Unsupported(format!(
+                    "pinned locus `{}` declares closures; cross-thread closure \
+                     routing not yet supported",
+                    locus_name
+                )));
+            }
+            // GH #826 backstop. This branch's join record — the
+            // deferred-dissolve slot below and the `pthread_t`
+            // alloca it carries — is ONE alloca per instantiation
+            // SITE, hoisted to the fn's entry block. A site inside a
+            // loop rewrites both every iteration, so the scope-exit
+            // flush joins and arena-destroys only the LAST instance
+            // and every earlier pinned thread is orphaned with its
+            // arena live (GH #815's per-iteration slot reclaim
+            // deliberately steps over a pinned entry: reclaiming it
+            // means joining the previous thread).
+            //
+            // `check_pinned_locus_in_loop` rejects the shape with a
+            // located diagnostic, so nothing that runs the checker
+            // reaches this. `build_executable` does NOT run the
+            // checker, and neither does a direct codegen embedder —
+            // refuse there rather than emit the leak.
+            if !self.loops.is_empty() {
+                return Err(CodegenError::Unsupported(format!(
+                    "pinned locus `{}` is instantiated inside a loop; its \
+                     thread's join record is one slot per site, so every \
+                     iteration but the last would be orphaned with its arena \
+                     live. Instantiate it once outside the loop (see \
+                     spec/semantics.md § Placement block rule 17)",
+                    locus_name
+                )));
+            }
+        }
+        let mut mailbox_ptr_opt: Option<PointerValue<'ctx>> = None;
+        let mut gate_skip_bb = None;
+        for step in birth_spine.iter().copied() {
+        match step {
+        ObligationKind::Accept => {
         // F.7 ordering: if we're inside a parent locus's lifecycle
         // method AND the OWNER has an accept(child: ThisLocus) that
         // matches our type, call owner.accept(owner_self, child)
@@ -3730,19 +3824,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
-
+        }
+        ObligationKind::Subscribe => {
         // Bus subscription registration runs BEFORE birth so a
         // locus's own birth() can publish on subjects it
         // subscribes to (rare but legal). For each declared
         // `bus subscribe "S" as h ...`: append (S, self_ptr,
-        // <Locus>.h) into the global bus table.
-        // For pinned-with-subscriptions loci we'll call this loop
-        // again BELOW (after the mailbox alloca), passing the
-        // mailbox pointer; cooperative loci register here with
-        // mailbox = None (route through the global queue).
-        let pinned_subscriptions =
-            matches!(info.schedule_class, ScheduleClass::Pinned(_))
-                && !info.subscriptions.is_empty();
+        // <Locus>.h) into the global bus table. A pinned locus
+        // registers with its mailbox (created here, before its
+        // thread starts); a cooperative one with mailbox = None
+        // (route through the global queue).
+        //
+        // Line 6: the window opens before the first registration, so
+        // nothing published to this instance is delivered before its
+        // birth() completes (the Readiness step closes it). A pinned
+        // locus needs none: its mailbox is drained by its own thread
+        // alone, which drains it from its Readiness step on.
+        if readiness && !is_pinned {
+            self.emit_hold_delivery(self_ptr)?;
+        }
+        self.lc_in_spine("Instantiation", |cx| {
+            cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
+        })?;
         if !pinned_subscriptions {
             // Phase 3 (2026-05-25): `where key == self.X` in any
             // subscribe clause needs `current_self` set to this
@@ -3828,6 +3931,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             self.in_params_default = prev_ipd_sub;
             self.current_self = prev_self;
+        } else {
+            // m28b: a pinned locus allocates its mailbox, stores the
+            // pointer in its __mailbox slot, and registers every
+            // subscription with that mailbox, so bus dispatch routes
+            // cells there instead of to the global queue.
+            mailbox_ptr_opt = self.emit_pinned_mailbox_registration(
+                &info,
+                self_ptr,
+                locus_name,
+                owned_beyond_scope,
+            )?;
+        }
+        self.lc_in_spine("Instantiation", |cx| {
+            cx.lc_event("Subscribe", "Completed", Some(self_ptr), Some(locus_name))
+        })?;
+        }
+        // From the birth on, the steps are emitted below: by a pinned
+        // locus's thread function, or after the pinned branch, in this
+        // order.
+        ObligationKind::Birth | ObligationKind::Readiness | ObligationKind::Run => {}
+        other => {
+            return Err(CodegenError::Unsupported(format!(
+                "`{locus_name}`: the birth spine has no step for {}",
+                other.name()
+            )));
+        }
+        }
         }
 
         // Fire birth → run in order. drain → dissolve are deferred
@@ -3844,9 +3974,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // dissolve to scope end via `deferred_dissolves`; the
         // cascade still fires depth-first when those scope-exit
         // calls run.
-        let is_long_lived = !info.subscriptions.is_empty();
-        let is_pinned =
-            matches!(info.schedule_class, ScheduleClass::Pinned(_));
 
         // m28a + m28b: pinned-class loci spawn a pthread that runs
         // the locus's full lifecycle on its own thread:
@@ -3875,131 +4002,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // significant complexity beyond m28b), closures.
         if is_pinned {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
-            if info.methods.contains_key("accept") {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares `accept()`; pinned coordinators \
-                     wait on a future cross-thread cascade-dissolve milestone",
-                    locus_name
-                )));
-            }
-            if info.birth_closures_fn.is_some()
-                || info.dissolve_closures_fn.is_some()
-            {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares closures; cross-thread closure \
-                     routing not yet supported",
-                    locus_name
-                )));
-            }
-            // GH #826 backstop. This branch's join record — the
-            // deferred-dissolve slot below and the `pthread_t`
-            // alloca it carries — is ONE alloca per instantiation
-            // SITE, hoisted to the fn's entry block. A site inside a
-            // loop rewrites both every iteration, so the scope-exit
-            // flush joins and arena-destroys only the LAST instance
-            // and every earlier pinned thread is orphaned with its
-            // arena live (GH #815's per-iteration slot reclaim
-            // deliberately steps over a pinned entry: reclaiming it
-            // means joining the previous thread).
-            //
-            // `check_pinned_locus_in_loop` rejects the shape with a
-            // located diagnostic, so nothing that runs the checker
-            // reaches this. `build_executable` does NOT run the
-            // checker, and neither does a direct codegen embedder —
-            // refuse there rather than emit the leak.
-            if !self.loops.is_empty() {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` is instantiated inside a loop; its \
-                     thread's join record is one slot per site, so every \
-                     iteration but the last would be orphaned with its arena \
-                     live. Instantiate it once outside the loop (see \
-                     spec/semantics.md § Placement block rule 17)",
-                    locus_name
-                )));
-            }
-
             let i64_t = self.context.i64_type();
             let i32_t = self.context.i32_type();
-
-            // m28b: if the locus subscribes, allocate its mailbox
-            // and store the pointer in the locus's __mailbox slot.
-            // Then register all subscriptions with that mailbox so
-            // bus dispatch routes cells here instead of to the
-            // global queue.
-            let mailbox_ptr_opt: Option<PointerValue<'ctx>> =
-                if let Some(mb_idx) = info.mailbox_field_idx {
-                    let create_fn = self
-                        .module
-                        .get_function("lotus_mailbox_create")
-                        .expect("lotus_mailbox_create declared");
-                    let mb_ptr = self
-                        .builder
-                        .build_call(
-                            create_fn,
-                            &[],
-                            &format!("{}.mailbox.create", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .try_as_basic_value()
-                        .left()
-                        .expect("lotus_mailbox_create returns ptr")
-                        .into_pointer_value();
-                    let mb_slot = self
-                        .builder
-                        .build_struct_gep(
-                            info.struct_ty,
-                            self_ptr,
-                            mb_idx,
-                            &format!("{}.__mailbox.ptr", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder
-                        .build_store(mb_slot, mb_ptr)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    // Phase 3 same setup as the cooperative path
-                    // above — set current_self for the key-filter
-                    // EXPR's `self.X` reads (and clear
-                    // in_params_default: member text, not default
-                    // text — see finding 4).
-                    let prev_self_pinned = self.current_self.clone();
-                    let prev_ipd_pinned =
-                        std::mem::replace(&mut self.in_params_default, false);
-                    self.current_self = Some(SelfCx {
-                        locus_name: locus_name.to_string(),
-                        struct_ty: info.struct_ty,
-                        self_ptr,
-                        fields: info.fields.clone(),
-                    });
-                    for (subject, handler_name, payload_type, key_filter) in
-                        &info.subscriptions
-                    {
-                        let handler_fn = info
-                            .user_methods
-                            .get(handler_name)
-                            .copied()
-                            .ok_or_else(|| {
-                                CodegenError::Unsupported(format!(
-                                    "locus `{}` subscribes to `{}` with handler \
-                                     `{}` but no such method declared",
-                                    locus_name, subject, handler_name
-                                ))
-                            })?;
-                        self.emit_bus_register(
-                            subject,
-                            self_ptr,
-                            handler_fn,
-                            Some(mb_ptr),
-                            payload_type,
-                            key_filter.as_ref(),
-                            owned_beyond_scope,
-                        )?;
-                    }
-                    self.in_params_default = prev_ipd_pinned;
-                    self.current_self = prev_self_pinned;
-                    Some(mb_ptr)
-                } else {
-                    None
-                };
 
             // Synthesize __pinned_main_<LocusName>(self_ptr) -> ptr.
             // Body: birth → run → (mailbox loop if subscriptions) →
@@ -4044,13 +4048,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             self.lc_pinned_thread()?;
             // 2026-05-23: stash this locus's mailbox in
-            // TLS so time::sleep / yield inside birth() and run()
-            // can drain it without going through the post-run
-            // mailbox loop. Closes the "cooperative→pinned dispatch
-            // silent mid-program" issue — long-running pinned
-            // servers (typical gateway shape) never return from run()
-            // so the post-run drain loop never started.
-            if let Some(mb_idx) = info.mailbox_field_idx {
+            // TLS so time::sleep / yield inside run() can drain it
+            // without going through the post-run mailbox loop.
+            // Closes the "cooperative→pinned dispatch silent
+            // mid-program" issue — long-running pinned servers
+            // (typical gateway shape) never return from run() so the
+            // post-run drain loop never started. Where the plan owes
+            // the locus readiness (line 6), its Readiness step does
+            // this, after birth(): cells sent before wait in the
+            // bounded mailbox, never delivered during the birth.
+            if let (Some(mb_idx), false) = (info.mailbox_field_idx, readiness) {
                 let mb_slot = self
                     .builder
                     .build_struct_gep(
@@ -4089,6 +4096,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get("birth")
                 .copied()
                 .filter(|_| !info.empty_lifecycle.contains("birth"));
+            // The thread's steps of the birth spine, in the plan's order.
+            let checks = self.birth_check_decls(locus_name);
+            for step in birth_spine.iter().copied() {
+            match step {
+            ObligationKind::Birth => {
             self.lc_in_spine("PinnedMain", |cx| {
                 cx.lc_step("Birth", Some(thread_self), Some(locus_name), |cx| {
                     if let Some(birth) = birth_call {
@@ -4099,6 +4111,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Ok(())
                 })
             })?;
+            // C38 (L4): the birth_check runs on this thread, after
+            // birth() and before run(), as on the instantiating thread
+            // for every other locus.
+            self.emit_pinned_birth_checks(&checks, &info, thread_self, thread_main, locus_name)?;
+            }
+            ObligationKind::Readiness => {
+                self.emit_pinned_readiness(&info, thread_self, locus_name)?;
+            }
+            ObligationKind::Run => {
+            // A check's failure is decided before run() starts.
+            if let (false, Some(rf)) = (checks.is_empty(), restart) {
+                let pre = self.emit_restart_count(&info, thread_self)?;
+                self.emit_pinned_birth_gate(&info, thread_self, rf.restart, pre)?;
+            }
             if let Some(method) = info.methods.get("run") {
                 let loop_bb = self
                     .context
@@ -4176,6 +4202,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(done_bb);
                 }
+            }
+            }
+            // The instantiating thread's steps, emitted above.
+            _ => {}
+            }
             }
             // m28b: mailbox loop. Reload the mailbox ptr from the
             // locus's __mailbox slot (we're on the pinned thread,
@@ -4404,6 +4435,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Ok(self_ptr);
         }
 
+        // The rest of the birth spine on the instantiating thread, in
+        // the plan's order: the birth, readiness, the run's start.
+        for step in birth_spine.iter().copied() {
+        match step {
+        ObligationKind::Birth => {
         // m39: birth-epoch closures fire right after birth()
         // returns. We emit birth() + __birth_closures + run() in
         // sequence — the closure check sits between birth (which
@@ -4458,45 +4494,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (parent_on_failure == null) still call exit(1) per the
         // existing F.27 contract — same panic-with-diagnostic as
         // a regular violate.
-        // GH #884: module nesting flattened — the locus being
-        // instantiated may be declared inside a `module { }`.
-        let birth_check_decls: Vec<BirthCheckDecl> =
-            hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == locus_name => {
-                    Some(
-                        l.members
-                            .iter()
-                            .filter_map(|m| match m {
-                                LocusMember::BirthCheck(bc) => Some(bc.clone()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
-        if !birth_check_decls.is_empty() {
-            // We need current_self set for `self.X` reads in the
-            // cond expressions to resolve against the newly-
-            // constructed locus. (in_params_default cleared:
-            // birth_check conds are member text — finding 4.)
-            let prev_self = self.current_self.clone();
-            let prev_ipd_bc = std::mem::replace(&mut self.in_params_default, false);
-            self.current_self = Some(SelfCx {
-                locus_name: locus_name.to_string(),
-                struct_ty: info.struct_ty,
-                self_ptr,
-                fields: info.fields.clone(),
-            });
-            let mut scope = Scope::default();
-            for bc in &birth_check_decls {
-                self.emit_birth_check(&bc, self_ptr, &info, &locus_name, &mut scope)?;
-            }
-            self.in_params_default = prev_ipd_bc;
-            self.current_self = prev_self;
+        let birth_check_decls = self.birth_check_decls(locus_name);
+        self.emit_birth_checks(&birth_check_decls, self_ptr, &info, locus_name)?;
         }
+        ObligationKind::Readiness => {
+            self.emit_readiness(self_ptr, locus_name, "Instantiation")?;
+        }
+        ObligationKind::Run => {
         // GH #1066: a failure this child raised during birth that its
         // parent is still holding (the parent's params are not settled)
         // is decided before run() starts. On this thread — the one
@@ -4505,7 +4509,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // restart it, start it, or leave it quarantined. The run
         // section below is skipped. Otherwise a restart the handler
         // already asked for takes effect now, before run().
-        let gate_skip_bb = match self.restart_fns.get(locus_name).copied() {
+        gate_skip_bb = match self.restart_fns.get(locus_name).copied() {
             Some(rf) => {
                 let func = self.current_fn.expect("current_fn set");
                 let pre = self.emit_restart_count(&info, self_ptr)?;
@@ -4812,6 +4816,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(after_run_bb);
             }
+        }
+        }
+        // Accept and Subscribe were emitted above.
+        _ => {}
+        }
         }
         if let Some(skip_bb) = gate_skip_bb {
             self.builder

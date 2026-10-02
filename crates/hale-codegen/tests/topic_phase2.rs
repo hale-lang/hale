@@ -315,6 +315,10 @@ fn more_than_one_main_locus_errors() {
 
 // ---- intra-locus optimization -----------------------------------------
 
+/// A send to the locus's own subscription becomes `self.on_beat(...)`,
+/// except in `birth()`: delivery to an instance is eligible once its
+/// birth has completed (decision line 6, F.40 phase 3 L4), so birth's
+/// send stays a send, which the bus parks until the instance is ready.
 #[test]
 fn intra_locus_send_rewrites_to_self_call() {
     let mut p = parse(r#"
@@ -327,38 +331,33 @@ fn intra_locus_send_rewrites_to_self_call() {
             }
             fn on_beat(t: Tick) { }
             birth() { Beat <- Tick { n: 1 }; }
+            run() { Beat <- Tick { n: 2 }; }
         }
         fn main() { Loop { }; }
     "#);
     desugar_intra_locus_topics(&mut p);
-    // Locate Loop.birth's first stmt — should be Stmt::Expr(Call(...self.on_beat...))
-    let mut found = false;
-    for it in &p.items {
-        if let TopDecl::Locus(l) = it {
-            if l.name.name != "Loop" {
-                continue;
-            }
-            for m in &l.members {
-                if let LocusMember::Lifecycle(lc) = m {
-                    if !matches!(lc.kind, LifecycleKind::Birth) {
-                        continue;
-                    }
-                    if let Some(stmt) = lc.body.stmts.first() {
-                        if let Stmt::Expr(Expr::Call { callee, .. }) = stmt {
-                            if let Expr::Field { receiver, name, .. } = callee.as_ref() {
-                                if matches!(receiver.as_ref(), Expr::KwSelf(_))
-                                    && name.name == "on_beat"
-                                {
-                                    found = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    assert!(found, "expected birth to be rewritten to self.on_beat(...)");
+    // The first stmt of Loop's `kind` lifecycle method.
+    let first = |kind: LifecycleKind| -> Stmt {
+        p.items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.name.name == "Loop" => l.members.iter().find_map(|m| match m {
+                    LocusMember::Lifecycle(lc) if lc.kind == kind => lc.body.stmts.first().cloned(),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("the method has a statement")
+    };
+    let is_self_call = |stmt: &Stmt| match stmt {
+        Stmt::Expr(Expr::Call { callee, .. }) => matches!(
+            callee.as_ref(),
+            Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) && name.name == "on_beat"
+        ),
+        _ => false,
+    };
+    assert!(is_self_call(&first(LifecycleKind::Run)), "expected run to be rewritten to self.on_beat(...)");
+    assert!(matches!(first(LifecycleKind::Birth), Stmt::Send { .. }), "birth's send to its own subscription stays a send");
 }
 
 #[test]
@@ -608,11 +607,10 @@ fn tower_parent_publishes_child_subscribes_round_trip_end_to_end() {
 #[test]
 fn intra_locus_round_trip_end_to_end() {
     // The optimized direct-call path should be observable as
-    // synchronous: birth() runs, the handler increments sum, and
-    // by the time fn main reads c.sum the value reflects the
-    // synchronous mutation. (Bus dispatch is deferred-cooperative
-    // — without the optimization, c.sum would still be 0 right
-    // after construction.)
+    // synchronous: fire() runs, the handler increments sum, and by
+    // the time fn main reads c.sum the value reflects the synchronous
+    // mutation. (Bus dispatch is deferred-cooperative — without the
+    // optimization, c.sum would still be 0 right after the call.)
     let src = r#"
         type Tick { n: Int; }
         topic Beat { payload: Tick; }
@@ -623,7 +621,7 @@ fn intra_locus_round_trip_end_to_end() {
                 subscribe Beat as on_beat;
             }
             fn on_beat(t: Tick) { self.sum = self.sum + t.n; }
-            birth() {
+            fn fire() {
                 Beat <- Tick { n: 1 };
                 Beat <- Tick { n: 2 };
                 Beat <- Tick { n: 3 };
@@ -631,6 +629,7 @@ fn intra_locus_round_trip_end_to_end() {
         }
         fn main() {
             let c = Counter { };
+            c.fire();
             print("sum=");
             println(c.sum);
         }
@@ -641,4 +640,46 @@ fn intra_locus_round_trip_end_to_end() {
     assert!(out.status.success(), "non-zero: {:?}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("sum=6"), "got: {:?}", stdout);
+}
+
+/// Decision line 6 (F.40 phase 3, L4): what birth() publishes to its own
+/// subscription is delivered once the birth has completed, in order,
+/// never during it and never dropped.
+#[test]
+fn a_births_own_publishes_are_delivered_after_it_in_order() {
+    // An ordinary string, not a raw one: the corpus harvests raw string
+    // programs out of test files, and this one belongs to this test.
+    let src = "type Tick { n: Int; }
+topic Beat { payload: Tick; }
+locus Counter {
+    params { sum: Int = 0; born: Int = 0; early: Int = 0; order: Int = 0; }
+    bus {
+        publish Beat;
+        subscribe Beat as on_beat;
+    }
+    fn on_beat(t: Tick) {
+        if self.born == 0 { self.early = self.early + 1; }
+        self.order = self.order * 10 + t.n;
+        self.sum = self.sum + t.n;
+    }
+    birth() {
+        Beat <- Tick { n: 1 };
+        Beat <- Tick { n: 2 };
+        std::time::sleep(5ms);
+        Beat <- Tick { n: 3 };
+        self.born = 1;
+    }
+}
+fn main() {
+    let c = Counter { };
+    std::time::sleep(5ms);
+    println(\"sum=\", c.sum, \" early=\", c.early, \" order=\", c.order);
+}
+";
+    let bin = build("births_own_publishes_after_it", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("sum=6 early=0 order=123"), "got: {:?}", stdout);
 }

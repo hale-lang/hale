@@ -5,6 +5,8 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "birth_spine_ir.rs"]
+mod birth_spine_ir;
 #[path = "drain_grace_names_the_wait.rs"]
 mod drain_grace_names_the_wait;
 #[path = "generic_monomorph_agreement.rs"]
