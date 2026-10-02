@@ -197,10 +197,10 @@ fn free_fn_shadowing_nothing_still_mangles() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "control build/run failed: {}", log);
     assert_eq!(stdout.trim(), "hello mid [x]", "control: {:?}", stdout);
-    let needle = b"_main_decorate";
+    let needle = b"__main__decorate";
     assert!(
         bin_bytes.windows(needle.len()).any(|w| w == needle),
         "the imported seed's free fn should still carry a mangled \
-         `__lib_<id>_main_decorate` symbol"
+         `__lib_<id>__main__decorate` symbol"
     );
 }

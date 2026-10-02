@@ -1063,7 +1063,7 @@ fn compile_cached_runtime_object_with(
 /// `import "lib/X" as foo;` declarations, mangles each imported
 /// sub-program, merges the mangled decls into `program`, and passes the
 /// table here. Each entry maps a segment vector (`["foo", "Bar"]`) to the
-/// mangled symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
+/// mangled symbol name (`"__lib_<lib_id>__<stem>__Bar"`). The codegen consults
 /// this table after the static stdlib table when resolving
 /// qualified-name paths. A caller with no imports passes `&[]`.
 ///
@@ -3322,7 +3322,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// per build from the user's `import "lib/X" as foo;`
     /// declarations. Maps a qualified segment vector (e.g.
     /// `["foo", "Bar"]`) to the mangler-generated symbol name
-    /// (e.g. `"__lib_foo_Y_Bar"`). Consulted by
+    /// (e.g. `"__lib_foo___Y__Bar"`). Consulted by
     /// `Cx::mangled_for_path` after the static stdlib table.
     import_renames: BTreeMap<Vec<String>, String>,
     /// GH #529 prep (DNA F.12): per keyed wire subject, the synthesized
@@ -25003,7 +25003,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => {
                 // A3 (G11): cross-seed non-fallible free-fn calls.
                 // The mangler rewrites the lib's decls to
-                // `__lib_<alias>_<stem>_<name>`; the consumer writes
+                // `__lib_<lib_id>__<stem>__<name>`; the consumer writes
                 // `alias::fn(...)` which lowers here. Consult the
                 // per-build import-rename table and dispatch through
                 // `lower_user_fn_call`. The fallible analogue at

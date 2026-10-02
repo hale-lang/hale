@@ -600,7 +600,7 @@ fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
         text
     });
     let mut text = text;
-    // an imported seed's names arrive mangled (`__lib_<id>_<stem>_<name>`)
+    // an imported seed's names arrive mangled (`__lib_<id>__<stem>__<name>`)
     for (path, mangled) in renames {
         if let Some(last) = path.last() {
             text = text.replace(&format!("\"{}\"", mangled), &format!("\"{}\"", last));
@@ -669,7 +669,7 @@ fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Defer
     // module must declare the pin's companion fn. A program's own fn that
     // happens to be called `role_password` is no pin (outside review,
     // finding 1). An imported seed's declarations arrive mangled
-    // (`__lib_<id>_<stem>_<name>`), the companion included. The
+    // (`__lib_<id>__<stem>__<name>`), the companion included. The
     // directory is not part of the identity: the DNA seeds are checked
     // from the tree, from a scratch copy and from the embedded host
     // cache, and only the file names travel with them.
@@ -678,12 +678,6 @@ fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Defer
         .and_then(|f| std::path::Path::new(f).file_stem())
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    // `__lib_<id>_<stem>_` of a mangled `have` spelling `want`: the one
-    // module (library and file) it was declared in
-    let mangled_prefix = |have: &str, stem: &str, want: &str| -> Option<String> {
-        (have.starts_with("__lib_") && have.ends_with(&format!("_{}_{}", stem, want)))
-            .then(|| have[..have.len() - want.len()].to_string())
-    };
     let Some((_, _, _, q, pin, _)) = PQ_DEFERRED.iter().find(|(stem, l, f, _, _, companion)| {
         // the name that pins the declaration: a method's locus (a
         // method's own name is never mangled), a free fn's name
@@ -696,7 +690,7 @@ fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Defer
         // merely somewhere in the world: two unrelated libraries, each
         // holding one pinned name, do not vouch for each other (outside
         // review of #1277, finding 2). Unmangled, that is the same file;
-        // mangled, the same `__lib_<id>_<stem>_` prefix.
+        // mangled, the same library and stem.
         if file_stem == *stem && have == want {
             return companion.is_empty()
                 || world.fns.get(*companion).is_some_and(|c| {
@@ -704,21 +698,21 @@ fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Defer
                     there.is_some() && there == file
                 });
         }
-        match mangled_prefix(have, stem, want) {
-            Some(prefix) => {
-                // The prefix names a library and a file stem, but two
-                // single-file libraries with one basename share a library
-                // id (the importer's fallback outside a workspace), so the
-                // prefix alone proves nothing: the candidate's own file must
-                // have the pin's stem, and the companion must be declared in
-                // that same file. Without provenance, no pin (outside review
-                // of #1279).
+        // Mangled, `have` names the library it was declared in; with the
+        // stem, that is its one module.
+        match crate::mangle::mangled_library(have, stem, want) {
+            Some(lib_id) => {
+                // The name says a library and a file stem, but not
+                // provenance: the candidate's own file must have the pin's
+                // stem, and the companion must be declared in that same
+                // file. Without provenance, no pin (outside review of
+                // #1279).
                 let Some(here) = file else { return false };
                 if file_stem != *stem {
                     return false;
                 }
                 companion.is_empty()
-                    || world.fns.get(&format!("{}{}", prefix, companion)).is_some_and(|c| {
+                    || world.fns.get(&crate::mangle::mangled(&lib_id, stem, companion)).is_some_and(|c| {
                         own_file(world, &c.site.0, c.site.1) == Some(here)
                     })
             }

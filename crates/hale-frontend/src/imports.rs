@@ -15,7 +15,7 @@ use super::workspace::top_decl_ident;
 /// Per-build path-rename table for cross-seed imports
 /// (v1.x-IMPORT). Each entry maps a qualified-name segment vector
 /// (e.g. `["foo", "Bar"]`) to the mangler-generated symbol name
-/// (`__lib_foo_<stem>_Bar`). Passed to
+/// (`__lib_<lib_id>__<stem>__Bar`). Passed to
 /// `build_executable_with_imports` so codegen can resolve
 /// `alias::Name` references in user code.
 pub type ImportRenames = Vec<(Vec<String>, String)>;

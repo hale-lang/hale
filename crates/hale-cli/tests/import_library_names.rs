@@ -10,7 +10,9 @@
 //! now a function of the library's own path alone — relative to the
 //! workspace root, or to the entry seed's directory for a library
 //! outside the workspace — encoded injectively, so no two libraries share
-//! one and no build gives one library two.
+//! one and no build gives one library two. A declaration's full name
+//! encodes the library, the file stem and the declaration as one
+//! injective tuple, so no two declarations share one either.
 //!
 //! The symbols are read where the load records them: the rename table,
 //! `alias::Name` -> the mangled name, as `collect_checkable` returns it.
@@ -135,9 +137,9 @@ fn a_directory_named_like_a_generated_fallback_stays_apart() {
     let app = d.join("app");
     check_and_run(&app, "one/two/three");
     let s = symbols(&app);
-    assert_eq!(s["a::who"], "__lib__x2e_x2e__one__util_util_who");
-    assert_eq!(s["b::who"], "__lib__x2e_x2e__two__util_util_who");
-    assert_eq!(s["c::who"], format!("__lib__x2e_x2e__three__{third}__lib_who"));
+    assert_eq!(s["a::who"], "__lib_x2e_x2e__one__util__util__who");
+    assert_eq!(s["b::who"], "__lib_x2e_x2e__two__util__util__who");
+    assert_eq!(s["c::who"], format!("__lib_x2e_x2e__three__{third}___lib__who"));
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -182,7 +184,7 @@ fn two_applications_with_different_dependencies_share_a_librarys_symbols() {
     check_and_run(&d.join("apps/x"), "shared");
     check_and_run(&d.join("deep/er/y"), "one/shared");
     let (x, y) = (symbols(&d.join("apps/x")), symbols(&d.join("deep/er/y")));
-    assert_eq!(x["m::who"], "__lib_shared__messages__messages_who");
+    assert_eq!(x["m::who"], "__lib_shared__messages___messages__who");
     assert_eq!(x["m::who"], y["msgs::who"]);
     assert_eq!(x["m::Tag"], y["msgs::Tag"]);
     let _ = std::fs::remove_dir_all(&d);
@@ -205,8 +207,8 @@ fn workspace_libraries_that_sanitized_alike_stay_apart() {
     let app = d.join("app");
     check_and_run(&app, "hyphen/underscore");
     let s = symbols(&app);
-    assert_eq!(s["h::who"], "__lib_lib_x2da__lib_who");
-    assert_eq!(s["u::who"], "__lib_lib_a__lib_who");
+    assert_eq!(s["h::who"], "__lib_lib_x2da___lib__who");
+    assert_eq!(s["u::who"], "__lib_lib_a___lib__who");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -227,7 +229,7 @@ fn a_copied_tree_keeps_its_symbols() {
     let there = tree("copy_there/nested/deeper", &files);
     let (a, b) = (symbols(&here.join("ws/app")), symbols(&there.join("ws/app")));
     assert_eq!(a, b, "a copied tree keeps its symbols");
-    assert_eq!(a["e::who"], "__lib__x2e_x2e___x2e_x2e__ext__util_util_who");
+    assert_eq!(a["e::who"], "__lib_x2e_x2e__x2e_x2e__ext__util__util__who");
     check_and_run(&there.join("ws/app"), "shared/ext");
     let _ = std::fs::remove_dir_all(&here);
     let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!(
@@ -277,13 +279,66 @@ fn a_library_reached_directly_and_through_another_keeps_one_name() {
     let app = d.join("app");
     check_and_run(&app, "one/one");
     let s = symbols(&app);
-    assert_eq!(s["a::who"], "__lib__x2e_x2e__one__util_util_who");
+    assert_eq!(s["a::who"], "__lib_x2e_x2e__one__util__util__who");
     assert_eq!(s["u::who"], s["a::who"], "the library's one name, through either importer");
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// The re-review's pair: library `a` holds `b__util.hl`, and library
+/// `a/b` holds `util.hl` (a directory import takes only the files
+/// directly in it). The library names differ, `a_` and `a__b_`, but
+/// joined to the raw stem by `_` both declarations were
+/// `__lib_a__b__util_Tag`, and the check refused the second as a
+/// duplicate. The stem is encoded and joined by `__`, so each alias
+/// reaches its own `who` through its own `Tag`.
+#[test]
+fn a_stem_holding_a_separator_is_not_another_librarys_path() {
+    let d = tree(
+        "stem_separator",
+        &[
+            ("hale.toml", "[project]\nname = \"ws\"\n"),
+            ("a/b__util.hl", &lib("1")),
+            ("a/b/util.hl", &lib("2")),
+            ("app/main.hl", &app(&[("../a", "a"), ("../a/b", "b")])),
+        ],
+    );
+    let app = d.join("app");
+    check_and_run(&app, "1/2");
+    let s = symbols(&app);
+    assert_eq!(s["a::Tag"], "__lib_a___b_x5f_util__Tag");
+    assert_eq!(s["b::Tag"], "__lib_a__b___util__Tag");
+    assert_eq!(s["a::who"], "__lib_a___b_x5f_util__who");
+    assert_eq!(s["b::who"], "__lib_a__b___util__who");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Declaration names that hold separator-like text, in two files of one
+/// library whose stems could have absorbed it: `q.hl` declares `s__who`
+/// and `q_s.hl` declares `_who`. Joined raw by `_` both were
+/// `__lib_p__q_s__who`; encoded, each keeps its own name.
+#[test]
+fn a_declaration_holding_a_separator_keeps_its_own_name() {
+    let d = tree(
+        "decl_separator",
+        &[
+            ("hale.toml", "[project]\nname = \"ws\"\n"),
+            ("p/q.hl", "fn s__who() -> String {\n    return \"double\";\n}\n"),
+            ("p/q_s.hl", "fn _who() -> String {\n    return \"leading\";\n}\n"),
+            ("app/main.hl", "import \"../p\" as p;\n\nfn main() {\n    println(p::s__who() + \"/\" + p::_who());\n}\n"),
+        ],
+    );
+    let app = d.join("app");
+    check_and_run(&app, "double/leading");
+    let s = symbols(&app);
+    assert_eq!(s["p::s__who"], "__lib_p___q__s_x5f_who");
+    assert_eq!(s["p::_who"], "__lib_p___q_s__x5fwho");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// The compatibility boundary: a single-file library beside the entry
-/// keeps the name it always had.
+/// whose file name is letters and digits keeps every symbol it had —
+/// `__lib_<stem>_<stem>_<name>` — for a declaration whose name neither
+/// starts with `_` nor holds `__`.
 #[test]
 fn a_library_beside_the_entry_keeps_its_name() {
     let d = tree(

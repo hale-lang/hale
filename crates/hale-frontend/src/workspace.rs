@@ -129,25 +129,25 @@ pub fn library_basis(lib: &Path, workspace_root: Option<&Path>, entry_dir: &Path
 /// [`library_basis`] so that two different bases never share a name —
 /// the encoding is injective, so there is no collision to resolve.
 ///
-/// Segments are joined by `__`. Within a segment, an ASCII letter or
-/// digit is kept, and so is a `_` that is not a segment's first byte
-/// and is followed by a letter or digit other than `x`; every other
-/// byte is `_xHH` (two lowercase hex digits). A file library's `.hl`
-/// is dropped, and a directory library's name ends in one `_` (a file
-/// library's name never does), so `util.hl` and `util/` stay apart.
-/// Reading back, `_` is a separator before `_`, an escape before `x`,
-/// the directory mark at the end, and itself otherwise.
+/// Each segment is one [`name_component`] (the encoding the mangler
+/// also gives a file stem and a declaration name), and segments are
+/// joined by `__`. A file library's `.hl` is dropped, and a directory
+/// library's name ends in one `_` (a file library's name never does),
+/// so `util.hl` and `util/` stay apart. A root directory is the
+/// segment `/`, which no other segment can be. Since no encoded
+/// segment starts or ends with `_` or holds `__`, a run of two
+/// underscores is a separator and a trailing one the directory mark.
 ///
 /// The result is a valid C / LLVM symbol component. A single-file
-/// library beside the entry, `util.hl`, is named `util`, as it always
-/// was.
+/// library beside the entry, `util.hl`, is named `util`.
+///
+/// [`name_component`]: hale_types::mangle::name_component
 pub fn library_id(basis: &Path, directory: bool) -> String {
-    use std::fmt::Write;
     let mut segments: Vec<&[u8]> = basis
         .components()
         .filter_map(|c| match c {
             Component::CurDir => None,
-            Component::RootDir => Some(&b""[..]),
+            Component::RootDir => Some(&b"/"[..]),
             other => Some(other.as_os_str().as_encoded_bytes()),
         })
         .collect();
@@ -157,24 +157,11 @@ pub fn library_id(basis: &Path, directory: bool) -> String {
             *last = file.strip_suffix(b".hl").unwrap_or(file);
         }
     }
-    let mut out = String::new();
-    for (i, seg) in segments.iter().enumerate() {
-        if i > 0 {
-            out.push_str("__");
-        }
-        for (j, &b) in seg.iter().enumerate() {
-            let plain_underscore = b == b'_'
-                && j > 0
-                && seg
-                    .get(j + 1)
-                    .is_some_and(|n| n.is_ascii_alphanumeric() && *n != b'x');
-            if b.is_ascii_alphanumeric() || plain_underscore {
-                out.push(b as char);
-            } else {
-                let _ = write!(out, "_x{b:02x}");
-            }
-        }
-    }
+    let mut out = segments
+        .iter()
+        .map(|seg| hale_types::mangle::name_component(seg))
+        .collect::<Vec<_>>()
+        .join("__");
     if directory {
         out.push('_');
     }
@@ -240,6 +227,7 @@ pub fn collect_seeds(root: &Path, out: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hale_types::mangle::mangled;
     use std::collections::HashMap;
 
     #[test]
@@ -249,10 +237,145 @@ mod tests {
         assert_eq!(library_id(Path::new("one/util.hl"), false), "one__util");
         assert_eq!(library_id(Path::new("toy"), true), "toy_");
         assert_eq!(library_id(Path::new("shared/messages"), true), "shared__messages_");
-        assert_eq!(library_id(Path::new("../one/util.hl"), false), "_x2e_x2e__one__util");
+        assert_eq!(library_id(Path::new("../one/util.hl"), false), "x2e_x2e__one__util");
         assert_eq!(library_id(Path::new("lib-util"), true), "lib_x2dutil_");
         assert_eq!(library_id(Path::new("lib_util"), true), "lib_util_");
         assert_eq!(library_id(Path::new("a_x"), true), "a_x5fx_");
+        assert_eq!(library_id(Path::new("xml.hl"), false), "x78ml");
+        assert_eq!(library_id(Path::new("b__util.hl"), false), "b_x5f_util");
+    }
+
+    /// The full name of `name` in file `stem` of the library at `basis`.
+    fn full(basis: &str, directory: bool, stem: &str, name: &str) -> String {
+        mangled(&library_id(Path::new(basis), directory), stem, name)
+    }
+
+    /// The declaration names themselves, not only the library names.
+    #[test]
+    fn the_full_name_keeps_library_stem_and_declaration_apart() {
+        // The re-review's pair: library `a` holding `b__util.hl`, and
+        // library `a/b` holding `util.hl`. Their names differ (`a_`,
+        // `a__b_`), and so do their declarations'.
+        assert_eq!(full("a", true, "b__util", "Tag"), "__lib_a___b_x5f_util__Tag");
+        assert_eq!(full("a/b", true, "util", "Tag"), "__lib_a__b___util__Tag");
+        // A declaration name holding separator-like text, beside the
+        // stem it could have been read as part of.
+        assert_eq!(full("p", true, "q", "s__who"), "__lib_p___q__s_x5f_who");
+        assert_eq!(full("p", true, "q_s", "_who"), "__lib_p___q_s__x5fwho");
+        assert_eq!(full("p", true, "q", "get_x_"), "__lib_p___q__get_x5fx_x5f");
+        // An escaped first byte against a literal `x` after the
+        // directory mark.
+        assert_eq!(full("d", true, "x2d", "T"), "__lib_d___x782d__T");
+        assert_eq!(full("d.hl", false, "-", "T"), "__lib_d__x2d__T");
+        // A library outside the workspace, and a stem holding `__`.
+        assert_eq!(full("../one/util.hl", false, "util", "who"), "__lib_x2e_x2e__one__util__util__who");
+        assert_eq!(full("my__util.hl", false, "my__util", "who"), "__lib_my_x5f_util__my_x5f_util__who");
+        // The compatibility boundary: a single-file library beside the
+        // entry whose file name is letters and digits keeps every
+        // declaration's name that neither starts with `_` nor holds
+        // `__`, as written.
+        assert_eq!(full("util.hl", false, "util", "who"), "__lib_util_util_who");
+        assert_eq!(full("util.hl", false, "util", "make_err"), "__lib_util_util_make_err");
+        assert_eq!(full("util.hl", false, "util", "get_x_"), "__lib_util_util_get_x_");
+        assert_eq!(full("xml.hl", false, "xml", "parse"), "__lib_xml_xml_parse");
+        assert_eq!(full("util.hl", false, "util", "_who"), "__lib_util__util__x5fwho");
+        assert_eq!(full("my_util.hl", false, "my_util", "who"), "__lib_my_util__my_util__who");
+        // Read back: a name, its stem and its declaration give the one
+        // library it was mangled in.
+        let lib = |have: &str, stem: &str, name: &str| hale_types::mangle::mangled_library(have, stem, name);
+        assert_eq!(lib("__lib_a___b_x5f_util__Tag", "b__util", "Tag").as_deref(), Some("a_"));
+        assert_eq!(lib("__lib_a__b___util__Tag", "util", "Tag").as_deref(), Some("a__b_"));
+        assert_eq!(lib("__lib_a__b___util__Tag", "b__util", "Tag"), None);
+        assert_eq!(lib("__lib_util_util_who", "util", "who").as_deref(), Some("util"));
+        assert_eq!(lib("__lib_util__util__who", "util", "who"), None);
+    }
+
+    /// Every (library, stem, declaration) tuple whose parts total at
+    /// most six bytes, over alphabets that hold each escape's trigger
+    /// (`_`, `x`, the hex digits `2` and `d` that spell `-` as `x2d`, a
+    /// byte that is not an identifier character, and for paths `.` and
+    /// `/`), each library as a file and as a directory, the directory
+    /// with the empty path among them: no two distinct
+    /// tuples share a full name, and every name is a symbol.
+    #[test]
+    fn the_full_name_is_injective() {
+        const PATH: &[u8] = b"dx2_-./";
+        const PART: &[u8] = b"dx2_-";
+        const TOTAL: usize = 6;
+        fn strings(alphabet: &[u8], max: usize) -> Vec<Vec<u8>> {
+            let mut all = Vec::new();
+            let mut layer: Vec<Vec<u8>> = vec![Vec::new()];
+            for _ in 0..max {
+                layer = layer
+                    .iter()
+                    .flat_map(|s| {
+                        alphabet.iter().map(move |&c| {
+                            let mut t = s.clone();
+                            t.push(c);
+                            t
+                        })
+                    })
+                    .collect();
+                all.extend(layer.iter().cloned());
+            }
+            all
+        }
+        // (identity, directory, written length, library id)
+        let mut libs: Vec<(Vec<String>, bool, usize, String)> = Vec::new();
+        for s in strings(PATH, TOTAL - 2) {
+            let text = String::from_utf8(s).unwrap();
+            if text.starts_with('/') || text.ends_with('/') || text.contains("//") {
+                continue;
+            }
+            for directory in [false, true] {
+                let path = if directory { PathBuf::from(&text) } else { PathBuf::from(format!("{text}.hl")) };
+                let identity: Vec<String> = path
+                    .components()
+                    .filter(|c| !matches!(c, Component::CurDir))
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                // `.` and `./.` are the entry's own directory, the
+                // library with the empty path: its name is `_`.
+                let id = library_id(&path, directory);
+                libs.push((identity, directory, text.len(), id));
+            }
+        }
+        let parts: Vec<String> =
+            strings(PART, TOTAL - 2).into_iter().map(|s| String::from_utf8(s).unwrap()).collect();
+        // (full name, library, stem, declaration), sorted so that equal
+        // names sit side by side.
+        let mut names: Vec<(String, u32, u32, u32)> = Vec::new();
+        for (li, (_, _, len, id)) in libs.iter().enumerate() {
+            for (si, stem) in parts.iter().enumerate() {
+                if len + stem.len() >= TOTAL {
+                    continue;
+                }
+                for (ni, name) in parts.iter().enumerate() {
+                    if len + stem.len() + name.len() > TOTAL {
+                        continue;
+                    }
+                    names.push((mangled(id, stem, name), li as u32, si as u32, ni as u32));
+                }
+            }
+        }
+        names.sort_unstable();
+        let tuple = |&(_, l, s, n): &(String, u32, u32, u32)| {
+            let (identity, directory, _, _) = &libs[l as usize];
+            (identity.clone(), *directory, parts[s as usize].clone(), parts[n as usize].clone())
+        };
+        for pair in names.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            assert!(
+                a.0.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'),
+                "{} is not a symbol",
+                a.0
+            );
+            if a.0 == b.0 {
+                assert_eq!(tuple(a), tuple(b), "{} names two declarations", a.0);
+            }
+        }
+        assert!(libs.iter().any(|(_, _, _, id)| id == "_"), "the empty path was enumerated");
+        assert!(names.len() > 500_000, "the tuples were enumerated: {}", names.len());
     }
 
     #[test]

@@ -156,15 +156,16 @@ fn three_hop_uses_path_based_mangled_prefix() {
     // The util lib lives at `<repo>/crates/hale-cli/tests/
     // fixtures/three-hop-lib-util/`. With path-based mangling, the
     // workspace-root-relative path becomes the lib id, encoded
-    // (`/` as `__`, `-` as `_x2d`, a directory's trailing `_`).
-    // The file stem is `box`. So make_box lands as
-    // `__lib_<…>__fixtures__three_x2dhop_x2dlib_x2dutil__box_make_box`.
+    // (`/` as `__`, `-` as `_x2d`, a directory's trailing `_`),
+    // joined by `__` to the file stem, `box`, and the declaration.
+    // So make_box lands as
+    // `__lib_<…>__fixtures__three_x2dhop_x2dlib_x2dutil___box__make_box`.
     //
     // We don't pin the full string (the hale workspace
     // structure can shift) — just check the path-based shape:
-    // the prefix is `__lib_` + path segments + `_box_make_box`,
+    // the prefix is `__lib_` + path segments + `___box__make_box`,
     // and explicitly NOT the old `__lib_u_box_make_box`.
-    let path_needle = b"__fixtures__three_x2dhop_x2dlib_x2dutil__box_make_box";
+    let path_needle = b"__fixtures__three_x2dhop_x2dlib_x2dutil___box__make_box";
     let path_hit = bin_bytes
         .windows(path_needle.len())
         .any(|w| w == path_needle);

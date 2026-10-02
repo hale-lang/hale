@@ -380,11 +380,11 @@ module nested {
     );
     assert_eq!(
         renames.get("Row").map(String::as_str),
-        Some("__lib_libid_lib_Row"),
+        Some("__lib_libid__lib__Row"),
     );
     assert_eq!(
         renames.get("Deep").map(String::as_str),
-        Some("__lib_libid_lib_Deep"),
+        Some("__lib_libid__lib__Deep"),
         "a module-nested declaration needs a rename row too: {:?}",
         renames,
     );
@@ -397,8 +397,8 @@ module nested {
     assert_eq!(
         names,
         vec![
-            "__lib_libid_lib_Deep".to_string(),
-            "__lib_libid_lib_Row".to_string(),
+            "__lib_libid__lib__Deep".to_string(),
+            "__lib_libid__lib__Row".to_string(),
         ],
     );
 }

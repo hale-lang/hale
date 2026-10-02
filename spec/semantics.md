@@ -4814,7 +4814,7 @@ References to library decls go through the alias as
    a stable path-derived `<lib_id>` + each file's stem, and
    merges the mangled items into the importing program's item
    list. A per-build path-rename table is built mapping
-   `["<alias>", "<Name>"]` to `__lib_<lib_id>_<stem>_<Name>` —
+   `["<alias>", "<Name>"]` to `__lib_<lib_id>__<stem>__<Name>` —
    the `<alias>` is the importer's local namespace choice; the
    `<lib_id>` is the lib's canonical path identity, so two
    consumers importing the same lib under different aliases see
@@ -4849,7 +4849,7 @@ the same mangled symbol. The mangler builds a unified rename
 map across every file in the imported library before
 rewriting, so `greet.hl`'s reference to a `Formatted` type
 declared in `format.hl` rewrites to the same
-`__lib_<lib_id>_format_Formatted` symbol that `format.hl`'s
+`__lib_<lib_id>__format__Formatted` symbol that `format.hl`'s
 decl ends up at.
 
 Local bindings (`let`, `let mut`, fn params, lifecycle params,
