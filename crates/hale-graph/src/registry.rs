@@ -228,6 +228,7 @@ const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
 const LIFECYCLE: &str = "crates/hale-types/src/lifecycle.rs";
 const LIFECYCLE_TRACE: &str = "crates/hale-types/src/lifecycle/trace.rs";
+const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -1120,9 +1121,10 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan.",
-        inputs: &["placement and topology blocks", "main's params", "entrypoint", "ownership (nested fields)"],
-        producer: Some(site(CHECK, "compute_pool_of_locus_type")),
+        inputs: &["placement and topology blocks", "entrypoint (the lowering root, never the entry)", "the construction templates: the root's literals, the entry's implicit construction of a root no literal builds, `fn main`'s own literals, the root's `bindings { }` adapters", "the params towers each template builds", "the minted sites of the snapshot and of the stdlib analysis copy", "free fns and locus bodies (dynamic sites, their domains and bounds)"],
+        producer: Some(site(PLACEMENT, "derive_placement")),
         legacy: &[
+            legacy(CHECK, "compute_pool_of_locus_type", "the checker's per-type map, first wins, seeded from the lowering root's tower alone and blind past a qualified, contract-typed or generic field (K-1 to K-7); sync inference builds it again per program before the mint (K-5)", "the table: the checker reads it in P1's checker-switch PR, and sync inference after the mint in C1"),
             legacy(CHECK, "enclosing_field_placement", "owner-relative placement, one of four in-checker derivations (two more inline in the blocking and single-thread checks)", "one placement table per snapshot (phase: placement lane)"),
             legacy(BUS_GRAPH, "collect_subscriber_placements", "per type, first wins", "same"),
             legacy(OWNERSHIP_GRAPH, "collect_placements", "a verbatim copy of the previous", "same"),
@@ -1133,12 +1135,24 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG_DEPLOY, "DeploymentPlan", "the plan type lowering reads today", "becomes the layer-5 table"),
         ],
         consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
-        invariants: &["F.38: placement is semantics-free, so a backend may Approximate it", "placement is a choice point: v1's declared placement is the single candidate"],
+        invariants: &[
+            "placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains",
+            "the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once",
+            "nested rows inherit their owner's domain unless a root field's entry or a binding decides it; pinned domains are per anchor and per replica, pool domains one per name with at most one affinity",
+            "the root is `lowering_root`, never the entry; an imported `main` is never the root",
+            "every root entry decides exactly one field family in each construction template, or it is a hole",
+            "unknown is a hole, not a default: an unresolved declaration, an unenumerable initializer, a held instance (`Reuse`) and a dynamic site of unknown domain each carry their policy, and none is main",
+            "a held instance's subtree lives in its holder's domain: the held row keeps its `Reuse` hole and its owner's domain, the source's actual rows (never the declaration's defaults) are projected under it, inherited, and each of those rows names its own source row, the one it was built as (`built_by`); where the source is not linked, nothing below the held row is asserted, and an instance there runs in an unknown domain; a question of where an instance runs skips the source's rows, a count of instances skips the held ones",
+            "every site the table names carries the universe that minted it (`SiteRef`); lowering joins the stdlib's into its merged mint once, totally and injectively",
+            "F.38: placement is semantics-free, so a backend may Approximate it",
+            "placement is a choice point: v1's declared placement is the single candidate",
+        ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/shadow_placement.rs (the shadow of compute_pool_of_locus_type against collect_subscriber_placements over the corpus; 21 classified divergences: 20 known old bugs, and the correction that the checker's map follows lowering's root, which deploys no `__lib_` main)"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds no table)", "crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)"],
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
         owned: &[],
         seams: &[
+            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 1), (SNAPSHOT, 1)] },
             Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (FORM_ROWS, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
         ],

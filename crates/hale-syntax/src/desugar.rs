@@ -1199,6 +1199,20 @@ fn collect_off_owner_thread_fields(
     out
 }
 
+/// `collect_off_owner_thread_fields`, reachable for the placement
+/// shadow (`hale-types`'s `tests/shadow_placement.rs`) alone: test
+/// support, not an API.
+#[doc(hidden)]
+pub mod shadow_support {
+    use super::TopDecl;
+
+    pub fn collect_off_owner_thread_fields(
+        items: &[TopDecl],
+    ) -> std::collections::BTreeSet<(String, String)> {
+        super::collect_off_owner_thread_fields(items)
+    }
+}
+
 /// Set of every declared locus type name in the program (across
 /// all module nesting). Used to recognize "this field's type
 /// names another locus" without consulting the typechecker.

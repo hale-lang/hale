@@ -1,0 +1,31 @@
+// Case 16: a held instance under a holder placed off main. `r` is
+// built on main and handed to `h`, which runs pinned; the held row is
+// a `Reuse` hole naming `r`, and the held instance's own fields are
+// rows under the holder's path, in the holder's domain.
+locus K { }
+
+locus Roles {
+    params {
+        k: K = K { };
+    }
+}
+
+locus Holder {
+    params {
+        roles: Roles = Roles { };
+    }
+}
+
+main locus App {
+    params {
+        h: Holder = Holder { };
+    }
+    placement {
+        h: pinned;
+    }
+}
+
+fn main() {
+    let r = Roles { };
+    App { h: Holder { roles: r } };
+}

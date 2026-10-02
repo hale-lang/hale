@@ -1,0 +1,39 @@
+// Case 10: dynamic sites. A locus literal in a root method in a loop,
+// an accepted child built in a method, and the root built by a
+// factory called in a loop: one construction template, unbounded.
+locus Job {
+    run() { }
+}
+
+locus Child {
+    run() { }
+}
+
+locus Hub {
+    accept(c: Child) { }
+    fn spawn() { Child { }; }
+}
+
+main locus App {
+    params {
+        h: Hub = Hub { };
+    }
+    run() {
+        let mut i = 0;
+        while i < 3 {
+            Job { };
+            i = i + 1;
+        }
+        self.h.spawn();
+    }
+}
+
+fn build() { App { }; }
+
+fn main() {
+    let mut i = 0;
+    while i < 2 {
+        build();
+        i = i + 1;
+    }
+}

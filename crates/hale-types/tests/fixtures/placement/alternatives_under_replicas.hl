@@ -1,0 +1,47 @@
+// Checkpoint 4: an alternative one step under a replicated root field.
+// `v` is pinned with three replicas; each `Wide` chooses at `inner`
+// between a box holding a leaf and a box holding a subtree of two.
+// Every row under a replica carries its index, and every row on or
+// under the choice is guarded. (The choice at the placed field itself
+// is refused by rule 18: `placed_conditional.hl`.)
+interface Shape {
+    fn size() -> Int;
+}
+
+locus Leaf {
+    fn size() -> Int { return 1; }
+}
+
+locus Pair {
+    params {
+        a: Leaf = Leaf { };
+        b: Leaf = Leaf { };
+    }
+    fn size() -> Int { return 2; }
+}
+
+locus Box {
+    params {
+        slot: Shape = Leaf { };
+    }
+}
+
+locus Wide {
+    params {
+        inner: Box = Box { };
+    }
+}
+
+main locus App {
+    params {
+        v: Wide = Wide { };
+    }
+    placement {
+        v: pinned(replicas = 3);
+    }
+}
+
+fn main() {
+    let c = true;
+    App { v: Wide { inner: if c { Box { } } else { Box { slot: Pair { } } } } };
+}

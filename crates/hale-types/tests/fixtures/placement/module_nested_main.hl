@@ -1,0 +1,17 @@
+// Case 7, second half: the seed's only `main locus` is inside a
+// module. It is not the entry, and lowering deploys it: the table's
+// root, with `is_entry` false.
+locus Worker { }
+
+module app {
+    main locus App {
+        params {
+            w: Worker = Worker { };
+        }
+        placement {
+            w: pinned;
+        }
+    }
+}
+
+fn main() { app::App { }; }

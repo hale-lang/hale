@@ -1,0 +1,12 @@
+// Case 8: a library whose `main locus` has a pinned entry. Imported,
+// it is never the root.
+locus Worker { }
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}

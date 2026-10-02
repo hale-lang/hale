@@ -1,0 +1,45 @@
+// A placed field's literal written in `fn main`: `w` pinned and `p` on
+// pool `io`, each restated by an explicit initializer. The literal is
+// the static field's, so its body runs where the entry placed it, never
+// on main where the initializer is written; `Child` and `Leaf`, built in
+// those bodies, run there alone. `s` is placed pinned and also built in
+// `App.run()` on main: its body runs in both, and so does `Grand`.
+locus Child {
+    run() { }
+}
+
+locus Leaf {
+    run() { }
+}
+
+locus Grand {
+    run() { }
+}
+
+locus Worker {
+    run() { Child { }; }
+}
+
+locus Pooled {
+    run() { Leaf { }; }
+}
+
+locus Shared {
+    run() { Grand { }; }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        p: Pooled = Pooled { };
+        s: Shared = Shared { };
+    }
+    placement {
+        w: pinned;
+        p: cooperative(pool = io);
+        s: pinned;
+    }
+    run() { Shared { }; }
+}
+
+fn main() { App { w: Worker { }, p: Pooled { }, s: Shared { } }; }

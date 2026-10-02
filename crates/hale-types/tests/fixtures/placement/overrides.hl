@@ -1,0 +1,41 @@
+// Case 3: overrides. The construction literal overrides `Gateway`'s
+// default router, and a contract-typed param holds the impl that was
+// built: `realizes` names the literal's declaration, `literal` the
+// override's site, and the domain is inherited.
+interface Router {
+    fn route() -> Int;
+}
+
+interface Counter {
+    fn count() -> Int;
+}
+
+locus RouterV1 {
+    fn route() -> Int { return 1; }
+}
+
+locus RouterV2 {
+    fn route() -> Int { return 2; }
+}
+
+locus Churner {
+    fn count() -> Int { return 3; }
+}
+
+locus Gateway {
+    params {
+        router: Router = RouterV1 { };
+    }
+}
+
+main locus App {
+    params {
+        gw: Gateway = Gateway { };
+        j: Counter = Churner { };
+    }
+    placement {
+        gw: cooperative(pool = io);
+    }
+}
+
+fn main() { App { gw: Gateway { router: RouterV2 { } } }; }

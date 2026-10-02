@@ -1,0 +1,46 @@
+// Case 2: nested inheritance, three deep. A subscriber `S` under `M`
+// under a root field: on pool `io`, pinned, and pinned with three
+// replicas, each replica its own domain with `[i]` in every nested key.
+type Tick {
+    n: Int = 0;
+}
+
+topic Ticks {
+    payload: Tick;
+    subject: "ticks";
+}
+
+locus S {
+    params {
+        got: Int = 0;
+    }
+    bus {
+        subscribe Ticks as on_tick;
+    }
+    fn on_tick(t: Tick) { self.got = self.got + t.n; }
+}
+
+locus M {
+    params {
+        s: S = S { };
+    }
+}
+
+main locus App {
+    params {
+        p: M = M { };
+        q: M = M { };
+        r: M = M { };
+    }
+    placement {
+        p: cooperative(pool = io);
+        q: pinned;
+        r: pinned(replicas = 3);
+    }
+    bus {
+        publish Ticks;
+    }
+    run() { Ticks <- Tick { n: 1 }; }
+}
+
+fn main() { App { }; }

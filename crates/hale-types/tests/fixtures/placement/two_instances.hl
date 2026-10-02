@@ -1,0 +1,23 @@
+// Case 1: one locus type built as three instances in three domains,
+// each nesting a `K` that inherits its owner's domain.
+locus K { }
+
+locus W {
+    params {
+        k: K = K { };
+    }
+}
+
+main locus App {
+    params {
+        a: W = W { };
+        b: W = W { };
+        c: W = W { };
+    }
+    placement {
+        a: pinned;
+        b: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }

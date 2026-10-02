@@ -789,7 +789,7 @@ fn classify_edge(
 /// `bus_graph::collect_subscriber_placements`: a `placement { }` entry
 /// keys on the owner's `params` field name, and that field's declared
 /// type names the placed child locus. First-placement-wins.
-fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
+pub(crate) fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
     let mut out: BTreeMap<String, Placement> = BTreeMap::new();
 
     fn walk(items: &[TopDecl], out: &mut BTreeMap<String, Placement>) {

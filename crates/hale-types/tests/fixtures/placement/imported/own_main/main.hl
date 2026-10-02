@@ -1,0 +1,17 @@
+// Case 8, with the seed's own `main`: the rows are the seed's root's,
+// one of them realizing the library's `Worker`.
+import "../lib" as lib;
+
+locus Local { }
+
+main locus Mine {
+    params {
+        w: lib::Worker = lib::Worker { };
+        l: Local = Local { };
+    }
+    placement {
+        l: pinned;
+    }
+}
+
+fn main() { Mine { }; }

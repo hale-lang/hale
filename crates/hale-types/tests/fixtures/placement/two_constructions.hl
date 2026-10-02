@@ -1,0 +1,53 @@
+// Case 11: three constructions of one root. Two differ only in a
+// nested override, so `gw` and `gw.router` have a key per
+// construction, each with its own `realizes`, `literal` and pinned
+// domain. The third chooses between two literals of one declaration
+// at `side`, so its rows there are guarded alternatives. (A choice
+// for the placed `gw` itself is refused by rule 18, and arms of two
+// declarations by the `if` arms' type agreement: see
+// `placed_conditional.hl`.)
+interface Router {
+    fn route() -> Int;
+}
+
+locus RouterV1 {
+    fn route() -> Int { return 1; }
+}
+
+locus RouterV2 {
+    fn route() -> Int { return 2; }
+}
+
+locus RouterV3 {
+    fn route() -> Int { return 3; }
+}
+
+locus Gateway {
+    params {
+        router: Router = RouterV1 { };
+    }
+}
+
+main locus App {
+    params {
+        gw: Gateway = Gateway { };
+        side: Gateway = Gateway { };
+    }
+    placement {
+        gw: pinned;
+    }
+}
+
+fn first() { App { gw: Gateway { router: RouterV2 { } } }; }
+
+fn second() { App { gw: Gateway { router: RouterV3 { } } }; }
+
+fn third(c: Bool) {
+    App { side: if c { Gateway { router: RouterV2 { } } } else { Gateway { } } };
+}
+
+fn main() {
+    first();
+    second();
+    third(true);
+}

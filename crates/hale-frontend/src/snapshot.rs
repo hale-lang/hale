@@ -22,6 +22,8 @@
 //!   the check's effects certificate engine and the effect rows read.
 //! - [`Snapshot::demand_effects`]: the effect rows, one fixpoint over
 //!   that summary.
+//! - [`Snapshot::demand_placement`]: the placement table, which thread
+//!   domain each instance of the deployed root's tower runs in.
 //! - [`Snapshot::demand_model`]: the application model, over the scope
 //!   and those three.
 //! - [`Snapshot::demand_check`]: what the checker reports — the scope's
@@ -65,6 +67,7 @@ use hale_types::entry::EntryRow;
 use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
+use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
 use hale_types::resolved::LoweringView;
 use hale_types::symbol::SourceFile;
@@ -86,7 +89,7 @@ use crate::source::SourceProvider;
 /// over the resolved program, a snapshot that is checked for its model
 /// and lowered holds both shapes' graphs. `sync_inference` counts the
 /// form rows ([`Snapshot::demand_forms`]).
-pub const FAMILIES: [&str; 15] = [
+pub const FAMILIES: [&str; 16] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -99,6 +102,7 @@ pub const FAMILIES: [&str; 15] = [
     "handler_routing",
     "alloc_summary",
     "effects",
+    "placement",
     "model",
     "claims",
     "lowering_view",
@@ -399,6 +403,7 @@ pub struct Snapshot {
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
+    placement: OnceCell<Result<PlacementTable, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     check: OnceCell<Result<Checked, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
@@ -567,6 +572,7 @@ impl Snapshot {
             handlers: OnceCell::new(),
             alloc_summary: OnceCell::new(),
             effects: OnceCell::new(),
+            placement: OnceCell::new(),
             model: OnceCell::new(),
             check: OnceCell::new(),
             lowering: OnceCell::new(),
@@ -1086,6 +1092,28 @@ impl Snapshot {
     /// not typecheck.
     pub fn demand_alloc_summary(&self) -> Result<&AllocSummary, &Blocked> {
         self.alloc_summary().map(|s| &**s)
+    }
+
+    /// The placement table: per static instance of the deployed root's
+    /// tower (one per construction literal of the root, and one per
+    /// adapter of its `bindings { }`), the declaration it realizes, the
+    /// literal that builds it, its domain and what decided it; and every
+    /// locus literal outside the tower, with the domains its enclosing
+    /// scope runs in and its bound ([`hale_types::placement`]). Seeded
+    /// from the entry row's lowering root, after the sequence and the
+    /// mint, so every site it names is one a mint numbered. Blocked with
+    /// the scope; it reads declarations and bodies, not types, so it is
+    /// total over a program that does not typecheck. No consumer reads it
+    /// yet (F.40 phase 3, P1).
+    pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
+        self.placement
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
+                self.count("placement");
+                Ok(hale_types::placement::derive_placement(&self.bundle(), &scope.top, entry))
+            })
+            .as_ref()
     }
 
     /// The application model, over the scope, the bus graph, the

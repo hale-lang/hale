@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 10 canonical, 30 migrating (with 133 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 10 canonical, 30 migrating (with 134 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -40,7 +40,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
-| `placement` | Layer 5 | Migrating | derivation | `compute_pool_of_locus_type` | 8 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
+| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 9 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | — | 7 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
@@ -1049,12 +1049,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Answers.** Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan.
 
-**Inputs.** placement and topology blocks; main's params; entrypoint; ownership (nested fields)
+**Inputs.** placement and topology blocks; entrypoint (the lowering root, never the entry); the construction templates: the root's literals, the entry's implicit construction of a root no literal builds, `fn main`'s own literals, the root's `bindings { }` adapters; the params towers each template builds; the minted sites of the snapshot and of the stdlib analysis copy; free fns and locus bodies (dynamic sites, their domains and bounds)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `compute_pool_of_locus_type`
+**Producer (today's authority, migrating).** `crates/hale-types/src/placement.rs` · `derive_placement`
 
 **Legacy producers (permitted until removal).**
 
+- `crates/hale-types/src/check.rs` · `compute_pool_of_locus_type` — the checker's per-type map, first wins, seeded from the lowering root's tower alone and blind past a qualified, contract-typed or generic field (K-1 to K-7); sync inference builds it again per program before the mint (K-5). *Removed when:* the table: the checker reads it in P1's checker-switch PR, and sync inference after the mint in C1.
 - `crates/hale-types/src/check.rs` · `enclosing_field_placement` — owner-relative placement, one of four in-checker derivations (two more inline in the blocking and single-thread checks). *Removed when:* one placement table per snapshot (phase: placement lane).
 - `crates/hale-types/src/bus_graph.rs` · `collect_subscriber_placements` — per type, first wins. *Removed when:* same.
 - `crates/hale-types/src/ownership_graph.rs` · `collect_placements` — a verbatim copy of the previous. *Removed when:* same.
@@ -1068,17 +1069,26 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Invariants.**
 
+- placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains
+- the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once
+- nested rows inherit their owner's domain unless a root field's entry or a binding decides it; pinned domains are per anchor and per replica, pool domains one per name with at most one affinity
+- the root is `lowering_root`, never the entry; an imported `main` is never the root
+- every root entry decides exactly one field family in each construction template, or it is a hole
+- unknown is a hole, not a default: an unresolved declaration, an unenumerable initializer, a held instance (`Reuse`) and a dynamic site of unknown domain each carry their policy, and none is main
+- a held instance's subtree lives in its holder's domain: the held row keeps its `Reuse` hole and its owner's domain, the source's actual rows (never the declaration's defaults) are projected under it, inherited, and each of those rows names its own source row, the one it was built as (`built_by`); where the source is not linked, nothing below the held row is asserted, and an instance there runs in an unknown domain; a question of where an instance runs skips the source's rows, a count of instances skips the held ones
+- every site the table names carries the universe that minted it (`SiteRef`); lowering joins the stdlib's into its merged mint once, totally and injectively
 - F.38: placement is semantics-free, so a backend may Approximate it
 - placement is a choice point: v1's declared placement is the single candidate
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-types/tests/placement_pairings.rs; crates/hale-codegen/tests/pool_affinity.rs; crates/hale-codegen/tests/placement_where_async_io.rs; crates/hale-types/tests/shadow_placement.rs (the shadow of compute_pool_of_locus_type against collect_subscriber_placements over the corpus; 21 classified divergences: 20 known old bugs, and the correction that the checker's map follows lowering's root, which deploys no `__lib_` main)
+**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-types/tests/placement_pairings.rs; crates/hale-codegen/tests/pool_affinity.rs; crates/hale-codegen/tests/placement_where_async_io.rs; crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds no table); crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)
 
 **Spec.** spec/semantics.md § Placement block (F.31); spec/decisions.md F.31, F.35, F.38
 
 **Guarded seams.**
 
+- `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 - `compute_pool_of_locus_type(` may be referenced from: `crates/hale-types/src/check.rs` ×2, `crates/hale-types/src/form_rows.rs` ×1
 - `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 
