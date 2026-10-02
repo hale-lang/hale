@@ -188,7 +188,10 @@ main locus Org {
 - **Unknown ⇒ violation.** An indirect call (function-typed
   parameter, #353) or a computed publish subject on a path from a
   `forbid` source cannot be certified and is reported as a
-  violation, exactly as `@no_syscall` treats the same shapes. And
+  violation, exactly as `@no_syscall` treats the same shapes. (A
+  call through a local bound by `let` to a fn name or path is not
+  indirect: the graph follows the binding through the body's scopes,
+  and `let f = pid; f()` is a call of `pid`.) And
   the **unresolved-callee backstop**: EVERY method call on a
   receiver the summarizer cannot type (a struct-literal receiver,
   a chained `self.a.b` field, a call result, a branch value) fails

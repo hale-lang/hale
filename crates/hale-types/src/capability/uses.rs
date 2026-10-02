@@ -39,7 +39,9 @@
 //! local function value whose binding the walk cannot follow to a fn —
 //! leaves the use's requirements unknown. On a target whose
 //! column rejects anything in the stdlib family (wasm32) that is a
-//! refusal; elsewhere it is a recorded hole, counted, never silent.
+//! refusal; elsewhere it is a recorded hole, counted, never silent. A
+//! call through a local the summary follows to a fn (`let f = pid;
+//! f()`) is a call of that fn, the local a link of its witness.
 //!
 //! **Type-only mentions** are not uses: a parameter, field or return
 //! type naming `std::io::tcp::Stream` asks nothing of the target.
@@ -342,7 +344,7 @@ impl<'a> Graph<'a> {
             for e in &fs.calls {
                 match self.edge(e) {
                     Edge::Needs(cap, link) => {
-                        r.caps.entry(cap).or_insert_with(|| vec![link]);
+                        r.caps.entry(cap).or_insert_with(|| through(e.via_local.as_deref(), link));
                     }
                     Edge::Hole(name, why) => {
                         if r.hole.is_none() {
@@ -351,8 +353,8 @@ impl<'a> Graph<'a> {
                     }
                     Edge::Calls(k) => {
                         if self.summary.fns.contains_key(&k) {
-                            let link = k.display();
-                            edges.push((k, vec![link]));
+                            let links = through(e.via_local.as_deref(), k.display());
+                            edges.push((k, links));
                         }
                     }
                     Edge::Nothing => {}
@@ -434,6 +436,12 @@ enum Edge {
     Nothing,
 }
 
+/// A call's links: the local a call through one is written with, then
+/// what it reaches.
+fn through(local: Option<&str>, link: String) -> Vec<String> {
+    local.map(str::to_string).into_iter().chain([link]).collect()
+}
+
 /// Whether a name is an imported seed's merged decl.
 fn merged(name: &str) -> bool {
     name.split("::").any(|seg| seg.starts_with("__lib_"))
@@ -483,7 +491,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
                     need: Need::Capability(cap),
                     kind: if e.receiver_present { UseKind::Receiver } else { UseKind::Call },
                     span: e.callee_span,
-                    chain: vec![link],
+                    chain: through(e.via_local.as_deref(), link),
                     holes: Vec::new(),
                 }),
                 Edge::Hole(name, why) => uses.push(CapabilityUse {
@@ -498,8 +506,12 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
                     // (`std::io::file::open`): the written path is the
                     // use, refused as the stdlib gate always worded it;
                     // what else the fn reaches is carried as a crossing.
+                    // Through a local, the local is what is written: the
+                    // path is a link of the crossing's witness.
                     let written = g.public(&k.display());
-                    let direct = (!e.receiver_present).then(|| std_namespace(&m, &written)).flatten();
+                    let direct = (!e.receiver_present && e.via_local.is_none())
+                        .then(|| std_namespace(&m, &written))
+                        .flatten();
                     if let Some(ns) = direct {
                         uses.push(CapabilityUse {
                             need: Need::Capability(Capability::StdNamespace(ns)),
@@ -511,7 +523,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
                     }
                     let kind = if e.receiver_present { UseKind::Receiver } else { UseKind::Crossing };
                     let skip = direct.map(Capability::StdNamespace);
-                    crossing(&mut uses, &req, &k, kind, e.callee_span, vec![k.display()], skip);
+                    crossing(&mut uses, &req, &k, kind, e.callee_span, through(e.via_local.as_deref(), k.display()), skip);
                 }
                 Edge::Calls(_) | Edge::Nothing => {}
             }
@@ -1186,7 +1198,9 @@ pub fn admission_diags(
                 let msg = match cap {
                     // The written callee is the stdlib path itself: the
                     // refusal names it, as the stdlib gate always has.
-                    Capability::StdNamespace(_) if u.kind == UseKind::Call => {
+                    // (A local bound to the path is written instead: its
+                    // chain is the witness.)
+                    Capability::StdNamespace(_) if u.kind == UseKind::Call && u.chain.len() == 1 => {
                         let path = name(&u.chain[0]);
                         holes.push(("path", path.trim_start_matches("std::").to_string()));
                         refusal.render(&cell.witness, &holes_ref(&holes))
