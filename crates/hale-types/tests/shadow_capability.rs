@@ -494,14 +494,18 @@ impl Shadow {
 }
 
 /// `TargetSpec::has_async_io` per known target against `AsyncIoPool`:
-/// the target model's answer, before any program reads it.
+/// the target model's answer, before any program reads it. They agree
+/// on the POSIX columns; on wasm32 the runtime has the backend over
+/// imports the loader stubs, and the cell refuses it (T2): the one
+/// classified difference, which closed the `TargetSpec` legacy row.
 #[test]
 fn has_async_io_agrees_with_the_async_io_cell() {
     let m = derive_capability_matrix();
     for t in TargetSpec::known() {
         let Some(class) = TargetClass::of(&t) else { continue };
         let cell = m.behaviour(class, Capability::AsyncIoPool).unwrap();
-        assert_eq!(t.has_async_io(), cell.is_lower(), "{}: has_async_io vs AsyncIoPool × {}", t.triple, class.name());
+        let expected = t.has_async_io() && class != TargetClass::Wasm32;
+        assert_eq!(expected, cell.is_lower(), "{}: has_async_io vs AsyncIoPool × {}", t.triple, class.name());
     }
 }
 

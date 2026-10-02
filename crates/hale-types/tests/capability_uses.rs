@@ -195,6 +195,110 @@ fn declarations_are_use_rows() {
     );
 }
 
+const MAIN_TWO: &str = "locus W { run() { } }\n\nmain locus App {\n    params {\n        w: W = W { };\n    }\n";
+
+/// Paired cases 2–4 (T2): a placement that asks for a thread of its own
+/// or a pool's is refused at its entry under wasm32; the host lowers it,
+/// and musl refuses `async_io` with its own wording.
+#[test]
+fn threads_and_async_io_are_refused_at_the_placement_entry() {
+    let one_thread = "the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`)";
+    refused_on_wasm32(
+        &format!("{MAIN_TWO}    placement {{\n        w: pinned;\n    }}\n}}\n\nfn main() {{ App {{ }}; }}\n"),
+        &[(
+            8,
+            9,
+            &format!(
+                "placement entry `w`: `pinned` is not available under {{selector}} — a pinned locus owns a thread of its \
+                 own, and {one_thread}; place it `cooperative` (pool `main`)"
+            ),
+        )],
+    );
+    refused_on_wasm32(
+        &format!("{MAIN_TWO}    placement {{\n        w: cooperative(pool = workers);\n    }}\n}}\n\nfn main() {{ App {{ }}; }}\n"),
+        &[(
+            8,
+            9,
+            &format!(
+                "placement entry `w`: a cooperative pool other than `main` is not available under {{selector}} — its \
+                 workers are threads, and {one_thread}; place it `cooperative` (pool `main`)"
+            ),
+        )],
+    );
+    let async_io =
+        format!("{MAIN_TWO}    placement {{\n        w: cooperative(pool = io) where async_io;\n    }}\n}}\n\nfn main() {{ App {{ }}; }}\n");
+    let on_wasm = check(&async_io, Some("wasm32"));
+    assert_eq!(on_wasm.len(), 2, "{on_wasm:?}");
+    assert_eq!((on_wasm[1].0, on_wasm[1].1), (8, 41));
+    assert!(on_wasm[1].2.starts_with("placement entry `w`: `async_io` pools aren't supported on wasm32 — "), "{on_wasm:?}");
+    let musl = check(&async_io, Some("x86_64-unknown-linux-musl"));
+    assert_eq!(musl.len(), 1, "{musl:?}");
+    assert!(musl[0].2.starts_with("placement entry `w`: `async_io` pools aren't supported on musl Linux yet"), "{musl:?}");
+    assert_eq!(check(&async_io, None), vec![]);
+}
+
+/// Paired case 5 (T2): a transport binding is refused at the binding.
+#[test]
+fn a_transport_binding_is_refused_at_the_binding() {
+    let src = "type Tick {\n    n: Int = 0;\n}\n\ntopic Ping {\n    payload: Tick;\n    subject: \"demo.ping\";\n}\n\n\
+               locus Counter {\n    bus {\n        subscribe Ping as on_ping;\n    }\n    fn on_ping(t: Tick) { }\n}\n\n\
+               main locus App {\n    params {\n        counter: Counter = Counter { };\n    }\n    bindings {\n        \
+               Ping: unix(\"/tmp/p.sock\", role: listen);\n    }\n}\n\nfn main() { App { }; }\n";
+    refused_on_wasm32(
+        src,
+        &[(
+            22,
+            15,
+            "bindings entry `Ping`: this transport is not available under {selector} — the browser sandbox has no \
+             AF_UNIX sockets; keep the topic in-process, or reach the host through an `@ffi(\"js\")` host import",
+        )],
+    );
+}
+
+/// T3: the known stubs are refused with their substitute, wherever the
+/// program reaches them.
+#[test]
+fn the_stub_namespaces_are_refused_on_wasm32() {
+    let clock = "the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and \
+                 `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep never waits";
+    refused_on_wasm32(
+        "fn main() {\n    let t = std::time::now();\n    println(t);\n}\n",
+        &[(2, 13, &format!("`std::time::now` is unavailable under {{selector}}: {clock}"))],
+    );
+    refused_on_wasm32(
+        "fn main() {\n    let v = std::env::var(\"HOME\");\n    println(v);\n}\n",
+        &[(
+            2,
+            13,
+            "`std::env::var` is unavailable under {selector}: the browser has no process environment: the shim's \
+             inline `getenv` returns NULL",
+        )],
+    );
+}
+
+/// Paired case 9 (T5): an `@ffi("js")` declaration on a native target is
+/// refused at the declaration, called or not; wasm32 lowers it.
+#[test]
+fn a_js_import_is_refused_at_its_declaration_on_a_native_target() {
+    let triple = TargetSpec::host().triple;
+    let want = |line: usize| {
+        (
+            line,
+            1,
+            format!(
+                "`@ffi(\"js\")` fn `console_log` is a host import of the wasm32 loader, and this program is built for \
+                 `{triple}`: a native build has no loader to supply it, so it would be an undefined symbol at the link; \
+                 build it for wasm32 (`target wasm {{ }}` or `--target wasm32`), or bind a C library with `@ffi(\"c\")`"
+            ),
+        )
+    };
+    for main in ["fn main() {\n    console_log(\"hi\");\n}\n", "fn main() {\n}\n"] {
+        let src = format!("@ffi(\"js\") fn console_log(m: String);\n\n{main}");
+        assert_eq!(check(&src, None), vec![want(1)], "{src}");
+        assert_eq!(check(&src, Some("wasm32")), vec![], "{src}");
+    }
+}
+
 /// An `@export`-only program: a host program refuses it at its first
 /// `@export` (design §1.3), where codegen used to fail late and
 /// unlocated; wasm32 lowers it.

@@ -323,10 +323,10 @@ fn approximation_only_on_layers_five_and_seven() {
     assert!(v.is_empty(), "{}", v.join("\n"));
 }
 
-/// The premises: every `Omit` holds on its own target, except the
-/// three wasm32 cells KNOWN_OPEN names, whose premise holds only once
-/// T2 lands; those must fail today, so the entry has to go when they
-/// start to hold.
+/// The premises: every `Omit` holds on its own target, except a cell
+/// KNOWN_OPEN names, whose premise must fail today, so the entry has to
+/// go when it starts to hold. (T2 made wasm32's `PoolJoin`,
+/// `IngressQuiesce` and `BindingConfig` premises hold; none is open.)
 #[test]
 fn every_omit_premise_holds_or_is_known_open() {
     let m = derive_capability_matrix();
@@ -541,9 +541,11 @@ fn the_tables_have_the_reviewed_shape() {
     assert_eq!((m.behaviours.len(), std), (104, 47), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 9);
-    // 10 namespaces, `[ffi] link`, `@export locus` with `run()`,
-    // ProcessSignals, pinned threads and the adapter binding on wasm32;
-    // the export-only module and `--wrap-main` on both POSIX columns;
-    // `async_io` on musl; 9 FFI type classes × 2 ABIs × 3 targets.
-    assert_eq!(rejects.len(), 74, "{}", rejects.join("\n"));
+    // On wasm32: 17 namespaces (the 10 browser-unavailable, T3's 7),
+    // `[ffi] link`, `@export locus` with `run()`, ProcessSignals, and
+    // T2's pinned threads, pools, `async_io` and the three transports;
+    // on both POSIX columns the export-only module, `--wrap-main` and
+    // T5's `@ffi("js")`; `async_io` on musl; 9 FFI type classes × 2 ABIs
+    // × 3 targets.
+    assert_eq!(rejects.len(), 87, "{}", rejects.join("\n"));
 }

@@ -334,12 +334,14 @@ impl TargetSpec {
         self.os == TargetOs::Linux
     }
 
-    /// Whether the lotus runtime has the `async_io` pool backend here.
-    /// Mirrors the runtime's `LOTUS_HAVE_ASYNC_IO`: glibc Linux (epoll),
-    /// macOS (kqueue, GH #970) and wasm's POSIX shim; the checker
-    /// refuses `where async_io` elsewhere. musl declares `<ucontext.h>`
-    /// and implements none of it, so the coroutine backend has nothing
-    /// to stand on there; Windows has no runtime yet (GH #445).
+    /// Whether the lotus runtime is built with the `async_io` pool
+    /// backend here: the runtime's shape, mirroring its
+    /// `LOTUS_HAVE_ASYNC_IO` (glibc Linux's epoll, macOS's kqueue, GH
+    /// #970, and wasm's POSIX shim). musl declares `<ucontext.h>` and
+    /// implements none of it; Windows has no runtime yet (GH #445).
+    /// Whether a program may ASK for an `async_io` pool is the
+    /// `AsyncIoPool` cell's, not this: wasm32's runtime has the backend
+    /// over imports the loader stubs, and the cell refuses it (T2).
     pub fn has_async_io(&self) -> bool {
         match self.os {
             TargetOs::Linux => self.env != TargetEnv::Musl,
@@ -658,9 +660,13 @@ mod tests {
     }
 
     /// The async_io backend is glibc Linux's, macOS's (kqueue) and wasm's
-    /// shim: musl has none, and the diagnostic names it.
+    /// shim: musl has none, and the diagnostic names it. What a program
+    /// may ask for is the `AsyncIoPool` cell (design §2.7): Lower where
+    /// the backend runs, Reject on musl and on wasm32, whose runtime has
+    /// the backend over stubbed imports.
     #[test]
     fn async_io_follows_the_libc() {
+        use crate::capability::{derive_capability_matrix, Capability, TargetClass};
         let t = |s: &str| TargetSpec::parse(s).unwrap();
         assert!(t("x86_64-unknown-linux-gnu").has_async_io());
         assert!(t("aarch64-unknown-linux-gnu").has_async_io());
@@ -669,6 +675,14 @@ mod tests {
         assert!(t("wasm32").has_async_io());
         assert!(!t("x86_64-unknown-linux-musl").has_async_io());
         assert!(!t("x86_64-pc-windows-msvc").has_async_io());
+        let m = derive_capability_matrix();
+        let admits = |s: &str| {
+            let class = TargetClass::of(&t(s)).expect("a column");
+            m.behaviour(class, Capability::AsyncIoPool).expect("a row").is_lower()
+        };
+        assert!(admits("x86_64-unknown-linux-gnu") && admits("aarch64-apple-darwin"));
+        assert!(!admits("x86_64-unknown-linux-musl"));
+        assert!(!admits("wasm32"), "the runtime has the backend; the cell refuses it");
         assert_eq!(t("x86_64-unknown-linux-musl").platform_label(), "musl Linux");
         assert_eq!(t("aarch64-apple-darwin").platform_label(), "macOS");
     }

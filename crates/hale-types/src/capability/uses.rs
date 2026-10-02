@@ -454,7 +454,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
                                 UseKind::ForeignDecl,
                                 a.span,
                                 &format!("@ffi(\"{}\") fn {}", a.abi, f.name.name),
-                                vec![],
+                                vec![("fn", f.name.name.clone())],
                             ));
                         }
                     }
