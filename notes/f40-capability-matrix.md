@@ -85,24 +85,25 @@ Three sources:
 2. **The configuration.** `--target` on `hale build`, and on `hale check`, which gains the flag in P3 2 of 3, parsed by the same `TargetSpec::parse`.
 3. **The host**, when neither names one.
 
-**The precedence rule (T1).**
+**The precedence rule (T1, decided (b)).**
 
 - An explicit `--target` is the effective target.
-- With no `--target`, a source declaration makes the effective target wasm32, for admission on every entry point.
+- With no `--target`, a source declaration makes the effective target wasm32, **for analysis and for artifact emission alike**, on every entry point. `hale build` of a program that declares `target wasm` emits the wasm module and its loader, as `--target wasm32` does. spec/ffi.md:378 ("opts into the wasm backend") becomes true as written.
 - With neither, the target is the host.
-- An explicit `--target` whose class disagrees with a source declaration is a **located refusal at the declaration**: ``this program declares `target wasm`, and is being checked/built for `<triple>`: build it with `--target wasm32`, or drop the declaration``. This is #911's ruling applied to the other half: "a stated directive that does nothing is worse than a refusal".
-- `hale build` with **no** `--target` on a program that declares `target wasm`: today it builds a native binary, refused late as "program has no `fn main()`" when the program is `@export`-only (CG:8787). Under T1(a) it is the same located refusal, naming `--target wasm32`, so artifact selection stays on the command line. Under T1(b) it selects wasm32 and makes spec/ffi.md:378 ("opts into the wasm backend") true.
+- An explicit `--target` whose class disagrees with a source declaration is a **located refusal at the declaration**: ``this program declares `target wasm`, and is being checked/built for `<triple>`: build it with `--target wasm32`, or drop the declaration``. This is #911's ruling applied to the other half: "a stated directive that does nothing is worse than a refusal". It is the same refusal on `hale check --target <triple>` and `hale build --target <triple>`.
 
-`--wrap-main`'s guard (`build.rs:56–58`) reads the effective target instead of matching strings, so `--target wasm32-unknown-unknown --wrap-main` is admitted.
+Today `hale build` with no `--target` on a declared program builds a native binary, and an `@export`-only one is refused late as "program has no `fn main()`" (CG:8787). Under (b) that program builds for wasm32. An `@export`-only program **without** a declaration and without `--target` is a host program; it is refused by `EntryInversion × Host` at its first `@export`: ``a program with no `fn main` is an export-only module, which needs wasm32: declare `target wasm { }` or build with `--target wasm32` ``.
 
-The editor has no `--target`. Its effective target is the source's, else the host. "Equivalent configuration" for the agreement test therefore means `hale check` and `hale build` without `--target`, compared with the editor. With `--target`, it means `hale check --target T` compared with `hale build --target T`.
+`--wrap-main`'s guard (`build.rs:56–58`) reads the effective target instead of matching strings, so `--target wasm32-unknown-unknown --wrap-main` is admitted. The guard reads the effective target of the **written** sources: the declaration `--wrap-main` injects (`desugar.rs:180–193`) is a consequence of the target and never selects it, so `hale build --wrap-main` with no `--target` and no declaration stays refused.
+
+**The agreement contract is unchanged.** The editor has no `--target`. Its effective target is the source's, else the host, which is now exactly what `hale check` and `hale build` compute without `--target`. "Equivalent configuration" for the agreement test therefore means `hale check` and `hale build` without `--target`, compared with the editor; with `--target`, it means `hale check --target T` compared with `hale build --target T`. Under (b) the three agree on the effective target as well as on admission, so the build of a declared program is judged by the same cells the editor showed.
 
 **Precedence tests** (P3 2 of 3, `crates/hale-cli/tests/target_precedence.rs`, a new `[[test]]` entry or a module of an existing area). The rows are source × configuration, and each cell names the effective target and the expected diagnostics, pinned by wording:
 
 | source \ CLI | none | `native`/host triple | `wasm32` | `wasm32-unknown-unknown` | musl triple |
 |---|---|---|---|---|---|
 | no declaration | host | host | wasm32 | wasm32 | musl |
-| `target wasm` | wasm32 (build: T1) | refusal at the declaration | wasm32 | wasm32 | refusal at the declaration |
+| `target wasm` | wasm32, the build emitting the wasm artifact | refusal at the declaration | wasm32 | wasm32 | refusal at the declaration |
 | `target browser_js` | as `target wasm` | as `target wasm` | wasm32 | wasm32 | as `target wasm` |
 | `fn main` + `--wrap-main` | refused (`--wrap-main` needs wasm32) | refused | wasm32 | wasm32 (**today refused**) | refused |
 
@@ -136,7 +137,7 @@ The rule: a refusal that depends only on (program, configuration, target) is a c
 |---|---|---|
 | `[ffi] link` on wasm32 (CG:2816) | build-time, and **masked by a missing clang**, because it is checked after the runtime compile (CG:2786–2799) | **cell** (`LinkLibrary × Wasm32 = Reject`). On `hale check` it is a manifest record (T4). On `hale build` it is reported before any tool is probed |
 | `@export locus` with `run()` (CG:14130) | build-time (codegen) | cell (`EntryInversion`), same wording |
-| `@export`-only program built natively (CG:8787) | build-time, "program has no `fn main()`" | cell, located at the first `@export` (T1 decides the wording) |
+| `@export`-only program built natively (CG:8787) | build-time, "program has no `fn main()`" | with a declaration: no failure, it builds for wasm32 (T1(b)). Without one: cell (`EntryInversion × Host`), located at the first `@export`, with §1.3's wording |
 | clang missing (CG:2793), wasm-ld missing (CG:2876) | build-time | unchanged |
 | a `csrc` unit that will not compile freestanding (CG:2835–2842) | build-time | unchanged: it depends on C source the checker does not read |
 | zig / target sysroot missing (spec/projects.md:752) | build-time | unchanged |
@@ -170,7 +171,7 @@ Each section gives the question the row answers today, the cell that replaces it
 
 **Today.** For a `std::` call path under a source-declared wasm target: is it one of the 8 rejected prefixes, and if so, with what reason? The prefixes are `io::tcp`, `io::udp`, `io::tls`, `io::fs`/`io::file`, `io::stdin`/`io::stdout`, `term`, `process`, `http`. Everything else passes, including namespaces whose wasm lowering is a stub (below). The comment at CHECK:8083–8087 lists `time`, `env` and `rand` as portable.
 
-**Cell.** `StdNamespace(p) × Wasm32` is `Reject` for the 8 prefixes. The wording is unchanged: `` `std::<path>` is unavailable under `target wasm`: <reason> `` (CHECK:14816–14823). Once `--target wasm32` can trigger it, T1's wording adds "or `--target wasm32`". The reasons and substitutes are the table's strings. `StdNamespace(p) × Host` is `Lower` for every namespace.
+**Cell.** `StdNamespace(p) × Wasm32` is `Reject` for the 8 prefixes. The wording is unchanged: `` `std::<path>` is unavailable under `target wasm`: <reason> `` (CHECK:14816–14823). The phrase names what selected the target: `` under `target wasm` `` when the declaration did, `` under `--target wasm32` `` when the configuration did, so every existing pinned wording stays byte-identical. The reasons and substitutes are the table's strings. `StdNamespace(p) × Host` is `Lower` for every namespace.
 
 **The namespaces with no stated cell today (T3).** They are admitted on wasm32 and lowered to stubs. `--allow-undefined` (CG:2872) and the loader's `() => 0` for every unknown import (CG:2983–2986) turn their syscalls into silent zeros:
 
@@ -279,7 +280,7 @@ Every wasm-relevant program in the tree is listed below. There are 33 in tracked
 
 | program | today | after P3 | change |
 |---|---|---|---|
-| `crates/hale-types/tests/wasm_target_gating.rs:16` `target_wasm_rejects_posix_stdlib` (5 programs, fs/tcp/tls/term/process) | refused by CHECK:14811 under the source declaration | the same refusals, through the cell | wording gains "or `--target wasm32`" only if T1's wording is taken; otherwise unchanged |
+| `crates/hale-types/tests/wasm_target_gating.rs:16` `target_wasm_rejects_posix_stdlib` (5 programs, fs/tcp/tls/term/process) | refused by CHECK:14811 under the source declaration | the same refusals, through the cell | unchanged: the declaration selected the target, so the wording still says `` under `target wasm` `` |
 | `wasm_target_gating.rs:38` `target_wasm_allows_portable_stdlib` | accepted | accepted | unchanged |
 | `wasm_target_gating.rs:57` `no_target_decl_does_not_gate` | accepted (host) | accepted (host) | unchanged; the companion `--target wasm32` case is new (paired case 1) |
 | `crates/hale-codegen/tests/wasm_target.rs`, 15 programs (lines 50, 87, 139, 208, 256, 322, 381, 460, 522, 574, 634, 686, 747, 792, 846) | harness builds for `Wasm32`, no check | the same | unchanged: none calls a gated namespace, places a locus, binds a topic or uses `std::time`/`env`/`ts` |
@@ -291,7 +292,7 @@ Every wasm-relevant program in the tree is listed below. There are 33 in tracked
 | `crates/hale-cli/tests/check_arg_parsing.rs:465` (`hale run --target wasm32`) | refused at OPT:386 | the same | unchanged |
 | `--target wasm32-unknown-unknown --wrap-main` (no test today) | refused by `build.rs:56` | admitted | **a refusal removed**; pinned by a new test |
 | `--wrap-main` program calling `std::process` (no test today) | refused by `hale build --target wasm32 --wrap-main`; `hale check` accepts | the same; `hale check --target wasm32` refuses it as well, because the check of a `--wrap-main` program is a check of the wrapped program only when the flag is given (see the note after this table) | new on `hale check --target wasm32` |
-| `iris/examples/wasm-flower/flower.hl` (declares `target wasm`, `@export fn` only) | `hale check` accepts; `hale build` without `--target` fails late in codegen ("program has no `fn main()`", CG:8787, inferred); untested (`crates/hale-cli/tests/iris_seeds_check.rs:31` claims a coverage that does not exist) | `hale check`: accepted, effective wasm32. `hale build` without `--target`: **T1's located refusal**. `hale build --target wasm32`: builds | **changed late failure → located refusal**; flower joins the wasm build tests |
+| `iris/examples/wasm-flower/flower.hl` (declares `target wasm`, `@export fn` only) | `hale check` accepts; `hale build` without `--target` fails late in codegen ("program has no `fn main()`", CG:8787, inferred); untested (`crates/hale-cli/tests/iris_seeds_check.rs:31` claims a coverage that does not exist) | `hale check`, the editor and `hale build`, all without `--target`: accepted, effective wasm32, and the build emits `flower.wasm` and its loader (T1(b)). `hale build --target wasm32`: the same artifact. `hale build --target <native triple>`: the located refusal at the declaration | **changed late failure → builds**; flower joins the wasm build tests and the agreement test, with and without `--target` |
 | corpus sweep (`crates/hale-codegen/tests/corpus_check_build_agreement.rs:193`): harvested declared-wasm programs `wasm_target.rs` #13 (522), #15 (634), #16 (686); `wasm_target_gating.rs` #0 (39); `crates/hale-syntax/tests/wrap_main.rs` #1 (90) | check-clean (gate fires, nothing gated), then built **natively** | built for their effective target, wasm32 (the sweep reads the snapshot's effective target instead of `build_opts::options()`'s `Native`) | no diagnostic change; the oracle now compares like with like |
 | `play/examples/*.hl`, `play/ui.hl`, `play/sim.hl` (`play/build.sh:51,63`; deploy-only, `.github/workflows/docs.yml:121–123`) | build with `--target wasm32 --wrap-main` | the same | unchanged (verified: none places, binds, sleeps or reads env) |
 | docs `hale` blocks (`docs/src/systems/webassembly.md:23, 57, 187`), spec/ffi.md:384, 435 | parse only (`docs_snippets.rs`) | the same | unchanged |
@@ -307,6 +308,7 @@ The fragment for the J commit (`unreleased/<pr>.md`):
 ```text
 ### Targets
 - What a target can do is one table, consulted by `hale check`, `hale build` and the editor alike. `hale check` takes `--target`; `--target wasm32` now gates the browser-unavailable stdlib exactly as a `target wasm { }` declaration does, and an explicit `--target` that contradicts a `target` declaration is refused at the declaration.
+- A `target wasm { }` or `target browser_js { }` declaration now selects the wasm32 backend: `hale build` without `--target` emits the module and its loader, where it used to build natively and fail on an export-only program.
 - Refused under wasm32 at check time, where they were admitted and never ran: `pinned` placement, cooperative pools other than `main`, `where async_io`, and transport `bindings`; <T3's namespaces>.
 - `[ffi] link` on wasm32 is refused by `hale check --target wasm32` and, in a build, before any tool is probed, so a machine without clang reports the capability rather than the toolchain.
 - The dispatch plan's `static_direct` flavor now requires a flat payload, as lowering always did; `--dump-model` and the execution digest change for subjects with a managed payload.
@@ -450,7 +452,7 @@ Closes nothing yet; the registry names `capability.rs` as the producer, with the
 
 ### P3 2 of 3: admission on every entry point (J · Opus pane; the driver writes T1–T5 into spec/ffi.md and docs before the pane starts)
 
-1. The effective target (§1.3) and `hale check --target`; `--wrap-main` reads the effective target.
+1. The effective target (§1.3) and `hale check --target`; `--wrap-main` reads the effective target; `hale build` takes its `CompileTarget` and output naming (`TargetSpec::filenames`) from the snapshot's effective target, not from OPT:312 alone, so a declared program emits the wasm artifact (T1(b)).
 2. The checker consults the family; `wasm_target`, `wasm_unavailable_stdlib`, `Bundle::target_has_async_io`/`target_label` go.
 3. The flipped cells (T2, T3, T5) and the moved refusals (`[ffi] link` ahead of the toolchain and into the check, T4; `@export locus` with `run()`; the `@export`-only native build), each with its wording pinned, in one J commit with the fragment of §2.9.
 4. The tests:
@@ -473,7 +475,7 @@ Closes nothing yet; the registry names `capability.rs` as the producer, with the
 | 5 | a `bindings { T: unix(...) }` entry | lowers | refused at the binding |
 | 6 | an app with `[ffi] link = ["m"]` | lowers | refused (manifest record on check; before clang on build) |
 | 7 | `@export locus L { fn run() { } }` | lowers (an ordinary locus) | refused at `run` |
-| 8 (reverse) | `@export fn go() { }` with no `fn main` | refused at the declaration (T1's wording) | lowers |
+| 8 (reverse) | `@export fn go() { }` with no `fn main` and no declaration | refused at the `@export` (`EntryInversion × Host`, §1.3's wording) | lowers |
 | 9 (reverse) | `@ffi("js") fn console_log(m: String);` called from main | refused at the declaration (T5) | lowers |
 
 ### P3 3 of 3: codegen reads the cells; lifecycle; the gate column (M · Sonnet pane for the site switch; S · Opus for the lifecycle commit and the gate column)
@@ -490,7 +492,7 @@ Closes nothing yet; the registry names `capability.rs` as the producer, with the
 1. **The registry's `lotus_replay_start_ingress` row** ("instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not") is half right. Every main exit emits wait-abort on wasm too (CG:6954–6956). Only the deferred entry (CG:7125) emits neither. The inventory's line 16 inherits the same undercount (§3.1).
 2. **`TargetSpec::has_async_io` is true for wasm32** (TGT:322), and the runtime agrees (`LOTUS_HAVE_ASYNC_IO` 1, RT:142–147). But the backend's epoll/eventfd calls are `() => 0` imports (CG:2983–2986), so an `async_io` pool on wasm is admitted and never runs.
 3. **SHIM:47–53 says pool workers and `cond_wait` are "gated out with `#ifndef __wasm__`"**. They are not: `lotus_coop_pool_start_all` (RT:10075) and `lotus_coop_pool_shutdown_all` (RT:10149) lie outside the gated region (RT:9827–10034), and pinned `pthread_create` (INST:4262–4272) is ungated in codegen.
-4. **spec/ffi.md:378 says the declaration "opts into the wasm backend"**. It selects no backend: only `--target` does (OPT:312), and codegen ignores the declaration (CG:13284). docs/src/systems/webassembly.md:19–21 is accurate ("the program declares the target so the typechecker can gate"), so the spec and the book disagree.
+4. **spec/ffi.md:378 says the declaration "opts into the wasm backend"**. It selects no backend: only `--target` does (OPT:312), and codegen ignores the declaration (CG:13284). docs/src/systems/webassembly.md:19–21 is accurate ("the program declares the target so the typechecker can gate"), so the spec and the book disagree. T1(b) resolves it toward the spec: the declaration selects the backend, and the book's sentence gains the build half in P3 2 of 3.
 5. **spec/ffi.md:423–425 and webassembly.md:42–45 say the network transports are "unavailable in the sandbox"**, but nothing refuses a `bindings` entry. `emit_bindings_prelude` (CG:9813) is ungated, and the transports' syscalls become no-op imports.
 6. **CHECK:8083–8087 lists `time`, `env` and `rand` as the portable surface**, while the shim makes the clock read 0, sleep return at once (SHIM:483–488) and `getenv` return NULL (SHIM:36).
 7. **The `is_wasm` row says "a dozen sites"**. There are 33 references; 30 sites read it. 13 of them are emission configuration, which the Final direction says is not a decision, so they are not capabilities. Two are dead: CG:1182 is unreachable through the CLI, and CG:2080's wasm arm comes after the wasm return.
