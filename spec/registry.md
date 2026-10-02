@@ -37,7 +37,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `blocking` | Layer 4 | Canonical | derivation | `blocking_path_match` | 0 | Which fns block (a cooperative worker would be held), and whether the program places anything off the main thread. |
 | `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 1 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
-| `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
+| `bare_fallible` | Layer 4 | Canonical | law | `bare_fallible_calls` | 0 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Canonical | law | `run_statically_nonreturning` | 0 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
 | `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
@@ -266,13 +266,13 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`; `crates/hale-types/src/typed_bodies.rs` · `typed_bodies`; `crates/hale-types/src/builtin_sigs.rs` · `BARE_BUILTIN_SIGS`
 
-**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); codegen (a bare builtin's arity and result: its signature row) (`crates/hale-codegen/src/codegen.rs` · `builtin_sig`); every layer
+**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law) (`crates/hale-types/src/check.rs` · `check_bundle_reporting`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); codegen (a bare builtin's arity and result: its signature row) (`crates/hale-codegen/src/codegen.rs` · `builtin_sig`); every layer
 
 **Invariants.**
 
 - expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)
 - codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span
-- the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason
+- the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call); a site the checker could not type is a hole with its reason
 - the bare builtins (`len`, `to_string`, the `Int` / `Float` casts, `abs` / `min` / `max`, `starts_with` / `contains`) are typed by one signature table (`BARE_BUILTIN_SIGS`), lowering's inference written down: the checker types a call by its row where lowering lowers it and leaves it `Unknown` where lowering refuses, and lowering reads each builtin's arity and result from the same row
 
 **Missing data.** a missing required row is a compiler error
@@ -283,7 +283,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `typed_bodies(` may be referenced from: `crates/hale-types/src/typed_bodies.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `typed_bodies(` may be referenced from: `crates/hale-types/src/typed_bodies.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `generics` — Canonical · derivation
 
@@ -991,33 +991,33 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `borrow_lifetime_diags` may be referenced from: `crates/hale-types/src/borrow_lifetime.rs` ×3, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
-### `bare_fallible` — Migrating · law
+### `bare_fallible` — Canonical · law
 
 **Answers.** Whether a fallible call's error is addressed.
 
-**Inputs.** expression types (Fallible); stdlib_surface (dual-mode calls)
+**Inputs.** typed_bodies (the fallible_calls column: each call's callee mark and what addresses it)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/bare_fallible.rs` · `bare_fallible_calls`
+**Producer.** `crates/hale-types/src/bare_fallible.rs` · `bare_fallible_calls`
 
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-types/src/check.rs` · `check_expr_addressed` — the checker judges user fallibility while bare_fallible judges stdlib dual-mode calls the checker types as Unknown: two producers split by callee kind. *Removed when:* one law once stdlib calls are typed.
-
-**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `bare_fallible_calls`); build, run, test, replay, bench (a build config's snapshot check, `Config::build_rules`) (`crates/hale-types/src/lib.rs` · `build_rule_diags`)
+**Consumers.** check, verify, build, run, test, replay, bench, the LSP (the snapshot's check, with the typing diagnostics) (`crates/hale-frontend/src/snapshot.rs` · `bare_fallible_calls`); the check of a bundle no snapshot holds (the tests' entries) (`crates/hale-types/src/check.rs` · `bare_fallible_calls`)
 
 **Invariants.**
 
-- runs on every entry point (not the LSP or bench today)
+- one rule for user and stdlib calls: only an `or` handles a fallible call; any other position (an argument, an operand, a `match` scrutinee, a `let` initializer, a statement, a returned value) is the GH #738 error, so `hale check` refuses what `hale build` refuses, save a call through an interface-typed local or parameter: the checker types that receiver `Unknown`, so the column holds no row for the call and only the build refuses it (a typing limitation to lift)
+- the law reads the column, never the signature table or the syntax tree: the checker records each fallible call's callee mark (`Declared`, `Typed`, `Stdlib`) and what addresses it as it walks
+- an `or`'s handler takes the implicit `or raise` exactly where lowering does (`expr_is_fallible_call`): a `Declared` callee; any other fallible handler is refused with the nested spelling, a limitation to lift, not a rule
+- the checker types a fallible value no `or` addresses as its success type, so a bare call reports the law's one error and no type mismatch
+- runs on every entry point, the LSP and bench included (the snapshot's check)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/check_strict_fallible.rs
+**Focused tests.** crates/hale-cli/tests/check_strict_fallible.rs; crates/hale-types/tests/typed_bodies.rs
 
-**Spec.** spec/semantics.md § fallible
+**Spec.** spec/semantics.md § A bare fallible call is an error; spec/types.md
 
 **Guarded seams.**
 
-- `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
+- `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `nonreturning` — Canonical · law
 

@@ -183,10 +183,10 @@ pub struct Config {
     /// wraps a bare `fn main` as the wasm `@export` entry before
     /// anything else shapes the program.
     pub wrap_main: bool,
-    /// The rules a build refuses beside the check (the borrow rule and
-    /// bare fallible calls, `hale_types::build_rule_diags`), appended to
-    /// the check's diagnostics, so they block lowering. `hale check`
-    /// runs them itself, beside its reports. Part of the typing stage.
+    /// The rules a build refuses beside the check (the borrow rule,
+    /// `hale_types::build_rule_diags`), appended to the check's
+    /// diagnostics, so they block lowering. `hale check` runs them
+    /// itself, beside its reports. Part of the typing stage.
     pub build_rules: bool,
     /// The allocation advisory (`hale_types::unbounded_alloc_warnings`,
     /// every site surveyed), appended to the typing stage after the
@@ -249,9 +249,9 @@ impl Config {
     /// The LSP's: `hale check <dir>`'s report. It checks a seed only
     /// once every member of it read and parsed, so it holds a whole
     /// program (GH #721), and its check carries the build rules `hale
-    /// check` runs beside its own (the borrow rule, bare fallible
-    /// calls) and the allocation advisory, so the editor shows every
-    /// finding the CLI prints, all of them before the laws.
+    /// check` runs beside its own (the borrow rule) and the allocation
+    /// advisory, so the editor shows every finding the CLI prints, all
+    /// of them before the laws.
     pub fn editor() -> Self {
         Config { build_rules: true, alloc_advisory: true, ..Config::check(true, false) }
     }
@@ -1551,6 +1551,11 @@ impl Snapshot {
             .get_or_init(|| self.with_env(|| {
                 let mut diags = self.typing().map_err(Clone::clone)?.to_vec();
                 self.count("typing_stage");
+                // The `bare_fallible` law, with the typing diagnostics:
+                // it reads the typed-body table's fallible column, the
+                // record the typing kept, so it runs no second check.
+                let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+                diags.extend(hale_types::bare_fallible::bare_fallible_calls(typed));
                 hale_types::finish_check_diags(&mut diags);
                 let own = diags.len();
                 let bundle = self.bundle();
@@ -1580,6 +1585,8 @@ impl Snapshot {
                 self.count("laws_stage");
                 let mut diags = Vec::new();
                 let bundle = self.bundle();
+                // The model is the typing's, before the `bare_fallible`
+                // law: a law's finding, like a claim's, hides no law.
                 if hale_types::denotes_a_model(typed) && hale_types::judgment::has_claim_surface(&bundle) {
                     if let Ok(model) = self.demand_model() {
                         self.count("claims");

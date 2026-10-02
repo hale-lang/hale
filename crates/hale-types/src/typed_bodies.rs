@@ -31,7 +31,8 @@
 //!    declarations: whether the locus satisfies the interface, with the
 //!    witness when it does not.
 //! 5. `fallible_calls`, per call site whose callee is fallible, stdlib
-//!    callees included: the callee and its error type.
+//!    callees included: the callee, its error type, and what addresses
+//!    the call where it stands. The `bare_fallible` law reads it.
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -164,10 +165,16 @@ pub struct GenericCall {
 /// How the checker knows a call's callee is fallible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalleeKind {
-    /// The call types as `Fallible`: a fn or method the program
-    /// declares `fallible(E)` (a generic or an imported one included),
-    /// a stdlib handle's fallible method, an array's `get`, a bounded
-    /// intrinsic.
+    /// The call types as `Fallible` and its callee is a fn or locus
+    /// method the program declares `fallible(E)`, spelled the way
+    /// lowering resolves one: a free fn by its name (not a generic
+    /// one), an imported fn or a bundled stdlib fn by its path, a
+    /// locus's member fn on `self`, a local or a field of `self`.
+    Declared,
+    /// Any other call that types as `Fallible`: a generic fn, a
+    /// perspective's or an interface's method, a method on a receiver
+    /// of another shape, a stdlib handle's fallible method, a
+    /// container's or an array's `get`, a bounded intrinsic.
     Typed,
     /// A stdlib entry point the signature table marks fallible. The
     /// checker types the bare call as `Unknown` (its legacy form), so
@@ -175,13 +182,32 @@ pub enum CalleeKind {
     Stdlib,
 }
 
+/// What addresses a fallible call where it stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handling {
+    /// The call is the operand of an `or` (`f() or raise`, `f() or
+    /// 0`, `f() or handler(err)`, ...).
+    Or,
+    /// The call is the handler of an `or` (`g() or f(err)`): its own
+    /// failure takes the enclosing fn's error path, an implicit `or
+    /// raise`. The span is the `or`'s.
+    Handler(Span),
+    /// Nothing: an argument, an operand, a `match` scrutinee, a `let`
+    /// initializer, a statement, a returned value.
+    Bare,
+}
+
 /// A call whose callee is fallible.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FallibleCall {
     pub span: Span,
     pub kind: CalleeKind,
+    /// The callee as the program spells it (`f`, `self.read`,
+    /// `std::str::parse_int`).
+    pub callee: String,
     /// The error type the callee declares.
     pub payload: Ty,
+    pub handled: Handling,
 }
 
 /// The rows of one body.
@@ -393,12 +419,15 @@ impl TypingRecord {
         rows[at].1.insert(call.0, row);
     }
 
+    /// Record a fallible call; a call already recorded keeps its row
+    /// (the call arm, which knows the callee, records before the walk's
+    /// general recording).
     pub fn fallible_call(&mut self, body: NodeId, call: NodeId, row: FallibleCall) {
         if call.is_none() {
             return;
         }
         self.sites.insert(call.0, body.0);
-        self.body(body).fallible_calls.insert(call.0, row);
+        self.body(body).fallible_calls.entry(call.0).or_insert(row);
     }
 }
 
@@ -460,6 +489,11 @@ impl TypedBodies {
     pub fn fallible_call(&self, call: NodeId) -> Option<&FallibleCall> {
         let body = self.sites.get(&call.0)?;
         self.bodies.get(body)?.fallible_calls.get(&call.0)
+    }
+
+    /// Every fallible call's row, body by body.
+    pub fn fallible_calls(&self) -> impl Iterator<Item = &FallibleCall> {
+        self.bodies.values().flat_map(|b| b.fallible_calls.values())
     }
 
     pub fn monomorphs(&self) -> &Monomorphs {

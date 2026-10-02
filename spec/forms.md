@@ -680,7 +680,7 @@ synthesized method (override is deferred to v2).`
 ```hale
 // WRONG — `get` returns fallible(IndexError); the bare let
 // binding drops the error.
-let v = vec.get(i);  // compile error: error not addressed
+let v = vec.get(i);  // compile error: `vec.get` can fail (IndexError) and this call says nothing about it
 ```
 
 ```hale
@@ -1265,8 +1265,8 @@ shaped languages is worth flagging.
 
 ```hale
 // WRONG — get and remove return fallible(KeyError).
-let v = registry.get(name);          // compile error: error not addressed
-registry.remove(name);               // compile error: error not addressed
+let v = registry.get(name);          // compile error: the call says nothing about its failure
+registry.remove(name);               // compile error: the call says nothing about its failure
 ```
 
 ```hale
@@ -1473,7 +1473,7 @@ membership, perspective projection all compose unchanged.
 
 ```hale
 // WRONG — pop returns fallible(EmptyError); the bare let drops it.
-let v = recent.pop();  // compile error: error not addressed
+let v = recent.pop();  // compile error: the call says nothing about its failure
 ```
 
 ```hale

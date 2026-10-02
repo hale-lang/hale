@@ -616,7 +616,9 @@ pub fn check_bundle_scoped(
 /// report beside the diagnostics: the check runs the engine once, for
 /// its `@effects`, `@phase_effects` and placement diagnostics, and the
 /// certificate evidence a law is judged against reads the same run
-/// instead of repeating it.
+/// instead of repeating it. The entry of a bundle no snapshot holds, so
+/// the `bare_fallible` law runs here over the table packaged from the
+/// typing's record, as the snapshot's check runs it over its own.
 pub fn check_bundle_reporting(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -624,8 +626,10 @@ pub fn check_bundle_reporting(
     strict_callees: bool,
     strict_idents: bool,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
-    let (diags, certificates, _) =
+    let (mut diags, certificates, record) =
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
+    let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
+    diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     (diags, certificates)
 }
 
@@ -768,6 +772,8 @@ pub fn check_bundle_by_declaration(
             templates: &templates,
             generic_bindings: BTreeMap::new(),
             specializing: None,
+            next_handling: crate::typed_bodies::Handling::Bare,
+            handling: crate::typed_bodies::Handling::Bare,
         };
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
@@ -7057,6 +7063,24 @@ fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
     }
 }
 
+/// A callee as the program spells it, for a fallible call's row: `f`,
+/// `alias::f`, `self.read`, `self.store.get`, `T::from_json` (which
+/// the desugar sequence rewrote to `__json_parse_T`).
+fn callee_display(callee: &Expr) -> String {
+    match callee {
+        Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
+            Some(t) => format!("{t}::from_json"),
+            None => id.name.clone(),
+        },
+        Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+        Expr::KwSelf(_) => "self".to_string(),
+        Expr::Field { receiver, name, .. } => format!("{}.{}", callee_display(receiver), name.name),
+        Expr::Call { callee, .. } => format!("{}(..)", callee_display(callee)),
+        Expr::Index { receiver, .. } => format!("{}[..]", callee_display(receiver)),
+        _ => "..".to_string(),
+    }
+}
+
 
 struct Checker<'a> {
     top: &'a TopScope,
@@ -7171,6 +7195,15 @@ struct Checker<'a> {
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
+    /// What addresses the expression the next `check_expr` walks: an
+    /// `or` sets it for its operand and its handler, and the walk takes
+    /// it, so nothing beneath that expression inherits it.
+    next_handling: crate::typed_bodies::Handling,
+    /// What addresses the expression being walked: a fallible call's
+    /// row records it, and a fallible value anything but an `or`
+    /// addresses types as its success type (the `bare_fallible` law
+    /// reports the call).
+    handling: crate::typed_bodies::Handling,
 }
 
 #[derive(Default)]
@@ -11373,7 +11406,7 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
-                let got = self.check_expr_addressed(value);
+                let got = self.check_expr(value);
                 let bound = match ty {
                     Some(te) => {
                         // GH #877: the one annotation that lives in a
@@ -11424,7 +11457,7 @@ impl<'a> Checker<'a> {
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
-                let got = self.check_expr_addressed(value);
+                let got = self.check_expr(value);
                 // GH #877: `let (a, b): (Int, Strng) = ...` — the
                 // annotation is a tuple type expression, walked the
                 // same way.
@@ -11469,7 +11502,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Assign { target, value, span, .. } => {
-                let got = self.check_expr_addressed(value);
+                let got = self.check_expr(value);
                 let want = self.lvalue_ty(target);
                 // bounded[T; N] fields cannot be whole-assigned
                 // (even from another bounded of the same shape —
@@ -11568,7 +11601,7 @@ impl<'a> Checker<'a> {
             }
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
-                    let got = self.check_expr_addressed(e);
+                    let got = self.check_expr(e);
                     // v1.x-FORM-1: returning from a fallible fn
                     // means returning the success value; payload
                     // type is checked at `fail` sites instead.
@@ -11665,7 +11698,7 @@ impl<'a> Checker<'a> {
                 // to produce a clear diagnostic if a Fail node
                 // is constructed by other means (interpreter
                 // synth, future macro, etc.).
-                let payload_ty = self.check_expr_addressed(value);
+                let payload_ty = self.check_expr(value);
                 match &self.fallible_ctx {
                     None => self.diags.push(Diag::ty(
                         *span,
@@ -11783,7 +11816,7 @@ impl<'a> Checker<'a> {
                 if matches!(e, Expr::Or { .. }) {
                     self.or_value_discarded = true;
                 }
-                let got = self.check_expr_addressed(e);
+                let got = self.check_expr(e);
                 self.or_value_discarded = false;
                 // GH #911 B5: `Cache { cap: 2 };` in statement
                 // position — the other site with no declared type to
@@ -11810,7 +11843,7 @@ impl<'a> Checker<'a> {
                                 topic.name, topic.name),
                     ));
                 }
-                let max_ty = self.check_expr_addressed(max);
+                let max_ty = self.check_expr(max);
                 if !matches!(max_ty, Ty::Prim(PrimType::Int) | Ty::Unknown) {
                     self.diags.push(Diag::ty(
                         max.span(),
@@ -11830,7 +11863,7 @@ impl<'a> Checker<'a> {
                 }
                 match &body.tail {
                     Some(t) => {
-                        let tt = self.check_expr_addressed(t);
+                        let tt = self.check_expr(t);
                         if !matches!(tt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
                             self.diags.push(Diag::ty(
                                 t.span(),
@@ -12161,7 +12194,7 @@ impl<'a> Checker<'a> {
                             },
                         );
                         let new_payload_ty =
-                            self.check_expr_addressed(payload_expr);
+                            self.check_expr(payload_expr);
                         self.locals.pop();
                         match &self.fallible_ctx {
                             None => self.diags.push(Diag::ty(
@@ -13779,23 +13812,39 @@ impl<'a> Checker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
+        use crate::typed_bodies::Handling;
+        let handling = std::mem::replace(&mut self.next_handling, Handling::Bare);
+        let outer = std::mem::replace(&mut self.handling, handling);
         let ty = self.check_expr_at(expr);
-        if let Some(seen) = &mut self.expr_types {
-            seen.push((expr as *const Expr, ty.clone()));
-        }
+        self.handling = outer;
         // The fallible column (F.40 phase 3, E4): a call this walk
         // typed `Fallible` (the ordinary walk's; a specialization's walk
-        // records its generic calls only).
-        if let (Expr::Call { id, span, .. }, Ty::Fallible { payload, .. }, None) = (expr, &ty, &self.specializing) {
+        // records its generic calls only), unless the call arm recorded
+        // it already with what it knows of the callee.
+        if let (Expr::Call { id, span, callee, .. }, Ty::Fallible { payload, .. }, None) =
+            (expr, &ty, &self.specializing)
+        {
             self.typed.fallible_call(
                 self.body,
                 *id,
                 crate::typed_bodies::FallibleCall {
                     span: *span,
                     kind: crate::typed_bodies::CalleeKind::Typed,
+                    callee: callee_display(callee),
                     payload: (**payload).clone(),
+                    handled: handling,
                 },
             );
+        }
+        // Only an `or` handles a fallible value. Anywhere else it is
+        // its success type, so the position checks it as the value it
+        // would be, and the `bare_fallible` law reports the call.
+        let ty = match ty {
+            Ty::Fallible { success, .. } if handling == Handling::Bare => *success,
+            ty => ty,
+        };
+        if let Some(seen) = &mut self.expr_types {
+            seen.push((expr as *const Expr, ty.clone()));
         }
         ty
     }
@@ -13950,7 +13999,7 @@ impl<'a> Checker<'a> {
                                 }
                                 for (i, a) in args.iter().enumerate() {
                                     let got =
-                                        self.check_expr_addressed(a);
+                                        self.check_expr(a);
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
@@ -13971,14 +14020,24 @@ impl<'a> Checker<'a> {
                                     }
                                 }
                                 return match &f.fallible {
-                                    Some(payload) => Ty::Fallible {
-                                        success: Box::new(
-                                            f.ret.clone(),
-                                        ),
-                                        payload: Box::new(
-                                            payload.clone(),
-                                        ),
-                                    },
+                                    Some(payload) => {
+                                        // A bundled stdlib fn: lowering
+                                        // resolves the path to it.
+                                        self.record_declared_fallible(
+                                            *call_id,
+                                            expr.span(),
+                                            callee,
+                                            payload,
+                                        );
+                                        Ty::Fallible {
+                                            success: Box::new(
+                                                f.ret.clone(),
+                                            ),
+                                            payload: Box::new(
+                                                payload.clone(),
+                                            ),
+                                        }
+                                    }
                                     None => f.ret.clone(),
                                 };
                             }
@@ -14008,7 +14067,9 @@ impl<'a> Checker<'a> {
                                     crate::typed_bodies::FallibleCall {
                                         span: expr.span(),
                                         kind: crate::typed_bodies::CalleeKind::Stdlib,
+                                        callee: sig.display_path(),
                                         payload,
+                                        handled: self.handling,
                                     },
                                 );
                             }
@@ -14031,7 +14092,7 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                             for (i, a) in args.iter().enumerate() {
-                                let got = self.check_expr_addressed(a);
+                                let got = self.check_expr(a);
                                 if let Some(want) = sig.params.get(i) {
                                     if !want.accepts(&got) {
                                         self.diags.push(Diag::ty(
@@ -14068,7 +14129,7 @@ impl<'a> Checker<'a> {
                             "println" | "print" | "to_string" => {
                                 for a in args {
                                     self.warn_if_meant_an_fstring(a);
-                                    let at = self.check_expr_addressed(a);
+                                    let at = self.check_expr(a);
                                     if !self.ty_is_printable(&at) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
@@ -14099,7 +14160,7 @@ impl<'a> Checker<'a> {
                             }
                             "abs" | "min" | "max" => {
                                 for a in args {
-                                    let at = self.check_expr_addressed(a);
+                                    let at = self.check_expr(a);
                                     let numeric = matches!(
                                         &at,
                                         Ty::Prim(
@@ -14180,7 +14241,7 @@ impl<'a> Checker<'a> {
                             if id.name == "set" {
                                 if let Some(i) = args.get(1) {
                                     let it =
-                                        self.check_expr_addressed(i);
+                                        self.check_expr(i);
                                     if !Ty::Prim(PrimType::Int)
                                         .assignable_from(&it)
                                     {
@@ -14196,7 +14257,7 @@ impl<'a> Checker<'a> {
                                 }
                                 if let Some(x) = args.get(2) {
                                     let xt =
-                                        self.check_expr_addressed(x);
+                                        self.check_expr(x);
                                     let widen_ok = matches!(
                                         (elem.as_ref(), &xt),
                                         (
@@ -14229,7 +14290,7 @@ impl<'a> Checker<'a> {
                             if id.name == "truncate" {
                                 if let Some(n) = args.get(1) {
                                     let nt =
-                                        self.check_expr_addressed(n);
+                                        self.check_expr(n);
                                     if !Ty::Prim(PrimType::Int)
                                         .assignable_from(&nt)
                                     {
@@ -14249,7 +14310,7 @@ impl<'a> Checker<'a> {
                                 "push" => {
                                     if let Some(x) = args.get(1) {
                                         let xt =
-                                            self.check_expr_addressed(x);
+                                            self.check_expr(x);
                                         let widen_ok = matches!(
                                             (elem.as_ref(), &xt),
                                             (
@@ -14282,7 +14343,7 @@ impl<'a> Checker<'a> {
                                 "at" => {
                                     if let Some(i) = args.get(1) {
                                         let it =
-                                            self.check_expr_addressed(i);
+                                            self.check_expr(i);
                                         if !Ty::Prim(PrimType::Int)
                                             .assignable_from(&it)
                                         {
@@ -14346,7 +14407,7 @@ impl<'a> Checker<'a> {
                         }
                         let arg_tys: Vec<Ty> = args
                             .iter()
-                            .map(|a| self.check_expr_addressed(a))
+                            .map(|a| self.check_expr(a))
                             .collect();
                         let generic_names: std::collections::BTreeSet<
                             String,
@@ -14916,7 +14977,10 @@ impl<'a> Checker<'a> {
                 // v1.x-FORM-1: if the callee resolves to a
                 // fallible fn, wrap the result type so the
                 // caller is forced to address the error.
-                if let Some(payload) = self.callee_fallible_payload(callee) {
+                if let Some((payload, declared)) = self.callee_fallible_payload(callee) {
+                    if declared {
+                        self.record_declared_fallible(*call_id, expr.span(), callee, &payload);
+                    }
                     Ty::Fallible {
                         success: Box::new(base_ret),
                         payload: Box::new(payload),
@@ -15201,6 +15265,7 @@ impl<'a> Checker<'a> {
             Expr::Or { inner, disposition, span } => {
                 let value_discarded = self.or_value_discarded;
                 self.or_value_discarded = false;
+                self.next_handling = crate::typed_bodies::Handling::Or;
                 let inner_ty = self.check_expr(inner);
                 // M3 stage 2 (2026-07-02): stdlib fallible
                 // path-calls are dual-mode at codegen (bare = the
@@ -15365,7 +15430,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                             },
                         );
-                        let new_payload_ty = self.check_expr_addressed(payload_expr);
+                        let new_payload_ty = self.check_expr(payload_expr);
                         self.locals.pop();
                         match &self.fallible_ctx {
                             None => self.diags.push(Diag::ty(
@@ -15403,6 +15468,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                             },
                         );
+                        self.next_handling = crate::typed_bodies::Handling::Handler(*span);
                         let rhs_ty = self.check_expr(rhs);
                         self.locals.pop();
                         // 2026-05-18 — locus → interface coercion at
@@ -15510,45 +15576,10 @@ impl<'a> Checker<'a> {
                             }
                             return success;
                         }
-                        // Docs/spec pass find (2026-07-02): a
-                        // STDLIB fallible path-call used directly
-                        // as the handler compiles but silently
-                        // yields the un-addressed sret ("" / 0) on
-                        // the handler's OWN failure instead of
-                        // propagating — the codegen handler
-                        // classifier doesn't cover stdlib paths.
-                        // Reject with the working spelling until
-                        // it does.
-                        if let Expr::Call { callee, .. } = rhs.as_ref() {
-                            if let Expr::Path(qn) = callee.as_ref() {
-                                let segs: Vec<&str> = qn
-                                    .segments
-                                    .iter()
-                                    .map(|s| s.name.as_str())
-                                    .collect();
-                                let is_fallible_stdlib =
-                                    crate::stdlib_surface::signature_for(
-                                        &segs,
-                                    )
-                                    .map(|sig| sig.fallible.is_some())
-                                    .unwrap_or(false);
-                                if is_fallible_stdlib {
-                                    self.diags.push(Diag::ty(
-                                        *span,
-                                        format!(
-                                            "`or {}(...)`: a fallible \
-                                             stdlib call can't be the \
-                                             handler directly yet — \
-                                             write the nested form `or \
-                                             ({}(...) or raise)` so its \
-                                             own failure has a path",
-                                            segs.join("::"),
-                                            segs.join("::")
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
+                        // A handler lowering does not classify as
+                        // fallible (a stdlib path-call, a built-in
+                        // method) is refused by the `bare_fallible`
+                        // law, from the handler's row.
                         // The substitute RHS must produce a
                         // value of the success type (or be a
                         // nested `or` that ultimately produces
@@ -15596,50 +15627,37 @@ impl<'a> Checker<'a> {
         self.check_expr(expr)
     }
 
-    /// v1.x-FORM-1: check an expression that's expected to
-    /// produce a regular (non-fallible) value. If the expression
-    /// is fallible-typed at its outermost level, emit an
-    /// `error not addressed` diagnostic and return the
-    /// (would-be) success type so downstream typechecks can
-    /// continue without cascading errors.
-    fn check_expr_addressed(&mut self, expr: &Expr) -> Ty {
-        let ty = self.check_expr(expr);
-        match ty {
-            Ty::Fallible { success, .. } => {
-                self.diags.push(Diag::ty(
-                    expr.span(),
-                    "error not addressed: this expression's fallible result \
-                     must be handled with an `or` clause (`or raise`, \
-                     `or <fallback>`, `or handler(err)`) or a `match`"
-                        .to_string(),
-                ));
-                *success
-            }
-            other => other,
-        }
-    }
-
     /// v1.x-FORM-1: if `callee` is a name reference resolving to
     /// a known fallible fn (or method on a locus / perspective),
     /// return the fn's payload type. Returns None for non-fn
     /// callees or non-fallible callees — caller uses the result
     /// to decide whether to wrap the call's return in
-    /// `Ty::Fallible`.
-    fn callee_fallible_payload(&mut self, callee: &Expr) -> Option<Ty> {
+    /// `Ty::Fallible`. Beside the payload: whether the callee is
+    /// [`crate::typed_bodies::CalleeKind::Declared`], a fn or locus
+    /// method spelled the way lowering resolves one (its classifier
+    /// for a fallible `or` handler, `expr_is_fallible_call`).
+    fn callee_fallible_payload(&mut self, callee: &Expr) -> Option<(Ty, bool)> {
         match callee {
             Expr::Ident(id) => match self.top.lookup(&id.name)? {
-                TopSymbol::Fn(sig) => sig.fallible.clone(),
+                TopSymbol::Fn(sig) => sig
+                    .fallible
+                    .clone()
+                    .map(|p| (p, !self.generic_fns.contains_key(id.name.as_str()))),
                 _ => None,
             },
             Expr::Path(qn) if qn.segments.len() == 1 => {
-                match self.top.lookup(&qn.segments[0].name)? {
-                    TopSymbol::Fn(sig) => sig.fallible.clone(),
+                let name = &qn.segments[0].name;
+                match self.top.lookup(name)? {
+                    TopSymbol::Fn(sig) => sig
+                        .fallible
+                        .clone()
+                        .map(|p| (p, !self.generic_fns.contains_key(name.as_str()))),
                     _ => None,
                 }
             }
             // GH #1028: an imported seed's fn, `alias::f(..)` — typed
             // like a bare one, fallibility included.
-            Expr::Path(qn) => self.imported_fn(qn).and_then(|(_, sig)| sig.fallible),
+            Expr::Path(qn) => self.imported_fn(qn).and_then(|(_, sig)| sig.fallible).map(|p| (p, true)),
             // v1.x-FORM-1 PR3b: method calls like `l.get(i)`. The
             // callee is a Field expression whose receiver resolves
             // to a locus/perspective; we look up the method by
@@ -15650,29 +15668,60 @@ impl<'a> Checker<'a> {
                     Ty::Named(n) => n,
                     _ => return None,
                 };
+                // Lowering resolves a locus method's receiver on
+                // `self`, a local, or a field of `self`.
+                let resolvable = match receiver.as_ref() {
+                    Expr::KwSelf(_) | Expr::Ident(_) => true,
+                    Expr::Field { receiver: r, .. } => matches!(r.as_ref(), Expr::KwSelf(_)),
+                    _ => false,
+                };
                 match self.top.lookup(&type_name)? {
                     TopSymbol::Locus(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone()),
+                        .and_then(|m| m.fallible.clone())
+                        .map(|p| (p, resolvable)),
                     TopSymbol::Perspective(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone()),
+                        .and_then(|m| m.fallible.clone())
+                        .map(|p| (p, false)),
                     // GH #732: a call through an interface carries the
                     // method's declared error channel.
                     TopSymbol::Interface(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone()),
+                        .and_then(|m| m.fallible.clone())
+                        .map(|p| (p, false)),
                     _ => None,
                 }
             }
             _ => None,
         }
+    }
+
+    /// The fallible column's row for a call whose callee is
+    /// [`crate::typed_bodies::CalleeKind::Declared`], recorded by the
+    /// call arm before the walk's general recording would mark it
+    /// `Typed`.
+    fn record_declared_fallible(&mut self, call: NodeId, span: Span, callee: &Expr, payload: &Ty) {
+        if self.specializing.is_some() {
+            return;
+        }
+        self.typed.fallible_call(
+            self.body,
+            call,
+            crate::typed_bodies::FallibleCall {
+                span,
+                kind: crate::typed_bodies::CalleeKind::Declared,
+                callee: callee_display(callee),
+                payload: payload.clone(),
+                handled: self.handling,
+            },
+        );
     }
 
     /// Whether a value of type `t` can be auto-coerced to String
@@ -15783,7 +15832,7 @@ impl<'a> Checker<'a> {
             ));
             return;
         }
-        let vt = self.check_expr_addressed(&args[0]);
+        let vt = self.check_expr(&args[0]);
         if !self.ty_is_printable(&vt) {
             self.diags.push(Diag::ty(
                 args[0].span(),

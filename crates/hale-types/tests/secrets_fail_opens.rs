@@ -469,7 +469,7 @@ fn a_bundle_callee_is_still_judged_on_its_own_row() {
         locus Raw {
             params { n: Int = 0; }
             @effects(is: { audit })
-            fn io(s: String) { std::io::fs::write_file(\"/tmp/x\", s); }
+            fn io(s: String) { std::io::fs::write_file(\"/tmp/x\", s) or discard; }
         }
         locus Wrapper {
             params { r: Raw = Raw { }; }

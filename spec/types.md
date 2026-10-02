@@ -1345,17 +1345,24 @@ the underlying success type:
 | Source                       | Inferred type                       |
 |------------------------------|-------------------------------------|
 | `fn f() -> T fallible(E)`    | `f()` has type `Ty::Fallible { success: T, payload: E }` |
-| `match` / `or` on fallible   | unwraps to `T`                      |
+| `or` on fallible             | unwraps to `T`                      |
 
-A `Ty::Fallible` is **not assignable** to its success type. It
-must be unwrapped at the immediate call site. The checker
-emits `error: error not addressed` at:
+Only an `or` addresses a `Ty::Fallible`: it must be unwrapped at
+the immediate call site, as the operand of an `or` (or an `or`'s
+handler, below). Anywhere else the call is bare, and the
+`bare_fallible` law reports it with one error naming the callee
+and its payload (`spec/semantics.md` § "A bare fallible call is an
+error"), at:
 
 - `let v = f();` with `f` fallible
 - `let v: T = f();` with `f` fallible (typed binding)
 - `f();` as an expression statement
-- `g(f())` — fallible passed as a non-fallible-typed arg
-- assignment, return, condition positions
+- `g(f())` — fallible passed as an argument
+- `match f() { .. }` — a `match` does not handle it
+- operand, assignment, return, condition positions
+
+The checker types a bare fallible value as its success type `T`,
+so the position reports no type mismatch beside the law's error.
 
 ### Disposition operators (`or`)
 
@@ -1392,9 +1399,14 @@ emits `error: error not addressed` at:
   `call() or (handler(err) or raise)`. E2 must be assignable to
   the enclosing fn's declared payload ("handler's failure has
   nowhere to go" / "propagated payload must match" otherwise).
-  User free fns, imported-path fns, and locus member fns are
-  classified; `@form`-synthesized methods and stdlib path-calls
-  still need the explicit nested spelling. In statement position
+  The implicit `or raise` applies where lowering supports it, a
+  limitation to lift rather than a rule: a fn the program declares
+  (not a generic one), an imported or bundled stdlib fn written as
+  Hale, and a locus member fn called on `self`, a local or a field of
+  `self`. Any other fallible handler (a stdlib path-call, a generic
+  fn, an interface's or a perspective's method, an `@form`-synthesized
+  or an array's method) is refused with the explicit nested spelling
+  to write instead. In statement position
   the substituted value is discarded, so the handler's success
   type needn't match the call's.
 
