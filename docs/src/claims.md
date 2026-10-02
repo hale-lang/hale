@@ -551,7 +551,9 @@ and the direction is fixed: *uncertainty may add possible edges;
 it may never delete an edge and report success.* Concretely, any
 judgment that traverses calls refuses to certify over:
 
-- an **indirect call** through a function-typed parameter;
+- an **indirect call** through a function-typed parameter (a call
+  through a local bound to a function by `let` is not one: `let f =
+  pid; f()` is judged as the call of `pid` it is);
 - a **method call on a receiver the compiler cannot type**. The
   summarizer types bare vars, `self` fields, chained fields
   (through locus and struct field maps), struct-literal receivers,

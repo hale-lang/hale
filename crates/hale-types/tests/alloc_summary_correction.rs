@@ -196,7 +196,9 @@ const CALL_LINES_ONLY: [(&str, usize); 19] = [
     ("tests/hale/api_roles_test.hl", 2),
     ("tests/hale/api_roles_xseed_test.hl", 2),
     ("tests/hale/api_serve_test.hl", 2),
-    ("tests/hale/imported_fn_value_test.hl", 1),
+    // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
+    // f()` to the fn the local names, which only the renames reach.
+    ("tests/hale/imported_fn_value_test.hl", 2),
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),

@@ -435,6 +435,12 @@ pub struct CallEdge {
     /// to an unknown free fn. That indistinguishability is what let an
     /// indirect call void every certificate.
     pub indirect: bool,
+    /// The call is through a local the body's bindings follow to a fn
+    /// (`let f = pid; f()`): the local's name, and the edge's callee is
+    /// what a direct call of the bound name or path reaches. A local bound
+    /// to anything else leaves the edge as it was written (`Unresolved`
+    /// with the local's name).
+    pub via_local: Option<String>,
     pub loop_depth: u32,
     /// True if the call is inside an unbounded loop — then the callee is
     /// invoked unboundedly many times regardless of its own multiplicity.
@@ -1495,9 +1501,10 @@ pub fn summarize_identified(
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
     // from its params (D2); then the identities of the program the body
-    // is in, and whether it is an `@hot` fn and a mode. A body's place
-    // in the list is its `decl_index`.
-    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool));
+    // is in, whether it is an `@hot` fn and a mode, and every param's
+    // name (the outermost of the body's bindings). A body's place in the
+    // list is its `decl_index`.
+    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), Vec<String>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
@@ -1721,7 +1728,7 @@ pub fn summarize_identified(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false)));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), param_names(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -1803,6 +1810,7 @@ pub fn summarize_identified(
                                     param_var_elem_types(&md.params),
                                     ids,
                                     (false, true),
+                                    param_names(&md.params),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -1830,6 +1838,7 @@ pub fn summarize_identified(
                                     param_var_elem_types(&decl.params),
                                     ids,
                                     (decl.hot, false),
+                                    param_names(&decl.params),
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -1853,6 +1862,7 @@ pub fn summarize_identified(
                                     param_var_elem_types(&lc.params),
                                     ids,
                                     (false, false),
+                                    param_names(&lc.params),
                                 ));
                             }
                             _ => {}
@@ -2046,7 +2056,7 @@ pub fn summarize_identified(
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
-    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode))) in bodies.iter().enumerate() {
+    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), params)) in bodies.iter().enumerate() {
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
             .as_ref()
@@ -2058,6 +2068,7 @@ pub fn summarize_identified(
             .unwrap_or(&empty_inline_arrays);
         let mut w = Walker {
             fn_params: fn_params.clone(),
+            locals: vec![params.iter().map(|p| (p.clone(), Local::Unresolved)).collect()],
             sites: Vec::new(),
             effect_sites: Vec::new(),
             locus_types: &locus_type_names,
@@ -2308,6 +2319,10 @@ fn fn_typed_params(params: &[Param]) -> Vec<String> {
         .filter(|p| matches!(p.ty, TypeExpr::Function { .. }))
         .map(|p| p.name.name.clone())
         .collect()
+}
+
+fn param_names(params: &[Param]) -> Vec<String> {
+    params.iter().map(|p| p.name.name.clone()).collect()
 }
 
 /// #382 receiver-typing: array-typed params' ELEMENT types, so a
@@ -2702,6 +2717,21 @@ fn init_is_scalar_or_static(e: &Expr) -> bool {
     }
 }
 
+/// What a call through a local binding reaches.
+#[derive(Debug, Clone)]
+enum Local {
+    /// `let f = <fn name or path>`: what a direct call of the name or path
+    /// would reach.
+    Fn(Callee),
+    /// A parameter, or a local bound to anything else (a call's result, a
+    /// field, a parameter), by a tuple `let`, a loop or a pattern, or
+    /// reassigned:
+    /// the walk does not follow values or flow, and a call through it is
+    /// the edge it always was (indirect through a function-typed
+    /// parameter, #353).
+    Unresolved,
+}
+
 struct Walker<'a> {
     sites: Vec<AllocSite>,
     /// GH #265: syntactic effect sites (publish / spawn).
@@ -2713,6 +2743,9 @@ struct Walker<'a> {
     /// #353: function-typed parameter names of the fn being walked, so
     /// a call through one can be marked indirect on its edge.
     fn_params: Vec<String>,
+    /// The body's local bindings, innermost scope last, the params the
+    /// outermost: what a call through each would reach.
+    locals: Vec<BTreeMap<String, Local>>,
     calls: Vec<CallEdge>,
     loops: Vec<LoopInfo>,
     escaping: &'a Escaping<'a>,
@@ -3074,11 +3107,64 @@ impl<'a> Walker<'a> {
 
 impl<'a> Walker<'a> {
     fn walk_block(&mut self, b: &Block, depth: u32, tail_escape: Escape) {
+        self.locals.push(BTreeMap::new());
         for s in &b.stmts {
             self.walk_stmt(s, depth);
         }
         if let Some(t) = &b.tail {
             self.walk_expr(t, depth, tail_escape);
+        }
+        self.locals.pop();
+    }
+
+    fn bind(&mut self, name: &str, local: Local) {
+        self.locals.last_mut().expect("a body has a scope").insert(name.to_string(), local);
+    }
+
+    fn local(&self, name: &str) -> Option<&Local> {
+        self.locals.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// What a direct call of a `Path` callee resolves to.
+    fn path_callee(&self, qp: &QualifiedName) -> Callee {
+        let path = qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+        // A cross-seed `alias::name` names a decl merged under
+        // a mangled symbol. Resolving it here is what lets the
+        // callgraph walk INTO an imported seed instead of
+        // stopping at the boundary and reporting nothing.
+        match self.rename_map.get(&path) {
+            Some(mangled) => {
+                let key = FnKey::free_fn(mangled.clone());
+                if self.known.contains(&key) && self.scope_fns.contains(mangled) {
+                    Callee::Resolved(key)
+                } else {
+                    Callee::Unresolved(path)
+                }
+            }
+            None => Callee::Unresolved(path),
+        }
+    }
+
+    /// What a `let` binds its name to: the fn a fn name or path names (a
+    /// local bound to one passes it on), or nothing the walk can follow.
+    fn bound_value(&self, value: &Expr) -> Local {
+        match value {
+            Expr::Ident(id) => match self.local(&id.name) {
+                Some(Local::Fn(c)) => Local::Fn(c.clone()),
+                Some(Local::Unresolved) => Local::Unresolved,
+                None => {
+                    let key = FnKey::free_fn(id.name.clone());
+                    if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
+                        Local::Fn(Callee::Resolved(key))
+                    } else if crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
+                        Local::Fn(Callee::Unresolved(id.name.clone()))
+                    } else {
+                        Local::Unresolved
+                    }
+                }
+            },
+            Expr::Path(qp) => Local::Fn(self.path_callee(qp)),
+            _ => Local::Unresolved,
         }
     }
 
@@ -3126,8 +3212,15 @@ impl<'a> Walker<'a> {
                 }
                 let esc = self.escaping.of_let(*id);
                 self.walk_let_value(value, *span, depth, esc);
+                let bound = self.bound_value(value);
+                self.bind(&name.name, bound);
             }
-            Stmt::LetTuple { value, span, .. } => self.walk_let_value(value, *span, depth, Escape::Local),
+            Stmt::LetTuple { names, value, span, .. } => {
+                self.walk_let_value(value, *span, depth, Escape::Local);
+                for n in names {
+                    self.bind(&n.name, Local::Unresolved);
+                }
+            }
             Stmt::Assign { target, value, id, span, .. } => {
                 if target.head.name == "self"
                     && matches!(target.tail.as_slice(), [LValueSeg::Field(_)])
@@ -3166,6 +3259,13 @@ impl<'a> Walker<'a> {
                 self.walk_expr(value, depth, esc);
                 self.store_target = prev;
                 self.self_replace = None;
+                // A reassigned local holds whichever value the run took
+                // last: the walk does not follow flow.
+                if target.tail.is_empty() {
+                    if let Some(scope) = self.locals.iter_mut().rev().find(|s| s.contains_key(&target.head.name)) {
+                        scope.insert(target.head.name.clone(), Local::Unresolved);
+                    }
+                }
             }
             Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
             Stmt::Return(None, _) => {}
@@ -3238,7 +3338,9 @@ impl<'a> Walker<'a> {
                 self.loop_stack.push(bounded);
                 self.infinite_stack.push(false);
                 self.loops_as_written += 1;
+                self.locals.push(BTreeMap::from([(name.name.clone(), Local::Unresolved)]));
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.locals.pop();
                 self.loops_as_written -= 1;
                 self.loop_stack.pop();
                 self.infinite_stack.pop();
@@ -3276,11 +3378,13 @@ impl<'a> Walker<'a> {
             Stmt::If(if_stmt) => self.walk_if(if_stmt, depth, Escape::Local),
             Stmt::Match(m) => self.walk_match(m, depth, Escape::Local),
             Stmt::Block(b) => self.walk_block(b, depth, Escape::Local),
-            Stmt::ShmWrite { max, body, .. } => {
+            Stmt::ShmWrite { max, binding, body, .. } => {
                 self.walk_expr(max, depth, Escape::Local);
                 // The body writes into the ring view, not the arena; treat
                 // its allocations as local for now.
+                self.locals.push(BTreeMap::from([(binding.name.clone(), Local::Unresolved)]));
                 self.walk_block(body, depth, Escape::Local);
+                self.locals.pop();
             }
             Stmt::Expr(e) => {
                 if let Expr::Struct { span, .. } = e {
@@ -3327,6 +3431,9 @@ impl<'a> Walker<'a> {
     fn walk_match(&mut self, m: &MatchStmt, depth: u32, escape: Escape) {
         self.walk_expr(&m.scrutinee, depth, Escape::Local);
         for arm in &m.arms {
+            let mut bound = BTreeMap::new();
+            pattern_bindings(&arm.pattern, &mut bound);
+            self.locals.push(bound);
             if let Some(g) = &arm.guard {
                 self.walk_expr(g, depth, Escape::Local);
             }
@@ -3334,6 +3441,7 @@ impl<'a> Walker<'a> {
                 MatchArmBody::Block(b) => self.walk_block(b, depth, escape),
                 MatchArmBody::Expr(e) => self.walk_expr(e, depth, escape),
             }
+            self.locals.pop();
         }
     }
 
@@ -3511,38 +3619,29 @@ impl<'a> Walker<'a> {
     fn record_call(&mut self, callee: &Expr, span: Span, depth: u32, escape: Escape) {
         let mut recv_ty: Option<String> = None;
         let mut receiver_present = false;
+        let mut via_local: Option<String> = None;
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
                 if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
                     Callee::Resolved(key)
-                } else {
+                } else if crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
                     Callee::Unresolved(id.name.clone())
-                }
-            }
-            Expr::Path(qp) => {
-                let path = qp
-                    .segments
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("::");
-                // A cross-seed `alias::name` names a decl merged under
-                // a mangled symbol. Resolving it here is what lets the
-                // callgraph walk INTO an imported seed instead of
-                // stopping at the boundary and reporting nothing.
-                match self.rename_map.get(&path) {
-                    Some(mangled) => {
-                        let key = FnKey::free_fn(mangled.clone());
-                        if self.known.contains(&key) && self.scope_fns.contains(mangled) {
-                            Callee::Resolved(key)
-                        } else {
-                            Callee::Unresolved(path)
+                } else {
+                    // A bare callee names a builtin or a fn before a
+                    // local, as codegen lowers it. A call through a
+                    // local the bindings follow to a fn reaches that fn;
+                    // through any other, the edge is what it always was.
+                    match self.local(&id.name) {
+                        Some(Local::Fn(c)) => {
+                            via_local = Some(id.name.clone());
+                            c.clone()
                         }
+                        Some(Local::Unresolved) | None => Callee::Unresolved(id.name.clone()),
                     }
-                    None => Callee::Unresolved(path),
                 }
             }
+            Expr::Path(qp) => self.path_callee(qp),
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
                 // #382: a receiver that is a bare ident naming an
                 // IMPORT ALIAS is a qualified free-fn call
@@ -3598,7 +3697,7 @@ impl<'a> Walker<'a> {
             }
         };
         let indirect = match &resolved {
-            Callee::Unresolved(n) => self.fn_params.iter().any(|p| p == n),
+            Callee::Unresolved(n) if via_local.is_none() => self.fn_params.iter().any(|p| p == n),
             _ => false,
         };
         let spelling = CallSpelling::of(callee);
@@ -3607,6 +3706,7 @@ impl<'a> Walker<'a> {
             receiver_present,
             callee: resolved,
             indirect,
+            via_local,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,
@@ -3620,6 +3720,21 @@ impl<'a> Walker<'a> {
             span,
             callee_span: callee.span(),
         });
+    }
+}
+
+/// The names a match pattern binds, none of them a fn the walk follows.
+fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
+    match p {
+        Pattern::Binding(id) => {
+            out.insert(id.name.clone(), Local::Unresolved);
+        }
+        Pattern::Constructor { args: ps, .. } | Pattern::Tuple(ps, _) => {
+            for p in ps {
+                pattern_bindings(p, out);
+            }
+        }
+        Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
 
@@ -5108,5 +5223,147 @@ mod tests {
         let site = insert_site(&f).expect("typed-let hashmap insert detected");
         assert_eq!(site.kind, AllocKind::CollectionInsert("hashmap".into()));
         assert_eq!(site.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    /// The calls a fn's body writes, as (callee, local, indirect), in
+    /// the order written.
+    fn local_calls(src: &str, f: &str) -> Vec<(String, Option<String>, bool)> {
+        let s = summarize(src);
+        fns(&s, &FnKey::free_fn(f))
+            .calls
+            .iter()
+            .map(|c| {
+                let callee = match &c.callee {
+                    Callee::Resolved(k) => k.display(),
+                    Callee::Unresolved(n) => format!("?{n}"),
+                };
+                (callee, c.via_local.clone(), c.indirect)
+            })
+            .collect()
+    }
+
+    fn through(callee: &str, local: &str) -> (String, Option<String>, bool) {
+        (callee.to_string(), Some(local.to_string()), false)
+    }
+
+    fn written(callee: &str) -> (String, Option<String>, bool) {
+        (callee.to_string(), None, false)
+    }
+
+    /// A call through a local bound to a fn name or path reaches what a
+    /// direct call of the name or path reaches, the local on the edge
+    /// (P3 2 of 3, a classified correction: the edge was `Unresolved`
+    /// with the local's name, a call to nothing).
+    #[test]
+    fn a_call_through_a_let_bound_fn_reaches_the_fn() {
+        let src = r#"
+            fn target() -> Int { return 1; }
+            fn g() -> Int {
+                let f = target;
+                let p = std::process::pid;
+                let n = len;
+                p();
+                n("x");
+                return f();
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            local_calls(src, "g"),
+            vec![through("?std::process::pid", "p"), through("?len", "n"), through("target", "f")],
+        );
+    }
+
+    /// The bindings are scoped: a local bound in a block reaches its fn
+    /// inside it, through a local bound to it, and is gone after it.
+    #[test]
+    fn a_let_bound_fn_is_followed_through_nested_scopes() {
+        let src = r#"
+            fn target() -> Int { return 1; }
+            fn g(c: Bool) -> Int {
+                let f = target;
+                if c {
+                    let h = f;
+                    h();
+                    while c {
+                        let k = target;
+                        k();
+                    }
+                    k();
+                }
+                return f();
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            local_calls(src, "g"),
+            vec![through("target", "h"), through("target", "k"), written("?k"), through("target", "f")],
+        );
+    }
+
+    /// An inner binding shadows an outer one for its scope only; a
+    /// parameter shadows a fn of the same name; a bare callee names a fn
+    /// before a local, as codegen lowers it.
+    #[test]
+    fn a_shadowing_binding_is_the_one_called() {
+        let src = r#"
+            fn target() -> Int { return 1; }
+            fn make() -> Int { return 2; }
+            fn other() -> Int { return 3; }
+            fn g(c: Bool, other: Int) -> Int {
+                let f = target;
+                if c {
+                    let f = make();
+                    f();
+                }
+                let o = other;
+                o();
+                let make = target;
+                make();
+                return f();
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            local_calls(src, "g"),
+            vec![written("make"), written("?f"), written("?o"), written("make"), through("target", "f")],
+        );
+    }
+
+    /// A reassigned local holds whichever value the run took last, and a
+    /// tuple binding is not followed: either call is the edge it always
+    /// was, `Unresolved` with the local's name.
+    #[test]
+    fn a_reassigned_or_tuple_bound_local_is_not_followed() {
+        let src = r#"
+            fn target() -> Int { return 1; }
+            fn other() -> Int { return 2; }
+            fn g() -> Int {
+                let f = target;
+                f = other;
+                f();
+                let (t, u) = (target, other);
+                t();
+                return u();
+            }
+            fn main() { }
+        "#;
+        assert_eq!(local_calls(src, "g"), vec![written("?f"), written("?t"), written("?u")]);
+    }
+
+    /// A call through a function-typed parameter stays indirect (#353);
+    /// a local bound to one is not followed, and its call is the edge it
+    /// always was.
+    #[test]
+    fn a_function_typed_parameter_stays_indirect() {
+        let src = r#"
+            fn g(cb: fn() -> Int) -> Int {
+                let h = cb;
+                h();
+                return cb();
+            }
+            fn main() { }
+        "#;
+        assert_eq!(local_calls(src, "g"), vec![written("?h"), ("?cb".to_string(), None, true)]);
     }
 }
