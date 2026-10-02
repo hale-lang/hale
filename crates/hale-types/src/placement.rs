@@ -562,6 +562,71 @@ impl PlacementTable {
     }
 }
 
+impl PlacementTable {
+    /// A key as a diagnostic names it: its origin's top declaration, then
+    /// its fields, then its replica (`App.w`, `App.workers.leaf[1]`).
+    pub fn path_of(&self, key: &InstanceKey) -> String {
+        let top = InstanceKey { origin: key.origin, path: Vec::new(), replica: None };
+        let mut out = self
+            .instances
+            .get(&top)
+            .or_else(|| self.instances.get(&InstanceKey { replica: key.replica, ..top.clone() }))
+            .and_then(|r| r.realizes.as_ref())
+            .map(|d| d.lowered.clone())
+            .unwrap_or_else(|| "?".to_string());
+        for step in &key.path {
+            out.push('.');
+            out.push_str(&step.field);
+        }
+        if let Some(i) = key.replica {
+            out.push_str(&format!("[{i}]"));
+        }
+        out
+    }
+
+    /// A domain as a diagnostic names it: `main`, `pool io`,
+    /// `the pinned thread of App.p`.
+    pub fn domain_name(&self, id: DomainId) -> String {
+        match &self.domain(id).kind {
+            DomainKind::Main => "main".to_string(),
+            DomainKind::Pool { name, .. } => format!("pool {name}"),
+            DomainKind::Pinned { anchor, .. } => format!("the pinned thread of {}", self.path_of(anchor)),
+        }
+    }
+
+    /// Every instance of the declaration lowering names `lowered`, with
+    /// where it runs: each row as `App.w on main`, each dynamic site as
+    /// `a literal in Spawner on main` (or `on a domain the table cannot
+    /// say`). A held instance's source rows are skipped, as in
+    /// [`Self::domains_by_type`].
+    pub fn instances_of(&self, lowered: &str) -> Vec<String> {
+        let handed_off = self.handed_off();
+        let mut out = Vec::new();
+        for (k, r) in &self.instances {
+            if handed_off.contains(k) || r.realizes.as_ref().is_none_or(|d| d.lowered != lowered) {
+                continue;
+            }
+            out.push(format!("{} on {}", self.path_of(k), self.domain_name(r.domain)));
+        }
+        for s in &self.dynamic {
+            if s.realizes.as_ref().is_none_or(|d| d.lowered != lowered) {
+                continue;
+            }
+            let within = match &s.enclosing {
+                Enclosing::Locus(d) => d.lowered.clone(),
+                Enclosing::Fn(_) => "a fn".to_string(),
+            };
+            let on = if s.domains.is_empty() {
+                "a domain the table cannot say".to_string()
+            } else {
+                s.domains.iter().map(|d| self.domain_name(*d)).collect::<Vec<_>>().join(", ")
+            };
+            out.push(format!("a literal in {within} on {on}"));
+        }
+        out
+    }
+}
+
 /// Where the instances of one declaration run ([`PlacementTable::domains_by_type`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TypeDomains {
@@ -2127,22 +2192,13 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 /// alone: test support, not an API.
 #[doc(hidden)]
 pub mod legacy {
-    use std::collections::BTreeMap;
-
     use hale_syntax::ast::LocusDecl;
 
-    use crate::bus_graph::Placement;
     use crate::check::PoolId;
-    use crate::symbol::Bundle;
 
     /// F.31's owner-relative answer at `self.f`.
     pub fn enclosing_field_placement(enclosing_locus: &LocusDecl, field_name: &str) -> Option<PoolId> {
         crate::check::enclosing_field_placement(enclosing_locus, field_name)
-    }
-
-    /// The ownership graph's per-type labels.
-    pub fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
-        crate::ownership_graph::collect_placements(bundle)
     }
 }
 

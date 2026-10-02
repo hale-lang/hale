@@ -1,4 +1,4 @@
-//! The `ownership_owners` integration-test binary: 15 test files of this area, kept
+//! The `ownership_owners` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -29,6 +29,8 @@ mod owner_table;
 mod ownership_bubble;
 #[path = "ownership_bubble_crosspool.rs"]
 mod ownership_bubble_crosspool;
+#[path = "ownership_bubble_mixed.rs"]
+mod ownership_bubble_mixed;
 #[path = "ownership_bubble_multi.rs"]
 mod ownership_bubble_multi;
 #[path = "unowned_literal_pair_leak.rs"]

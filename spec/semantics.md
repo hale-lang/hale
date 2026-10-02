@@ -320,6 +320,21 @@ bare statement, and using the instance as a value is rejected at
 compile time. See `runtime.md` "Interest-based ownership (accept
 bubbling)."
 
+Whether the owner is on another pool is a fact of each *instance*
+of the enclosing locus, not of its type: a locus nested under a
+root field placed off main runs on that field's thread, and one
+type can have instances on several threads. The owner is resolved
+once, for every instance; the delivery is chosen per instance. When
+some instances of the enclosing locus run on the owner's thread and
+others do not, and the owner is a `main locus`, a bare `I{};` is
+born in the owner's region where the enclosing instance runs on the
+owner's thread, and handed off where it does not. Where that choice
+cannot be made — a value use of the literal, or an owner with more
+than one instance, which has no single thread to hand off to — the
+literal is refused at compile time, naming every instance of the
+enclosing locus and the thread it runs on. A resolved owner is never
+dropped for a transient birth.
+
 ### Birth order is load-bearing
 
 A parent births its `params` fields **in declaration order**, one

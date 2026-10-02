@@ -1075,13 +1075,15 @@ impl Snapshot {
     }
 
     /// The ownership graph over the checked programs: the model's
-    /// dynamic births.
+    /// dynamic births. Its edge classes read the snapshot's placement
+    /// table.
     pub fn demand_ownership_graph(&self) -> Result<&OwnershipGraph, &Blocked> {
         self.ownership_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("ownership");
-                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top))
+                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top, placement))
             })
             .as_ref()
     }
@@ -1158,9 +1160,9 @@ impl Snapshot {
     /// from the entry row's lowering root, after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
-    /// total over a program that does not typecheck. The bus graph reads
-    /// it, and the check's bounded-subscriber rule when a subscriber is
-    /// bounded (F.40 phase 3, P1).
+    /// total over a program that does not typecheck. The bus graph and the
+    /// ownership graph read it, and the check's bounded-subscriber rule
+    /// when a subscriber is bounded (F.40 phase 3, P1).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {

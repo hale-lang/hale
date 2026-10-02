@@ -1440,6 +1440,8 @@ pub fn build_resolved(
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
         ownership_bubble_crosspool_plan: bubble.crosspool,
+        ownership_bubble_mixed_plan: bubble.mixed,
+        mixed_bubble_arm: None,
         ownership_accepts: ownership.accepts.clone(),
         handlers: handlers.clone(),
         bare_locus_instantiation_stmt: false,
@@ -3470,6 +3472,23 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
     pub(crate) ownership_bubble_crosspool_plan:
         std::collections::BTreeMap<(String, String), String>,
+    /// The placement correspondence's U-1 (F.40 phase 3, P1): the
+    /// `Mixed` edges, same key, whose enclosing locus runs both on the
+    /// owner's thread and off it. The owner is kept for every instance;
+    /// the mechanism is chosen per instance. For a singleton owner a
+    /// bare `I { };` branches at the literal on `lotus_on_main_thread`
+    /// (the owner is a `main locus`, on main) between this plan's two
+    /// arms, the same-tower bubble and the cross-pool post
+    /// ([`Self::mixed_bubble_arm`]); a value use, or a non-singleton
+    /// owner, is refused at the literal. Empty under
+    /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
+    pub(crate) ownership_bubble_mixed_plan:
+        std::collections::BTreeMap<(String, String), hale_types::ownership_graph::MixedPlan>,
+    /// Which arm of a `Mixed` site the next instantiation lowers: set by
+    /// the bare statement immediately before each arm and taken at the
+    /// top of `lower_locus_instantiation`, like
+    /// [`Self::bare_locus_instantiation_stmt`].
+    pub(crate) mixed_bubble_arm: Option<MixedArm>,
     /// locus type → the child types it declares `accept(_: T)` for: the
     /// ownership graph's `accepts` relation, from the resolved program.
     /// `lower_locus_instantiation` reads it to decide whether the
@@ -4127,6 +4146,16 @@ pub(crate) struct AccumulatorCtx<'ctx> {
 /// LLVM-side handles the prior `BusState` carried are gone.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BusState;
+
+/// The two arms of a `Mixed` ownership edge's birth (U-1;
+/// [`Cx::ownership_bubble_mixed_plan`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MixedArm {
+    /// On the owner's thread: the same-tower bubble into its arena.
+    SameTower,
+    /// Off it: the cross-pool post of a create cell to its thread.
+    CrossPool,
+}
 
 /// The route a thread anchor's descendants register their
 /// subscriptions with ([`Cx::anchor_route`]).
@@ -16259,15 +16288,86 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // its top, so nested/param-default instantiations
                     // see false and a value-use of a cross-pool `I{}` is
                     // rejected there.
-                    self.bare_locus_instantiation_stmt = true;
-                    // GH #921 A2: hand the pre-pass's id for THIS node
-                    // to the instantiation, which takes it like a flag.
-                    let site = self.owner_site_for_stmt(stmt);
-                    self.owner_site = Some(site);
-                    let r = self.lower_locus_instantiation(name, inits, scope);
-                    self.bare_locus_instantiation_stmt = false;
-                    self.owner_site = None;
-                    let _ = r?;
+                    //
+                    // U-1 (F.40 phase 3, P1): at a `Mixed` site whose
+                    // owner is a singleton on main, the enclosing
+                    // instance decides the arm at runtime: on main the
+                    // same-tower bubble, off it the cross-pool post. The
+                    // literal is lowered once per arm.
+                    let mixed = self
+                        .current_self
+                        .as_ref()
+                        .map(|cs| (cs.locus_name.clone(), name.to_string()))
+                        .is_some_and(|k| self.ownership_bubble_mixed_plan.get(&k).is_some_and(|p| p.singleton));
+                    let arms: Vec<(Option<inkwell::basic_block::BasicBlock<'ctx>>, Option<MixedArm>)> = if mixed {
+                        let on_main_fn = self.module.get_function("lotus_on_main_thread").unwrap_or_else(|| {
+                            self.module.add_function(
+                                "lotus_on_main_thread",
+                                self.context.i32_type().fn_type(&[], false),
+                                None,
+                            )
+                        });
+                        let on_main = self
+                            .builder
+                            .build_call(on_main_fn, &[], "mixed.on_main")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_on_main_thread returns i32")
+                            .into_int_value();
+                        let is_main = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                on_main,
+                                self.context.i32_type().const_zero(),
+                                "mixed.is_main",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let f = self
+                            .builder
+                            .get_insert_block()
+                            .and_then(|b| b.get_parent())
+                            .expect("a statement inside a function");
+                        let same = self.context.append_basic_block(f, "mixed.same_tower");
+                        let cross = self.context.append_basic_block(f, "mixed.cross_pool");
+                        self.builder
+                            .build_conditional_branch(is_main, same, cross)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        vec![(Some(same), Some(MixedArm::SameTower)), (Some(cross), Some(MixedArm::CrossPool))]
+                    } else {
+                        vec![(None, None)]
+                    };
+                    let born = mixed.then(|| {
+                        let f = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("a function");
+                        self.context.append_basic_block(f, "mixed.born")
+                    });
+                    for (bb, arm) in arms {
+                        if let Some(bb) = bb {
+                            self.builder.position_at_end(bb);
+                        }
+                        self.mixed_bubble_arm = arm;
+                        self.bare_locus_instantiation_stmt = true;
+                        // GH #921 A2: hand the pre-pass's id for THIS node
+                        // to the instantiation, which takes it like a flag.
+                        let site = self.owner_site_for_stmt(stmt);
+                        self.owner_site = Some(site);
+                        let r = self.lower_locus_instantiation(name, inits, scope);
+                        self.bare_locus_instantiation_stmt = false;
+                        self.owner_site = None;
+                        self.mixed_bubble_arm = None;
+                        let _ = r?;
+                        if let Some(born) = born {
+                            if self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() {
+                                self.builder
+                                    .build_unconditional_branch(born)
+                                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            }
+                        }
+                    }
+                    if let Some(born) = born {
+                        self.builder.position_at_end(born);
+                    }
                 } else if self.user_types.contains_key(name) {
                     // Statement-position type literal: build it,
                     // discard the pointer. Useful for side-effect-

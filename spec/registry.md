@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 11 canonical, 29 migrating (with 125 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 11 canonical, 29 migrating (with 124 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -40,7 +40,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
-| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 8 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
+| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 7 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
@@ -450,7 +450,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Answers.** Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array.
 
-**Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories (one producer); returned bindings
+**Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories (one producer); returned bindings; placement (the table: each bubbling edge's class, per instance)
 
 **Producer (today's authority, migrating).** `crates/hale-types/src/ownership.rs` · `resolve_owners`
 
@@ -474,12 +474,14 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - the ownership matrix stays green with an empty KNOWN_OPEN
 - `fresh_factories` is read by lowering and the checker with the bundle's import renames; a factory's returned name is the declaration the snapshot resolves it to, so a fn whose returned name an inner `let` shadows is a factory of the outer binding (the #1140 shape; its escape walk still reads every binding spelling the name as the returned one, the conservative side). The carrier-arm extension (`extend_fresh_factories`) is folded in for lowering only
 - which declaration a returned or escaping name denotes is read from the snapshot (`Snapshot::declaration_of` over `binding_of`, resolved once by the mint), never resolved again: `returned_bindings` (the binding facts and the pre-pass), `fresh_factories`, borrow_lifetime's `returned_decls` and alloc_summary's escape tags each key a binding by its declaration's SiteId; a `let` or a use the snapshot did not mint answers by name in `returned_bindings` (the conservative side) and resolves to nothing elsewhere, and every entry point mints
+- a bubbling edge's class reads the placement table per instance: each row of the enclosing locus is paired with the row that owns it, every other instance with every domain of the owner; SameTower when every pair shares its domain, CrossPool when none does and the owner has one, Mixed otherwise or where an instance runs where the table cannot say. The graph reads no `placement { }` block itself
+- the owner is a fact of the site, the mechanism of the instance (U-1): a Mixed edge keeps its resolved owner, takes the same-tower birth or the cross-pool post per enclosing instance where the owner is a singleton on main (`lotus_on_main_thread` at the literal), and is refused at the literal (`CodegenError::UnsupportedAt`, naming every instance and its domain) for a value use or a non-singleton owner; it is never lowered as a transient birth
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/owner_table.rs; crates/hale-codegen/tests/ownership_matrix.rs; crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding); crates/hale-codegen/tests/ownership_bubble.rs
+**Focused tests.** crates/hale-codegen/tests/owner_table.rs; crates/hale-codegen/tests/ownership_matrix.rs; crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding); crates/hale-codegen/tests/ownership_bubble.rs; crates/hale-types/tests/ownership_graph.rs (the O rows: nested under pinned, on the owner's pool, per-instance pairing, adapter, mixed); crates/hale-codegen/tests/ownership_bubble_mixed.rs (U-1: both instances' owner, count, retention, birth thread and teardown, both arms and ASan; the transient control; the located refusal); crates/hale-codegen/tests/ownership_bubble_crosspool.rs (O-1 under ASan)
 
-**Spec.** spec/decisions.md F.39; spec/semantics.md § Dissolve timing rules
+**Spec.** spec/decisions.md F.39; spec/semantics.md § Dissolve timing rules; spec/semantics.md § Locus instantiation (accept bubbling: the owner per site, the delivery per instance); spec/runtime.md § Interest-based ownership (accept bubbling)
 
 **Guarded seams.**
 
@@ -1060,14 +1062,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/check.rs` · `compute_pool_of_locus_type` — the checker's per-type map, first wins, seeded from the lowering root's tower alone and blind past a qualified, contract-typed or generic field (K-1 to K-7); sync inference builds it again per program before the mint (K-5). *Removed when:* the table: the checker reads it in P1's checker-switch PR, and sync inference after the mint in C1.
 - `crates/hale-types/src/check.rs` · `enclosing_field_placement` — owner-relative placement, one of four in-checker derivations (two more inline in the blocking and single-thread checks). *Removed when:* one placement table per snapshot (phase: placement lane).
-- `crates/hale-types/src/ownership_graph.rs` · `collect_placements` — a verbatim copy of the previous. *Removed when:* same.
 - `crates/hale-types/src/model_builder.rs` · `PlacedIn` — the model's arrangement, per instance with replicas. *Removed when:* projected from the table.
 - `crates/hale-types/src/resource_budget.rs` · `budget_for_programs` — counts placement entries, ignores replicas. *Removed when:* reads the table.
 - `crates/hale-syntax/src/desugar.rs` · `collect_off_owner_thread_fields` — a desugar-time placement read. *Removed when:* reads the table.
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — codegen's DeploymentPlan, keyed by field name and locus type name. *Removed when:* codegen reads the table.
 - `crates/hale-codegen/src/deployment.rs` · `DeploymentPlan` — the plan type lowering reads today. *Removed when:* becomes the layer-5 table.
 
-**Consumers.** check (rules 2-5, 13-18; F.31); sync_inference; dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to) (`crates/hale-types/src/resolved.rs` · `route_anchors`); bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains) (`crates/hale-types/src/bus_graph.rs` · `type_placements`); check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded) (`crates/hale-types/src/check.rs` · `check_bounded_bus`); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rules 2-5, 13-18; F.31); sync_inference; dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to) (`crates/hale-types/src/resolved.rs` · `route_anchors`); bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains) (`crates/hale-types/src/bus_graph.rs` · `type_placements`); ownership (each bubbling edge's class: the enclosing instances paired with their owner rows) (`crates/hale-types/src/ownership_graph.rs` · `relate`); check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded) (`crates/hale-types/src/check.rs` · `check_bounded_bus`); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 

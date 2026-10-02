@@ -378,7 +378,7 @@ fn check_numbered_bundle(
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
         let model =
-            model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms, &bus);
+            model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms, &bus, &table);
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
@@ -410,7 +410,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
     let table = placement::bundle_placement(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &table);
-    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus)
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &table)
 }
 
 /// The bus graph of a bundle no snapshot holds, over its scope and its
@@ -443,8 +443,9 @@ pub(crate) fn bundle_intra_locus(bundle: &Bundle<'_>) -> Vec<hale_syntax::desuga
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary, the form rows and the bus graph its caller
-/// already built: the graphs the model reads beside them are built here.
+/// allocation summary, the form rows, the bus graph and the placement
+/// table its caller already built: the graphs the model reads beside
+/// them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -452,8 +453,9 @@ fn model_over_scope(
     alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
     forms: &form_rows::FormRows,
     bus_graph: &bus_graph::BusGraph,
+    table: &placement::PlacementTable,
 ) -> hale_model::ApplicationModel {
-    let ownership = ownership_graph::build_ownership_graph(bundle, top);
+    let ownership = ownership_graph::build_ownership_graph(bundle, top, table);
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
         bundle,

@@ -12148,6 +12148,21 @@ void lotus_bus_quarantine_self(void *self_ptr) {
     if (subscribed) bus_dead_add(self_ptr);
 }
 
+/* U-1 (F.40 phase 3, P1): the process's main thread, captured by a
+ * constructor (which runs on it, before `main`). A locus whose
+ * instances run both on main and off it, and whose `I { }` bubbles to
+ * a singleton owner on main, chooses its birth per instance at the
+ * literal: on main, the same-tower bubble into the owner's arena; off
+ * it, the cross-pool post to the owner's thread. */
+static pthread_t g_lotus_main_thread;
+__attribute__((constructor)) static void lotus_main_thread_ctor(void) {
+    g_lotus_main_thread = pthread_self();
+}
+
+int lotus_on_main_thread(void) {
+    return pthread_equal(pthread_self(), g_lotus_main_thread) ? 1 : 0;
+}
+
 /* U-6 (F.40 phase 3, P1): retire every registration routed to `mb`
  * before the mailbox is destroyed. A pinned anchor's mailbox is the
  * route of its own subscriptions and of every subscription in the tree

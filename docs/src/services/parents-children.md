@@ -110,6 +110,16 @@ side can't hold onto it. There a cross-pool spawn is
 `let s = Ship { ... }`. The compiler will tell you if you try to
 keep the value.
 
+"A different thread" counts instances, not types. A worker nested
+inside a pinned or pool-placed locus runs on that locus's thread,
+so its spawns are cross-pool even though the worker itself has no
+placement entry. And when one worker type has an instance on the
+owner's thread and another off it, the same `Ship { ... };` line
+does the right thing in each: born directly where it can be, handed
+over where it can't. Keeping the value at such a line, or spawning
+toward an owner that has several instances, is refused with a
+message that lists where each instance runs.
+
 ## The contract: what crosses the boundary
 
 A child declares what its parent may see in a `contract`, and a
