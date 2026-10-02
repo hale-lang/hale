@@ -57,7 +57,7 @@ use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_types::lifecycle::project::{self, Focus, Inside, PathFailure, RunPath};
 use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
-use hale_types::lifecycle::{FailureSource, NotStarted, ObligationKind, Point, Spine, Terminal};
+use hale_types::lifecycle::{FailureSource, Multiplicity, NotStarted, ObligationKind, Point, Spine, Status, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -1107,6 +1107,118 @@ fn assert_fixture(file: &str) {
         let today = PENDING.iter().find(|(p, _)| *p == file).map(|(_, t)| *t).unwrap_or("<no PENDING entry>");
         assert_eq!(got, today, "{file} (pending, decision line {}) changed its outcome", f.line);
     }
+}
+
+// ------------------------------------------------------------ spines
+
+/// The spines the law below reads (L4): the five an instance's own steps
+/// are emitted on and the trace names as the plan's holder does.
+const SPINES: &[Spine] = &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown];
+
+/// Kinds the law leaves to their own spine's reading. The reclaim's
+/// events carry the spine of the frame whose chokepoint runs it (a field's
+/// under its owner's entry, `lc_in_spine_event`), not the reclaim's
+/// holder: the reclaim spine reads the plan in its own L4 commit. A
+/// cancellation exists only on the path a shutdown takes (line 19), not
+/// the one the law reads.
+const NOT_READ: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
+
+/// Spines whose emitted steps depart from the plan today, each classified
+/// with the spine whose L4 commit reads it: (file, the departure, why).
+/// Asserted to show, so the entry goes when that spine reads the plan.
+const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[(
+    "l17_pinned_join_deferred.hl",
+    "App@EagerTeardown: emitted [], the plan owes [Drain Dissolve]",
+    "a statement literal that subscribes is deferred to fn main's flush (inventory C14) and torn down on the deferred main entry's spine; the plan puts it on the eager spine, which the deferred entry teardown's commit corrects",
+)];
+
+/// The emitted step sequence of every instance a run of `file` built, per
+/// spine, against the plan's ordered obligations for that spine
+/// (`LifecyclePlan::spine`): the departures, one line each.
+fn spine_departures(file: &str) -> Vec<String> {
+    let f = fixture(file);
+    let Some(ran) = run_fixture(f, &[]) else { return Vec::new() };
+    let path = dir().join(file);
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false))
+        .unwrap_or_else(|_| panic!("{file} does not load"));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{file}: the lifecycle plan is blocked"));
+    // The emitted steps: each subject's first incarnation, per spine, in
+    // the order the trace numbered them. A step is its entry, or the
+    // not-started end of one that never began.
+    let mut emitted: BTreeMap<(String, u64, Spine), Vec<ObligationKind>> = BTreeMap::new();
+    for e in &ran.trace.events {
+        let (Some(decl), Some(subject), Some(spine)) = (&e.decl, e.subject, e.spine) else { continue };
+        // Every instance the run shows owes each of the five spines a
+        // sequence, empty where the plan owes nothing on it.
+        for s in SPINES {
+            emitted.entry((decl.clone(), subject.instance.raw(), *s)).or_default();
+        }
+        let step = e.point == Point::Entered || matches!(e.point, Point::Terminal(Terminal::NotStarted(_)));
+        // A step owed per incarnation is read in the first; one owed per
+        // instance in whichever incarnation reaches it.
+        let first = subject.incarnation.raw() == 0 || project::trace_multiplicity(e.kind) != Multiplicity::OncePerIncarnation;
+        if !step || !first || !SPINES.contains(&spine) || NOT_READ.contains(&e.kind) {
+            continue;
+        }
+        emitted.entry((decl.clone(), subject.instance.raw(), spine)).or_default().push(e.kind);
+    }
+    // The plan's: per template of the declaration, its rows on the spine
+    // the trace records, the known-open ones left to their fixtures.
+    let owed = |decl: &str, spine: Spine| -> Vec<Vec<ObligationKind>> {
+        plan.templates(decl)
+            .map(|site| {
+                plan.spine(site, spine)
+                    .into_iter()
+                    .filter(|s| project::TRACED.contains(&s.kind) && !NOT_READ.contains(&s.kind))
+                    .filter(|s| !matches!(plan.obligations[s.obligation.0 as usize].status, Status::KnownOpen { .. }))
+                    .map(|s| s.kind)
+                    .collect()
+            })
+            .collect()
+    };
+    let names = |ks: &[ObligationKind]| ks.iter().map(|k| k.name()).collect::<Vec<_>>().join(" ");
+    let mut out = Vec::new();
+    for ((decl, _, spine), got) in &emitted {
+        let want = owed(decl, *spine);
+        // A run that ended early emits a prefix of its spine.
+        let holds = want.iter().any(|w| w == got || (!ran.complete() && w.starts_with(got)));
+        if !holds {
+            let want: Vec<String> = want.iter().map(|w| format!("[{}]", names(w))).collect();
+            out.push(format!("{decl}@{}: emitted [{}], the plan owes {}", spine.name(), names(got), want.join(" or ")));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// L4's harness law: the steps the emitters emit for a spine are exactly
+/// the plan's ordered obligations for it, over the spines of every
+/// fixture program that runs.
+#[test]
+fn every_spine_emits_the_plans_obligations_in_order() {
+    let shown: Vec<(&str, String)> = std::thread::scope(|s| {
+        let runs: Vec<_> = FIXTURES
+            .iter()
+            .filter(|f| f.run != RunMode::CompileOnly)
+            .map(|f| (f.file, s.spawn(move || spine_departures(f.file))))
+            .collect();
+        runs.into_iter()
+            .flat_map(|(file, h)| h.join().expect("a fixture's spines").into_iter().map(move |d| (file, d)))
+            .collect()
+    });
+    for (file, d, why) in SPINE_KNOWN_OPEN {
+        assert!(
+            shown.iter().any(|(f, s)| f == file && s == d),
+            "{file} no longer shows `{d}` ({why}): its spine reads the plan now, so the SPINE_KNOWN_OPEN entry has to go"
+        );
+    }
+    let broken: Vec<String> = shown
+        .iter()
+        .filter(|(f, s)| !SPINE_KNOWN_OPEN.iter().any(|(kf, kd, _)| kf == f && kd == s))
+        .map(|(f, s)| format!("{f}: {s}"))
+        .collect();
+    assert!(broken.is_empty(), "{} spine(s) depart from the plan:\n{}", broken.len(), broken.join("\n"));
 }
 
 macro_rules! fixture_tests {

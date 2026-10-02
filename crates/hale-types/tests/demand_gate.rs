@@ -387,11 +387,24 @@ fn the_harness_snapshot_lowers_without_a_check() {
     let builds = s.builds();
     // Lowering reads the form rows (F.40 phase 3, C1), which read the
     // scope: both are demanded once, where the load's sync inference
-    // pre-pass used to build a scope of its own outside the counts.
-    for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "top_scope", "sync_inference", "lowering_view"] {
+    // pre-pass used to build a scope of its own outside the counts. The
+    // emitters read the lifecycle plan (F.40 phase 3, L4), which reads
+    // the placement table, the handler rows and the bus graph.
+    for family in [
+        "seed_loading",
+        "desugar_sequence",
+        "snapshot_identity",
+        "top_scope",
+        "sync_inference",
+        "lowering_view",
+        "lifecycle_order",
+        "placement",
+        "handler_routing",
+        "bus_graph",
+    ] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["expression_typing", "bus_graph", "ownership", "handler_routing", "effects", "model", "claims"] {
+    for family in ["expression_typing", "ownership", "effects", "model", "claims"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");

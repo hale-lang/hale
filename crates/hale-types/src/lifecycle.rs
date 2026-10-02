@@ -8,6 +8,8 @@
 //! whose identities this schema shares, the handler rows, the flow rows
 //! and the bus graph. [`project::expected`] renders a plan as what one
 //! run owes, the form the trace oracle ([`trace::Expected`]) checks.
+//! [`spine`] is the emitters' reader: one spine's obligations for one
+//! instance template, in the order the plan places them.
 //!
 //! An obligation is something the compiler emits or the runtime
 //! performs that some domain owes some instance: params settle, a held
@@ -141,6 +143,7 @@
 
 pub mod derive;
 pub mod project;
+pub mod spine;
 pub mod trace;
 
 // ------------------------------------------------------------ identity

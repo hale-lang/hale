@@ -1180,8 +1180,8 @@ impl Snapshot {
     /// process's own. Over the placement table, the handler rows, the
     /// flow rows of the checked programs and the bus graph, each
     /// demanded. Blocked with the scope; like its inputs it reads
-    /// declarations and bodies, not types. No check builds it, and no
-    /// consumer outside the tests reads it yet (F.40 phase 3, L1).
+    /// declarations and bodies, not types. No check builds it; the
+    /// lowering view carries it to the emitters (F.40 phase 3, L4).
     pub fn demand_lifecycle(&self) -> Result<&LifecyclePlan, &Blocked> {
         self.lifecycle
             .get_or_init(|| {
@@ -1323,8 +1323,10 @@ impl Snapshot {
                 }
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;
+                // The emitters read the lifecycle plan (F.40 phase 3, L4).
+                let lifecycle = self.demand_lifecycle().map_err(Clone::clone)?.clone();
                 self.count("lowering_view");
-                hale_types::resolved::resolve_rewritten(
+                let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
                     &self.source_map,
                     &self.import_renames,
@@ -1332,7 +1334,9 @@ impl Snapshot {
                     self.config.api_roles.as_deref(),
                     forms,
                 )
-                .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
+                .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;
+                view.lifecycle = Some(lifecycle);
+                Ok(view)
             })
             .as_ref()
     }

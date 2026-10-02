@@ -137,6 +137,13 @@ pub struct LoweringView {
     /// Where lowering routes an allocation, over `merged`: which free
     /// fns are scratch-local (`crate::alloc_routing`).
     pub alloc_routing: crate::alloc_routing::AllocRouting,
+    /// The lifecycle plan (`crate::lifecycle`, the `lifecycle_order`
+    /// family) of the program the view was resolved from: the emitters
+    /// read a spine's obligations, in order, from it
+    /// ([`LoweringView::lifecycle`]). The snapshot's view carries its
+    /// plan; a view resolved from a bare program ([`resolve_program`])
+    /// has none.
+    pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
 }
 
 /// The name the merged program goes by in its bundle view. Nothing is
@@ -161,6 +168,14 @@ impl LoweringView {
     /// facts through it instead of building its own.
     pub fn bundle(&self) -> Bundle<'_> {
         merged_bundle(&self.merged, &self.import_renames)
+    }
+
+    /// The lifecycle plan the emitters read: each spine's obligations for
+    /// an instance template, in the plan's order
+    /// (`crate::lifecycle::spine`). `None` for a view resolved from a
+    /// bare program.
+    pub fn lifecycle(&self) -> Option<&crate::lifecycle::LifecyclePlan> {
+        self.lifecycle.as_ref()
     }
 }
 
@@ -473,6 +488,7 @@ pub fn resolve_rewritten(
         api_roles: api_roles.map(str::to_string),
         top,
         alloc_routing,
+        lifecycle: None,
     })
 }
 
