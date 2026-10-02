@@ -1318,13 +1318,14 @@ impl Snapshot {
 
     /// The ownership graph over the checked programs: the checker's
     /// unowned-subscriber rule (type-check rule 20) and the model's
-    /// dynamic births.
+    /// dynamic births. Edge classes read the snapshot's placement table.
     pub fn demand_ownership_graph(&self) -> Result<&OwnershipGraph, &Blocked> {
         self.ownership_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("ownership");
-                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top))
+                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top, placement))
             })
             .as_ref()
     }

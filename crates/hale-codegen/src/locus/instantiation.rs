@@ -290,6 +290,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (recursive `lower_locus_instantiation` calls below) see false.
         let is_bare_stmt =
             std::mem::take(&mut self.bare_locus_instantiation_stmt);
+        // U-1: the arm of a `Mixed` site the bare statement is lowering,
+        // taken the same way.
+        let mixed_arm = std::mem::take(&mut self.mixed_bubble_arm);
         // GH #921 A3, commit 2: does the enclosing FRAME reclaim this
         // instance at its scope-exit flush, or is it dissolved
         // eagerly at the end of its own expression?
@@ -481,8 +484,60 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // is what makes the co-location (and same-thread teardown)
         // sound. SelfOwned (`parent_accepts_us`) always wins, so we only
         // consult the plan when the direct parent doesn't accept us.
+        //
+        // U-1 (the placement correspondence, F.40 phase 3): a `Mixed`
+        // site keeps its owner and takes the arm the bare statement
+        // chose for this enclosing instance; where neither arm can be
+        // emitted it is refused at the literal, never lowered as a
+        // transient birth (which would drop the owner).
+        let mixed_plan = if parent_accepts_us {
+            None
+        } else {
+            self.current_self.as_ref().and_then(|cs| {
+                self.ownership_bubble_mixed_plan.get(&(cs.locus_name.clone(), locus_name.to_string())).cloned()
+            })
+        };
+        if let Some(plan) = &mixed_plan {
+            let enclosing = self.current_self.as_ref().map(|cs| cs.locus_name.clone()).unwrap_or_default();
+            let refuse = |why: String| {
+                let span = own_site_id.and_then(|id| self.owner_table.entry(id)).map(|e| e.span);
+                let msg = format!(
+                    "`{child} {{ }}` is born to `{owner}`, but `{enclosing}` runs both on `{owner}`'s thread and \
+                     off it ({instances}), so its birth is a same-tower allocation in some instances and a \
+                     cross-pool post in others; {why}",
+                    child = locus_name,
+                    owner = plan.owner,
+                    instances = plan.instances.join("; "),
+                );
+                match span {
+                    Some(span) => CodegenError::UnsupportedAt(msg, span),
+                    None => CodegenError::Unsupported(msg),
+                }
+            };
+            if !plan.singleton {
+                return Err(refuse(format!(
+                    "`{}` has more than one instance, so a post has no static target. Keep every instance of \
+                     `{enclosing}` on one thread with `{}`, or have `{enclosing}` accept `{locus_name}` itself.",
+                    plan.owner, plan.owner
+                )));
+            }
+            if !is_bare_stmt {
+                return Err(refuse(format!(
+                    "a cross-pool birth is fire-and-forget, so the literal cannot be used as a value. Write it as \
+                     a bare statement (`{locus_name} {{ ... }};`)."
+                )));
+            }
+            if mixed_arm.is_none() {
+                return Err(CodegenError::Unsupported(format!(
+                    "`{locus_name} {{ }}` in `{enclosing}` is a mixed ownership edge reached without an arm: \
+                     a compiler defect (the bare statement chooses one per instance)"
+                )));
+            }
+        }
         let crosspool_owner: Option<String> = if parent_accepts_us {
             None
+        } else if let (Some(plan), Some(crate::codegen::MixedArm::CrossPool)) = (&mixed_plan, mixed_arm) {
+            Some(plan.owner.clone())
         } else if let Some(cs) = self.current_self.as_ref() {
             let key = (cs.locus_name.clone(), locus_name.to_string());
             self.ownership_bubble_crosspool_plan.get(&key).cloned()
@@ -608,6 +663,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let bubble_route: Option<BubbleRoute> = if parent_accepts_us {
             None
+        } else if let (Some(plan), Some(crate::codegen::MixedArm::SameTower)) = (&mixed_plan, mixed_arm) {
+            // U-1: this enclosing instance runs on the owner's thread.
+            Some(BubbleRoute::Singleton(plan.owner.clone()))
         } else if let Some(cs) = self.current_self.as_ref() {
             let key = (cs.locus_name.clone(), locus_name.to_string());
             if let Some(a) = self.ownership_bubble_plan.get(&key) {
@@ -1369,6 +1427,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .ownership_bubble_crosspool_plan
                 .values()
                 .any(|a| a == locus_name)
+            || self
+                .ownership_bubble_mixed_plan
+                .values()
+                .any(|p| p.singleton && p.owner == locus_name)
         {
             let owner_global = self.owner_singleton_global(locus_name);
             self.builder

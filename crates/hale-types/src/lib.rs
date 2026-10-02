@@ -332,7 +332,6 @@ fn check_numbered_bundle(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
-    let ownership = bundle_ownership_graph(bundle, &top);
     let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -342,6 +341,7 @@ fn check_numbered_bundle(
     };
     let entry = entry::entry_row(bundle);
     let placement = placement::derive_placement(bundle, &top, &entry);
+    let ownership = bundle_ownership_graph(bundle, &top, &placement);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
@@ -419,8 +419,9 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 pub(crate) fn bundle_ownership_graph(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
+    placement: &placement::PlacementTable,
 ) -> ownership_graph::OwnershipGraph {
-    ownership_graph::build_ownership_graph(bundle, top)
+    ownership_graph::build_ownership_graph(bundle, top, placement)
 }
 
 /// The application model of a bundle no snapshot holds: the test
@@ -439,7 +440,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
-    let ownership = bundle_ownership_graph(bundle, &top);
+    let ownership = bundle_ownership_graph(bundle, &top, &placement);
     model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership)
 }
 

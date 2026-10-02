@@ -478,7 +478,7 @@ pub fn resolve_rewritten(
         // The scope's diagnostics are dropped: the checker reported
         // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
+        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement);
         let bubble = graph.bubble_plans();
         let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement);
         // Boundary 7: the sends the intra-locus rewrite replaced are

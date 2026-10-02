@@ -551,7 +551,6 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
-    let ownership = crate::bundle_ownership_graph(bundle, top);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -562,6 +561,7 @@ fn check_numbered_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let ownership = crate::bundle_ownership_graph(bundle, top, &placement);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
     let bus = crate::bundle_bus_graph(bundle, top, &bindings, &placement);

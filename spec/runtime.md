@@ -137,7 +137,17 @@ the model: runtime is automatic; stdlib is explicit.
   over the bus queue: the child is born on the owner's thread and
   reclaimed by the owner's same-thread cascade, so a cross-pool
   `I{}` is **fire-and-forget** — it may only be a bare statement;
-  using the instance as a value is rejected at compile time.
+  using the instance as a value is rejected at compile time. Which
+  of the two an `I{}` is follows the placement table per instance
+  of the enclosing locus (F.40 phase 3, P1): the enclosing instance
+  is paired with the owner instance above it, and a locus nested
+  under a field placed off main runs on that field's thread. When
+  an enclosing locus has instances on both sides of its owner's
+  thread and the owner is a `main locus`, a bare `I{};` tests
+  `lotus_on_main_thread()` at the literal and takes the same-tower
+  birth on main, the handoff off it; a value use there, or such an
+  edge to an owner with several instances, is refused at the
+  literal.
 - **Order by construction, with latches.** A locus can't run
   before its birth completed, can't be torn down twice, etc.
   There is no runtime state machine: the order is the order the

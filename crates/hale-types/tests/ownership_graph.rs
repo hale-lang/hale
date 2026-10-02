@@ -34,7 +34,7 @@ fn graph(src: &str) -> OwnershipGraph {
     // same resolved scope.
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
-    build_ownership_graph(&bundle, &top)
+    build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top))
 }
 
 /// The single site instantiating `child` inside `enclosing`.
@@ -236,11 +236,14 @@ fn orphan_when_enclosing_is_root() {
 // --- Cross-pool edge ----------------------------------------------
 
 #[test]
-fn cross_pool_owner_placed_off_thread() {
+fn a_child_born_in_a_placed_owners_body_is_same_tower() {
     // Worker accepts Item and (in a method body) instantiates Mid.
-    // Mid instantiates Item. Worker is placed `pinned` by the main
-    // locus, Mid is same-thread → the owner (Worker) is off-thread
-    // relative to the enclosing (Mid) → CrossPool.
+    // Mid instantiates Item. Worker is placed on pool `io`, and Mid,
+    // born in Worker's body, runs where Worker runs: the owner and the
+    // enclosing locus share a thread → SameTower. The legacy label
+    // read only the root's entries, called Mid same-thread and Worker
+    // cross-pool, and gave CrossPool (F.40 phase 3, P1 3 of 6: a
+    // locus born in a body runs in its enclosing scope's domain).
     let src = r#"
         locus Item { params { x: Int = 0; } }
         locus Mid {
@@ -252,14 +255,185 @@ fn cross_pool_owner_placed_off_thread() {
         }
         main locus App {
             params { w: Worker = Worker { }; }
-            placement { w: pinned; }
+            placement { w: cooperative(pool = io); }
         }
         fn main() { App { }; }
     "#;
     let g = graph(src);
     let s = site(&g, "Mid", "Item");
     assert_eq!(s.resolution, OwnerResolution::Ancestor("Worker".to_string()));
+    assert_eq!(s.edge_class, EdgeClass::SameTower);
+}
+
+// --- The table's edge classes (F.40 phase 3, P1 3 of 6) -------------
+//
+// Each edge compares the domains of the enclosing locus's instances
+// with their owners', read from the placement table, per instance (the
+// placement correspondence's § 2.3).
+
+/// O-1: an enclosing locus nested under a pinned root field runs on that
+/// field's thread, so a child it bubbles to the root (on main) is a
+/// cross-pool birth, and lowering posts it. The legacy label called the
+/// nested locus same-thread, and lowering allocated the child in the
+/// root's arena from the pinned thread.
+#[test]
+fn a_nested_enclosing_under_a_pinned_field_is_cross_pool() {
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus Worker {
+            fn spawn() { I { }; }
+        }
+        locus Owner {
+            params { w: Worker = Worker { }; }
+        }
+        main locus App {
+            params { o: Owner = Owner { }; }
+            placement { o: pinned; }
+            accept(c: I) { }
+        }
+        fn main() { App { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "Worker", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("App".to_string()));
     assert_eq!(s.edge_class, EdgeClass::CrossPool);
+    let plans = g.bubble_plans();
+    let key = ("Worker".to_string(), "I".to_string());
+    assert_eq!(plans.crosspool.get(&key), Some(&"App".to_string()), "lowering posts the birth");
+    assert!(!plans.singleton.contains_key(&key), "and never allocates it from the pinned thread");
+}
+
+/// O-2: an enclosing locus nested under a root field on pool `io`,
+/// bubbling to that field (on `io` too), shares its owner's thread:
+/// SameTower, so lowering threads the owner pointer instead of leaving
+/// the child transient. The legacy labels gave CrossPool.
+#[test]
+fn a_nested_enclosing_on_its_owners_pool_is_same_tower() {
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus Worker {
+            fn spawn() { I { }; }
+        }
+        locus Hub {
+            params { w: Worker = Worker { }; }
+            accept(c: I) { }
+        }
+        main locus App {
+            params { h: Hub = Hub { }; }
+            placement { h: cooperative(pool = io); }
+        }
+        fn main() { App { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "Worker", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("Hub".to_string()));
+    assert_eq!(s.edge_class, EdgeClass::SameTower);
+    let key = ("Worker".to_string(), "I".to_string());
+    assert_eq!(g.bubble_plans().nonsingleton.get(&key), Some(&"Hub".to_string()));
+}
+
+/// The pairing is per instance: two owners in two domains, each nesting
+/// its own enclosing instance, are each on their own instance's thread.
+/// SameTower, though the types' domain sets are {main, io} on both
+/// sides.
+#[test]
+fn two_owners_in_two_domains_each_own_their_nested_children() {
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus Worker {
+            fn spawn() { I { }; }
+        }
+        locus Hub {
+            params { w: Worker = Worker { }; }
+            accept(c: I) { }
+        }
+        main locus App {
+            params { h1: Hub = Hub { }; h2: Hub = Hub { }; }
+            placement { h2: cooperative(pool = io); }
+        }
+        fn main() { App { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "Worker", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("Hub".to_string()));
+    assert_eq!(s.edge_class, EdgeClass::SameTower);
+}
+
+/// O-7: an adapter in the root's `bindings { }` runs on its own thread,
+/// and so does its tower. As an owner, a child its nested locus bubbles
+/// to it is born on that thread: SameTower, each instance paired with
+/// its own owner row. As an enclosing side it reaches no owner above
+/// it: a `bindings { }` entry is no instantiation edge of the walk, so
+/// the child is `Orphan` and the edge `Open`, which the table does not
+/// change. (The legacy label called the adapter same-thread; no edge
+/// moved, in this case or over the seeds.)
+#[test]
+fn an_adapter_edge_runs_on_the_adapters_thread() {
+    let src = r#"
+        type Wire { n: Int; }
+        topic Beat { payload: Wire; subject: "beat"; }
+        locus I { params { x: Int = 0; } }
+        locus Worker {
+            fn spawn() { I { }; }
+        }
+        locus Probe {
+            params { w: Worker = Worker { }; }
+            accept(c: I) { }
+            fn send(subject: String, bytes: Bytes) { I { }; }
+        }
+        main locus App {
+            bindings { Beat: Probe { }; }
+            bus { publish Beat; }
+            accept(c: I) { }
+        }
+        fn main() { App { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "Worker", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("Probe".to_string()));
+    assert_eq!(s.edge_class, EdgeClass::SameTower);
+    let own = site(&g, "Probe", "I");
+    assert_eq!(own.resolution, OwnerResolution::SelfOwned("Probe".to_string()));
+}
+
+/// O-3, as U-1 decides: one enclosing locus with an instance on its
+/// owner's thread and one off it keeps its resolved owner, and its edge
+/// is `Mixed`, naming every instance and its domain; the plan is the
+/// per-instance one, never the transient fallback.
+#[test]
+fn a_mixed_enclosing_keeps_its_owner() {
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus Worker {
+            fn spawn() { I { }; }
+        }
+        locus Owner {
+            params { w: Worker = Worker { }; }
+        }
+        main locus App {
+            params { a: Worker = Worker { }; o: Owner = Owner { }; }
+            placement { o: pinned; }
+            accept(c: I) { }
+        }
+        fn main() { App { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "Worker", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("App".to_string()));
+    assert_eq!(s.owner_kind, OwnerKind::SingletonConst);
+    assert_eq!(s.edge_class, EdgeClass::Mixed);
+    assert_eq!(
+        s.instances,
+        ["App.a on main", "App.o.w on the pinned thread of App.o", "the owner App on main"],
+    );
+    let plans = g.bubble_plans();
+    let key = ("Worker".to_string(), "I".to_string());
+    let plan = plans.mixed.get(&key).expect("a mixed plan");
+    assert_eq!((plan.owner.as_str(), plan.singleton), ("App", true));
+    assert!(
+        !plans.singleton.contains_key(&key) && !plans.crosspool.contains_key(&key) && !plans.nonsingleton.contains_key(&key),
+        "the mixed plan is the edge's only plan"
+    );
 }
 
 // --- Cycle-safety -------------------------------------------------
@@ -461,7 +635,7 @@ fn corpus_graph(project: &str) -> Option<OwnershipGraph> {
     let bundle = Bundle::new(bundle_programs);
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
-    Some(build_ownership_graph(&bundle, &top))
+    Some(build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top)))
 }
 
 #[test]

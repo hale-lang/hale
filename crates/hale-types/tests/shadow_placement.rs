@@ -7,7 +7,6 @@
 //! (`Snapshot::demand_placement`) with each legacy producer the snapshot
 //! can reach, one column each, every key prefixed by its column:
 //!
-//! - `ownership`: the ownership graph's verbatim copy, `collect_placements`;
 //! - `model`: the arrangement's `PlacedIn`, per instance path;
 //! - `desugar`: `collect_off_owner_thread_fields`, per `Owner.field`;
 //! - `budget`: `budget_for_programs`' threads and pools.
@@ -47,8 +46,6 @@ use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_graph::shadow::{gate_message, program_id, Class, Divergence, Kind, Report};
 use hale_syntax::ast::{flat_decls, LocusDecl, LocusMember, TopDecl, TypeExpr};
-use hale_types::bus_graph::Placement;
-use hale_types::placement::legacy::collect_placements;
 use hale_types::placement::{
     Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
     PlacementTable, SiteUniverse,
@@ -57,15 +54,6 @@ use hale_types::resolve::TopScope;
 use hale_types::stdlib_bodies::mangled_locus_name;
 use hale_types::symbol::{TopSymbol, TypeKind};
 use hale_types::Bundle;
-
-fn placement_key(p: &Placement) -> String {
-    match p {
-        Placement::SameThread => "main".into(),
-        Placement::CrossPool(name) => format!("pool:{name}"),
-        Placement::Pinned => "pinned".into(),
-        Placement::Unknown => "unknown".into(),
-    }
-}
 
 // ---------------------------------- the table against every legacy producer
 
@@ -451,74 +439,8 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
     }
     let field_decls: BTreeMap<String, String> = field_decls.iter().map(|(k, v)| (k.clone(), joined(v))).collect();
 
-    // bus and ownership: the per-type label, keyed by the last segment of
-    // the placed field's written type; no row is `SameThread`. A label's
-    // consumers match it against a declaration's name, so a key that names
-    // a declaration the table places is that one; only a key that names
-    // none (a qualified field's last segment) goes through the root field
-    // that wrote it.
-    let mut last_to_lowered: BTreeMap<String, String> = BTreeMap::new();
-    let mut labelled = type_witness(&|k: &InstanceKey, _: &InstanceRow| k.path.len() <= 1);
-    if let Some(root) = entry.lowering_root.as_ref().and_then(|m| m.decl(&bundle)) {
-        for m in &root.members {
-            let LocusMember::Params(pb) = m else { continue };
-            for p in &pb.params {
-                let Some(TypeExpr::Named { path, .. }) = &p.ty else { continue };
-                let Some(last) = path.segments.last() else { continue };
-                let realized: BTreeSet<&str> = t
-                    .instances
-                    .iter()
-                    .filter(|(k, _)| k.path.len() == 1 && k.path[0].field == p.name.name)
-                    .filter_map(|(_, r)| r.realizes.as_ref().map(|d| d.lowered.as_str()))
-                    .collect();
-                // B-5: a qualified field whose last segment is another
-                // declaration's name labels that declaration.
-                if path.segments.len() > 1 && by_type.contains_key(&last.name) && !realized.contains(last.name.as_str()) {
-                    labelled.entry(last.name.clone()).or_default().push(format!(
-                        "cause: a qualified root field `{}` whose last segment names another declaration",
-                        p.name.name
-                    ));
-                }
-                if realized.len() == 1 {
-                    last_to_lowered.insert(last.name.clone(), realized.into_iter().next().unwrap().to_string());
-                }
-            }
-        }
-    }
-    // A label another `main`'s entries wrote.
-    for w in labelled.values_mut() {
-        w.extend(global.iter().cloned());
-    }
-    // (The bus graph's labels read the table since P1 3 of 6: no column.)
-    for (name, labels, slice) in [(
-        "ownership",
-        collect_placements(&bundle),
-        "the ownership graph's edge classes (SameTower / CrossPool), lowering's bubble plans",
-    )] {
-        let map_old: BTreeMap<String, String> = labels
-            .keys()
-            .filter(|k| !by_type.contains_key(*k))
-            .filter_map(|k| last_to_lowered.get(k).map(|l| (k.clone(), l.clone())))
-            .collect();
-        let mut old: Vec<(String, String)> = labels.iter().map(|(k, v)| (k.clone(), placement_key(v))).collect();
-        let covered: BTreeSet<String> =
-            labels.keys().map(|k| map_old.get(k).cloned().unwrap_or_else(|| k.clone())).collect();
-        for (k, _) in &typed_new {
-            if !covered.contains(k) {
-                old.push((k.clone(), "main".into()));
-            }
-        }
-        columns.push(Column {
-            name,
-            old,
-            new: typed_new.clone(),
-            map_old,
-            witness: labelled.clone(),
-            global: global.clone(),
-            slice,
-            decl: BTreeMap::new(),
-        });
-    }
+    // (The bus graph's and the ownership graph's labels read the table
+    // since P1 3 of 6: neither has a column.)
 
     // model: the arrangement's instances, by path, against the table's
     // rows projected to the same paths (every construction and every
@@ -833,25 +755,6 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
          by § 4's adapter case (`nested_offthread_delivery.rs`). § 2.2, § 10.2",
     ),
     (
-        "O-1/O-2",
-        Class::KnownOldBug,
-        "B-1's principle reaching the ownership graph: a locus nested under a root field placed off main inherits its \
-         owner's domain; the copy labels it SameThread. § 2.3",
-    ),
-    (
-        "O-3",
-        Class::SpecDisagreement,
-        "one enclosing type with instances in several domains; first-wins gives one edge class for all (U-1, pending \
-         the owner). § 2.3",
-    ),
-    (
-        "O-7",
-        Class::KnownOldBug,
-        "an adapter locus in `bindings { }` as an edge's enclosing or owning side: the copy labels it SameThread, the \
-         table pins it on its own thread. Runtime confirmation pending: § 4's adapter test, the correction in the \
-         graph-switch PR. § 2.3, § 10.2",
-    ),
-    (
         "F-R",
         Class::Correction,
         "fixture F-R's principle: the walk reads an imported root's placement block; a `__lib_` root is never \
@@ -992,7 +895,7 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
             if !causes.iter().any(|c| c.contains("(imported), with entries")) {
                 return None;
             }
-            vec![if col == "desugar" { "F-R" } else { "B-4" }]
+            vec!["F-R"]
         }
         ("model", Kind::OnlyNew) => every(&|c| {
             if c.contains("realizing a stdlib declaration") {
