@@ -1608,3 +1608,86 @@ fn a_nested_registration_carries_its_anchors_route() {
     let c = ir_of(Case::C);
     assert!(!c.contains("lotus_bus_retire_mailbox"), "no route anchor, no retire");
 }
+
+// A full ring must not delay the constructor after the pending worker
+// has claimed its init. The zero-message variant is the queued-path control.
+const POOL_INIT_FULL_RING: &str = r#"
+@ffi("c") fn pthread_self() -> Int;
+
+type Ping { n: Int; }
+topic Tick { payload: Ping; }
+locus Failer {
+    bus { subscribe Tick as receive; }
+    fn receive(m: Ping) { }
+    params { name: String = ""; tid: Int = 0; }
+    closure fuse { captures: name; epoch inline; }
+    run() { self.tid = pthread_self(); violate fuse; }
+}
+
+locus Inner {
+    params { btid: Int = 0; }
+    birth() { self.btid = pthread_self(); println("INNER_READY"); }
+}
+
+locus Holder { params { i: Inner = Inner { }; } }
+
+locus Slow { bus { publish Tick; } run() { std::time::sleep(100ms); let mut i = 0; while i < 64 { Tick <- Ping { n: i }; i = i + 1; } println("FILLED"); } }
+
+main locus App {
+    params {
+        f: Failer = Failer { name: "f" };
+        slow: Slow = Slow { };
+        h: Holder = Holder { };
+        fired: Int = 0;
+    }
+    placement { f: cooperative(pool = side); h: cooperative(pool = side); }
+    on_failure(c: Failer, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() {
+        println("HELD fired=" + to_string(self.fired) + " failer=" + to_string(self.f.tid) + " inner=" + to_string(self.h.i.btid) + " main=" + to_string(pthread_self()));
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_pending_init_completes_with_a_full_ring_and_an_empty_ring() {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        for messages in [0, 64] {
+            let src = POOL_INIT_FULL_RING.replace("i < 64", &format!("i < {messages}"));
+            let program = hale_syntax::parse_source(&src).expect("parse");
+            let snapshot = hale_frontend::snapshot::Snapshot::from_program(
+                program.clone(), Vec::new(), hale_frontend::snapshot::Config::editor(),
+            ).ok().expect("snapshot");
+            let checked = snapshot.demand_check().expect("admission");
+            assert!(!checked.diags.iter().any(|d| d.is_error()), "{:?}", checked.diags);
+            let bin = harness::unique_bin(&format!("pool_start_ring_{arm:?}_{messages}"));
+            let opts = BuildOptions { asan: true, no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
+            build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+            let mut child = Command::new(&bin).env("LOTUS_BUS_QUEUE_CAP", "64")
+                .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("run");
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while child.try_wait().expect("poll").is_none() {
+                if Instant::now() >= deadline {
+                    child.kill().expect("kill stalled startup");
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let out = child.wait_with_output().expect("output");
+            let _ = std::fs::remove_file(&bin);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{arm:?}/{messages}: {:?}\n{stdout}\n{stderr}", out.status);
+            assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+            assert_eq!(stdout.lines().filter(|l| *l == "INNER_READY").count(), 1, "{stdout}");
+            assert!(stdout.contains("FILLED"), "{stdout}");
+            let line = stdout.lines().find(|l| l.starts_with("HELD ")).expect("owner settled");
+            assert_eq!(field(line, "fired"), Some(1), "{line}");
+            assert_eq!(field(line, "inner"), field(line, "failer"), "{line}");
+            assert_ne!(field(line, "inner"), field(line, "main"), "{line}");
+        }
+    }
+}

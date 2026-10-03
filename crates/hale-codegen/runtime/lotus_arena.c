@@ -8936,6 +8936,41 @@ static void lotus_coop_pool_wake_producers(lotus_coop_pool_t *p) {
     }
 }
 
+/* Wake the consumer after publishing a cell, including a startup job.
+ * Both ordinary posts and nonblocking startup posts use the same park
+ * handshake; async pools keep their durable eventfd wake. */
+static void lotus_coop_pool_wake_consumer(lotus_coop_pool_t *p) {
+    int is_async = (p->wake_fd >= 0);
+    if (is_async) {
+        /* async_io pool: the worker parks in epoll_wait, not on the
+         * condvar. Poke the wake eventfd — UNCHANGED from the prior
+         * design. eventfd is level-triggered (its counter is
+         * durable until the worker read()s it), so this is already
+         * missed-wakeup-safe: even if the worker hasn't yet entered
+         * epoll_wait, the pending count returns it immediately. The
+         * parked/cond handshake does NOT apply to the epoll path. */
+#if LOTUS_HAVE_ASYNC_IO
+        lotus_wake_post(p);
+#endif
+    } else {
+        /* classic pool: signal-only-when-parked wake. The seq_cst
+         * fence orders the release-publish of the cell (inside
+         * try_enqueue) before this load of `parked`; it pairs with
+         * the consumer's store(parked,1) + fence + recheck
+         * (drain_one). Byte-identical to the mailbox producer wake
+         * — the Dekker/SB handshake that defeats the missed wakeup.
+         * Under load the consumer is not parked → no mutex on the
+         * hot path (this is the cross-pool grid win). */
+        atomic_thread_fence(memory_order_seq_cst);
+        if (atomic_load_explicit(&p->parked,
+                                 memory_order_seq_cst)) {
+            pthread_mutex_lock(&p->lock);
+            pthread_cond_signal(&p->not_empty);   /* one consumer */
+            pthread_mutex_unlock(&p->lock);
+        }
+    }
+}
+
 /* `run`: the cell is a child's run() (the compiler's only post, through
  * `lotus_coop_pool_post`), which takes a retention on the child; a bus
  * delivery (`lotus_coop_pool_post_bus`) takes none. */
@@ -8974,9 +9009,6 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
      * posting to this same pool — must NEVER block (the worker IS the sole
      * consumer → deadlock). Detected via the worker's TLS pool pointer. */
     int self_publish = (lotus_coop_pool_current() == p);
-    /* wake_fd >= 0 ⇔ async_io pool. Read once; set at async-enable and
-     * stable thereafter, so this unlocked read is race-free. */
-    int is_async = (p->wake_fd >= 0);
 
     for (;;) {
         int enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
@@ -9015,34 +9047,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
         }
 
         if (enq) {
-            if (is_async) {
-                /* async_io pool: the worker parks in epoll_wait, not on the
-                 * condvar. Poke the wake eventfd — UNCHANGED from the prior
-                 * design. eventfd is level-triggered (its counter is
-                 * durable until the worker read()s it), so this is already
-                 * missed-wakeup-safe: even if the worker hasn't yet entered
-                 * epoll_wait, the pending count returns it immediately. The
-                 * parked/cond handshake does NOT apply to the epoll path. */
-#if LOTUS_HAVE_ASYNC_IO
-                lotus_wake_post(p);
-#endif
-            } else {
-                /* classic pool: signal-only-when-parked wake. The seq_cst
-                 * fence orders the release-publish of the cell (inside
-                 * try_enqueue) before this load of `parked`; it pairs with
-                 * the consumer's store(parked,1) + fence + recheck
-                 * (drain_one). Byte-identical to the mailbox producer wake
-                 * — the Dekker/SB handshake that defeats the missed wakeup.
-                 * Under load the consumer is not parked → no mutex on the
-                 * hot path (this is the cross-pool grid win). */
-                atomic_thread_fence(memory_order_seq_cst);
-                if (atomic_load_explicit(&p->parked,
-                                         memory_order_seq_cst)) {
-                    pthread_mutex_lock(&p->lock);
-                    pthread_cond_signal(&p->not_empty);   /* one consumer */
-                    pthread_mutex_unlock(&p->lock);
-                }
-            }
+            lotus_coop_pool_wake_consumer(p);
             return;
         }
 
@@ -9236,7 +9241,7 @@ typedef struct lotus_pool_start_job {
     void                 *start;
     lotus_pinned_start_t *gate;
     _Atomic int           claimed;
-    _Atomic int           refs;     /* the queued cell's, and the slot's */
+    _Atomic int           refs;     /* posting/cell reference, plus offered slot */
 } lotus_pool_start_job_t;
 
 /* The pool whose root's init this worker is running (NULL outside
@@ -9339,18 +9344,52 @@ void lotus_pool_start_post(lotus_coop_pool_t *p, void *init, void *self_ptr,
         lotus_pool_start_release(j);
         return;
     }
-    atomic_init(&j->refs, 2);
-    void *none = NULL;
-    if (atomic_compare_exchange_strong(&p->start_pending, &none, j)) {
-        /* Wake a worker blocked in `lotus_failure_await`. */
-        pthread_mutex_lock(&g_params_open_lock);
-        pthread_cond_broadcast(&g_held_delivered);
-        pthread_mutex_unlock(&g_params_open_lock);
-    } else {
-        atomic_store(&j->refs, 1);                /* no slot to offer it in */
+    /* The posting reference becomes the cell's only after enqueue.
+     * Offering the slot adds another reference before publishing j;
+     * if the worker claims it first, no queued copy is required. */
+    atomic_init(&j->refs, 1);
+    int offered = 0;
+    lotus_bus_cell_t cell = {0};
+    cell.handler = (void *)lotus_pool_start_job;
+    cell.self_ptr = self_ptr;
+    cell.payload_size = sizeof j;
+    cell.deserialize = g_bus_pending_wire_deser;
+    cell.rec_pub_id = g_bus_pending_rec_pub;
+    memcpy(cell.payload_inline, &j, sizeof j);
+    for (;;) {
+        if (atomic_load_explicit(&j->claimed, memory_order_acquire)) {
+            lotus_pool_start_release(j);          /* posting reference */
+            return;
+        }
+        if (!offered) {
+            /* A different constructor can occupy the slot. Retry it
+             * while the ring is full, rather than needing ring space
+             * after that pending init has completed. */
+            atomic_fetch_add_explicit(&j->refs, 1, memory_order_relaxed);
+            void *none = NULL;
+            if (atomic_compare_exchange_strong(&p->start_pending, &none, j)) {
+                offered = 1;
+                pthread_mutex_lock(&g_params_open_lock);
+                pthread_cond_broadcast(&g_held_delivered);
+                pthread_mutex_unlock(&g_params_open_lock);
+            } else {
+                lotus_pool_start_release(j);      /* unoffered reference */
+            }
+        }
+        if (lotus_mpsc_ring_try_enqueue(&p->ring, &cell)) {
+            lotus_coop_pool_wake_consumer(p);
+            return;                              /* posting -> cell */
+        }
+        /* A worker waiting on this constructor can run j through the
+         * slot even when the ordinary queue has no room. Never enter
+         * the ordinary post's unbounded not_full wait: its progress
+         * can depend on this constructor settling its parent's params.
+         * The posting reference keeps j live throughout this poll. */
+        pthread_mutex_lock(&gate->lock);
+        if (!atomic_load_explicit(&j->claimed, memory_order_acquire))
+            lotus_pinned_start_wait_slice(gate);
+        pthread_mutex_unlock(&gate->lock);
     }
-    lotus_coop_pool_post_cell(p, (void *)lotus_pool_start_job, self_ptr,
-                              &j, sizeof j, 0);
 }
 
 /* The instantiating thread: wait for the init as for a pinned locus's
