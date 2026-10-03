@@ -118,8 +118,8 @@ pub fn guarantee(t: Transport, c: BindingConstraint) -> &'static Guarantee {
 
 /// What the matrix says of a transport kind on a target: its
 /// `RemoteTransport(kind)` cell, whose verdict is `Lower` where the
-/// target realizes the transport and `Reject` where it does not (the
-/// adapter's on wasm32, today a late link refusal).
+/// target realizes the transport and `Reject` where it does not. The
+/// admission check reports a refusal before lowering.
 pub fn transport_cell(class: TargetClass, t: Transport) -> &'static Behaviour {
     derive_capability_matrix()
         .behaviour(class, Capability::RemoteTransport(t))
@@ -168,14 +168,15 @@ mod tests {
 
     /// The matrix's transport rows: today's cells, on each target class.
     #[test]
-    fn the_matrix_admits_each_transport_where_lowering_does() {
+    fn the_matrix_admits_native_transports_and_refuses_them_on_wasm() {
         for t in Transport::ALL {
             for class in [TargetClass::PosixAsync, TargetClass::PosixNoAsync] {
                 assert!(transport_cell(class, t).is_lower(), "{} lowers on {}", t.name(), class.name());
             }
+            assert!(
+                transport_cell(TargetClass::Wasm32, t).refusal().is_some(),
+                "{} is refused on wasm before lowering", t.name()
+            );
         }
-        assert!(transport_cell(TargetClass::Wasm32, Transport::Unix).is_lower());
-        assert!(transport_cell(TargetClass::Wasm32, Transport::ShmRing).is_lower());
-        assert!(!transport_cell(TargetClass::Wasm32, Transport::Adapter).is_lower(), "the adapter's thread has no wasm");
     }
 }
