@@ -2314,3 +2314,151 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     }
 }
 
+/// A ref the lowering view resolves: a declaration, which joins by its
+/// lowered name, or any other site, which joins by position.
+#[derive(Debug, Clone, Copy)]
+pub enum LoweringRef<'a> {
+    Decl(&'a DeclRef),
+    Site(SiteRef),
+}
+
+impl LoweringRef<'_> {
+    fn site(&self) -> SiteRef {
+        match self {
+            LoweringRef::Decl(d) => d.site,
+            LoweringRef::Site(s) => *s,
+        }
+    }
+}
+
+/// Resolve the table's refs into lowering's merged mint, once.
+///
+/// A `User` site joins directly: the resolved program keeps the ids the
+/// bundle minted, so the merged mint holds the same index with the same
+/// kind. A `StdlibAnalysis` site joins by position: the analysis copy and
+/// the merged program's stdlib tail are clones of one parsed program
+/// that no pass touches between the clone and the mint, so the two walks
+/// visit the same sites in the same order. Each pair's kind and span are
+/// asserted equal, and a `StdlibAnalysis` declaration must also join by
+/// its lowered name to the same merged site. The resolution must be
+/// total and injective over `refs`: a ref the merged program lacks, or
+/// two refs resolving to one merged site, is a compiler bug, returned as
+/// the message naming the ref.
+///
+/// `user` is the snapshot's identities; `merged` and `merged_ids` the
+/// lowering view's program and mint.
+pub fn join_lowering(
+    refs: &[LoweringRef<'_>],
+    user: &Snapshot,
+    merged: &Program,
+    merged_ids: &Snapshot,
+) -> Result<BTreeMap<SiteRef, SiteId>, String> {
+    let pairing = if refs.iter().any(|r| r.site().universe == SiteUniverse::StdlibAnalysis) {
+        Some(stdlib_pairing(merged, merged_ids)?)
+    } else {
+        None
+    };
+    let mut out: BTreeMap<SiteRef, SiteId> = BTreeMap::new();
+    let mut taken: BTreeMap<SiteId, SiteRef> = BTreeMap::new();
+    for r in refs {
+        let site = r.site();
+        let resolved = match site.universe {
+            SiteUniverse::User => {
+                let own = user
+                    .site(site.id)
+                    .ok_or_else(|| format!("{site:?}: the snapshot did not mint this site"))?;
+                let there = merged_ids
+                    .site_id(NodeId(site.id.index))
+                    .and_then(|id| merged_ids.site(id))
+                    .ok_or_else(|| format!("{site:?}: the merged program has no site at this index"))?;
+                if there.kind != own.kind || there.span != own.span {
+                    return Err(format!(
+                        "{site:?}: the merged site at this index is a {:?} at {:?}, not the {:?} at {:?} the \
+                         snapshot minted",
+                        there.kind, there.span, own.kind, own.span
+                    ));
+                }
+                there.id
+            }
+            SiteUniverse::StdlibAnalysis => {
+                let pairing = pairing.as_ref().expect("built for a stdlib ref");
+                let by_position = *pairing
+                    .get(&site.id)
+                    .ok_or_else(|| format!("{site:?}: the analysis copy's site has no merged counterpart"))?;
+                if let LoweringRef::Decl(d) = r {
+                    let by_name = stdlib_decl_named(merged, merged_ids, &d.lowered).ok_or_else(|| {
+                        format!("{site:?}: the merged stdlib declares no locus `{}`", d.lowered)
+                    })?;
+                    if by_name != by_position {
+                        return Err(format!(
+                            "{site:?}: `{}` joins by name to {by_name:?} and by position to {by_position:?}",
+                            d.lowered
+                        ));
+                    }
+                }
+                by_position
+            }
+        };
+        if let Some(prev) = out.get(&site) {
+            if *prev != resolved {
+                return Err(format!("{site:?} resolved twice, to {prev:?} and {resolved:?}"));
+            }
+            continue;
+        }
+        if let Some(other) = taken.insert(resolved, site) {
+            return Err(format!("{other:?} and {site:?} both resolve to the merged site {resolved:?}"));
+        }
+        out.insert(site, resolved);
+    }
+    Ok(out)
+}
+
+/// The analysis copy's sites paired, in walk order, with the merged
+/// program's stdlib tail: analysis id → merged id.
+fn stdlib_pairing(merged: &Program, merged_ids: &Snapshot) -> Result<BTreeMap<SiteId, SiteId>, String> {
+    let (Some(analysis), Some(analysis_ids)) =
+        (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities())
+    else {
+        return Err("the stdlib analysis copy did not parse".to_string());
+    };
+    let n = analysis.items.len();
+    if merged.items.len() < n {
+        return Err(format!("the merged program holds {} items, fewer than the stdlib's {n}", merged.items.len()));
+    }
+    let walk = |items: &[TopDecl]| {
+        let mut sites: Vec<(SiteKind, hale_syntax::Span, NodeId)> = Vec::new();
+        for item in items {
+            for_each_site_in_item(item, &mut |kind, span, id| sites.push((kind, span, id)));
+        }
+        sites
+    };
+    let ours = walk(&analysis.items);
+    let theirs = walk(&merged.items[merged.items.len() - n..]);
+    if ours.len() != theirs.len() {
+        return Err(format!(
+            "the merged program's stdlib tail does not pair with the analysis copy: {} sites against {}",
+            theirs.len(),
+            ours.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for ((k1, s1, a), (k2, s2, m)) in ours.iter().zip(&theirs) {
+        if k1 != k2 || s1 != s2 {
+            return Err(format!("the stdlib pairing diverges: a {k1:?} at {s1:?} against a {k2:?} at {s2:?}"));
+        }
+        let (Some(a), Some(m)) = (analysis_ids.site_id(*a), merged_ids.site_id(*m)) else { continue };
+        out.insert(a, m);
+    }
+    Ok(out)
+}
+
+/// The merged site of the stdlib locus lowering names `lowered`.
+fn stdlib_decl_named(merged: &Program, merged_ids: &Snapshot, lowered: &str) -> Option<SiteId> {
+    let stdlib_seed = merged_ids.seeds.iter().position(|s| s == crate::snapshot::STDLIB_SEED)?;
+    flat_decls(&merged.items).find_map(|item| match item {
+        TopDecl::Locus(l) if l.name.name == lowered => {
+            merged_ids.site_id(l.id).filter(|id| id.seed.0 as usize == stdlib_seed)
+        }
+        _ => None,
+    })
+}
