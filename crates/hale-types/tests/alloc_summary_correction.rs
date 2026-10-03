@@ -171,7 +171,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 28 targets below are the only ones the correction changes.
+/// The 29 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -182,7 +182,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 19] = [
+const CALL_LINES_ONLY: [(&str, usize); 20] = [
     ("crates/hale-codegen/tests/fixtures/examples/docs-server", 1),
     ("crates/hale-codegen/tests/fixtures/examples/http-hello", 1),
     ("dna/core", 1248),
@@ -190,6 +190,7 @@ const CALL_LINES_ONLY: [(&str, usize); 19] = [
     ("dna/organism", 1315),
     ("dna/organization_source", 1288),
     ("dna/reflexes", 68),
+    ("tests/hale/api_bearer_roles_test.hl", 2),
     ("tests/hale/api_big_reply_test.hl", 2),
     ("tests/hale/api_binding_test.hl", 2),
     ("tests/hale/api_context_test.hl", 2),
