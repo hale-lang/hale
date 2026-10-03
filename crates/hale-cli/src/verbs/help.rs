@@ -225,7 +225,11 @@ that is not a flag is the target, as in `hale check`:
   --target <native|wasm32|triple>  which backend emits the artifact
                                    (`hale targets` lists every target
                                    this compiler can name, and says
-                                   which it can build)
+                                   which it can build). Without it, a
+                                   `target wasm { }` declaration
+                                   selects wasm32; with it, a
+                                   declaration it contradicts is
+                                   refused
   --target-cpu <native|baseline>   `native` tunes to this host, best
                                    speed and not portable; `baseline`
                                    pins a portable x86-64-v3 for an
@@ -438,6 +442,15 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 is an error, not a skip. Cannot be");
     println!("                                 combined with --env, --workspace, or");
     println!("                                 any per-evaluation artifact flag.");
+    println!("  --target <native|wasm32|triple>  check for that target, as");
+    println!("                                 `hale build --target` builds for it.");
+    println!("                                 Without it, a `target wasm {{ }}`");
+    println!("                                 declaration selects wasm32, else");
+    println!("                                 the host.");
+    println!("  --link <lib>                    a library the build would link, held");
+    println!("                                 to the target as `hale build` holds it");
+    println!("                                 (wasm32 links none); so is every");
+    println!("                                 imported package's `[ffi] link`.");
     println!();
     println!("Claims and topology (spec/verification.md):");
     println!("  --dump-topology[=<path>]        emit the topology artifact");

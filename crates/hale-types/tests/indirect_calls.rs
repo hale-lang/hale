@@ -111,3 +111,34 @@ fn merely_holding_a_fn_param_is_not_an_indirect_call() {
         ds
     );
 }
+
+/// P3 2 of 3, a classified correction: a call through a local bound to
+/// a fn name or path reaches that fn. The edge used to be `Unresolved`
+/// with the local's name, a call to nothing, so `@no_syscall` certified
+/// a fn that performs a syscall through `let f = …; f()`.
+#[test]
+fn a_certificate_sees_a_call_through_a_let_bound_fn() {
+    for (bound, prelude) in [
+        ("does_syscall", "fn does_syscall() -> Int { println(\"side effect\"); return 1; }\n"),
+        ("std::process::pid", ""),
+    ] {
+        let ds = errs(&format!(
+            "{prelude}@no_syscall\n\
+             fn g() -> Int {{ let f = {bound}; return f(); }}\n\
+             fn main() {{ println(g()); }}"
+        ));
+        let d = ds
+            .iter()
+            .find(|m| m.contains("effect assertion violated"))
+            .unwrap_or_else(|| panic!("`let f = {bound}; f()` performs a syscall: {:?}", ds));
+        assert!(!d.contains("indirect call"), "the call is resolved, not indirect: {d}");
+    }
+    // The control: a local bound to a syscall-free fn still certifies.
+    let ds = errs(
+        "fn pure_double(x: Int) -> Int { return x * 2; }\n\
+         @no_syscall\n\
+         fn apply(v: Int) -> Int { let f = pure_double; return f(v); }\n\
+         fn main() { println(apply(1)); }",
+    );
+    assert!(ds.is_empty(), "a local bound to a syscall-free fn certifies: {:?}", ds);
+}

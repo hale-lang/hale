@@ -264,7 +264,7 @@ impl Shift for RingAttrValue {
 }
 
 shift_unit_enum!(UnmatchedPolicy { Swallow, Fail, Fallback });
-shift_struct!(TargetDecl { name, capabilities, span });
+shift_struct!(TargetDecl { name, capabilities, span, synthesized });
 shift_struct!(Capability { segments, span });
 shift_struct!(InterfaceDecl { name, methods, span, id });
 shift_struct!(InterfaceMethodSig { name, params, ret, fallible, span });

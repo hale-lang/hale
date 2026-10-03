@@ -5,4 +5,3 @@
 # program <TAB> key <TAB> kind <TAB> class <TAB> old <TAB> new <TAB> note
 # A field writes `\` as `\\`, a tab as `\t`, a newline as `\n`, a carriage return
 # as `\r`; an old or new of `-` is no row, and a field that is `-` itself is `\-`.
-crates/hale-cli/tests/shadow_capability_cli.rs#WrapMain-wasm32-unknown-unknown	wasm32 --wrap-main WrapMain wasm32-unknown-unknown	disagreement	correction	--wrap-main requires --target wasm32 — it synthesizes the wasm @export entry from `fn main`, and there is no native entry-inversion to wrap	lower	T1 (design §1.3, §2.9's `--wrap-main` row, §6 item 11): `build.rs`'s guard string-matches `wasm32`/`wasm` and disagrees with `TargetSpec::parse` on the triple; the cell is wasm32's, whatever its spelling. P3 2 of 3 makes the guard read the effective target, pinned by the precedence table's `wasm32-unknown-unknown` + `--wrap-main` cell

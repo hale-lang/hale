@@ -75,8 +75,8 @@ use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
+use hale_types::capability::uses::CapabilityUses;
 use hale_types::capability::TargetRow;
-use hale_types::target::TargetSpec;
 use hale_types::binding_rows::BindingRows;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
@@ -147,34 +147,12 @@ pub const FAMILIES: [&str; 21] = [
 /// families, not a family of the registry's.
 pub const STAGES: [&str; 2] = ["typing_stage", "laws_stage"];
 
-/// The target a snapshot is configured for: `--target`, or the host.
-/// The checker asks it what `where async_io` may assume and how a
-/// refusal names the platform; the effective-target row
-/// ([`Snapshot::demand_target`]) records it beside the source
-/// declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Target {
-    /// The target's name: `host`, or the triple a build names.
-    pub name: String,
-    pub spec: TargetSpec,
-}
-
-impl Target {
-    /// The machine the compiler runs on: every check's target.
-    pub fn host() -> Self {
-        Target { name: "host".to_string(), spec: TargetSpec::host() }
-    }
-
-    /// Whether the target's runtime has the `async_io` pool backend.
-    pub fn has_async_io(&self) -> bool {
-        self.spec.has_async_io()
-    }
-
-    /// The platform as the `async_io` diagnostic names it.
-    pub fn label(&self) -> &'static str {
-        self.spec.platform_label()
-    }
-}
+/// The target a snapshot is configured for: `--target`, or the host
+/// when nothing names one. The effective-target row
+/// ([`Snapshot::demand_target`]) reads it beside the source
+/// declaration, and the check, the build and the editor act on the
+/// row's effective target.
+pub use hale_types::capability::ConfiguredTarget as Target;
 
 /// A deployment environment the program is checked for: an
 /// `[environments.<name>]` of `hale.toml` (GH #409).
@@ -286,8 +264,11 @@ impl Config {
         d.field(self.target.spec.arch.llvm_name().as_bytes());
         d.field(self.target.spec.os.name().as_bytes());
         d.field(self.target.spec.env.name().as_bytes());
-        d.flag(self.target.has_async_io());
-        d.field(self.target.label().as_bytes());
+        d.flag(self.target.spec.has_async_io());
+        d.field(self.target.spec.platform_label().as_bytes());
+        // Whether `--target` named it: an explicit target overrides a
+        // source declaration, the host fallback does not (T1(b)).
+        d.flag(self.target.explicit);
         d.option(self.api.as_deref());
         d.option(self.api_roles.as_deref());
         match &self.environment {
@@ -461,6 +442,7 @@ pub struct Snapshot {
     unlinked: Option<CheckableFailure>,
     entry: OnceCell<Result<EntryRow, Blocked>>,
     target: OnceCell<Result<TargetRow, Blocked>>,
+    capability_uses: OnceCell<Result<CapabilityUses, Blocked>>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -659,6 +641,7 @@ impl Snapshot {
             unlinked: loaded.unlinked,
             entry: OnceCell::new(),
             target: OnceCell::new(),
+            capability_uses: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             bindings: OnceCell::new(),
@@ -938,8 +921,7 @@ impl Snapshot {
         );
         b.import_renames = self.import_renames.clone();
         b.sources = self.source_map.clone();
-        b.target_has_async_io = self.config.target.has_async_io();
-        b.target_label = self.config.target.label();
+        b.target = self.config.target.clone();
         b.snapshot = self.identities.clone();
         b
     }
@@ -995,14 +977,15 @@ impl Snapshot {
     }
 
     /// The effective-target row (the `target_capability` family,
-    /// `hale_types::capability::target_row`): the configured target,
-    /// the first source `target wasm`/`browser_js` declaration, and the
-    /// precedence today's readers apply between them, recorded as a
-    /// fact. Its inputs are the key's configured target and the
+    /// `hale_types::capability::target_row`): the one target the check,
+    /// the build and the editor act on, for analysis and emission alike
+    /// (T1(b)) — an explicit `--target`, else a written
+    /// `target wasm`/`browser_js` declaration (wasm32), else the host —
+    /// with the refusal of a `--target` a written declaration
+    /// contradicts. Its inputs are the key's configured target and the
     /// sources, so a cached row never serves another target's snapshot.
     /// It reads declarations only; a seed with a hole has no programs
-    /// to read, so its row is blocked with its scope. No consumer reads
-    /// it yet (P3 2 of 3 makes it the target every entry point acts on).
+    /// to read, so its row is blocked with its scope.
     pub fn demand_target(&self) -> Result<&TargetRow, &Blocked> {
         self.target
             .get_or_init(|| {
@@ -1010,11 +993,24 @@ impl Snapshot {
                     return Err(Blocked { family: "target_capability", ..self.hole_blocked() });
                 }
                 self.count("target_capability");
-                Ok(hale_types::capability::target_row(
-                    &self.bundle(),
-                    &self.config.target.name,
-                    self.config.target.spec,
-                ))
+                Ok(hale_types::capability::target_row(&self.bundle()))
+            })
+            .as_ref()
+    }
+
+    /// The use rows (the `target_capability` family's second product,
+    /// `hale_types::capability::uses`): every way the program asks its
+    /// target for a capability, over the resolved graph the allocation
+    /// summary holds, each with its witness chain. The check holds them
+    /// to the effective target's cells (the admission law), so the
+    /// check, the build and the editor refuse alike. Blocked with the
+    /// summary. The family's count is its row's: the uses are its second
+    /// product, derived once beside it, never a second derivation.
+    pub fn demand_capability_uses(&self) -> Result<&CapabilityUses, &Blocked> {
+        self.capability_uses
+            .get_or_init(|| {
+                let summary = self.alloc_summary().map_err(Clone::clone)?.clone();
+                Ok(hale_types::capability::uses::derive_capability_uses(&self.bundle(), &summary))
             })
             .as_ref()
     }
@@ -1061,17 +1057,16 @@ impl Snapshot {
 
     /// The matrix's cell for a binding row's transport kind on the
     /// effective target: `RemoteTransport(kind)` × the target row's
-    /// backend class ([`Snapshot::demand_target`]). `Lower` where the
-    /// target realizes the transport; `Reject` where it does not (the
-    /// adapter's on wasm32, which is a late link refusal today, so the
-    /// check reports nothing from it: P3 2 of 3 makes the target every
-    /// entry point acts on). `None` for a target with no class (a planned
-    /// tier). Blocked with the target row.
+    /// class ([`Snapshot::demand_target`]). `Lower` where the target
+    /// realizes the transport; `Reject` where it does not. Capability
+    /// admission reports a rejected binding use against this effective
+    /// target. `None` for a target with no class (a planned tier).
+    /// Blocked with the target row.
     pub fn binding_cell(
         &self,
         row: &hale_types::binding_rows::BindingRow,
     ) -> Result<Option<&'static hale_types::capability::Behaviour>, &Blocked> {
-        let class = self.demand_target()?.precedence.backend;
+        let class = self.demand_target()?.class;
         Ok(class.map(|class| hale_types::capability::transport::transport_cell(class, row.transport)))
     }
 
@@ -1167,6 +1162,8 @@ impl Snapshot {
             bus: self.demand_bus_graph().map_err(Clone::clone)?,
             intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
             placement: self.demand_placement().map_err(Clone::clone)?,
+            target: self.demand_target().map_err(Clone::clone)?,
+            uses: self.demand_capability_uses().map_err(Clone::clone)?,
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered
@@ -1662,6 +1659,16 @@ impl Snapshot {
                     if !errors.is_empty() {
                         return Err(Blocked { family: "lowering_view", because: errors, refused: None });
                     }
+                } else {
+                    // A lowering the check does not gate (the harness's)
+                    // still lowers no use the target refuses: the
+                    // admission law, read here as the check reads it.
+                    let row = self.demand_target().map_err(Clone::clone)?;
+                    let uses = self.demand_capability_uses().map_err(Clone::clone)?;
+                    let refused = hale_types::capability::uses::admission_diags(uses, row, &self.import_renames);
+                    if !refused.is_empty() {
+                        return Err(Blocked { family: "target_capability", because: refused, refused: None });
+                    }
                 }
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;
@@ -1901,6 +1908,7 @@ impl Digest {
 mod tests {
     use super::*;
     use crate::source::{Disk, Overlay};
+    use hale_types::target::TargetSpec;
 
     const CLEAN: &str = "locus W { params { n: Int = 0; } fn bump() { self.n = self.n + 1; } }\n\
                          main locus App { params { w: W = W { }; } run() { self.w.bump(); } }\n\
@@ -2086,6 +2094,7 @@ mod tests {
         musl.target = Target {
             name: "x86_64-unknown-linux-musl".to_string(),
             spec: TargetSpec::parse("x86_64-unknown-linux-musl").unwrap(),
+            explicit: true,
         };
         let musl = load(&app, &Disk, musl);
         assert_ne!(disk.key().target, musl.key().target);
@@ -2093,8 +2102,13 @@ mod tests {
         // The spec is folded beside the name: one name over two specs
         // is two digests.
         let mut renamed = Config::editor();
-        renamed.target = Target { name: "host".to_string(), spec: musl.config.target.spec };
+        renamed.target = Target { name: "host".to_string(), spec: musl.config.target.spec, explicit: false };
         assert_ne!(Config::editor().digest(), renamed.digest());
+        // `--target` naming the host is not the host fallback: the one
+        // overrides a source declaration, the other does not.
+        let mut named_host = Config::editor();
+        named_host.target.explicit = true;
+        assert_ne!(Config::editor().digest(), named_host.digest());
 
         assert_ne!(disk.key().entry, load(&other, &Disk, Config::editor()).key().entry);
 
@@ -2109,19 +2123,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(other.parent().unwrap());
     }
 
-    /// The effective-target row (design §1.3, §1.7): a function of the
-    /// key's configured target and the sources, demanded once per
-    /// snapshot, with today's precedence recorded as it is. A host and a
-    /// wasm32 snapshot of one seed differ in `target` and
-    /// `config_digest` and each derive their own row; nothing else is
-    /// computed for it.
+    /// The effective-target row (design §1.3, §1.7, T1(b)): a function
+    /// of the key's configured target and the sources, demanded once per
+    /// snapshot. A host and a wasm32 snapshot of one seed differ in
+    /// `target` and `config_digest` and each derive their own row;
+    /// nothing else is computed for it. With no `--target`, a written
+    /// declaration selects wasm32; an explicit `--target` of another
+    /// class is refused at the declaration.
     #[test]
     fn the_target_row_is_the_configured_target_and_the_sources() {
-        use hale_types::capability::TargetClass;
+        use hale_types::capability::{Selection, TargetClass};
         let d = scratch("target-row");
         let app = d.join("app.hl");
         std::fs::write(&app, "fn main() {\n    let _ = std::process::pid();\n}\n").unwrap();
-        let wasm = Target { name: "wasm32-unknown-unknown".to_string(), spec: TargetSpec::parse("wasm32").unwrap() };
+        let wasm = Target {
+            name: "wasm32-unknown-unknown".to_string(),
+            spec: TargetSpec::parse("wasm32").unwrap(),
+            explicit: true,
+        };
 
         let host = load(&app, &Disk, Config::build(Target::host()));
         let on_wasm = load(&app, &Disk, Config::build(wasm.clone()));
@@ -2129,34 +2148,75 @@ mod tests {
         assert_ne!(host.key().config_digest, on_wasm.key().config_digest);
 
         let row = host.demand_target().expect("the row reads declarations only");
-        assert_eq!(row.configured_name, "host");
+        assert_eq!(row.configured.name, "host");
         assert_eq!(row.declaration, None);
-        assert_eq!(row.precedence.backend, Some(TargetClass::PosixAsync));
-        assert_eq!(row.precedence.stdlib_gate, None);
+        assert_eq!((row.class, row.selected_by), (Some(TargetClass::PosixAsync), Selection::Host));
         let row = on_wasm.demand_target().unwrap();
-        assert_eq!(row.configured_name, "wasm32-unknown-unknown");
-        assert_eq!(row.precedence.backend, Some(TargetClass::Wasm32));
-        assert_eq!(row.precedence.async_io_gate, Some(TargetClass::Wasm32));
-        // Today `--target wasm32` alone does not gate the stdlib: the
-        // fact P3 2 of 3 corrects (T1(b)).
-        assert_eq!(row.precedence.stdlib_gate, None);
+        assert_eq!(row.configured.name, "wasm32-unknown-unknown");
+        assert_eq!((row.class, row.selected_by), (Some(TargetClass::Wasm32), Selection::Configured));
+        assert_eq!(row.wasm32_selector(), "`--target wasm32`");
         let _ = on_wasm.demand_target();
         for s in [&host, &on_wasm] {
             assert_eq!(s.builds()["target_capability"], 1, "one derivation per snapshot");
             assert_eq!(s.builds()["expression_typing"], 0, "the row computes nothing else");
         }
 
-        // A declaration: today the stdlib gate reads it, and the backend
-        // does not.
+        // A written declaration with no `--target` selects wasm32, for
+        // analysis and emission alike.
         std::fs::write(&app, "target wasm { }\n\nfn main() {\n    println(\"hi\");\n}\n").unwrap();
         let declared = load(&app, &Disk, Config::build(Target::host()));
         assert_ne!(declared.key().sources_digest, host.key().sources_digest);
         let row = declared.demand_target().unwrap();
         let decl = row.declaration.as_ref().expect("the declaration is recorded");
-        assert_eq!((decl.name.as_str(), decl.span.start.0), ("wasm", 0));
+        assert_eq!((decl.name.as_str(), decl.span.start.0, decl.synthesized), ("wasm", 0, false));
         assert!(decl.file.ends_with("app.hl"), "{}", decl.file);
-        assert_eq!(row.precedence.stdlib_gate, Some(TargetClass::Wasm32));
-        assert_eq!(row.precedence.backend, Some(TargetClass::PosixAsync));
+        assert_eq!((row.class, row.selected_by), (Some(TargetClass::Wasm32), Selection::Declared));
+        assert!(row.refusals.is_empty());
+        assert_eq!(row.wasm32_selector(), "`target wasm`");
+
+        // `--target` naming the host contradicts it: refused at the
+        // declaration, and the host stays the effective target.
+        let mut named = Target::host();
+        named.explicit = true;
+        let refused = load(&app, &Disk, Config::build(named));
+        let row = refused.demand_target().unwrap();
+        assert_eq!((row.class, row.selected_by), (Some(TargetClass::PosixAsync), Selection::Configured));
+        let messages: Vec<(u32, &str)> = row.refusals.iter().map(|d| (d.span.start.0, d.message.as_str())).collect();
+        let want = format!(
+            "this program declares `target wasm`, and is being checked for `{}`: build it with \
+             `--target wasm32`, or drop the declaration",
+            TargetSpec::host().triple
+        );
+        assert_eq!(messages, vec![(0, want.as_str())]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// No target leaks across the editor's snapshots (design §1.7, P3 2
+    /// of 3): one session's buffer gains a `target wasm { }` line and
+    /// loses it again. The stdlib refusal appears and disappears with the
+    /// line, each snapshot derives its own row once, and the use rows
+    /// are the same three times: what changed is the target, not the
+    /// program's uses.
+    #[test]
+    fn the_editor_follows_a_target_line_in_and_out() {
+        let d = scratch("target-edit");
+        let app = d.join("app.hl");
+        let body = "fn main() {\n    let _ = std::process::pid();\n}\n";
+        std::fs::write(&app, body).unwrap();
+        let mut uses = Vec::new();
+        for (text, refused) in
+            [(body.to_string(), false), (format!("{body}\ntarget wasm {{ }}\n"), true), (body.to_string(), false)]
+        {
+            let mut buffers = BTreeMap::new();
+            buffers.insert(app.clone(), text);
+            let s = load(&app, &Overlay::new(&buffers), Config::editor());
+            let diags = &s.demand_check().expect("the check runs").diags;
+            let gate = diags.iter().filter(|d| d.message.contains("is unavailable under `target wasm`")).count();
+            assert_eq!(gate, usize::from(refused), "{diags:?}");
+            assert_eq!(s.builds()["target_capability"], 1, "one derivation per snapshot");
+            uses.push(s.demand_capability_uses().expect("the use rows").clone());
+        }
+        assert!(uses.windows(2).all(|w| w[0] == w[1]), "the uses do not depend on the target");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2400,14 +2460,18 @@ mod tests {
         for r in &rows.rows {
             assert!(s.binding_cell(r).expect("the target row").expect("a class").is_lower(), "{}", r.topic);
         }
-        let wasm = Target { name: "wasm32-unknown-unknown".to_string(), spec: TargetSpec::parse("wasm32").unwrap() };
+        let wasm = Target {
+            name: "wasm32-unknown-unknown".to_string(),
+            spec: TargetSpec::parse("wasm32").unwrap(),
+            explicit: true,
+        };
         let on_wasm = load(&d.join("app.hl"), &Disk, Config::build(wasm));
         let wasm_rows = on_wasm.demand_bindings().expect("binding rows");
         let lowered = |t: Transport| {
             let r = wasm_rows.rows.iter().find(|r| r.transport == t).expect("a row of the kind");
             on_wasm.binding_cell(r).unwrap().unwrap().is_lower()
         };
-        assert!(lowered(Transport::Unix) && lowered(Transport::ShmRing), "today's wasm admits both substrates");
+        assert!(!lowered(Transport::Unix) && !lowered(Transport::ShmRing), "wasm refuses both native substrates");
         // The bus graph's gate reads the projection.
         let graph = s.demand_bus_graph().expect("bus graph");
         for wire in ["Out", "In", "Both"] {

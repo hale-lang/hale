@@ -1319,6 +1319,7 @@ impl Parser {
             name,
             capabilities,
             span: kw.span.merge(close.span),
+            synthesized: false,
         })
     }
 

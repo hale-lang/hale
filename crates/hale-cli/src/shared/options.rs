@@ -89,6 +89,12 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     // GH #409
     ("--env", true),
     ("--matrix", false),
+    // F.40 P3: the target the program is checked for, parsed as
+    // `hale build --target` parses it (design §1.3).
+    ("--target", true),
+    // F.40 P3 (T4): a link library the build would take, held to the
+    // target's `LinkLibrary` cell as the build holds it.
+    ("--link", true),
 ];
 
 /// GH #861: the one argument splitter `hale build` and `hale run`
@@ -282,40 +288,7 @@ pub(crate) fn parse_build_options(
                 let v = args.get(i + 1).ok_or_else(|| {
                     "--target requires a value (native|wasm32|<triple>)".to_string()
                 })?;
-                // Canonical triples, not just the two aliases. A target
-                // the compiler can NAME is not necessarily one it can
-                // BUILD, so say which of the two this is rather than
-                // failing later inside the linker (GH #445).
-                let spec = hale_codegen::target::TargetSpec::parse(v)
-                    .map_err(|e| format!("--target: {}", e))?;
-                let host = hale_codegen::target::TargetSpec::host();
-                match spec.support_from(&host) {
-                    hale_codegen::target::TargetSupport::Planned => {
-                        return Err(format!(
-                            "--target: `{}` is not buildable yet\n\n{}\n\n\
-                             The target model knows this platform; the codegen \
-                             and runtime for it do not exist yet. Track GH #445.",
-                            spec.triple,
-                            spec.describe_from(&host),
-                        ));
-                    }
-                    hale_codegen::target::TargetSupport::Cross
-                    | hale_codegen::target::TargetSupport::ForeignHost
-                    | hale_codegen::target::TargetSupport::Supported
-                    | hale_codegen::target::TargetSupport::ObjectOnly => {}
-                }
-                // GH #969: a native triple that is not the host must not
-                // become `Native`, which IS the host — that built a host
-                // binary under the target's name. It is its own target
-                // (GH #970): linked through zig where the target has a
-                // cross toolchain here, emitted as an object otherwise.
-                opts.target = if spec.is_wasm() {
-                    hale_codegen::CompileTarget::Wasm32
-                } else if spec.triple != host.triple {
-                    hale_codegen::CompileTarget::Foreign(spec)
-                } else {
-                    hale_codegen::CompileTarget::Native
-                };
+                opts.target = compile_target(parse_target(v)?);
                 i += 2;
             }
             // Backend CPU tuning for the native target. `native` tunes to
@@ -356,6 +329,78 @@ pub(crate) fn parse_build_options(
         }
     }
     Ok(opts)
+}
+
+/// `--target`'s value, as `hale build` and `hale check` read it alike:
+/// canonical triples, not just the two aliases. A target the compiler
+/// can NAME is not necessarily one it can BUILD, so say which of the two
+/// this is rather than failing later inside the linker (GH #445).
+pub(crate) fn parse_target(v: &str) -> Result<hale_codegen::target::TargetSpec, String> {
+    let spec = hale_codegen::target::TargetSpec::parse(v).map_err(|e| format!("--target: {}", e))?;
+    let host = hale_codegen::target::TargetSpec::host();
+    match spec.support_from(&host) {
+        hale_codegen::target::TargetSupport::Planned => Err(format!(
+            "--target: `{}` is not buildable yet\n\n{}\n\n\
+             The target model knows this platform; the codegen \
+             and runtime for it do not exist yet. Track GH #445.",
+            spec.triple,
+            spec.describe_from(&host),
+        )),
+        hale_codegen::target::TargetSupport::Cross
+        | hale_codegen::target::TargetSupport::ForeignHost
+        | hale_codegen::target::TargetSupport::Supported
+        | hale_codegen::target::TargetSupport::ObjectOnly => Ok(spec),
+    }
+}
+
+/// The backend a target selects. GH #969: a native triple that is not
+/// the host must not become `Native`, which IS the host — that built a
+/// host binary under the target's name. It is its own target (GH #970):
+/// linked through zig where the target has a cross toolchain here,
+/// emitted as an object otherwise.
+pub(crate) fn compile_target(spec: hale_codegen::target::TargetSpec) -> hale_codegen::CompileTarget {
+    if spec.is_wasm() {
+        hale_codegen::CompileTarget::Wasm32
+    } else if spec.triple != hale_codegen::target::TargetSpec::host().triple {
+        hale_codegen::CompileTarget::Foreign(spec)
+    } else {
+        hale_codegen::CompileTarget::Native
+    }
+}
+
+/// The configured target a snapshot is loaded with: the one `--target`
+/// names (`explicit`), or the host when nothing names one. The host is
+/// named `host` either way, as the build has always named it.
+pub(crate) fn configured_target(
+    target: hale_codegen::CompileTarget,
+    explicit: bool,
+) -> hale_frontend::snapshot::Target {
+    let spec = target.spec();
+    hale_frontend::snapshot::Target {
+        name: match target {
+            hale_codegen::CompileTarget::Native => "host".to_string(),
+            _ => spec.triple.to_string(),
+        },
+        spec,
+        explicit,
+    }
+}
+
+/// The refusal of a command that executes what it builds (`run`,
+/// `replay`) when the program's effective target is wasm32: a written
+/// `target wasm`/`browser_js` declaration selects the wasm backend
+/// (T1(b)), whose artifact this host cannot execute — the invocation
+/// cell `Run × Wasm32` (`--target wasm32` itself is refused at argument
+/// parsing, before any program is read).
+pub(crate) fn refuse_unexecutable(cmd: &str, snap: &hale_frontend::snapshot::Snapshot) -> Option<String> {
+    let row = snap.demand_target().ok()?;
+    let decl = row.declaration.as_ref().filter(|_| row.is_wasm32())?;
+    Some(format!(
+        "hale {cmd}: this program declares `target {}`, so it builds a wasm32 \
+         module this host cannot execute — build it with `hale build` and run \
+         it in a host that can",
+        decl.name
+    ))
 }
 
 /// GH #904: the build options of a command that compiles AND THEN
@@ -465,6 +510,82 @@ pub(crate) fn collect_ffi_from_imports(
     opts
 }
 
+/// Where a link library came from (T4, design §1.5): an imported
+/// package's `hale.toml`, at its `[ffi] link` key's line, or `--link`.
+pub(crate) enum LinkInput {
+    Manifest { path: PathBuf, line: usize, libs: Vec<String> },
+    Flag { lib: String },
+}
+
+/// Every link library a build of these imports would take, with where
+/// each came from: the `--link` flags, then each imported package's
+/// `[ffi] link` ([`collect_ffi_from_imports`]'s walk).
+pub(crate) fn link_inputs(
+    flags: &[String],
+    imports: &[hale_syntax::ast::Import],
+    importer_dir: &Path,
+    workspace_root: Option<&Path>,
+) -> Vec<LinkInput> {
+    let mut out: Vec<LinkInput> = flags.iter().map(|l| LinkInput::Flag { lib: l.clone() }).collect();
+    let mut seen_dirs = std::collections::BTreeSet::new();
+    for imp in imports {
+        if imp.path.starts_with("std/") || imp.path == "std" {
+            continue;
+        }
+        let Some(ImportTarget::Directory(lib_dir)) = resolve_import(importer_dir, workspace_root, &imp.path, &Disk) else {
+            continue;
+        };
+        if !seen_dirs.insert(lib_dir.canonicalize().unwrap_or_else(|_| lib_dir.clone())) {
+            continue;
+        }
+        let Ok(Some(ffi)) = crate::pkg::read_lib_ffi(&lib_dir) else { continue };
+        if ffi.link.is_empty() {
+            continue;
+        }
+        let path = lib_dir.join("hale.toml");
+        // The `link` key's line under `[ffi]`, for the record's position.
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut in_ffi = false;
+        let mut line = 1;
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim();
+            if t.starts_with('[') {
+                in_ffi = t == "[ffi]";
+            } else if in_ffi && t.starts_with("link") && t[4..].trim_start().starts_with('=') {
+                line = i + 1;
+                break;
+            }
+        }
+        out.push(LinkInput::Manifest { path, line, libs: ffi.link });
+    }
+    out
+}
+
+/// The `LinkLibrary` cell's refusals for the effective target, one per
+/// input, rendered before any tool is looked up (T4): a record against
+/// the manifest's `[ffi] link` line, or the `--link` argument named as
+/// such. Empty where the target links system libraries.
+pub(crate) fn link_refusals(row: &hale_types::capability::TargetRow, inputs: &[LinkInput]) -> Vec<String> {
+    use hale_types::capability::{derive_capability_matrix, Capability};
+    let Some(class) = row.class else { return Vec::new() };
+    let m = derive_capability_matrix();
+    let cell = m.behaviour(class, Capability::LinkLibrary).expect("a row");
+    let Some(refusal) = cell.refusal() else { return Vec::new() };
+    inputs
+        .iter()
+        .map(|input| match input {
+            LinkInput::Manifest { path, line, libs } => {
+                let libs = hale_types::capability::libs_hole(libs);
+                format!("{}:{line}:1: error: {}", path.display(), refusal.render(&cell.witness, &[("libs", &libs)]))
+            }
+            LinkInput::Flag { lib } => {
+                let libs = hale_types::capability::libs_hole(std::slice::from_ref(lib));
+                format!("error: --link {lib}: {}", refusal.render(&cell.witness, &[("libs", &libs)]))
+            }
+        })
+        .collect()
+}
+
 /// GH #1109: what `build --env` and `run --env` resolve before the
 /// program is parsed: the environment's section (for the constitution
 /// it binds) and, onto `options`, its role table, which the api binding
@@ -481,21 +602,16 @@ pub(crate) fn resolve_build_env(
 }
 
 /// GH #1109: the config a build's snapshot is loaded with, from its
-/// flags: the target it compiles for, `--api`, and `--env`'s role
-/// table and constitutions (resolved by [`resolve_build_env`]). The
-/// environment is a pass of the snapshot's load and part of its key.
+/// flags: the target it compiles for (`explicit` when `--target` named
+/// it, so it overrides a source declaration), `--api`, and `--env`'s
+/// role table and constitutions (resolved by [`resolve_build_env`]).
+/// The environment is a pass of the snapshot's load and part of its key.
 pub(crate) fn build_config(
     options: &hale_codegen::BuildOptions,
     env_spec: &Option<(crate::pkg::EnvSpec, Option<String>)>,
+    explicit: bool,
 ) -> hale_frontend::snapshot::Config {
-    let spec = options.target.spec();
-    let target = hale_frontend::snapshot::Target {
-        name: match options.target {
-            hale_codegen::CompileTarget::Native => "host".to_string(),
-            _ => spec.triple.to_string(),
-        },
-        spec,
-    };
+    let target = configured_target(options.target, explicit);
     let mut config = hale_frontend::snapshot::Config::build(target);
     config.api = options.api.clone();
     config.api_roles = options.api_roles.clone();

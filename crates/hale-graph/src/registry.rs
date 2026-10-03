@@ -258,9 +258,9 @@ const CG_WIRE: &str = "crates/hale-codegen/src/bus/wire.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
-const TY_TARGET: &str = "crates/hale-types/src/target.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
 const CAPABILITY_TRANSPORT: &str = "crates/hale-types/src/capability/transport.rs";
+const CAPABILITY_USES: &str = "crates/hale-types/src/capability/uses.rs";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
@@ -1105,7 +1105,9 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/memory.md § Allocation routing", "spec/styleguide.md"],
         owned: &[site(ALLOC, "summarize_identified"), site(ALLOC_ROUTING, "derive_alloc_routing")],
         seams: &[
-            Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 4)] },
+            // ... and the use producer's walk of a program that nests a
+            // `module { }`, which the family's summary keys top-level only
+            Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 4), ("crates/hale-types/src/capability/uses.rs", 1)] },
             Seam { symbol: "allocating_recv(", allowed: &[(ALLOC, 2)] },
             Seam { symbol: "check_hot_path_alloc(", allowed: &[(CHECK, 2)] },
             Seam { symbol: "derive_alloc_summary(", allowed: &[(ALLOC, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (EVIDENCE, 1), (JUDGMENT, 1), (TOPOLOGY, 1), ("crates/hale-types/src/resource_budget.rs", 1)] },
@@ -1239,19 +1241,22 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["--target", "a source `target` declaration", "stdlib_surface", "FFI signatures"],
         producer: Some(site(CAPABILITY, "derive_capability_matrix")),
         legacy: &[
-            legacy(CHECK, "wasm_unavailable_stdlib", "a hand-kept slice-pattern table keyed by leading namespace, consulted only when the SOURCE declares `target wasm` (never from `--target wasm32`), and only for call forms", "one CapabilityMatrix consulted by the driver before lowering"),
-            legacy(CHECK, "wasm_target", "the source-declaration flag the table is gated on", "same"),
-            legacy(CG, "link_wasm", "link-time refusals (link_libs) and the export list", "same"),
+            legacy(CG, "link_wasm", "the export list, spelled at the link (its `[ffi] link` refusal moved ahead of every tool, into the check and the build's LinkLibrary read, in P3 2 of 3)", "same"),
             legacy(CG_INST, "lotus_replay_start_ingress", "one of the per-site wasm skips; on wasm the eager main-locus spine emits the pool join where every other spine omits it, and every spine but the deferred entry emits wait-abort", "same"),
-            legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory", "emission configuration through TargetSpec only; every capability through the matrix"),
+            legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory; where the admission reads a cell (an exported locus's run(), an export-only host program) the check refuses first and codegen's refusal is a harness backstop", "emission configuration through TargetSpec only; every capability through the matrix"),
             legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
-            legacy(TY_TARGET, "TargetSpec", "has_async_io is true for wasm32; the checker sees the target only under `hale build`", "the matrix is the one statement, on every entry point"),
         ],
         consumers: &[
             consumer("check"),
             consumer("build"),
             consumer_at("docs (systems/webassembly.md § What wasm32 can do, and spec/ffi.md's refused-namespace table: regions rendered from the cells)", CAPABILITY, "render_markdown"),
-            consumer_at("the effective-target row, on the snapshot (consulted by nothing yet)", SNAPSHOT, "demand_target"),
+            consumer_at("the effective-target row, on the snapshot: the check's target and its conflict refusal, the editor's alike", SNAPSHOT, "demand_target"),
+            consumer_at("hale build's backend and artifact naming, from the effective target", "crates/hale-cli/src/verbs/build.rs", "compile_target(row.effective)"),
+            consumer_at("hale run and replay refuse a program whose effective target is wasm32", "crates/hale-cli/src/shared/options.rs", "refuse_unexecutable"),
+            consumer_at("the use rows, on the snapshot: the check's input beside the row", SNAPSHOT, "demand_capability_uses"),
+            consumer_at("the admission law: every use's cell for the effective target, in the check of every entry point", CHECK, "admission_diags"),
+            consumer_at("hale check and hale build: every link input (--link, each package's [ffi] link) held to LinkLibrary before any tool, located at its manifest line or flag", "crates/hale-cli/src/shared/options.rs", "link_refusals"),
+            consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read before lowering and before any tool", CG, "Capability::LinkLibrary"),
         ],
         invariants: &[
             "Approximate is legitimate only in layers 5 and 7; everywhere else a target lowers or rejects, with the row's witness",
@@ -1260,25 +1265,56 @@ pub const FAMILIES: &[Family] = &[
             "behaviours and obligations are distinct types: an obligation is omitted only on a premise (a Reject behaviour, a Refused invocation, a registered proof) that holds on its own target, and a Lower behaviour requires only Lower behaviours",
             "a capability refusal depends only on the program, the configuration and the target; a failure that depends on the machine running the compiler stays a toolchain error",
             "a target's class comes from its (arch, os, env), never from a triple's name; the effective target is a function of the snapshot key's configured target and its sources",
+            "one effective target for analysis and emission alike (T1(b)): an explicit `--target`, else a written `target wasm`/`browser_js` declaration (wasm32), else the host; a `--target` of another class than a written declaration's is refused at the declaration, and a declaration `--wrap-main` injects never selects",
+            "every use is read off resolved identities (a call, a method through its receiver's type, a cross-seed alias, a construction and the lifecycle it implies), never a `std::` spelling of the call; a type-only mention is not a use",
+            "the program's own sources are the horizon: a use is refused once, at its first site in them, naming the capability, the target and its witness chain; a callee beyond it is refused at the call that crosses into it",
+            "an unresolved requirement is never an admission on a target that rejects anything in its family: a hole is refused there and recorded elsewhere",
+            "a policy refusal comes before any tool is probed: a link input the target refuses is refused by the check and by the build before clang, wasm-ld or zig is looked up, located at its input (T4)",
         ],
         missing: Missing::Error,
         tests: &[
             "crates/hale-types/tests/wasm_target_gating.rs",
             "crates/hale-codegen/tests/wasm_target.rs",
             "crates/hale-cli/tests/target_model.rs",
-            "crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires, KNOWN_OPEN still today's answer)",
+            "crates/hale-cli/tests/wasm_package_csrc.rs (T4: a package's [ffi] link refused by check and build alike at the manifest's line; --link named as the flag; the refusal before any tool, on a PATH with no clang)",
+            "crates/hale-cli/tests/target_precedence.rs (the precedence table: source x --target, check, build and the editor agreeing per cell; wasm-flower built for its declared target; run refusing a declared program; the agreement test: every wasm-relevant program's located refusals equal on check, build and the editor, with and without --target wasm32)",
+            "crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires; KNOWN_OPEN empty since T2, T3 and T5 landed, a new entry held to today's answer)",
+            "crates/hale-types/src/target.rs (async_io_follows_the_libc: TargetSpec::has_async_io is the runtime's shape, the AsyncIoPool cell what a program may ask for; they differ on wasm32 alone)",
             "crates/hale-types/tests/shadow_capability.rs (the checker rows against their cells over the corpus, tests/hale, the DNA seeds and the wasm programs, on three columns: 0 divergences)",
-            "crates/hale-codegen/tests/shadow_capability_lowering.rs (the codegen rows, the thread behaviours and @ffi(\"js\") against their cells, both targets built; 7 classified divergences, all the design's: 3 PoolJoin, 4 @ffi(\"js\") native links)",
-            "crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 1 classified divergence, T1's --wrap-main spelling)",
+            "crates/hale-codegen/tests/shadow_capability_lowering.rs (the codegen rows, the thread behaviours and @ffi(\"js\") against their cells, both targets built, a harness build refused by the admission before lowering; 7 classified divergences, all the design's: 4 declared export-only programs and 3 declared @ffi(\"js\") programs a harness lowers natively anyway, where codegen still says `program has no fn main()` and the native link fails)",
+            "crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 0 divergences)",
+            "crates/hale-types/tests/capability_uses.rs (the use producer's acceptance cases: a stdlib call, a construction with its lifecycle, a handle's method, a wrapper refused once, module-nested and on_failure bodies, a hole, declaration rows, an export-only program, an exported run(); T2's pinned, pool, async_io and transport refusals at the entry or binding; T3's stub namespaces; T5's @ffi(\"js\") on a native target, called or not; each type-only variant admitted)",
             "crates/hale-types/tests/capability_doc_matches.rs (both document regions equal the rendered matrix)",
         ],
         spec: &["spec/decisions.md F.35", "spec/ffi.md § The `target` declaration + stdlib gating", "docs/src/systems/webassembly.md"],
-        owned: &[],
+        owned: &[site(CAPABILITY_USES, "derive_capability_uses"), site(CAPABILITY_USES, "admission_diags")],
         seams: &[
-            Seam { symbol: "wasm_unavailable_stdlib(", allowed: &[(CHECK, 2)] },
-            // the definition and the document rendering, and the laws
-            Seam { symbol: "derive_capability_matrix(", allowed: &[(CAPABILITY, 2), (CAPABILITY_TRANSPORT, 1), ("crates/hale-types/src/capability/laws.rs", 12)] },
-            Seam { symbol: "target_row(", allowed: &[(CAPABILITY, 1), (SNAPSHOT, 1)] },
+            // the definition and the document rendering, the laws, and
+            // the use producer and the admission law
+            Seam {
+                symbol: "derive_capability_matrix(",
+                allowed: &[
+                    (CAPABILITY, 2),
+                    (CAPABILITY_TRANSPORT, 1),
+                    ("crates/hale-types/src/capability/laws.rs", 12),
+                    (CAPABILITY_USES, 2),
+                    // the target model's test, holding has_async_io to the cell
+                    ("crates/hale-types/src/target.rs", 1),
+                    // LinkLibrary, read before any tool by the CLI and by a
+                    // build handed link libraries
+                    ("crates/hale-cli/src/shared/options.rs", 1),
+                    (CG, 1),
+                ],
+            },
+            // the definition, the snapshot's family, and the two checks
+            // of a bundle no snapshot holds
+            Seam {
+                symbol: "derive_capability_uses(",
+                allowed: &[(CAPABILITY_USES, 1), (SNAPSHOT, 1), (CHECK, 1), ("crates/hale-types/src/lib.rs", 1)],
+            },
+            // the definition, the snapshot's family, and the check of a
+            // bundle no snapshot holds (the tests' entries)
+            Seam { symbol: "target_row(", allowed: &[(CAPABILITY, 1), (SNAPSHOT, 1), (CHECK, 1), ("crates/hale-types/src/lib.rs", 1)] },
         ],
     },
     Family {

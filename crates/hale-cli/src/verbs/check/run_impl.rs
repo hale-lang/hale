@@ -10,6 +10,7 @@ use crate::shared::diag::render_diag_json;
 use crate::shared::diag::render_flows;
 use crate::shared::diag::render_located;
 use crate::shared::frontend::retain_owned_advisories;
+use crate::shared::options::{compile_target, configured_target, flag_value_in, parse_target};
 /// Resolve a flat list of import directives originating from one
 /// importer directory: for each import, locate the target on disk
 /// (entry-relative file or dir, workspace-root fallback dir),
@@ -108,6 +109,26 @@ pub(crate) fn run_check_impl_labelled(
         target.is_dir(),
         std::env::args().any(|a| a == "--allow-unowned-subscriber"),
     );
+    // `--target`: the target the program is checked for, parsed as
+    // `hale build --target` parses it, and the effective target as it
+    // is the build's (T1(b)). Without it, a written declaration selects
+    // wasm32 and the host is the fallback, as in the build and the
+    // editor.
+    let args: Vec<String> = std::env::args().collect();
+    match flag_value_in(&args, "--target") {
+        Ok(None) => {}
+        Ok(Some(v)) => match parse_target(&v) {
+            Ok(spec) => config.target = configured_target(compile_target(spec), true),
+            Err(msg) => {
+                eprintln!("{}", msg);
+                return 2;
+            }
+        },
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return 2;
+        }
+    }
     // GH #409: an environment binds law to an ENTRYPOINT; the snapshot
     // refuses a seed with no main locus, and adopts the environment's
     // constitutions into the one it has.
@@ -761,6 +782,37 @@ pub(crate) fn run_check_impl_labelled(
             return 1;
         }
         if diags.iter().any(|d| d.is_error()) {
+            return 1;
+        }
+    }
+    // T4: the link libraries a build of this program would take —
+    // `--link`, and each imported package's `[ffi] link` — held to the
+    // `LinkLibrary` cell, as `hale build` holds them before any tool is
+    // looked up: a record against the manifest's line, or the flag.
+    if let Ok(row) = snap.demand_target() {
+        let args: Vec<String> = std::env::args().collect();
+        let links: Vec<String> =
+            args.windows(2).filter(|w| w[0] == "--link").map(|w| w[1].clone()).collect();
+        let entry_dir = if target.is_dir() {
+            target.to_path_buf()
+        } else {
+            target.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
+        let inputs = crate::shared::options::link_inputs(
+            &links,
+            snap.entry_imports(),
+            &entry_dir,
+            crate::shared::workspace::find_workspace_root(target).as_deref(),
+        );
+        let refused = crate::shared::options::link_refusals(row, &inputs);
+        if !refused.is_empty() {
+            for r in &refused {
+                if json_mode {
+                    println!("{}", serde_json::json!({ "severity": "error", "kind": "capability", "message": r }));
+                } else {
+                    eprintln!("{r}");
+                }
+            }
             return 1;
         }
     }

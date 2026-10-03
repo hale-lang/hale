@@ -16,23 +16,59 @@ hale build client/main.hl --target wasm32
 
 This emits `client/main.wasm` (self-contained — the runtime is
 linked in, with no libc and no external runtime) and `client/main.mjs` (a loader that
-instantiates the module and wires the host functions). The program
-declares the target so the typechecker can gate the parts of the
-standard library that need syscalls:
+instantiates the module and wires the host functions). A program
+written for the browser can say so itself:
 
 ```hale
 target wasm { }
 ```
 
-It goes at the top level of the file. A `target` block inside a
-`module { }` is a parse error — it is a directive for the whole
-program, and putting it out of reach of everything that reads it
-would only look like it worked.
+With that declaration, `hale build client/main.hl` builds for wasm32
+with no flag at all, and `hale check` and the editor judge the program
+as wasm32 — the same cells, the same refusals. It goes at the top level
+of the file. A `target` block inside a `module { }` is a parse error —
+it is a directive for the whole program, and putting it out of reach
+of everything that reads it would only look like it worked.
+
+`--target` always wins over the host, and `hale check` takes it too:
+`hale check --target wasm32 app.hl` judges an undeclared program as the
+browser build will. A `--target` that contradicts the declaration —
+building a `target wasm` program for the host — is refused at the
+declaration rather than quietly building the other thing. And since
+nothing a wasm32 build emits runs here, `hale run` refuses a declared
+program, as it refuses `--target wasm32`.
 
 The browser sandbox has no syscalls, so the parts of a program that
 need them are refused or do nothing there; [What wasm32
 can do](#what-wasm32-can-do) lists each one. Reach the outside world
 through host functions instead.
+
+The check finds every way your program reaches a refused namespace,
+not just a call spelled `std::io::fs::…`: building a
+`std::io::tcp::Listener { … }`, calling `conn.recv(64)` on a
+`std::io::tcp::Stream`, calling a library's `c::stamp()` whose body
+calls `std::process::pid()`, or building a library's `lib::Kid { }`
+whose params default (or `on_failure` handler) calls it. Each is
+refused where your code makes it, with the chain that leads to the
+namespace:
+
+```text
+error: `std::process` is unavailable under `target wasm`: OS process control (`std::process`) isn't available in the browser — witness: `c::stamp` → `std::process::pid`
+```
+
+A helper you write yourself is refused once, inside it, not at every
+call. A type that only names a stdlib handle (a parameter typed
+`std::io::tcp::Stream`) is fine. And a call the compiler cannot see
+through — a method on a value whose type it doesn't know, or a call
+through a function-typed parameter — is refused under wasm32 too, since
+it can't promise what that call needs. A call through a local is
+followed to the function the local holds (`let f = pid; f()` needs what
+`pid` needs, and the refusal's witness names `f`); in your own code and
+in a library locus's params default, a local holding a field, a call's
+result or an `if` value can't be followed, and is refused the same way.
+So is a local you reassign — and a loop that reassigns one anywhere
+inside it makes it unfollowable for the whole loop, since the next
+iteration calls whatever the assignment stored.
 
 The **in-process typed bus** — `topic` / `bus { publish … }` /
 `bus { subscribe … }` across loci — runs under wasm exactly as it
@@ -67,18 +103,13 @@ compiler consults, with the reasons it gives.
 | `std::term` | terminal control (`std::term`) isn't available in the browser | (no terminal in the browser) |
 | `std::process` | OS process control (`std::process`) isn't available in the browser | (no OS process control) |
 | `std::http` | the `std::http` server is built on raw TCP and isn't available in the browser | (server is built on raw TCP) |
-
-These namespaces type-check and build under wasm32, and what they do there is a stub:
-
-| Namespace | Under wasm32 |
-|---|---|
-| `std::env` | admitted, and a stub: every operation reads the shim's inline `getenv`, which returns NULL |
-| `std::io::mirror` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::io::sockopt` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::io::unix` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::ring` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::time` | admitted, and mixed: the clock reads go through the shim's inline `clock_gettime`, which writes zero, and `sleep` calls `clock_nanosleep`, an import stubbed to 0; the conversions compute on their argument |
-| `std::ts` | admitted, and a stub: the wasm link returns before the tree-sitter shim is linked |
+| `std::env` | the browser has no process environment: the shim's inline `getenv` returns NULL | configuration handed in through an `@ffi("js")` host import or an `@export` fn's arguments |
+| `std::io::mirror` | a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have | (no shared memory in the browser) |
+| `std::io::sockopt` | socket options are syscalls the browser sandbox does not have | (no sockets in the browser) |
+| `std::io::unix` | AF_UNIX sockets are syscalls the browser sandbox does not have | a WebSocket bus adapter (`ws://`), or an `@ffi("js")` host import |
+| `std::ring` | a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have | (no shared memory in the browser) |
+| `std::time` | the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep never waits | a host clock (`performance.now`, `Date.now`) or timer through an `@ffi("js")` host import |
+| `std::ts` | the tree-sitter parser is a native static library the wasm link never reaches | parsing on the host, through an `@ffi("js")` host import |
 
 Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::io`, `std::iter`, `std::json`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::yaml`.
 
@@ -86,12 +117,12 @@ Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::
 
 | Construct | Under wasm32 | Why |
 |---|---|---|
-| a `pinned` placement, or an adapter binding | refused: `wasm-ld failed: exit status: 1` | wasm-ld: function signature mismatch: pthread_join; codegen declares `pthread_join(i64, ptr)` while the wasm shim's `pthread_t` is i32, and the only emitted call is the pinned-child join: a late, unlocated refusal after clang has run |
-| `cooperative(pool = X)`, X other than `main` | admitted | admitted: `pthread_create` is an import the loader stubs with `() => 0`, so a pool's `run()` is posted and never executes; the module links with wasm-ld's signature-mismatch warnings on `lotus_coop_pool_post` and `lotus_bus_dispatch_keyed`, a trap if either call executes |
-| `where async_io` | admitted | admitted: the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, so the pool never runs |
-| a `unix(...)` binding | admitted | admitted: the bindings prelude is ungated and the socket calls are imports the loader stubs with `() => 0`, so the binding never connects |
-| a `shm_ring(...)` binding | admitted | admitted: the bindings prelude is ungated and `shm_open` and `mmap` are imports the loader stubs with `() => 0`, so the ring never maps |
-| an adapter binding (`T: MyAdapter { ... }`) | refused: `wasm-ld failed: exit status: 1` | an adapter's instance runs on its own thread, so its binding requires `PinnedThreads`, and meets the same late refusal: wasm-ld: function signature mismatch: pthread_join |
+| a `pinned` placement | refused: ``placement entry `<field>`: `pinned` is not available under `target wasm` — a pinned locus owns a thread of its own, and the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`); place it `cooperative` (pool `main`)`` | the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`) |
+| `cooperative(pool = X)`, X other than `main` | refused: ``placement entry `<field>`: a cooperative pool other than `main` is not available under `target wasm` — its workers are threads, and the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`); place it `cooperative` (pool `main`)`` | the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`) |
+| `where async_io` | refused: ``placement entry `<field>`: `async_io` pools aren't supported on wasm32 — use a cooperative pool on `main` (drop `where async_io` and the pool). (the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, and the pool's workers are threads the module does not have.)`` | the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, and the pool's workers are threads the module does not have |
+| a `unix(...)` binding | refused: ``bindings entry `<Topic>`: this transport is not available under `target wasm` — the browser sandbox has no AF_UNIX sockets; keep the topic in-process, or reach the host through an `@ffi("js")` host import`` | the browser sandbox has no AF_UNIX sockets |
+| a `shm_ring(...)` binding | refused: ``bindings entry `<Topic>`: this transport is not available under `target wasm` — the browser sandbox has no shared memory to map; keep the topic in-process, or reach the host through an `@ffi("js")` host import`` | the browser sandbox has no shared memory to map |
+| an adapter binding (`T: MyAdapter { ... }`) | refused: ``bindings entry `<Topic>`: this transport is not available under `target wasm` — an adapter's instance runs on a thread of its own, which the wasm32 module does not have; keep the topic in-process, or reach the host through an `@ffi("js")` host import`` | an adapter's instance runs on a thread of its own, which the wasm32 module does not have |
 | `or wait` on an `on_full: fail` topic | admitted | the publisher spins on its own pump (the 1 ms nap is the shim's inline no-op) until the queue empties, or wait-abort ends the wait |
 
 **Linking.** `[ffi] link` is refused:
@@ -135,6 +166,10 @@ const inst = await run((h) => ({
   draw_line: (x1,y1,z1,x2,y2,z2) => { /* push to a WebGL buffer */ },
 }));
 ```
+
+Only the wasm32 loader can supply a `js` import, so a native build of a
+program that declares one is refused at the declaration — even if
+nothing calls it. Keep browser imports in the browser build.
 
 ## Letting the host call you: `@export` + the app locus
 
@@ -185,7 +220,10 @@ function tick() {
 requestAnimationFrame(tick);
 ```
 
-A program made of `@export` declarations needs no `fn main` at all.
+A program made of `@export` declarations needs no `fn main` at all —
+as long as it's built for wasm32. Checked or built for the host, it has
+no entry point, and the check says so at its first `@export`: declare
+`target wasm { }`, or pass `--target wasm32`.
 
 ## Quick wasm from a bare `fn main`: `--wrap-main`
 
@@ -219,9 +257,12 @@ once natively. Because it works on the AST, not the source text:
   stdlib (`std::io::tcp`, `std::process`, …) is rejected with a precise
   diagnostic, on untouched source.
 
-It is **wasm-only and opt-in**: it requires `--target wasm32` (there is
-no native entry-inversion to wrap, so it errors on a native build), and
-it's never implied — a normal wasm program may legitimately keep a bare
+It is **wasm-only and opt-in**: it requires a wasm32 build — `--target
+wasm32` (or `wasm32-unknown-unknown`), or a `target wasm { }` the source
+itself declares — since there is no native entry-inversion to wrap; on
+a native build it errors. The declaration it injects doesn't count:
+`hale build --wrap-main snippet.hl` alone is still refused. It's never
+implied — a normal wasm program may legitimately keep a bare
 `fn main` exported as `main`. If the program already declares an
 `@export` entry, `--wrap-main` leaves it untouched (prefer-explicit).
 This is the one flag the browser playground passes so it can hand the
