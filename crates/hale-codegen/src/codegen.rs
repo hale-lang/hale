@@ -1187,11 +1187,6 @@ pub fn build_resolved(
         }
     };
     phase("resolve", &mut t_last);
-    // Whether any placement puts a thread off main, asked of the
-    // envelope's bundle view before the envelope is taken apart; see
-    // `program_has_offthread` below for why it matters.
-    let has_offthread_placement =
-        hale_types::bus_graph::has_offthread_placement(&resolved.bundle());
     // The view the frontend produced (`hale_types::resolved`): `merged`
     // is what lowering walks.
     let LoweringView {
@@ -1243,11 +1238,19 @@ pub fn build_resolved(
     // value makes them identical-by-construction.
     //
     // The value is the UNION of every condition that makes the runtime
-    // set `g_bus_has_pinned`:
-    //   * pinned OR non-main cooperative placement
-    //     (`has_offthread_placement` — drives `lotus_bus_mark_pinned`
-    //     for pinned, and `lotus_coop_pool_start_all` for pools), and
-    //   * ANY `bindings { }` block on the main locus. Adapter entries
+    // set `g_bus_has_pinned`, read off the view's rows (F.40 phase 3,
+    // E2):
+    //   * a domain of the placement table that is not main
+    //     (`PlacementTable::places_off_main`: a pinned anchor, a non-main
+    //     cooperative pool, an adapter binding's thread, the api
+    //     binding's synthesized pool — drives `lotus_bus_mark_pinned`
+    //     for pinned, and `lotus_coop_pool_start_all` for pools). The
+    //     table places what lowering deploys, so an imported library's
+    //     `main locus`, which nothing builds, adds nothing however its
+    //     `placement { }` block reads; and
+    //   * ANY binding row of the program's own main locus, a
+    //     module-nested one included, as `root_bindings` lowers it
+    //     (`BindingRows::binds_on_main`). Adapter entries
     //     were always counted (a transport recv-loop on its own
     //     thread, "pinned-equivalent by construction") — but unix/udp
     //     listen bindings spawn EXACTLY the same kind of reader
@@ -1265,12 +1268,8 @@ pub fn build_resolved(
     //     but the statically-baked `no_pinned` enqueue sites can't
     //     be un-baked at runtime — so the compile-time union here
     //     must stay the superset.
-    let has_socket_binding = merged.items.iter().any(|item| {
-        matches!(item, TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") && l.members.iter().any(|m| {
-            matches!(m, LocusMember::Bindings(b) if !b.entries.is_empty() || b.api.is_some())
-        }))
-    });
-    let program_has_offthread = has_offthread_placement || has_socket_binding;
+    let program_has_offthread =
+        resolved.placement.places_off_main() || resolved.bindings.binds_on_main();
 
     // Static-bus-dispatch devirtualization plan (build #1b), derived in
     // the resolved program from the bus graph over the merged and

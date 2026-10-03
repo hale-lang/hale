@@ -44,8 +44,8 @@ program's placement coherent with how the runtime dispatches.
 | **Single-threaded-method invariant** | a *direct* cross-pool method call (`self.field.method()` where `field` is placed on a different pool) — it would run the callee's method on the wrong thread | error | `check_placement_single_thread` |
 | **Dead bus receiver** | a non-`main` cooperative locus that subscribes to the bus *and* makes a blocking call in `run()` — the blocking call monopolizes the pool thread so the dispatch never delivers and its handlers never fire | error | `check_cooperative_pool_blocking` |
 | **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, a stdin or file read, an `http` request, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
-| **Cooperative pool starvation** | two or more loci on one cooperative pool (not `where async_io`) whose `run()` bodies statically never return (terminal `while` with no exit — `while true`, `while !self.draining`, or a never-assigned Bool flag) — the pool runs each `run()` to completion in birth order, so the later `run()` bodies never start. Covers fields with no placement entry (they default to pool `main`) and the main locus's own `run()`, which begins only after params-init | warning | `check_cooperative_pool_blocking` |
-| **Nested long-running child** | a non-`main` locus holding a params field of a locus type whose `run()` doesn't return — the canonical fix is hoisting it to a `main` sibling with its own placement | error | `check_nested_long_running_child` |
+| **Cooperative pool starvation** | two or more loci on one cooperative pool (not `where async_io`) whose `run()` bodies statically never return (terminal `while` with no exit — `while true`, `while !self.draining`, or a never-assigned Bool flag) — the pool runs each `run()` to completion in birth order, so the later `run()` bodies never start. Covers fields with no placement entry (they default to pool `main`) and the main locus's own `run()`, which begins only after params-init | warning | `check_pool_starvation` |
+| **Nested long-running child** | a non-`main` locus with a `run()` body of its own holding a params field of a locus type whose `run()` is long-running (a body of its own, whether or not it returns: `spec/runtime.md` § Typecheck enforcement) — the canonical fix is hoisting it to a `main` sibling with its own placement | error | `check_nested_long_running_child` |
 | **Unowned subscriber locus** | a bus-subscribing locus instantiated inside another locus's bus handler with no accepting ancestor in the ownership graph on every construction path of the handler's locus (the paths the placement table records, `fn main`'s included; a hole proves no owner) — it dissolves when the handler returns, so its subscription can never fire; judged by declaration identity, and silent where the graph cannot decide (`spec/semantics.md` type-check rule 20; overridable with `--allow-unowned-subscriber`) | error | `check_unowned_subscriber_locus` |
 | **Pinned placement in a loop** | a locus whose `placement { }` pins a field, instantiated inside a loop body — the pinned thread's join record is one slot per instantiation site, so every iteration but the last is orphaned with its arena live. A loop that *calls a fn* holding the literal is fine (each call joins its own thread) | error | `check_pinned_locus_in_loop` |
 | **Unconsumed placement entry** | a `placement { }` entry whose field is initialised by anything but a locus literal (a factory call, a conditional, a reference to an instance built elsewhere) — the entry rides an override the next literal takes, so nothing consumes it and the stated placement is silently dropped. Checked against the init at the instantiation site when the literal supplies one, and the `params` default otherwise | error | `check_placement_entry_consumed` |
@@ -55,6 +55,18 @@ call-graph surface is not widened), while the blocking *warning* is
 interprocedural — the high-stakes diagnostic stays precise. See
 `spec/semantics.md` type-check rules 7–8 and
 `docs/src/services/concurrency.md`.
+
+**The warning's horizon.** The helpers that block are read off the
+effect rows: a fn blocks when its own `block` leaf holds the worker
+(below), or when any fn it calls blocks, transitively over the rows'
+resolved call targets — a module's fns by their bare names, a
+qualified cross-seed call, a stdlib body behind a handle method and
+another locus's method included. The `run()` walk consults that set at
+two call shapes only: a bare call `pump()` (a free fn) and
+`self.pump()` (a method of the locus's own). A handle method or a
+`self.field.method()` hop written in `run()` itself is not looked at;
+the same call inside a helper that `run()` calls makes the helper
+block.
 
 **What counts as "blocking" for both** is the effects registry's
 `block` classification — the same rows the effect assertions and the

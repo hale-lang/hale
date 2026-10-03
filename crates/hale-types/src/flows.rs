@@ -33,10 +33,19 @@
 //! way a concrete clause's type is resolved. The flow facts then cover
 //! the concrete loci lowering creates, not only the ones written out
 //! (outside review of #1295, finding 1).
+//!
+//! Beside the clauses, every locus declaration has a run row
+//! ([`RunRow`]): whether its `run()` is *long-running* (a body of its
+//! own) and whether it *never returns*. The checker asks both, of
+//! different rules, so they are two columns, never one predicate
+//! (F.40 phase 3, E2).
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{LifecycleKind, LocusDecl, LocusMember, NodeId, Program, TopDecl, TypeExpr};
+use hale_syntax::ast::{
+    Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, Literal, LocusDecl, LocusMember,
+    MatchArmBody, NodeId, ParamInit, Program, Stmt, TopDecl, TypeExpr, UnaryOp,
+};
 use hale_syntax::Span;
 
 use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
@@ -75,11 +84,41 @@ pub struct Flow {
     pub clauses: Vec<FlowClause>,
 }
 
+/// A locus's `run()`, as the two questions the checker asks of it
+/// (F.40 phase 3, E2). They are different questions, asked by
+/// different rules, so each is a column of its own
+/// (spec/runtime.md § Typecheck enforcement):
+///
+/// - **long-running**: the `run()` body has a statement of its own. A
+///   nested cooperative child runs its `run()` to completion before its
+///   parent's begins, so any body delays the parent whether or not it
+///   ever returns: the nested-long-running-child rule asks this.
+/// - **never returns**: the `run()` body provably never returns (its
+///   last statement is a `while` with no exit whose condition never
+///   flips false). A cooperative pool runs each `run()` cell to
+///   completion, so only such a body starves the cells after it: the
+///   starvation and birth-order laws ask this.
+///
+/// A body that never returns is long-running; the converse does not
+/// hold (`run() { std::time::sleep(1m); }` is long-running and returns).
+pub struct RunRow {
+    /// The locus as declared, and where: a declaration is found by its
+    /// name and span ([`FlowRows::run_of`]).
+    pub locus: String,
+    pub span: Span,
+    pub long_running: bool,
+    /// The terminal `while`, when the body never returns.
+    pub never_returns: Option<Span>,
+}
+
 /// The `flows` family's rows, with what a template clause is resolved
 /// against once a specialization substitutes it: the declared loci and
 /// aliases, and the bundle's import renames. Derefs to the rows.
 pub struct FlowRows {
     flows: Vec<Flow>,
+    /// One run row per locus declaration, a module's included, in
+    /// declaration order.
+    runs: Vec<RunRow>,
     declared: DeclaredNames,
     renames: Vec<(Vec<String>, String)>,
 }
@@ -92,6 +131,11 @@ impl std::ops::Deref for FlowRows {
 }
 
 impl FlowRows {
+    /// The run row of a declaration the rows were surveyed over.
+    pub fn run_of(&self, decl: &LocusDecl) -> Option<&RunRow> {
+        self.runs.iter().find(|r| r.locus == decl.name.name && r.span == decl.span)
+    }
+
     /// The loci a specialization of `template` makes flows: each of the
     /// template's clauses, its type passed through `substitute` (the
     /// consumer's substitution of the template's parameters by the
@@ -145,10 +189,25 @@ fn mentions_param(ty: &TypeExpr, generics: &[String]) -> bool {
         || generic_args.iter().any(|a| mentions_param(a, generics))
 }
 
-fn walk(items: &[TopDecl], rows: &FlowRows, out: &mut BTreeMap<String, Vec<FlowClause>>) {
+fn walk(
+    items: &[TopDecl],
+    rows: &FlowRows,
+    out: &mut BTreeMap<String, Vec<FlowClause>>,
+    runs: &mut Vec<RunRow>,
+) {
     for item in items {
         match item {
             TopDecl::Locus(l) => {
+                let run = l.members.iter().find_map(|m| match m {
+                    LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(&lc.body),
+                    _ => None,
+                });
+                runs.push(RunRow {
+                    locus: l.name.name.clone(),
+                    span: l.span,
+                    long_running: run.is_some_and(|b| !b.stmts.is_empty()),
+                    never_returns: run.and_then(|b| run_statically_nonreturning(b, l)),
+                });
                 let generics: Vec<String> = l.generics.iter().map(|g| g.name.name.clone()).collect();
                 for member in &l.members {
                     let LocusMember::Lifecycle(lc) = member else { continue };
@@ -181,7 +240,7 @@ fn walk(items: &[TopDecl], rows: &FlowRows, out: &mut BTreeMap<String, Vec<FlowC
                     });
                 }
             }
-            TopDecl::Module(m) => walk(&m.items, rows, out),
+            TopDecl::Module(m) => walk(&m.items, rows, out, runs),
             _ => {}
         }
     }
@@ -194,13 +253,16 @@ fn walk(items: &[TopDecl], rows: &FlowRows, out: &mut BTreeMap<String, Vec<FlowC
 pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -> FlowRows {
     let mut rows = FlowRows {
         flows: Vec::new(),
+        runs: Vec::new(),
         declared: DeclaredNames::of(programs),
         renames: import_renames.to_vec(),
     };
     let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
+    let mut runs: Vec<RunRow> = Vec::new();
     for p in programs {
-        walk(&p.items, &rows, &mut by_child);
+        walk(&p.items, &rows, &mut by_child, &mut runs);
     }
+    rows.runs = runs;
     rows.flows = by_child
         .into_iter()
         .map(|(child, mut clauses)| {
@@ -211,9 +273,205 @@ pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -
     rows
 }
 
+// === statically non-returning run(): the never-returns column =====
+//
+// Moved here from the checker (F.40 phase 3, E2) so the run row holds
+// it beside the long-running column; the starvation and birth-order
+// laws read the column. A cooperative pool runs each posted `run()`
+// cell to completion, so
+// two loci on one pool whose `run()` bodies never return means the
+// second never starts — silently (bus handlers still fire at
+// sleep/yield drains, which makes the hang look like a healthy idle).
+// The predicate below is deliberately conservative (same style as
+// `while_counter_bounded` in alloc_summary.rs): it only claims
+// "statically never returns" for shapes it can prove, so the
+// starvation warning never false-fires on a loop that can exit.
+
+/// Does this block contain a statement that can exit the enclosing
+/// `run()` loop — `break`, `return`, `terminate`, `fail`, or
+/// `violate`? Walked recursively through nested statement bodies but
+/// NOT into expressions (a `return` inside a failure-closure exits
+/// the closure, not `run()`). A `break` in a *nested* loop only exits
+/// that loop, but counting it as an exit here is the conservative
+/// direction (a missed warning, never a false one).
+fn block_has_loop_exit(block: &Block) -> bool {
+    block.stmts.iter().any(stmt_has_loop_exit)
+}
+
+fn stmt_has_loop_exit(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Break(_)
+        | Stmt::Return(..)
+        | Stmt::Terminate(_)
+        | Stmt::Fail { .. }
+        | Stmt::Violate { .. } => true,
+        Stmt::If(if_stmt) => if_has_loop_exit(if_stmt),
+        Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
+            MatchArmBody::Block(b) => block_has_loop_exit(b),
+            MatchArmBody::Expr(_) => false,
+        }),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => block_has_loop_exit(body),
+        Stmt::Block(b) => block_has_loop_exit(b),
+        Stmt::ShmWrite { body, .. } => block_has_loop_exit(body),
+        _ => false,
+    }
+}
+
+fn if_has_loop_exit(if_stmt: &IfStmt) -> bool {
+    if block_has_loop_exit(&if_stmt.then_block) {
+        return true;
+    }
+    match if_stmt.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => block_has_loop_exit(b),
+        Some(ElseBranch::ElseIf(inner)) => if_has_loop_exit(inner),
+        None => false,
+    }
+}
+
+/// `Some(field_name)` iff the expression is a bare `self.<field>` read.
+fn self_bool_field(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Field { receiver, name, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+        {
+            Some(name.name.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// Is `self.<field> = ...` (or a compound assign to it) present in any
+/// member body of the locus? Walked through nested statement bodies.
+fn locus_assigns_self_field(decl: &LocusDecl, field: &str) -> bool {
+    fn block_assigns(block: &Block, field: &str) -> bool {
+        block.stmts.iter().any(|s| stmt_assigns(s, field))
+    }
+    fn if_assigns(if_stmt: &IfStmt, field: &str) -> bool {
+        block_assigns(&if_stmt.then_block, field)
+            || match if_stmt.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => block_assigns(b, field),
+                Some(ElseBranch::ElseIf(inner)) => if_assigns(inner, field),
+                None => false,
+            }
+    }
+    fn stmt_assigns(stmt: &Stmt, field: &str) -> bool {
+        match stmt {
+            Stmt::Assign { target, .. } => {
+                target.head.name == "self"
+                    && matches!(
+                        target.tail.first(),
+                        Some(LValueSeg::Field(f)) if f.name == field
+                    )
+            }
+            Stmt::If(if_stmt) => if_assigns(if_stmt, field),
+            Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
+                MatchArmBody::Block(b) => block_assigns(b, field),
+                MatchArmBody::Expr(_) => false,
+            }),
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                block_assigns(body, field)
+            }
+            Stmt::Block(b) => block_assigns(b, field),
+            Stmt::ShmWrite { body, .. } => block_assigns(body, field),
+            _ => false,
+        }
+    }
+    decl.members.iter().any(|m| match m {
+        LocusMember::Fn(f) => block_assigns(&f.body, field),
+        LocusMember::Lifecycle(l) => block_assigns(&l.body, field),
+        LocusMember::Mode(md) => block_assigns(&md.body, field),
+        LocusMember::Failure(fd) => block_assigns(&fd.body, field),
+        _ => false,
+    })
+}
+
+/// The literal Bool default of a params field, if it has one.
+fn param_bool_default(decl: &LocusDecl, field: &str) -> Option<bool> {
+    decl.members.iter().find_map(|m| {
+        let LocusMember::Params(pb) = m else { return None };
+        pb.params.iter().find_map(|p| {
+            if p.name.name != field {
+                return None;
+            }
+            match &p.init {
+                ParamInit::Value(Expr::Literal(Literal::Bool(b), _)) => Some(*b),
+                _ => None,
+            }
+        })
+    })
+}
+
+/// `Some(span of the terminal while)` iff this `run()` body statically
+/// never returns: its last statement is a `while` whose body contains
+/// no exit statement and whose condition provably never flips false —
+///   - `while true`,
+///   - `while !self.draining` (the synthetic drain flag flips only at
+///     shutdown, so for the pool's purposes the loop runs forever),
+///   - `while !self.f` / `while self.f` where `f` is a Bool params
+///     field that no member body ever assigns and whose declared
+///     default keeps the loop live (`false` / `true` respectively).
+fn run_statically_nonreturning(run_body: &Block, decl: &LocusDecl) -> Option<Span> {
+    let Some(Stmt::While { cond, body, span }) = run_body.stmts.last() else {
+        return None;
+    };
+    if block_has_loop_exit(body) {
+        return None;
+    }
+    let never_flips = match cond {
+        Expr::Literal(Literal::Bool(true), _) => true,
+        Expr::Unary { op: UnaryOp::Not, operand, .. } => {
+            match self_bool_field(operand) {
+                Some("draining") => true,
+                Some(f) => {
+                    !locus_assigns_self_field(decl, f)
+                        && param_bool_default(decl, f) == Some(false)
+                }
+                None => false,
+            }
+        }
+        _ => match self_bool_field(cond) {
+            Some(f) if f != "draining" => {
+                !locus_assigns_self_field(decl, f)
+                    && param_bool_default(decl, f) == Some(true)
+            }
+            _ => false,
+        },
+    };
+    if never_flips {
+        Some(*span)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Long-running" and "never returns" are two columns: a `run()`
+    /// that sleeps once is long-running and returns; a terminal
+    /// `while true` is both; an empty `run()` and no `run()` are neither.
+    /// A module's loci have rows too.
+    #[test]
+    fn long_running_and_never_returns_are_two_columns() {
+        let src = "locus Sleeper { run() { std::time::sleep(1m); } }\n\
+                   locus Daemon { run() { while true { std::time::sleep(1s); } } }\n\
+                   locus Idle { run() { } }\n\
+                   locus Plain { params { n: Int = 0; } }\n\
+                   module inner { locus Nested { run() { while true { } } } }\n\
+                   fn main() { }\n";
+        let p = hale_syntax::parse_source(src).expect("parse");
+        let rows = survey(&[&p], &[]);
+        let col = |name: &str| {
+            let r = rows.runs.iter().find(|r| r.locus == name).expect("a run row");
+            (r.long_running, r.never_returns.is_some())
+        };
+        assert_eq!(col("Sleeper"), (true, false));
+        assert_eq!(col("Daemon"), (true, true));
+        assert_eq!(col("Idle"), (false, false));
+        assert_eq!(col("Plain"), (false, false));
+        assert_eq!(col("Nested"), (true, true));
+    }
 
     /// A clause's child is the locus lowering names: an alias is
     /// followed to its target, so two spellings of one child are two

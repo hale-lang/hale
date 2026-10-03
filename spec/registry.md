@@ -19,14 +19,14 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
-| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 31 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
+| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 30 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 4 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 2 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 1 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
-| `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
+| `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
 | `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
@@ -34,11 +34,11 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
 | `effects` | Layer 4 | Canonical | derivation | `derive_effect_rows` | 0 | Which effect classes each fn and locus reaches (the callgraph fixpoint), the declared classes and their `causes:`/`depends:` DAG, and the certificate relating the two. |
-| `blocking` | Layer 4 | Migrating | derivation | `blocking_path_match` | 4 | Which fns block (a cooperative worker would be held), and whether the program places anything off the main thread. |
+| `blocking` | Layer 4 | Canonical | derivation | `blocking_path_match` | 0 | Which fns block (a cooperative worker would be held), and whether the program places anything off the main thread. |
 | `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 1 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
-| `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
+| `nonreturning` | Layer 4 | Canonical | law | `run_statically_nonreturning` | 0 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
 | `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 4 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
@@ -411,7 +411,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `crates/hale-codegen/src/codegen.rs` · `in_main` — whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects` — the shm-ring subjects are read through `root_bindings`, which takes the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `synthesize_codec_thunks_for_main_bindings` — the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `let has_socket_binding` — whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen. *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` — rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error). *Removed when:* reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4.
 - `crates/hale-types/src/check.rs` · `check_instance_aliasing` — instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included). *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `check_pool_affinity` — validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact. *Removed when:* none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4).
@@ -585,7 +584,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Producer.** `crates/hale-types/src/binding_rows.rs` · `derive_binding_rows`
 
-**Consumers.** check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); check (a binding's `where` constraints are held to its transport's guarantee: the capability module's table, read through the row's transport kind) (`crates/hale-types/src/capability/transport.rs` · `guarantee`); the transport's cell on the effective target: `RemoteTransport(kind)` × the target row's backend, read through the snapshot (verdict-neutral: the adapter's wasm refusal is a late link refusal today, a known-open cell) (`crates/hale-frontend/src/snapshot.rs` · `binding_cell`); model (main's binding thread domains: the role and the transport kind) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); bus graph (the bound-topic set, at both grains, is the rows' projection) (`crates/hale-types/src/bus_graph.rs` · `collect_bus_walk`); codegen (the prelude, the shm-ring subjects, the codec thunks and the pinned adapter loci read each entry's transport kind, role, codec and producer-versus-attach from its row, through the lowering view; the entry's own text supplies the transport's parameters; a missing row is an error) (`crates/hale-codegen/src/codegen.rs` · `root_bindings`); api_surface
+**Consumers.** check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); check (a binding's `where` constraints are held to its transport's guarantee: the capability module's table, read through the row's transport kind) (`crates/hale-types/src/capability/transport.rs` · `guarantee`); the transport's cell on the effective target: `RemoteTransport(kind)` × the target row's backend, read through the snapshot (verdict-neutral: the adapter's wasm refusal is a late link refusal today, a known-open cell) (`crates/hale-frontend/src/snapshot.rs` · `binding_cell`); model (main's binding thread domains: the role and the transport kind) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); bus graph (the bound-topic set, at both grains, is the rows' projection) (`crates/hale-types/src/bus_graph.rs` · `collect_bus_walk`); codegen (the prelude, the shm-ring subjects, the codec thunks and the pinned adapter loci read each entry's transport kind, role, codec and producer-versus-attach from its row, through the lowering view; the entry's own text supplies the transport's parameters; a missing row is an error) (`crates/hale-codegen/src/codegen.rs` · `root_bindings`); codegen (whether a thread crosses the bus boundary: an entry of the program's own main, `binds_on_main`, beside the placement table's domains) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`); api_surface
 
 **Invariants.**
 
@@ -680,19 +679,20 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 ### `flows` — Canonical · derivation
 
-**Answers.** Which children are flows (released per completion) and which are resident.
+**Answers.** Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns.
 
-**Inputs.** release declarations; accept declarations; declared loci and type aliases (handler_routing's resolver); import renames
+**Inputs.** release declarations; accept declarations; run bodies; declared loci and type aliases (handler_routing's resolver); import renames
 
 **Producer.** `crates/hale-types/src/flows.rs` · `survey`
 
-**Consumers.** check --flows (each flow type as written, with its clauses) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `flows::survey(`); check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows) (`crates/hale-types/src/check.rs` · `check_accept_release`); resolved program (the lowering view's rows, over the merged program) (`crates/hale-types/src/resolved.rs` · `flows::survey(`); a declaration's dependents (X2: a flow child and its `release` owners are neighbours, `Snapshot::declaration_dependents`) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); the lifecycle plan (an accepted flow is torn down by the reclaim its run's end runs, a resident by its owner's cascade: the snapshot's rows over the checked programs) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read) (`crates/hale-codegen/src/codegen.rs` · `is_flow`); codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies) (`crates/hale-codegen/src/codegen.rs` · `specialize(`)
+**Consumers.** check --flows (each flow type as written, with its clauses) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `flows::survey(`); check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows) (`crates/hale-types/src/check.rs` · `check_accept_release`); check (the run rows: the long-running-child rule's long-running column, the starvation and birth-order laws' never-returns column; one survey per check, handed to all four) (`crates/hale-types/src/check.rs` · `run_of`); resolved program (the lowering view's rows, over the merged program) (`crates/hale-types/src/resolved.rs` · `flows::survey(`); a declaration's dependents (X2: a flow child and its `release` owners are neighbours, `Snapshot::declaration_dependents`) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); the lifecycle plan (an accepted flow is torn down by the reclaim its run's end runs, a resident by its owner's cascade: the snapshot's rows over the checked programs) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read) (`crates/hale-codegen/src/codegen.rs` · `is_flow`); codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies) (`crates/hale-codegen/src/codegen.rs` · `specialize(`)
 
 **Invariants.**
 
 - a release clause's child is resolved once, by `child_locus_name` (handler_routing's resolver: aliases, generic instantiations, qualified paths), into the row (`FlowClause::locus`); lowering's flow-ness is a row read (`flows::is_flow`), never a comparison of its own
 - the flow facts cover the specializations lowering creates: a clause whose type mentions its owner's type parameters names no locus by itself and carries its template (`FlowClause::template`: the owner's identity, its parameters in order, the type as written); `FlowRows::specialize` answers for one specialization by resolving the template's type under the substitution lowering's synthesis applied, so `Manager<Worker>`'s `release(c: T)` makes `Worker` a flow exactly as a concrete `release(c: Worker)` does
 - the checker's accept/release rule judges over the rows: the release clauses a locus declares are the rows' clauses inside its declaration
+- every locus declaration, a module's included, has a run row (`RunRow`: the declaration's name and span, which `FlowRows::run_of` finds it by, and two columns, long-running and never-returns, the `nonreturning` family's two definitions); the checker surveys the rows once per check and its four readers share that survey
 
 **Missing data.** a missing required row is a compiler error
 
@@ -859,7 +859,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-types/src/frontier.rs` · `infer_effects`; `crates/hale-types/src/frontier.rs` · `infer_effect_bounds`; `crates/hale-types/src/purity.rs` · `infer_purity_for_bundle`; `crates/hale-types/src/effect_rows.rs` · `EffectRows`; `crates/hale-types/src/evidence.rs` · `derive_certificate_evidence`; `crates/hale-types/src/evidence.rs` · `derive_certificate_evidence_over`
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_decorator_stacks`); claims (certificate, causes, depends, budget); the certificate evidence (the check's effects certificate report, read by the check's laws and the artifact's) (`crates/hale-frontend/src/snapshot.rs` · `demand_effect_certificates`); check (a codec binding's purity assertion reads the purity column, demanding the rows only when a codec reaches it) (`crates/hale-types/src/check.rs` · `CheckInputs`); model (effect labels, lower bounds and direct contributions, the last read by the reachability judgment's `effects(C)` test, and the summary the rows' walk read: the snapshot's rows, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); the effects manifest (`--dump-effects-manifest`, `--check-effects-manifest`: the snapshot's rows, cross-seed calls resolved through the renames) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_effects`); replay (the live-effects gate reads the manifest over the snapshot's rows, and refuses when they are blocked) (`crates/hale-cli/src/verbs/replay.rs` · `demand_effects`); doc
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_decorator_stacks`); claims (certificate, causes, depends, budget); the certificate evidence (the check's effects certificate report, read by the check's laws and the artifact's) (`crates/hale-frontend/src/snapshot.rs` · `demand_effect_certificates`); check (a codec binding's purity assertion reads the purity column, demanding the rows only when a codec reaches it) (`crates/hale-types/src/check.rs` · `CheckInputs`); check (the blocking warning: which helpers hold a cooperative worker, the BLOCK class with its leaves and resolved targets, demanding the rows only once a placed field has a `run()` to walk) (`crates/hale-types/src/check.rs` · `worker_holding_fns`); model (effect labels, lower bounds and direct contributions, the last read by the reachability judgment's `effects(C)` test, and the summary the rows' walk read: the snapshot's rows, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); the effects manifest (`--dump-effects-manifest`, `--check-effects-manifest`: the snapshot's rows, cross-seed calls resolved through the renames) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_effects`); replay (the live-effects gate reads the manifest over the snapshot's rows, and refuses when they are blocked) (`crates/hale-cli/src/verbs/replay.rs` · `demand_effects`); doc
 
 **Invariants.**
 
@@ -868,7 +868,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - an unresolved edge is coverage, never a violation: a row's `effects` saturates to `UNCLASSIFIED` when the walk reaches what it cannot name, its `known` set is the lower bound an unresolved edge never erases, and `unknown` says the walk reached such an edge
 - a row is keyed by the fn's name (`FnKey`) until the `snapshot_identity` family's declaration rows carry it
 - a fn's direct contribution is a column (`direct`; `EffectRows::direct` answers any key, a bodyless one by what it carries): the model's function rows and absorbed paths, which the reachability judgment's `effects(C)` destination test reads, take it from the rows, and nothing outside the producer folds a body for it
-- purity and the lower bound are columns of the rows: one walk answers a fn's saturating set and its lower bound (`infer_effect_bounds`), and the purity walk runs only inside the producer; the checker's codec law reads the purity column through `CheckInputs::effects`, a demand made only when a codec binding reaches the assertion, so a check of a program that binds no codec runs no effects fixpoint
+- purity and the lower bound are columns of the rows: one walk answers a fn's saturating set and its lower bound (`infer_effect_bounds`), and the purity walk runs only inside the producer; the checker's codec law reads the purity column through `CheckInputs::effects`, a demand made only when a codec binding reaches the assertion, and the blocking check its BLOCK class, a demand made only once a placement entry puts a field with a `run()` on a classic pool or main, so a check of a program that does neither runs no effects fixpoint
 - the effects certificate engine runs once per snapshot, in the check (`check_bundle_reporting`); the certificate evidence reads that report (`Snapshot::demand_effect_certificates`, handed to `derive_certificate_evidence_over`) and never runs the engine itself; a bundle no check ran over runs it once for itself (`effect_certificates`)
 
 **Missing data.** an unknown is a hole with a stated policy
@@ -888,32 +888,36 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `derive_certificate_evidence(` may be referenced from: `crates/hale-types/src/evidence.rs` ×1
 - `derive_certificate_evidence_over(` may be referenced from: `crates/hale-types/src/evidence.rs` ×2, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×1
 
-### `blocking` — Migrating · derivation
+### `blocking` — Canonical · derivation
 
 **Answers.** Which fns block (a cooperative worker would be held), and whether the program places anything off the main thread.
 
-**Inputs.** stdlib_surface (holds_cooperative_worker); the callgraph; placement
+**Inputs.** stdlib_surface (holds_cooperative_worker); effects (the rows' BLOCK class, their resolved targets and unresolved leaves); placement (the table's domains); bindings (the program's own main's entries)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `blocking_path_match`
+**Producer.** `crates/hale-types/src/check.rs` · `blocking_path_match`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/check.rs` · `worker_holding_fns`; `crates/hale-types/src/placement.rs` · `places_off_main`; `crates/hale-types/src/binding_rows.rs` · `binds_on_main`
 
-- `crates/hale-types/src/check.rs` · `blocking_free_fns` — a name-keyed callgraph fixpoint for the BLOCK class, beside the effects fixpoint's own BLOCK propagation. *Removed when:* one fixpoint (the effects rows).
-- `crates/hale-types/src/check.rs` · `blocking_self_methods` — the method half of the same fixpoint; no cross-locus hop. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `program_has_offthread` — codegen's predicate: its placement term calls the bus graph's `has_offthread_placement` (which walks modules); its bindings term scans top-level items only, so a module-nested main's socket binding is missed. *Removed when:* codegen reads the placement rows.
-- `crates/hale-types/src/bus_graph.rs` · `has_offthread_placement` — the placement half of the same predicate, walking modules; a component of codegen's, not a second copy. *Removed when:* one placement table.
-
-**Consumers.** check (rules 7, 8); effects (@no_block); codegen (mark_pinned, no_pinned dispatch)
+**Consumers.** check (rules 7, 8); effects (@no_block); codegen (mark_pinned, no_pinned dispatch: `program_has_offthread` over the view's placement table and binding rows) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`)
 
 **Invariants.**
 
 - one leaf set (GH #830) and one propagation
+- whether a thread crosses the bus boundary is read off rows, once, in lowering (`program_has_offthread`): a domain of the placement table that is not main (`PlacementTable::places_off_main`: a pinned anchor, a non-main pool, an adapter binding's thread, the api binding's synthesized pool) or an entry of the program's own `main locus` (`BindingRows::binds_on_main`: not an imported main, a module-nested one included, as lowering's prelude lowers it); the `lotus_bus_mark_pinned` call and every static dispatch's `no_pinned` flag are that one value and its negation
+- an imported library's `main locus` is never deployed, so its `placement { }` block places nothing and its `bindings { }` bind nothing: a program importing one is not off-thread for it (a classified correction, pinned in `offthread_imported_main.rs`), and a deployed module-nested main's binding makes its program off-thread (the same correction's other half: the old binding term scanned top-level items only)
+- the helpers that block are the effect rows' (`worker_holding_fns`, demanded through `CheckInputs::effects` only once a placed field has a `run()` to walk): a fn whose `direct` BLOCK comes from a leaf `holds_cooperative_worker` names (the BLOCK class includes `std::time::sleep`, which yields the worker, so the leaf test stays beside the row), closed over the rows' resolved targets; the check folds no call graph of its own
+- the rule's horizon: the rows' propagation sees what the old name-keyed walk did not (a qualified cross-seed call, a stdlib body behind a handle method, another locus's method), but the `run()` walk consults the set only at a bare call or a `self.m()` call, so the horizon decides what a helper reaches and never which call in `run()` is looked at; the rule's diagnostics over the corpus, tests/hale and the DNA seeds are the old walk's (spec/verification.md § Concurrency & placement safety)
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-codegen/tests/bus_devirt_no_pinned.rs
+**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-codegen/tests/bus_devirt_no_pinned.rs; crates/hale-types/tests/checks_inside_modules.rs; crates/hale-cli/tests/offthread_imported_main.rs
 
-**Spec.** spec/semantics.md rules 7, 8
+**Spec.** spec/semantics.md rules 7, 8; spec/verification.md § Concurrency & placement safety; spec/semantics.md § The entry locus
+
+**Guarded seams.**
+
+- `places_off_main(` may be referenced from: `crates/hale-types/src/placement.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `binds_on_main(` may be referenced from: `crates/hale-types/src/binding_rows.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
 
 ### `alloc_summary` — Migrating · derivation
 
@@ -1018,30 +1022,32 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
-### `nonreturning` — Migrating · law
+### `nonreturning` — Canonical · law
 
 **Answers.** Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it.
 
-**Inputs.** run bodies; params order; placement
+**Inputs.** flows (each locus declaration's run row: the long-running and never-returns columns); params order; placement (the table's rows for the deployed root's fields)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `run_statically_nonreturning`
+**Producer.** `crates/hale-types/src/flows.rs` · `run_statically_nonreturning`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/check.rs` · `check_pool_starvation`; `crates/hale-types/src/check.rs` · `check_birth_order`
 
-- `crates/hale-types/src/check.rs` · `check_nested_long_running_child` — a second `long-running` predicate (a hand table naming std::http::Server) that disagrees with the first. *Removed when:* one predicate.
-- `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` — the starvation and birth-order phases live inside the blocking check. *Removed when:* laws over rows.
-
-**Consumers.** check
+**Consumers.** check (the nested-long-running-child rule reads the long-running column) (`crates/hale-types/src/check.rs` · `check_nested_long_running_child`); check (the starvation and birth-order laws read the never-returns column) (`crates/hale-types/src/check.rs` · `never_returns`)
 
 **Invariants.**
 
-- one definition of long-running
+- two definitions, two columns of the flow rows' run row (`flows::RunRow`), named in spec/runtime.md § Typecheck enforcement: long-running is a `run()` body with a statement of its own (a nested child's `run()` completes before its parent's begins, so any body delays the parent, whether or not it returns), never-returns is a terminal `while` with no exit whose condition never flips false (only such a body starves the cells a pool runs after it); every body that never returns is long-running, not the converse, and a child whose `run()` is `std::time::sleep(1m)` keeps the long-running-child error
+- the checker surveys the flow rows once per check and the three rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/birth_order_trap.rs; crates/hale-codegen/tests/birth_order_trap.rs
+**Focused tests.** crates/hale-types/tests/birth_order_trap.rs; crates/hale-codegen/tests/birth_order_trap.rs; crates/hale-codegen/tests/nested_long_running_child.rs; crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)
 
-**Spec.** spec/semantics.md
+**Spec.** spec/semantics.md; spec/runtime.md § Typecheck enforcement
+
+**Guarded seams.**
+
+- `run_statically_nonreturning(` may be referenced from: `crates/hale-types/src/flows.rs` ×2
 
 ### `working_set` — Canonical · derivation
 
@@ -1085,7 +1091,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — codegen's DeploymentPlan, keyed by field name and locus type name. *Removed when:* codegen reads the table.
 - `crates/hale-codegen/src/deployment.rs` · `DeploymentPlan` — the plan type lowering reads today. *Removed when:* becomes the layer-5 table.
 
-**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check's three phases, blocking calls, pool starvation and the birth-order trap: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 
@@ -1522,7 +1528,6 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-lsp/src/lib.rs` | `format!("{code:?}")` | 1 | renders |
 | `crates/hale-syntax/src/json_gen.rs` | `format!("{:?}", f)` | 1 | renders |
 | `crates/hale-syntax/src/parser.rs` | `format!("{:?}", err)` | 21 | renders |
-| `crates/hale-types/src/check.rs` | `format!("{:?}", kind)` | 1 | decides (`blocking`) |
 | `crates/hale-types/src/check.rs` | `format!("{:?}", p)` | 2 | decides (`snapshot_identity`) |
 | `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_text(inner))` | 1 | renders |
 | `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_identity(inner, known))` | 1 | decides (`snapshot_identity`) |

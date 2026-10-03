@@ -740,6 +740,27 @@ is silent (the parent's `run()` simply never executes), so the
 type-side rejection is load-bearing: it converts a class of
 hard-to-diagnose runtime bugs into a clear compile-time signal.
 
+The rule asks whether a `run()` is **long-running**, which is not
+whether it **never returns**, and the two are two definitions, two
+columns of each locus's run row (`hale_types::flows::RunRow`, read
+through the flow rows):
+
+- **long-running**: the `run()` body has a statement of its own. A
+  nested child's `run()` runs to completion before its parent's
+  begins, so any body delays the parent whether or not it returns: a
+  child whose `run()` is `std::time::sleep(1m)` is long-running and
+  draws this error. This rule reads it.
+- **never returns**: the `run()` body's last statement is a `while`
+  with no exit whose condition never flips false (`while true`,
+  `while !self.draining`, or a Bool params flag no member assigns,
+  whose default keeps the loop live). Only such a body starves the
+  cells a cooperative pool runs after it: the pool-starvation warning
+  and the birth-order trap read it.
+
+Every body that never returns is long-running; the converse does not
+hold. A stdlib locus, whose body the checker does not see, is both
+when it is on the known-long-running allowlist.
+
 #### `where async_io` — green-I/O cooperative pools (F.35)
 
 The sibling-in-main fix puts each long-running child on its own

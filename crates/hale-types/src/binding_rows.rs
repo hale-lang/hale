@@ -158,6 +158,18 @@ impl BindingRows {
         }
         out
     }
+
+    /// Whether the program's own `main locus` binds a transport: an
+    /// entry of a main that is not an imported one, a module-nested main
+    /// included, as lowering's prelude takes the root's entries. Every
+    /// role counts, connect included: a listen entry's reader and a
+    /// connect entry's loss supervision run beside the main drain, so
+    /// the bus queue they share takes the lock. Codegen's binding term
+    /// of "does a thread cross the bus boundary"; the `api` binding is
+    /// not an entry, and its synthesized pool is the placement table's.
+    pub fn binds_on_main(&self) -> bool {
+        self.rows.iter().any(|r| r.is_main && !r.imported)
+    }
 }
 
 /// The `bindings` family's producer: one walk over the bundle's

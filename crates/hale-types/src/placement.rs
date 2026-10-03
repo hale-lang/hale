@@ -511,6 +511,17 @@ impl PlacementTable {
         &self.domains[id.0 as usize]
     }
 
+    /// Whether anything the deployed program builds runs off the main
+    /// thread: a domain that is not main (a pool, a pinned anchor, an
+    /// adapter binding's pinned-equivalent thread, the api binding's
+    /// synthesized pool). The table places only what lowering deploys,
+    /// so an imported library's `main locus`, which nothing builds, adds
+    /// no domain however its `placement { }` block reads. Codegen's
+    /// placement term of "does a thread cross the bus boundary".
+    pub fn places_off_main(&self) -> bool {
+        self.domains.iter().any(|d| !matches!(d.kind, DomainKind::Main))
+    }
+
     /// The rows a held instance was built as: every key some row names
     /// as its [`InstanceRow::built_by`]. Each answers where its instance
     /// was built (the retention question); where the instance runs is

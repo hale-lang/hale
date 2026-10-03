@@ -122,9 +122,13 @@ with how the runtime dispatches:
   by the locus it actually builds (through an alias too); a library's
   `main locus` you import is not deployed by your build, so it is not
   judged.
-- **Nested long-running child** — a non-`main` locus holding a
-  params field of a locus type whose `run()` never returns; the fix
-  is hoisting it to a `main` sibling with its own placement —
+- **Nested long-running child** — a non-`main` locus with work of
+  its own holding a params field of a locus type whose `run()` is
+  long-running: any body of its own, since a nested child's `run()`
+  finishes before its parent's starts, so even one that returns
+  (`std::time::sleep(1m)`) delays the parent. This is a different
+  question from the starvation warning's "never returns". The fix is
+  hoisting it to a `main` sibling with its own placement —
   **error**.
 - **Unowned subscriber locus** — a bus-subscribing locus
   instantiated in another locus's bus handler that no ancestor
