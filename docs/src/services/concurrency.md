@@ -306,6 +306,12 @@ built, and the program stops there.
 
 ## The bus crosses threads for you
 
+An adapter named in `bindings { }` runs on its own pinned thread.
+The same restrictions as an explicit `pinned` placement apply:
+it cannot declare `accept()` or a closure with a `birth` or
+`dissolve` epoch (including an omitted epoch). The checker reports
+these at the binding. Inline closures are supported on that thread.
+
 When a cooperative locus on one pool publishes to a subscriber on
 another pool — or to a pinned locus on its own thread — the
 runtime handles the hand-off: it copies the payload across the

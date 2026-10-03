@@ -5099,6 +5099,24 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
+/// Rule 6 applies to every locus with its own pinned thread, whether
+/// selected by a placement entry or by an adapter binding.
+fn pinned_lifecycle_conflict(info: &LocusInfo) -> Option<&'static str> {
+    if info.accept_param.is_some() {
+        Some("declares `accept()`: a pinned locus owns its own \
+              thread and cannot accept children")
+    } else if info.closures.iter().any(|c| {
+        matches!(c.epoch, EpochSpec::Birth | EpochSpec::Dissolve)
+    }) {
+        Some("declares a closure whose epoch is `birth` or \
+              `dissolve` (dissolve is the default): the \
+              lifecycle cascade cannot route it across a pinned \
+              locus's thread")
+    } else {
+        None
+    }
+}
+
 fn check_main_and_bindings<'e>(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -5207,7 +5225,18 @@ fn check_main_and_bindings<'e>(
             &entry.transport
         {
             match top.lookup(&locus.name) {
-                Some(TopSymbol::Locus(_)) => {
+                Some(TopSymbol::Locus(info)) => {
+                    if let Some(why) = pinned_lifecycle_conflict(info) {
+                        diags.push(Diag::ty(
+                            locus.span,
+                            format!(
+                                "adapter binding for topic `{}`: `{}` runs on its own \
+                                 pinned thread but {}; drop the feature from the \
+                                 adapter locus (rule 6)",
+                                entry.topic.name, locus.name, why
+                            ),
+                        ));
+                    }
                     // Wave B: the bus's adapter contract, by the one
                     // conformance function (its error channel unjudged).
                     const ADAPTER: &str = "__StdBusAdapter";
@@ -8918,24 +8947,7 @@ impl<'a> Checker<'a> {
                     // program `hale build` refused.
                     if is_locus && matches!(entry.spec, PlacementSpec::Pinned { .. }) {
                         let conflict = match self.top.lookup(name) {
-                            Some(TopSymbol::Locus(li)) if li.accept_param.is_some() => {
-                                Some("declares `accept()`: a pinned locus owns its own \
-                                      thread and cannot accept children")
-                            }
-                            Some(TopSymbol::Locus(li))
-                                if li.closures.iter().any(|c| {
-                                    matches!(
-                                        c.epoch,
-                                        hale_syntax::ast::EpochSpec::Birth
-                                            | hale_syntax::ast::EpochSpec::Dissolve
-                                    )
-                                }) =>
-                            {
-                                Some("declares a closure whose epoch is `birth` or \
-                                      `dissolve` (dissolve is the default): the \
-                                      lifecycle cascade cannot route it across a pinned \
-                                      locus's thread")
-                            }
+                            Some(TopSymbol::Locus(li)) => pinned_lifecycle_conflict(li),
                             _ => None,
                         };
                         if let Some(why) = conflict {

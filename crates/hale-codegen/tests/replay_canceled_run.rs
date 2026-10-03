@@ -14,7 +14,9 @@
 //! Each program is built, recorded with `LOTUS_OBS_RECORD`, and
 //! replayed with `LOTUS_REPLAY` and `LOTUS_REPLAY_STATUS`; both runs
 //! print exactly `delivered 1`, and the replay's status file counts
-//! two consumes (Spawner's run, its own delivery) and nothing else.
+//! three consumes (Spawner's initialization, its run, its own
+//! delivery) and nothing else. Pool-root initialization is a queued
+//! job since F.40 P1-3 and stays ahead of run in the edited tapes too.
 //! The control is the same program without the queued run (Kid has
 //! no run()), and the classic pool is checked with the lifecycle
 //! trace on and off; the async pool's drain gates the same way.
@@ -157,7 +159,8 @@ fn replay_clean(bin: &Path, rec: &Path, expect_stdout: &str, consumes: &str) -> 
 }
 
 /// Record, replay, and hold the replay to its recording: `delivered 1`
-/// both times, Spawner's run and its own delivery the two consumes.
+/// both times; initialization, Spawner's run and its own delivery
+/// are the three consumes. The canceled Kid contributes none.
 /// Returns the replay's stderr.
 fn record_and_replay(name: &str, src: &str, trace: bool) -> String {
     let bin = build(name, src, trace);
@@ -167,7 +170,13 @@ fn record_and_replay(name: &str, src: &str, trace: bool) -> String {
     assert_eq!(stdout, "delivered 1\n", "recorded run's stdout; stderr:\n{stderr}");
     assert!(rec.is_file(), "no recording produced");
 
-    let stderr = replay_clean(&bin, &rec, "delivered 1\n", "2");
+    let consumes = pool_consumes(&std::fs::read(&rec).expect("recording"));
+    let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
+    assert!(
+        ids.len() == 3 && ids[..2] == [0, 0] && ids[2] != 0,
+        "Spawner init, Spawner.run, then the ping; no canceled Kid.run: {consumes:?}"
+    );
+    let stderr = replay_clean(&bin, &rec, "delivered 1\n", "3");
 
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&rec);
@@ -203,7 +212,7 @@ fn a_queued_run_canceled_on_an_async_pool_replays_clean() {
 
 /// The recorded consumes (private-ring entries of kind CONSUME) of the
 /// consumer that consumed the one identified delivery: each entry's
-/// offset and its delivery identity (0 for a run).
+/// offset and its delivery identity (0 for an init or run job).
 fn pool_consumes(buf: &[u8]) -> Vec<(usize, u64)> {
     let mut all = Vec::new();
     let hlen = u32::from_le_bytes(buf[12..16].try_into().unwrap()) as usize;
@@ -280,17 +289,17 @@ fn main() { App { }; }
     let (bin, mut buf, consumes) = record_edited("held_live", src, "kid ran\ndelivered 1\n");
     let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
     assert!(
-        ids.len() == 3 && ids[0] == 0 && ids[1] == 0 && ids[2] != 0,
-        "Spawner.run, Kid.run, then the ping: {consumes:?}"
+        ids.len() == 4 && ids[..3] == [0, 0, 0] && ids[3] != 0,
+        "Spawner init, Spawner.run, Kid.run, then the ping: {consumes:?}"
     );
-    let (kid, ping) = (consumes[1].0, consumes[2].0);
+    let (kid, ping) = (consumes[2].0, consumes[3].0);
     let kid_frame: Vec<u8> = buf[kid..kid + 24].to_vec();
     buf.copy_within(ping..ping + 24, kid);
     buf[ping..ping + 24].copy_from_slice(&kid_frame);
     let rec = bin.with_extension("halerec");
     std::fs::write(&rec, &buf).unwrap();
 
-    let stderr = replay_clean(&bin, &rec, "delivered 1\nkid ran\n", "3");
+    let stderr = replay_clean(&bin, &rec, "delivered 1\nkid ran\n", "4");
     assert!(
         !stderr.contains("NotStarted"),
         "the held run was started, not canceled:\n{stderr}"
@@ -336,19 +345,19 @@ fn main() { App { }; }
     // Kid.run consumed at all means it was dequeued ahead of Flow.run,
     // whose completion reclaims Kid.
     assert!(
-        ids.len() == 4 && ids[..3] == [0, 0, 0] && ids[3] != 0,
-        "Spawner.run, Kid.run, Flow.run, then the ping: {consumes:?}"
+        ids.len() == 5 && ids[..4] == [0, 0, 0, 0] && ids[4] != 0,
+        "Spawner init, Spawner.run, Kid.run, Flow.run, then the ping: {consumes:?}"
     );
     // Kid.run's consume becomes an entry replay does not index (the
     // recorder's enqueue kind), so the replay expects Flow.run next.
-    let kid = consumes[1].0;
+    let kid = consumes[2].0;
     let w0 = u64::from_le_bytes(buf[kid + 8..kid + 16].try_into().unwrap());
     let w0 = (w0 & !(0x1F << 20)) | (3 << 20);
     buf[kid + 8..kid + 16].copy_from_slice(&w0.to_le_bytes());
     let rec = bin.with_extension("halerec");
     std::fs::write(&rec, &buf).unwrap();
 
-    let stderr = replay_clean(&bin, &rec, "flow ran\ndelivered 1\n", "3");
+    let stderr = replay_clean(&bin, &rec, "flow ran\ndelivered 1\n", "4");
     assert!(
         stderr.contains("NotStarted(Acknowledged)"),
         "the flow's reclaim canceled the held run, and the trace names it:\n{stderr}"

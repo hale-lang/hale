@@ -8,7 +8,7 @@ budget	R-1	-	known-old-bug	11	crates/hale-codegen/tests/fixtures/examples/20d-re
 budget	R-4	-	known-old-bug	57	crates/hale-types/tests/placement.rs
 budget	R-5	-	known-old-bug	2	crates/hale-types/tests/placement.rs
 budget	R-5+R-6	-	spec-disagreement	2	dna/host
-budget	R-6	-	spec-disagreement	29	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
+budget	R-6	-	spec-disagreement	28	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
 budget	R-7	-	spec-disagreement	2	crates/hale-codegen/tests/bus_cross_thread_drain.rs
 desugar	F-R	__lib_App.a	correction	1	crates/hale-types/tests/placement.rs
 desugar	F-R	__lib_App.w	correction	1	crates/hale-types/tests/bus_graph.rs

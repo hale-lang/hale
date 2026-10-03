@@ -1438,7 +1438,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the AST", "the lowering context"],
         producer: None,
         legacy: &[
-            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (rule 6's checker evaluator landed in phase 0; the backstop stays for harness builds that skip the checker); for a placed locus the checker types as Unknown, for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), and for an adapter locus instantiated inline in a `bindings { }` block (which lowering pins without a placement entry), it is the only evaluator", "phase 3, when one pipeline guarantees the checker ran before lowering and the refusals become dead: every verb checks before it lowers, but the test harness's adapter `build_executable_with_options` builds through a harness snapshot that does not gate lowering on a check (`Config::harness`), and over three hundred test files build through it (at the phase-2 close)"),
+            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (rule 6's checker evaluator landed in phase 0 and covers adapter bindings since P1-3; the backstop stays for harness builds that skip the checker); for a placed locus the checker types as Unknown and for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), it is the only evaluator", "phase 3, when one pipeline guarantees the checker ran before lowering and the refusals become dead: every verb checks before it lowers, but the test harness's adapter `build_executable_with_options` builds through a harness snapshot that does not gate lowering on a check (`Config::harness`), and over three hundred test files build through it (at the phase-2 close)"),
         ],
         consumers: &[consumer("codegen harness builds")],
         invariants: &["a law is judged once, with a span"],
@@ -1682,9 +1682,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/6",
-        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) at the placement entry",
+        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) at the placement entry or adapter binding",
         family: "placement",
-        evaluator: Some(site(CHECK, "is placed `pinned` but")),
+        evaluator: Some(site(CHECK, "pinned_lifecycle_conflict")),
         state: State::Migrating,
     },
     Rule {

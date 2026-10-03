@@ -362,11 +362,10 @@ fn two_owners_in_two_domains_each_own_their_nested_children() {
 /// O-7: an adapter in the root's `bindings { }` runs on its own thread,
 /// and so does its tower. As an owner, a child its nested locus bubbles
 /// to it is born on that thread: SameTower, each instance paired with
-/// its own owner row. As an enclosing side it reaches no owner above
-/// it: a `bindings { }` entry is no instantiation edge of the walk, so
-/// the child is `Orphan` and the edge `Open`, which the table does not
-/// change. (The legacy label called the adapter same-thread; no edge
-/// moved, in this case or over the seeds.)
+/// its own owner row. A birth in the adapter itself is self-owned.
+/// These graph rows can be derived even though admission rejects an
+/// adapter with `accept()` under rule 6; the graph describes ownership,
+/// and the checker separately judges the pinned lifecycle restriction.
 #[test]
 fn an_adapter_edge_runs_on_the_adapters_thread() {
     let src = r#"

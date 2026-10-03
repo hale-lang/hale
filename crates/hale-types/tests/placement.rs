@@ -2868,3 +2868,68 @@ fn a_bounded_subscriber_nested_off_main_is_refused() {
     let msgs = check(&bounded_nested_under("cooperative(pool = main)"));
     assert!(!msgs.iter().any(|m| m.contains("bounded(N, ...)")), "on main the bound is legal: {msgs:?}");
 }
+
+fn assert_adapter_rule6_at_binding(src: &str, conflict: &str) {
+    let program = parse_source(src).expect("parse");
+    let diags = check_program(&program);
+    let refusals: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(refusals.len(), 1, "one binding refusal: {diags:?}");
+    let diag = refusals[0];
+    assert!(
+        diag.message.contains("adapter binding for topic `Beat`")
+            && diag.message.contains(conflict)
+            && diag.message.contains("rule 6"),
+        "{diag:?}"
+    );
+    assert_eq!(&src[diag.span.start.as_usize()..diag.span.end.as_usize()], "Coord");
+    assert!(diag.span.start.as_usize() > src.find("bindings").unwrap());
+}
+
+#[test]
+fn adapter_binding_cannot_accept_children_but_a_cooperative_instance_can() {
+    let src = r#"
+type Ping { n: Int; }
+topic Beat { payload: Ping; }
+locus Child { }
+locus Coord {
+    accept(c: Child) { }
+    fn send(subject: String, bytes: Bytes) { }
+}
+main locus App {
+    bindings { Beat: Coord { }; }
+    bus { publish Beat; }
+}
+fn main() { App { }; }
+"#;
+    assert_adapter_rule6_at_binding(src, "accept()");
+    let cooperative = src.replace(
+        "bindings { Beat: Coord { }; }",
+        "params { c: Coord = Coord { }; } placement { c: cooperative(pool = io); }",
+    );
+    let msgs = errors(&cooperative);
+    assert!(msgs.is_empty(), "the restriction belongs to the binding: {msgs:?}");
+}
+
+#[test]
+fn adapter_binding_refuses_cascade_closures_but_allows_inline_closures() {
+    let src = r#"
+type Ping { n: Int; }
+topic Beat { payload: Ping; }
+locus Coord {
+    params { n: Int = 0; }
+    closure ready { self.n ~~ self.n within 0; epoch birth; }
+    fn send(subject: String, bytes: Bytes) { }
+}
+main locus App {
+    bindings { Beat: Coord { }; }
+    bus { publish Beat; }
+}
+fn main() { App { }; }
+"#;
+    for epoch in ["epoch birth;", "epoch dissolve;", ""] {
+        assert_adapter_rule6_at_binding(&src.replace("epoch birth;", epoch), "dissolve is the default");
+    }
+    let inline = src.replace("self.n ~~ self.n within 0; epoch birth;", "epoch inline;");
+    let msgs = errors(&inline);
+    assert!(msgs.is_empty(), "inline closures run on the adapter's thread: {msgs:?}");
+}
