@@ -79,6 +79,14 @@ introduce a data race in the first place:
 - **Vertical-only failure.** No lateral references between siblings; a
   failure travels up to a parent's `on_failure`, never sideways.
 
+The lifecycle trace tests use the compiler's derived plan to check
+retention as well as event order. For example, replacing a child whose
+run has started on another pool must keep its memory until the run
+ends. That rule permits drain and dissolve to overlap the run; it does
+not require the run to finish before teardown starts. The tests also
+distinguish an immediate teardown from a subscriber's teardown at scope
+exit.
+
 ## Checked at build time
 
 These run during `hale check` / `hale build`, on top of ordinary

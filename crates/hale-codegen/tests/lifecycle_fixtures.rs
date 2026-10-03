@@ -314,33 +314,6 @@ const PLANS: &[(&str, &str)] = &[
          Kid: Cancellation!main
          edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
     ),
-    // R19a: a started run holds its child until it returns. The old
-    // child's reclaim on main waits for its run on `side` to end before
-    // it completes; the replacement inherits main and runs there.
-    (
-        "l19_started_run_retained.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid*2: Birth Run Drain Dissolve Reclaim
-         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
-    ),
-    (
-        "l19_started_run_retained_async.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid*2: Birth Run Drain Dissolve Reclaim
-         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
-    ),
-    (
-        "l19_started_run_publishes_back.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid*2: Birth Run Drain Dissolve Reclaim
-         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
-    ),
-    (
-        "l19_started_run_publishes_back_async.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid*2: Birth Run Drain Dissolve Reclaim
-         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
-    ),
     // R19's other half: a run admitted after the worker's last check is
     // canceled by its child's reclaim; once the canceled cells fill the
     // ring, a post is refused for the pool's shutdown, named with no
@@ -490,6 +463,13 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l19_resumed_run_at_shutdown.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
+            &["19"]
+        }
+        // The placed child's started run and the inline replacement
+        // both end before their own physical reclaim (line 19).
+        "l19_started_run_retained.hl" | "l19_started_run_retained_async.hl"
+        | "l19_started_run_publishes_back.hl" | "l19_started_run_publishes_back_async.hl" => {
+            p.occurrences = count(&[("Kid", 2)]);
             &["19"]
         }
         "rd_restart_during_teardown.hl" => {
@@ -745,7 +725,7 @@ const CONTROLS: &[Control] = &[
         fixture: "l19_parked_started_coroutine.hl",
         skip: "Run.Terminal(CanceledAfterStart)",
         plan: None,
-        fails_with: "edge: __StdIoTcpListener.Drain.Entered",
+        fails_with: "edge: __StdIoTcpListener.Reclaim.Completed",
         baseline_passes: false,
     },
     Control {
@@ -1465,7 +1445,7 @@ fn every_planned_kind_has_a_negative_control() {
 /// and the main one's completes (`=Ended`). The edges between the
 /// Parents and their fields are not held: two occurrences of each, and
 /// the trace does not say which is whose. The control, both parents on
-/// main, claims main alone and renders byte for byte what it did before.
+/// main, claims main alone. Every run is held until reclaim completes.
 const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains.hl",
@@ -1474,9 +1454,10 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
          edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
          edge Leaf.Run.Ended -> Leaf.Reclaim.Completed\n\
@@ -1490,9 +1471,10 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
          edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
          edge Twig.Run.Ended -> Twig.Reclaim.Completed\n\
@@ -1505,12 +1487,15 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Parent: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
          edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
          edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
 ];
 
@@ -1521,7 +1506,8 @@ const FIELD_PLANS: &[(&str, &str)] = &[
 /// two domains named no one). Each occurrence's run() runs inline at its
 /// statement and ends before its drain, on side as on main: a body
 /// literal's run is never posted behind its owner's teardown. The
-/// control, both Mids on main, renders byte for byte what it did before.
+/// control, both Mids on main, retains that inline ordering. Both also
+/// carry the started-run retention edge through physical reclaim.
 const BODY_PLANS: &[(&str, &str)] = &[
     (
         "l03_body_literal_two_domains.hl",
@@ -1530,12 +1516,14 @@ const BODY_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
          edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
     (
         "l03_body_literal_one_domain.hl",
@@ -1544,12 +1532,15 @@ const BODY_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
          edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
          edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
 ];
 

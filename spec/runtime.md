@@ -1849,8 +1849,14 @@ entry has to go with the fix. Each fixture also runs under the
 lifecycle trace (§ "The lifecycle trace"), held to the plan the
 table's producer (`hale_types::lifecycle::derive`) derives for its
 program, on its line's rules (three of line 19's, whose shapes the
-producer does not derive yet, to a hand-written plan);
-a departure the trace shows and the outcome cannot (a missing step,
+producer does not derive yet, to a hand-written plan).
+The four started-run retention fixtures use the derived plan, including
+the edge from each run's end to its reclaim's completion. A posted run
+may overlap drain and dissolve; an inline run ends before drain. The
+producer also keeps statement-position subscribers alive until frame
+exit, where their teardown runs, rather than assigning them an eager
+teardown at the literal.
+A departure the trace shows and the outcome cannot (a missing step,
 a step on the wrong thread) is in the same file's
 `TRACE_KNOWN_OPEN` table. A line still waiting on a condition
 says so and records today's behaviour. The same rules are evidenced

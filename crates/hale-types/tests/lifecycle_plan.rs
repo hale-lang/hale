@@ -553,6 +553,41 @@ fn a_flow_child_is_reclaimed_at_its_runs_end_before_its_owner() {
     assert_eq!(app_reclaim.edges.entry.iter().filter(|pr| pr.rule.line == Some("14")).count(), 3);
 }
 
+/// Line 19 holds a started run against cross-pool field replacement as
+/// well as queued cancellation. The replacement's inline run obeys the
+/// same reclaim edge, so the trace projection can hold both instances
+/// to the producer's rule without a hand-written plan.
+#[test]
+fn a_started_run_is_retained_until_reclaim_completes() {
+    for src in [
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_retained.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_retained_async.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_publishes_back.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_publishes_back_async.hl"),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        assert!(laws(p).is_empty(), "{:?}", laws(p));
+        assert_eq!(rows(p, "Kid", K::Run).len(), 2);
+        let subscriber = !rows(p, "App", K::Subscribe).is_empty();
+        assert_eq!(one(p, "App", K::Drain).holder.spine,
+                   if subscriber { Spine::DeferredEntry } else { Spine::EagerTeardown });
+        assert_eq!(p.obligations.iter().any(|o| o.kind == K::PoolJoin && o.holder.spine == Spine::EagerTeardown), !subscriber,
+                   "a statement-position subscriber joins at frame exit");
+        for reclaim in rows(p, "Kid", K::Reclaim) {
+            let run = p.obligations.iter().find(|o| o.kind == K::Run && o.site == reclaim.site).expect("this instance's run");
+            let run_id = id_of(p, run);
+            assert!(reclaim.edges.completion.iter().any(|pr| {
+                pr.event.obligation == run_id && pr.event.point == Point::Ended && pr.rule == Rule::line("19", Status::Shipped)
+            }), "each instance owes its run's end before reclaim completes");
+            let drain = p.obligations.iter().find(|o| o.kind == K::Drain && o.site == reclaim.site).expect("this instance's drain");
+            let waits_before_drain = drain.edges.entry.iter().any(|pr| pr.event.obligation == run_id);
+            assert_eq!(waits_before_drain, !matches!(reclaim.site.as_ref().unwrap().template, Template::Static(_)),
+                       "only the inline replacement owes run completion before drain");
+        }
+    }
+}
+
 /// RD: a handler that restarts has its restart performed on one path and
 /// refused, not started, under teardown on another (C42 today).
 #[test]

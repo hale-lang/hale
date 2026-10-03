@@ -409,13 +409,13 @@ fn main() { App { }; }
         record_edited("hold_async", async_src, "kid ran\ndelivered 1\n", 1);
     let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
     assert!(
-        ids.len() == 3 && ids[0] == 0 && ids[1] == 0 && ids[2] != 0,
-        "Spawner.run, Kid.run, then the ping: {consumes:?}"
+        ids.len() == 4 && ids[..3] == [0, 0, 0] && ids[3] != 0,
+        "Spawner init, Spawner.run, Kid.run, then the ping: {consumes:?}"
     );
-    swap_frames(&mut buf, consumes[1].0, consumes[2].0);
+    swap_frames(&mut buf, consumes[2].0, consumes[3].0);
     let rec = bin.with_extension("halerec");
     std::fs::write(&rec, &buf).unwrap();
-    replay_clean(&bin, &rec, "delivered 1\nkid ran\n", "3");
+    replay_clean(&bin, &rec, "delivered 1\nkid ran\n", "4");
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&rec);
 

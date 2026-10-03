@@ -1131,6 +1131,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
             ),
             (
                 Status::Shipped,
+                "a started run ends before its child's physical reclaim completes, including a field replacement on another pool (L5)",
+            ),
+            (
+                Status::Shipped,
                 "a post refused at shutdown ends NotStarted(Shutdown(PoolShutdown)), a cell freed unrun at the pools' teardown NotStarted(Shutdown(PoolTeardown)) (L5)",
             ),
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
