@@ -30,6 +30,11 @@
 //! the run is held and then started at its recorded slot, once; and
 //! one that never consumed the run, so the held run is canceled by a
 //! reclaim during the hold and the gate's sweep ends it unrun.
+//!
+//! The hold buffer is freed by the thread that held, at its exit: the
+//! edited-recording replays run under AddressSanitizer with no leak
+//! suppression, on a classic pool's worker, an async pool's worker and
+//! a pinned thread, each joined at the teardown after it held.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -116,22 +121,14 @@ fn run(bin: &Path, what: &str, env: &[(&str, &OsStr)]) -> (String, String) {
 /// the replay's stderr.
 fn replay_clean(bin: &Path, rec: &Path, expect_stdout: &str, consumes: &str) -> String {
     let status = bin.with_extension("status");
-    // Under ASan: a pool worker never frees its thread's hold buffer,
-    // the gate's own allocation and not a ticket, so that one site is
-    // excused and every other leak still fails the run.
-    let lsan = bin.with_extension("lsan");
-    std::fs::write(&lsan, "leak:lotus_rp_pending_push\n").unwrap();
-    let lsan_options = format!("suppressions={}", lsan.display());
     let (stdout, stderr) = run(
         bin,
         "the replay",
         &[
             ("LOTUS_REPLAY", rec.as_os_str()),
             ("LOTUS_REPLAY_STATUS", status.as_os_str()),
-            ("LSAN_OPTIONS", OsStr::new(&lsan_options)),
         ],
     );
-    let _ = std::fs::remove_file(&lsan);
     assert_eq!(stdout, expect_stdout, "replay's stdout; stderr:\n{stderr}");
     let text = std::fs::read_to_string(&status).expect("replay status file");
     let _ = std::fs::remove_file(&status);
@@ -170,7 +167,7 @@ fn record_and_replay(name: &str, src: &str, trace: bool) -> String {
     assert_eq!(stdout, "delivered 1\n", "recorded run's stdout; stderr:\n{stderr}");
     assert!(rec.is_file(), "no recording produced");
 
-    let consumes = pool_consumes(&std::fs::read(&rec).expect("recording"));
+    let consumes = pool_consumes(&std::fs::read(&rec).expect("recording"), 1);
     let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
     assert!(
         ids.len() == 3 && ids[..2] == [0, 0] && ids[2] != 0,
@@ -211,9 +208,10 @@ fn a_queued_run_canceled_on_an_async_pool_replays_clean() {
 }
 
 /// The recorded consumes (private-ring entries of kind CONSUME) of the
-/// consumer that consumed the one identified delivery: each entry's
-/// offset and its delivery identity (0 for an init or run job).
-fn pool_consumes(buf: &[u8]) -> Vec<(usize, u64)> {
+/// consumer that consumed the `identified` identified deliveries, all
+/// on one consumer: each entry's offset and its delivery identity (0
+/// for an init or run job).
+fn pool_consumes(buf: &[u8], identified: usize) -> Vec<(usize, u64)> {
     let mut all = Vec::new();
     let hlen = u32::from_le_bytes(buf[12..16].try_into().unwrap()) as usize;
     let mut end = buf.len();
@@ -235,7 +233,10 @@ fn pool_consumes(buf: &[u8]) -> Vec<(usize, u64)> {
         }
     }
     let delivered: Vec<u32> = all.iter().filter(|e| e.2 != 0).map(|e| e.0).collect();
-    assert_eq!(delivered.len(), 1, "one identified delivery: {all:?}");
+    assert!(
+        delivered.len() == identified && delivered.iter().all(|r| *r == delivered[0]),
+        "{identified} identified deliveries on one consumer: {all:?}"
+    );
     all.iter()
         .filter(|e| e.0 == delivered[0])
         .map(|e| (e.1, e.2))
@@ -243,13 +244,15 @@ fn pool_consumes(buf: &[u8]) -> Vec<(usize, u64)> {
 }
 
 /// Build `src` traced and under AddressSanitizer (a ticket freed twice
-/// or never fails the run), record it and assert the recorded run's
-/// stdout; the binary, the recording's bytes and the side pool's
-/// consumes.
+/// or never, or a hold buffer its thread did not free, fails the run),
+/// record it and assert the recorded run's stdout; the binary, the
+/// recording's bytes and the consumes of the consumer that consumed
+/// the `identified` identified deliveries.
 fn record_edited(
     name: &str,
     src: &str,
     expect_stdout: &str,
+    identified: usize,
 ) -> (PathBuf, Vec<u8>, Vec<(usize, u64)>) {
     let bin = build_with(name, src, true, true);
     let rec = bin.with_extension("halerec");
@@ -257,8 +260,16 @@ fn record_edited(
     assert_eq!(stdout, expect_stdout, "recorded run's stdout; stderr:\n{stderr}");
     let buf = std::fs::read(&rec).expect("recording");
     let _ = std::fs::remove_file(&rec);
-    let consumes = pool_consumes(&buf);
+    let consumes = pool_consumes(&buf, identified);
     (bin, buf, consumes)
+}
+
+/// Swap the two recorded consume frames at `a` and `b`, so replay
+/// expects the second consume first and holds the first cell.
+fn swap_frames(buf: &mut [u8], a: usize, b: usize) {
+    let first: Vec<u8> = buf[a..a + 24].to_vec();
+    buf.copy_within(b..b + 24, a);
+    buf[b..b + 24].copy_from_slice(&first);
 }
 
 /// A live run the gate holds keeps its protection and starts at its
@@ -286,16 +297,13 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let (bin, mut buf, consumes) = record_edited("held_live", src, "kid ran\ndelivered 1\n");
+    let (bin, mut buf, consumes) = record_edited("held_live", src, "kid ran\ndelivered 1\n", 1);
     let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
     assert!(
         ids.len() == 4 && ids[..3] == [0, 0, 0] && ids[3] != 0,
         "Spawner init, Spawner.run, Kid.run, then the ping: {consumes:?}"
     );
-    let (kid, ping) = (consumes[2].0, consumes[3].0);
-    let kid_frame: Vec<u8> = buf[kid..kid + 24].to_vec();
-    buf.copy_within(ping..ping + 24, kid);
-    buf[ping..ping + 24].copy_from_slice(&kid_frame);
+    swap_frames(&mut buf, consumes[2].0, consumes[3].0);
     let rec = bin.with_extension("halerec");
     std::fs::write(&rec, &buf).unwrap();
 
@@ -340,7 +348,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let (bin, mut buf, consumes) =
-        record_edited("held_canceled", src, "kid ran\nflow ran\ndelivered 1\n");
+        record_edited("held_canceled", src, "kid ran\nflow ran\ndelivered 1\n", 1);
     let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
     // Kid.run consumed at all means it was dequeued ahead of Flow.run,
     // whose completion reclaims Kid.
@@ -362,6 +370,85 @@ fn main() { App { }; }
         stderr.contains("NotStarted(Acknowledged)"),
         "the flow's reclaim canceled the held run, and the trace names it:\n{stderr}"
     );
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&rec);
+}
+
+/// The hold buffer is its consumer thread's, and it is freed when that
+/// thread exits: each replay below holds a cell on a thread the
+/// teardown then joins, under AddressSanitizer with no suppression, so
+/// a buffer its thread took to the exit fails the run as a leak. The
+/// classic pool's worker holds in the two tests above; here an async
+/// pool's worker holds a live run behind a delivery (the recording's
+/// Kid.run and ping consumes swapped), and a pinned thread holds one
+/// mailbox delivery behind the other (its two consumes swapped). Each
+/// replay releases the held cell at its recorded slot and counts no
+/// divergence.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hold_on_an_async_worker_or_a_pinned_thread_is_freed_at_its_teardown() {
+    let async_src = r#"
+type Ping { n: Int = 0; }
+locus Kid { run() { println("kid ran"); } }
+locus Spawner {
+    accept(c: Kid) { }
+    bus {
+        subscribe "probe.ping" as on_ping of type Ping;
+        publish "probe.ping" of type Ping;
+    }
+    fn on_ping(p: Ping) { println("delivered " + to_string(p.n)); }
+    run() { Kid { }; "probe.ping" <- Ping { n: 1 }; }
+}
+main locus App {
+    params { spawner: Spawner = Spawner { }; }
+    placement { spawner: cooperative(pool = side) where async_io; }
+}
+fn main() { App { }; }
+"#;
+    let (bin, mut buf, consumes) =
+        record_edited("hold_async", async_src, "kid ran\ndelivered 1\n", 1);
+    let ids: Vec<u64> = consumes.iter().map(|c| c.1).collect();
+    assert!(
+        ids.len() == 4 && ids[..3] == [0, 0, 0] && ids[3] != 0,
+        "Spawner init, Spawner.run, Kid.run, then the ping: {consumes:?}"
+    );
+    swap_frames(&mut buf, consumes[2].0, consumes[3].0);
+    let rec = bin.with_extension("halerec");
+    std::fs::write(&rec, &buf).unwrap();
+    replay_clean(&bin, &rec, "delivered 1\nkid ran\n", "4");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&rec);
+
+    let pinned_src = r#"
+type Note { n: Int = 0; }
+locus Sink {
+    bus {
+        subscribe "sink.a" as on_a of type Note;
+        subscribe "sink.b" as on_b of type Note;
+    }
+    fn on_a(x: Note) { println("a " + to_string(x.n)); }
+    fn on_b(x: Note) { println("b " + to_string(x.n)); }
+}
+locus Feeder {
+    bus {
+        publish "sink.a" of type Note;
+        publish "sink.b" of type Note;
+    }
+    run() { "sink.a" <- Note { n: 1 }; "sink.b" <- Note { n: 2 }; }
+}
+main locus App {
+    params { sink: Sink = Sink { }; feeder: Feeder = Feeder { }; }
+    placement { sink: pinned; }
+}
+fn main() { App { }; }
+"#;
+    let (bin, mut buf, consumes) = record_edited("hold_pinned", pinned_src, "a 1\nb 2\n", 2);
+    let delivered: Vec<usize> = consumes.iter().filter(|c| c.1 != 0).map(|c| c.0).collect();
+    assert_eq!(delivered.len(), 2, "the sink's two deliveries: {consumes:?}");
+    swap_frames(&mut buf, delivered[0], delivered[1]);
+    let rec = bin.with_extension("halerec");
+    std::fs::write(&rec, &buf).unwrap();
+    replay_clean(&bin, &rec, "b 2\na 1\n", &consumes.len().to_string());
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&rec);
 }
