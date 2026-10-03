@@ -155,8 +155,8 @@ and `hale dna nerves migrate` prints them ([The nerves](./nerves.md)).
 ### Its API
 
 What the organism does *to* the application goes the other way:
-through the API the application exposes ([Service
-APIs](../services/api.md)), never through its events.
+through the API the application exposes ([The API
+binding](../services/api.md)), never through its events.
 
 A leg is not handed that API. The hands in
 `dna/core/legs/hands.hl` include a `HeartHand` and a `DeployHand`, and

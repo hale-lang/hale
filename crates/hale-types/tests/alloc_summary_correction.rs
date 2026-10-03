@@ -171,7 +171,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 27 targets below are the only ones the correction changes.
+/// The 28 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -207,8 +207,9 @@ const CALL_LINES_ONLY: [(&str, usize); 19] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 8] = [
+const VERDICT_TARGETS: [&str; 9] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
+    "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
     "dna/host",
     "dna/operations",
@@ -256,6 +257,19 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> per-iteration-reclaim", 5),
+        ],
+        &[
+        ],
+    );
+    pinned(
+        "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
+        13,
+        &[
+            "Tokens::principal",
+            "Tokens::refused",
+        ],
+        &[
+            ("once-per-invocation -> per-iteration-reclaim", 2),
         ],
         &[
         ],

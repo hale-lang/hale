@@ -1,4 +1,4 @@
-# Drive it from outside
+# The API binding
 
 A service that is authoritative over something ends up wanting a
 surface that tools can plug into: a command line, a dashboard, an
@@ -6,6 +6,10 @@ MCP host. You could write an HTTP server, a JSON codec per message
 and a routing table for it. You do not have to. Everything the
 program already declares on its bus *is* its API, and one line at
 the deployment tier hands it out.
+
+This chapter explains each piece with an example of its own. To see
+the pieces combined into one program, built step by step from an
+empty file to a gated API, read [Build an API](./build-an-api.md).
 
 ## One entry, no other change
 

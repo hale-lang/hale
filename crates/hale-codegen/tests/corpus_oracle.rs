@@ -74,7 +74,7 @@ fn examples_dir() -> PathBuf {
 ///     multi-file/import projects are filtered structurally below
 ///     (plain `build_executable` can't resolve cross-file imports;
 ///     that's the CLI's directory-build path).
-const SKIP_SERVERS: &[&str] = &["http-hello", "io-demo", "docs-server"];
+const SKIP_SERVERS: &[&str] = &["http-hello", "io-demo", "docs-server", "92-build-an-api"];
 
 /// The one fixture whose correct exit is non-zero: it deliberately
 /// bubbles a ClosureViolation to the root, which the runtime

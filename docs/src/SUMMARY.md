@@ -38,7 +38,8 @@
 - [Parents & children](./services/parents-children.md)
 - [When things fail](./services/failure.md)
 - [Across binaries](./services/multi-binary.md)
-- [Drive it from outside](./services/api.md)
+- [Build an API](./services/build-an-api.md)
+- [The API binding](./services/api.md)
 - [Composition patterns](./services/patterns.md)
 - [The model](./the-model.md)
 
