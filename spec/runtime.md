@@ -2358,9 +2358,10 @@ teardown therefore leaves an artifact that is attributable and
 exact up to one torn frame at the tail. Default recording rides
 the page cache (survives a process crash, not power loss).
 `LOTUS_OBS_RECORD_DURABLE=1` is the power-loss grade: every
-flushed sweep passes `fdatasync`, the parent directory is synced
+flushed sweep synchronizes the file (`fdatasync` on Linux,
+`F_FULLFSYNC` on macOS), the parent directory is synced
 at file creation (a fresh NAME is not durable until its directory
-entry is), the finalize trailer itself is `fdatasync`'d before
+entry is), the finalize trailer itself is synchronized before
 close (a clean exit followed by power loss must not demote a
 finalized recording to a truncated one), and the grade is
 recorded in the header's policy flags (bit 1).
@@ -3381,7 +3382,7 @@ its behavior as described in this document.
 | `LOTUS_OBS_SLOTS=<N>` | 4096 | Slots per ring: a power of two, at least 64; anything else falls back to the default. |
 | `LOTUS_OBS_WIRE=1` | off | Puts the `(origin, seq)` edge identity on the wire: the udp magic prefix and the framed transport's origin widening. That is a wire-format change a pre-header receiver cannot parse, so the whole fleet opts in together; it is what cross-process edges need (iris handoff-4 P16). |
 | `LOTUS_OBS_RECORD=<path>` | unset | Lossless recording (GH #296): write the run's tape to `<path>`; implies observation. See *Lossless recording mode*. |
-| `LOTUS_OBS_RECORD_DURABLE=1` | off | Push every flushed drain sweep of the recording through `fdatasync`; the default rides the page cache (survives a process crash, not power loss). |
+| `LOTUS_OBS_RECORD_DURABLE=1` | off | Synchronize every flushed drain sweep of the recording (`fdatasync` on Linux, `F_FULLFSYNC` on macOS); the default rides the page cache (survives a process crash, not power loss). |
 | `LOTUS_OBS_RECORD_ENV=full` | withheld | Record the value of every environment read, not just its name, existence and length; the artifact header says which policy applied. |
 | `LOTUS_REPLAY=<path>` | unset | Replay a recording (`hale replay` sets it): the run is judged against the tape. |
 | `LOTUS_REPLAY_FEED=<path>` | unset | Feed mode (`hale replay --feed`): the recording is input, not law. Mutually exclusive with `LOTUS_REPLAY`. |

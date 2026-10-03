@@ -48,7 +48,8 @@ one torn frame at the tail. Replaying it is an explicit opt-in
 how much it kept, and replays that prefix; under `--diff` the
 post-crash suffix is surplus, not divergence, while anything
 inside the prefix still must match. `LOTUS_OBS_RECORD_DURABLE=1`
-is the power-loss grade: `fdatasync` per drain sweep AND on the
+is the power-loss grade: a file sync (`fdatasync` on Linux,
+`F_FULLFSYNC` on macOS) per drain sweep AND on the
 finalize trailer, plus a parent-directory sync at creation, with
 the grade recorded in the artifact header.
 

@@ -59,6 +59,16 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Durable recording: request a storage flush with the platform's API.
+ * macOS has no fdatasync; F_FULLFSYNC also flushes the drive's cache. */
+static int lotus_rec_sync_file(int fd) {
+#ifdef __APPLE__
+  return fcntl(fd, F_FULLFSYNC);
+#else
+  return fdatasync(fd);
+#endif
+}
+
 /* GH #527 B1 (2026-09-09): the protocol's executable form is
  * obs_protocol.h, in this directory, prepended to this translation
  * unit by codegen (RUNTIME_OBS_C_SOURCE). OBS_MAGIC, OBS_PAGE, the
@@ -1765,7 +1775,7 @@ void lotus_obs_teardown(void) {
        * not). */
       if (fwrite(trailer, sizeof trailer, 1, g_rec_file) != 1 ||
           fflush(g_rec_file) != 0 ||
-          (g_rec_durable && fdatasync(fileno(g_rec_file)) != 0) ||
+          (g_rec_durable && lotus_rec_sync_file(fileno(g_rec_file)) != 0) ||
           fclose(g_rec_file) != 0) {
         g_rec_file = NULL;
         fprintf(stderr,
@@ -2162,7 +2172,7 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
   }
   /* GH #296 phase 5: durability grade. Default recording rides the
    * page cache (survives a process crash, not power loss);
-   * DURABLE=1 pushes every flushed drain sweep through fdatasync. */
+   * DURABLE=1 synchronizes every flushed drain sweep with the file. */
   const char *dur = getenv("LOTUS_OBS_RECORD_DURABLE");
   if (dur && dur[0] == '1') g_rec_durable = 1;
 }
@@ -2623,7 +2633,7 @@ static void *obs_record_drain_main(void *arg) {
       obs_rec_write_failed();
     }
     if (wrote && g_rec_durable &&
-        fdatasync(fileno(g_rec_file)) != 0) {
+        lotus_rec_sync_file(fileno(g_rec_file)) != 0) {
       obs_rec_write_failed();
     }
     if (stop) break;

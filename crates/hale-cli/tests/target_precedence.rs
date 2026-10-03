@@ -51,8 +51,10 @@ fn hale(args: &[&str]) -> (String, i32) {
 /// message`.
 fn cli_refusals(text: &str, file: &Path) -> BTreeSet<String> {
     let prefix = format!("{}:", file.display());
+    let canonical = file.canonicalize().expect("the diagnostic's source file exists");
+    let canonical_prefix = format!("{}:", canonical.display());
     text.lines()
-        .filter_map(|l| l.strip_prefix(&prefix))
+        .filter_map(|l| l.strip_prefix(&prefix).or_else(|| l.strip_prefix(&canonical_prefix)))
         .filter_map(|rest| {
             let (line, rest) = rest.split_once(':')?;
             let (col, rest) = rest.split_once(": ")?;

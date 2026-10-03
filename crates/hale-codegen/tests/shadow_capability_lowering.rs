@@ -441,7 +441,9 @@ impl Shadow {
                 let new = self.behaviour_fact(
                     class,
                     Capability::ForeignAbi(Abi::Js),
-                    &[("fn", &js[0]), ("selector", hale_types::target::TargetSpec::host().triple)],
+                    // This shadow compares the native capability class;
+                    // its fixture is shared by Linux and macOS hosts.
+                    &[("fn", &js[0]), ("selector", "the native target")],
                 );
                 self.compare("foreign abi", class, &id, vec![("ForeignAbi(Js)".to_string(), old)], vec![("ForeignAbi(Js)".to_string(), new)]);
             }
