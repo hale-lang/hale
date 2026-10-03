@@ -4,6 +4,7 @@
 // until the replacing handler returns. Handler order and the old run
 // reading its heap String are both preserved.
 // Gate files establish the overlap without a timing-dependent sleep.
+// The driver waits for App.run(), after App has registered its handlers.
 // Expected outcome: answered-after-handler, with each child reclaimed
 // once and Run.Ended before Reclaim.Completed in the derived plan.
 
@@ -47,7 +48,7 @@ locus Kid {
 locus Driver {
     bus { publish Replaces; }
     run() {
-        while !std::io::fs::file_exists(gate("started")) { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(gate("started")) || !std::io::fs::file_exists(gate("ready")) { std::time::sleep(1ms); }
         Replaces <- Note { tag: 1 };
     }
 }
@@ -68,9 +69,11 @@ main locus App {
         std::io::fs::write_file(gate("heard"), "go") or discard;
     }
     run() {
+        std::io::fs::write_file(gate("ready"), "go") or discard;
         while !std::io::fs::file_exists(gate("done")) { std::time::sleep(1ms); }
     }
     dissolve() {
+        std::io::fs::unlink(gate("ready")) or discard;
         std::io::fs::unlink(gate("started")) or discard;
         std::io::fs::unlink(gate("replacing")) or discard;
         std::io::fs::unlink(gate("heard")) or discard;
