@@ -1439,6 +1439,9 @@ pub fn build_resolved(
         forms: &resolved.forms,
         bindings: &resolved.bindings,
         typed: &resolved.typed,
+        current_specialization: None,
+        current_call: None,
+        default_invocations: Vec::new(),
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -1449,6 +1452,7 @@ pub fn build_resolved(
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
+        specialized_locus_decls: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         current_user_fn_scratch_local: false,
@@ -3240,6 +3244,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the checker's answers here instead of typing again, and refuses
     /// a hole at its span.
     pub(crate) typed: &'p hale_types::typed_bodies::TypedBodies,
+    /// While a generic fn's specialization is lowered: its template's
+    /// site and its type arguments, under which the table holds the
+    /// rows of the generic calls its body makes.
+    pub(crate) current_specialization: Option<(hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)>,
+    /// Source invocation whose omitted defaults are being lowered.
+    current_call: Option<NodeId>,
+    default_invocations: Vec<u32>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -3284,6 +3295,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_program`; carries the LLVM struct type for the
     /// locus's params + the lifecycle methods compiled against it.
     pub(crate) user_loci: BTreeMap<String, LocusInfo<'ctx>>,
+    /// Substituted source declarations used to declare the concrete
+    /// locus methods. Signature lookup must read these same declarations
+    /// instead of searching the unspecialized program for a mangled name.
+    specialized_locus_decls: BTreeMap<String, LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -7944,6 +7959,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut seen_mangles,
             &mut requests,
         )?;
+        // A generic fn can spell Holder<T> before T is bound. The
+        // typed producer records the concrete monomorphs discovered
+        // while specializing its body. Queue those concrete rows;
+        // the source walk below leaves unbound template uses out.
+        for m in self.typed.monomorphs().rows() {
+            let template = match m.kind {
+                hale_types::typed_bodies::TemplateKind::Locus => generic_locus_decls.values()
+                    .find(|l| l.id.0 == m.template.0).map(|l| l.name.name.clone()),
+                hale_types::typed_bodies::TemplateKind::Type => generic_type_decls.values()
+                    .find(|t| t.id.0 == m.template.0).map(|t| t.name.name.clone()),
+                hale_types::typed_bodies::TemplateKind::Fn => None,
+            };
+            let Some(template) = template else { continue };
+            let span = hale_syntax::Span::new(0, 0);
+            let args: Option<Vec<TypeExpr>> = m.args.iter().map(|t| match t {
+                hale_types::ty::Ty::Prim(p) => Some(TypeExpr::Primitive(*p, span)),
+                hale_types::ty::Ty::Named(n) => Some(TypeExpr::Named {
+                    path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
+                    generic_args: Vec::new(),
+                    span,
+                }),
+                _ => None,
+            }).collect();
+            if let Some(args) = args {
+                if seen_mangles.insert(m.name.clone()) {
+                    requests.push((template, args));
+                }
+            }
+        }
         // m63: process requests as a queue — synthesizing one
         // instantiation may surface NEW generic uses inside its
         // substituted body (e.g., `Holder<Int>` instantiates
@@ -8040,6 +8084,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &mut requests,
                     )?;
                 }
+                self.specialized_locus_decls.insert(mangled, synthesized.clone());
                 synthesized_loci.push(synthesized);
             }
         }
@@ -11820,159 +11865,122 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// m62: convert a CodegenTy back to a TypeExpr for the
-    /// generic-fn inference path. The resulting TypeExpr is used
-    /// to mangle the instantiation name and to substitute into
-    /// the template's body — both purely structural operations,
-    /// so the synthetic spans are fine.
-    fn codegen_ty_to_type_expr(
-        t: &CodegenTy,
-    ) -> Result<TypeExpr, CodegenError> {
-        // Synthetic span for the synthesized TypeExpr — these
-        // never surface in user-visible diagnostics because m62
-        // structural ops only inspect shape, not source location.
+    /// The declaration used for a locus's emitted methods, retaining
+    /// source identities while substituting its type arguments.
+    fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
+        self.specialized_locus_decls.get(name).or_else(|| {
+            hale_syntax::ast::flat_decls(&self.program.items).find_map(|d| match d {
+                TopDecl::Locus(l) if l.name.name == name => Some(l),
+                _ => None,
+            })
+        })
+    }
+
+    /// m62: the specialization a generic fn call instantiates — its
+    /// type arguments, in the template's `generics` order, and its
+    /// name. Both are the checker's (F.40 phase 3, E4): the call's
+    /// typed-body row (the arguments the checker's unification bound)
+    /// and the monomorph table's row for the template at those
+    /// arguments. An argument lowering cannot name a specialization for
+    /// (m62 v0.1: primitives and named types) is refused as it always
+    /// was; a hole, or a call the table holds no row for, at the call.
+    fn generic_call_instance(
+        &self,
+        name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
+    ) -> Result<(Vec<TypeExpr>, String, (hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)), CodegenError> {
+        use hale_types::typed_bodies::Typed;
+        // Select by the call's lexical body, including params defaults
+        // evaluated inside another specialization. Defaults use the
+        // declaring locus, just as their `self.X` reads do; literal
+        // overrides keep the caller's context. No type is inferred here.
+        // NodeId structural equality ignores metadata; compare the raw
+        // source identities when choosing a specialization.
+        let context = self.default_invocations.first().map(|id| NodeId(*id)).unwrap_or(call);
+        let fn_specialization = self.current_specialization.as_ref().filter(|(body, _)| {
+            self.typed.generic_call_body(context).map(|id| id.0) == Some(body.0)
+        });
+        let locus = if self.in_params_default {
+            self.params_init_self.as_ref().or(self.current_self.as_ref())
+        } else {
+            self.current_self.as_ref().or(self.params_init_self.as_ref())
+        };
+        let locus_specialization = locus
+            .and_then(|l| self.typed.monomorphs().named(&l.locus_name))
+            .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus
+                && self.typed.generic_call_locus(context).map(|id| id.0) == Some(m.template.0));
+        let row = if self.default_invocations.is_empty() {
+            match (fn_specialization, locus_specialization) {
+                (Some((body, args)), _) => self.typed.specialized_generic_call(*body, args, call),
+                (None, Some(m)) => self.typed.specialized_generic_call_at(&m.args, call),
+                (None, None) => self.typed.generic_call(call),
+            }
+        } else {
+            let args = fn_specialization.map(|(_, args)| args.as_slice())
+                .or_else(|| locus_specialization.map(|m| m.args.as_slice()));
+            self.typed.default_generic_call(&self.default_invocations, args, call)
+        };
+        let row = match row {
+            Some(Typed::Known(row)) => row,
+            Some(Typed::Hole(h)) => return Err(CodegenError::UnsupportedAt(h.reason.clone(), h.span)),
+            None => {
+                return Err(CodegenError::UnsupportedAt(
+                    format!(
+                        "generic fn `{}`: this call has no typed-body row: the checker did not walk it",
+                        name
+                    ),
+                    call_span,
+                ))
+            }
+        };
+        let args = row
+            .type_args
+            .iter()
+            .map(|t| self.generic_type_arg(t))
+            .collect::<Result<Vec<TypeExpr>, CodegenError>>()?;
+        let mono = self.typed.monomorphs().of(row.template, &row.type_args).ok_or_else(|| {
+            CodegenError::UnsupportedAt(
+                format!(
+                    "generic fn `{}`: the monomorph table names no specialization for this call's \
+                     type arguments",
+                    name
+                ),
+                call_span,
+            )
+        })?;
+        Ok((args, mono.name.clone(), (row.template, row.type_args.clone())))
+    }
+
+    /// m62: a type argument the checker bound, as the type expression a
+    /// specialization substitutes: a primitive, or a declared type or
+    /// enum by its name (m62 v0.1).
+    fn generic_type_arg(&self, t: &hale_types::ty::Ty) -> Result<TypeExpr, CodegenError> {
+        use hale_types::ty::Ty;
         let span = hale_syntax::span::Span::new(0, 0);
         match t {
-            CodegenTy::Int => Ok(TypeExpr::Primitive(PrimType::Int, span)),
-            CodegenTy::Float => {
-                Ok(TypeExpr::Primitive(PrimType::Float, span))
-            }
-            CodegenTy::Bool => Ok(TypeExpr::Primitive(PrimType::Bool, span)),
-            CodegenTy::String => {
-                Ok(TypeExpr::Primitive(PrimType::String, span))
-            }
-            CodegenTy::Duration => {
-                Ok(TypeExpr::Primitive(PrimType::Duration, span))
-            }
-            CodegenTy::Decimal => {
-                Ok(TypeExpr::Primitive(PrimType::Decimal, span))
-            }
-            CodegenTy::Time => Ok(TypeExpr::Primitive(PrimType::Time, span)),
-            CodegenTy::TypeRef(name) | CodegenTy::Enum(name) => {
+            Ty::Prim(
+                p @ (PrimType::Int
+                | PrimType::Float
+                | PrimType::Bool
+                | PrimType::String
+                | PrimType::Duration
+                | PrimType::Decimal
+                | PrimType::Time),
+            ) => Ok(TypeExpr::Primitive(*p, span)),
+            Ty::Named(n) if self.user_types.contains_key(n) || self.user_enums.contains_key(n) => {
                 Ok(TypeExpr::Named {
-                    path: QualifiedName {
-                        segments: vec![Ident::new(name.clone(), span)],
-                        span,
-                    },
+                    path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
                     generic_args: Vec::new(),
                     span,
                 })
             }
             other => Err(CodegenError::Unsupported(format!(
-                "codegen_ty_to_type_expr: form `{:?}` not supported \
-                 (m62 v0.1 limits inference to primitives + named \
-                 types as generic args)",
-                other
+                "generic type argument `{}` not supported (m62 v0.1 limits \
+                 inference to primitives + named types as generic args)",
+                other.display()
             ))),
         }
-    }
-
-    /// m62: structurally walk a declared TypeExpr against an
-    /// actual CodegenTy, recording bindings for any generic
-    /// param refs. `params` names which idents in the TypeExpr
-    /// represent generic params (vs. concrete user types).
-    /// Errors if a param binds to multiple distinct types
-    /// (inconsistent inference).
-    fn unify_generic_param_bindings(
-        declared: &TypeExpr,
-        actual: &CodegenTy,
-        params: &BTreeSet<String>,
-        bindings: &mut BTreeMap<String, TypeExpr>,
-    ) -> Result<(), CodegenError> {
-        // Generic-param ref: bind to actual.
-        if let TypeExpr::Named {
-            path, generic_args, ..
-        } = declared
-        {
-            if path.segments.len() == 1
-                && generic_args.is_empty()
-                && params.contains(&path.segments[0].name)
-            {
-                let bound = Self::codegen_ty_to_type_expr(actual)?;
-                let name = &path.segments[0].name;
-                if let Some(prior) = bindings.get(name) {
-                    if prior != &bound {
-                        return Err(CodegenError::Unsupported(format!(
-                            "generic param `{}` inferred as both \
-                             `{:?}` and `{:?}` from call site",
-                            name, prior, bound
-                        )));
-                    }
-                } else {
-                    bindings.insert(name.clone(), bound);
-                }
-                return Ok(());
-            }
-        }
-        // Otherwise structural recurse where shapes match.
-        match (declared, actual) {
-            (TypeExpr::Array { elem, .. }, CodegenTy::Array(a_elem, _)) => {
-                Self::unify_generic_param_bindings(
-                    elem, a_elem, params, bindings,
-                )
-            }
-            (TypeExpr::Tuple(parts, _), CodegenTy::Tuple(a_parts))
-                if parts.len() == a_parts.len() =>
-            {
-                for (p, a) in parts.iter().zip(a_parts) {
-                    Self::unify_generic_param_bindings(
-                        p, a, params, bindings,
-                    )?;
-                }
-                Ok(())
-            }
-            // Concrete-vs-concrete shapes: nothing to bind.
-            // Mismatches don't error here — the typechecker (or
-            // the call site type check after substitution) will
-            // surface them.
-            _ => Ok(()),
-        }
-    }
-
-    /// m62: infer the concrete type-args tuple for a generic fn
-    /// call by unifying each declared param TypeExpr against the
-    /// actual arg CodegenTy. Returns the args in the same order
-    /// as the template's `generics: Vec<GenericParam>`.
-    fn infer_generic_fn_args(
-        template: &FnDecl,
-        actual_arg_tys: &[CodegenTy],
-    ) -> Result<Vec<TypeExpr>, CodegenError> {
-        let visible_args = template.params.len().min(actual_arg_tys.len());
-        let generic_param_names: BTreeSet<String> = template
-            .generics
-            .iter()
-            .map(|g| g.name.name.clone())
-            .collect();
-        let mut bindings: BTreeMap<String, TypeExpr> = BTreeMap::new();
-        for (p, actual_ty) in template
-            .params
-            .iter()
-            .zip(actual_arg_tys.iter())
-            .take(visible_args)
-        {
-            Self::unify_generic_param_bindings(
-                &p.ty,
-                actual_ty,
-                &generic_param_names,
-                &mut bindings,
-            )?;
-        }
-        let mut args: Vec<TypeExpr> = Vec::new();
-        for gp in &template.generics {
-            match bindings.get(&gp.name.name) {
-                Some(t) => args.push(t.clone()),
-                None => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "generic fn `{}`: could not infer param `{}` \
-                         from call site (m62 v0.1 requires every \
-                         generic param to appear in an arg position \
-                         that pins it)",
-                        template.name.name, gp.name.name
-                    )));
-                }
-            }
-        }
-        Ok(args)
     }
 
     /// m62: synthesize a concrete (non-generic) FnDecl from a
@@ -12124,6 +12132,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
+        fn mentions_parameter(te: &TypeExpr, names: &BTreeSet<&str>) -> bool {
+            match te {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    (path.segments.len() == 1 && names.contains(path.segments[0].name.as_str()))
+                        || generic_args.iter().any(|t| mentions_parameter(t, names))
+                }
+                TypeExpr::Projection { inner, .. } => mentions_parameter(inner, names),
+                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => mentions_parameter(elem, names),
+                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions_parameter(t, names)),
+                TypeExpr::Function { params, ret, .. } => params.iter().any(|t| mentions_parameter(t, names))
+                    || ret.as_ref().is_some_and(|t| mentions_parameter(t, names)),
+                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+            }
+        }
         // GH #884: module nesting flattened — a generic
         // instantiation written one brace deeper needs the same
         // monomorph synthesized, and the `TopDecl::Module` arm
@@ -12178,13 +12200,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     /* generic template — its own body's `T`
                      * references aren't instantiations. */
                 }
-                TopDecl::Fn(f) => {
+                TopDecl::Fn(f) if f.generics.is_empty() => {
                     Self::collect_in_fn_decl(
                         f,
                         generic_names,
                         seen,
                         requests,
                     )?;
+                }
+                TopDecl::Fn(f) => {
+                    // Like type and locus templates, unbound fn
+                    // annotations are not concrete instantiations.
+                    // Keep concretely spelled uses (including builtin
+                    // Option/Result); the typed rows supply bound uses.
+                    let names = f.generics.iter().map(|g| g.name.name.as_str()).collect();
+                    let mut local_seen = BTreeSet::new();
+                    let mut local_requests = Vec::new();
+                    Self::collect_in_fn_decl(f, generic_names, &mut local_seen, &mut local_requests)?;
+                    for (name, args) in local_requests {
+                        if !args.iter().any(|t| mentions_parameter(t, &names)) {
+                            let mangled = Self::mangle_generic_name(&name, &args)?;
+                            if seen.insert(mangled) {
+                                requests.push((name, args));
+                            }
+                        }
+                    }
                 }
                 TopDecl::Locus(l) if l.generics.is_empty() => {
                     for member in &l.members {
@@ -14290,8 +14330,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// fns. Used from both expression-position and statement-position
     /// call sites.
     /// m62: lower a call to a generic free fn. Lowers each arg
-    /// once (so side effects fire at most once), infers concrete
-    /// type args from the resulting CodegenTys, mangles, and —
+    /// once (so side effects fire at most once), reads the type
+    /// args and the specialization's name from the call's
+    /// typed-body row (`generic_call_instance`), and —
     /// if this instantiation hasn't been seen before — synthesizes
     /// + lowers a specialized fn body (saving and restoring
     /// builder state so the surrounding caller's IR isn't
@@ -14300,6 +14341,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_generic_fn_call(
         &mut self,
         name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
@@ -14322,10 +14365,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 arg_pairs.len()
             )));
         }
-        let arg_tys: Vec<CodegenTy> =
-            arg_pairs.iter().map(|(_, t)| t.clone()).collect();
-        let inferred = Self::infer_generic_fn_args(&template, &arg_tys)?;
-        let mangled = Self::mangle_generic_name(name, &inferred)?;
+        let (inferred, mangled, instance) = self.generic_call_instance(name, call, call_span)?;
 
         // Synthesize + lower the specialized fn if we haven't
         // seen this instantiation before.
@@ -14351,6 +14391,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_scratch_local = self.current_user_fn_scratch_local;
             let saved_exit_bb = self.current_user_fn_exit_bb;
             let saved_ret_alloca = self.current_user_fn_ret_alloca;
+            // A free fn must not emit loads from the caller method's
+            // allocas. Nested specialization also restores the caller's
+            // fallible channel after lowering the new function.
+            let saved_method_scratch = self.current_method_scratch.take();
+            let saved_method_caller = self.current_method_caller_arena.take();
+            let saved_fallible = self.current_user_fn_fallible.take();
+            let saved_defaults = std::mem::take(&mut self.default_invocations);
+            let saved_call = self.current_call.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
@@ -14366,7 +14414,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_self = None;
 
             self.declare_user_fn(&synth)?;
+            let saved_specialization = self.current_specialization.replace(instance);
             self.lower_user_fn_body(&synth)?;
+            self.current_specialization = saved_specialization;
 
             // Restore caller-side state.
             if let Some(b) = saved_block {
@@ -14389,6 +14439,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_user_fn_scratch_local = saved_scratch_local;
             self.current_user_fn_exit_bb = saved_exit_bb;
             self.current_user_fn_ret_alloca = saved_ret_alloca;
+            self.current_method_scratch = saved_method_scratch;
+            self.current_method_caller_arena = saved_method_caller;
+            self.current_user_fn_fallible = saved_fallible;
+            self.default_invocations = saved_defaults;
+            self.current_call = saved_call;
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
@@ -14785,7 +14840,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // arbitrary expressions they execute in the caller's
                 // scope (matching the interpreter's semantics).
                 let default = sig.defaults[i].as_ref().expect("checked above");
-                self.lower_expr(default, scope)?
+                self.lower_default_in_caller(default, scope)?
             };
             // F.20 Phase B: implicit locus → interface coercion. If
             // the param is an Interface and the arg is a LocusRef
@@ -16207,6 +16262,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        let previous = self.current_call;
+        if let Stmt::Expr(expr) = stmt {
+            if let Some(call) = Self::invocation_id(expr) {
+                self.current_call = Some(call);
+            }
+        }
+        let result = self.lower_stmt_at(stmt, scope);
+        self.current_call = previous;
+        result
+    }
+
+    fn lower_stmt_at(
+        &mut self,
+        stmt: &Stmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
         match stmt {
             Stmt::Expr(Expr::Struct { path, inits, .. }) => {
                 // m73a: rewrite recognized `std::*` paths to the
@@ -16335,7 +16406,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // position — synthesize on-demand,
                             // discard return value.
                             let _ = self
-                                .lower_generic_fn_call(name, args, scope)?;
+                                .lower_generic_fn_call(name, *call_id, callee.span(), args, scope)?;
                         } else if let Some((slot_ptr, CodegenTy::FnPtr {
                             args: arg_tys,
                             ret: ret_ty,
@@ -18069,6 +18140,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `user_fn_shadows_bounded_intrinsic` (`form/bounded.rs`) — so
     /// the guarded arms no longer hijack it and still need no
     /// refusal here.
+    /// A bare builtin's row of the signature table the checker types
+    /// its calls by (F.40 phase 3, E4): lowering reads the arity and
+    /// the result from it.
+    fn builtin_sig(name: &str) -> &'static hale_types::builtin_sigs::BuiltinSig {
+        hale_types::builtin_sigs::bare_builtin_sig(name).expect("every lowered bare builtin has a signature row")
+    }
+
+    /// The type a builtin's row gives a call over its (first) operand.
+    fn builtin_result(sig: &hale_types::builtin_sigs::BuiltinSig, operand: &CodegenTy) -> CodegenTy {
+        use hale_types::builtin_sigs::Returns;
+        match sig.returns {
+            Returns::Prim(PrimType::Int) => CodegenTy::Int,
+            Returns::Prim(PrimType::Float) => CodegenTy::Float,
+            Returns::Prim(PrimType::Bool) => CodegenTy::Bool,
+            Returns::Prim(PrimType::String) => CodegenTy::String,
+            Returns::Prim(other) => unreachable!("no builtin row returns {other:?}"),
+            Returns::Operand => operand.clone(),
+        }
+    }
+
     fn reject_builtin_over_user_fn(
         &self,
         name: &str,
@@ -18101,7 +18192,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("len");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`len` expects exactly 1 argument, got {}",
                 args.len()
@@ -18126,7 +18218,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_len returns i64");
-                Ok((val, CodegenTy::Int))
+                Ok((val, Self::builtin_result(sig, &ty)))
             }
             CodegenTy::Bytes | CodegenTy::BytesView => {
                 // m89: Bytes carries an explicit length prefix —
@@ -18147,11 +18239,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_bytes_len returns i64");
-                Ok((val, CodegenTy::Int))
+                Ok((val, Self::builtin_result(sig, &ty)))
             }
             CodegenTy::Array(_, n) => {
                 let val = self.context.i64_type().const_int(n, true);
-                Ok((val.into(), CodegenTy::Int))
+                Ok((val.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`len` not supported for argument type {:?}",
@@ -18171,7 +18263,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("Int");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`Int` cast expects exactly 1 argument, got {}",
                 args.len()
@@ -18179,7 +18272,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Int => Ok((v, CodegenTy::Int)),
+            CodegenTy::Int => Ok((v, Self::builtin_result(sig, &ty))),
             CodegenTy::Float => {
                 let res = self
                     .builder
@@ -18189,7 +18282,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Int.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), CodegenTy::Int))
+                Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Int(...)` cast not supported for argument type {:?} \
@@ -18214,7 +18307,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("Float");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`Float` cast expects exactly 1 argument, got {}",
                 args.len()
@@ -18222,7 +18316,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Float => Ok((v, CodegenTy::Float)),
+            CodegenTy::Float => Ok((v, Self::builtin_result(sig, &ty))),
             CodegenTy::Int => {
                 let res = self
                     .builder
@@ -18232,7 +18326,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Float.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), CodegenTy::Float))
+                Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
@@ -18253,7 +18347,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let arity = if name == "abs" { 1 } else { 2 };
+        let sig = Self::builtin_sig(name);
+        let arity = sig.arity;
         if args.len() != arity {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly {} argument(s), got {}",
@@ -18293,7 +18388,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, at))
+                Ok((v, Self::builtin_result(sig, &at)))
             }
             CodegenTy::Float => {
                 let pred = match name {
@@ -18314,7 +18409,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, at))
+                Ok((v, Self::builtin_result(sig, &at)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`{}` not supported for type {:?}",
@@ -18358,7 +18453,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, ty.clone()))
+                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             CodegenTy::Float => {
                 let fv = v.into_float_value();
@@ -18380,7 +18475,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, ty.clone()))
+                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`abs` not supported for type {:?}",
@@ -18398,7 +18493,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 2 {
+        let sig = Self::builtin_sig(name);
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly 2 arguments, got {}",
                 name,
@@ -18442,7 +18538,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &format!("str.{}.bool", name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((v.into(), CodegenTy::Bool))
+        Ok((v.into(), Self::builtin_result(sig, &st)))
     }
 
     /// m37: lower a `to_string(x)` builtin call. Routes by the
@@ -18503,7 +18599,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("to_string");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`to_string` expects exactly 1 argument, got {}",
                 args.len()
@@ -18511,7 +18608,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
-        Ok((res, CodegenTy::String))
+        Ok((res, Self::builtin_result(sig, &ty)))
     }
 
     /// m47-payloads-followup: convert any single value to a
@@ -22243,7 +22340,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
+    fn invocation_id(expr: &Expr) -> Option<NodeId> {
+        match expr {
+            Expr::Call { id, .. } => Some(*id),
+            Expr::Or { inner, .. } => Self::invocation_id(inner),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn lower_default_in_caller(
+        &mut self,
+        default: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let call = self.current_call.ok_or_else(|| CodegenError::UnsupportedAt(
+            "function default has no source invocation".into(), default.span(),
+        ))?;
+        if self.default_invocations.contains(&call.0) {
+            return Err(CodegenError::UnsupportedAt("recursive function default evaluation".into(), default.span()));
+        }
+        self.default_invocations.push(call.0);
+        let result = self.lower_expr(default, scope);
+        self.default_invocations.pop();
+        result
+    }
+
     pub(crate) fn lower_expr(
+        &mut self,
+        e: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let previous = self.current_call;
+        if let Some(call) = Self::invocation_id(e) {
+            self.current_call = Some(call);
+        }
+        let result = self.lower_expr_at(e, scope);
+        self.current_call = previous;
+        result
+    }
+
+    fn lower_expr_at(
         &mut self,
         e: &Expr,
         scope: &Scope<'ctx>,
@@ -23051,7 +23187,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (v, t) = self.lower_expr(operand, scope)?;
                 self.lower_unop(*op, v, &t)
             }
-            Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Call { callee, args, id: call_id, .. } => match callee.as_ref() {
                 // m46-vocab: count() / mean(x) accumulator builtins
                 // — when an accumulator-eval ctx is active, route
                 // to the next slot. count() takes 0 args; mean(x)
@@ -23162,7 +23298,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if self.generic_fn_templates.contains_key(&i.name) =>
                 {
                     let result =
-                        self.lower_generic_fn_call(&i.name, args, scope)?;
+                        self.lower_generic_fn_call(&i.name, *call_id, i.span, args, scope)?;
                     result.ok_or_else(|| {
                         CodegenError::Unsupported(format!(
                             "generic fn `{}` returns no value but is \
@@ -28133,9 +28269,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ret: Option<TypeExpr>,
         }
         // GH #884: module nesting flattened.
-        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == cs.locus_name => l
+        let sig: MethodSig = self.locus_declaration(&cs.locus_name)
+            .and_then(|l| l
                     .members
                     .iter()
                     .find_map(|m| match m {
@@ -28161,9 +28296,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                         _ => None,
-                    }),
-                _ => None,
-            })
+                    }))
             .expect("method declaration was visited in pass A2");
         // Caller may omit a contiguous tail of defaulted params
         // (suffix-only rule enforced at decl time). Each missing
@@ -28197,7 +28330,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 let default_expr =
                     sig.params[i].default.as_ref().expect("checked above");
-                self.lower_expr(default_expr, scope)?
+                self.lower_default_in_caller(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             // 2026-05-18 — locus → interface coercion at self-method
@@ -28595,9 +28728,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fallible: Option<TypeExpr>,
         }
         // GH #884: module nesting flattened.
-        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == locus_name => l
+        let sig: MethodSig = self.locus_declaration(&locus_name)
+            .and_then(|l| l
                     .members
                     .iter()
                     .find_map(|m| match m {
@@ -28635,9 +28767,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                         _ => None,
-                    }),
-                _ => None,
-            })
+                    }))
             .ok_or_else(|| {
                 CodegenError::Unsupported(format!(
                     "method `{}` declaration not found on locus `{}`",
@@ -28698,7 +28828,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             locus_name, method_name, sig.params[i].name.name
                         ))
                     })?;
-                self.lower_expr(default_expr, scope)?
+                self.lower_default_in_caller(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             // 2026-05-18 — locus → interface coercion at locus-method

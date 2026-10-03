@@ -738,14 +738,6 @@ pub(crate) fn run_check_impl_labelled(
             &bundle.import_renames,
         ));
     }
-    // GH #738: a bare fallible stdlib call — no `or` — is an error, here
-    // and on every build path (`check_bundle_for_build` runs the same
-    // pass).
-    {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        diags.extend(hale_types::bare_fallible::bare_fallible_calls(&progs));
-    }
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits
     // NDJSON diagnostics on STDOUT (one object per line: file,
     // line, col, severity, kind, message) for editor/LSP

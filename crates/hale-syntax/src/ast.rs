@@ -2441,7 +2441,7 @@ pub struct FnDecl {
     /// v1.x-FORM-1: optional `fallible(T)` marker. When present,
     /// the fn can fail with a payload of type T; call sites
     /// MUST address the error via an `or` clause (see
-    /// [`Expr::Or`]) or a `match`. Inside the body, `fail <expr>`
+    /// [`Expr::Or`]). Inside the body, `fail <expr>`
     /// (see [`Stmt::Fail`]) exits via the error path with the
     /// expression as the typed payload.
     pub fallible: Option<TypeExpr>,

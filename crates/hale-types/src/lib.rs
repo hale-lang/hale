@@ -26,6 +26,7 @@ pub mod alloc_summary;
 pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
+pub mod builtin_sigs;
 pub mod budget_check;
 pub mod bus_graph;
 pub mod bus_inert;
@@ -260,9 +261,10 @@ pub fn check_bundle_for_build(
 }
 
 /// The rules a build refuses beside the check, after it: the borrow
-/// rule (GH #730, #1048) and, GH #738, a bare fallible stdlib call — an
-/// error on every build path, as it is in `hale check`. The snapshot's
-/// check appends them for a build's config (`Config::build_rules`).
+/// rule (GH #730, #1048), an error on every build path, as it is in
+/// `hale check`. The snapshot's check appends them for a build's config
+/// (`Config::build_rules`). A bare fallible call (GH #738) is the
+/// check's own: the `bare_fallible` law runs with the typing.
 pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(
@@ -271,7 +273,6 @@ pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
         &bundle.import_renames,
     );
     stdlib_bodies::demangle_imports(&mut diags, &[]);
-    diags.extend(bare_fallible::bare_fallible_calls(&programs));
     diags
 }
 
@@ -1783,8 +1784,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.iter().any(|d| d.message.contains("error not addressed")),
-            "expected error-not-addressed diag, got: {:?}",
+            diags.iter().any(|d| d.message.contains("`parse` can fail (E) and this call says nothing about it")),
+            "expected the bare-fallible diag, got: {:?}",
             diags
         );
     }
@@ -1800,8 +1801,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.iter().any(|d| d.message.contains("error not addressed")),
-            "expected error-not-addressed diag, got: {:?}",
+            diags.iter().any(|d| d.message.contains("`doit` can fail (E) and this call says nothing about it")),
+            "expected the bare-fallible diag, got: {:?}",
             diags
         );
     }
@@ -2508,9 +2509,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.iter().any(|d| d.message.contains("error not addressed")
-                || d.message.contains("fallible")),
-            "expected error-not-addressed diag, got: {:?}",
+            diags.iter().any(|d| d.message.contains("`r.get` can fail (KeyError) and this call says nothing about it")),
+            "expected the bare-fallible diag, got: {:?}",
             diags
         );
     }
@@ -2700,8 +2700,8 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("error not addressed")),
-            "expected error-not-addressed on bare get(), got: {:?}",
+                .any(|d| d.message.contains("`l.get` can fail (IndexError) and this call says nothing about it")),
+            "expected the bare-fallible diag on bare get(), got: {:?}",
             diags
         );
     }

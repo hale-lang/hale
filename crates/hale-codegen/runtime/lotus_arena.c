@@ -24746,16 +24746,18 @@ void lotus_bus_dispatch_wire_inbound(const char *subject,
  * the one place a runtime subject comes from; the table never mints
  * one.
  *
- * Nothing here takes a lock. The subject table is open addressing with
- * a relaxed CAS on the key, and the sequence number a relaxed
- * fetch_add, so the trace adds no happens-before edge between the
- * threads it watches. What it does give: on one thread, seq order is
+ * The subject table is open addressing with a relaxed CAS on the key.
+ * A release/acquire ready flag publishes each slot's initialized
+ * identity; another thread finding the claimed key waits for it.
+ * Mutable trace metadata and the sequence counter use relaxed atomics.
+ * What the sequence gives: on one thread, seq order is
  * program order; and if event a happens before event b, seq(a) <
  * seq(b) (one atomic's modification order), so a seq order that
  * contradicts a required edge is a real violation. The converse does
  * not hold (a serialized log is evidence of an execution, not a proof
- * of a happens-before edge), and the write(2) itself serializes in the
- * kernel, which is the one perturbation the trace makes.
+ * of a happens-before edge). Subject publication and the write(2)
+ * itself perturb the execution, so a traced run does not establish
+ * the ordering of an untraced run.
  *
  * `LOTUS_LIFECYCLE_SKIP` (read once, at load) is a comma list of steps
  * a negative control removes: a kind name (`PoolJoin`) makes
@@ -24772,10 +24774,11 @@ void lotus_bus_dispatch_wire_inbound(const char *subject,
 
 typedef struct {
     void *key;          /* the instance's struct; NULL empty, TOMB retired */
-    const char *type;   /* the declaration's name, once an event named it */
+    _Atomic int ready;  /* key claims the slot; ready publishes its identity */
+    _Atomic(const char *) type; /* the name, once an event named it */
     uint64_t inst;
-    uint32_t inc;
-    int running;        /* Run entered and not ended: the parked coro's name */
+    _Atomic uint32_t inc;
+    _Atomic int running; /* Run entered and not ended: the parked coro's name */
 } lotus_lc_slot_t;
 
 static lotus_lc_slot_t g_lc_slots[LOTUS_LC_SLOTS];
@@ -24807,6 +24810,18 @@ int lotus_lc_skips(const char *what) {
     return strstr(g_lc_skip, needle) != NULL;
 }
 
+static lotus_lc_slot_t *lotus_lc_ready_subject(lotus_lc_slot_t *s,
+                                              const char *type) {
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) {}
+    if (type) {
+        const char *unnamed = NULL;
+        atomic_compare_exchange_strong_explicit(&s->type, &unnamed, type,
+                                                 memory_order_relaxed,
+                                                 memory_order_relaxed);
+    }
+    return s;
+}
+
 static lotus_lc_slot_t *lotus_lc_subject(void *self, const char *type) {
     if (!self) return NULL;
     uint64_t h = ((uint64_t)(uintptr_t)self >> 4) * 0x9E3779B97F4A7C15ull;
@@ -24814,23 +24829,21 @@ static lotus_lc_slot_t *lotus_lc_subject(void *self, const char *type) {
     for (size_t i = 0; i < LOTUS_LC_SLOTS; i++) {
         lotus_lc_slot_t *s = &g_lc_slots[(start + i) & (LOTUS_LC_SLOTS - 1)];
         void *k = __atomic_load_n(&s->key, __ATOMIC_RELAXED);
-        if (k == self) {
-            if (type && !s->type) s->type = type;
-            return s;
-        }
+        if (k == self) return lotus_lc_ready_subject(s, type);
         if (k == NULL) {
             void *expected = NULL;
             if (__atomic_compare_exchange_n(&s->key, &expected, self, 0,
                                             __ATOMIC_RELAXED,
                                             __ATOMIC_RELAXED)) {
-                s->type = type;
-                s->inc = 0;
-                s->running = 0;
+                atomic_store_explicit(&s->type, type, memory_order_relaxed);
+                atomic_store_explicit(&s->inc, 0, memory_order_relaxed);
+                atomic_store_explicit(&s->running, 0, memory_order_relaxed);
                 s->inst = __atomic_add_fetch(&g_lc_next_inst, 1,
                                              __ATOMIC_RELAXED);
+                atomic_store_explicit(&s->ready, 1, memory_order_release);
                 return s;
             }
-            if (expected == self) return s;
+            if (expected == self) return lotus_lc_ready_subject(s, type);
         }
     }
     return NULL; /* the table is full: the line says inst=- */
@@ -24860,13 +24873,14 @@ static void lotus_lc_write(const char *kind, const char *point,
     uint64_t seq = __atomic_add_fetch(&g_lc_seq, 1, __ATOMIC_RELAXED);
     char line[384];
     int len;
-    if (s)
+    if (s) {
+        const char *type = atomic_load_explicit(&s->type, memory_order_relaxed);
         len = snprintf(line, sizeof line,
                        "lc %" PRIu64 " %s %s spine=%s dom=%s type=%s inst=%" PRIu64
                        " inc=%u\n",
-                       seq, kind, point, spine, dom, s->type ? s->type : "?",
-                       s->inst, s->inc);
-    else
+                       seq, kind, point, spine, dom, type ? type : "?",
+                       s->inst, atomic_load_explicit(&s->inc, memory_order_relaxed));
+    } else
         len = snprintf(line, sizeof line,
                        "lc %" PRIu64 " %s %s spine=%s dom=%s type=- inst=- inc=-\n",
                        seq, kind, point, spine, dom);
@@ -24898,8 +24912,10 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
                  const char *spine, const char *type) {
     lotus_lc_slot_t *s = lotus_lc_subject(self, type);
     int entered = strcmp(point, "Entered") == 0;
-    if (s && entered && strcmp(kind, "Restart") == 0) s->inc++;
-    if (s && strcmp(kind, "Run") == 0) s->running = entered;
+    if (s && entered && strcmp(kind, "Restart") == 0)
+        atomic_fetch_add_explicit(&s->inc, 1, memory_order_relaxed);
+    if (s && strcmp(kind, "Run") == 0)
+        atomic_store_explicit(&s->running, entered, memory_order_relaxed);
     lotus_lc_emit(kind, point, s, spine);
     if (s && strcmp(kind, "Reclaim") == 0 && strcmp(point, "Completed") == 0)
         __atomic_store_n(&s->key, LOTUS_LC_TOMB, __ATOMIC_RELAXED);
@@ -24912,8 +24928,8 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
 void lotus_lc_parked_abandoned(void *self) {
     lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
     lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
-    if (s && s->running) {
-        s->running = 0;
+    if (s && atomic_load_explicit(&s->running, memory_order_relaxed)) {
+        atomic_store_explicit(&s->running, 0, memory_order_relaxed);
         lotus_lc_emit("Run", "Terminal(CanceledAfterStart)", s, "PoolRun");
     }
     lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");

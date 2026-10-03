@@ -31,11 +31,12 @@ carrying the payload. The function's result is now "either an
 an `Int`:
 
 ```hale,fragment
-let n = parse_count(input);     // ERROR: error not addressed
+let n = parse_count(input);     // ERROR: says nothing about failure
 ```
 
 You have to *address* the error. You do that with an `or`
-clause.
+clause, and only with one: a `match` over the call, passing it as
+an argument or comparing it are all the same error.
 
 ## The five `or` motions
 
@@ -96,16 +97,19 @@ fn load_greeting() -> String fallible(...) {
 
 ## The bare form is an error
 
-A stdlib function that can fail must be called with an `or`:
+Any function that can fail, yours or the stdlib's, must be called with
+an `or`:
 
 ```hale,fragment
 std::io::fs::write_file(path, text);                // ERROR: says nothing about failure
 let r: Int = std::io::fs::write_file(path, text);   // ERROR: the legacy Int status
+match parse_count(s) { 0 -> { }, _ -> { } }         // ERROR: a match does not handle it
 ```
 
-Since v0.22.0 the compiler refuses every such call in `hale check`,
-`hale verify` and `hale build`, naming the function, what it can fail
-with, and the four ways to say what should happen:
+The compiler refuses every such call in `hale check`, `hale verify`
+and `hale build` alike (for stdlib calls since v0.22.0), naming the
+function, what it can fail with, and the four ways to say what should
+happen:
 
 ```hale,fragment
 std::io::fs::write_file(path, text) or raise;      // propagate
@@ -201,9 +205,10 @@ compatible error type.
 
 For your own fallible functions the inner `or raise` is implicit —
 `db_read(k) or self.rebuild(k)` propagates the handler's failure
-automatically. Stdlib calls and `@form` methods used as handlers
-still need the explicit nested spelling above (the compiler will
-tell you, with the exact rewrite, if you forget).
+automatically. Stdlib calls, generic functions, interface methods and
+`@form` methods used as handlers still need the explicit nested
+spelling above (the compiler will tell you, with the exact rewrite, if
+you forget).
 
 Next, we put the pieces together: [Your first
 program](./first-program.md).

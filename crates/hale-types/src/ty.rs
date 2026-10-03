@@ -37,10 +37,9 @@ pub enum Ty {
     ///
     /// A `Ty::Fallible` is NOT assignable to its success type —
     /// the caller MUST address the error first, via an
-    /// `or`-disposition or a `match`. The typechecker rejects
-    /// bare consumption of fallible values with
-    /// `error: error not addressed`. `Expr::Or` unwraps a
-    /// fallible into its success type.
+    /// `or`-disposition, which unwraps a fallible into its success
+    /// type. Anywhere else the checker types the value as its
+    /// success type and the `bare_fallible` law refuses the call.
     Fallible {
         success: Box<Ty>,
         payload: Box<Ty>,

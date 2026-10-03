@@ -747,6 +747,22 @@ arguments substituted. A field read on a monomorph locus value
 (`c.cap`) types as the substituted param, exactly as a monomorph
 struct's field read does.
 
+Generic function calls inside a generic locus are typed for each
+concrete locus monomorph. A call on `self.value`, or on a local bound
+to that field, uses the substituted field type. The checked call rows
+retain their source body and call identities; lowering selects the
+row for that locus's arguments. Params defaults use their declaring
+locus's specialization even when construction happens inside another
+generic function or locus. Specializations discovered in these bodies
+are checked in turn.
+
+Omitted function and method defaults are typed at each invocation in
+the caller's scope. Their generic call rows retain the default's source
+site and distinguish the invocation path and the caller's specialization.
+The same default can therefore use `Int` in one caller and `String` in
+another. Lowering reads the corresponding checked row; supplied arguments
+do not evaluate the default.
+
 **Where the arguments come from.** A struct / locus literal spelled
 with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
 carries no type arguments of its own; it takes them from the
@@ -1002,6 +1018,22 @@ aspirational entries — a name is on it when codegen dispatches it,
 not when it looks like it should (GH #800). The compiler tests both
 directions over its whole program corpus rather than trusting the
 list.
+
+The value builtins have types, and the checker and the compiler read
+them from one signature table:
+
+| call | operands | type |
+| --- | --- | --- |
+| `len(x)` | a `String` or `Bytes` (or a view of either), a fixed-size array | `Int` |
+| `to_string(x)` | a printable value | `String` |
+| `Int(x)` / `Float(x)` | an `Int` or a `Float` | `Int` / `Float` |
+| `abs(x)`, `min(a, b)`, `max(a, b)` | `Int`, `Float`, `Duration` or `Decimal`, one type throughout | the operands' type |
+| `starts_with(s, p)`, `contains(s, p)` | two `String`s | `Bool` |
+
+A call over operands outside its row is typed as unknown: the checker
+names no type for it, and the compiler refuses it where it lowers it. So
+`first(len(s))` instantiates `first<Int>`, and `let n: String =
+len(s)` is a type error at the `let`.
 
 ### Bare identifiers
 
@@ -1329,17 +1361,24 @@ the underlying success type:
 | Source                       | Inferred type                       |
 |------------------------------|-------------------------------------|
 | `fn f() -> T fallible(E)`    | `f()` has type `Ty::Fallible { success: T, payload: E }` |
-| `match` / `or` on fallible   | unwraps to `T`                      |
+| `or` on fallible             | unwraps to `T`                      |
 
-A `Ty::Fallible` is **not assignable** to its success type. It
-must be unwrapped at the immediate call site. The checker
-emits `error: error not addressed` at:
+Only an `or` addresses a `Ty::Fallible`: it must be unwrapped at
+the immediate call site, as the operand of an `or` (or an `or`'s
+handler, below). Anywhere else the call is bare, and the
+`bare_fallible` law reports it with one error naming the callee
+and its payload (`spec/semantics.md` § "A bare fallible call is an
+error"), at:
 
 - `let v = f();` with `f` fallible
 - `let v: T = f();` with `f` fallible (typed binding)
 - `f();` as an expression statement
-- `g(f())` — fallible passed as a non-fallible-typed arg
-- assignment, return, condition positions
+- `g(f())` — fallible passed as an argument
+- `match f() { .. }` — a `match` does not handle it
+- operand, assignment, return, condition positions
+
+The checker types a bare fallible value as its success type `T`,
+so the position reports no type mismatch beside the law's error.
 
 ### Disposition operators (`or`)
 
@@ -1376,9 +1415,14 @@ emits `error: error not addressed` at:
   `call() or (handler(err) or raise)`. E2 must be assignable to
   the enclosing fn's declared payload ("handler's failure has
   nowhere to go" / "propagated payload must match" otherwise).
-  User free fns, imported-path fns, and locus member fns are
-  classified; `@form`-synthesized methods and stdlib path-calls
-  still need the explicit nested spelling. In statement position
+  The implicit `or raise` applies where lowering supports it, a
+  limitation to lift rather than a rule: a fn the program declares
+  (not a generic one), an imported or bundled stdlib fn written as
+  Hale, and a locus member fn called on `self`, a local or a field of
+  `self`. Any other fallible handler (a stdlib path-call, a generic
+  fn, an interface's or a perspective's method, an `@form`-synthesized
+  or an array's method) is refused with the explicit nested spelling
+  to write instead. In statement position
   the substituted value is discarded, so the handler's success
   type needn't match the call's.
 

@@ -590,3 +590,131 @@ fn main() {
         &Expect::Runs("v=6"),
     );
 }
+
+#[test]
+fn generic_locus_calls_select_each_concrete_body() {
+    agree(
+        "typed_locus_calls",
+        r#"
+fn first<T>(x: T) -> T { return x; }
+fn twice<T>(x: T) -> T { return first(first(x)); }
+fn external(n: Int = first(7)) { println(n); }
+locus Holder<T> {
+    params { v: T; }
+    run() {
+        external();
+        println(first(self.v));
+        let x = self.v;
+        println(twice(x));
+    }
+}
+fn main() {
+    let i: Holder<Int> = Holder { v: 42 };
+    let s: Holder<String> = Holder { v: "text" };
+}
+"#,
+        &Expect::Runs("7\n42\n42\n7\ntext\ntext\n"),
+    );
+}
+
+#[test]
+fn generic_fn_discovers_locus_calls_and_defaults_keep_their_declaring_context() {
+    agree(
+        "typed_locus_defaults",
+        r#"
+fn first<T>(x: T) -> T { return x; }
+locus Holder<T> {
+    params { v: T; copied: T = first(self.v); }
+    fn read() -> T { return first(self.copied); }
+    run() { println(first(self.read())); }
+}
+fn spawn<T>(x: T) {
+    let h: Holder<T> = Holder { v: first(x) };
+}
+fn main() {
+    spawn(42);
+    spawn("text");
+}
+"#,
+        &Expect::Runs("42\ntext\n"),
+    );
+}
+
+#[test]
+fn function_and_method_defaults_use_each_caller_scope() {
+    agree(
+        "typed_caller_defaults",
+        r#"
+fn first<T>(x: T) -> T { return x; }
+fn show(n: String = to_string(first(value))) { println(n); }
+locus Display {
+    fn show(n: String = to_string(first(value))) { println(n); }
+}
+fn caller<T>(value: T) { show(); }
+fn int_caller() {
+    let value = 42;
+    show();
+    let d = Display { };
+    d.show();
+}
+fn string_caller() {
+    let value = "text";
+    show();
+    let d = Display { };
+    d.show();
+}
+fn main() {
+    int_caller();
+    string_caller();
+    caller(7);
+    caller("other");
+    show("supplied");
+}
+"#,
+        &Expect::Runs("42\n42\ntext\ntext\n7\nother\nsupplied\n"),
+    );
+}
+
+#[test]
+fn nested_defaults_keep_the_outer_invocation_and_helpers_keep_their_own_body() {
+    agree(
+        "typed_nested_defaults",
+        r#"
+fn first<T>(x: T) -> T { return x; }
+fn twice<T>(x: T) -> T { return first(first(x)); }
+fn read(n: Int = twice(value)) -> Int { return n; }
+fn nested(n: Int = read()) -> Int { return n; }
+fn main() {
+    let value = 42;
+    println(nested());
+    { let value = 7; println(nested()); }
+}
+"#,
+        &Expect::Runs("42\n7\n"),
+    );
+}
+
+#[test]
+fn defaults_use_generic_locus_callers_and_addressed_fallible_calls() {
+    agree(
+        "typed_specialized_defaults",
+        r#"
+type Fault { n: Int; }
+fn first<T>(x: T) -> T { return x; }
+fn show(n: String = to_string(first(value))) { println(n); }
+fn read(n: Int = first(value)) -> Int fallible(Fault) { return n; }
+locus Holder<T> {
+    params { v: T; }
+    fn show(n: String = to_string(first(value))) { println(n); }
+    run() { let value = self.v; show(); self.show(); }
+}
+fn main() {
+    let value = 9;
+    println(read() or - 1);
+    let i: Holder<Int> = Holder { v: 42 };
+    let s: Holder<String> = Holder { v: "text" };
+}
+"#,
+        &Expect::Runs("9\n42\n42\ntext\ntext\n"),
+    );
+}

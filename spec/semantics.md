@@ -4711,25 +4711,61 @@ statement-position recognition is also parser-gated to a
 fallible-body scope (so `let fail = 0;` outside such a body
 stays admissible).
 
-### A bare stdlib call is an error (GH #738)
+### A bare fallible call is an error (GH #738)
 
-Every stdlib entry point the signature table marks `fallible` must be
-called with an `or` disposition. A call with none — including the
-legacy Int-status form of the write fns, `let r: Int =
-std::io::fs::write_file(..)` — is a **type error** naming the callee,
-the payload it can fail with, and the shapes that address it (`or
-raise`, `or <fallback>`, `or discard`, `or handler(err)`). It is
-reported by `hale check`, `hale verify` and `hale build` alike; there
-is no flag or mode that accepts it. The rule was staged (warning,
-then `--strict-fallible`, then this) and the flag is removed.
+One rule holds for every fallible call, whether the callee is a fn or
+method the program declares, an interface method, a container's or
+an array's `get`, or a stdlib entry point: **only an `or` handles
+it.** The call must be the operand of an `or` disposition (`or raise`,
+`or <fallback>`, `or handler(err)`, `or fail <payload>`, `or
+discard`). In any other position the call is **bare**: an argument
+(`g(f())`), an operand (`f() > 1`), a `match` scrutinee (`match f() {
+.. }`), a `let` initializer (`let v = f();`), a statement (`f();`), a
+returned value (`return f();`, in a fallible fn too). A `match` does
+not handle a fallible call.
+
+A bare call is a **type error** naming the callee, the payload it can
+fail with, and the shapes that address it (`or raise`, `or
+<fallback>`, `or discard`, `or handler(err)`). That includes the
+legacy Int-status form of the stdlib write fns, `let r: Int =
+std::io::fs::write_file(..)`. It is reported by `hale check`, `hale
+verify`, `hale build`, `run`, `test` and the language server alike,
+one error per call. There is no flag or mode that accepts it. The rule
+for stdlib calls was staged (a warning, then `--strict-fallible`, then
+this) and the flag is removed. For any other callee the bare call was
+always refused, by the build if not by the check.
 
 A handled call and a deliberately discarded one (`or discard`, which
-needs a `()` success type) are not reported. The inventory of the
-entry points concerned is the table itself (`stdlib_surface.rs`, the
-rows with a payload): 94 at the time of the ruling, across
+needs a `()` success type) are not reported. The stdlib entry points
+concerned are the signature table's rows with a payload
+(`stdlib_surface.rs`): 94 at the time of the ruling, across
 `std::io::fs`, `std::process`, `std::http::client`, `std::io::tcp`,
 `std::compress`, `std::tar`, `std::bytes`, `std::str` and
 `std::time`.
+
+**Limitations to lift.** These are where lowering's support stops
+today, not part of the rule:
+
+- **A fallible handler.** An `or`'s handler that can fail itself
+  (`g() or f(err)`) takes an implicit `or raise` (`spec/types.md`
+  § "Disposition operators (`or`)") only when it is a fn the program declares (not a
+  generic one), an imported or bundled stdlib fn written as Hale, or
+  a locus's member fn called on `self`, a local or a field of `self`.
+  Any other fallible handler is refused with the nested spelling that
+  works, `or (f(err) or raise)`. That covers a stdlib entry point, a
+  generic fn, an interface's or a perspective's method, and a
+  container's, an array's or a stdlib handle's method.
+- **The stdlib's legacy form.** Lowering still carries a bare form
+  for some stdlib entry points (`read_file` returns the success value,
+  the write fns an Int status). The check refuses every bare call, so
+  no program reaches it.
+- **A call through an interface-typed value.** The checker types a
+  local or parameter whose declared type is an interface as unknown
+  (an interface slot accepts any locus that satisfies it), so it does
+  not see a call through one as fallible: a bare `s.put(k)` with `s:
+  Store` passes `hale check`, and `hale build` refuses it (``error not
+  addressed: `Store.put` is fallible``). A call through a locus-typed
+  value is checked.
 
 ### `or` disposition
 

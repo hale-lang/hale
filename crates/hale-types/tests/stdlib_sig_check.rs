@@ -164,11 +164,12 @@ fn tranche2_io_fs_checks_fire() {
 }
 
 #[test]
-fn bare_fallible_calls_stay_legal_dual_mode() {
+fn bare_fallible_calls_are_the_law_s_errors_and_type_permissively() {
     // Stdlib fallible path-calls are dual-mode at codegen: the bare
     // (no `or`) legacy form returns a direct value (read_file → the
-    // String, write_file → an Int status). Bare calls must not be
-    // flagged, and their returns stay permissive.
+    // String, write_file → an Int status). The checker types the bare
+    // call permissively, so its uses report nothing; the call itself is
+    // the `bare_fallible` law's error (GH #738), one per call.
     let m = msgs(
         r#"
         fn main() {
@@ -180,13 +181,13 @@ fn bare_fallible_calls_stay_legal_dual_mode() {
     );
     let errs: Vec<&String> = m
         .iter()
-        .filter(|s| {
-            s.contains("error not addressed")
-                || s.contains("argument")
-                || s.contains("expected")
-        })
+        .filter(|s| s.contains("argument") || s.contains("expected"))
         .collect();
     assert!(errs.is_empty(), "got: {:?}", errs);
+    let bare: Vec<&String> = m.iter().filter(|s| s.contains("says nothing about it")).collect();
+    assert_eq!(bare.len(), 2, "got: {:?}", m);
+    assert!(bare[0].starts_with("`std::io::fs::read_file` can fail (IoError)"), "got: {:?}", bare);
+    assert!(bare[1].starts_with("`std::io::fs::write_file` can fail (IoError)"), "got: {:?}", bare);
 }
 
 #[test]

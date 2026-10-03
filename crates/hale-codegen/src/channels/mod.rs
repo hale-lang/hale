@@ -1241,7 +1241,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .defaults[i]
                     .as_ref()
                     .expect("checked above");
-                self.lower_expr(default, scope)?
+                self.lower_default_in_caller(default, scope)?
             };
             // Same arg-coercion shape as lower_user_fn_call.
             let v = if let (CodegenTy::Interface(iface), CodegenTy::LocusRef(l)) =

@@ -271,7 +271,7 @@ fn fallible_handle_methods_are_enforced_at_check_time() {
     assert!(
         errors(bare)
             .iter()
-            .any(|m| m.contains("not addressed")),
+            .any(|m| m.contains("`f.write_line` can fail (IoError) and this call says nothing about it")),
         "a bare fallible handle method must be refused: {:?}",
         errors(bare)
     );

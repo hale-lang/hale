@@ -2,13 +2,14 @@
 //! keyed by declaration identity, one per snapshot.
 //!
 //! The checker records its own answers as it walks; the snapshot
-//! packages them on demand (`Snapshot::demand_typed_bodies`), and a
-//! check that never asks builds no table.
+//! packages them on demand (`Snapshot::demand_typed_bodies`), once:
+//! the check demands it for the `bare_fallible` law, and runs no
+//! second check to build it.
 
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_syntax::ast::{LocusMember, NodeId, Program, Stmt, TopDecl};
 use hale_types::ty::Ty;
-use hale_types::typed_bodies::{AccumulatorKind, CalleeKind, TemplateKind, Typed, Unsatisfied};
+use hale_types::typed_bodies::{AccumulatorKind, CalleeKind, Handling, TemplateKind, Typed, Unsatisfied};
 
 const PROGRAM: &str = r#"
 type Fault { why: String = ""; }
@@ -96,11 +97,11 @@ fn main_calls(p: &Program) -> Vec<NodeId> {
 }
 
 #[test]
-fn a_check_builds_no_table_and_a_demand_builds_one() {
+fn a_check_demands_the_table_once_and_runs_no_second_check() {
     let s = snapshot(Config::check(true, false));
     s.demand_check().expect("checked");
-    assert_eq!(s.builds()["typed_bodies"], 0, "a check never asks for the table");
-    assert_eq!(s.builds()["expression_typing"], 1);
+    assert_eq!(s.builds()["typed_bodies"], 1, "the check's `bare_fallible` law reads the table");
+    assert_eq!(s.builds()["expression_typing"], 1, "the table is the check's record: no second check");
     let first = s.demand_typed_bodies().expect("the table") as *const _;
     let again = s.demand_typed_bodies().expect("still there") as *const _;
     assert_eq!(first, again);
@@ -162,15 +163,74 @@ fn each_column_holds_the_checker_s_answer_by_identity() {
     let mute = table.conformance(id_of(decl(p, "Mute")), reading).expect("a row");
     assert_eq!(mute.verdict, Err(Unsatisfied::Missing { method: "value".into() }));
 
-    // 5. the fallible calls: the user's, typed `Fallible`, and the
-    // stdlib's, the signature table's mark.
+    // 5. the fallible calls: the user's, a fn the program declares, and
+    // the stdlib's, the signature table's mark; each the operand of an
+    // `or`.
     let risky = table.fallible_call(calls[1]).expect("`risky` can fail");
-    assert_eq!(risky.kind, CalleeKind::Typed);
+    assert_eq!(risky.kind, CalleeKind::Declared);
+    assert_eq!(risky.callee, "risky");
     assert_eq!(risky.payload, Ty::Named("Fault".into()));
+    assert_eq!(risky.handled, Handling::Or);
     let parse = table.fallible_call(calls[2]).expect("`parse_int` can fail");
     assert_eq!(parse.kind, CalleeKind::Stdlib);
+    assert_eq!(parse.callee, "std::str::parse_int");
     assert_eq!(parse.payload, Ty::Named("ParseError".into()));
+    assert_eq!(parse.handled, Handling::Or);
     assert!(table.fallible_call(calls[0]).is_none(), "`first` cannot fail");
+}
+
+/// The fallible column's marks and positions, which the `bare_fallible`
+/// law reads: a declared fn as an `or`'s handler, a built-in method and
+/// a generic fn as one, and the bare positions.
+#[test]
+fn the_fallible_column_records_the_callee_and_what_addresses_it() {
+    const SRC: &str = r#"
+type Fault { why: String = ""; }
+fn risky(n: Int) -> Int fallible(Fault) { return n; }
+fn pick<T>(x: T) -> T fallible(Fault) { return x; }
+fn take(n: Int) -> Int { return n; }
+fn via(n: Int) -> Int fallible(Fault) {
+    let a = risky(n) or risky(1);
+    let b = risky(n) or pick(2);
+    return a + b;
+}
+fn main() {
+    let arr = [1, 2, 3];
+    let c = arr.get(1) or 0;
+    let d = take(risky(3));
+    match risky(4) { _ -> { println(c, d); }, }
+}
+"#;
+    let program = hale_syntax::parse_source(SRC).expect("the fixture parses");
+    let s = match Snapshot::from_program(program, Vec::new(), Config::check(true, false)) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program's snapshot is not refused"),
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let mut rows: Vec<(String, CalleeKind, &'static str)> = table
+        .fallible_calls()
+        .map(|r| {
+            let at = match r.handled {
+                Handling::Or => "or",
+                Handling::Handler(_) => "handler",
+                Handling::Bare => "bare",
+            };
+            (r.callee.clone(), r.kind, at)
+        })
+        .collect();
+    rows.sort_by(|a, b| (a.0.as_str(), a.2).cmp(&(b.0.as_str(), b.2)));
+    assert_eq!(
+        rows,
+        vec![
+            ("arr.get".to_string(), CalleeKind::Typed, "or"),
+            ("pick".to_string(), CalleeKind::Typed, "handler"),
+            ("risky".to_string(), CalleeKind::Declared, "bare"),
+            ("risky".to_string(), CalleeKind::Declared, "bare"),
+            ("risky".to_string(), CalleeKind::Declared, "handler"),
+            ("risky".to_string(), CalleeKind::Declared, "or"),
+            ("risky".to_string(), CalleeKind::Declared, "or"),
+        ]
+    );
 }
 
 /// A generic locus's closure: the template's `self.x` is `T`, which
@@ -304,5 +364,145 @@ fn an_unpinned_generic_call_is_a_hole() {
     match table.generic_call(call) {
         Some(Typed::Hole(h)) => assert!(h.reason.contains("pins `T`"), "{}", h.reason),
         other => panic!("expected a hole: {other:?}"),
+    }
+}
+
+/// A bare builtin argument is typed by the signature table lowering
+/// reads, so the generic call it feeds binds its parameter instead of
+/// staying a hole.
+#[test]
+fn a_bare_builtin_argument_pins_a_generic_call() {
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+fn main() {
+    let a = first(len("abc"));
+    let b = first(abs(-2.5));
+    let c = first(to_string(1));
+    let d = first(Float(2));
+    let e = first(starts_with("ab", "a"));
+    println(a, b, c, d, e);
+}
+
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
+        panic!("not refused")
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let p = s.program().unwrap();
+    use hale_syntax::ast::PrimType::{Bool, Float, Int, String};
+    let want = [Int, Float, String, Float, Bool];
+    let calls = main_calls(p);
+    assert_eq!(calls.len(), want.len());
+    for (call, want) in calls.into_iter().zip(want) {
+        let Some(Typed::Known(row)) = table.generic_call(call) else {
+            panic!("typed: {:?}", table.generic_call(call))
+        };
+        assert_eq!(row.type_args, vec![Ty::Prim(want)]);
+    }
+}
+
+#[test]
+fn generic_locus_members_keep_separate_call_rows_by_body_and_type_arguments() {
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+locus Holder<T> {
+    params { v: T; copied: T = first(self.v); }
+    birth() { println(first(self.v)); }
+    fn read() -> T { return first(self.copied); }
+    run() {
+        println(first(self.v));
+        println(first(self.read()));
+        let x = self.v;
+        println(first(x));
+    }
+    dissolve() { println(first(self.v)); }
+}
+fn spawn<T>(x: T) {
+    let h: Holder<T> = Holder { v: first(x) };
+}
+fn main() {
+    spawn(42);
+    spawn("text");
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
+        panic!("not refused")
+    };
+    let checked = s.demand_check().expect("checked");
+    assert!(checked.diags.is_empty(), "{:?}", checked.diags);
+    let table = s.demand_typed_bodies().expect("the table");
+    let TopDecl::Locus(holder) = decl(s.program().unwrap(), "Holder") else { unreachable!() };
+    let mut bodies = vec![holder.id];
+    bodies.extend(holder.members.iter().filter_map(|member| match member {
+        LocusMember::Fn(f) => Some(f.id),
+        LocusMember::Lifecycle(lc) => Some(lc.id),
+        _ => None,
+    }));
+    let mut calls = 0;
+    for body in bodies {
+        let rows = table.body(body).expect("body recorded");
+        for (site, template) in &rows.generic_calls {
+            calls += 1;
+            let call = NodeId(*site);
+            assert!(matches!(template, Typed::Hole(_)), "template parameter is unbound");
+            assert_eq!(table.generic_call_body(call).map(|id| id.0), Some(body.0));
+            assert_eq!(table.generic_call_locus(call).map(|id| id.0), Some(holder.id.0));
+            for prim in [hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String] {
+                let args = vec![Ty::Prim(prim)];
+                let Some(Typed::Known(row)) = table.specialized_generic_call_at(&args, call) else {
+                    panic!("{body:?}/{prim:?}: {:?}", table.specialized_generic_call_at(&args, call));
+                };
+                assert_eq!(row.type_args, args);
+                assert_eq!(row.params, args);
+                assert!(table.monomorphs().of(row.template, &args).is_some());
+            }
+        }
+    }
+    assert_eq!(calls, 7, "params default, birth, method, three run calls, dissolve");
+}
+
+#[test]
+fn default_call_rows_preserve_one_source_site_for_each_invocation_and_caller_monomorph() {
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+fn show(n: String = to_string(first(value))) { println(n); }
+fn caller<T>(value: T) { show(); }
+fn main() {
+    let value = 42;
+    show();
+    { let value = "text"; show(); }
+    caller(7);
+    caller("other");
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else { panic!("snapshot") };
+    assert!(s.demand_check().unwrap().diags.is_empty());
+    let table = s.demand_typed_bodies().expect("typed rows");
+    let main = table.body(id_of(decl(s.program().unwrap(), "main"))).unwrap();
+    assert_eq!(main.default_calls.len(), 2);
+    let mut source = None;
+    for (evaluation, prim) in main.default_calls.iter().zip([hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String]) {
+        assert_eq!(evaluation.invocations.len(), 1);
+        assert_eq!(evaluation.specialization, None);
+        let (&site, row) = evaluation.calls.iter().next().unwrap();
+        if let Some(id) = source { assert_eq!(site, id); } else { source = Some(site); }
+        let Typed::Known(row) = row else { panic!("{row:?}") };
+        assert_eq!(row.type_args, vec![Ty::Prim(prim)]);
+        assert!(table.monomorphs().of(row.template, &row.type_args).is_some());
+    }
+    assert_ne!(main.default_calls[0].invocations, main.default_calls[1].invocations);
+    let caller = table.body(id_of(decl(s.program().unwrap(), "caller"))).unwrap();
+    assert_eq!(caller.default_calls.len(), 3);
+    let generic = &caller.default_calls[0];
+    assert_eq!(generic.specialization, None);
+    assert!(matches!(generic.calls[&source.unwrap()], Typed::Hole(_)));
+    for prim in [hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String] {
+        let args = vec![Ty::Prim(prim)];
+        let evaluation = caller.default_calls.iter().find(|r| r.specialization.as_ref() == Some(&args)).unwrap();
+        assert_eq!(evaluation.invocations, generic.invocations);
+        assert!(matches!(table.default_generic_call(&evaluation.invocations, Some(&args), NodeId(source.unwrap())), Some(Typed::Known(row)) if row.type_args == args));
     }
 }
