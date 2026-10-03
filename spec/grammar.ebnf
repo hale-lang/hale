@@ -500,7 +500,7 @@ binding_entry     = qualified_name , ":" , transport_spec ,
    `on_full` are required by the checker; `watch_bound` and
    `on_watch_full` go together and default to `bound` / `drop_old`.
    See spec/semantics.md § "The api binding". *)
-api_entry         = "api" , ":" , api_transport , ";" ;
+api_entry         = "api" , ":" , api_transport , { "," , api_clause } , ";" ;
 (* The path is an expression the main locus evaluates as a param
    default (GH #1109 review): a string literal, or `self.<param>` the
    program computed — a per-record path under XDG_RUNTIME_DIR, say.
@@ -512,6 +512,19 @@ api_kwarg         = ( "bound" , ":" , INT_LIT )
                   | ( "on_watch_full" , ":" , shed_policy )
                   | ( "on_unauthorized" , ":" , ( "refuse" | "drop" ) )   (* #1109 *)
                   | ( "roles" , ":" , expression ) ;
+(* GH #1135, #1137: clauses after the transport, each at most once.
+   `http(host, port, principals: <source>)` adds the binding's HTTP
+   transport: one POST per request carrying one line of the same wire
+   under `Authorization: Bearer <token>`; `principals:` is an expression
+   the main locus evaluates as a param default, a locus satisfying
+   `std::api::BearerSource`. `serve: [param, …]` names params of the
+   main locus whose type is a locus another seed declared; the
+   binding puts that locus's commands, streams and reads on the
+   surface beside its own seed's.
+   See spec/semantics.md § "The api binding". *)
+api_clause        = ( "http" , "(" , expression , "," , expression ,
+                      [ "," , "principals" , ":" , expression ] , [ "," ] , ")" )
+                  | ( "serve" , ":" , "[" , [ IDENT , { "," , IDENT } , [ "," ] ] , "]" ) ;
 (* `roles:` takes an expression the main locus evaluates as a param
    default: a locus literal (`RecordRoles { }`, `lib::RecordRoles { }`)
    or one of main's params (`self.roles`), so the program builds its

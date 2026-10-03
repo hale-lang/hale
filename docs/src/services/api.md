@@ -146,7 +146,9 @@ printf '%s\n' '{"id":1,"call":"Verdicts","payload":{"review_id":7,"verdict":"rat
 A caller that is not on your machine's socket — a browser behind your
 web server, another service — reaches the same commands over the
 binding's HTTP transport. Name it after the socket, with the locus that
-says who a bearer token is:
+says who a bearer token is (any locus satisfying `std::api::BearerSource`:
+`principal(token)` answers the caller, `refused()` the reason a token
+naming nobody gets):
 
 ```hale
 locus Tokens {
@@ -360,7 +362,7 @@ owner          = ["user:alice"]
 ```
 
 `hale build --env prod` (or `hale run --env prod`) bakes that table
-into the binding; the members are matched against the peer's
+into the binding, held by the stdlib's `std::api::StaticRoles` source; the members are matched against the peer's
 credentials (`uid:`; `gid:` against the primary group and the
 supplementary groups the kernel reports for the connection; `user:`
 and `group:` resolved once at start per the account database; `*`
@@ -373,8 +375,8 @@ every gate refuses, and the build tells you. The matrix also insists
 that every declared role is mapped in every environment, `[]`
 meaning explicitly nobody.
 
-An app can hand the binding its own source instead: a locus with
-`fn holds(p: std::api::Principal, r: String) -> Bool`, named on the
+An app can hand the binding its own source instead: a locus satisfying
+`std::api::RoleSource` (`fn holds(p: std::api::Principal, r: String) -> Bool`), named on the
 entry as an expression the main locus evaluates, so it can be built
 with the program's own state and kept as a handle:
 
