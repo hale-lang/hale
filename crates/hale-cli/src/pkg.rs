@@ -200,8 +200,9 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
     if m == "*" {
         return Ok(());
     }
-    // `bearer:<name>` is a name the program's bearer source answers, not an
-    // account: never resolved, but held to the same characters.
+    // `bearer:<name>` is a name the program's bearer source answers (an
+    // OIDC subject, say), not an account: never resolved, and held only to
+    // what the one-line table can carry (`bearer_name_ok`).
     for (prefix, numeric) in [
         ("uid:", true),
         ("gid:", true),
@@ -219,11 +220,19 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
             // The table travels as one line the binding re-splits, so a
             // name is confined to what an account name is: never `;`,
             // `,`, `=`, blanks or control characters.
+            if prefix == "bearer:" {
+                if !bearer_name_ok(rest) {
+                    return Err(format!(
+                        "`{}` is not a bearer name (printable ASCII without blanks, `,`, `;` or `=`, at most 255)",
+                        m
+                    ));
+                }
+                return Ok(());
+            }
             if !numeric && !account_name_ok(rest) {
                 return Err(format!(
-                    "`{}` is not {} name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
-                    m,
-                    if prefix == "bearer:" { "a bearer" } else { "an account" }
+                    "`{}` is not an account name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
+                    m
                 ));
             }
             return Ok(());
@@ -234,6 +243,16 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
          `group:<name>`, `bearer:<name>` or `*` (any authenticated caller)",
         m
     ))
+}
+
+/// A `bearer:` member's name: 1 to 255 printable ASCII characters (an OIDC
+/// subject is at most 255 ASCII characters), never a blank or the table's
+/// own separators `,` `;` `=`, since the table travels as one line the
+/// binding re-splits.
+pub fn bearer_name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && s.bytes().all(|c| c.is_ascii_graphic() && !matches!(c, b',' | b';' | b'='))
 }
 
 /// An account name the table may carry: `[A-Za-z0-9._@-]`, 1 to 64.

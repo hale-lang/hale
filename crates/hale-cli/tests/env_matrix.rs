@@ -1052,13 +1052,15 @@ fn the_matrix_wants_every_declared_role_mapped_or_explicitly_nobody() {
 }
 
 /// A bearer caller on the HTTP transport is named in the table as
-/// `bearer:<name>`, held to the account-name characters; a misspelled
-/// prefix is still no member, and the refusal lists the new spelling.
+/// `bearer:<name>`, whose name is what the bearer source answers (an OIDC
+/// subject such as `oidc:abc` or `auth0|123` included); a misspelled
+/// prefix is still no member, the refusal lists the new spelling, and a
+/// name carrying the table's own separators or a blank is refused.
 #[test]
 fn the_matrix_accepts_a_bearer_member_and_refuses_a_misspelled_prefix() {
     let r = gated_workspace(
         "roles_bearer",
-        "support = [\"bearer:alice\", \"*\"]\nauditor = [\"bearer:svc.ops@example\"]\nowner = []\n",
+        "support = [\"bearer:alice\", \"*\"]\nauditor = [\"bearer:svc.ops@example\", \"bearer:oidc:abc\", \"bearer:auth0|123\"]\nowner = []\n",
     );
     let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
     let _ = std::fs::remove_dir_all(&r);
@@ -1081,6 +1083,12 @@ fn the_matrix_accepts_a_bearer_member_and_refuses_a_misspelled_prefix() {
     assert!(out.contains("names nothing after `bearer:`"), "{}", out);
 
     let r = gated_workspace("roles_bearer_smuggle", "support = [\"bearer:a;owner=*\"]\nauditor = []\nowner = []\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("is not a bearer name"), "{}", out);
+
+    let r = gated_workspace("roles_bearer_blank", "support = [\"bearer:a b\"]\nauditor = []\nowner = []\n");
     let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);

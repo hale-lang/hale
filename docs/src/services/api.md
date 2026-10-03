@@ -382,9 +382,10 @@ The two transports' spellings never cross. A `bearer:` member is
 never a socket peer, and the four account spellings never match a
 bearer caller, even one whose name reads the same: a Unix account and
 a token's subject are different identities. A bearer name is the
-source's, so it is not looked up in the account database; it is held
-to the same characters an account name is (letters, digits, `.`,
-`_`, `-`, `@`). `LOTUS_API_ROLES="refund_support=uid:1000,bearer:desk;owner=user:alice"`
+source's, so it is not looked up in the account database, and it is
+written as the source answers it: an OIDC subject such as
+`bearer:oidc:auth0|123` included (printable ASCII without blanks or the
+table's own `,`, `;` and `=`, at most 255). `LOTUS_API_ROLES="refund_support=uid:1000,bearer:desk;owner=user:alice"`
 overrides the table at run time, which is how a test drives it. A table
 naming a role the program does not declare, or a member outside
 those spellings, is refused at start with the reason, the same rule

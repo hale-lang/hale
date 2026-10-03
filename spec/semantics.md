@@ -2114,8 +2114,9 @@ overrides at run time. The table travels as one line the binding
 re-splits, so it is held to one rule at check, at build and at
 birth: a key is a role the program declares (an identifier), a
 member is `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>`,
-`bearer:<name>` (a name: letters, digits, `.`, `_`, `-`, `@`) or
-`*`; a table outside that rule is a manifest error, and at birth the
+`bearer:<name>` (the name the bearer source answers, an OIDC subject
+say: 1 to 255 printable ASCII characters other than a blank and the
+table's own `,`, `;` and `=`) or `*`; a table outside that rule is a manifest error, and at birth the
 binding refuses to start, saying which entry. `*` is any
 authenticated caller on either transport: a socket peer the kernel
 vouches for (uid ≥ 0), or a bearer principal its source named (a

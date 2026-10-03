@@ -165,10 +165,32 @@ fn __api_chars_ok(s: String, extra: String) -> Bool {
     return len(s) > 0;
 }
 
+/// Whether `s` can be a `bearer:` member's name: 1 to 255 printable ASCII
+/// characters (an OIDC subject is at most 255 ASCII characters), never a
+/// blank or the table's own separators `,` `;` `=`, since the table
+/// travels as one line the binding re-splits.
+@unbounded
+fn __api_bearer_name_ok(s: String) -> Bool {
+    if len(s) == 0 || len(s) > 255 {
+        return false;
+    }
+    let mut i = 0;
+    while i < len(s) {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c <= 32 || c >= 127 || c == 44 || c == 59 || c == 61 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
 /// Why a table is refused ("" when it is not): a key must be a declared
 /// role (an identifier), a member one of `uid:<n>`, `gid:<n>`,
-/// `user:<name>`, `group:<name>`, `bearer:<name>` (a name: letters,
-/// digits, `.`, `_`, `-`, `@`, at most 64) or `*`.
+/// `user:<name>`, `group:<name>` (an account name: letters, digits, `.`,
+/// `_`, `-`, `@`, at most 64), `bearer:<name>` (a name the bearer source
+/// answers, an OIDC subject say: printable ASCII but blanks and the
+/// table's own `,` `;` `=`, at most 255) or `*`.
 @unbounded
 fn __api_table_refusal(table: String, known: String) -> String {
     let mut rest = table;
@@ -217,7 +239,7 @@ fn __api_table_refusal(table: String, known: String) -> String {
                 ok = __api_chars_ok(m[6..len(m)], "._-@") && len(m) <= 70;
             }
             if std::str::starts_with(m, "bearer:") {
-                ok = __api_chars_ok(m[7..len(m)], "._-@") && len(m) <= 71;
+                ok = __api_bearer_name_ok(m[7..len(m)]);
             }
             if !ok {
                 return "role `" + role + "`: `" + m + "` is not a role member (uid:<n>, gid:<n>, user:<name>, group:<name>, bearer:<name> or *)";

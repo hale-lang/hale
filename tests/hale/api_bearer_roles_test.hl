@@ -23,6 +23,7 @@ fn app_source(sock: String, port: Int, me_name: String, me: String) -> String {
         + "    fn principal(token: String) -> std::api::Principal {\n"
         + "        if token == \"t-alice\" { return std::api::Principal { mode: \"bearer\", name: \"alice\" }; }\n"
         + "        if token == \"t-bob\" { return std::api::Principal { mode: \"bearer\", name: \"bob\" }; }\n"
+        + "        if token == \"t-oidc\" { return std::api::Principal { mode: \"bearer\", name: \"oidc:auth0|123\" }; }\n"
         + "        if token == \"t-me\" { return std::api::Principal { mode: \"bearer\", name: \"" + me_name + "\", uid: " + me + " }; }\n"
         + "        return std::api::Principal { mode: \"bearer\", name: \"\" };\n"
         + "    }\n"
@@ -195,6 +196,19 @@ fn main() {
     b.stop();
     std::io::fs::unlink(sock) or discard;
 
+    // An OIDC subject as its source names it, `:` and `|` included, is a
+    // `bearer:` member as written.
+    let o = Proc { };
+    std::test::assert(o.start("env\nLOTUS_API_ROLES=support=bearer:oidc:auth0|123\n" + bin), "the app started under an OIDC-shaped bearer member");
+    let apio = Api { };
+    std::test::assert(apio.connect(sock), "connected under the OIDC-shaped member: " + o.out);
+    let o1 = post_refund(base, "t-oidc");
+    std::test::assert(std::str::ends_with(o1, "200") && has(o1, "\"by\":\"oidc:auth0|123\",\"role\":\"support\""), "bearer:oidc:auth0|123 grants that subject: " + o1);
+    let o2 = post_refund(base, "t-alice");
+    std::test::assert(std::str::ends_with(o2, "404") && !has(o2, "support"), "and no one else: " + o2);
+    o.stop();
+    std::io::fs::unlink(sock) or discard;
+
     // `user:` and `uid:` name this host's account: the socket peer holds
     // the role, the bearer spelled the same (and carrying the uid) does not.
     let c = Proc { };
@@ -216,7 +230,7 @@ fn main() {
     std::test::assert(has(d.out, "`barer:alice` is not a role member") && has(d.out, "bearer:<name>"), "and says which, naming the spellings: " + d.out);
     let e = Proc { };
     std::test::assert(e.start("env\nLOTUS_API_ROLES=support=bearer:a b\n" + bin), "started under a bearer name with a blank");
-    std::test::assert_eq_int(e.exit_code(), 2, "a bearer name is held to the name characters: " + e.out);
+    std::test::assert_eq_int(e.exit_code(), 2, "a bearer name never carries a blank: " + e.out);
     std::io::fs::unlink(sock) or discard;
     std::io::fs::unlink(bin) or discard;
     std::io::fs::unlink(src) or discard;
