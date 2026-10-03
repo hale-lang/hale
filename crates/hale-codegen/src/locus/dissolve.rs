@@ -1466,12 +1466,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_fn = self.current_fn.replace(f);
         let saved_di_loc = self.di_current_loc;
         let saved_di_pos = self.di_current_pos;
-        self.di_begin_function();
         let entry = self.context.append_basic_block(f, "entry");
         let live = self.context.append_basic_block(f, "live");
         let release = self.context.append_basic_block(f, "release");
         let done = self.context.append_basic_block(f, "done");
         self.builder.position_at_end(entry);
+        self.di_begin_function();
         let child = f.get_first_param().expect("self").into_pointer_value();
         let arena_slot = self
             .builder
