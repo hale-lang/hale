@@ -735,46 +735,47 @@ pub fn check_bundle_by_declaration(
     // the model resolve it. Handed in (phase 2.3): the model reads the
     // same rows.
     let handlers = inputs.handlers;
-    for (key, program) in &bundle.programs {
-        let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
+    let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
+    let mut generic_types: BTreeMap<String, &TypeDecl> = BTreeMap::new();
+    let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
         collect_generic_fns(&program.items, &mut generic_fns);
-        let mut generic_types: BTreeMap<String, &TypeDecl> =
-            BTreeMap::new();
         collect_generic_types(&program.items, &mut generic_types);
-        let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
         collect_generic_loci(&program.items, &mut generic_loci);
-        let mut cx = Checker {
-            top,
-            known,
-            diags: &mut diags,
-            locals: ScopeStack::new(),
-            current_locus: None,
-            in_lifecycle: false,
-            in_closure: false,
-            in_on_failure: false,
-            fallible_ctx: None,
-            return_ctx: None,
-            strict_callees,
-            strict_idents,
-            or_value_discarded: false,
-            generic_params: Vec::new(),
-            generic_fns,
-            generic_types,
-            generic_loci,
-            handlers,
-            bound_topics: &bound_topics,
-            import_renames: &bundle.import_renames,
-            unresolved_import_aliases: &unresolved_import_aliases,
-            typed: &mut typed,
-            body: NodeId::NONE,
-            expr_types: None,
-            locus_decl: None,
-            templates: &templates,
-            generic_bindings: BTreeMap::new(),
-            specializing: None,
-            next_handling: crate::typed_bodies::Handling::Bare,
-            handling: crate::typed_bodies::Handling::Bare,
-        };
+    }
+    let mut cx = Checker {
+        top,
+        known,
+        diags: &mut diags,
+        locals: ScopeStack::new(),
+        current_locus: None,
+        in_lifecycle: false,
+        in_closure: false,
+        in_on_failure: false,
+        fallible_ctx: None,
+        return_ctx: None,
+        strict_callees,
+        strict_idents,
+        or_value_discarded: false,
+        generic_params: Vec::new(),
+        generic_fns,
+        generic_types,
+        generic_loci,
+        handlers,
+        bound_topics: &bound_topics,
+        import_renames: &bundle.import_renames,
+        unresolved_import_aliases: &unresolved_import_aliases,
+        typed: &mut typed,
+        body: NodeId::NONE,
+        expr_types: None,
+        locus_decl: None,
+        templates: &templates,
+        generic_bindings: BTreeMap::new(),
+        specializing: None,
+        next_handling: crate::typed_bodies::Handling::Bare,
+        handling: crate::typed_bodies::Handling::Bare,
+    };
+    for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
             match &reused[key.as_str()][i] {
@@ -789,9 +790,9 @@ pub fn check_bundle_by_declaration(
                 }
             }
         }
-        cx.specialize_generic_fns();
         by_decl.insert(key.clone(), per);
     }
+    cx.specialize_generic_bodies();
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -1015,6 +1016,11 @@ struct GenericTemplates<'a> {
     by_key: BTreeMap<u32, GenericTemplate<'a>>,
     types: BTreeMap<&'a str, u32>,
     loci: BTreeMap<&'a str, u32>,
+}
+
+enum GenericBody<'a> {
+    Fn(&'a FnDecl),
+    Locus(&'a LocusDecl),
 }
 
 impl<'a> GenericTemplates<'a> {
@@ -7188,7 +7194,7 @@ struct Checker<'a> {
     /// The bundle's generic type and locus templates by identity: what
     /// a monomorph row's template site names.
     templates: &'a GenericTemplates<'a>,
-    /// While a generic fn's body is walked for one of its monomorphs:
+    /// While a generic fn or locus is walked for one of its monomorphs:
     /// the template's parameters bound to the monomorph's arguments
     /// (every annotation the walk resolves substitutes them), and the
     /// arguments the walk's call rows are recorded under. Empty / `None`
@@ -8330,6 +8336,9 @@ impl<'a> Checker<'a> {
     }
 
     fn check_locus(&mut self, decl: &'a LocusDecl) {
+        if !decl.generics.is_empty() {
+            self.typed.body(decl.id).enclosing_locus = Some(decl.id);
+        }
         // GH #734 — reserved member names. Runs before the symbol
         // lookup below so it fires for every parsed locus.
         self.check_reserved_member_names(decl);
@@ -10358,6 +10367,9 @@ impl<'a> Checker<'a> {
             LocusMember::Fn(f) => self.body = f.id,
             _ => {}
         }
+        if let Some(l) = self.locus_decl.filter(|l| !l.generics.is_empty()) {
+            self.typed.body(self.body).enclosing_locus = Some(l.id);
+        }
         self.check_locus_member_at(member);
         self.body = prev_body;
     }
@@ -11240,6 +11252,16 @@ impl<'a> Checker<'a> {
             let payload = self.resolve_te(payload_te);
             self.fallible_ctx = Some((success_ret, payload));
         }
+        // Defaults are evaluated in the caller's scope. Record the
+        // source's call rows without adding declaration-time diagnostics:
+        // a name only the caller supplies remains a located typed hole.
+        let mark = self.diags.len();
+        for p in &decl.params {
+            if let Some(default) = &p.default {
+                let _ = self.check_expr(default);
+            }
+        }
+        self.diags.truncate(mark);
         self.locals.push();
         for p in &decl.params {
             let ty = self.resolve_te(&p.ty);
@@ -12400,7 +12422,16 @@ impl<'a> Checker<'a> {
 
     fn self_ty(&self) -> Ty {
         match self.current_locus {
-            Some(l) => Ty::Named(l.name.clone()),
+            Some(l) => {
+                if let (Some(decl), Some(args)) = (self.locus_decl, &self.specializing) {
+                    if decl.name.name == l.name {
+                        if let Some(m) = self.typed.monomorphs.of(decl.id, args) {
+                            return Ty::Named(m.name.clone());
+                        }
+                    }
+                }
+                Ty::Named(l.name.clone())
+            }
             None => Ty::Unknown,
         }
     }
@@ -12734,46 +12765,80 @@ impl<'a> Checker<'a> {
     }
 
     /// A type expression the walk resolves: through the scope's names,
-    /// and, while a generic fn's body is walked for one of its
+    /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
         if self.generic_bindings.is_empty() {
             resolve_type_expr(te, self.known)
         } else {
+            // Substituted annotations can discover Holder<T> in a
+            // specialized body. This leaves ordinary literal-field
+            // checking's established nested-template tolerance intact.
+            if let TypeExpr::Named { path, generic_args, .. } = te {
+                if !generic_args.is_empty() && path.segments.len() == 1 {
+                    let tokens: Option<Vec<String>> = generic_args.iter()
+                        .map(|arg| crate::typed_bodies::mangle_token(&self.resolve_te(arg)))
+                        .collect();
+                    return tokens.map_or(Ty::Unknown, |tokens| Ty::Named(format!("{}_{}", path.segments[0].name, tokens.join("_"))));
+                }
+            }
             substitute_generic_ty(te, &self.generic_bindings, self.known)
         }
     }
 
-    /// The generic fns' monomorphs, typed (F.40 phase 3, E4): a generic
-    /// fn's body types a use of its parameter `T` as `Unknown`, so a
-    /// generic call inside it pins nothing. Each fn monomorph the table
+    /// The generic bodies' monomorphs, typed (F.40 phase 3, E4): a
+    /// template types a use of its parameter `T` as `Unknown`, so a
+    /// generic call inside it pins nothing. Each fn or locus monomorph the table
     /// names is walked again with the template's parameters bound to its
     /// arguments, as lowering lowers that specialization, and the walk's
     /// generic call rows are recorded under the monomorph's arguments;
     /// a specialization a walk instantiates is walked in turn. The walk
     /// reports nothing: its diagnostics are the template's, reported by
     /// the ordinary walk, and are dropped.
-    fn specialize_generic_fns(&mut self) {
+    fn specialize_generic_bodies(&mut self) {
         const LIMIT: usize = 1024;
         let mut next = 0;
         let mut walked = 0;
         while next < self.typed.monomorphs.rows().len() && walked < LIMIT {
             let m = self.typed.monomorphs.rows()[next].clone();
             next += 1;
-            if m.kind != crate::typed_bodies::TemplateKind::Fn {
+            let (generics, template) = match m.kind {
+                crate::typed_bodies::TemplateKind::Fn => {
+                    let Some(f) = self.generic_fns.values().copied().find(|f| f.id.0 == m.template.0) else {
+                        continue;
+                    };
+                    (&f.generics, GenericBody::Fn(f))
+                }
+                crate::typed_bodies::TemplateKind::Locus => {
+                    let Some(GenericTemplate::Locus(l)) = self.templates.get(m.template) else {
+                        continue;
+                    };
+                    (&l.generics, GenericBody::Locus(l))
+                }
+                crate::typed_bodies::TemplateKind::Type => continue,
+            };
+            if m.args.iter().any(|t| matches!(t, Ty::Unknown)) {
                 continue;
             }
-            let Some(template) = self.generic_fns.values().copied().find(|f| f.id.0 == m.template.0) else {
-                continue;
-            };
             walked += 1;
             let bindings: BTreeMap<String, Ty> =
-                template.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+                generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
             let mark = self.diags.len();
             let prev_bindings = std::mem::replace(&mut self.generic_bindings, bindings);
             let prev_specializing = self.specializing.replace(m.args.clone());
             let prev_locus = self.current_locus.take();
-            self.check_fn(template, None);
+            let prev_decl = self.locus_decl.take();
+            let prev_body = self.body;
+            match template {
+                GenericBody::Fn(f) => self.check_fn(f, None),
+                GenericBody::Locus(l) => {
+                    self.body = l.id;
+                    self.locus_decl = Some(l);
+                    self.check_locus(l);
+                }
+            }
+            self.body = prev_body;
+            self.locus_decl = prev_decl;
             self.current_locus = prev_locus;
             self.specializing = prev_specializing;
             self.generic_bindings = prev_bindings;
@@ -12786,6 +12851,11 @@ impl<'a> Checker<'a> {
     /// expression it accumulates (`seen`, by node). An accumulated
     /// expression the walk did not type, or typed `Unknown`, is a hole.
     fn record_accumulators(&mut self, assertion: &ClosureAssertion, seen: &[(*const Expr, Ty)]) {
+        if self.specializing.is_some() {
+            // This walk fills generic-call rows only. Keep the
+            // template's accumulator rows and their own specializations.
+            return;
+        }
         use crate::typed_bodies::{AccumulatorRow, Hole, Typed};
         let rows: Vec<AccumulatorRow> = crate::typed_bodies::accumulator_sites(assertion)
             .into_iter()
@@ -13004,7 +13074,19 @@ impl<'a> Checker<'a> {
                                     });
                                 }
                             }
-                            return None;
+                            if let Some(f) = ld.members.iter().find_map(|m| match m {
+                                LocusMember::Fn(f) if f.name.name == name => Some(f),
+                                _ => None,
+                            }) {
+                                return Some(Ty::Function {
+                                    params: f.params.iter().map(|p| substitute_generic_ty(&p.ty, &bindings, self.known)).collect(),
+                                    ret: Box::new(f.ret.as_ref().map_or(Ty::Unit, |te| substitute_generic_ty(te, &bindings, self.known))),
+                                });
+                            }
+                            // Synthetic members (draining, children,
+                            // k_max, form methods) retain their ordinary
+                            // signatures instead of becoming holes.
+                            return self.field_ty(&Ty::Named(ld.name.name.clone()), name);
                         }
                     }
                 }
@@ -13302,6 +13384,9 @@ impl<'a> Checker<'a> {
     /// from a `const` there. `hale check <dir>` and every build path
     /// hold the whole program and hold the rule.
     fn check_type_annotation(&mut self, te: &TypeExpr) {
+        if self.specializing.is_some() {
+            self.record_specialized_type(te);
+        }
         // GH #911 B3 (#907): the generic-argument vocabulary is a
         // property of the type expression, not of how much of the
         // program this bundle holds, so it is decided before the
@@ -13376,6 +13461,38 @@ impl<'a> Checker<'a> {
             // names a contract, not a type expression's bare name —
             // its own resolution rules are #724's, unchanged.
             TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// An annotation reached in a specialization can instantiate a
+    /// locus not spelled concretely in the source (`Holder<T>` in a
+    /// generic fn). Queue its concrete monomorph in the same producer
+    /// as the call rows, so that locus's bodies are walked in turn.
+    fn record_specialized_type(&mut self, te: &TypeExpr) {
+        if let Ty::Named(name) = self.resolve_te(te) {
+            if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
+                if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                    self.typed.monomorphs.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
+                }
+            }
+        }
+        match te {
+            TypeExpr::Named { generic_args, .. } | TypeExpr::Tuple(generic_args, _) => {
+                for arg in generic_args {
+                    self.record_specialized_type(arg);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => self.record_specialized_type(inner),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.record_specialized_type(elem),
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.record_specialized_type(p);
+                }
+                if let Some(ret) = ret {
+                    self.record_specialized_type(ret);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
         }
     }
 

@@ -1450,6 +1450,7 @@ pub fn build_resolved(
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
+        specialized_locus_decls: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         current_user_fn_scratch_local: false,
@@ -3289,6 +3290,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_program`; carries the LLVM struct type for the
     /// locus's params + the lifecycle methods compiled against it.
     pub(crate) user_loci: BTreeMap<String, LocusInfo<'ctx>>,
+    /// Substituted source declarations used to declare the concrete
+    /// locus methods. Signature lookup must read these same declarations
+    /// instead of searching the unspecialized program for a mangled name.
+    specialized_locus_decls: BTreeMap<String, LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -7949,6 +7954,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut seen_mangles,
             &mut requests,
         )?;
+        // A generic fn can spell Holder<T> before T is bound. The
+        // typed producer records the concrete monomorphs discovered
+        // while specializing its body. Queue those concrete rows;
+        // the source walk below leaves unbound template uses out.
+        for m in self.typed.monomorphs().rows() {
+            let template = match m.kind {
+                hale_types::typed_bodies::TemplateKind::Locus => generic_locus_decls.values()
+                    .find(|l| l.id.0 == m.template.0).map(|l| l.name.name.clone()),
+                hale_types::typed_bodies::TemplateKind::Type => generic_type_decls.values()
+                    .find(|t| t.id.0 == m.template.0).map(|t| t.name.name.clone()),
+                hale_types::typed_bodies::TemplateKind::Fn => None,
+            };
+            let Some(template) = template else { continue };
+            let span = hale_syntax::Span::new(0, 0);
+            let args: Option<Vec<TypeExpr>> = m.args.iter().map(|t| match t {
+                hale_types::ty::Ty::Prim(p) => Some(TypeExpr::Primitive(*p, span)),
+                hale_types::ty::Ty::Named(n) => Some(TypeExpr::Named {
+                    path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
+                    generic_args: Vec::new(),
+                    span,
+                }),
+                _ => None,
+            }).collect();
+            if let Some(args) = args {
+                if seen_mangles.insert(m.name.clone()) {
+                    requests.push((template, args));
+                }
+            }
+        }
         // m63: process requests as a queue — synthesizing one
         // instantiation may surface NEW generic uses inside its
         // substituted body (e.g., `Holder<Int>` instantiates
@@ -8045,6 +8079,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &mut requests,
                     )?;
                 }
+                self.specialized_locus_decls.insert(mangled, synthesized.clone());
                 synthesized_loci.push(synthesized);
             }
         }
@@ -11825,6 +11860,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// The declaration used for a locus's emitted methods, retaining
+    /// source identities while substituting its type arguments.
+    fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
+        self.specialized_locus_decls.get(name).or_else(|| {
+            hale_syntax::ast::flat_decls(&self.program.items).find_map(|d| match d {
+                TopDecl::Locus(l) if l.name.name == name => Some(l),
+                _ => None,
+            })
+        })
+    }
+
     /// m62: the specialization a generic fn call instantiates — its
     /// type arguments, in the template's `generics` order, and its
     /// name. Both are the checker's (F.40 phase 3, E4): the call's
@@ -11840,11 +11886,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         call_span: hale_syntax::span::Span,
     ) -> Result<(Vec<TypeExpr>, String, (hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)), CodegenError> {
         use hale_types::typed_bodies::Typed;
-        // Inside a generic fn's specialization, the call's row is the
-        // one the checker typed for that monomorph.
-        let row = match &self.current_specialization {
-            Some((template, args)) => self.typed.specialized_generic_call(*template, args, call),
-            None => self.typed.generic_call(call),
+        // Select by the call's lexical body, including params defaults
+        // evaluated inside another specialization. Defaults use the
+        // declaring locus, just as their `self.X` reads do; literal
+        // overrides keep the caller's context. No type is inferred here.
+        // NodeId structural equality ignores metadata; compare the raw
+        // source identities when choosing a specialization.
+        let fn_specialization = self.current_specialization.as_ref().filter(|(body, _)| {
+            self.typed.generic_call_body(call).map(|id| id.0) == Some(body.0)
+        });
+        let locus = if self.in_params_default {
+            self.params_init_self.as_ref().or(self.current_self.as_ref())
+        } else {
+            self.current_self.as_ref().or(self.params_init_self.as_ref())
+        };
+        let locus_specialization = locus
+            .and_then(|l| self.typed.monomorphs().named(&l.locus_name))
+            .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus
+                && self.typed.generic_call_locus(call).map(|id| id.0) == Some(m.template.0));
+        let row = match (fn_specialization, locus_specialization) {
+            (Some((body, args)), _) => self.typed.specialized_generic_call(*body, args, call),
+            (None, Some(m)) => self.typed.specialized_generic_call_at(&m.args, call),
+            (None, None) => self.typed.generic_call(call),
         };
         let row = match row {
             Some(Typed::Known(row)) => row,
@@ -12057,6 +12120,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
+        fn mentions_parameter(te: &TypeExpr, names: &BTreeSet<&str>) -> bool {
+            match te {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    (path.segments.len() == 1 && names.contains(path.segments[0].name.as_str()))
+                        || generic_args.iter().any(|t| mentions_parameter(t, names))
+                }
+                TypeExpr::Projection { inner, .. } => mentions_parameter(inner, names),
+                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => mentions_parameter(elem, names),
+                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions_parameter(t, names)),
+                TypeExpr::Function { params, ret, .. } => params.iter().any(|t| mentions_parameter(t, names))
+                    || ret.as_ref().is_some_and(|t| mentions_parameter(t, names)),
+                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+            }
+        }
         // GH #884: module nesting flattened — a generic
         // instantiation written one brace deeper needs the same
         // monomorph synthesized, and the `TopDecl::Module` arm
@@ -12111,13 +12188,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     /* generic template — its own body's `T`
                      * references aren't instantiations. */
                 }
-                TopDecl::Fn(f) => {
+                TopDecl::Fn(f) if f.generics.is_empty() => {
                     Self::collect_in_fn_decl(
                         f,
                         generic_names,
                         seen,
                         requests,
                     )?;
+                }
+                TopDecl::Fn(f) => {
+                    // Like type and locus templates, unbound fn
+                    // annotations are not concrete instantiations.
+                    // Keep concretely spelled uses (including builtin
+                    // Option/Result); the typed rows supply bound uses.
+                    let names = f.generics.iter().map(|g| g.name.name.as_str()).collect();
+                    let mut local_seen = BTreeSet::new();
+                    let mut local_requests = Vec::new();
+                    Self::collect_in_fn_decl(f, generic_names, &mut local_seen, &mut local_requests)?;
+                    for (name, args) in local_requests {
+                        if !args.iter().any(|t| mentions_parameter(t, &names)) {
+                            let mangled = Self::mangle_generic_name(&name, &args)?;
+                            if seen.insert(mangled) {
+                                requests.push((name, args));
+                            }
+                        }
+                    }
                 }
                 TopDecl::Locus(l) if l.generics.is_empty() => {
                     for member in &l.members {
@@ -14284,6 +14379,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_scratch_local = self.current_user_fn_scratch_local;
             let saved_exit_bb = self.current_user_fn_exit_bb;
             let saved_ret_alloca = self.current_user_fn_ret_alloca;
+            // A free fn must not emit loads from the caller method's
+            // allocas. Nested specialization also restores the caller's
+            // fallible channel after lowering the new function.
+            let saved_method_scratch = self.current_method_scratch.take();
+            let saved_method_caller = self.current_method_caller_arena.take();
+            let saved_fallible = self.current_user_fn_fallible.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
@@ -14324,6 +14425,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_user_fn_scratch_local = saved_scratch_local;
             self.current_user_fn_exit_bb = saved_exit_bb;
             self.current_user_fn_ret_alloca = saved_ret_alloca;
+            self.current_method_scratch = saved_method_scratch;
+            self.current_method_caller_arena = saved_method_caller;
+            self.current_user_fn_fallible = saved_fallible;
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
@@ -28094,9 +28198,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ret: Option<TypeExpr>,
         }
         // GH #884: module nesting flattened.
-        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == cs.locus_name => l
+        let sig: MethodSig = self.locus_declaration(&cs.locus_name)
+            .and_then(|l| l
                     .members
                     .iter()
                     .find_map(|m| match m {
@@ -28122,9 +28225,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                         _ => None,
-                    }),
-                _ => None,
-            })
+                    }))
             .expect("method declaration was visited in pass A2");
         // Caller may omit a contiguous tail of defaulted params
         // (suffix-only rule enforced at decl time). Each missing
@@ -28556,9 +28657,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fallible: Option<TypeExpr>,
         }
         // GH #884: module nesting flattened.
-        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == locus_name => l
+        let sig: MethodSig = self.locus_declaration(&locus_name)
+            .and_then(|l| l
                     .members
                     .iter()
                     .find_map(|m| match m {
@@ -28596,9 +28696,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                         _ => None,
-                    }),
-                _ => None,
-            })
+                    }))
             .ok_or_else(|| {
                 CodegenError::Unsupported(format!(
                     "method `{}` declaration not found on locus `{}`",

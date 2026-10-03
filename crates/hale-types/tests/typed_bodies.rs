@@ -382,6 +382,7 @@ fn main() {
     let e = first(starts_with("ab", "a"));
     println(a, b, c, d, e);
 }
+
 "#;
     let program = hale_syntax::parse_source(src).expect("parses");
     let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
@@ -399,4 +400,65 @@ fn main() {
         };
         assert_eq!(row.type_args, vec![Ty::Prim(want)]);
     }
+}
+
+#[test]
+fn generic_locus_members_keep_separate_call_rows_by_body_and_type_arguments() {
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+locus Holder<T> {
+    params { v: T; copied: T = first(self.v); }
+    birth() { println(first(self.v)); }
+    fn read() -> T { return first(self.copied); }
+    run() {
+        println(first(self.v));
+        println(first(self.read()));
+        let x = self.v;
+        println(first(x));
+    }
+    dissolve() { println(first(self.v)); }
+}
+fn spawn<T>(x: T) {
+    let h: Holder<T> = Holder { v: first(x) };
+}
+fn main() {
+    spawn(42);
+    spawn("text");
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
+        panic!("not refused")
+    };
+    let checked = s.demand_check().expect("checked");
+    assert!(checked.diags.is_empty(), "{:?}", checked.diags);
+    let table = s.demand_typed_bodies().expect("the table");
+    let TopDecl::Locus(holder) = decl(s.program().unwrap(), "Holder") else { unreachable!() };
+    let mut bodies = vec![holder.id];
+    bodies.extend(holder.members.iter().filter_map(|member| match member {
+        LocusMember::Fn(f) => Some(f.id),
+        LocusMember::Lifecycle(lc) => Some(lc.id),
+        _ => None,
+    }));
+    let mut calls = 0;
+    for body in bodies {
+        let rows = table.body(body).expect("body recorded");
+        for (site, template) in &rows.generic_calls {
+            calls += 1;
+            let call = NodeId(*site);
+            assert!(matches!(template, Typed::Hole(_)), "template parameter is unbound");
+            assert_eq!(table.generic_call_body(call).map(|id| id.0), Some(body.0));
+            assert_eq!(table.generic_call_locus(call).map(|id| id.0), Some(holder.id.0));
+            for prim in [hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String] {
+                let args = vec![Ty::Prim(prim)];
+                let Some(Typed::Known(row)) = table.specialized_generic_call_at(&args, call) else {
+                    panic!("{body:?}/{prim:?}: {:?}", table.specialized_generic_call_at(&args, call));
+                };
+                assert_eq!(row.type_args, args);
+                assert_eq!(row.params, args);
+                assert!(table.monomorphs().of(row.template, &args).is_some());
+            }
+        }
+    }
+    assert_eq!(calls, 7, "params default, birth, method, three run calls, dissolve");
 }

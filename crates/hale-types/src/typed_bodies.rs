@@ -213,6 +213,10 @@ pub struct FallibleCall {
 /// The rows of one body.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypedBody {
+    /// The generic locus declaring this member or params default.
+    /// Free functions have no enclosing locus, even when a default is
+    /// evaluated while a locus method is being lowered.
+    pub enclosing_locus: Option<NodeId>,
     pub accumulators: Vec<AccumulatorRow>,
     /// A generic locus's closure: its accumulators for each of the
     /// template's monomorphs, by the monomorph's type arguments, each
@@ -220,8 +224,8 @@ pub struct TypedBody {
     pub specialized_accumulators: Vec<(Vec<Ty>, Vec<AccumulatorRow>)>,
     /// By call site.
     pub generic_calls: BTreeMap<u32, Typed<GenericCall>>,
-    /// A generic fn's body: its generic calls for each of the fn's
-    /// monomorphs, by the monomorph's type arguments, typed with the
+    /// A generic fn or locus member: its generic calls for each of the
+    /// enclosing template's monomorphs, by their type arguments, typed with the
     /// template's parameters bound to them.
     pub specialized_generic_calls: Vec<(Vec<Ty>, BTreeMap<u32, Typed<GenericCall>>)>,
     /// By call site.
@@ -408,6 +412,7 @@ impl TypingRecord {
         if call.is_none() {
             return;
         }
+        self.sites.insert(call.0, body.0);
         let rows = &mut self.body(body).specialized_generic_calls;
         let at = match rows.iter().position(|(a, _)| *a == args) {
             Some(i) => i,
@@ -473,8 +478,25 @@ impl TypedBodies {
         self.bodies.get(body)?.generic_calls.get(&call.0)
     }
 
-    /// The row of the generic call at `call` inside the generic fn
-    /// declared at `template`, in its monomorph at `args`.
+    /// The declaration owning a generic call's source site. A locus's
+    /// different monomorphs keep this same body identity.
+    pub fn generic_call_body(&self, call: NodeId) -> Option<NodeId> {
+        self.sites.get(&call.0).copied().map(NodeId)
+    }
+
+    /// The generic locus declaring this call's source body, if any.
+    pub fn generic_call_locus(&self, call: NodeId) -> Option<NodeId> {
+        self.body(self.generic_call_body(call)?)?.enclosing_locus
+    }
+
+    /// A generic call's concrete row, in its owning body, for the
+    /// enclosing fn or locus's type arguments.
+    pub fn specialized_generic_call_at(&self, args: &[Ty], call: NodeId) -> Option<&Typed<GenericCall>> {
+        self.specialized_generic_call(self.generic_call_body(call)?, args, call)
+    }
+
+    /// The row of the generic call at `call` inside the body declared
+    /// at `template`, for its enclosing template's monomorph at `args`.
     pub fn specialized_generic_call(&self, template: NodeId, args: &[Ty], call: NodeId) -> Option<&Typed<GenericCall>> {
         self.body(template)?
             .specialized_generic_calls

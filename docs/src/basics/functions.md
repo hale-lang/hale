@@ -76,6 +76,14 @@ Locus methods support defaults too. One caveat: bus-handler
 methods and mode methods reject them — their argument shape is
 fixed by the runtime, so there's no slot to fill at dispatch time.
 
+## Generic calls inside loci
+
+A generic function can also be called from a generic locus. If a
+`Holder<T>` calls `first(self.value)`, a `Holder<Int>` uses the `Int`
+call and a `Holder<String>` uses the `String` call. Binding the field
+to a local first has the same result. Params defaults use the type
+arguments of the locus declaring them.
+
 ## Functions are values
 
 A function has a type — `fn(Int, Int) -> Int` — and you can pass

@@ -747,6 +747,15 @@ arguments substituted. A field read on a monomorph locus value
 (`c.cap`) types as the substituted param, exactly as a monomorph
 struct's field read does.
 
+Generic function calls inside a generic locus are typed for each
+concrete locus monomorph. A call on `self.value`, or on a local bound
+to that field, uses the substituted field type. The checked call rows
+retain their source body and call identities; lowering selects the
+row for that locus's arguments. Params defaults use their declaring
+locus's specialization even when construction happens inside another
+generic function or locus. Specializations discovered in these bodies
+are checked in turn.
+
 **Where the arguments come from.** A struct / locus literal spelled
 with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
 carries no type arguments of its own; it takes them from the

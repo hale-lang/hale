@@ -524,14 +524,14 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("check (a mangled monomorph name: the table's row)", CHECK, "resolve_generic_monomorph"), consumer_at("codegen (a generic fn call's type arguments and specialization: the call's typed-body row, and the monomorph table's row for them)", CG, "generic_call_instance"), consumer("codegen")],
         invariants: &[
             "one unification; the monomorph set is a row lowering reads",
-            "lowering infers no generic argument: a generic fn call's type arguments are its typed-body row (inside a specialization, the row typed for that monomorph) and the specialization's name is the monomorph table's; a hole, or a call with no row, is refused at the call",
+            "lowering infers no generic argument: a generic fn call's type arguments are its typed-body row (inside a fn or locus specialization, the owning body's row typed for that monomorph, including params defaults in their declaring locus) and the specialization's name is the monomorph table's; a hole, or a call with no row, is refused at the call",
             "one monomorph table per snapshot (the typed-body table's `monomorphs`), keyed by the template's site and its type arguments, never by a name string: its producer parses a mangled name once, for each name the program spells (a written instantiation as the checker resolves it, an annotation, a struct literal's path), against the bundle's templates by identity; the checker's lookups read the row",
-            "a generic call inside a generic fn's body is typed again for each of the fn's monomorphs, the template's parameters bound to its arguments, and recorded under them; that walk reports nothing",
+            "a generic call inside a generic fn or locus body is typed again for each of the enclosing template's monomorphs, the template's parameters bound to its arguments, and recorded under them by its source body and call identities; that walk reports nothing and queues concrete instantiations reached in annotations for the same producer to walk",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/generic_monomorph_agreement.rs", "crates/hale-types/tests/typed_bodies.rs"],
         spec: &["spec/types.md"],
-        owned: &[site(CHECK, "monomorph_table"), site(CHECK, "specialize_generic_fns")],
+        owned: &[site(CHECK, "monomorph_table"), site(CHECK, "specialize_generic_bodies"), site(CHECK, "record_specialized_type")],
         seams: &[],
     },
     Family {

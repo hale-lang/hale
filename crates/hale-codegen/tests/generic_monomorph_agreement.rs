@@ -590,3 +590,52 @@ fn main() {
         &Expect::Runs("v=6"),
     );
 }
+
+#[test]
+fn generic_locus_calls_select_each_concrete_body() {
+    agree(
+        "typed_locus_calls",
+        r#"
+fn first<T>(x: T) -> T { return x; }
+fn twice<T>(x: T) -> T { return first(first(x)); }
+fn external(n: Int = first(7)) { println(n); }
+locus Holder<T> {
+    params { v: T; }
+    run() {
+        external();
+        println(first(self.v));
+        let x = self.v;
+        println(twice(x));
+    }
+}
+fn main() {
+    let i: Holder<Int> = Holder { v: 42 };
+    let s: Holder<String> = Holder { v: "text" };
+}
+"#,
+        &Expect::Runs("7\n42\n42\n7\ntext\ntext\n"),
+    );
+}
+
+#[test]
+fn generic_fn_discovers_locus_calls_and_defaults_keep_their_declaring_context() {
+    agree(
+        "typed_locus_defaults",
+        r#"
+fn first<T>(x: T) -> T { return x; }
+locus Holder<T> {
+    params { v: T; copied: T = first(self.v); }
+    fn read() -> T { return first(self.copied); }
+    run() { println(first(self.read())); }
+}
+fn spawn<T>(x: T) {
+    let h: Holder<T> = Holder { v: first(x) };
+}
+fn main() {
+    spawn(42);
+    spawn("text");
+}
+"#,
+        &Expect::Runs("42\ntext\n"),
+    );
+}
