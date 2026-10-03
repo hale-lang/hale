@@ -170,10 +170,15 @@ pub fn infer_effect_bounds(
                     // here: fanned out when conformers exist, dead
                     // code when none do.)
                     //
-                    // Both shapes set the flag and contribute nothing
+                    // E5: a call through a local the summary cannot
+                    // follow to a fn, or a computed callee, is indirect
+                    // on the edge and reads the same.
+                    //
+                    // Every shape sets the flag and contributes nothing
                     // to the lower bound, rather than swallowing what
                     // is already known.
                     if fs.fn_params.iter().any(|p| p == name)
+                        || edge.indirect
                         || edge.opaque_method_call()
                     {
                         may = may.union(EffectSet::UNCLASSIFIED);

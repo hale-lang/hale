@@ -274,6 +274,36 @@ fn main() { println(use_it(Rt { })); }\n";
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// E5's function-value alternatives also belong to the declaration
+/// bodies added by X2: a callback in a params initializer or failure
+/// handler makes that locus a dependent of each possible target.
+#[test]
+fn function_values_in_declaration_bodies_keep_their_dependents() {
+    for (name, member) in [
+        ("initializer", "params { child: Child = Child { }; n: Int = { let f = if true { one } else { two }; f() }; }"),
+        ("failure", "params { child: Child = Child { }; } on_failure(c: Child, err: ClosureViolation) { let f = if true { one } else { two }; println(f()); }"),
+    ] {
+        let text = format!(
+            "locus Child {{ }}\nlocus App {{\n    {member}\n}}\n\
+             fn one() -> Int {{ return 1; }}\nfn two() -> Int {{ return 2; }}\n\
+             fn unrelated() -> Int {{ return 3; }}\nfn main() {{ let app = App {{ }}; }}\n"
+        );
+        let dir = scratch_seed(&format!("function-value-{name}"), &text);
+        let snap = load(&dir, &BTreeMap::new()).expect("the seed checks");
+        let errors: Vec<_> = snap.demand_typing().expect("typed").diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{name}: {errors:?}");
+        let all = keys(snap.declarations());
+        let app = all.iter().find(|k| k.2 == "App").expect("App");
+        for target in ["one", "two"] {
+            let key = all.iter().find(|k| k.2 == target).expect("callback");
+            assert!(answer(&snap, key).expect("a fn is placed").contains(app), "{name}: App reads {target}");
+        }
+        let unrelated = all.iter().find(|k| k.2 == "unrelated").expect("unrelated");
+        assert!(!answer(&snap, unrelated).expect("a fn is placed").contains(app), "{name}: unrelated is no callback");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// A seed where a body edit changes another declaration's check two
 /// calls away: `Api` hands a revealed secret to the wire through `enc`,
 /// which the reveal rule follows only while `enc`, `mid` and `inner` are

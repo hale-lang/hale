@@ -241,8 +241,8 @@ fn own_scope_let_block_scope_test() {
         assert_eq!(
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 438 fns, 34 entry points, 114 invoked-unboundedly",
-                "+ # 438 fns, 34 entry points, 113 invoked-unboundedly",
+                "- # 438 fns, 34 entry points, 116 invoked-unboundedly",
+                "+ # 438 fns, 34 entry points, 115 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -377,6 +377,10 @@ fn reached_no_other_target_changes() {
     );
 }
 
+/// `invoked` counts the copy's fns too: two more since F.40 E5, which
+/// resolves the copy's indirect calls to the function values of their
+/// type, so the router's fn-route dispatch reaches `__http_fn_unset` and
+/// the listener's `on_conn` reaches `__default_on_connection`.
 fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: &[&str], lines: &[&str]) {
     let u = unreached(target, &stdlib_fns()).expect("the target loads");
     let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
@@ -402,7 +406,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (115, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (117, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -412,7 +416,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (115, 0),
+        (117, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -432,7 +436,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (137, 2),
+        (139, 2),
         &[
             "b64",
             "decode",
@@ -496,7 +500,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (117, 0),
+        (119, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -556,22 +560,44 @@ fn run_to_exit(target: &str) -> Option<(usize, Vec<String>)> {
     .flatten()
 }
 
-/// Every run-to-exit program loses the copy's 21 sites; two also lose
-/// their own `main`'s in-loop sites; no other target moves.
+/// Every run-to-exit program loses the copy's 21 sites (more where the
+/// program reaches more of the copy: since F.40 E5 the listener's
+/// `on_conn` call resolves to the program's handler, which can make more
+/// of the copy invoked unboundedly); two also lose their own `main`'s
+/// in-loop sites, and docs-server its handler's; no other target moves.
 #[test]
 fn own_entries_run_to_exit_programs() {
     let mut moved = 0;
     let mut own = Vec::new();
+    let mut more: Vec<(String, usize)> = Vec::new();
     for t in targets() {
         let Some((copy, mine)) = run_to_exit(&t) else { continue };
         moved += 1;
-        assert_eq!(copy, 21, "{t}: the copy's leak sites");
+        if copy != 21 {
+            more.push((t.clone(), copy));
+        }
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
     }
     assert_eq!(moved, 78, "the run-to-exit programs among the targets");
     assert_eq!(
+        more,
+        [
+            ("crates/hale-codegen/tests/fixtures/examples/docs-server".to_string(), 22),
+            ("crates/hale-codegen/tests/fixtures/examples/http-hello".to_string(), 22),
+        ],
+        "the copy's leak sites"
+    );
+    assert_eq!(
         own,
         [
+            // F.40 E5: the listener's `on_conn` call resolves to the
+            // program's handler, so these are invoked unboundedly first.
+            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4255 InUnboundedLoop",
+            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4239 InUnboundedLoop",
+            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4232 InUnboundedLoop",
+            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4224 InUnboundedLoop",
+            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4217 InUnboundedLoop",
+            "crates/hale-codegen/tests/fixtures/examples/docs-server: __wrap_html_page StringConcat @3012..3462 InvokedUnboundedly",
             "tests/hale/api_context_test.hl: main StringConcat @12358..12422 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12358..12393 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",

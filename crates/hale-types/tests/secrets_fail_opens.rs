@@ -618,12 +618,19 @@ fn an_indirect_call_leaves_attribution_uncertified() {
     // the textual name sat in the stdlib registry, so a callback
     // contributed nothing and the law reported `holds` over a
     // boundary it could not see.
+    //
+    // F.40 E5 resolves a call through a function value to the program's
+    // function values of its type, so the callee here is a method read
+    // as a value, the one the summary does not follow.
     let src = "
         fn invoke(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }
-        fn double(x: Int) -> Int { return x + x; }
-        locus L {
+        locus D {
             params { n: Int = 0; }
-            fn go(k: Int) -> Int { return invoke(double, k); }
+            fn double(x: Int) -> Int { return x + x; }
+        }
+        locus L {
+            params { n: Int = 0; d: D = D { }; }
+            fn go(k: Int) -> Int { return invoke(self.d.double, k); }
         }
         main locus App {
             params { l: L = L { }; }
@@ -636,6 +643,34 @@ fn an_indirect_call_leaves_attribution_uncertified() {
         es.iter().any(|m| m.contains("uncertified")),
         "an opaque callee must not be certified past: {es:?}"
     );
+}
+
+/// F.40 E5: a callback that is one of the program's function values is
+/// followed — a clean one leaves the law holding, and one that performs
+/// a syscall is the unattributed operation the law names.
+#[test]
+fn a_callback_the_program_names_is_followed_by_attribution() {
+    let src = |body: &str| {
+        format!(
+            "
+        fn invoke(f: fn(Int) -> Int, n: Int) -> Int {{ return f(n); }}
+        fn double(x: Int) -> Int {{ {body} return x + x; }}
+        locus L {{
+            params {{ n: Int = 0; }}
+            fn go(k: Int) -> Int {{ return invoke(double, k); }}
+        }}
+        main locus App {{
+            params {{ l: L = L {{ }}; }}
+            claims {{ io: require attributed(all syscall); }}
+        }}
+        fn main() {{ App {{ }}; }}
+    "
+        )
+    };
+    let es = errors(&src(""));
+    assert!(es.is_empty(), "a clean callback holds: {es:?}");
+    let es = errors(&src("println(\"x\");"));
+    assert!(es.iter().any(|m| m.contains("double")), "the callback's syscall is named: {es:?}");
 }
 
 // ---------------------------------------------------------------

@@ -164,21 +164,21 @@ fn hole_of(e: &CallEdge) -> Option<&'static str> {
         // not unknown (`CallEdge::via_interface`).
         return None;
     }
-    if e.indirect {
+    // An indirect call the summary resolved to the program's function
+    // values is its alternatives (`CallEdge::via_value`), never a hole.
+    if e.indirect && e.through_param {
         return Some("it is called through a function-typed parameter, whose target is not known here");
     }
     // A computed callee (`pick()(x)`), worded as the member walk words it.
-    if e.spelling == CallSpelling::Expr {
+    if e.indirect && e.spelling == CallSpelling::Expr {
         return Some(UNRESOLVED_VALUE);
     }
     if e.opaque_method_call() {
         return Some("its receiver's type is not known here");
     }
-    // A call through a local the summary does not follow to a fn, which
-    // every other reader of the edge takes for the call to nothing it
-    // always was: a hole in every body, the program's own and an imported
-    // one alike.
-    if e.unresolved_local {
+    // A local still unresolved after function-value resolution is a
+    // hole in every body, the program's own and an imported one alike.
+    if e.indirect && e.unresolved_local {
         return Some(UNRESOLVED_VALUE);
     }
     None

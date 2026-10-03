@@ -1215,12 +1215,29 @@ fn an_unbounded_bound_names_recursion() {
     );
 }
 
+/// The call through `f` reaches no function value of the program (the
+/// planner forwards a parameter of its own, and nothing reads a
+/// function as a value), so the walk cannot follow it. (`go` passed
+/// `model_call`, which the call resolves to since F.40 E5.)
 #[test]
 fn an_unbounded_bound_points_at_an_unfollowable_call() {
-    let src = bound_src(
-        "self.n = thru(model_call, 1);",
-        "fn thru(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }",
-    );
+    let src = r#"
+effect llm;
+@effects(is: {llm})
+fn model_call(p: Int) -> Int { return p; }
+fn thru(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }
+locus Planner {
+    params { n: Int = 0; }
+    fn go(g: fn(Int) -> Int) { self.n = thru(g, 1); }
+}
+group planners = { Planner };
+main locus App {
+    params { p: Planner = Planner { }; }
+    claims { one: bound llm <= 1 on paths from planners; }
+}
+fn main() { App { }; }
+"#
+    .to_string();
     let ds = diags(&src);
     let primary = ds
         .iter()

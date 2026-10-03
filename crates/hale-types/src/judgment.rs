@@ -874,8 +874,8 @@ pub fn judge_forbid_reaches(
                                             format!(
                                                 "claim `{}` cannot be certified: \
                                                  `{}` (reachable from `{}`) calls \
-                                                 through a function-typed \
-                                                 parameter, whose target is not \
+                                                 through a function value, \
+                                                 whose target is not \
                                                  knowable statically. An \
                                                  unresolvable edge fails closed",
                                                 row.name,
@@ -1023,8 +1023,8 @@ pub fn judge_forbid_reaches(
                                     FnHole::Indirect => format!(
                                         "claim `{}` cannot be certified: \
                                          `{}` (reachable from `{}`) calls \
-                                         through a function-typed \
-                                         parameter, whose target is not \
+                                         through a function value, \
+                                         whose target is not \
                                          knowable statically. An \
                                          unresolvable edge fails closed",
                                         row.name,
@@ -1111,7 +1111,7 @@ pub fn judge_forbid_reaches(
                                     }
                                     FnHole::Indirect => {
                                         "calls through a \
-                                         function-typed parameter"
+                                         function value"
                                             .to_string()
                                     }
                                     FnHole::Computed => {
@@ -1181,8 +1181,8 @@ pub fn judge_forbid_reaches(
                                                 format!(
                                                     "claim `{}` cannot be certified: \
                                                      `{}` (reachable from `{}`) calls \
-                                                     through a function-typed \
-                                                     parameter, whose target is not \
+                                                     through a function value, \
+                                                     whose target is not \
                                                      knowable statically. An \
                                                      unresolvable edge fails closed",
                                                     row.name,
@@ -1975,8 +1975,8 @@ pub fn judge_only_edges(
                             row_span,
                             format!(
                                 "claim `{}` cannot be certified: `{}` \
-                                 calls through a function-typed \
-                                 parameter, whose target is not \
+                                 calls through a function value, \
+                                 whose target is not \
                                  knowable statically. An unresolvable \
                                  edge fails closed",
                                 row.name,
@@ -2122,8 +2122,8 @@ pub fn judge_only_edges(
                             ),
                             FnHole::Indirect => format!(
                                 "claim `{}` cannot be certified: `{}` \
-                                 calls through a function-typed \
-                                 parameter, whose target is not \
+                                 calls through a function value, \
+                                 whose target is not \
                                  knowable statically. An unresolvable \
                                  edge fails closed",
                                 row.name,

@@ -164,16 +164,20 @@ fn the_rich_fixture_derives_a_lawful_model_with_every_family() {
         .iter()
         .any(|p| matches!(&p.key_domain, Some(hale_model::KeyDomain::AnyOfType(_)))));
 
-    // Calls: the indirect call is a HOLE (not a row); double's
-    // direct call from Store::on_c is a site row.
-    assert!(m
+    // Calls: the indirect call in `call_it` resolves to the program's
+    // one function value of its type, `double` (F.40 E5: it was a
+    // HOLE), so it is a site row; double's direct call from
+    // Store::on_c is a site row.
+    assert!(!m
         .holes
         .iter()
         .any(|h| h.kind == HoleKind::IndirectCall));
-    assert!(!m.capabilities.exact_calls, "indirect call ⇒ inexact");
     let fname = |id: hale_model::FunctionId| {
         e.functions[id.index()].name.clone()
     };
+    assert!(r.calls.iter().any(|c| fname(c.from) == "call_it"
+        && fname(c.to) == "double"
+        && c.dispatch == DispatchKind::Direct));
     assert!(r.calls.iter().any(|c| fname(c.from) == "Store::on_c"
         && fname(c.to) == "double"
         && c.dispatch == DispatchKind::Direct));
@@ -493,7 +497,9 @@ fn model_and_artifact_extract_the_same_facts() {
 #[test]
 fn dead_dispatch_and_indirect_are_separated() {
     // A call through an uninhabited interface + a genuine indirect
-    // call: one dead row, one hole — never conflated.
+    // call: one dead row, one hole — never conflated. (The indirect
+    // call reaches no function value of the program: `run` used to pass
+    // `id`, which it resolves to since F.40 E5.)
     let src = r#"
 interface Notifier {
     fn notify(v: Int) -> Int;
@@ -503,7 +509,7 @@ fn poke(n: Notifier, v: Int) -> Int { return n.notify(v); }
 fn id(v: Int) -> Int { return v; }
 main locus App {
     run() {
-        let a = call_it(id, 1);
+        let a = id(1);
         println(a);
     }
 }

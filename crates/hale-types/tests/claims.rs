@@ -437,7 +437,7 @@ fn an_indirect_call_on_the_path_fails_closed() {
     let ds = diags(src);
     assert!(
         ds.iter().any(|m| m.contains("cannot be certified")
-            && m.contains("function-typed parameter")),
+            && m.contains("calls through a function value")),
         "an indirect call must fail closed: {:?}",
         ds
     );
