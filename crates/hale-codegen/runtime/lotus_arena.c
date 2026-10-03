@@ -2036,7 +2036,7 @@ int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
     return node ? 1 : 0;
 }
 
-/* Defined with the pool start (C49): a pool-placed root's init the
+/* Defined with the pool start (C50): a pool-placed root's init the
  * thread holding a parent open is waiting for, which a worker waiting
  * below for that thread's decision runs in place. */
 static int lotus_pool_start_pending_here(void);
@@ -2079,7 +2079,7 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
     node->waiters++;
     while (node->state != LOTUS_DELIVERED) {
         /* A pool worker waiting here may be what the deciding thread
-         * waits for: the init of a pool-placed root it posted (C49). Run
+         * waits for: the init of a pool-placed root it posted (C50). Run
          * it in place, unlocked, and wait on. */
         if (lotus_pool_start_pending_here()) {
             pthread_mutex_unlock(&g_params_open_lock);
@@ -8666,7 +8666,7 @@ typedef struct lotus_coop_pool {
      * stale read is harmless. "" when the cell's locus has no name. */
     const char *volatile running_label;
     /* The pool-placed root's init the instantiating thread is waiting
-     * for (`lotus_pool_start_job_t *`, C49), NULL when none: what the
+     * for (`lotus_pool_start_job_t *`, C50), NULL when none: what the
      * worker runs if it is itself waiting on that thread. */
     _Atomic(void *)   start_pending;
     /* F.35 Slice 1: async_io state. Dormant when `async_io_enabled`
@@ -9188,7 +9188,7 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
     return g_current_pool_tls;
 }
 
-/* The start of a pool-placed root (inventory C49, the pool side of the
+/* The start of a pool-placed root (inventory C50, the pool side of the
  * review of PR #1319's correction of U-6): its subtree initializes on
  * the pool's worker, as a pinned locus's does on its thread. The
  * instantiating thread posts the root's params init as one job and
@@ -9224,6 +9224,9 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
  * worker waiting there for another thread's decision runs it in place
  * (`lotus_pool_start_run_pending`), still on the worker. Whichever of
  * the two paths claims the job runs it; the other only lets go of it.
+ * Posting tries the ring without blocking, so a full ring does not
+ * prevent the constructor from reaching its readiness wait once the
+ * pending path has claimed the job. No queued copy is then required.
  *
  * The wait is the pinned one, so its slices are the same per-platform
  * `lotus_pinned_start_wait_slice`. wasm32 has no threads: codegen
@@ -9997,7 +10000,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
      * once (lotus_coro_payload_dispose, from lotus_coro_release). `cell_copy`
      * is a drain stack local the next dequeue overwrites; nothing may point
      * into it past this call. */
-    /* A pool-placed root's init (C49) never parks: it runs on the
+    /* A pool-placed root's init (C50) never parks: it runs on the
      * worker's own stack, so it is complete before another cell starts. */
     lotus_coro_t *c = cell_copy->handler == (void *)lotus_pool_start_job
         ? NULL

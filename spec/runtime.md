@@ -1116,16 +1116,22 @@ pool it runs on the worker's own stack, not a coroutine, so a
 `sleep` or a socket wait inside it blocks the worker, and the
 initialization is complete before the worker starts another cell.
 The roots of one pool therefore initialize in post order, each
-complete before the next is posted. Two consequences. The job
-waits behind every cell already queued on X: a field placed after
+complete before the next is posted. Ordinarily the job
+waits behind cells already queued on X: a field placed after
 a sibling on the same classic pool whose `run()` never returns is
 never initialized, and the instantiation waits for it (the
 sibling's `run()` already holds the worker against everything
-else on X). And no wait may be on itself (§ "Lifecycle
+else on X). No wait may be on itself (§ "Lifecycle
 obligations", line 1): when the worker is itself blocked on the
 instantiating thread, waiting for the decision on a held failure
 that thread gives only at settle, it runs the posted
-initialization in place, still on the worker, and waits on. A
+initialization in place, still on the worker, and waits on. The
+constructor offers this pending initialization independently of
+queue capacity and tries to enqueue without blocking. Once the
+worker claims the pending initialization, the constructor proceeds
+to the readiness wait even if the queue remains full; it need not
+enqueue a second copy. The pending slot and any queued copy each
+hold a reference, and only one path runs the initialization. A
 target without threads initializes on the instantiating thread.
 
 **m28b stage 1 (inline-payload queue):** Bus queue cells now

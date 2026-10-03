@@ -1226,6 +1226,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - existence, each edge and each domain claim carry their own rule and status, so a row shipped to exist can carry a claim known open (decision L0-1 at C36) or pending (line 3); a domain is claimed only where the placement table and the rule resolve one for every occurrence: one domain, or the set where a template's occurrences are built under parents on different domains (each occurrence held to one of them), never one parent's alone
 - the plan the trace oracle holds a lifecycle fixture's or a matrix cell's run to is the producer's for its program, rendered along the run's path (`lifecycle::project::expected`): no hand-written expectation stands beside it, the negative controls' own plans aside and the hand-written plans of the fixtures the producer does not derive yet (`UNDERIVED`, L5's second part's three), and a run's known departures are named per inventory row in the known-open tables
 - a row whose every terminal is a not-started one is owed by no subject: a restart refused under teardown (RD, C42), a run a resumed locus does not declare (line 13, C48)
+- a pinned or pool anchor's params initialize and settle on its own domain (C49/C50); each static nested field's instantiating domain follows that initialization, while the pool anchor's own birth retains its caller's domain; a nested run inside a pool init is inline and owes no queue admission or queued-run cancellation
 
 **Missing data.** a missing required row is a compiler error
 

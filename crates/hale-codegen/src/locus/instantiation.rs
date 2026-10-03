@@ -2408,7 +2408,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // its initialization for a delivery through the mailbox is
         // drained by the thread the delivery is routed to.
         //
-        // The pool side (inventory C49): a root placed on a worker pool
+        // The pool side (inventory C50): a root placed on a worker pool
         // initializes its params on the pool's worker the same way, as
         // the first job of that root (`pool_init`), so its nested bodies
         // run on the thread its nested handlers run on. A target without
@@ -2602,7 +2602,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // loop reads is captured into the thread's argument block. A
         // root on a worker pool is lowered the same way, into
         // `__pool_init_<L>`, which the instantiating thread posts to the
-        // pool and waits for (C49).
+        // pool and waits for (C50).
         let caller_self_ptr = self_ptr;
         let mut pinned_init = if thread_init {
             let p = self.begin_pinned_init(locus_name, &info, pool_init.clone())?;
@@ -5189,7 +5189,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 /// A pinned locus's params-init, lowered into a function its own thread
 /// runs (the review of PR #1319, correcting U-6), or a pool-placed
-/// root's, which its pool's worker runs (C49): what
+/// root's, which its pool's worker runs (C50): what
 /// [`Cx::begin_pinned_init`] took of the instantiating function's
 /// lowering state, given back by [`Cx::finish_pinned_init`].
 pub(crate) struct PinnedInit<'ctx> {
@@ -5256,7 +5256,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// nested subscription registers against the locus's mailbox,
     /// read back from its slot.
     ///
-    /// With `pool`, a root placed on that worker pool (C49): the same
+    /// With `pool`, a root placed on that worker pool (C50): the same
     /// lowering into `__pool_init_<L>(self, start)`, which the pool's
     /// worker runs as the root's first job. A nested subscription
     /// registers against the pool, as before, and a nested cooperative
@@ -5371,7 +5371,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// created with its affinity, and the instantiating thread waits
     /// until the params are initialized.
     ///
-    /// For a pool-placed root (C49) the argument block is the same, and
+    /// For a pool-placed root (C50) the argument block is the same, and
     /// instead of a thread the init is posted to the pool as one job
     /// (`lotus_pool_start_post`), which the instantiating thread waits
     /// for the same way (`lotus_pool_start_await_ready`, which also frees

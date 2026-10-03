@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::lifecycle::{
-    FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
+    DomainRole, FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
     Spine, Status, Template, Terminal, DECISION_LINES,
 };
 use hale_types::placement::{Bound, DomainKind, SiteUniverse};
@@ -193,7 +193,8 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert_eq!(one(p, "Outer", K::Birth).holder.spine, Spine::PinnedMain);
     assert_eq!(one(p, "Outer", K::Run).holder.spine, Spine::PinnedMain, "a pinned thread runs run(), written or not");
     assert_eq!(rows(p, "Outer", K::PinnedJoin).len(), 1);
-    assert_eq!(one(p, "Inner", K::Birth).holder.spine, Spine::Instantiation, "a field of a pinned locus is born off its thread");
+    assert_eq!(one(p, "Inner", K::Birth).holder.spine, Spine::Instantiation, "the field's instantiation runs inside the pinned init");
+    assert_eq!(claimed(p, one(p, "Inner", K::Birth)), labels(&["pinned"]));
     let drain = one(p, "Inner", K::Drain);
     assert_eq!((drain.line, drain.status), (Some("12"), Status::KnownOpen { inventory_row: "C9" }));
     let outer_drain = one(p, "Outer", K::Drain);
@@ -219,7 +220,7 @@ fn a_contract_typed_field_owes_its_drain_before_its_owners() {
 }
 
 /// Line 3: a field nested under a pool-placed field owes its run() to
-/// that pool, and runs it inline today (C12).
+/// that pool, and initializes there inside the anchor's init (C50).
 #[test]
 fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
     let s = snapshot(
@@ -228,7 +229,31 @@ fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
     let p = plan(&s);
     let on = one(p, "Kid", K::Run).runs_on.clone().expect("the table gives it a pool");
     assert!(matches!(&p.domains[on.one().expect("one domain").0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
-    assert_eq!((on.rule.line, on.rule.status), (Some("3"), Status::KnownOpen { inventory_row: "C12" }));
+    assert_eq!(on.rule, Rule::SHIPPED);
+    assert_eq!(claimed(p, one(p, "Kid", K::Birth)), labels(&["pool:side"]));
+    assert!(rows(p, "Kid", K::RunAdmission).is_empty(), "the nested run does not enter the pool queue");
+    assert!(rows(p, "Kid", K::Cancellation).is_empty(), "the nested run is inline, not queued behind the init");
+}
+
+#[test]
+fn an_anchors_params_and_held_delivery_use_its_initialization_domain() {
+    let source = include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_pool_owner_settle.hl");
+    for (placement, domain, birth_domain) in [
+        ("cooperative(pool = side)", "pool:side", "main"),
+        ("pinned", "pinned", "pinned"),
+    ] {
+        let s = snapshot(&source.replace("cooperative(pool = side)", placement));
+        let p = plan(&s);
+        assert_eq!(claimed(p, one(p, "Owner", K::ParamsSettle)), labels(&[domain]));
+        assert_eq!(one(p, "Owner", K::ParamsSettle).holder.domain, DomainRole::Own);
+        assert_eq!(claimed(p, one(p, "Owner", K::Birth)), labels(&[birth_domain]));
+        for kind in [K::Birth, K::Run] {
+            assert_eq!(claimed(p, one(p, "Boom", kind)), labels(&[domain]));
+        }
+        let held = rows(p, "Boom", K::FailureDelivery).into_iter()
+            .find(|o| o.guard == PathGuard::FailedAtSettle).expect("the held alternative");
+        assert_eq!(claimed(p, held), labels(&[domain]));
+    }
 }
 
 /// The labels of the domains a row claims.

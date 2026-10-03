@@ -374,19 +374,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
                 .is_some_and(|d| unlinked.contains(d.lowered.as_str()))
     };
 
-    // Per locus type (the lowered name), the domains its instances run
-    // in, and the rows that decided them.
-    let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut rows_of: BTreeMap<String, Vec<(&InstanceKey, &InstanceRow)>> = BTreeMap::new();
-    for (k, r) in &t.instances {
-        if handed_off.contains(k) {
-            continue;
-        }
-        let Some(d) = &r.realizes else { continue };
-        by_type.entry(d.lowered.clone()).or_default().insert(domain_key(t, r.domain));
-        rows_of.entry(d.lowered.clone()).or_default().push((k, r));
-    }
-    let typed_new: Vec<(String, String)> = by_type.iter().map(|(k, v)| (k.clone(), joined(v))).collect();
     let describe = |k: &InstanceKey, r: &InstanceRow| {
         let own = match k.path.len() {
             0 => "top".to_string(),
@@ -411,19 +398,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             }
         )
     };
-    let type_witness = |seen: &dyn Fn(&InstanceKey, &InstanceRow) -> bool| -> BTreeMap<String, Vec<String>> {
-        rows_of
-            .iter()
-            .map(|(ty, rows)| {
-                let mut w: Vec<String> = rows.iter().map(|(k, r)| describe(k, r)).collect();
-                let causes: BTreeSet<String> =
-                    rows.iter().filter_map(|(k, _)| paths.first_unseen(k, &bundle, top, seen)).collect();
-                w.extend(causes.into_iter().map(|c| format!("cause: {c}")));
-                (ty.clone(), w)
-            })
-            .collect()
-    };
-
     // Owner.field → the declarations the field's rows realize.
     let mut field_decls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (k, r) in &t.instances {

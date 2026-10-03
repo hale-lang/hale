@@ -3942,7 +3942,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// anchor's params: main's queue, as before.
     pub(crate) anchor_route: Option<AnchorRoute<'ctx>>,
     /// True while lowering a pool-placed root's params init
-    /// (`__pool_init_<L>`, inventory C49), which the pool's worker runs:
+    /// (`__pool_init_<L>`, inventory C50), which the pool's worker runs:
     /// a nested cooperative `run()` there runs inline, in the params
     /// loop, as it does everywhere else a params loop runs, instead of
     /// being posted to the pool the worker is on.

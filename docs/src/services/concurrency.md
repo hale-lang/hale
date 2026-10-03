@@ -295,7 +295,11 @@ itself gets it: a `std::time::sleep` there lets the worker handle
 `io`'s queued messages. The pool locus's own `birth()` still runs
 where the literal is, and its `run()` is posted to the worker after
 that, as before. Two locus fields on one pool are built in turn,
-one after the other. The build waits behind whatever the worker is
+one after the other. If the worker is waiting for this constructor
+to settle a held failure, it can perform the initialization during
+that wait, even when its message queue is full. This breaks the
+startup dependency and runs the initialization once on the worker.
+Otherwise the build waits behind whatever the worker is
 already running, so a locus placed after a sibling whose `run()`
 never returns on the same pool (without `where async_io`) is never
 built, and the program stops there.

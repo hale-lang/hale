@@ -95,14 +95,14 @@
 //! asserted to show exactly that profile, so a departure outside it
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
-//! it has been seen to show, and a run shows exactly one of them. 44
-//! cells in five families:
+//! it has been seen to show, and a run shows exactly one of them. The
+//! remaining cells are in four families:
 //! a handler run in place off the owner's domain (C36, L5's), a pinned
 //! locus's fields undrained (C9), a pinned locus's `birth_check` never
 //! evaluated (C38), a contract-typed field drained after its owner's
-//! dissolve (C32), and a field nested under a pool-placed field run
-//! inline off its pool (C12). `handler/grandchild/pinned` shows C9 after its subtree initializes
-//! on the pinned thread; the pool subtree also initializes on its worker (C50).
+//! dissolve (C32). `handler/grandchild/pinned` shows C9 after its subtree
+//! initializes on the pinned thread; the pool subtree initializes on its
+//! worker (C50), closing C12's off-pool nested run.
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -409,12 +409,9 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     ("drain/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
     (
         "drain/grandchild/cross_pool",
-        &[("C36", IN_PLACE), ("C12", NESTED_INLINE)],
-        &[&[RAN_ON_MAIN_FOR_SIDE, RUN_ON_MAIN_FOR_SIDE]],
+        &[("C36", IN_PLACE)],
+        &[&[RAN_ON_MAIN_FOR_SIDE]],
     ),
-    // A field nested under a pool-placed field runs inline.
-    ("run/grandchild/cross_pool", &[("C12", NESTED_INLINE)], &[&[RUN_ON_MAIN_FOR_SIDE]]),
-    ("none/grandchild/cross_pool", &[("C12", NESTED_INLINE)], &[&[RUN_ON_MAIN_FOR_SIDE]]),
     // A pinned locus's own fields.
     ("params_settle/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
     ("birth/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
@@ -467,7 +464,10 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
 /// worker that tears its owner down started on the reclaimed struct, or
 /// a subscriber's was freed unrun and unnamed; each is now canceled by
 /// the teardown, `NotStarted(Acknowledged)` ([`run_canceled`]).
-const REGRESSIONS: &[&str] = &["birth/accepted_child/pool", "handler/root_child/pool"];
+const REGRESSIONS: &[&str] = &[
+    "birth/accepted_child/pool", "handler/root_child/pool",
+    "run/grandchild/cross_pool", "none/grandchild/cross_pool",
+];
 
 const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
 const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main";
@@ -483,9 +483,6 @@ const MID_DRAIN_ORDER: &str = "trace: edge: Mid.Drain.Entered (inst _ inc 0) wit
 
 const CONTRACT_LATE: &str = "an interface- or perspective-typed field is torn down through its recorded reclaim, its whole spine after its owner's dissolve, so `Own`'s drain starts before `Subj`'s (decision line 12)";
 const OWN_DRAIN_ORDER: &str = "trace: edge: Own.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
-
-const NESTED_INLINE: &str = "a field nested under a pool-placed field carries that pool in the placement table, and its run() runs inline on the instantiating thread (decision line 3)";
-const RUN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.Run (inst _ inc 0) ran on main, claimed pool:side";
 
 // Inventory C38 said the check agrees; it is never evaluated on a pinned
 // locus. The checker does not refuse it: L4's birth spine runs the check

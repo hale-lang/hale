@@ -55,7 +55,7 @@
 //! count with both: under a pinned anchor they are the anchor's thread,
 //! since the anchor's subtree initializes there (the review of PR
 //! #1319, correcting U-6), and under a pool anchor its `birth()` is the
-//! pool's worker, since the root's subtree initializes there (C49).
+//! pool's worker, since the root's subtree initializes there (C50).
 //!
 //! The registration route that puts a nested handler on its anchor's
 //! thread (the correspondence's U-6) is pinned at IR level, with the
@@ -71,7 +71,7 @@
 //! the host and for wasm32. A temporary locus of a pinned
 //! default is dissolved when the init ends, on the anchor's thread.
 //!
-//! **The pool side (inventory C49).** A root placed on a worker pool
+//! **The pool side (inventory C50).** A root placed on a worker pool
 //! initializes its subtree on the pool's worker, as the root's first job,
 //! and the instantiating thread waits for it the same way. The review's
 //! program runs under a pool root beside a pinned one, verbatim and
@@ -83,6 +83,11 @@
 //! trip through main, with its negative control. The IR pins the post,
 //! the wait and the run's post in the instantiating function, and the
 //! nested registration and birth in `__pool_init_<L>`.
+//! A worker awaiting its constructor's held-failure decision also runs
+//! a pending init with a full 64-cell ring: the constructor reaches its
+//! readiness wait without needing queue space. Full and empty rings,
+//! under both devirtualization modes and ASan, must initialize once,
+//! deliver the held failure once, and preserve the worker's thread id.
 //!
 //! The outcomes measured today that contradict the spec are listed in
 //! [`KNOWN_OPEN`] and [`KNOWN_OPEN_FLAVORS`], each asserted to FAIL in
@@ -256,7 +261,7 @@ fn expected(case: Case) -> Expect {
 /// inside them: a nested receiver's under a pinned anchor is the
 /// anchor's, since the anchor's subtree initializes on its thread (the
 /// review of PR #1319), and under a pool anchor the pool's worker, since
-/// the anchor's subtree initializes there (C49); a root receiver's is
+/// the anchor's subtree initializes there (C50); a root receiver's is
 /// main's. Under the pool anchor the receiver has no `run()` (its owner
 /// has one), so only its `birth()` is held.
 fn expected_bodies(case: Case) -> Option<Expect> {
@@ -1166,7 +1171,7 @@ fn the_runtime_compiles_for_wasm32() {
     runtime_syntax_check(clang, &["--target=wasm32", "-mbulk-memory", "-Wno-builtin-requires-header"]);
 }
 
-/// The pool side of the startup (inventory C49). A root placed on a
+/// The pool side of the startup (inventory C50). A root placed on a
 /// worker pool initializes its subtree on the pool's worker, as the
 /// first job of that root, and the instantiating thread waits for it as
 /// it waits for a pinned anchor. `Probe`, a root on the same pool with
@@ -1233,14 +1238,14 @@ fn assert_kids_on(stdout: &str, anchor: Anchor, what: &str) -> Vec<i64> {
     anchors
 }
 
-/// The reviewer's startup program (C49) under a pool root and under a
+/// The reviewer's startup program (C50) under a pool root and under a
 /// pinned one, side by side, in both arms and under ASan. Verbatim it
 /// exits 0 with the nested child ready before the root's `run()`; its
 /// witnessing variant measures the thread inside `Kid`'s `birth()`,
 /// handler and `run()`: one thread, the pool's worker under the pool
 /// root, the anchor's own under the pinned one, never main. Before this
 /// correction the pool root's `Kid` ran `birth()` and `run()` on main
-/// while its handler ran on the worker (inventory C49, the review's
+/// while its handler ran on the worker (inventory C50, the review's
 /// measurement).
 #[test]
 fn the_reviewers_program_initializes_a_pool_roots_subtree_on_its_worker() {
@@ -1573,7 +1578,7 @@ fn a_nested_registration_carries_its_anchors_route() {
             "`{handler}` routes to the anchor's pool, by name:\n{line}"
         );
     }
-    // The pool side (C49): the instantiating function creates the start
+    // The pool side (C50): the instantiating function creates the start
     // gate, posts the root's params init to its pool with the argument
     // block, waits for it (draining the program-wide queue), and only
     // then posts the root's run() behind it; the nested receiver is built,

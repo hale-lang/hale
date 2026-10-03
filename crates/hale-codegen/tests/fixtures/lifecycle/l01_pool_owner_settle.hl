@@ -6,9 +6,9 @@
 //
 // `Owner` is placed on pool `side`; its child `Boom` fails while
 // Owner's params are open. Owner's params initialize, and settle, on
-// the pool's worker, as Owner's first job there (inventory C49), so the
+// the pool's worker, as Owner's first job there (inventory C50), so the
 // worker runs the handler; Owner's own birth() follows on the
-// instantiating thread (main). Until C49 closed, the params settled on
+// instantiating thread (main). Until C50 closed, the params settled on
 // main, which ran the handler.
 // The fixture pins what is observable from the program: one delivery,
 // at settle, before Owner's birth(). The thread it ran on is L5's
