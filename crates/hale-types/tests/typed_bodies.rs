@@ -462,3 +462,47 @@ fn main() {
     }
     assert_eq!(calls, 7, "params default, birth, method, three run calls, dissolve");
 }
+
+#[test]
+fn default_call_rows_preserve_one_source_site_for_each_invocation_and_caller_monomorph() {
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+fn show(n: String = to_string(first(value))) { println(n); }
+fn caller<T>(value: T) { show(); }
+fn main() {
+    let value = 42;
+    show();
+    { let value = "text"; show(); }
+    caller(7);
+    caller("other");
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else { panic!("snapshot") };
+    assert!(s.demand_check().unwrap().diags.is_empty());
+    let table = s.demand_typed_bodies().expect("typed rows");
+    let main = table.body(id_of(decl(s.program().unwrap(), "main"))).unwrap();
+    assert_eq!(main.default_calls.len(), 2);
+    let mut source = None;
+    for (evaluation, prim) in main.default_calls.iter().zip([hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String]) {
+        assert_eq!(evaluation.invocations.len(), 1);
+        assert_eq!(evaluation.specialization, None);
+        let (&site, row) = evaluation.calls.iter().next().unwrap();
+        if let Some(id) = source { assert_eq!(site, id); } else { source = Some(site); }
+        let Typed::Known(row) = row else { panic!("{row:?}") };
+        assert_eq!(row.type_args, vec![Ty::Prim(prim)]);
+        assert!(table.monomorphs().of(row.template, &row.type_args).is_some());
+    }
+    assert_ne!(main.default_calls[0].invocations, main.default_calls[1].invocations);
+    let caller = table.body(id_of(decl(s.program().unwrap(), "caller"))).unwrap();
+    assert_eq!(caller.default_calls.len(), 3);
+    let generic = &caller.default_calls[0];
+    assert_eq!(generic.specialization, None);
+    assert!(matches!(generic.calls[&source.unwrap()], Typed::Hole(_)));
+    for prim in [hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String] {
+        let args = vec![Ty::Prim(prim)];
+        let evaluation = caller.default_calls.iter().find(|r| r.specialization.as_ref() == Some(&args)).unwrap();
+        assert_eq!(evaluation.invocations, generic.invocations);
+        assert!(matches!(table.default_generic_call(&evaluation.invocations, Some(&args), NodeId(source.unwrap())), Some(Typed::Known(row)) if row.type_args == args));
+    }
+}

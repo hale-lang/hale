@@ -756,6 +756,13 @@ locus's specialization even when construction happens inside another
 generic function or locus. Specializations discovered in these bodies
 are checked in turn.
 
+Omitted function and method defaults are typed at each invocation in
+the caller's scope. Their generic call rows retain the default's source
+site and distinguish the invocation path and the caller's specialization.
+The same default can therefore use `Int` in one caller and `String` in
+another. Lowering reads the corresponding checked row; supplied arguments
+do not evaluate the default.
+
 **Where the arguments come from.** A struct / locus literal spelled
 with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
 carries no type arguments of its own; it takes them from the

@@ -735,6 +735,8 @@ pub fn check_bundle_by_declaration(
     // the model resolve it. Handed in (phase 2.3): the model reads the
     // same rows.
     let handlers = inputs.handlers;
+    let mut fn_decls: BTreeMap<String, &FnDecl> = BTreeMap::new();
+    let mut locus_decls: BTreeMap<String, &LocusDecl> = BTreeMap::new();
     let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
     let mut generic_types: BTreeMap<String, &TypeDecl> = BTreeMap::new();
     let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
@@ -742,6 +744,19 @@ pub fn check_bundle_by_declaration(
         collect_generic_fns(&program.items, &mut generic_fns);
         collect_generic_types(&program.items, &mut generic_types);
         collect_generic_loci(&program.items, &mut generic_loci);
+    }
+    for program in bundle.programs.values().copied().chain(crate::stdlib_bodies::program()) {
+        for decl in hale_syntax::ast::flat_decls(&program.items) {
+            match decl {
+                TopDecl::Fn(f) => {
+                    fn_decls.entry(f.name.name.clone()).or_insert(f);
+                }
+                TopDecl::Locus(l) => {
+                    locus_decls.entry(l.name.name.clone()).or_insert(l);
+                }
+                _ => {}
+            }
+        }
     }
     let mut cx = Checker {
         top,
@@ -759,6 +774,9 @@ pub fn check_bundle_by_declaration(
         or_value_discarded: false,
         generic_params: Vec::new(),
         generic_fns,
+        fn_decls,
+        locus_decls,
+        default_invocations: Vec::new(),
         generic_types,
         generic_loci,
         handlers,
@@ -7130,6 +7148,10 @@ struct Checker<'a> {
     /// args must match the substituted params — and the call types
     /// as the SUBSTITUTED return instead of Unknown.
     generic_fns: BTreeMap<String, &'a FnDecl>,
+    /// Declarations whose omitted defaults are evaluated in the caller.
+    fn_decls: BTreeMap<String, &'a FnDecl>,
+    locus_decls: BTreeMap<String, &'a LocusDecl>,
+    default_invocations: Vec<u32>,
     /// GH #877: the generic parameters of the declaration being
     /// checked — a fn's `<T>`, a generic `type`'s. They name no
     /// top-level declaration and resolve to `Ty::Unknown` by design,
@@ -11252,16 +11274,6 @@ impl<'a> Checker<'a> {
             let payload = self.resolve_te(payload_te);
             self.fallible_ctx = Some((success_ret, payload));
         }
-        // Defaults are evaluated in the caller's scope. Record the
-        // source's call rows without adding declaration-time diagnostics:
-        // a name only the caller supplies remains a located typed hole.
-        let mark = self.diags.len();
-        for p in &decl.params {
-            if let Some(default) = &p.default {
-                let _ = self.check_expr(default);
-            }
-        }
-        self.diags.truncate(mark);
         self.locals.push();
         for p in &decl.params {
             let ty = self.resolve_te(&p.ty);
@@ -13928,6 +13940,59 @@ impl<'a> Checker<'a> {
         nearest_qualified_segment(head, &types)
     }
 
+    /// Defaults are expressions at the invocation, with the caller's
+    /// locals and self. Record their generic calls under the invocation
+    /// path and caller monomorph, retaining each default's source site.
+    fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
+        if self.default_invocations.contains(&invocation.0) {
+            return;
+        }
+        let decl = match callee {
+            Expr::Ident(id) => self.fn_decls.get(&id.name).copied(),
+            Expr::Path(path) => {
+                let key = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
+                self.known.import_target(&key.join("::"))
+                    .or_else(|| crate::stdlib_bodies::mangled_locus_name(&key))
+                    .and_then(|name| self.fn_decls.get(name).copied())
+            }
+            Expr::Field { receiver, name, .. } => {
+                let mark = self.diags.len();
+                let ty = self.check_expr(receiver);
+                self.diags.truncate(mark);
+                let locus = match ty {
+                    Ty::Named(ref n) => self.locus_decls.get(n).copied().or_else(|| {
+                        let mono = self.typed.monomorphs.named(n)?;
+                        match self.templates.get(mono.template)? {
+                            GenericTemplate::Locus(l) => Some(l),
+                            _ => None,
+                        }
+                    }),
+                    _ => None,
+                };
+                locus.and_then(|l| l.members.iter().find_map(|m| match m {
+                    LocusMember::Fn(f) if f.name.name == name.name => Some(f),
+                    _ => None,
+                }))
+            }
+            _ => None,
+        };
+        let Some(decl) = decl else { return };
+        let defaults: Vec<&Expr> = decl.params.iter().skip(supplied)
+            .filter_map(|p| p.default.as_ref()).collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let mark = self.diags.len();
+        self.default_invocations.push(invocation.0);
+        for default in defaults {
+            let _ = self.check_expr(default);
+        }
+        self.default_invocations.pop();
+        // Preserve the existing default-diagnostic surface. Located
+        // holes remain facts and are refused by the row consumer.
+        self.diags.truncate(mark);
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Ty {
         use crate::typed_bodies::Handling;
         let handling = std::mem::replace(&mut self.next_handling, Handling::Bare);
@@ -14054,6 +14119,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, id: call_id, .. } => {
+                self.record_omitted_defaults(*call_id, callee, args.len());
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
                 // every way a program reaches a namespace, not only a
@@ -14651,12 +14717,19 @@ impl<'a> Checker<'a> {
                                 });
                             }
                         }
-                        match &self.specializing {
-                            Some(args) => {
-                                let args = args.clone();
-                                self.typed.specialized_generic_call(self.body, args, *call_id, row);
+                        if !self.default_invocations.is_empty() {
+                            self.typed.default_generic_call(
+                                self.body, &self.default_invocations,
+                                self.specializing.clone(), *call_id, row,
+                            );
+                        } else {
+                            match &self.specializing {
+                                Some(args) => {
+                                    let args = args.clone();
+                                    self.typed.specialized_generic_call(self.body, args, *call_id, row);
+                                }
+                                None => self.typed.generic_call(self.body, *call_id, row),
                             }
-                            None => self.typed.generic_call(self.body, *call_id, row),
                         }
                         // Args vs substituted params.
                         for ((p, at), a) in template

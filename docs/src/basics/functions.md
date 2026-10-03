@@ -84,6 +84,12 @@ call and a `Holder<String>` uses the `String` call. Binding the field
 to a local first has the same result. Params defaults use the type
 arguments of the locus declaring them.
 
+Function and method defaults use the caller's scope at each invocation.
+If a default calls `first(value)`, one caller can supply an `Int` binding
+named `value` and another can supply a `String` binding. The compiler
+keeps a separate checked call row for each invocation and caller
+specialization, including defaults that call other defaulted functions.
+
 ## Functions are values
 
 A function has a type — `fn(Int, Int) -> Int` — and you can pass

@@ -1440,6 +1440,8 @@ pub fn build_resolved(
         bindings: &resolved.bindings,
         typed: &resolved.typed,
         current_specialization: None,
+        current_call: None,
+        default_invocations: Vec::new(),
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3246,6 +3248,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// site and its type arguments, under which the table holds the
     /// rows of the generic calls its body makes.
     pub(crate) current_specialization: Option<(hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)>,
+    /// Source invocation whose omitted defaults are being lowered.
+    current_call: Option<NodeId>,
+    default_invocations: Vec<u32>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -11892,8 +11897,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // overrides keep the caller's context. No type is inferred here.
         // NodeId structural equality ignores metadata; compare the raw
         // source identities when choosing a specialization.
+        let context = self.default_invocations.first().map(|id| NodeId(*id)).unwrap_or(call);
         let fn_specialization = self.current_specialization.as_ref().filter(|(body, _)| {
-            self.typed.generic_call_body(call).map(|id| id.0) == Some(body.0)
+            self.typed.generic_call_body(context).map(|id| id.0) == Some(body.0)
         });
         let locus = if self.in_params_default {
             self.params_init_self.as_ref().or(self.current_self.as_ref())
@@ -11903,11 +11909,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let locus_specialization = locus
             .and_then(|l| self.typed.monomorphs().named(&l.locus_name))
             .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus
-                && self.typed.generic_call_locus(call).map(|id| id.0) == Some(m.template.0));
-        let row = match (fn_specialization, locus_specialization) {
-            (Some((body, args)), _) => self.typed.specialized_generic_call(*body, args, call),
-            (None, Some(m)) => self.typed.specialized_generic_call_at(&m.args, call),
-            (None, None) => self.typed.generic_call(call),
+                && self.typed.generic_call_locus(context).map(|id| id.0) == Some(m.template.0));
+        let row = if self.default_invocations.is_empty() {
+            match (fn_specialization, locus_specialization) {
+                (Some((body, args)), _) => self.typed.specialized_generic_call(*body, args, call),
+                (None, Some(m)) => self.typed.specialized_generic_call_at(&m.args, call),
+                (None, None) => self.typed.generic_call(call),
+            }
+        } else {
+            let args = fn_specialization.map(|(_, args)| args.as_slice())
+                .or_else(|| locus_specialization.map(|m| m.args.as_slice()));
+            self.typed.default_generic_call(&self.default_invocations, args, call)
         };
         let row = match row {
             Some(Typed::Known(row)) => row,
@@ -14385,6 +14397,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_method_scratch = self.current_method_scratch.take();
             let saved_method_caller = self.current_method_caller_arena.take();
             let saved_fallible = self.current_user_fn_fallible.take();
+            let saved_defaults = std::mem::take(&mut self.default_invocations);
+            let saved_call = self.current_call.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
@@ -14428,6 +14442,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_method_scratch = saved_method_scratch;
             self.current_method_caller_arena = saved_method_caller;
             self.current_user_fn_fallible = saved_fallible;
+            self.default_invocations = saved_defaults;
+            self.current_call = saved_call;
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
@@ -14824,7 +14840,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // arbitrary expressions they execute in the caller's
                 // scope (matching the interpreter's semantics).
                 let default = sig.defaults[i].as_ref().expect("checked above");
-                self.lower_expr(default, scope)?
+                self.lower_default_in_caller(default, scope)?
             };
             // F.20 Phase B: implicit locus → interface coercion. If
             // the param is an Interface and the arg is a LocusRef
@@ -16242,6 +16258,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn lower_stmt_inner(
+        &mut self,
+        stmt: &Stmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let previous = self.current_call;
+        if let Stmt::Expr(expr) = stmt {
+            if let Some(call) = Self::invocation_id(expr) {
+                self.current_call = Some(call);
+            }
+        }
+        let result = self.lower_stmt_at(stmt, scope);
+        self.current_call = previous;
+        result
+    }
+
+    fn lower_stmt_at(
         &mut self,
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
@@ -22308,7 +22340,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
+    fn invocation_id(expr: &Expr) -> Option<NodeId> {
+        match expr {
+            Expr::Call { id, .. } => Some(*id),
+            Expr::Or { inner, .. } => Self::invocation_id(inner),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn lower_default_in_caller(
+        &mut self,
+        default: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let call = self.current_call.ok_or_else(|| CodegenError::UnsupportedAt(
+            "function default has no source invocation".into(), default.span(),
+        ))?;
+        if self.default_invocations.contains(&call.0) {
+            return Err(CodegenError::UnsupportedAt("recursive function default evaluation".into(), default.span()));
+        }
+        self.default_invocations.push(call.0);
+        let result = self.lower_expr(default, scope);
+        self.default_invocations.pop();
+        result
+    }
+
     pub(crate) fn lower_expr(
+        &mut self,
+        e: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let previous = self.current_call;
+        if let Some(call) = Self::invocation_id(e) {
+            self.current_call = Some(call);
+        }
+        let result = self.lower_expr_at(e, scope);
+        self.current_call = previous;
+        result
+    }
+
+    fn lower_expr_at(
         &mut self,
         e: &Expr,
         scope: &Scope<'ctx>,
@@ -28259,7 +28330,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 let default_expr =
                     sig.params[i].default.as_ref().expect("checked above");
-                self.lower_expr(default_expr, scope)?
+                self.lower_default_in_caller(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             // 2026-05-18 — locus → interface coercion at self-method
@@ -28757,7 +28828,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             locus_name, method_name, sig.params[i].name.name
                         ))
                     })?;
-                self.lower_expr(default_expr, scope)?
+                self.lower_default_in_caller(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             // 2026-05-18 — locus → interface coercion at locus-method

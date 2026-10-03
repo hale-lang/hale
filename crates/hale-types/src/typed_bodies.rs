@@ -22,7 +22,9 @@
 //!    `mean(x)` of its assertion, in [`accumulator_sites`]' order,
 //!    with the element type the checker gave `x`.
 //! 2. `generic_calls`, per call site of a generic fn: the inferred type
-//!    arguments and the unified parameter types.
+//!    arguments and the unified parameter types. An omitted function or
+//!    method default also records its invocation path and the caller's
+//!    specialization, keeping the default expression's source site.
 //! 3. `monomorphs`, one table per snapshot: template site x type
 //!    arguments -> the specialization, for every generic fn a call
 //!    instantiates and every generic type or locus a type expression
@@ -210,6 +212,16 @@ pub struct FallibleCall {
     pub handled: Handling,
 }
 
+/// Generic calls in defaults evaluated by one caller. Source sites
+/// stay unchanged; the invocation path distinguishes repeated expansion
+/// of a default, and the caller's arguments distinguish its monomorphs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefaultCalls {
+    pub invocations: Vec<u32>,
+    pub specialization: Option<Vec<Ty>>,
+    pub calls: BTreeMap<u32, Typed<GenericCall>>,
+}
+
 /// The rows of one body.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypedBody {
@@ -228,6 +240,7 @@ pub struct TypedBody {
     /// enclosing template's monomorphs, by their type arguments, typed with the
     /// template's parameters bound to them.
     pub specialized_generic_calls: Vec<(Vec<Ty>, BTreeMap<u32, Typed<GenericCall>>)>,
+    pub default_calls: Vec<DefaultCalls>,
     /// By call site.
     pub fallible_calls: BTreeMap<u32, FallibleCall>,
 }
@@ -400,6 +413,27 @@ impl TypingRecord {
         self.bodies.entry(decl.0).or_default()
     }
 
+    /// Record a default's call under the caller, without changing the
+    /// default expression's lexical source identity.
+    pub fn default_generic_call(
+        &mut self, body: NodeId, invocations: &[u32],
+        specialization: Option<Vec<Ty>>, call: NodeId, row: Typed<GenericCall>,
+    ) {
+        if call.is_none() || invocations.is_empty() {
+            return;
+        }
+        self.sites.insert(invocations[0], body.0);
+        let rows = &mut self.body(body).default_calls;
+        let at = match rows.iter().position(|r| r.invocations == invocations && r.specialization == specialization) {
+            Some(i) => i,
+            None => {
+                rows.push(DefaultCalls { invocations: invocations.to_vec(), specialization, calls: BTreeMap::new() });
+                rows.len() - 1
+            }
+        };
+        rows[at].calls.insert(call.0, row);
+    }
+
     pub fn generic_call(&mut self, body: NodeId, call: NodeId, row: Typed<GenericCall>) {
         if call.is_none() {
             return;
@@ -487,6 +521,17 @@ impl TypedBodies {
     /// The generic locus declaring this call's source body, if any.
     pub fn generic_call_locus(&self, call: NodeId) -> Option<NodeId> {
         self.body(self.generic_call_body(call)?)?.enclosing_locus
+    }
+
+    /// A default's generic call evaluated along this invocation path,
+    /// in the first invocation's caller and its concrete specialization.
+    pub fn default_generic_call(
+        &self, invocations: &[u32], specialization: Option<&[Ty]>, call: NodeId,
+    ) -> Option<&Typed<GenericCall>> {
+        let body = self.generic_call_body(NodeId(*invocations.first()?))?;
+        self.body(body)?.default_calls.iter()
+            .find(|r| r.invocations == invocations && r.specialization.as_deref() == specialization)?
+            .calls.get(&call.0)
     }
 
     /// A generic call's concrete row, in its owning body, for the
