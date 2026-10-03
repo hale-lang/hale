@@ -241,8 +241,8 @@ fn own_scope_let_block_scope_test() {
         assert_eq!(
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 438 fns, 34 entry points, 114 invoked-unboundedly",
-                "+ # 438 fns, 34 entry points, 113 invoked-unboundedly",
+                "- # 439 fns, 34 entry points, 114 invoked-unboundedly",
+                "+ # 439 fns, 34 entry points, 113 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -568,7 +568,7 @@ fn own_entries_run_to_exit_programs() {
         assert_eq!(copy, 21, "{t}: the copy's leak sites");
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
     }
-    assert_eq!(moved, 78, "the run-to-exit programs among the targets");
+    assert_eq!(moved, 79, "the run-to-exit programs among the targets");
     assert_eq!(
         own,
         [

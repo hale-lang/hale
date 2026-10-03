@@ -333,7 +333,7 @@ model	M-7	Aggregator	correction	4	crates/hale-codegen/tests/fixtures/examples/30
 model	M-7	AggregatorL	correction	4	crates/hale-codegen/tests/fixtures/examples/04-modes/main.hl
 model	M-7	Alpha	correction	1	crates/hale-types/tests/violate.rs
 model	M-7	AlphaL	correction	1	crates/hale-codegen/tests/form_vec_codegen.rs
-model	M-7	Api	correction	10	crates/hale-cli/tests/effects_manifest.rs
+model	M-7	Api	correction	11	crates/hale-cli/tests/effects_manifest.rs
 model	M-7	App	correction	19	crates/hale-cli/tests/topology_v2.rs
 model	M-7	AppL	correction	6	crates/hale-codegen/tests/fixtures/examples/multi-file-seed/main.hl
 model	M-7	ApplierL	correction	1	crates/hale-codegen/tests/fixtures/examples/fitter-applier-demo/main.hl
@@ -524,7 +524,7 @@ model	M-7	PoolHostL	correction	2	crates/hale-codegen/tests/f22_capacity_dispatch
 model	M-7	PracticeProvenanceCases	correction	1	dna/operations/tests/practice_provenance_test.hl
 model	M-7	Printer	correction	1	tests/hale/bus_static_wide_payload_test.hl
 model	M-7	Probe	correction	4	crates/hale-cli/tests/run_scratch_is_private.rs
-model	M-7	Proc	correction	8	tests/hale/api_big_reply_test.hl
+model	M-7	Proc	correction	9	tests/hale/api_big_reply_test.hl
 model	M-7	Producer	correction	24	crates/hale-codegen/tests/fixtures/examples/30-stats/main.hl
 model	M-7	Proof	correction	1	dna/face/examples/intake-control/tests/provider_test.hl
 model	M-7	Provider	correction	2	crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl
@@ -642,7 +642,7 @@ model	M-7	__StdHttpRouter	correction	8	crates/hale-codegen/tests/fixtures/exampl
 model	M-7	__StdHttpServer	correction	3	crates/hale-codegen/tests/http_server_memory.rs
 model	M-7	__StdIoMirrorRing	correction	2	crates/hale-codegen/tests/mirror_ring.rs
 model	M-7	__StdIoTcpListener	correction	3	crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl
-model	M-7	__StdIoTcpStream	correction	15	crates/hale-codegen/tests/io_tcp_recv_timeout.rs
+model	M-7	__StdIoTcpStream	correction	16	crates/hale-codegen/tests/io_tcp_recv_timeout.rs
 model	M-7	__StdIterLines	correction	5	crates/hale-codegen/tests/stdlib_iter.rs
 model	M-7	__StdJsonBuilder	correction	7	crates/hale-codegen/tests/stdlib_json.rs
 model	M-7	__StdLogLogger	correction	7	crates/hale-codegen/tests/drain_elision.rs
@@ -651,7 +651,7 @@ model	M-7	__StdMetricsHistogramList	correction	2	crates/hale-codegen/tests/stdli
 model	M-7	__StdMetricsMap	correction	2	crates/hale-codegen/tests/stdlib_metrics.rs
 model	M-7	__StdMetricsRegistry	correction	2	crates/hale-codegen/tests/stdlib_metrics.rs
 model	M-7	__StdNameConvention	correction	4	crates/hale-codegen/tests/stdlib_name.rs
-model	M-7	__StdProcessChild	correction	29	crates/hale-cli/tests/run_reports_signal.rs
+model	M-7	__StdProcessChild	correction	30	crates/hale-cli/tests/run_reports_signal.rs
 model	M-7	__StdSecretCredential	correction	4	crates/hale-cli/tests/harness_vault.rs
 model	M-7	__StdTaggedAccumulator	correction	6	crates/hale-codegen/tests/stdlib_tagged.rs
 model	M-7	__StdTermRawMode	correction	1	crates/hale-codegen/tests/term_primitives.rs

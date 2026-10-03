@@ -62,9 +62,15 @@ fn __api_local_context() -> std::api::Context {
 // of the supplementary groups the kernel holds for the connection),
 // `user:<name>` or `group:<name>` (resolved once, at birth, per the
 // host's account database; an unknown name is reported and holds
-// nobody) or `*` (any authenticated peer). A principal the binding
-// could not authenticate (uid -1) holds no role whatever the table
-// says.
+// nobody), `bearer:<name>` (a bearer principal on the HTTP transport
+// whose source named it exactly <name>; never resolved, since the name
+// is the source's) or `*` (any authenticated caller: a socket peer the
+// kernel vouches for, or a bearer principal its source named). The two
+// transports' members never cross: `bearer:` matches no socket peer,
+// and `uid:`/`gid:`/`user:`/`group:` match no bearer principal, so a
+// Unix account and a token subject spelled alike stay two identities.
+// A principal the binding could not authenticate (a peer with uid -1, a
+// bearer with no name) holds no role whatever the table says.
 
 /// A membership source: the binding asks, the deployment answers.
 interface __StdApiRoleSource {
@@ -98,7 +104,7 @@ locus __StdApiNoBearer {
 
 /// The static table, from the environment's `roles` section. Its birth
 /// refuses (and the process exits, saying why) a table that names a
-/// role the program does not declare or a member outside the five
+/// role the program does not declare or a member outside the six
 /// spellings — the rule `hale.toml` is held to, applied to
 /// `LOTUS_API_ROLES` as well, since the table travels as one line.
 locus __StdApiStaticRoles {
@@ -120,7 +126,7 @@ locus __StdApiStaticRoles {
         self.table = __api_resolve_role_names(self.table);
     }
     fn holds(p: std::api::Principal, r: String) -> Bool {
-        if p.uid < 0 {
+        if !__api_authenticated(p) {
             return false;
         }
         let mut rest = self.table;
@@ -161,8 +167,8 @@ fn __api_chars_ok(s: String, extra: String) -> Bool {
 
 /// Why a table is refused ("" when it is not): a key must be a declared
 /// role (an identifier), a member one of `uid:<n>`, `gid:<n>`,
-/// `user:<name>`, `group:<name>` (an account name: letters, digits,
-/// `.`, `_`, `-`, `@`, at most 64) or `*`.
+/// `user:<name>`, `group:<name>`, `bearer:<name>` (a name: letters,
+/// digits, `.`, `_`, `-`, `@`, at most 64) or `*`.
 @unbounded
 fn __api_table_refusal(table: String, known: String) -> String {
     let mut rest = table;
@@ -210,16 +216,31 @@ fn __api_table_refusal(table: String, known: String) -> String {
             if std::str::starts_with(m, "group:") {
                 ok = __api_chars_ok(m[6..len(m)], "._-@") && len(m) <= 70;
             }
+            if std::str::starts_with(m, "bearer:") {
+                ok = __api_chars_ok(m[7..len(m)], "._-@") && len(m) <= 71;
+            }
             if !ok {
-                return "role `" + role + "`: `" + m + "` is not a role member (uid:<n>, gid:<n>, user:<name>, group:<name> or *)";
+                return "role `" + role + "`: `" + m + "` is not a role member (uid:<n>, gid:<n>, user:<name>, group:<name>, bearer:<name> or *)";
             }
         }
     }
     return "";
 }
 
-/// One role's member list against a principal.
+/// Whether the binding knows who `p` is: a bearer principal its source
+/// named, or any other principal with credentials the kernel vouched for.
+fn __api_authenticated(p: std::api::Principal) -> Bool {
+    if p.mode == "bearer" {
+        return len(p.name) > 0;
+    }
+    return p.uid >= 0;
+}
+
+/// One role's member list against an authenticated principal: `*` is
+/// anyone, `bearer:` matches only a bearer principal, the account
+/// spellings only a socket peer.
 fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
+    let bearer = p.mode == "bearer";
     let mut rest = members;
     while len(rest) > 0 {
         let comma = std::str::index_of(rest, ",");
@@ -233,6 +254,12 @@ fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
         m = std::str::trim(m);
         if m == "*" {
             return true;
+        }
+        if bearer {
+            if std::str::starts_with(m, "bearer:") && m[7..len(m)] == p.name {
+                return true;
+            }
+            continue;
         }
         if std::str::starts_with(m, "uid:") {
             let n = std::str::parse_int(m[4..len(m)]) or - 1;

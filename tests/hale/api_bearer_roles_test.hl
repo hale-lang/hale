@@ -1,0 +1,223 @@
+// The role table grants roles to bearer callers.
+//
+// spec/semantics.md § "Roles and @gated" (the api binding): the stdlib's
+// `std::api::StaticRoles` matches `*` against any authenticated caller on
+// either transport — a socket peer the kernel vouches for, a bearer
+// principal the program's `BearerSource` named — and `bearer:<name>`
+// against a bearer principal named exactly that, never a socket peer;
+// `uid:`/`gid:`/`user:`/`group:` never match a bearer principal, even one
+// whose name or uid reads the same. A token the source names nobody is
+// refused before any gate. The table arrives as `LOTUS_API_ROLES`, and
+// its birth refuses a misspelled prefix as it refuses any other member
+// outside the spellings.
+
+// A desk with one gated command, on the socket and over HTTP. `t-me` is a
+// token whose subject is spelled as this host's account and carries its
+// uid: still a bearer, never that account.
+fn app_source(sock: String, port: Int, me_name: String, me: String) -> String {
+    return "role support;\n"
+        + "type Refund { amount: Int; }\n"
+        + "type Done { by: String; role: String; }\n"
+        + "topic Refunds { payload: Refund; subject: \"desk.refund\"; }\n"
+        + "locus Tokens {\n"
+        + "    fn principal(token: String) -> std::api::Principal {\n"
+        + "        if token == \"t-alice\" { return std::api::Principal { mode: \"bearer\", name: \"alice\" }; }\n"
+        + "        if token == \"t-bob\" { return std::api::Principal { mode: \"bearer\", name: \"bob\" }; }\n"
+        + "        if token == \"t-me\" { return std::api::Principal { mode: \"bearer\", name: \"" + me_name + "\", uid: " + me + " }; }\n"
+        + "        return std::api::Principal { mode: \"bearer\", name: \"\" };\n"
+        + "    }\n"
+        + "    fn refused() -> String { return \"no such token\"; }\n"
+        + "}\n"
+        + "locus Desk {\n"
+        + "    bus { subscribe Refunds as on_refund; }\n"
+        + "    @gated(role: support)\n"
+        + "    fn on_refund(r: Refund, ctx: std::api::Context) -> Done {\n"
+        + "        return Done { by: ctx.caller.name, role: ctx.role };\n"
+        + "    }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    params { desk: Desk = Desk { }; }\n"
+        + "    placement { desk: cooperative(pool = work) where async_io; }\n"
+        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse), http(\"127.0.0.1\", " + to_string(port) + ", principals: Tokens { }); }\n"
+        + "    run() { while !self.draining { std::time::sleep(100ms); } }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    // The child's exit code, waited for (bounded); -1 when it did not exit.
+    fn exit_code() -> Int {
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stderr(self.child) or "");
+                return code;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stderr(self.child) or "");
+                return;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+locus Api {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+
+    fn connect(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 10s) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        return true;
+    }
+
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let mut i = 0;
+        while i < 25 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                i = i + 1;
+            } else {
+                self.buf = self.buf + chunk;
+            }
+        }
+        return "";
+    }
+}
+
+fn run_tool(argv: String) -> std::process::ProcessOutput {
+    return std::process::run(argv)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+fn has(s: String, needle: String) -> Bool {
+    return std::str::contains(s, needle);
+}
+
+// One POST of a refund under a bearer token: the body, then the status.
+fn post_refund(base: String, token: String) -> String {
+    return std::str::trim(run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer " + token + "\n--data\n{\"call\":\"Refunds\",\"payload\":{\"amount\":5}}\n" + base + "/").stdout);
+}
+
+// The same refund as one line of the socket's wire.
+fn refund_line() -> String {
+    return "{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"amount\":5}}";
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let me = std::str::trim(run_tool("id\n-u").stdout);
+    let me_name = std::str::trim(run_tool("id\n-un").stdout);
+    let tag = to_string(std::process::pid());
+    let sock = "/tmp/hale-bearer-roles-" + tag + ".sock";
+    // a port for the HTTP transport: bound and closed here, so it is free
+    let mut port = 30000 + (std::process::pid() * 11 + 3) % 17000;
+    let mut probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    while probe < 0 { port = port + 1; probe = std::io::tcp::__listen_socket("127.0.0.1", port); }
+    std::io::tcp::__close_fd(probe);
+    let base = "http://127.0.0.1:" + to_string(port);
+    let src = std::io::fs::mktemp("/tmp/hale-bearer-roles-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, app_source(sock, port, me_name, me)) or discard;
+    let built = run_tool(hale + "\nbuild\n" + src);
+    std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
+    let bin = src[0..(len(src) - 3)];
+
+    // `*`: a bearer the source names and a socket peer both hold the
+    // role; a token the source names nobody is refused before the gate.
+    let a = Proc { };
+    std::test::assert(a.start("env\nLOTUS_API_ROLES=support=*\n" + bin), "the app started under support=*");
+    let api = Api { };
+    std::test::assert(api.connect(sock), "connected to " + sock);
+    let a1 = post_refund(base, "t-alice");
+    std::test::assert(std::str::ends_with(a1, "200") && has(a1, "\"by\":\"alice\",\"role\":\"support\"") && has(a1, "},\"role\":\"support\"}"), "`*` grants a bearer its source named, and the receipt names the role: " + a1);
+    let a2 = api.ask(refund_line());
+    std::test::assert(has(a2, "\"ok\":true") && has(a2, "},\"role\":\"support\"}") && has(a2, "\"caller\":{\"mode\":\"unix\""), "`*` grants a socket peer: " + a2);
+    let a3 = post_refund(base, "t-mallory");
+    std::test::assert(std::str::ends_with(a3, "401") && has(a3, "\"kind\":\"unauthenticated\"") && !has(a3, "support"), "`*` grants no token the source names nobody: " + a3);
+    a.stop();
+    std::io::fs::unlink(sock) or discard;
+
+    // `bearer:<name>`: alice over HTTP holds it; bob does not; and a
+    // socket peer whose account carries a named bearer's spelling does
+    // not either — the table names this host's account as a bearer.
+    let b = Proc { };
+    std::test::assert(b.start("env\nLOTUS_API_ROLES=support=bearer:alice,bearer:" + me_name + "\n" + bin), "the app started under bearer members");
+    let api2 = Api { };
+    std::test::assert(api2.connect(sock), "connected under bearer members");
+    let b1 = post_refund(base, "t-alice");
+    std::test::assert(std::str::ends_with(b1, "200") && has(b1, "\"by\":\"alice\",\"role\":\"support\"") && has(b1, "},\"role\":\"support\"}"), "bearer:alice grants alice over HTTP: " + b1);
+    let b2 = post_refund(base, "t-bob");
+    std::test::assert(std::str::ends_with(b2, "404") && has(b2, "\"kind\":\"unknown\"") && !has(b2, "support"), "bearer:alice refuses bob: " + b2);
+    let b3 = api2.ask(refund_line());
+    std::test::assert(has(b3, "\"kind\":\"unknown\"") && !has(b3, "support"), "bearer:" + me_name + " refuses the socket peer whose account is " + me_name + ": " + b3);
+    let b4 = post_refund(base, "t-me");
+    std::test::assert(std::str::ends_with(b4, "200") && has(b4, "\"role\":\"support\""), "the bearer the source names " + me_name + " holds it: " + b4);
+    b.stop();
+    std::io::fs::unlink(sock) or discard;
+
+    // `user:` and `uid:` name this host's account: the socket peer holds
+    // the role, the bearer spelled the same (and carrying the uid) does not.
+    let c = Proc { };
+    std::test::assert(c.start("env\nLOTUS_API_ROLES=support=user:" + me_name + ",uid:" + me + "\n" + bin), "the app started under account members");
+    let api3 = Api { };
+    std::test::assert(api3.connect(sock), "connected under account members");
+    let c1 = post_refund(base, "t-me");
+    std::test::assert(std::str::ends_with(c1, "404") && has(c1, "\"kind\":\"unknown\""), "user:" + me_name + " and uid:" + me + " refuse a bearer named " + me_name + ": " + c1);
+    let c2 = api3.ask(refund_line());
+    std::test::assert(has(c2, "\"ok\":true") && has(c2, "},\"role\":\"support\"}"), "the socket peer holds it by its account: " + c2);
+    c.stop();
+    std::io::fs::unlink(sock) or discard;
+
+    // A misspelled prefix is still no member: the binding refuses to
+    // start, and the reason lists the spellings, bearer's included.
+    let d = Proc { };
+    std::test::assert(d.start("env\nLOTUS_API_ROLES=support=barer:alice\n" + bin), "started under a misspelled prefix");
+    std::test::assert_eq_int(d.exit_code(), 2, "a misspelled prefix refuses to start: " + d.out);
+    std::test::assert(has(d.out, "`barer:alice` is not a role member") && has(d.out, "bearer:<name>"), "and says which, naming the spellings: " + d.out);
+    let e = Proc { };
+    std::test::assert(e.start("env\nLOTUS_API_ROLES=support=bearer:a b\n" + bin), "started under a bearer name with a blank");
+    std::test::assert_eq_int(e.exit_code(), 2, "a bearer name is held to the name characters: " + e.out);
+    std::io::fs::unlink(sock) or discard;
+    std::io::fs::unlink(bin) or discard;
+    std::io::fs::unlink(src) or discard;
+}

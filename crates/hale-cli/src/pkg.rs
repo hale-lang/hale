@@ -186,7 +186,8 @@ pub struct EnvSpec {
     #[serde(default)]
     pub entrypoints: Vec<String>,
     /// GH #1109: `[environments.<name>.roles]` — who holds which
-    /// role here, `role = ["uid:1000", "group:ops", "user:riley"]`.
+    /// role here, `role = ["uid:1000", "group:ops", "user:riley",
+    /// "bearer:front-desk"]`.
     /// The requirement is form (`@gated(role:)` on the operation);
     /// this is the params half. A role mapped to `[]` is explicitly
     /// nobody, which `--matrix` accepts; an absent role it does not.
@@ -199,7 +200,15 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
     if m == "*" {
         return Ok(());
     }
-    for (prefix, numeric) in [("uid:", true), ("gid:", true), ("user:", false), ("group:", false)] {
+    // `bearer:<name>` is a name the program's bearer source answers, not an
+    // account: never resolved, but held to the same characters.
+    for (prefix, numeric) in [
+        ("uid:", true),
+        ("gid:", true),
+        ("user:", false),
+        ("group:", false),
+        ("bearer:", false),
+    ] {
         if let Some(rest) = m.strip_prefix(prefix) {
             if rest.is_empty() {
                 return Err(format!("`{}` names nothing after `{}`", m, prefix));
@@ -207,13 +216,14 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
             if numeric && rest.parse::<u64>().is_err() {
                 return Err(format!("`{}` is not `{}<number>`", m, prefix));
             }
-            // The table travels as one line the binding re-splits, so an
-            // account name is confined to what an account name is:
-            // never `;`, `,`, `=`, blanks or control characters.
+            // The table travels as one line the binding re-splits, so a
+            // name is confined to what an account name is: never `;`,
+            // `,`, `=`, blanks or control characters.
             if !numeric && !account_name_ok(rest) {
                 return Err(format!(
-                    "`{}` is not an account name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
-                    m
+                    "`{}` is not {} name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
+                    m,
+                    if prefix == "bearer:" { "a bearer" } else { "an account" }
                 ));
             }
             return Ok(());
@@ -221,7 +231,7 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
     }
     Err(format!(
         "`{}` is not a role member: write `uid:<n>`, `gid:<n>`, `user:<name>`, \
-         `group:<name>` or `*` (any authenticated peer)",
+         `group:<name>`, `bearer:<name>` or `*` (any authenticated caller)",
         m
     ))
 }
