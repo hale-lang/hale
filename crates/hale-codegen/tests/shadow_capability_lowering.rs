@@ -675,6 +675,9 @@ const SITES: &[(&str, &str, Reads)] = &[
     ("crates/hale-codegen/src/stdlib/time.rs", "let entry_draining = if self.is_wasm { ⏎ None", Reads::Obligations(&[Obligation::DrainTerm])),
     ("crates/hale-codegen/src/locus/instantiation.rs", "if is_main_locus && !self.is_wasm { ⏎ let start_fn = self", Reads::Obligations(&[Obligation::ReplayIngress])),
     ("crates/hale-codegen/src/locus/instantiation.rs", "if !self.is_wasm { ⏎ self.emit_bus_ingress_quiesce()?;", Reads::Obligations(&[Obligation::IngressQuiesce])),
+    // Pool params initialize on their worker; wasm's single thread has
+    // no PoolThreads capability and performs no worker initialization.
+    ("crates/hale-codegen/src/locus/instantiation.rs", "let pool_init = if on_pinned || self.is_wasm { None } else { pool_anchor.clone() }; ⏎ let thread_init = on_pinned || pool_init.is_some();", Reads::Behaviour(Capability::PoolThreads)),
 ];
 
 /// How many lines share each fingerprint (the fall-through, test-failure

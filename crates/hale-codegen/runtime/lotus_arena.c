@@ -2036,6 +2036,12 @@ int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
     return node ? 1 : 0;
 }
 
+/* Defined with the pool start (C50): a pool-placed root's init the
+ * thread holding a parent open is waiting for, which a worker waiting
+ * below for that thread's decision runs in place. */
+static int lotus_pool_start_pending_here(void);
+static void lotus_pool_start_run_pending(void);
+
 /* Where a failing child learns what its held handler decided, at the
  * point it would act on it — after its run() returned (phase 0), or
  * before it starts run() (phase 1). A restart the handler asks for
@@ -2071,8 +2077,18 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
         return r;
     }
     node->waiters++;
-    while (node->state != LOTUS_DELIVERED)
+    while (node->state != LOTUS_DELIVERED) {
+        /* A pool worker waiting here may be what the deciding thread
+         * waits for: the init of a pool-placed root it posted (C50). Run
+         * it in place, unlocked, and wait on. */
+        if (lotus_pool_start_pending_here()) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_pool_start_run_pending();
+            pthread_mutex_lock(&g_params_open_lock);
+            continue;
+        }
         pthread_cond_wait(&g_held_delivered, &g_params_open_lock);
+    }
     if (--node->waiters == 0) free(node);
     pthread_mutex_unlock(&g_params_open_lock);
     return 1;
@@ -8059,8 +8075,15 @@ lotus_mailbox_t *lotus_mailbox_get_current(void) {
  * lock released so they can publish further cells (the post
  * path re-acquires the lock).
  */
+/* Defined with the pool start below: on a pool worker running a
+ * pool-placed root's init, a yield drains the pool's own queue. */
+static void lotus_pool_init_yield(void);
+
 void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
-    if (!mb) return;
+    if (!mb) {
+        lotus_pool_init_yield();
+        return;
+    }
     lotus_bus_cell_t cell;
     /* Non-blocking: drain the ring, then the consumer-local overflow list,
      * until both are empty. Cells posted DURING a handler land in the ring
@@ -8083,6 +8106,203 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
         return;                                 /* both empty */
     }
 }
+
+/* The start of a pinned locus (the review of PR #1319, correcting U-6):
+ * its subtree initializes on its own thread. The instantiating thread
+ * creates the locus's route and its thread, then waits here until the
+ * thread has initialized the locus's params — every nested
+ * construction, its registrations against the route, its birth and
+ * its inline cooperative `run()` — so a nested child that waits for a
+ * delivery during its initialization is drained by the thread the
+ * delivery is routed to, and no one observes the tree before it is
+ * built. The instantiating thread then finishes the instantiation (the
+ * synthetic fields, the failure route, the locus's own registrations)
+ * and releases the thread into `birth()` and its consumer loop.
+ *
+ *   IT:     create → pthread_create → await_ready → … → go
+ *   thread: params init → ready → await_go (frees the gate) → birth …
+ *
+ * After `go` the instantiating thread never touches the gate; the
+ * pinned thread frees it once its wait has returned.
+ *
+ * The instantiating thread services its own mailbox while it waits,
+ * exactly as a yield on that thread would: in 1 ms slices it drains
+ * the program-wide queue, whose handlers only its owner, main, runs
+ * (`lotus_bus_queue_drain` is owner-guarded, a no-op elsewhere), and
+ * its own pinned mailbox, the TLS current one (none on main or on a
+ * pool worker). So a nested body that waits during the init for a
+ * reply from a subscriber on the instantiating thread is answered
+ * rather than deadlocked. A handler run here reaches its own
+ * subscriber, not the instantiating frame the init has captured.
+ *
+ * Each slice is timed on the clock its wait reads, one wait per
+ * platform. Elsewhere the condition variable is created on
+ * CLOCK_MONOTONIC and `pthread_cond_timedwait` takes an absolute
+ * monotonic deadline. Darwin has no `pthread_condattr_setclock`, so
+ * there the variable keeps its default and
+ * `pthread_cond_timedwait_relative_np` measures the 1 ms itself; no
+ * clock is read, so none can disagree with the wait's. Either wait
+ * returns early on the broadcast `ready` sends.
+ *
+ * wasm32 has no threads: every pinned placement is refused there, so
+ * codegen never emits these calls, and the family is not compiled (the
+ * shim declares neither the condattr calls nor a timed wait). Its
+ * stubs trap rather than leave the symbols undefined, which the wasm
+ * link (`--allow-undefined`) would turn into host imports answering 0. */
+typedef struct lotus_pinned_start lotus_pinned_start_t;
+
+#ifndef __wasm__
+struct lotus_pinned_start {
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int state;                 /* 0 initializing, 1 ready, 2 go */
+};
+
+static void lotus_pinned_start_fail(const char *what, int rc) {
+    fprintf(stderr, "lotus: starting a pinned locus: %s failed (%d)\n", what, rc);
+    abort();
+}
+
+lotus_pinned_start_t *lotus_pinned_start_create(void) {
+    lotus_pinned_start_t *s = calloc(1, sizeof *s);
+    if (!s) {
+        fprintf(stderr, "lotus: out of memory starting a pinned locus\n");
+        abort();
+    }
+    int rc = pthread_mutex_init(&s->lock, NULL);
+    if (rc != 0) lotus_pinned_start_fail("pthread_mutex_init", rc);
+#if defined(__APPLE__)
+    rc = pthread_cond_init(&s->cond, NULL);
+    if (rc != 0) lotus_pinned_start_fail("pthread_cond_init", rc);
+#else
+    pthread_condattr_t attr;
+    rc = pthread_condattr_init(&attr);
+    if (rc != 0) lotus_pinned_start_fail("pthread_condattr_init", rc);
+    rc = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    if (rc != 0) lotus_pinned_start_fail("pthread_condattr_setclock(CLOCK_MONOTONIC)", rc);
+    rc = pthread_cond_init(&s->cond, &attr);
+    if (rc != 0) lotus_pinned_start_fail("pthread_cond_init", rc);
+    (void)pthread_condattr_destroy(&attr);
+#endif
+    return s;
+}
+
+/* One slice of the readiness wait, `s->lock` held: up to 1 ms, or
+ * until `ready`'s broadcast. */
+static void lotus_pinned_start_wait_slice(lotus_pinned_start_t *s) {
+#if defined(__APPLE__)
+    const struct timespec slice = { 0, 1000000 };           /* 1 ms */
+    int rc = pthread_cond_timedwait_relative_np(&s->cond, &s->lock, &slice);
+#else
+    struct timespec slice;
+    if (clock_gettime(CLOCK_MONOTONIC, &slice) != 0)
+        lotus_pinned_start_fail("clock_gettime(CLOCK_MONOTONIC)", errno);
+    slice.tv_nsec += 1000000;                               /* 1 ms */
+    if (slice.tv_nsec >= 1000000000L) {
+        slice.tv_sec += 1;
+        slice.tv_nsec -= 1000000000L;
+    }
+    int rc = pthread_cond_timedwait(&s->cond, &s->lock, &slice);
+#endif
+    if (rc != 0 && rc != ETIMEDOUT && rc != EINTR)
+        lotus_pinned_start_fail("the timed readiness wait", rc);
+}
+
+static void lotus_pinned_start_set(lotus_pinned_start_t *s, int state) {
+    pthread_mutex_lock(&s->lock);
+    s->state = state;
+    pthread_cond_broadcast(&s->cond);
+    pthread_mutex_unlock(&s->lock);
+}
+
+static void lotus_pinned_start_wait(lotus_pinned_start_t *s, int state) {
+    pthread_mutex_lock(&s->lock);
+    while (s->state < state)
+        pthread_cond_wait(&s->cond, &s->lock);
+    pthread_mutex_unlock(&s->lock);
+}
+
+/* The pinned thread: its params are initialized. */
+void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
+    lotus_pinned_start_set(s, 1);
+}
+
+/* Test-only: LOTUS_TEST_PINNED_START_NO_DRAIN=1 makes the readiness
+ * wait a plain block, the negative control of its drain. Unset = the
+ * drain. */
+static int lotus_pinned_start_no_drain(void) {
+    static int cached = -1;
+    int v = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char *e = getenv("LOTUS_TEST_PINNED_START_NO_DRAIN");
+        v = (e && *e && *e != '0') ? 1 : 0;
+        __atomic_store_n(&cached, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+
+/* The instantiating thread: wait for the params, draining its own
+ * mailbox as a yield would. `queue` is the program-wide queue (NULL in
+ * a bundle that can enqueue nothing). */
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
+                                    lotus_bus_queue_t *queue) {
+    if (lotus_pinned_start_no_drain()) {
+        lotus_pinned_start_wait(s, 1);
+        return;
+    }
+    lotus_mailbox_t *own = g_current_pinned_mailbox;
+    pthread_mutex_lock(&s->lock);
+    while (s->state < 1) {
+        lotus_pinned_start_wait_slice(s);
+        if (s->state >= 1) break;
+        pthread_mutex_unlock(&s->lock);
+        lotus_bus_queue_drain(queue);
+        lotus_mailbox_drain_pending(own);
+        pthread_mutex_lock(&s->lock);
+    }
+    pthread_mutex_unlock(&s->lock);
+}
+
+/* The instantiating thread: the instantiation is complete; its last
+ * touch of the gate. */
+void lotus_pinned_start_go(lotus_pinned_start_t *s) {
+    lotus_pinned_start_set(s, 2);
+}
+
+/* The pinned thread: wait for the instantiation, then free the gate. */
+void lotus_pinned_start_await_go(lotus_pinned_start_t *s) {
+    lotus_pinned_start_wait(s, 2);
+    pthread_cond_destroy(&s->cond);
+    pthread_mutex_destroy(&s->lock);
+    free(s);
+}
+#else /* __wasm__ */
+static void lotus_pinned_start_refused(void) {
+    fprintf(stderr, "lotus: a pinned locus cannot start on wasm32 (no threads)\n");
+    abort();
+}
+lotus_pinned_start_t *lotus_pinned_start_create(void) {
+    lotus_pinned_start_refused();
+    return NULL;
+}
+void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
+    (void)s;
+    lotus_pinned_start_refused();
+}
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
+                                    lotus_bus_queue_t *queue) {
+    (void)s; (void)queue;
+    lotus_pinned_start_refused();
+}
+void lotus_pinned_start_go(lotus_pinned_start_t *s) {
+    (void)s;
+    lotus_pinned_start_refused();
+}
+void lotus_pinned_start_await_go(lotus_pinned_start_t *s) {
+    (void)s;
+    lotus_pinned_start_refused();
+}
+#endif /* __wasm__ */
 
 /*
  * F.31 Phase 4: cooperative-pool worker threads (M:N substrate).
@@ -8445,6 +8665,10 @@ typedef struct lotus_coop_pool {
      * as the process is about to end; a label is a string literal, so a
      * stale read is harmless. "" when the cell's locus has no name. */
     const char *volatile running_label;
+    /* The pool-placed root's init the instantiating thread is waiting
+     * for (`lotus_pool_start_job_t *`, C50), NULL when none: what the
+     * worker runs if it is itself waiting on that thread. */
+    _Atomic(void *)   start_pending;
     /* F.35 Slice 1: async_io state. Dormant when `async_io_enabled`
      * is 0 — pool runs the classic blocking-syscall worker loop.
      * When non-zero, `epoll_fd` is open and the worker uses the
@@ -8615,6 +8839,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->overflow_head = NULL;
     p->overflow_tail = NULL;
     p->worker_started = 0;
+    atomic_store_explicit(&p->start_pending, NULL, memory_order_relaxed);
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->not_empty, NULL);
     pthread_cond_init(&p->not_full, NULL);
@@ -8711,6 +8936,41 @@ static void lotus_coop_pool_wake_producers(lotus_coop_pool_t *p) {
     }
 }
 
+/* Wake the consumer after publishing a cell, including a startup job.
+ * Both ordinary posts and nonblocking startup posts use the same park
+ * handshake; async pools keep their durable eventfd wake. */
+static void lotus_coop_pool_wake_consumer(lotus_coop_pool_t *p) {
+    int is_async = (p->wake_fd >= 0);
+    if (is_async) {
+        /* async_io pool: the worker parks in epoll_wait, not on the
+         * condvar. Poke the wake eventfd — UNCHANGED from the prior
+         * design. eventfd is level-triggered (its counter is
+         * durable until the worker read()s it), so this is already
+         * missed-wakeup-safe: even if the worker hasn't yet entered
+         * epoll_wait, the pending count returns it immediately. The
+         * parked/cond handshake does NOT apply to the epoll path. */
+#if LOTUS_HAVE_ASYNC_IO
+        lotus_wake_post(p);
+#endif
+    } else {
+        /* classic pool: signal-only-when-parked wake. The seq_cst
+         * fence orders the release-publish of the cell (inside
+         * try_enqueue) before this load of `parked`; it pairs with
+         * the consumer's store(parked,1) + fence + recheck
+         * (drain_one). Byte-identical to the mailbox producer wake
+         * — the Dekker/SB handshake that defeats the missed wakeup.
+         * Under load the consumer is not parked → no mutex on the
+         * hot path (this is the cross-pool grid win). */
+        atomic_thread_fence(memory_order_seq_cst);
+        if (atomic_load_explicit(&p->parked,
+                                 memory_order_seq_cst)) {
+            pthread_mutex_lock(&p->lock);
+            pthread_cond_signal(&p->not_empty);   /* one consumer */
+            pthread_mutex_unlock(&p->lock);
+        }
+    }
+}
+
 /* `run`: the cell is a child's run() (the compiler's only post, through
  * `lotus_coop_pool_post`), which takes a retention on the child; a bus
  * delivery (`lotus_coop_pool_post_bus`) takes none. */
@@ -8749,9 +9009,6 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
      * posting to this same pool — must NEVER block (the worker IS the sole
      * consumer → deadlock). Detected via the worker's TLS pool pointer. */
     int self_publish = (lotus_coop_pool_current() == p);
-    /* wake_fd >= 0 ⇔ async_io pool. Read once; set at async-enable and
-     * stable thereafter, so this unlocked read is race-free. */
-    int is_async = (p->wake_fd >= 0);
 
     for (;;) {
         int enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
@@ -8790,34 +9047,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
         }
 
         if (enq) {
-            if (is_async) {
-                /* async_io pool: the worker parks in epoll_wait, not on the
-                 * condvar. Poke the wake eventfd — UNCHANGED from the prior
-                 * design. eventfd is level-triggered (its counter is
-                 * durable until the worker read()s it), so this is already
-                 * missed-wakeup-safe: even if the worker hasn't yet entered
-                 * epoll_wait, the pending count returns it immediately. The
-                 * parked/cond handshake does NOT apply to the epoll path. */
-#if LOTUS_HAVE_ASYNC_IO
-                lotus_wake_post(p);
-#endif
-            } else {
-                /* classic pool: signal-only-when-parked wake. The seq_cst
-                 * fence orders the release-publish of the cell (inside
-                 * try_enqueue) before this load of `parked`; it pairs with
-                 * the consumer's store(parked,1) + fence + recheck
-                 * (drain_one). Byte-identical to the mailbox producer wake
-                 * — the Dekker/SB handshake that defeats the missed wakeup.
-                 * Under load the consumer is not parked → no mutex on the
-                 * hot path (this is the cross-pool grid win). */
-                atomic_thread_fence(memory_order_seq_cst);
-                if (atomic_load_explicit(&p->parked,
-                                         memory_order_seq_cst)) {
-                    pthread_mutex_lock(&p->lock);
-                    pthread_cond_signal(&p->not_empty);   /* one consumer */
-                    pthread_mutex_unlock(&p->lock);
-                }
-            }
+            lotus_coop_pool_wake_consumer(p);
             return;
         }
 
@@ -8957,6 +9187,247 @@ static __thread lotus_coop_pool_t *g_current_pool_tls = NULL;
 lotus_coop_pool_t *lotus_coop_pool_current(void) {
     return g_current_pool_tls;
 }
+
+/* The start of a pool-placed root (inventory C50, the pool side of the
+ * review of PR #1319's correction of U-6): its subtree initializes on
+ * the pool's worker, as a pinned locus's does on its thread. The
+ * instantiating thread posts the root's params init as one job and
+ * waits for it, draining its own mailbox as a yield there would
+ * (`lotus_pinned_start_await_ready`); the worker runs the job, every
+ * nested construction, registration, birth and inline cooperative
+ * `run()` in it, and reports ready. The instantiating thread then
+ * finishes the instantiation (the synthetic fields, the root's own
+ * registrations, its `birth()`) and posts its `run()` behind the job,
+ * as before.
+ *
+ *   IT:     create → post(job) → await_ready (frees the gate) → …
+ *   worker: … job: params init → ready
+ *
+ * The job never parks. On an async_io pool it runs on the worker's own
+ * stack, not a coroutine (`lotus_async_start_cell`), so a sleep or a
+ * socket wait inside it blocks the worker instead of parking, and the
+ * job is complete before the worker starts another cell. A yield
+ * inside it (a sleep slice, `yield;`) drains the pool's own queue on
+ * the worker, as a yield on a pinned thread drains its mailbox: so a
+ * nested body that waits during the init for a delivery to the
+ * subtree, or for a reply through another thread, receives it there.
+ * Those cells run on the worker's stack too, one at a time; a yield
+ * inside one of them drains nothing. Outside an init, a yield on a
+ * pool worker still drains nothing.
+ *
+ * No wait on itself (spec/runtime.md § "Lifecycle obligations", line
+ * 1). The worker can be blocked on the instantiating thread when the
+ * job is posted: a pool-placed child whose run() failed while that
+ * thread holds its parent's params open waits in `lotus_failure_await`
+ * for the decision the thread gives only at settle, after this wait.
+ * So the job is also offered in the pool's `start_pending` slot, and a
+ * worker waiting there for another thread's decision runs it in place
+ * (`lotus_pool_start_run_pending`), still on the worker. Whichever of
+ * the two paths claims the job runs it; the other only lets go of it.
+ * Posting tries the ring without blocking, so a full ring does not
+ * prevent the constructor from reaching its readiness wait once the
+ * pending path has claimed the job. No queued copy is then required.
+ *
+ * The wait is the pinned one, so its slices are the same per-platform
+ * `lotus_pinned_start_wait_slice`. wasm32 has no threads: codegen
+ * initializes a pool-placed root there on the instantiating thread and
+ * never emits the post or the wait, so the family is gated out with the
+ * pinned start's, its entry points trap, and the helpers the failure
+ * wait and the yield call find no init to run. */
+typedef void (*lotus_pool_init_fn)(void *self_ptr, void *start);
+
+#ifndef __wasm__
+
+typedef struct lotus_pool_start_job {
+    lotus_pool_init_fn    init;
+    void                 *self_ptr;
+    void                 *start;
+    lotus_pinned_start_t *gate;
+    _Atomic int           claimed;
+    _Atomic int           refs;     /* posting/cell reference, plus offered slot */
+} lotus_pool_start_job_t;
+
+/* The pool whose root's init this worker is running (NULL outside
+ * one), and the yield drain's re-entrancy guard. */
+static __thread lotus_coop_pool_t *g_pool_init_on = NULL;
+static __thread int g_pool_init_draining = 0;
+
+static void lotus_pool_start_release(lotus_pool_start_job_t *j) {
+    if (atomic_fetch_sub_explicit(&j->refs, 1, memory_order_acq_rel) == 1)
+        free(j);
+}
+
+/* The init, then the readiness report, unless the other path ran it. */
+static void lotus_pool_start_run(lotus_pool_start_job_t *j) {
+    if (atomic_exchange_explicit(&j->claimed, 1, memory_order_acq_rel))
+        return;
+    lotus_coop_pool_t *prev = g_pool_init_on;
+    g_pool_init_on = lotus_coop_pool_current();
+    j->init(j->self_ptr, j->start);
+    g_pool_init_on = prev;
+    lotus_pinned_start_ready(j->gate);
+}
+
+/* The queued cell's handler; the payload is the job's pointer. */
+static void lotus_pool_start_job(void *self_ptr, void *payload) {
+    (void)self_ptr;
+    lotus_pool_start_job_t *j;
+    memcpy(&j, payload, sizeof j);
+    lotus_coop_pool_t *p = lotus_coop_pool_current();
+    void *offered = j;
+    if (p && atomic_compare_exchange_strong(&p->start_pending, &offered, NULL))
+        lotus_pool_start_release(j);              /* the slot's */
+    lotus_pool_start_run(j);
+    lotus_pool_start_release(j);                  /* the cell's */
+}
+
+/* A worker waiting for another thread's decision: the init that thread
+ * is waiting for, if any, run here. */
+static void lotus_pool_start_run_pending(void) {
+    lotus_coop_pool_t *p = lotus_coop_pool_current();
+    if (!p) return;
+    lotus_pool_start_job_t *j = (lotus_pool_start_job_t *)
+        atomic_exchange(&p->start_pending, NULL);
+    if (!j) return;
+    lotus_pool_start_run(j);
+    lotus_pool_start_release(j);                  /* the slot's */
+}
+
+static int lotus_pool_start_pending_here(void) {
+    lotus_coop_pool_t *p = lotus_coop_pool_current();
+    return p && atomic_load(&p->start_pending) != NULL;
+}
+
+/* A yield inside the init: every cell already in the pool's queue, on
+ * this worker, in order. */
+static void lotus_pool_init_yield(void) {
+    lotus_coop_pool_t *p = g_pool_init_on;
+    if (!p || g_pool_init_draining) return;
+    g_pool_init_draining = 1;
+    const char *label = p->running_label;
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
+    lotus_bus_cell_t cell;
+    for (;;) {
+        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
+            lotus_coop_pool_wake_producers(p);   /* freed a slot */
+        } else if (p->overflow_head) {
+            lotus_coop_overflow_t *node = p->overflow_head;
+            p->overflow_head = node->next;
+            if (!p->overflow_head) p->overflow_tail = NULL;
+            cell = node->cell;
+            free(node);
+        } else {
+            break;
+        }
+        if (replaying && !lotus_replay_gate_cell(&cell)) continue;
+        lotus_coop_pool_dispatch_cell(p, &cell);
+    }
+    p->running_label = label;
+    g_pool_init_draining = 0;
+}
+
+/* The instantiating thread: post a pool-placed root's init to its
+ * pool. Run in place when there is no worker to run it (a pool not
+ * started) or when the caller is that worker already. */
+void lotus_pool_start_post(lotus_coop_pool_t *p, void *init, void *self_ptr,
+                           void *start, lotus_pinned_start_t *gate) {
+    lotus_pool_start_job_t *j = malloc(sizeof *j);
+    if (!j) {
+        fprintf(stderr, "lotus: out of memory starting a pool-placed locus\n");
+        abort();
+    }
+    j->init = (lotus_pool_init_fn)init;
+    j->self_ptr = self_ptr;
+    j->start = start;
+    j->gate = gate;
+    atomic_init(&j->claimed, 0);
+    if (!p || !p->worker_started || lotus_coop_pool_current() == p) {
+        atomic_init(&j->refs, 1);
+        lotus_pool_start_run(j);
+        lotus_pool_start_release(j);
+        return;
+    }
+    /* The posting reference becomes the cell's only after enqueue.
+     * Offering the slot adds another reference before publishing j;
+     * if the worker claims it first, no queued copy is required. */
+    atomic_init(&j->refs, 1);
+    int offered = 0;
+    lotus_bus_cell_t cell = {0};
+    cell.handler = (void *)lotus_pool_start_job;
+    cell.self_ptr = self_ptr;
+    cell.payload_size = sizeof j;
+    cell.deserialize = g_bus_pending_wire_deser;
+    cell.rec_pub_id = g_bus_pending_rec_pub;
+    memcpy(cell.payload_inline, &j, sizeof j);
+    for (;;) {
+        if (atomic_load_explicit(&j->claimed, memory_order_acquire)) {
+            lotus_pool_start_release(j);          /* posting reference */
+            return;
+        }
+        if (!offered) {
+            /* A different constructor can occupy the slot. Retry it
+             * while the ring is full, rather than needing ring space
+             * after that pending init has completed. */
+            atomic_fetch_add_explicit(&j->refs, 1, memory_order_relaxed);
+            void *none = NULL;
+            if (atomic_compare_exchange_strong(&p->start_pending, &none, j)) {
+                offered = 1;
+                pthread_mutex_lock(&g_params_open_lock);
+                pthread_cond_broadcast(&g_held_delivered);
+                pthread_mutex_unlock(&g_params_open_lock);
+            } else {
+                lotus_pool_start_release(j);      /* unoffered reference */
+            }
+        }
+        if (lotus_mpsc_ring_try_enqueue(&p->ring, &cell)) {
+            lotus_coop_pool_wake_consumer(p);
+            return;                              /* posting -> cell */
+        }
+        /* A worker waiting on this constructor can run j through the
+         * slot even when the ordinary queue has no room. Never enter
+         * the ordinary post's unbounded not_full wait: its progress
+         * can depend on this constructor settling its parent's params.
+         * The posting reference keeps j live throughout this poll. */
+        pthread_mutex_lock(&gate->lock);
+        if (!atomic_load_explicit(&j->claimed, memory_order_acquire))
+            lotus_pinned_start_wait_slice(gate);
+        pthread_mutex_unlock(&gate->lock);
+    }
+}
+
+/* The instantiating thread: wait for the init as for a pinned locus's
+ * params, then free the gate; the worker's last touch of it was the
+ * readiness report. */
+void lotus_pool_start_await_ready(lotus_pinned_start_t *s,
+                                  lotus_bus_queue_t *queue) {
+    lotus_pinned_start_await_ready(s, queue);
+    pthread_cond_destroy(&s->cond);
+    pthread_mutex_destroy(&s->lock);
+    free(s);
+}
+#else /* __wasm__ */
+static void lotus_pool_start_refused(void) {
+    fprintf(stderr, "lotus: a pool-placed locus cannot start on a worker on wasm32 (no threads)\n");
+    abort();
+}
+static void lotus_pool_start_job(void *self_ptr, void *payload) {
+    (void)self_ptr; (void)payload;
+    lotus_pool_start_refused();
+}
+static void lotus_pool_start_run_pending(void) {}
+static int lotus_pool_start_pending_here(void) { return 0; }
+static void lotus_pool_init_yield(void) {}
+void lotus_pool_start_post(lotus_coop_pool_t *p, void *init, void *self_ptr,
+                           void *start, lotus_pinned_start_t *gate) {
+    (void)p; (void)init; (void)self_ptr; (void)start; (void)gate;
+    lotus_pool_start_refused();
+}
+void lotus_pool_start_await_ready(lotus_pinned_start_t *s,
+                                  lotus_bus_queue_t *queue) {
+    (void)s; (void)queue;
+    lotus_pool_start_refused();
+}
+#endif /* __wasm__ */
 
 /* Enable async_io mode for a pool: opens an epoll fd. Idempotent;
  * safe to call before or after the worker thread starts (the worker
@@ -9529,13 +10000,17 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
      * once (lotus_coro_payload_dispose, from lotus_coro_release). `cell_copy`
      * is a drain stack local the next dequeue overwrites; nothing may point
      * into it past this call. */
-    lotus_coro_t *c = lotus_coro_alloc(p, cell_copy);
+    /* A pool-placed root's init (C50) never parks: it runs on the
+     * worker's own stack, so it is complete before another cell starts. */
+    lotus_coro_t *c = cell_copy->handler == (void *)lotus_pool_start_job
+        ? NULL
+        : lotus_coro_alloc(p, cell_copy);
     if (!c) {
-        /* OOM on coro alloc — fall back to direct invocation, which keeps
-         * the cell's payload (alloc took nothing) alive for the whole
+        /* OOM on coro alloc, or the init above — direct invocation, which
+         * keeps the cell's payload (alloc took nothing) alive for the whole
          * handler because this frame outlives it. The handler runs on the
          * worker's stack; if it parks via `park_on_fd`, the call returns
-         * -1 (no current coro). */
+         * -1 (no current coro), and a sleep blocks instead of parking. */
         void *payload_ptr = NULL;
         if (cell_copy->payload_size > 0) {
             payload_ptr = cell_copy->payload_heap
@@ -12176,6 +12651,41 @@ void lotus_bus_quarantine_self(void *self_ptr) {
      * materialization, on their consumer's thread — see
      * `bus_self_dead`. Only a self that ever subscribed can have one. */
     if (subscribed) bus_dead_add(self_ptr);
+}
+
+/* U-1 (F.40 phase 3, P1): the process's main thread, captured by a
+ * constructor (which runs on it, before `main`). A locus whose
+ * instances run both on main and off it, and whose `I { }` bubbles to
+ * a singleton owner on main, chooses its birth per instance at the
+ * literal: on main, the same-tower bubble into the owner's arena; off
+ * it, the cross-pool post to the owner's thread. */
+static pthread_t g_lotus_main_thread;
+__attribute__((constructor)) static void lotus_main_thread_ctor(void) {
+    g_lotus_main_thread = pthread_self();
+}
+
+int lotus_on_main_thread(void) {
+    return pthread_equal(pthread_self(), g_lotus_main_thread) ? 1 : 0;
+}
+
+/* U-6 (F.40 phase 3, P1): retire every registration routed to `mb`
+ * before the mailbox is destroyed. A pinned anchor's mailbox is the
+ * route of its own subscriptions and of every subscription in the tree
+ * nested under it. Each of those deregisters in its own dissolve, on
+ * the anchor's thread; the anchor's join calls this after that thread
+ * has drained the mailbox and exited, as the backstop for any entry
+ * still routed here, so no registration outlives its route: a later
+ * publish skips the retired entries instead of posting to freed
+ * memory. Each retired self is marked dead, as quarantine does, so a
+ * cell already taken for it is dropped. */
+void lotus_bus_retire_mailbox(void *mb) {
+    if (!mb) return;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        if (g_bus_entries[i].mailbox == mb && g_bus_entries[i].subject) {
+            g_bus_entries[i].subject = NULL;
+            bus_dead_add(g_bus_entries[i].self_ptr);
+        }
+    }
 }
 
 void lotus_bus_router_destroy(void) {

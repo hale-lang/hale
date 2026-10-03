@@ -305,11 +305,10 @@ const PLANS: &[(&str, &str)] = &[
     (
         "l19_cross_pool_queued_run_canceled.hl",
         "App: Birth Run Drain Dissolve Reclaim
-         Holder: Birth Run!pool:side Drain Dissolve Reclaim
+         Holder: Birth Drain Dissolve Reclaim
          Kid*2: Birth Drain Dissolve Reclaim
          Kid: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered
-         edge Holder.Run.Ended -> Holder.Drain.Entered",
+         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
     ),
     // R19's other half: a run admitted after the worker's last check is
     // canceled by its child's reclaim; once the canceled cells fill the
@@ -1173,8 +1172,8 @@ fn queued_run_canceled(r: &Ran) -> String {
     }
 }
 
-/// What the cross-pool fixture printed: the first child's run never
-/// started, the replacement's ran, each child dissolved once.
+/// The queued child's run never started, the replacement's ran, and
+/// each child dissolved once.
 fn cross_pool_printed(r: &Ran) -> bool {
     count(r, "ev kid-run 0") == 0
         && count(r, "ev kid-run 1") == 1

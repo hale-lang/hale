@@ -370,6 +370,17 @@ struct Contribution {
     in_handler: bool,
 }
 
+/// Pinned and pool anchors initialize their params on their own domain
+/// (C49/C50). Their literal and, for a pool anchor, their own birth still
+/// run on the instantiating thread.
+fn initialization_domain(t: &PlacementTable, placed: bool, c: &Contribution) -> Option<DomainId> {
+    if placed && c.own.is_some_and(|d| matches!(t.domains[d.0 as usize].kind, DomainKind::Pinned { .. } | DomainKind::Pool { .. })) {
+        c.own
+    } else {
+        c.it
+    }
+}
+
 /// Where a template's contributions come from.
 enum Source<'t> {
     /// A static row or a literal in a free fn: the one the table gives.
@@ -546,6 +557,9 @@ fn subjects<'a>(
             How::Field
         };
         let owner = row.owner.as_ref().and_then(|k| by_key.get(k).copied());
+        let it = owner.map_or(Some(PlacementTable::MAIN), |o| {
+            initialization_domain(t, out[o].placed, &out[o].contributions[0])
+        });
         let contract = match (owner, key.path.last()) {
             (Some(o), Some(step)) => contract_field(out[o].decl, &step.field, out[o].universe, index),
             _ => false,
@@ -560,7 +574,7 @@ fn subjects<'a>(
             contributions: vec![Contribution {
                 owner,
                 under: None,
-                it: Some(PlacementTable::MAIN),
+                it,
                 own: Some(row.domain),
                 in_handler: false,
             }],
@@ -1053,8 +1067,8 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     /// The instance is a pinned domain's anchor: it runs on a thread of
-    /// its own. A field of a pinned locus shares its anchor's domain for
-    /// its cells, but is built, drained and dissolved off that thread.
+    /// its own. Its fields initialize there too; their later teardown
+    /// remains a separate obligation.
     fn is_pinned(&self, i: usize) -> bool {
         let Template::Static(key) = &self.subjects[i].site.template else { return false };
         self.all(i, |c| c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { anchor, .. } if anchor == key)))
@@ -1080,13 +1094,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.is_pool(c.own) && c.own != c.it
     }
 
-    /// A field nested under a pool-placed field: the table gives it its
-    /// owner's pool, and no pool is chosen for its `run()`, which runs
-    /// inline on the instantiating thread (inventory C12, R17 and R18).
-    fn inline_off_its_pool(&self, i: usize, c: &Contribution) -> bool {
-        self.is_pool(c.own) && !self.subjects[i].placed && c.own != c.it
-    }
-
     /// Its `run()` is posted to the pool worker that tears its owner down
     /// (line 19, the retention L5 shipped): the run is retained against
     /// that teardown, which cancels it if it is still queued before it
@@ -1097,6 +1104,9 @@ impl<'b, 'a> Builder<'b, 'a> {
     fn posted_to_its_owners_teardown(&self, i: usize, c: &Contribution) -> bool {
         let under = self.under(c);
         matches!(self.subjects[i].how, How::Field | How::Accepted { .. })
+            // Static fields inside a pool anchor's init run inline on
+            // its worker; the init does not post them behind itself.
+            && !matches!(self.subjects[i].site.template, Template::Static(_))
             && self.is_pool(c.own)
             && !under.is_empty()
             && under.iter().all(|o| o.it == c.own)
@@ -1183,6 +1193,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         let pinned = self.is_pinned(i);
         let on_pool = self.any(i, |c| self.is_pool(c.own));
         let on_async_pool = self.any(i, |c| self.is_async_pool(c.own));
+        let in_pool_init = matches!(s.site.template, Template::Static(_)) && !s.placed
+            && self.all(i, |c| self.is_pool(c.own) && c.own == c.it);
         let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(i, c));
         let accepted = matches!(s.how, How::Accepted { .. });
         let flow = matches!(s.how, How::Accepted { flow: true });
@@ -1197,14 +1209,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         // Params settle (line 1): the bracket, when the declaration has one.
         if brackets {
             let mut o = self.row(i, K::ParamsSettle, instantiation);
+            if pinned || (s.placed && on_pool) {
+                o.holder.domain = DomainRole::Own;
+            }
             o.line = Some("1");
-            // An owner placed on a cooperative pool settles on the
-            // instantiating thread today; which domain it owes is pending.
+            // Anchors settle on their initialization thread. The wider
+            // construction-delivery policy for pool owners is pending.
             o.runs_on = self.claim(i, |c| {
+                let on = initialization_domain(self.inputs.placement, s.placed, c);
                 if self.pool_placed(c) {
-                    Self::on(c.it, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
+                    Self::on(on, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
                 } else {
-                    Self::on(c.it, shipped("1"))
+                    Self::on(on, shipped("1"))
                 }
             });
             r.params_settle = Some(self.push(o));
@@ -1274,7 +1290,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.failures(i, &mut r, &[FailureSource::BirthClosure, FailureSource::BirthCheck]);
         // The run: admitted to its pool (line 19), then executed.
         if run {
-            let posted = on_pool || pinned;
+            let posted = (on_pool && !in_pool_init) || pinned;
             let run_holder = if pinned {
                 Holder { spine: Spine::PinnedMain, domain: DomainRole::Own }
             } else {
@@ -1294,14 +1310,11 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
             let mut o = self.row(i, K::Run, run_holder);
             o.multiplicity = Multiplicity::OncePerIncarnation;
-            // A field nested under a pool-placed field owes its run() to
-            // the pool the table gives it, and runs it inline on the
-            // instantiating thread today (line 3, inventory C12).
+            // A nested field's inline run executes on its anchor's
+            // initialization thread, the pool the table gives it (C50).
             o.runs_on = self.claim(i, |c| {
                 if self.under_pinned(i, c) {
                     None
-                } else if self.inline_off_its_pool(i, c) {
-                    Self::on(c.own, open("3", "C12"))
                 } else {
                     Self::on(c.own, Rule::SHIPPED)
                 }
@@ -1309,11 +1322,11 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
             // Every end an occurrence can reach, under any contribution.
             o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
-            if on_pool {
+            if on_pool && !in_pool_init {
                 o.terminals.push(Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)));
                 o.terminals.push(Terminal::NotStarted(NotStarted::Acknowledged));
             }
-            if on_async_pool {
+            if on_async_pool && !in_pool_init {
                 o.terminals.push(Terminal::CanceledAfterStart);
             }
             o.lifetime.push(Retention {
@@ -1648,7 +1661,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         for c in routed {
             let raised_on = self.raised_on(i, c, source);
             for oc in self.under(c) {
-                let settling = oc.it;
+                let owner = c.owner.expect("a routed contribution has an owner");
+                let settling = initialization_domain(self.inputs.placement, self.subjects[owner].placed, oc);
                 let rule = if self.pool_placed(oc) {
                     Rule::line("1", Status::Pending { condition: POOL_OWNER })
                 } else {
@@ -2055,4 +2069,3 @@ mod tests {
         assert_eq!(combine([on(0, delivered), None]), None, "one occurrence's domain unknown: no claim");
     }
 }
-

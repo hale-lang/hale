@@ -137,7 +137,17 @@ the model: runtime is automatic; stdlib is explicit.
   over the bus queue: the child is born on the owner's thread and
   reclaimed by the owner's same-thread cascade, so a cross-pool
   `I{}` is **fire-and-forget** — it may only be a bare statement;
-  using the instance as a value is rejected at compile time.
+  using the instance as a value is rejected at compile time. Which
+  of the two an `I{}` is follows the placement table per instance
+  of the enclosing locus (F.40 phase 3, P1): the enclosing instance
+  is paired with the owner instance above it, and a locus nested
+  under a field placed off main runs on that field's thread. When
+  an enclosing locus has instances on both sides of its owner's
+  thread and the owner is a `main locus`, a bare `I{};` tests
+  `lotus_on_main_thread()` at the literal and takes the same-tower
+  birth on main, the handoff off it; a value use there, or such an
+  edge to an owner with several instances, is refused at the
+  literal.
 - **Order by construction, with latches.** A locus can't run
   before its birth completed, can't be torn down twice, etc.
   There is no runtime state machine: the order is the order the
@@ -447,6 +457,17 @@ arranged instance and a dynamic birth is incomplete, and its
 arranged instance does not answer for the instances the model
 admits it cannot see. Plan subjects are WIRE subjects; `hale
 model dump` prints the plan and the same-domain count.
+
+The gates' placement leg reads the placement table (F.40 phase 3,
+P1): a type is same-thread only when every instance of it runs on
+main, so `static_direct` needs every publisher and every subscriber
+type to be. An instance nested under a root field placed off main
+runs on that field's thread, an adapter in `bindings { }` on its
+own, and an instance the table cannot place (a literal in a scope
+whose domain is unknown) is never taken for main; each keeps its
+subject on a queued flavor. The same answer decides where a
+subscriber's `bounded(N, …)` is legal (main-queue registrations
+only, `spec/decisions.md` F.37).
 
 **Binding roles and replica indices in the model.** A binding's
 role is the authored `role:` kwarg when present and otherwise the
@@ -931,7 +952,13 @@ today because lifecycle methods are not user-callable in the
 `recv.method()` shape that Phase 5 checks. Plan: Phase 4b
 moves lifecycle dispatch onto the pool worker via the same
 queue mechanism (post "run_init" / "drain_exit" cells at
-instantiation / scope-exit boundaries).
+instantiation / scope-exit boundaries). The pool-placed field's
+`run()` is posted to its worker (below), and its **subtree**
+initializes there (§ "m27 + m28a", the pool side): everything
+nested under it is built, registered and born on the worker, and
+a nested cooperative child's `run()` runs there inline. The
+placed field's own `accept` and `birth()` still run on the
+instantiating thread (§ "Lifecycle obligations", line 3).
 
 **Runtime pool inheritance for in-method-body instantiation
 (2026-05-29).** A locus instantiated *inside a method or
@@ -1007,10 +1034,40 @@ m20's "memcpy payload into subscriber's arena" step happens at
 ENQUEUE time (publisher's frame).
 
 **m27 + m28a (pinned threads + full lifecycle):** Pinned-class
-loci spawn a pthread at instantiation; the locus's full
-declared lifecycle (birth → run → drain → dissolve, each only
-if declared) executes on that thread, in order. Main thread
-continues immediately after spawn. At scope exit (deferred-
+loci spawn a pthread at instantiation; the locus's params and
+its full declared lifecycle (birth → run → drain → dissolve,
+each only if declared) execute on that thread, in order.
+
+A pinned locus's subtree initializes on its thread. The
+instantiating thread creates the locus's mailbox, if it has
+one, and then its thread. The thread makes the mailbox current
+and initializes the locus's params: every nested construction,
+its subscriptions, its `birth()` and a cooperative child's
+inline `run()`, and the params bracket and its settle. The
+initialization has a scope of its own: a temporary locus a
+default builds (`Helper { }.value()`) is dissolved when the
+initialization ends, on the pinned thread, not when the
+instantiating function's scope does. So every
+lifecycle body of a locus nested under a pinned one runs on the
+pinned thread, the domain it is placed in, and a yield inside
+one (`std::time::sleep`, an `await`) drains the pinned locus's
+mailbox, as a yield on main drains main's queue. The
+instantiating thread waits until the params are initialized
+(`lotus_pinned_start_await_ready`), so nothing observes the tree
+before it is built. While it waits it services its own mailbox
+exactly as a yield on it would: on main it drains main's queue,
+on a pinned thread that thread's mailbox (a yield on a pool
+worker drains neither, and neither does this wait). So a nested
+body that waits during the initialization for a reply from a
+subscriber on the instantiating thread gets it. Then it finishes the instantiation (the
+synthetic fields, the failure route, the locus's own
+subscriptions) and releases the thread (`lotus_pinned_start_go`)
+into `birth()` and the rest of its lifecycle, and continues. An
+override written at the literal (`Worker { started:
+pthread_self() }`) is the instantiating code's: it is evaluated
+on the instantiating thread, before the pinned thread starts. A
+locus an override builds as the field's value is part of the
+subtree, and is built on the pinned thread. At scope exit (deferred-
 dissolve flush), `pthread_join` blocks until the pinned
 thread has finished its lifecycle and returned; the main
 thread's only remaining work for a pinned entry is the join
@@ -1020,10 +1077,62 @@ SKIPPED on the main side — they ran on the pinned thread).
 m28a synthesizes a per-locus `__pinned_main_<LocusName>`
 function whose signature matches pthread's start-routine
 contract directly (`ptr (ptr)`); pthread_create gets that
-function pointer with `self_ptr` as its argument. No C-side
-adapter, no thread_args struct. The synthesized body simply
-calls each declared lifecycle method in sequence, then
-returns null.
+function pointer with the locus's start block as its argument:
+the locus, the start gate, and each value of the instantiating
+function that the params' initialization reads (the
+instantiating thread runs nothing but its own mailbox's handlers
+while they are read, and those reach their own subscribers, not
+its frame). No C-side
+adapter. The synthesized body makes the mailbox current, runs
+the params' initialization (`__pinned_init_<LocusName>`),
+reports ready, waits for its release, calls each declared
+lifecycle method in sequence, then returns null.
+
+**The pool side.** A root field placed on `cooperative(pool = X)`
+initializes its subtree on X's worker the same way, as the first
+job of that field. Its params' initialization is lowered into
+`__pool_init_<LocusName>`, the start block is the pinned one, and
+the instantiating thread posts the initialization to X as one job
+(`lotus_pool_start_post`) and waits for it as for a pinned locus
+(`lotus_pool_start_await_ready`, which services its own mailbox
+the same way). The worker runs every nested construction, its
+subscriptions (routed to X), its `birth()` and a cooperative
+child's inline `run()`, and the params bracket and its settle, so
+a failure a nested child raises during the initialization is
+delivered on the worker at settle. The instantiating thread then
+finishes the instantiation (the synthetic fields, the field's own
+subscriptions and its `birth()`, still on the instantiating
+thread) and posts the field's `run()` to X behind the job, as
+before. An override written at the literal is evaluated on the
+instantiating thread before the post, as for a pinned locus. A
+delivery to the subtree during the initialization is X's own: it
+runs on the worker, at a yield of the initialization or after it.
+A yield inside the initialization (`std::time::sleep`, `yield;`)
+drains X's queue on the worker, as a yield on a pinned thread
+drains its mailbox; a yield inside a cell that drain runs drains
+nothing, and outside an initialization a yield on a pool worker
+drains nothing, as before. The job never parks: on an `async_io`
+pool it runs on the worker's own stack, not a coroutine, so a
+`sleep` or a socket wait inside it blocks the worker, and the
+initialization is complete before the worker starts another cell.
+The roots of one pool therefore initialize in post order, each
+complete before the next is posted. Ordinarily the job
+waits behind cells already queued on X: a field placed after
+a sibling on the same classic pool whose `run()` never returns is
+never initialized, and the instantiation waits for it (the
+sibling's `run()` already holds the worker against everything
+else on X). No wait may be on itself (§ "Lifecycle
+obligations", line 1): when the worker is itself blocked on the
+instantiating thread, waiting for the decision on a held failure
+that thread gives only at settle, it runs the posted
+initialization in place, still on the worker, and waits on. The
+constructor offers this pending initialization independently of
+queue capacity and tries to enqueue without blocking. Once the
+worker claims the pending initialization, the constructor proceeds
+to the readiness wait even if the queue remains full; it need not
+enqueue a second copy. The pending slot and any queued copy each
+hold a reference, and only one path runs the initialization. A
+target without threads initializes on the instantiating thread.
 
 **m28b stage 1 (inline-payload queue):** Bus queue cells now
 carry an inline `[u8; 512]` payload buffer (with `pthread_mutex_t`
@@ -1038,8 +1147,8 @@ Per spec/memory.md, "every locus boundary copies the payload"
 still holds — just with two memcpy's per cell instead of one.
 
 **m28b stage 2 (cross-thread mailboxes):** Each pinned locus
-that declares `bus subscribe` allocates its own
-`lotus_mailbox_t` at instantiation: a bounded ring buffer with
+that declares `bus subscribe`, or nests one that does, allocates
+its own `lotus_mailbox_t` at instantiation: a bounded ring buffer with
 `pthread_mutex_t` + `pthread_cond_t` + a shutdown flag, sharing
 the same inline-payload cell shape as the global queue. The
 locus's struct grows a `__mailbox: ptr` field to hold it.
@@ -1052,6 +1161,29 @@ fn loads `entry.mailbox` and branches: null → enqueue on the
 global cooperative queue (handler runs on the cooperative
 thread); non-null → `lotus_mailbox_post` on the pinned
 subscriber's mailbox (handler runs on the pinned thread).
+
+**Subscriptions follow the tower.** A locus nested under a root
+field placed off main runs on that field's thread (§ Placement
+classes), and so do its bus handlers: its subscriptions register
+with its anchor's route, not the global queue. Under a pinned
+anchor that is the anchor's mailbox, which the anchor has whenever
+anything in its tree subscribes, whether or not it subscribes
+itself; under an anchor on `cooperative(pool = X)` it is pool `X`.
+The route exists before the subscriptions that use it: the anchor's
+mailbox is created before its params are initialized, which is
+where every nested instance registers. A pinned anchor's params
+initialize on its own thread (m27 + m28a, above), so a nested
+instance that waits during its initialization for a delivery
+through the mailbox is served by the thread the mailbox belongs
+to. An anchor on a pool initializes its params on the pool's
+worker (the pool side, above), so a nested instance's bodies and
+its handlers run on the one worker, and a delivery during its
+initialization runs there at a yield or after it, never beside
+it. The route outlives the subscriptions: each
+nested instance deregisters in its own `dissolve()`, on the
+anchor's thread, before the join below returns, and the join
+retires any registration still routed to the mailbox before
+destroying it.
 
 The synthesized `__pinned_main_<Locus>` body grows a mailbox
 loop between `run()` and `drain()`: it calls
@@ -1083,7 +1215,8 @@ m28b's mailbox post-and-continue) or a closure whose epoch is
 `birth` or `dissolve` — dissolve being the default with no
 `epoch` clause — (cross-thread routing inside the cascade). Tick, duration, explicit and inline closures fire on
 the pinned thread and are supported. The typechecker refuses
-the two gated shapes at the placement entry (rule 6); codegen
+the two gated shapes at the placement entry or adapter binding
+(adapters also run on their own pinned thread; rule 6); codegen
 keeps a backstop for builds that skip the checker.
 
 **m28c (CPU-core affinity):** When a pinned locus declares
@@ -1744,12 +1877,16 @@ its `KNOWN_OPEN` table.
   (`l01_neg_same_pool_held.hl`), and an instantiating thread that
   settles while the worker holding the failed child needs its
   queue for a sibling's run (`l01_neg_it_waits_worker_queue.hl`),
-  both complete today. **Pending:** an owner placed on a
-  cooperative pool. Decision L0-1 names the pool's worker as that
-  owner's domain, `spec/semantics.md` § "on_failure(c, err)" names
-  the thread settling the parent, and today that is the
-  instantiating thread (`l01_pool_owner_settle.hl` pins the
-  delivery, not its thread).
+  both complete today; so does an instantiating thread waiting for
+  a pool-placed field's initialization on a worker that is itself
+  waiting for that thread's decision, since the worker runs the
+  initialization in place (§ "m27 + m28a", the pool side).
+  **Pending:** an owner placed on a cooperative pool. Decision L0-1
+  names the pool's worker as that owner's domain, and
+  `spec/semantics.md` § "on_failure(c, err)" names the thread
+  settling the parent; for a root field placed on a pool both are
+  now the worker, where its params open and settle
+  (`l01_pool_owner_settle.hl` pins the delivery, not its thread).
 - **Line 2, the tick closures after a posted `run()`.** **Pending:**
   the decisions choose no option. Today the tick and duration
   closures of a locus whose `run()` is posted to a pool run on the
@@ -1763,13 +1900,9 @@ its `KNOWN_OPEN` table.
   `accept` and `birth()` run on the instantiating thread, its
   `run()` on the pool's worker, and its `dissolve()` on the
   teardown thread (`l03_pool_birth_domain.hl`); § "Placement
-  classes", Phase 4 v1 limit, says otherwise. One case is decided:
-  a locus field nested under a pool-placed field is in that pool
-  (the placement table gives it its owner's pool), and its `run()`
-  runs on the pool's worker, as a placed locus's does. Not yet
-  shipped (inventory row C12): no pool is chosen for its `run()`,
-  which runs inline on the instantiating thread (the lifecycle
-  matrix's cross-pool grandchild cells).
+  classes", Phase 4 v1 limit, says otherwise. Everything nested
+  under it is built, registered, born and run inline on the worker
+  (§ "m27 + m28a", the pool side).
 - **Line 4, the failure route bound at birth, in every spine.**
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
@@ -3399,6 +3532,7 @@ its behavior as described in this document.
 | `LOTUS_BUS_UDP_RCVBUF=<N>` | the kernel's | `SO_RCVBUF`, in bytes, for the udp bus readers. Ignored unless a positive `int`. |
 | `LOTUS_BUS_TEST_BOOT_HOLD_MS=<ms>` | 0 | Test only: stretches the boot-registration window of a listening binding (see `LOTUS_BUS_QUIESCE_MS`). Never set in production. |
 | `LOTUS_BUS_TEST_READER_STALL_MS=<ms>` | 0 | Test only: stretches the window in which a binding's reader is descheduled. Never set in production. |
+| `LOTUS_TEST_PINNED_START_NO_DRAIN=1` | off | Test only: disables the instantiating thread's queue drain while it waits for pinned or pool initialization. The startup request/reply negative controls use it to expose the resulting deadlock. Any non-empty value not starting with `0` enables it. Never set in production. |
 | `LOTUS_LIFECYCLE_SKIP=<steps>` | unset | Test only, and read only by a lifecycle-trace build (`HALE_LIFECYCLE_TRACE=1`; a release runtime has no such code): a comma list of steps a negative control removes, a kind (`PoolJoin`) or one event line (`Reclaim.Completed`). See *The lifecycle trace*. |
 | `HALE_MATRIX=full` | the sample | Test only, read by the test suite (`ownership_matrix.rs`, `lifecycle_matrix.rs`), never by a program: `full` runs every cell of the generated ownership and lifecycle matrices instead of the default deterministic sample. |
 | `LOTUS_OBS=1` | off | Native observation emission (iris): the process creates its observation segment and its probes emit. Implied by `LOTUS_OBS_RECORD` and `LOTUS_REPLAY`. See *Native observation emission*. |

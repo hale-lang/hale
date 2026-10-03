@@ -240,6 +240,74 @@ fn disable_flag_reverts_to_transient() {
     );
 }
 
+/// O-1 (F.40 phase 3, P1 3 of 6): the enclosing locus is not placed at
+/// all; it is nested under a `pinned` root field, and spawns from its
+/// owner's `run()`, on the pinned thread. The ownership graph reads the
+/// placement table, so the edge is CrossPool and the Ship is posted to
+/// World's thread. The legacy label called the nested `Worker`
+/// same-thread, and lowering allocated the Ship in World's arena from
+/// the pinned thread. Run under ASan for memory safety (leaks off: a
+/// child born by a cross-pool post leaks its arena record at teardown,
+/// as `XPOOL_SRC` does too).
+const NESTED_UNDER_PINNED_SRC: &str = r#"
+    locus Ship {
+        params { hull: Int = 0; }
+        contract { expose hull: Int; }
+    }
+    locus Worker {
+        fn spawn() { Ship { hull: 9 }; }
+    }
+    locus Owner {
+        params { w: Worker = Worker { }; }
+        run() { self.w.spawn(); }
+    }
+    main locus World {
+        params { o: Owner = Owner { }; }
+        placement { o: pinned; }
+        contract { consume hull: Int; }
+        accept(s: Ship) { }
+        mode harmonic() -> Int {
+            let mut n: Int = 0;
+            for child in self.children { n = n + 1; }
+            return n;
+        }
+        mode bulk() -> Int {
+            let mut t: Int = 0;
+            for child in self.children { t = t + child.hull; }
+            return t;
+        }
+        run() {
+            let mut waited: Int = 0;
+            while self.harmonic() < 1 && waited < 120 {
+                std::time::sleep(100ms);
+                waited = waited + 1;
+            }
+            println("count=", self.harmonic());
+            println("total=", self.bulk());
+        }
+    }
+    fn main() { World { }; }
+"#;
+
+#[test]
+fn a_nested_enclosing_under_a_pinned_field_posts_its_child() {
+    let _lock = bubble_lock();
+    let program = hale_syntax::parse_source(NESTED_UNDER_PINNED_SRC).expect("parse");
+    let bin = harness::unique_bin(&format!("hale_test_xpool_bubble_nested_pinned_{}", std::process::id()));
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    let out = Command::new(&bin).env("ASAN_OPTIONS", "detect_leaks=0").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("AddressSanitizer"), "ASan reported:\n{stderr}");
+    assert!(out.status.success(), "non-zero exit: {:?}\n{stdout}\n{stderr}", out.status);
+    assert!(
+        stdout.contains("count=1") && stdout.contains("total=9"),
+        "World collects the Ship posted from the pinned thread: {stdout}"
+    );
+}
+
 #[test]
 fn fire_and_forget_value_use_is_rejected() {
     let _lock = bubble_lock();

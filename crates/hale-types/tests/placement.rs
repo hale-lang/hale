@@ -2816,3 +2816,120 @@ fn main() { App { }; }
         msgs
     );
 }
+
+/// B-2 (F.40 phase 3, P1 3 of 6): a subscriber's `bounded(N, …)` is
+/// legal only on a main-queue registration (spec/decisions.md F.37, its
+/// scope facts), and a locus nested under a root field placed off main
+/// registers on that field's thread. The rule read the legacy label,
+/// which called the nested locus same-thread and accepted the bound; it
+/// reads the placement table now, and refuses it with the message a
+/// placed field always got.
+fn bounded_nested_under(placement: &str) -> String {
+    format!(
+        r#"
+type P {{ n: Int; }}
+topic T {{ payload: P; }}
+
+locus Kid {{
+    params {{ got: Int = 0; }}
+    bus {{ subscribe T as on_t bounded(4, drop_old); }}
+    fn on_t(p: P) {{ self.got = self.got + 1; }}
+}}
+
+locus Owner {{
+    params {{ k: Kid = Kid {{ }}; }}
+}}
+
+main locus App {{
+    params {{ o: Owner = Owner {{ }}; }}
+    placement {{ o: {placement}; }}
+    bus {{ publish T; }}
+    run() {{ T <- P {{ n: 1 }}; }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn a_bounded_subscriber_nested_off_main_is_refused() {
+    const REFUSED: &str = "subscriber `bounded(N, ...)` is only supported on main-queue subscribers at v1, and \
+                           `Kid` is placed off-main — its pool/mailbox ring is already bounded with \
+                           producer-blocking backpressure (GH #125)";
+    for placement in ["pinned", "cooperative(pool = io)"] {
+        let msgs = check(&bounded_nested_under(placement));
+        assert_eq!(
+            msgs.iter().filter(|m| m.as_str() == REFUSED).count(),
+            1,
+            "under `{placement}`: {msgs:?}"
+        );
+    }
+    let msgs = check(&bounded_nested_under("cooperative(pool = main)"));
+    assert!(!msgs.iter().any(|m| m.contains("bounded(N, ...)")), "on main the bound is legal: {msgs:?}");
+}
+
+fn assert_adapter_rule6_at_binding(src: &str, conflict: &str) {
+    let program = parse_source(src).expect("parse");
+    let diags = check_program(&program);
+    let refusals: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(refusals.len(), 1, "one binding refusal: {diags:?}");
+    let diag = refusals[0];
+    assert!(
+        diag.message.contains("adapter binding for topic `Beat`")
+            && diag.message.contains(conflict)
+            && diag.message.contains("rule 6"),
+        "{diag:?}"
+    );
+    assert_eq!(&src[diag.span.start.as_usize()..diag.span.end.as_usize()], "Coord");
+    assert!(diag.span.start.as_usize() > src.find("bindings").unwrap());
+}
+
+#[test]
+fn adapter_binding_cannot_accept_children_but_a_cooperative_instance_can() {
+    let src = r#"
+type Ping { n: Int; }
+topic Beat { payload: Ping; }
+locus Child { }
+locus Coord {
+    accept(c: Child) { }
+    fn send(subject: String, bytes: Bytes) { }
+}
+main locus App {
+    bindings { Beat: Coord { }; }
+    bus { publish Beat; }
+}
+fn main() { App { }; }
+"#;
+    assert_adapter_rule6_at_binding(src, "accept()");
+    let cooperative = src.replace(
+        "bindings { Beat: Coord { }; }",
+        "params { c: Coord = Coord { }; } placement { c: cooperative(pool = io); }",
+    );
+    let msgs = errors(&cooperative);
+    assert!(msgs.is_empty(), "the restriction belongs to the binding: {msgs:?}");
+}
+
+#[test]
+fn adapter_binding_refuses_cascade_closures_but_allows_inline_closures() {
+    let src = r#"
+type Ping { n: Int; }
+topic Beat { payload: Ping; }
+locus Coord {
+    params { n: Int = 0; }
+    closure ready { self.n ~~ self.n within 0; epoch birth; }
+    fn send(subject: String, bytes: Bytes) { }
+}
+main locus App {
+    bindings { Beat: Coord { }; }
+    bus { publish Beat; }
+}
+fn main() { App { }; }
+"#;
+    for epoch in ["epoch birth;", "epoch dissolve;", ""] {
+        assert_adapter_rule6_at_binding(&src.replace("epoch birth;", epoch), "dissolve is the default");
+    }
+    let inline = src.replace("self.n ~~ self.n within 0; epoch birth;", "epoch inline;");
+    let msgs = errors(&inline);
+    assert!(msgs.is_empty(), "inline closures run on the adapter's thread: {msgs:?}");
+}

@@ -16,7 +16,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C48, R1–R49, R19a and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C50, R1–R50, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -102,7 +102,7 @@
 //! line  kinds                                    status
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
 //! 2     Closures Run                             Pending (no option chosen)
-//! 3     Accept Birth Run Dissolve                Pending (no option chosen); KnownOpen C12
+//! 3     Accept Birth Run Dissolve                Pending (no option chosen)
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; KnownOpen C8
@@ -531,14 +531,14 @@ impl ObligationKind {
     /// The inventory rows the kind stands for.
     pub fn rows(self) -> &'static [&'static str] {
         match self {
-            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "R1", "R5"],
+            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "C49", "C50", "R1", "R5"],
             ObligationKind::ConstructionDelivery => &["C11", "R2", "R3", "R4", "R5"],
             ObligationKind::Accept => &["C2", "C7", "R6"],
-            ObligationKind::Subscribe => &["C8"],
-            ObligationKind::Readiness => &["C8", "C10"],
-            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "R9", "R11", "R12", "R46"],
+            ObligationKind::Subscribe => &["C8", "C49", "C50", "R50"],
+            ObligationKind::Readiness => &["C8", "C10", "C49", "C50"],
+            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "C49", "C50", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
-            ObligationKind::Run => &["C9", "C12", "C48", "R24", "R25"],
+            ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "R24", "R25"],
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
@@ -1002,13 +1002,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "3",
         title: "where lifecycle methods run on a pool",
         kinds: &[K::Accept, K::Birth, K::Run, K::Dissolve],
-        statuses: &[
-            (Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus"),
-            (
-                Status::KnownOpen { inventory_row: "C12" },
-                "a field nested under a pool-placed field runs its run() inline on the instantiating thread, off the pool the placement table gives it",
-            ),
-        ],
+        statuses: &[(Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus")],
     },
     DecisionLine {
         line: "4",

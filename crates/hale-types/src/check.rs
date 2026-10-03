@@ -551,7 +551,6 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
-    let ownership = crate::bundle_ownership_graph(bundle, top);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -562,9 +561,10 @@ fn check_numbered_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let ownership = crate::bundle_ownership_graph(bundle, top, &placement);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
-    let bus = crate::bundle_bus_graph(bundle, top, &bindings);
+    let bus = crate::bundle_bus_graph(bundle, top, &bindings, &placement);
     let intra_locus = crate::bundle_intra_locus(bundle);
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
@@ -826,7 +826,7 @@ pub fn check_bundle_by_declaration(
     check_phase3_fallback_subscribers(bundle, &top.topics, &mut diags);
     // GH #255 phase 2: bounded-topic pairing + subscriber-bound
     // placement rules.
-    check_bounded_bus(bundle, &mut diags);
+    check_bounded_bus(bundle, inputs.placement, &mut diags);
     // F.31 Phase 5: single-threaded-method invariant. Walks
     // method bodies looking for cross-pool `self.X.foo()` calls
     // where X's locus type is placed on a different pool than
@@ -4790,11 +4790,19 @@ fn check_binding_constraints(
 ///   MAIN-queue subscriber: pool queues and pinned mailboxes are
 ///   already bounded MPSC rings with producer-blocking
 ///   backpressure (GH #125), so shed bounds there would
-///   misdescribe the actual contract.
-fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+///   misdescribe the actual contract. Which subscribers those are is
+///   the placement table's answer per instance (F.40 phase 3, P1,
+///   row B-2): a locus nested under a field placed off main runs off
+///   main as surely as the field does, and so does an adapter. A
+///   locus some instance of which runs where the table cannot say is
+///   not refused: the rule compares known domains only.
+fn check_bounded_bus(
+    bundle: &Bundle<'_>,
+    placement: &crate::placement::PlacementTable,
+    diags: &mut Vec<Diag>,
+) {
     // GH #825: a `topic` and a subscriber inside a `module { … }` are
-    // ordinary bundle members — `collect_subscriber_placements`
-    // already reads them, so only these two walks were short.
+    // ordinary bundle members, so both walks descend into modules.
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
@@ -4818,7 +4826,8 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             }
         });
     }
-    let placements = crate::bus_graph::collect_subscriber_placements(bundle);
+    // The table is read only when a subscriber is bounded.
+    let mut placements: Option<BTreeMap<String, crate::bus_graph::Placement>> = None;
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -4831,11 +4840,17 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     else {
                         continue;
                     };
+                    let placements = placements.get_or_insert_with(|| {
+                        crate::bus_graph::type_placements(placement)
+                    });
                     let placed = placements
                         .get(&l.name.name)
                         .cloned()
                         .unwrap_or(crate::bus_graph::Placement::SameThread);
-                    if placed != crate::bus_graph::Placement::SameThread {
+                    if matches!(
+                        placed,
+                        crate::bus_graph::Placement::CrossPool(_) | crate::bus_graph::Placement::Pinned
+                    ) {
                         diags.push(Diag::ty(
                             b.span,
                             format!(
@@ -5084,6 +5099,24 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
+/// Rule 6 applies to every locus with its own pinned thread, whether
+/// selected by a placement entry or by an adapter binding.
+fn pinned_lifecycle_conflict(info: &LocusInfo) -> Option<&'static str> {
+    if info.accept_param.is_some() {
+        Some("declares `accept()`: a pinned locus owns its own \
+              thread and cannot accept children")
+    } else if info.closures.iter().any(|c| {
+        matches!(c.epoch, EpochSpec::Birth | EpochSpec::Dissolve)
+    }) {
+        Some("declares a closure whose epoch is `birth` or \
+              `dissolve` (dissolve is the default): the \
+              lifecycle cascade cannot route it across a pinned \
+              locus's thread")
+    } else {
+        None
+    }
+}
+
 fn check_main_and_bindings<'e>(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -5192,7 +5225,18 @@ fn check_main_and_bindings<'e>(
             &entry.transport
         {
             match top.lookup(&locus.name) {
-                Some(TopSymbol::Locus(_)) => {
+                Some(TopSymbol::Locus(info)) => {
+                    if let Some(why) = pinned_lifecycle_conflict(info) {
+                        diags.push(Diag::ty(
+                            locus.span,
+                            format!(
+                                "adapter binding for topic `{}`: `{}` runs on its own \
+                                 pinned thread but {}; drop the feature from the \
+                                 adapter locus (rule 6)",
+                                entry.topic.name, locus.name, why
+                            ),
+                        ));
+                    }
                     // Wave B: the bus's adapter contract, by the one
                     // conformance function (its error channel unjudged).
                     const ADAPTER: &str = "__StdBusAdapter";
@@ -8903,24 +8947,7 @@ impl<'a> Checker<'a> {
                     // program `hale build` refused.
                     if is_locus && matches!(entry.spec, PlacementSpec::Pinned { .. }) {
                         let conflict = match self.top.lookup(name) {
-                            Some(TopSymbol::Locus(li)) if li.accept_param.is_some() => {
-                                Some("declares `accept()`: a pinned locus owns its own \
-                                      thread and cannot accept children")
-                            }
-                            Some(TopSymbol::Locus(li))
-                                if li.closures.iter().any(|c| {
-                                    matches!(
-                                        c.epoch,
-                                        hale_syntax::ast::EpochSpec::Birth
-                                            | hale_syntax::ast::EpochSpec::Dissolve
-                                    )
-                                }) =>
-                            {
-                                Some("declares a closure whose epoch is `birth` or \
-                                      `dissolve` (dissolve is the default): the \
-                                      lifecycle cascade cannot route it across a pinned \
-                                      locus's thread")
-                            }
+                            Some(TopSymbol::Locus(li)) => pinned_lifecycle_conflict(li),
                             _ => None,
                         };
                         if let Some(why) = conflict {

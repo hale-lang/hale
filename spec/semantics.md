@@ -281,6 +281,18 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    itself sits in a default (F.4 call-site rule). This holds
    regardless of where the instantiation executes (fn main, a
    params-init, or another locus's method body — 2026-07-14 fix).
+   For a locus placed `pinned`, the defaults, and every locus
+   nested under it with its whole instantiation, are computed on
+   the locus's own thread, and the literal completes once they
+   are; an override is still evaluated where the literal is,
+   except a locus it builds as the field's value, which is part
+   of the pinned subtree (`runtime.md` § "Placement classes",
+   m27 + m28a). For a field placed on `cooperative(pool = X)`
+   the same holds on X's worker, as the first job of that field:
+   its defaults and every locus nested under it are computed
+   there, and the literal completes once they are (the pool side
+   of m27 + m28a); the field's own `birth()` still runs where
+   the literal is.
 2. The nearest enclosing ancestor that declares `accept(c: I)`
    for the child's interface is the **owner** (innermost-wins —
    interest-based ownership / accept bubbling; see below and
@@ -319,6 +331,21 @@ cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
 compile time. See `runtime.md` "Interest-based ownership (accept
 bubbling)."
+
+Whether the owner is on another pool is a fact of each *instance*
+of the enclosing locus, not of its type: a locus nested under a
+root field placed off main runs on that field's thread, and one
+type can have instances on several threads. The owner is resolved
+once, for every instance; the delivery is chosen per instance. When
+some instances of the enclosing locus run on the owner's thread and
+others do not, and the owner is a `main locus`, a bare `I{};` is
+born in the owner's region where the enclosing instance runs on the
+owner's thread, and handed off where it does not. Where that choice
+cannot be made — a value use of the literal, or an owner with more
+than one instance, which has no single thread to hand off to — the
+literal is refused at compile time, naming every instance of the
+enclosing locus and the thread it runs on. A resolved owner is never
+dropped for a transient birth.
 
 ### Birth order is load-bearing
 
