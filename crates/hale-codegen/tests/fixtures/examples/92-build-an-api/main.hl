@@ -1,0 +1,77 @@
+// Build an API (docs/src/services/build-an-api.md): one program grown a
+// step at a time. A shop takes orders and answers each with a reply,
+// streams its shipments, exposes its stock as a read, knows who is
+// calling, gates what only staff may do, and answers over HTTP as well
+// as on its socket.
+
+type Order { item: String; qty: Int; }
+type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
+type Shipment { order_id: Int; item: String; qty: Int; }
+type Stock { on_hand: Int; orders: Int; }
+type Restock { qty: Int; }
+type Restocked { on_hand: Int; by: String; role: String; }
+
+topic Orders { payload: Order; subject: "shop.order"; }
+topic Restocks { payload: Restock; subject: "shop.restock"; }
+topic Shipments { payload: Shipment; subject: "shop.shipment"; }
+
+role clerk;
+role manager includes clerk;
+
+locus Shop {
+    contract {
+        @gated(role: clerk) expose stock: Stock;
+    }
+    params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
+    bus {
+        subscribe Orders as on_order;
+        subscribe Restocks as on_restock;
+        @gated(role: clerk) publish Shipments;
+    }
+
+    fn on_order(o: Order, ctx: std::api::Context) -> Placed {
+        if o.qty <= 0 || o.qty > self.stock.on_hand {
+            return Placed { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+        }
+        self.stock.on_hand = self.stock.on_hand - o.qty;
+        self.stock.orders = self.stock.orders + 1;
+        println("order " + to_string(self.stock.orders) + ": " + to_string(o.qty) + " " + o.item + " for " + ctx.caller.name + " via " + ctx.via);
+        Shipments <- Shipment { order_id: self.stock.orders, item: o.item, qty: o.qty };
+        return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+    }
+
+    @gated(role: manager)
+    fn on_restock(r: Restock, ctx: std::api::Context) -> Restocked {
+        self.stock.on_hand = self.stock.on_hand + r.qty;
+        return Restocked { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
+    }
+}
+
+// Who a bearer token on the HTTP transport is (a std::api::BearerSource).
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-front-desk" {
+            return std::api::Principal { mode: "bearer", name: "front-desk" };
+        }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus App {
+    params { shop: Shop = Shop { }; }
+    placement { shop: cooperative(pool = work) where async_io; }
+    bus { publish Orders; }
+    bindings {
+        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse),
+        http("127.0.0.1", 8794, principals: Tokens { });
+    }
+    run() {
+        Orders <- Order { item: "window display", qty: 1 };
+        while !self.draining { std::time::sleep(100ms); }
+    }
+}
+
+fn main() {
+    App { };
+}

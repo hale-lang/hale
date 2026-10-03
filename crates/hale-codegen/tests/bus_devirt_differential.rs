@@ -35,7 +35,7 @@ mod build_opts;
 const DEADLINE: Duration = Duration::from_secs(20);
 
 /// Servers never self-terminate — out of scope (matches corpus_oracle).
-const SKIP_SERVERS: &[&str] = &["http-hello", "io-demo", "docs-server"];
+const SKIP_SERVERS: &[&str] = &["http-hello", "io-demo", "docs-server", "92-build-an-api"];
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

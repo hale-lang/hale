@@ -30,9 +30,9 @@ bus	B-1	RouterV3	known-old-bug	1	crates/hale-types/tests/fixtures/placement/two_
 bus	B-1	Routes	known-old-bug	1	crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs
 bus	B-1	SourceReader	known-old-bug	1	dna/api
 bus	B-1	Table	known-old-bug	3	crates/hale-codegen/tests/form_hashmap_synced_retire.rs
-bus	B-1	Tokens	known-old-bug	2	crates/hale-types/tests/snapshot.rs
+bus	B-1	Tokens	known-old-bug	3	crates/hale-types/tests/snapshot.rs
 bus	B-1	__StdApiNoBearer	known-old-bug	6	crates/hale-cli/tests/fixtures/api_description/main.hl
-bus	B-1	__StdApiStaticRoles	known-old-bug	6	crates/hale-cli/tests/fixtures/api_description/main.hl
+bus	B-1	__StdApiStaticRoles	known-old-bug	7	crates/hale-cli/tests/fixtures/api_description/main.hl
 bus	B-1	__StdBytesBytesBuilder	known-old-bug	10	crates/hale-types/tests/effect_assertions.rs
 bus	B-1	__StdMetricsHistogramList	known-old-bug	2	dna/api/project_service
 bus	B-1	__StdMetricsMap	known-old-bug	2	dna/api/project_service
@@ -197,7 +197,7 @@ model	M-2	PushSlots	spec-disagreement	1	dna/api/project_service
 model	M-2	Routes	spec-disagreement	1	crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs
 model	M-2	WebAssets	spec-disagreement	1	dna/api
 model	M-2	__StdApiNoBearer	spec-disagreement	6	crates/hale-cli/tests/fixtures/api_description/main.hl
-model	M-2	__StdApiStaticRoles	spec-disagreement	6	crates/hale-cli/tests/fixtures/api_description/main.hl
+model	M-2	__StdApiStaticRoles	spec-disagreement	7	crates/hale-cli/tests/fixtures/api_description/main.hl
 model	M-2	__StdBytesBytesBuilder	spec-disagreement	307	crates/hale-types/tests/effect_assertions.rs
 model	M-2	__StdHttpServer	spec-disagreement	8	crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs
 model	M-2	__StdIoTcpListener	spec-disagreement	6	crates/hale-cli/tests/target_model.rs
@@ -262,7 +262,7 @@ model	M-5	RouterV1|RouterV2|RouterV3	known-old-bug	1	crates/hale-types/tests/fix
 model	M-5	RouterV2	known-old-bug	3	crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override/main.hl
 model	M-5	Shared	known-old-bug	1	dna/tests/workflow_attempt_test.hl
 model	M-5	Table	known-old-bug	2	crates/hale-types/tests/snapshot.rs
-model	M-5	Tokens	known-old-bug	2	crates/hale-types/tests/snapshot.rs
+model	M-5	Tokens	known-old-bug	3	crates/hale-types/tests/snapshot.rs
 model	M-5	Triple	known-old-bug	5	crates/hale-cli/tests/cross_seed_qualified_serves.rs
 model	M-5	Wrong	known-old-bug	1	dna/tests/workflow_attempt_test.hl
 model	M-5	__StdBytesBytesBuilder	known-old-bug	2	dna/tests/routing_test.hl
@@ -834,9 +834,9 @@ ownership	O-1/O-2	RouterV3	known-old-bug	1	crates/hale-types/tests/fixtures/plac
 ownership	O-1/O-2	Routes	known-old-bug	1	crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs
 ownership	O-1/O-2	SourceReader	known-old-bug	1	dna/api
 ownership	O-1/O-2	Table	known-old-bug	3	crates/hale-codegen/tests/form_hashmap_synced_retire.rs
-ownership	O-1/O-2	Tokens	known-old-bug	2	crates/hale-types/tests/snapshot.rs
+ownership	O-1/O-2	Tokens	known-old-bug	3	crates/hale-types/tests/snapshot.rs
 ownership	O-1/O-2	__StdApiNoBearer	known-old-bug	6	crates/hale-cli/tests/fixtures/api_description/main.hl
-ownership	O-1/O-2	__StdApiStaticRoles	known-old-bug	6	crates/hale-cli/tests/fixtures/api_description/main.hl
+ownership	O-1/O-2	__StdApiStaticRoles	known-old-bug	7	crates/hale-cli/tests/fixtures/api_description/main.hl
 ownership	O-1/O-2	__StdBytesBytesBuilder	known-old-bug	10	crates/hale-types/tests/effect_assertions.rs
 ownership	O-1/O-2	__StdMetricsHistogramList	known-old-bug	2	dna/api/project_service
 ownership	O-1/O-2	__StdMetricsMap	known-old-bug	2	dna/api/project_service
