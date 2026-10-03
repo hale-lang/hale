@@ -2051,14 +2051,17 @@ then the arena's release), `PreDrain`,
 `WaitAbort`, `PoolJoin` and `PinnedJoin`. Readiness, subscription and
 the run's admission have no events yet.
 
-The trace adds no happens-before edge between the threads it
-watches: the sequence number is one relaxed counter and the subject
-table takes no lock. On one thread `seq` order is program order, and
+The subject table publishes each initialized identity with a
+release/acquire ready flag: a thread finding a claimed slot waits
+until its instance number and initial metadata are ready. Later
+metadata updates and the sequence counter use relaxed atomics.
+On one thread `seq` order is program order, and
 if event a happens before event b then `seq(a) < seq(b)`, so a `seq`
 order that contradicts a required edge is a real violation, and one
 that agrees with it is evidence of an execution, not a proof. The
-write itself (one `write(2)` per line) is the trace's one
-perturbation. `hale_types::lifecycle::trace` parses the lines back
+subject publication and the write itself (one `write(2)` per line)
+perturb the execution; a traced run does not establish the ordering
+of an untraced run. `hale_types::lifecycle::trace` parses the lines back
 into `Event`s and checks them against what a run owes.
 
 `LOTUS_LIFECYCLE_SKIP`, read by a trace build's runtime at start, is

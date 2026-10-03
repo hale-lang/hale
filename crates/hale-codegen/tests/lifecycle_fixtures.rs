@@ -74,6 +74,119 @@ use lifecycle_plan::{normalized, plan, render};
 /// outcome of its own (`timeout`), not a stalled suite.
 const DEADLINE: Duration = Duration::from_secs(10);
 
+/// A slot's key is claimed before its instance number is assigned. Stop
+/// the creator in that window and make a second thread look up the same
+/// subject: it must wait for publication, never return instance zero.
+#[test]
+fn trace_subject_is_initialized_before_another_thread_uses_it() {
+    let runtime = include_str!("../runtime/lotus_arena.c");
+    let subject = runtime.split_once("#define LOTUS_LC_SLOTS").unwrap().1;
+    let subject = subject.split_once("static void lotus_lc_domain").unwrap().0;
+    // Compile the production lookup itself. These test-only wrappers stop
+    // the mint just before assignment and observe the reader's ready wait;
+    // neither hook is part of a shipped runtime or relies on a timed sleep.
+    let source = format!(r#"
+#include <assert.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static void mint_pause(void);
+static void ready_read(void);
+#define __atomic_add_fetch(...) \
+    ({{ __auto_type value = __atomic_add_fetch(__VA_ARGS__); mint_pause(); value; }})
+#undef atomic_load_explicit
+#define atomic_load_explicit(...) \
+    ({{ __auto_type value = __c11_atomic_load(__VA_ARGS__); ready_read(); value; }})
+
+#define LOTUS_LC_SLOTS{subject}
+
+#undef __atomic_add_fetch
+#undef atomic_load_explicit
+#define atomic_load_explicit __c11_atomic_load
+
+static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
+static int creator_paused, release_creator, reader_waiting, reader_done;
+static _Thread_local int reader;
+static int object;
+static uint64_t creator_inst, reader_inst;
+
+static void mint_pause(void) {{
+    pthread_mutex_lock(&gate);
+    creator_paused = 1;
+    pthread_cond_broadcast(&changed);
+    while (!release_creator) pthread_cond_wait(&changed, &gate);
+    pthread_mutex_unlock(&gate);
+}}
+
+static void ready_read(void) {{
+    if (!reader) return;
+    pthread_mutex_lock(&gate);
+    reader_waiting = 1;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&gate);
+}}
+
+static void *create_subject(void *unused) {{
+    (void)unused;
+    creator_inst = lotus_lc_subject(&object, NULL)->inst;
+    return NULL;
+}}
+
+static void *read_subject(void *unused) {{
+    (void)unused;
+    reader = 1;
+    lotus_lc_slot_t *slot = lotus_lc_subject(&object, "Subject");
+    reader_inst = slot->inst;
+    pthread_mutex_lock(&gate);
+    reader_done = 1;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&gate);
+    return NULL;
+}}
+
+int main(void) {{
+    alarm(5);
+    pthread_t creator, observer;
+    assert(pthread_create(&creator, NULL, create_subject, NULL) == 0);
+    pthread_mutex_lock(&gate);
+    while (!creator_paused) pthread_cond_wait(&changed, &gate);
+    pthread_mutex_unlock(&gate);
+    assert(pthread_create(&observer, NULL, read_subject, NULL) == 0);
+    pthread_mutex_lock(&gate);
+    while (!reader_waiting && !reader_done) pthread_cond_wait(&changed, &gate);
+    release_creator = 1;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&gate);
+    assert(pthread_join(creator, NULL) == 0);
+    assert(pthread_join(observer, NULL) == 0);
+    assert(reader_inst != 0 && reader_inst == creator_inst);
+    lotus_lc_slot_t *slot = lotus_lc_subject(&object, NULL);
+    assert(strcmp(slot->type, "Subject") == 0);
+    assert(slot->inc == 0 && slot->running == 0);
+    return 0;
+}}
+"#);
+    let bin = harness::unique_bin("hale_trace_subject_publication");
+    let c = bin.with_extension("c");
+    std::fs::write(&c, source).unwrap();
+    let built = Command::new("clang")
+        .args(["-std=gnu11", "-pthread"])
+        .arg(&c).arg("-o").arg(&bin)
+        .output().expect("compile the trace subject publication probe");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&bin).output().expect("run the trace subject publication probe");
+    let _ = std::fs::remove_file(&c);
+    let _ = std::fs::remove_file(&bin);
+    assert!(ran.status.success(), "trace subject publication: {}\n{}",
+        ran.status, String::from_utf8_lossy(&ran.stderr));
+}
+
 struct Fixture {
     file: &'static str,
     /// The inventory's decision line, or `RD` / `JP`.

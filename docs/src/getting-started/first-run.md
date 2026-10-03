@@ -89,8 +89,10 @@ A few switches worth knowing from day one:
   builds with the lifecycle trace: one `lc` line on stderr per step
   (a birth, a `run()`, a drain, a dissolve, a reclaim, the pool
   join), naming the instance, its restart incarnation and the thread
-  it ran on. A debug aid: the format is not a contract, and a build
-  without the switch carries none of it.
+  it ran on. Concurrent events for an instance wait for its trace
+  identity to be initialized; this synchronization and writing the
+  trace can affect scheduling. A debug aid: the format is not a
+  contract, and a build without the switch carries none of it.
 - **Editor & agent integration:** `hale lsp` is a stdio Language
   Server — point any LSP-speaking editor (or agent harness) at it
   and you get live diagnostics: type errors as errors, the
