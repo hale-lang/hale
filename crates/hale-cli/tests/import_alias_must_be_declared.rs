@@ -26,7 +26,7 @@
 //! programs must not trip it.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 /// Write a throwaway multi-seed tree under a pid-unique temp dir.
 fn seed(tag: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -44,12 +44,16 @@ fn seed(tag: &str, files: &[(&str, &str)]) -> PathBuf {
     d
 }
 
-fn hale(cwd: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+fn hale_output(cwd: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(args)
         .current_dir(cwd)
         .output()
-        .expect("hale");
+        .expect("hale")
+}
+
+fn hale(cwd: &Path, args: &[&str]) -> (bool, String) {
+    let out = hale_output(cwd, args);
     (
         out.status.success(),
         format!(
@@ -325,8 +329,16 @@ fn a_seeds_own_alias_in_every_path_position_stays_green() {
         ok,
         "a seed's own alias is reachable in every path position:\n{out}"
     );
-    let (ok, out) = hale(&top, &["run", "main.hl"]);
-    assert!(ok, "run: {out}");
+    let run = hale_output(&top, &["run", "main.hl"]);
+    assert!(
+        run.status.success(),
+        "run: {}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // This assertion checks the values reached through the aliases;
+    // shutdown diagnostics travel separately on stderr.
+    let out = String::from_utf8_lossy(&run.stdout);
     assert_eq!(
         out.lines().collect::<Vec<_>>(),
         vec!["from-lib lib-tag", "11 5 g", "1 lib-tag"],

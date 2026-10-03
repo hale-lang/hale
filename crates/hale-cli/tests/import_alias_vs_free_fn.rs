@@ -58,6 +58,7 @@ fn build_and_run(seed: &Path) -> (bool, String, String) {
     let out = Command::new(hale_bin())
         .arg("build")
         .arg(seed)
+        .env("LOTUS_DUMP_IR", "1")
         .output()
         .expect("invoke hale build");
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -193,13 +194,19 @@ fn free_fn_shadowing_nothing_still_mangles() {
 
     let (ok, log, stdout) = build_and_run(&dir.join("top"));
     let bin_path = dir.join("top").join("top");
-    let bin_bytes = std::fs::read(&bin_path).unwrap_or_default();
+    let ir = std::fs::read_to_string(bin_path.with_extension("ll"))
+        .expect("the pre-optimization IR beside the binary");
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "control build/run failed: {}", log);
     assert_eq!(stdout.trim(), "hello mid [x]", "control: {:?}", stdout);
-    let needle = b"__main__decorate";
+    // Optimization may inline the function and strip its native
+    // symbol. The mangling law is observed before optimization.
     assert!(
-        bin_bytes.windows(needle.len()).any(|w| w == needle),
+        ir.lines().any(|line| {
+            line.starts_with("define ")
+                && line.contains("@__lib_")
+                && line.contains("__main__decorate(")
+        }),
         "the imported seed's free fn should still carry a mangled \
          `__lib_<id>__main__decorate` symbol"
     );
