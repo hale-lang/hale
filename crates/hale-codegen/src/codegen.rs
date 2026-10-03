@@ -6524,6 +6524,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
             self.builder.position_at_end(do_bb);
+            // Logical teardown already ran if storage release is pending.
+            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+            let pending = self.builder.build_call(pending, &[self_arg.into()], "reclaim.pending")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value().left().expect("i64").into_int_value();
+            let pending = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, pending, i64_t.const_zero(), "reclaim.retired",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let ready_bb = self.context.append_basic_block(reclaim, "reclaim.ready");
+            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(ready_bb);
             // A child whose failure its parent is still holding (the
             // parent's params are not settled — spec/semantics.md §
             // "on_failure(c, err)") must outlive the handler that reads
@@ -7282,6 +7294,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(f) => f,
             None => return Ok(()),
         };
+        let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let func = self.current_fn.expect("dissolve frame current fn");
@@ -7392,6 +7405,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(header)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(cont);
+        self.emit_reclaim_scope_leave(retain)?;
         Ok(())
     }
 
@@ -32430,10 +32444,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
         if let Some(reclaim) = self.reclaim_fns.get(field_locus).copied() {
+            let request = self.module.get_function("lotus_reclaim_request")
+                .expect("reclaim request declared");
             self.builder
                 .build_call(
-                    reclaim,
-                    &[old_ptr.into()],
+                    request,
+                    &[
+                        old_ptr.into(), cs.self_ptr.into(),
+                        reclaim.as_global_value().as_pointer_value().into(),
+                    ],
                     &format!("{}.reassign.reclaim_old", field_locus),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

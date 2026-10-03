@@ -1,24 +1,12 @@
-//! Decision line 19 in the emitted IR (F.40 phase 3, L5): every reclaim
-//! path begins its Reclaim bracket with `lotus_run_cancel_queued(self)`,
-//! past the `__arena` latch and before the arena (or, for an elided
-//! arena, the struct) is released, so a run queued on any pool for the
-//! instance finds it whole or finds its ticket canceled.
+//! Decision line 19 at each emitted teardown spine: logical reclaim
+//! cancels queued runs before handing storage to its release callback.
+//! The callback waits for admitted runs before releasing any storage,
+//! including forms, recognition pools, descendants, arenas and structs.
+//! Its deferred return touches none of those resources.
 //!
-//! The teardown spines all funnel into one chokepoint
-//! (`emit_locus_arena_destroy`), so the call is one line in the
-//! compiler; what this file pins is that each spine reaches it: the
-//! eager spine (a statement literal), the deferred spine (a `let` at the
-//! frame flush), the return spine (`return` from `fn main`), the reclaim
-//! spine (`__reclaim_<L>`, a flow child's run end) and the dissolve
-//! cascade (an owner's field). For each, the pre-optimization IR of the
-//! spine's function holds the latch-passed block of the instance's
-//! reclaim, and that block calls the cancel before it branches to the
-//! release; across the module there is exactly one cancel per reclaim
-//! block, so the IR changes by that call and nothing else (the release
-//! IR shadow over the corpus says the same of every program).
-//!
-//! Programs are assembled from ordinary string constants, never a raw
-//! string literal (the corpus harvest's note, `lifecycle_matrix.rs`).
+//! These checks follow the pre-optimization CFG in both functions. They
+//! cover eager, frame, explicit return, reclaim and field-cascade paths;
+//! executable fixtures separately exercise the deferred callback.
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -88,76 +76,84 @@ fn blocks(f: &str) -> Vec<Block<'_>> {
     out
 }
 
-/// The latch-passed blocks of locus `l`'s reclaims in `f`: the arena's
-/// release path and the elided arena's struct release.
-fn latch_passed<'a>(bs: &'a [Block<'a>], l: &str) -> Vec<&'a Block<'a>> {
-    let numbered = |label: &str, prefix: &str| {
-        label.strip_prefix(prefix).is_some_and(|r| r.chars().all(|c| c.is_ascii_digit()))
-    };
-    let (arena, elide) = (format!("{l}.arena.destroy.do"), format!("{l}.elide.release_struct"));
-    bs.iter().filter(|b| numbered(b.label, &arena) || numbered(b.label, &elide)).collect()
-}
+const RELEASES: &[&str] = &[
+    "@lotus_arena_destroy(", "@lotus_recpool_fixed_release(",
+    "@lotus_recpool_slab_release(", "@lotus_child_struct_release(",
+    "@lotus_children_free(", "@lotus_vec_destroy(", "@lotus_hashmap_destroy(",
+    "@lotus_ring_buffer_destroy(", "@lotus_lru_free(",
+    "@lotus_recpool_fixed_destroy(", "@lotus_recpool_slab_destroy(",
+    "@lotus_reclaim_flush_owned(",
+];
 
-const RELEASES: &[&str] =
-    &["@lotus_arena_destroy(", "@lotus_recpool_fixed_release(", "@lotus_recpool_slab_release(", "@lotus_child_struct_release("];
-
-/// The latch's bookkeeping, the only calls allowed before the cancel:
-/// the drain-observer count (GH #1077), and in a trace build the
-/// Reclaim's entry.
-fn bookkeeping(line: &str) -> bool {
-    line.contains("@lotus_drain_observer_add(") || line.contains("@lotus_lc_")
-}
-
-/// From the latch-passed block, every path to a release passes through
-/// the cancel, and the cancel is reached: the walk that stops at the
-/// cancel's block finds no release, and finds that block. Before the
-/// cancel only the latch's [`bookkeeping`] calls anything.
-fn assert_cancels_first(tag: &str, bs: &[Block<'_>], start: &Block<'_>) {
-    let by_label = |l: &str| bs.iter().find(|b| b.label == l).unwrap_or_else(|| panic!("{tag}: no block {l}"));
-    let mut seen: Vec<&str> = vec![start.label];
-    let mut work = vec![start];
-    let mut cancels = 0;
-    while let Some(b) = work.pop() {
-        if let Some(at) = b.body.find(CANCEL) {
-            cancels += 1;
-            let before = &b.body[..at];
-            assert!(!RELEASES.iter().any(|r| before.contains(r)), "{tag}: {} releases before it cancels:\n{}", b.label, b.body);
-            let calls: Vec<&str> = before.lines().filter(|l| l.contains("call ") && !bookkeeping(l)).collect();
-            assert!(calls.is_empty(), "{tag}: {} calls {calls:#?} before the cancel", b.label);
-            continue;
-        }
-        assert!(!RELEASES.iter().any(|r| b.body.contains(r)), "{tag}: {} reaches a release with no cancel:\n{}", b.label, b.body);
-        let calls: Vec<&str> = b.body.lines().filter(|l| l.contains("call ") && !bookkeeping(l)).collect();
-        assert!(calls.is_empty(), "{tag}: {} calls {calls:#?} before the cancel", b.label);
-        for s in &b.succs {
-            if !seen.contains(s) {
-                seen.push(s);
-                work.push(by_label(s));
+/// Every path that reaches a physical release must first wait. The
+/// alternative path may return with retirement pending, without freeing.
+fn assert_wait_dominates_release(tag: &str, f: &str) {
+    let bs = blocks(f);
+    let first = bs.iter().position(|b| !b.body.is_empty()).expect("entry block");
+    let mut work = vec![(first, false)];
+    let mut seen = Vec::new();
+    let mut waits = 0;
+    let mut releases = 0;
+    while let Some((index, mut waited)) = work.pop() {
+        if seen.contains(&(index, waited)) { continue; }
+        seen.push((index, waited));
+        let b = &bs[index];
+        for line in b.body.lines() {
+            if line.contains(CANCEL) { waited = true; waits += 1; }
+            if RELEASES.iter().any(|r| line.contains(r)) {
+                releases += 1;
+                assert!(waited, "{tag}: release without run-hold wait in {}: {line}", b.label);
             }
         }
+        for succ in &b.succs {
+            let next = bs.iter().position(|b| b.label == *succ).expect("successor");
+            work.push((next, waited));
+        }
     }
-    assert_eq!(cancels, 1, "{tag}: from {} the cancel is reached {cancels} times, not once", start.label);
+    assert!(waits > 0 && releases > 0, "{tag}: no wait/release path: {f}");
 }
 
-/// The spine's function holds `l`'s reclaim, each one cancels first,
-/// and the module carries exactly one cancel per reclaim.
 fn assert_spine(tag: &str, ir: &str, func: &str, l: &str) -> usize {
-    let bs = blocks(function(ir, func));
-    let mine = latch_passed(&bs, l);
-    assert!(!mine.is_empty(), "{tag}: `{func}` holds no reclaim of {l}:\n{}", function(ir, func));
-    for b in &mine {
-        assert_cancels_first(tag, &bs, b);
+    let f = function(ir, func);
+    let bs = blocks(f);
+    let prefix = format!("{l}.storage.release.live");
+    let starts: Vec<_> = bs.iter().enumerate().filter(|(_, b)| b.label.strip_prefix(&prefix)
+        .is_some_and(|r| r.chars().all(|c| c.is_ascii_digit()))).map(|(i, _)| i).collect();
+    assert!(!starts.is_empty(), "{tag}: `{func}` holds no reclaim of {l}:\n{f}");
+    let helper_prefix = format!("@__release_storage_{l}_");
+    let mut helpers = Vec::new();
+    for start in &starts {
+        let mut work = vec![(*start, false)];
+        let mut seen = Vec::new();
+        let mut reached = false;
+        while let Some((index, mut canceled)) = work.pop() {
+            if seen.contains(&(index, canceled)) { continue; }
+            seen.push((index, canceled));
+            let b = &bs[index];
+            let mut handed_off = false;
+            for line in b.body.lines() {
+                if line.contains("call void @lotus_run_cancel_only(") { canceled = true; }
+                if let Some(at) = line.find(&helper_prefix) {
+                    assert!(canceled, "{tag}: release callback before cancellation: {line}");
+                    let name = &line[at + 1..];
+                    let end = name.find(['(', ')', ',', ' ']).expect("callee boundary");
+                    let name = &name[..end];
+                    if !helpers.contains(&name) { helpers.push(name); }
+                    handed_off = true;
+                    reached = true;
+                }
+            }
+            if !handed_off {
+                for succ in &b.succs {
+                    let next = bs.iter().position(|b| b.label == *succ).expect("successor");
+                    work.push((next, canceled));
+                }
+            }
+        }
+        assert!(reached, "{tag}: logical reclaim never reaches its storage callback");
     }
-    // Every locus's reclaim, the stdlib's included.
-    let any_reclaim = |label: &str| {
-        [".arena.destroy.do", ".elide.release_struct"].iter().any(|k| {
-            label.rfind(k).is_some_and(|i| label[i + k.len()..].chars().all(|c| c.is_ascii_digit()))
-        })
-    };
-    let reclaims: usize =
-        ir.split("\ndefine ").skip(1).map(|f| blocks(f).iter().filter(|b| any_reclaim(b.label)).count()).sum();
-    assert_eq!(ir.matches(CANCEL).count(), reclaims, "{tag}: the module's cancels and its reclaims differ");
-    mine.len()
+    for helper in helpers { assert_wait_dominates_release(tag, function(ir, helper)); }
+    starts.len()
 }
 
 /// The eager spine: a statement literal is torn down where it stands.

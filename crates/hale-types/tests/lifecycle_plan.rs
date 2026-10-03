@@ -316,7 +316,7 @@ fn a_field_reached_under_parents_on_two_domains_claims_both() {
         assert!(b.edges.entry.iter().any(|pr| pr.event.obligation == leaf_birth));
     }
     for r in rows(p, "Parent", K::Reclaim) {
-        assert!(r.edges.entry.iter().any(|pr| pr.event.obligation == leaf_reclaim));
+        assert!(r.edges.completion.iter().any(|pr| pr.event.obligation == leaf_reclaim));
     }
 }
 
@@ -424,7 +424,7 @@ fn a_body_literal_under_enclosing_templates_on_two_domains_claims_both() {
     let mid_reclaims = rows(p, "Mid", K::Reclaim);
     assert_eq!(mid_reclaims.len(), 2, "two Mid literals, two templates");
     for r in mid_reclaims {
-        assert!(r.edges.entry.iter().any(|pr| pr.event.obligation == leaf_reclaim));
+        assert!(r.edges.completion.iter().any(|pr| pr.event.obligation == leaf_reclaim));
     }
 }
 
@@ -551,6 +551,11 @@ fn a_flow_child_is_reclaimed_at_its_runs_end_before_its_owner() {
     assert!(rows(p, "Kid", K::Drain).iter().all(|o| o.holder.spine == Spine::Reclaim));
     let app_reclaim = one(p, "App", K::Reclaim);
     assert_eq!(app_reclaim.edges.entry.iter().filter(|pr| pr.rule.line == Some("14")).count(), 3);
+    assert_eq!(app_reclaim.edges.completion.iter().filter(|pr| pr.rule.line == Some("14")).count(), 3);
+    for edge in app_reclaim.edges.completion.iter().filter(|pr| pr.rule.line == Some("14")) {
+        assert_eq!(p.obligations[edge.event.obligation.0 as usize].kind, K::Reclaim);
+        assert_eq!(edge.event.point, Point::Completed);
+    }
 }
 
 /// Line 19 holds a started run against cross-pool field replacement as
@@ -564,6 +569,8 @@ fn a_started_run_is_retained_until_reclaim_completes() {
         include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_retained_async.hl"),
         include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_publishes_back.hl"),
         include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_publishes_back_async.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_handler_replaces_started_run.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_handler_replaces_started_run_async.hl"),
     ] {
         let s = snapshot(src);
         let p = plan(&s);

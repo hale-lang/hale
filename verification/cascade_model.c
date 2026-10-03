@@ -28,8 +28,8 @@
  *     waiter frees the node);
  *   - the compiled `__reclaim_<L>` fast path (a MONOTONIC load of
  *     `lotus_held_failure_count`, then defer_reclaim) and the reclaim
- *     bracket of emit_locus_arena_destroy (the `__arena` latch, then
- *     lotus_run_cancel_queued first, then the arena released);
+ *     bracket of emit_locus_arena_destroy (the `__arena` latch,
+ *     queued cancellation, the started-run wait, then arena release);
  *   - the run tickets and holds: lotus_run_ticket_take (in the run
  *     post), lotus_run_admit (the worker's dispatch: the ticket becomes
  *     the run's hold, still linked), lotus_run_hold_release (the run
@@ -45,6 +45,12 @@
  *     thread's params-open to the worker.
  *
  * REDUCTIONS (not the production code):
+ *   - The compiler's initial lotus_run_cancel_only and the physical
+ *     callback's lotus_run_cancel_queued are collapsed to one cancel
+ *     followed by its wait. There is no handler on the reclaiming
+ *     thread here. The handler-boundary retirement queue, active-release
+ *     guards, owner links and retained descendant trees are NOT modeled;
+ *     deadline, trace-order and ASan regressions exercise those paths.
  *   - `pthread_self()` / `pthread_equal()` are a model thread id passed
  *     in: the opener test in lotus_failure_await compares ids, and the
  *     thread-local `t_run_running` (the caller's own run, which its

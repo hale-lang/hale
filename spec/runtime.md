@@ -1850,12 +1850,15 @@ lifecycle trace (§ "The lifecycle trace"), held to the plan the
 table's producer (`hale_types::lifecycle::derive`) derives for its
 program, on its line's rules (three of line 19's, whose shapes the
 producer does not derive yet, to a hand-written plan).
-The four started-run retention fixtures use the derived plan, including
+The six started-run retention fixtures use the derived plan, including
 the edge from each run's end to its reclaim's completion. A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
-teardown at the literal.
+teardown at the literal. An owner's Reclaim entry follows its children's
+Dissolve completion; its Reclaim completion follows their Reclaim
+completion. This permits retained storage while preserving physical
+release from children to owner.
 A departure the trace shows and the outcome cannot (a missing step,
 a step on the wrong thread) is in the same file's
 `TRACE_KNOWN_OPEN` table. A line still waiting on a condition
@@ -1986,9 +1989,9 @@ its `KNOWN_OPEN` table.
   shows none. Not yet shipped (inventory row C48): its resumed
   incarnation enters a `Run`, the empty one the desugar gives it,
   where its first never does (`l01_neg_same_pool_held.hl`).
-- **Line 14, order.** There is no runtime state machine: order is
-  the order the compiler emits, and latches keep a step from
-  running twice (§ "Lifecycle", "Order by construction"). Shipped
+- **Line 14, order.** Order follows the steps the compiler emits;
+  latches and pending-release records keep teardown from running
+  twice (§ "Lifecycle", "Order by construction"). Shipped
   (`l14_reclaim_exactly_once.hl`), and verified: the trace build
   (§ "The lifecycle trace") checks every fixture's run, and every
   runnable example's, against laws that hold whatever the plan (an
@@ -2085,15 +2088,37 @@ its `KNOWN_OPEN` table.
   before, and the hold guards the memory only. A run executing on the
   reclaiming thread is not waited for. Such a run is the one whose
   end reclaims its own child, which happens after `run()` returned.
-  The wait services the reclaiming thread's queue as a yield does, so
-  a run that publishes back to that thread and waits for its answer
-  cannot deadlock it. A coroutine on an async pool parks while it
+  Outside a live handler, the wait services the reclaiming thread's
+  queue as a yield does. Inside a queued main-thread handler, drain,
+  dissolve and queued-run cancellation still happen at the reclaim
+  site, but physical release is queued until that handler returns.
+  The queue guard stays set throughout the handler body: a free
+  function's tail drain cannot start the next handler early. At the
+  boundary, a release callback can wait and service replies normally.
+  A coroutine on an async pool parks while it
   waits, so its worker runs its other cells and coroutines. Main
   drains its bus queue between short sleeps, and a pinned thread
   drains its mailbox the same way (`l19_started_run_retained.hl` and
   `l19_started_run_retained_async.hl`, both also under
   AddressSanitizer; `l19_started_run_publishes_back.hl` and its
-  `_async` twin). Before the hold, admission freed the ticket and
+  `_async` twin). The handler variants
+  (`l19_handler_replaces_started_run.hl` and its `_async` twin) check
+  dissolve-before-replacement, handler completion order, a handler-local
+  temporary and a started run reading a nested form's storage. Both
+  dispatch modes run these and the run-body controls under ASan.
+  Removing the handler boundary restores the original deadlock under
+  the fixture's deadline.
+
+  Physical release waits before freeing forms, children trackers,
+  recognition pools, arenas or recyclable structs. While an owner's
+  run can still read its descendants, their logical teardown collects
+  physical-release callbacks under that owner. The owner waits first,
+  releases those descendants, then releases its own storage. Retired
+  fields retain an explicit owner link after their field slots change.
+  Nested handler drains during a release cannot start another release
+  callback beneath it; pending requests are coalesced. Unowned
+  handler-local stack instances retain synchronous release.
+  Before the hold, admission freed the ticket and
   nothing held the child. Such a reclaim released the arena under the
   running run, a heap-use-after-free under AddressSanitizer in both
   dispatch modes. A run whose child is never reclaimed until its

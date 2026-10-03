@@ -56,7 +56,10 @@ That has consequences worth stating rather than burying:
   deadlocks with a child waiting for its parent, rests on the
   deadline and lifecycle-matrix tests, not on the model. So does the
   reclaim's wait for a started run ending; the model checks only that
-  the child's memory outlives the run.
+  the child's memory outlives the run. The handler-boundary release
+  queue and retention of an owner's descendant storage are exercised
+  by deadline, trace-order and ASan tests; they are not represented by
+  that model.
 - The CI gate is conditional: a prose-only diff skips the model
   checker, on the reasoning that no sentence in a `.md` alters a memory
   ordering.

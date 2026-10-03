@@ -22,10 +22,13 @@ fn gate(what: String) -> String {
     return "/tmp/hale-l19-publish-" + what + "-" + to_string(std::process::pid());
 }
 
+@form(vec)
+locus Rows { capacity { heap values of Int; } }
+
 locus Kid {
-    params { tag: Int = 0; name: String = ""; }
+    params { tag: Int = 0; name: String = ""; rows: Rows = Rows { }; }
     bus { publish Notes; }
-    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; self.rows.push(7); }
     run() {
         if self.tag == 0 {
             std::io::fs::write_file(gate("started"), "go") or discard;
@@ -35,6 +38,7 @@ locus Kid {
                 std::time::sleep(1ms);
             }
         }
+        println("ev rows " + to_string(self.tag) + " " + to_string(self.rows.len()));
         println("ev kid-run " + to_string(self.tag) + " " + self.name);
     }
     dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }

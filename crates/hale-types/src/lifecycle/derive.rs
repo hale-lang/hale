@@ -1841,9 +1841,14 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.get(cd).edges.entry.push(after(pd, Point::Completed, Rule::SHIPPED));
             }
         }
-        // Children before their owner's arena (line 14).
+        // Children before their owner's physical release (line 14).
+        // Reclaim can begin by canceling posts and retaining a tree
+        // through a started run; its entry need not free storage yet.
         if let (Some(cr), Some(pr)) = (child.reclaim, parent.reclaim) {
-            self.get(pr).edges.entry.push(after(cr, Point::Completed, shipped("14")));
+            if let Some(cd) = child.dissolve {
+                self.get(pr).edges.entry.push(after(cd, Point::Completed, shipped("14")));
+            }
+            self.get(pr).edges.completion.push(after(cr, Point::Completed, shipped("14")));
         }
         // A held failure: delivered once the owner's last param is
         // stored, completed at its settle, before its birth (line 1).

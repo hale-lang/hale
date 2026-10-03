@@ -38,7 +38,7 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | `bus_grow_model.c` | the GROW branch of `bus_queue_enqueue_inner` vs. `lotus_bus_queue_drain` in `lotus_arena.c` — a producer reallocs and frees the `cells` array while a consumer is between its unlock and its use of the popped cell. The pop-snapshot-under-lock is what makes that safe. | ✅ verified: **6 executions, no errors** |
 | `hashmap_iter_model.c` | `lotus_hashmap_iter_next` (LOCKFREE arm) in `lotus_arena.c` — iteration is a SEQUENCE of enter/exit steps, so a grow can land between them. Pinned to `--sc`; see "the RA question" below. | ⚠️ verified under `--sc` only: **13 executions**; fails under the default RA model |
 | `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
-| `cascade_model.c` | the failure cascade in `lotus_arena.c` (F.40 phase 3, L5): `lotus_params_open` / `lotus_params_settle`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, the compiled `__reclaim_<L>` fast path and reclaim bracket, and the run tickets and holds (`lotus_run_ticket_take`, `lotus_run_admit`, `lotus_run_hold_release`, `lotus_run_cell_drop_canceled`, `lotus_run_cancel_queued` and its `lotus_run_hold_wait`) over the pool's MPSC ring. Checks exactly-once teardown, the child and violation retained until the handler completes, a run finding its child whole or its ticket canceled, no delivery before the owner's params settle, and a started run holding its child until it returns against a reclaim no join orders. Its header states the proof boundary (see "The failure cascade's boundary" below). | ⏳ added 2026-10-02 without a local GenMC: the CI `genmc` job is its first exploration |
+| `cascade_model.c` | the failure cascade in `lotus_arena.c` (F.40 phase 3, L5): `lotus_params_open` / `lotus_params_settle`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, the compiled `__reclaim_<L>` fast path and reclaim bracket, and the run tickets and holds (`lotus_run_ticket_take`, `lotus_run_admit`, `lotus_run_hold_release`, `lotus_run_cell_drop_canceled`, `lotus_run_cancel_queued` and its `lotus_run_hold_wait`) over the pool's MPSC ring. Checks exactly-once teardown, the child and violation retained until the handler completes, a run finding its child whole or its ticket canceled, no delivery before the owner's params settle, and a started run holding its child until it returns against a reclaim no join orders. Its header states the proof boundary (see "The failure cascade's boundary" below). | ✅ 2026-10-03, GenMC 0.17 / LLVM 18: 630 complete, 126 blocked, no errors; all five negative controls fail as expected |
 
 ## Coverage gaps and drift (audited 2026-08-02)
 
@@ -208,6 +208,13 @@ thread waits) rest on the deadline oracle and the lifecycle matrix
 (`crates/hale-codegen/tests/lifecycle_matrix.rs`, the `l01_*` /
 `l19_*` fixtures), not on GenMC.
 
+**Handler-boundary storage release is out.** The model collapses
+initial queued-run cancellation and the later hold wait into one
+operation. It has no retirement queue, active-release guard or
+descendant-storage graph. The handler and run-body fixtures exercise
+those paths with nested form storage, both dispatch modes and ASan;
+removing the handler boundary restores the deadlock under a deadline.
+
 **A started run against a reclaim no join orders is in.** It was the
 model's open boundary while admission freed the ticket and nothing
 held the child: `-DMODEL_RECLAIM_UNJOINED` released the arena right
@@ -222,9 +229,12 @@ Its negative controls are `-DMODEL_BUG_NO_HOLD`,
 `-DMODEL_BUG_ADMIT_IGNORES_CANCEL` and `-DMODEL_BUG_RECLAIM_SKIPS_WAIT`
 (the reclaim does not wait for the started run's hold: assertion (5),
 the arena released before the run returns). Each is named in the
-header with the assertion it is expected to fail. Like the model
-itself, they have not yet run under GenMC, and `run_genmc.sh` runs
-only the default configuration.
+header with the assertion it is expected to fail. On 2026-10-03,
+GenMC 0.17 with LLVM 18 explored 630 complete executions and 126
+blocked executions of the positive model without an error. All five
+negative controls reported their expected safety failure (the
+delivered-before-handler control reports a non-atomic race).
+`run_genmc.sh` runs only the default configuration.
 
 ## Roadmap
 

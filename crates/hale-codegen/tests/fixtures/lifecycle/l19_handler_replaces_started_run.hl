@@ -1,0 +1,81 @@
+// Decision line 19: a queued handler replaces a child whose started
+// run needs another handler on the same queue before it can return.
+// Drain/dissolve precede the new child; only storage release waits
+// until the replacing handler returns. Handler order and the old run
+// reading its heap String are both preserved.
+// Gate files establish the overlap without a timing-dependent sleep.
+// Expected outcome: answered-after-handler, with each child reclaimed
+// once and Run.Ended before Reclaim.Completed in the derived plan.
+
+type Note { tag: Int; }
+topic Replaces { payload: Note; }
+topic Notes { payload: Note; subject: "lifecycle.l19.started"; }
+
+fn gate(what: String) -> String {
+    return "/tmp/hale-l19-handler-" + what + "-" + to_string(std::process::pid());
+}
+
+@form(vec)
+locus Rows { capacity { heap values of Int; } }
+
+locus Scratch {
+    params { name: String = ""; }
+    birth() { self.name = "handler-" + to_string(std::process::pid()); }
+    run() { println("ev scratch-run " + self.name); }
+    dissolve() { println("ev scratch-dissolve"); }
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; rows: Rows = Rows { }; }
+    bus { publish Notes; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; self.rows.push(7); }
+    run() {
+        if self.tag == 0 {
+            std::io::fs::write_file(gate("started"), "go") or discard;
+            while !std::io::fs::file_exists(gate("replacing")) { std::time::sleep(1ms); }
+            Notes <- Note { tag: self.tag };
+            while !std::io::fs::file_exists(gate("heard")) {
+                std::time::sleep(1ms);
+            }
+        }
+        println("ev rows " + to_string(self.tag) + " " + to_string(self.rows.len()));
+        println("ev kid-run " + to_string(self.tag) + " " + self.name);
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+locus Driver {
+    bus { publish Replaces; }
+    run() {
+        while !std::io::fs::file_exists(gate("started")) { std::time::sleep(1ms); }
+        Replaces <- Note { tag: 1 };
+    }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 0 }; driver: Driver = Driver { }; }
+    placement { k: cooperative(pool = side); driver: cooperative(pool = driver); }
+    bus { subscribe Notes as on_note; subscribe Replaces as on_replace; }
+    fn on_replace(n: Note) {
+        std::io::fs::write_file(gate("replacing"), "go") or discard;
+        self.k = Kid { tag: 1 };
+        Scratch { };
+        println("ev replaced");
+        std::io::fs::write_file(gate("done"), "go") or discard;
+    }
+    fn on_note(n: Note) {
+        println("ev heard " + to_string(n.tag));
+        std::io::fs::write_file(gate("heard"), "go") or discard;
+    }
+    run() {
+        while !std::io::fs::file_exists(gate("done")) { std::time::sleep(1ms); }
+    }
+    dissolve() {
+        std::io::fs::unlink(gate("started")) or discard;
+        std::io::fs::unlink(gate("replacing")) or discard;
+        std::io::fs::unlink(gate("heard")) or discard;
+        std::io::fs::unlink(gate("done")) or discard;
+    }
+}
+
+fn main() { App { }; }

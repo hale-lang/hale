@@ -1412,11 +1412,11 @@ Assigning a fresh locus literal to a locus-typed field —
 `self.<field> = SomeLocus { … };` — is a **lifecycle
 transition**, not a value store. It is lowered **break-before-make**:
 
-1. The instance currently in the field is reclaimed — its full
-   teardown spine runs (drain → dissolve → arena freed), so its
-   resources are released: `@ffi` handles closed, child loci
-   cascaded, region returned. This is the same teardown a child
-   gets when its parent dissolves.
+1. The instance currently in the field runs its teardown spine:
+   drain → dissolve, including its child cascade. Cleanup such as
+   closing `@ffi` handles happens before the replacement's birth.
+   Its storage is released once started runs have given up their
+   holds, as in the teardown when its parent dissolves.
 2. A new instance is constructed from the literal **into self's
    own arena**, owned by the field (not scope-bound) — so it
    outlives the enclosing method and is reclaimed through the
@@ -1424,12 +1424,16 @@ transition**, not a value store. It is lowered **break-before-make**:
    child from params-init.
 3. The field is repointed at the live new instance.
 
-The old and new instances do not coexist: the old is fully torn
-down before the new is constructed. (Treating the assignment as a
-plain value store — the naive lowering — would leave the field
-pointing at a scope-dissolved temporary: closed handles, freed
-arena, use-after-free on next use. The transition lowering exists
-to prevent exactly that.)
+The old instance's drain and dissolve finish before the new instance
+is constructed. There is one storage-retention exception: when a
+queued main-thread handler performs the replacement, waiting for an
+old run inside that handler could deadlock a reply queued behind it.
+Physical release is then deferred until the handler returns. The old
+run retains its arena, forms and owned descendants until it finishes;
+their storage is released before the containing owner's storage.
+This does not postpone `dissolve()` or keep resources closed by that
+method open. Handler bodies keep their completion order. Outside a
+handler, replacement waits for the old run while servicing the queue.
 
 For "same instance, reconfigure," use **in-place mutation**
 (`self.<field>.<x> = v;`), which stays the cheap path and triggers
