@@ -838,6 +838,50 @@ fn the_main_fall_through_spine_owes_the_wait_abort_before_the_join() {
     }
 }
 
+/// Lines 7 and 16, from one source: every teardown spine states its
+/// process rows and the plan's reader orders them. The quiesce, the
+/// wait-abort, the join on the main locus's own teardown, eager or
+/// deferred; `fn main`'s three exits likewise, then the frame's
+/// pre-drain, or, without pools, the pre-drain ahead of the wait-abort.
+/// The eager spine's pre-drain is the one it does not emit (C13).
+#[test]
+fn every_teardown_spine_states_its_process_rows() {
+    let pool_app = "locus Worker { run() { } }\n\
+                    main locus App { params { w: Worker = Worker { }; } placement { w: cooperative(pool = side); } run() { } }\n";
+    let bare_app = "main locus App { run() { } }\n";
+    let order = |app: &str, main: &str, spine: Spine| -> Vec<K> {
+        let s = snapshot(&format!("{app}{main}"));
+        let p = plan(&s);
+        assert!(laws(p).is_empty(), "{:?}", laws(p));
+        p.process_order(spine).expect("one order").iter().map(|st| st.kind).collect()
+    };
+    let eager = "fn main() { App { }; }\n";
+    let deferred = "fn start() { let app = App { }; }\nfn main() { start(); }\n";
+    let let_bound = "fn main() { let app = App { }; }\n";
+    let head = [K::IngressQuiesce, K::WaitAbort, K::PoolJoin, K::JoinProgress];
+    assert_eq!(order(pool_app, eager, Spine::EagerTeardown), [&[K::PreDrain][..], &head].concat());
+    assert_eq!(order(bare_app, eager, Spine::EagerTeardown), vec![K::PreDrain, K::IngressQuiesce, K::WaitAbort]);
+    assert_eq!(order(pool_app, deferred, Spine::DeferredMainEntry), head.to_vec());
+    assert_eq!(order(pool_app, let_bound, Spine::DeferredMainEntry), head.to_vec());
+    for spine in [Spine::MainFallThrough, Spine::MainReturn, Spine::MainTestFailure] {
+        assert_eq!(order(pool_app, let_bound, spine), [&head[..], &[K::PreDrain]].concat(), "{}", spine.name());
+        assert_eq!(order(bare_app, let_bound, spine), vec![K::IngressQuiesce, K::PreDrain, K::WaitAbort], "{}", spine.name());
+    }
+    // A main locus built by another fn is torn down at that fn's exit,
+    // before `fn main`'s: its head comes first.
+    let s = snapshot(&format!("{pool_app}{deferred}"));
+    let p = plan(&s);
+    let row = |kind: K, spine: Spine| p.iter().find(|(_, o)| o.site.is_none() && o.kind == kind && o.holder.spine == spine).expect("a row").0;
+    let (entry_join, exit_quiesce) = (row(K::PoolJoin, Spine::DeferredMainEntry), row(K::IngressQuiesce, Spine::MainFallThrough));
+    assert!(p.get(exit_quiesce).expect("a row").edges.entry.iter().any(|pr| pr.event.obligation == entry_join));
+    let eager_pre = p.iter().find(|(_, o)| o.kind == K::PreDrain && o.holder.spine == Spine::EagerTeardown);
+    assert!(eager_pre.is_none(), "no eager statement here");
+    let s = snapshot(&format!("{pool_app}{eager}"));
+    let p = plan(&s);
+    let pre = p.iter().find(|(_, o)| o.kind == K::PreDrain && o.holder.spine == Spine::EagerTeardown).expect("a pre-drain").1;
+    assert_eq!(pre.status, Status::KnownOpen { inventory_row: "C13" });
+}
+
 /// A subscribing main instance uses its deferred main-entry spine;
 /// static posted fields also owe cancellation if reclaimed while queued.
 #[test]

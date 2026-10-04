@@ -496,9 +496,11 @@ fn fields_named(subjects: &[Subject<'_>], owner: usize, name: &str) -> usize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum How {
-    /// A template's top: a root or entry literal in `fn main`, or the
-    /// entry's implicit construction of the root.
-    Top { built: Built, main_locus: bool },
+    /// A template's top: a root or entry literal, or the entry's implicit
+    /// construction of the root; `in_fn_main` where `fn main`'s frame
+    /// holds it (a root built by another fn is torn down at that fn's
+    /// exit).
+    Top { built: Built, main_locus: bool, in_fn_main: bool },
     /// A params field of its owner.
     Field,
     /// An adapter of the root's `bindings { }`.
@@ -550,10 +552,13 @@ fn subjects<'a>(
         let how = if key.path.is_empty() {
             match key.origin {
                 Origin::Binding(_) => How::Adapter,
-                Origin::Entry(_) => How::Top { built: Built::Statement, main_locus: main_locus.as_ref() == Some(&realizes) },
+                Origin::Entry(_) => {
+                    How::Top { built: Built::Statement, main_locus: main_locus.as_ref() == Some(&realizes), in_fn_main: true }
+                }
                 Origin::Construction(lit) => How::Top {
                     built: literals.get(&lit).map(|l| l.built).unwrap_or(Built::Statement),
                     main_locus: main_locus.as_ref() == Some(&realizes),
+                    in_fn_main: literals.get(&lit).is_none_or(|l| l.member == Member::FnMain),
                 },
             }
         } else {
@@ -1917,21 +1922,16 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
     }
 
-    /// What the spines owe the process: the main locus's eager teardown
-    /// (its pre-drain, the wait-abort, the pool join), `fn main`'s exit
-    /// (the pool join, its pre-drain, the wait-abort), and the signal
-    /// path's cooperative drain.
-    fn process(&mut self) {
-        let pools = self.plan.domains.iter().any(|d| matches!(d.kind, DomainKind::Pool { .. }));
-        let main = Some(PlacementTable::MAIN);
-        let process_row = |kind, spine, line: Option<&'static str>, status| Obligation {
+    /// A process row: owed the process by a spine, on main.
+    fn process_row(kind: K, spine: Spine, line: Option<&'static str>, status: Status) -> Obligation {
+        Obligation {
             site: None,
             kind,
             epoch: None,
             source: None,
             guard: PathGuard::Normal,
             holder: Holder { spine, domain: DomainRole::Main },
-            runs_on: Self::on(main, Rule::SHIPPED),
+            runs_on: Self::on(Some(PlacementTable::MAIN), Rule::SHIPPED),
             edges: Edges::default(),
             terminals: vec![Terminal::Completed],
             multiplicity: Multiplicity::OncePerTrigger,
@@ -1939,7 +1939,114 @@ impl<'b, 'a> Builder<'b, 'a> {
             progress: local(),
             line,
             status,
+        }
+    }
+
+    /// A teardown spine's ingress quiesce (R35, GH #468): kernel-accepted
+    /// listen ingress drains through the intact registry before anything
+    /// is joined or torn down.
+    fn quiesce(&mut self, spine: Spine, prior: &[Prerequisite]) -> ObligationId {
+        let mut o = Self::process_row(K::IngressQuiesce, spine, None, Status::Shipped);
+        o.edges.entry.extend_from_slice(prior);
+        self.push(o)
+    }
+
+    /// A teardown spine's wait-abort (R34): every `or wait` only teardown
+    /// ends is woken into its raise. After the quiesce (line 7): the
+    /// quiesce's drain runs handlers, and a wait that drain can satisfy is
+    /// not aborted into a raise.
+    fn abort(&mut self, spine: Spine, prior: &[Prerequisite], quiesce: ObligationId) -> ObligationId {
+        let mut o = Self::process_row(K::WaitAbort, spine, Some("7"), Status::Shipped);
+        o.edges.entry.extend_from_slice(prior);
+        o.edges.entry.push(after(quiesce, Point::Completed, shipped("7")));
+        self.push(o)
+    }
+
+    /// A teardown spine's pool join (R20), with the progress it owes (join
+    /// progress, R20 known open): after the quiesce (GH #468) and after
+    /// the wait-abort (line 7), so a worker parked in a wait only the abort
+    /// ends is released before the join waits for it.
+    fn join(&mut self, spine: Spine, prior: &[Prerequisite], quiesce: ObligationId, abort: ObligationId) -> ObligationId {
+        let mut o = Self::process_row(K::PoolJoin, spine, None, Status::Shipped);
+        o.edges.entry.extend_from_slice(prior);
+        o.edges.entry.push(after(quiesce, Point::Completed, Rule::SHIPPED));
+        o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
+        o.progress = Progress {
+            rule: ProgressRule::Join { pumps: K::FailureDelivery },
+            status: Status::KnownOpen { inventory_row: "R20" },
         };
+        let join = self.push(o);
+        let mut o = Self::process_row(K::JoinProgress, spine, Some("JP"), Status::KnownOpen { inventory_row: "R20" });
+        o.edges.entry.push(after(join, Point::Entered, open("JP", "R20")));
+        self.push(o);
+        join
+    }
+
+    /// The head of the main locus's own teardown, eager or deferred: the
+    /// quiesce, the wait-abort and, where the program has pools, the join,
+    /// all before its fields' teardown (rule (b)). Returns the join.
+    fn root_head(&mut self, spine: Spine, i: usize, pools: bool, prior: &[Prerequisite]) -> Option<ObligationId> {
+        let mut prior = prior.to_vec();
+        if let Some(run) = self.rows[i].run {
+            prior.push(after(run, Point::Completed, Rule::SHIPPED));
+        }
+        let q = self.quiesce(spine, &prior);
+        let a = self.abort(spine, &prior, q);
+        if !pools {
+            return None;
+        }
+        let join = self.join(spine, &prior, q, a);
+        // Rule (b): the main locus joins the pools before its fields'
+        // teardown.
+        let fields: Vec<usize> =
+            (0..self.subjects.len()).filter(|&c| self.subjects[c].how == How::Field && self.owners(c).contains(&i)).collect();
+        for c in fields {
+            if let Some(d) = self.rows[c].drain {
+                self.get(d).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+            }
+        }
+        Some(join)
+    }
+
+    /// Whether the template builds the root lowering deploys (the
+    /// placement table's root): the instance whose teardown owes the
+    /// process its head.
+    fn is_root(&self, i: usize) -> bool {
+        self.inputs.placement.root.as_ref().is_some_and(|r| r.realizes == self.subjects[i].site.decl)
+    }
+
+    /// One of `fn main`'s exits (C21–C23): its head, then the frame's
+    /// pre-drain (line 18). With pools: the quiesce, the wait-abort, the
+    /// join (rule (b): before the frame's entries), then the pre-drain;
+    /// without: the quiesce, the pre-drain, then the wait-abort (line 7:
+    /// the pre-drain runs handlers, and a wait it can satisfy is not
+    /// aborted into a raise). Returns (the pre-drain, the join).
+    fn main_exit(&mut self, spine: Spine, pools: bool, prior: &[Prerequisite]) -> (ObligationId, Option<ObligationId>) {
+        let q = self.quiesce(spine, prior);
+        let mut pre = Self::process_row(K::PreDrain, spine, Some("18"), Status::Shipped);
+        pre.edges.entry.extend_from_slice(prior);
+        pre.edges.entry.push(after(q, Point::Completed, Rule::SHIPPED));
+        if pools {
+            let a = self.abort(spine, prior, q);
+            let join = self.join(spine, prior, q, a);
+            pre.edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+            (self.push(pre), Some(join))
+        } else {
+            let pre = self.push(pre);
+            let a = self.abort(spine, prior, q);
+            self.get(a).edges.entry.push(after(pre, Point::Completed, shipped("7")));
+            (pre, None)
+        }
+    }
+
+    /// What the spines owe the process: every teardown spine's head (the
+    /// ingress quiesce, the wait-abort, the pool join; C13, C19, C21, C22,
+    /// C23), the eager spine's pre-drain it does not emit (C13), `fn
+    /// main`'s exits' pre-drains, and the signal path's cooperative
+    /// drain. The capability matrix selects which of them a target emits
+    /// (line 16), and these rows' edges order the ones selected.
+    fn process(&mut self) {
+        let pools = self.plan.domains.iter().any(|d| matches!(d.kind, DomainKind::Pool { .. }));
         let mut first_join: Option<ObligationId> = None;
         // A statement-position subscriber remains live until the frame
         // exits, like a let-bound locus. Only the other statement tops
@@ -1954,7 +2061,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 (0..self.subjects.len()).filter(|&c| self.subjects[c].how == How::Field && self.owners(c).contains(&i)).collect();
             // Every teardown spine pre-drains (line 18; not the eager one
             // yet, C13).
-            let mut o = process_row(K::PreDrain, Spine::EagerTeardown, Some("18"), Status::KnownOpen { inventory_row: "C13" });
+            let mut o = Self::process_row(K::PreDrain, Spine::EagerTeardown, Some("18"), Status::KnownOpen { inventory_row: "C13" });
             if let Some(run) = self.rows[i].run {
                 o.edges.entry.push(after(run, Point::Completed, open("18", "C13")));
             }
@@ -1964,93 +2071,85 @@ impl<'b, 'a> Builder<'b, 'a> {
                     self.get(d).edges.entry.push(after(pre, Point::Completed, open("18", "C13")));
                 }
             }
-            if !main_locus {
-                continue;
-            }
-            // The main locus aborts the waits only teardown ends before it
-            // joins the workers they block (line 7).
-            let mut o = process_row(K::WaitAbort, Spine::EagerTeardown, Some("7"), Status::Shipped);
-            if let Some(run) = self.rows[i].run {
-                o.edges.entry.push(after(run, Point::Completed, Rule::SHIPPED));
-            }
-            let abort = self.push(o);
-            if pools {
-                let mut o = process_row(K::PoolJoin, Spine::EagerTeardown, None, Status::Shipped);
-                o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
-                if let Some(run) = self.rows[i].run {
-                    o.edges.entry.push(after(run, Point::Completed, Rule::SHIPPED));
+            // The main locus's eager teardown owes the process its head
+            // (C13).
+            if main_locus {
+                if let Some(join) = self.root_head(Spine::EagerTeardown, i, pools, &[]) {
+                    first_join.get_or_insert(join);
                 }
-                o.progress = Progress {
-                    rule: ProgressRule::Join { pumps: K::FailureDelivery },
-                    status: Status::KnownOpen { inventory_row: "R20" },
-                };
-                let join = self.push(o);
-                first_join.get_or_insert(join);
-                // Rule (b): the main locus joins the pools before its
-                // fields' teardown.
-                for &c in &fields {
-                    if let Some(d) = self.rows[c].drain {
-                        self.get(d).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
-                    }
-                }
-                let mut o = process_row(K::JoinProgress, Spine::EagerTeardown, Some("JP"), Status::KnownOpen { inventory_row: "R20" });
-                o.edges.entry.push(after(join, Point::Entered, open("JP", "R20")));
-                self.push(o);
             }
         }
-        // `fn main`'s fall-through exit aborts the waits before joining
-        // pools. Without pools, its abort follows the frame pre-drain.
         let has_fn_main = self.inputs.bundle.programs.values().any(|p| {
             p.items.iter().any(|it| matches!(it, TopDecl::Fn(f) if f.name.name == "main"))
         });
-        if has_fn_main {
-            // After every statement of `fn main` has torn its literal down.
-            let after_statements = |mut o: Obligation| {
-                o.edges.entry.extend(statements_done.iter().map(|&r| after(r, Point::Completed, Rule::SHIPPED)));
-                o
-            };
-            let abort = pools.then(|| self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped))));
-            let mut frame_join = None;
-            if let Some(abort) = abort {
-                let mut o = process_row(K::PoolJoin, Spine::MainFallThrough, None, Status::Shipped);
-                o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
-                o.progress = Progress {
-                    rule: ProgressRule::Join { pumps: K::FailureDelivery },
-                    status: Status::KnownOpen { inventory_row: "R20" },
-                };
-                let join = self.push(after_statements(o));
+        // `fn main`'s frame: its let-bound literals and its statement-
+        // position subscribers, each torn down at the exit.
+        let frame: Vec<usize> = (0..self.subjects.len())
+            .filter(|&i| {
+                has_fn_main
+                    && (matches!(
+                        self.subjects[i].how,
+                        How::Body { built: Built::Let | Built::Nested, in_fn_main: true }
+                            | How::Top { built: Built::Let | Built::Nested, in_fn_main: true, .. }
+                    ) || (self.facts[i].subscribes && matches!(
+                        self.subjects[i].how,
+                        How::Body { built: Built::Statement, in_fn_main: true }
+                            | How::Top { built: Built::Statement, in_fn_main: true, .. }
+                    )))
+            })
+            .collect();
+        // The deferred main-locus entry (C19) owes its head inside its own
+        // teardown, at the exit of whichever fn built it (GH #1148). Built
+        // by a fn other than `main`, that exit comes before `fn main`'s.
+        let deferred_roots: Vec<usize> = (0..self.subjects.len())
+            .filter(|&i| self.teardown(i).0 == Spine::DeferredMainEntry && self.is_root(i))
+            .collect();
+        let mut heads_done: Vec<Prerequisite> = Vec::new();
+        for &i in deferred_roots.iter().filter(|i| !frame.contains(i)) {
+            let before = self.plan.obligations.len();
+            if let Some(join) = self.root_head(Spine::DeferredMainEntry, i, pools, &[]) {
                 first_join.get_or_insert(join);
-                frame_join = Some(join);
             }
-            let pre = self.push(after_statements(process_row(K::PreDrain, Spine::MainFallThrough, Some("18"), Status::Shipped)));
-            if let Some(join) = frame_join {
-                self.get(pre).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+            // The head's last step: its join, else its wait-abort.
+            let last = (before..self.plan.obligations.len())
+                .rev()
+                .map(|n| ObligationId(n as u32))
+                .find(|&id| matches!(self.plan.obligations[id.0 as usize].kind, K::PoolJoin | K::WaitAbort));
+            heads_done.extend(last.map(|id| after(id, Point::Completed, Rule::SHIPPED)));
+        }
+        // `fn main`'s three exits, each its head and its frame's pre-drain;
+        // a run takes one. The fall-through comes after every statement of
+        // `fn main` has torn its literal down.
+        let mut pres: Vec<ObligationId> = Vec::new();
+        if has_fn_main {
+            let mut statements: Vec<Prerequisite> =
+                statements_done.iter().map(|&r| after(r, Point::Completed, Rule::SHIPPED)).collect();
+            statements.extend(heads_done.iter().copied());
+            let (pre, join) = self.main_exit(Spine::MainFallThrough, pools, &statements);
+            if let Some(join) = join {
+                first_join.get_or_insert(join);
             }
-            if abort.is_none() {
-                self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped)));
+            pres.push(pre);
+            for spine in [Spine::MainReturn, Spine::MainTestFailure] {
+                pres.push(self.main_exit(spine, pools, &heads_done).0);
             }
-            // A let-bound literal of `fn main`: run at its statement, drained
-            // and dissolved at the scope's exit, after the pre-drain (line 11).
-            let mut frame_tree = BTreeSet::new();
-            for i in 0..self.subjects.len() {
-                let deferred = matches!(
-                    self.subjects[i].how,
-                    How::Body { built: Built::Let | Built::Nested, in_fn_main: true } | How::Top { built: Built::Let | Built::Nested, .. }
-                ) || (self.facts[i].subscribes && matches!(
-                    self.subjects[i].how,
-                    How::Body { built: Built::Statement, in_fn_main: true } | How::Top { built: Built::Statement, .. }
-                ));
-                if !deferred {
-                    continue;
-                }
+        }
+        // A let-bound literal of `fn main`: run at its statement, drained
+        // and dissolved at the scope's exit, after the exit's pre-drain
+        // (line 11; an edge from another exit's row is off the run's path).
+        let mut frame_tree = BTreeSet::new();
+        if has_fn_main {
+            for &i in &frame {
                 if !self.is_pinned(i) {
                     frame_tree.insert(i);
                 }
-                if let Some(run) = self.rows[i].run {
-                    self.get(pre).edges.entry.push(after(run, Point::Completed, shipped("11")));
-                }
-                if let Some(d) = self.rows[i].drain {
-                    self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                for &pre in &pres {
+                    if let Some(run) = self.rows[i].run {
+                        self.get(pre).edges.entry.push(after(run, Point::Completed, shipped("11")));
+                    }
+                    if let Some(d) = self.rows[i].drain {
+                        self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                    }
                 }
             }
             // The frame's pre-drain also precedes the recursive drain of
@@ -2071,11 +2170,19 @@ impl<'b, 'a> Builder<'b, 'a> {
                 }
                 for i in fields {
                     frame_tree.insert(i);
-                    if let Some(d) = self.rows[i].drain {
-                        self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                    for &pre in &pres {
+                        if let Some(d) = self.rows[i].drain {
+                            self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                        }
                     }
                 }
             }
+        }
+        // Held by `fn main`'s frame, the deferred main-locus entry's head
+        // comes after the exit's pre-drain.
+        for &i in deferred_roots.iter().filter(|i| frame.contains(i)) {
+            let prior: Vec<Prerequisite> = pres.iter().map(|&pre| after(pre, Point::Completed, Rule::SHIPPED)).collect();
+            self.root_head(Spine::DeferredMainEntry, i, pools, &prior);
         }
         // A failure of a child the joins wait for completes before the join
         // does (join progress): today because the handler runs in place on
@@ -2138,7 +2245,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         // A signal raises the cooperative flag; nothing on the signal path
         // calls a lifecycle method (line 15).
-        let mut o = process_row(K::ProcessDrain, Spine::Process, Some("15"), Status::Shipped);
+        let mut o = Self::process_row(K::ProcessDrain, Spine::Process, Some("15"), Status::Shipped);
         o.guard = PathGuard::DrainInFlight;
         self.push(o);
     }

@@ -1999,7 +1999,8 @@ its `KNOWN_OPEN` table.
   the workers they block, and an aborted publish is not a success:
   it raises `BusWaitAborted`. Shipped in all five spines: each runs
   the ingress quiesce, then the wait-abort, then the pool join (the
-  plan's edges, `lifecycle::TEARDOWN_EDGES`), so a pool-placed
+  edges between the process rows the lifecycle plan states for every
+  teardown spine, which emission reads), so a pool-placed
   publisher waiting for space on a queue only `main` drains takes the
   raise path and the join returns (`l07_pool_or_wait_teardown.hl`,
   and one fixture per other spine: `l07_or_wait_deferred_main_entry`,

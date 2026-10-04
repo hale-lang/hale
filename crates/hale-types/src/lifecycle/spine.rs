@@ -174,6 +174,54 @@ impl LifecyclePlan {
         })
     }
 
+    /// The process obligations a teardown spine owes (the ingress
+    /// quiesce, the wait-abort, the pool join, the frame's pre-drain:
+    /// the rows with no source site), one step per kind, in the order the
+    /// plan's edges place them among the spine's rows; two kinds the
+    /// edges leave unordered come in the producer's order. Each step names
+    /// the first of its kind's rows, whose status is the kind's on the
+    /// spine (a known-open row is one the code does not emit). An error
+    /// names two kinds the edges order both ways.
+    pub fn process_order(&self, spine: Spine) -> Result<Vec<SpineStep>, String> {
+        let rows: Vec<ObligationId> = self
+            .iter()
+            .filter(|(_, o)| o.site.is_none() && o.holder.spine == spine && o.guard == PathGuard::Normal && o.source.is_none())
+            .map(|(id, _)| id)
+            .collect();
+        let mut kinds: Vec<ObligationKind> = Vec::new();
+        let mut first: BTreeMap<ObligationKind, ObligationId> = BTreeMap::new();
+        for &id in &rows {
+            let k = self.obligations[id.0 as usize].kind;
+            if !kinds.contains(&k) {
+                kinds.push(k);
+                first.insert(k, id);
+            }
+        }
+        // A row's kind after every kind of the spine its entry edges reach.
+        let mut pairs: BTreeSet<(ObligationKind, ObligationKind)> = BTreeSet::new();
+        for &id in &rows {
+            let mut seen = BTreeSet::new();
+            let mut stack = vec![id];
+            while let Some(at) = stack.pop() {
+                let Some(o) = self.get(at) else { continue };
+                for p in &o.edges.entry {
+                    if seen.insert(p.event.obligation) {
+                        stack.push(p.event.obligation);
+                    }
+                }
+            }
+            let k = self.obligations[id.0 as usize].kind;
+            for &b in &rows {
+                let kb = self.obligations[b.0 as usize].kind;
+                if kb != k && seen.contains(&b) {
+                    pairs.insert((kb, k));
+                }
+            }
+        }
+        let ordered = order_by(spine.name(), &kinds, &pairs, &BTreeSet::new(), &kinds, |k| k.name())?;
+        Ok(ordered.into_iter().map(|kind| SpineStep { obligation: first[&kind], kind }).collect())
+    }
+
     /// The template's birth spine: its rows of [`BIRTH_KINDS`] on the path
     /// no failure takes, whichever spine holds each (the instantiation,
     /// a pinned locus's thread, the posted run), in the plan's order.

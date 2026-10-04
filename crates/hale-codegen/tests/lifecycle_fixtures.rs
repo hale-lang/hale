@@ -305,21 +305,6 @@ const PENDING: &[(&str, &str)] = &[
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
-    (
-        "l07_or_wait_deferred_main_entry.hl",
-        "-: WaitAbort@DeferredMainEntry PoolJoin@DeferredMainEntry
-         edge -.WaitAbort@DeferredMainEntry.Completed -> -.PoolJoin@DeferredMainEntry.Entered",
-    ),
-    (
-        "l07_or_wait_main_return.hl",
-        "-: WaitAbort@MainReturn PoolJoin@MainReturn
-         edge -.WaitAbort@MainReturn.Completed -> -.PoolJoin@MainReturn.Entered",
-    ),
-    (
-        "l07_or_wait_main_test_failure.hl",
-        "-: WaitAbort@MainTestFailure PoolJoin@MainTestFailure
-         edge -.WaitAbort@MainTestFailure.Completed -> -.PoolJoin@MainTestFailure.Entered",
-    ),
     // R19 across pools: the run queued on `side` is canceled by the
     // reclaim on main, inside its bracket. The replacement's run is the
     // judge's, since one plan step cannot owe two ends.
@@ -432,8 +417,23 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // The aborted wait is an unhandled structural failure: the
         // worker exits the process while main is joining it. The abort
         // completed, but neither the join nor later teardown completes.
-        "l07_pool_or_wait_teardown.hl" | "l07_or_wait_main_fall_through.hl" => {
-            let spine = if file == "l07_pool_or_wait_teardown.hl" { Spine::EagerTeardown } else { Spine::MainFallThrough };
+        // Each spine's head is the plan's (the deferred main entry in a fn
+        // that is not `main`, and `fn main`'s exits, each the run's exit).
+        "l07_pool_or_wait_teardown.hl"
+        | "l07_or_wait_main_fall_through.hl"
+        | "l07_or_wait_deferred_main_entry.hl"
+        | "l07_or_wait_main_return.hl"
+        | "l07_or_wait_main_test_failure.hl" => {
+            let spine = match file {
+                "l07_pool_or_wait_teardown.hl" => Spine::EagerTeardown,
+                "l07_or_wait_deferred_main_entry.hl" => Spine::DeferredMainEntry,
+                "l07_or_wait_main_return.hl" => Spine::MainReturn,
+                "l07_or_wait_main_test_failure.hl" => Spine::MainTestFailure,
+                _ => Spine::MainFallThrough,
+            };
+            if matches!(spine, Spine::MainReturn | Spine::MainTestFailure) {
+                p.exit = Some(spine);
+            }
             p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(spine) });
             &["7"]
         }
@@ -519,13 +519,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
 /// cancellation at a reclaim off the run's pool, the instances of one
 /// declaration whose runs end differently in one run (the trace names
 /// an instance by its declaration), and a main locus built more than
-/// once, each literal with its own teardown. The producer also does not
-/// enumerate deferred main-entry, return or test-failure process spines
-/// yet; P3's fixtures pin those spines until their producer rows exist.
+/// once, each literal with its own teardown.
 const UNDERIVED: &[(&str, &str)] = &[
-    ("l07_or_wait_deferred_main_entry.hl", "the producer has no deferred main-entry process spine"),
-    ("l07_or_wait_main_return.hl", "the producer has no main-return process spine or exit-path selection"),
-    ("l07_or_wait_main_test_failure.hl", "the producer has no test-failure process spine or exit-path selection"),
     (
         "l19_cross_pool_queued_run_canceled.hl",
         "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",

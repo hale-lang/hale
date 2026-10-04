@@ -30,7 +30,8 @@
 //! omits every target-dependent behaviour and obligation by reading its
 //! effective target's column off the lowering view ([`LoweringCells`]),
 //! the teardown spines included (the matrix selects their obligations,
-//! `crate::lifecycle::TEARDOWN_EDGES` orders them); the checker holds
+//! the lifecycle plan's process rows order them,
+//! `crate::lifecycle::LifecyclePlan::process_order`); the checker holds
 //! `@ffi` and `@export` signatures to the `FfiType` cells
 //! ([`ffi_type_refusal`]). `crates/hale-types/tests/shadow_capability.rs`
 //! and `crates/hale-codegen/tests/shadow_capability_lowering.rs` hold

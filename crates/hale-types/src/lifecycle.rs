@@ -127,7 +127,11 @@
 //!
 //! **Line 16** is P3's: the obligations a target owes come from the
 //! capability matrix's cells, and the spines emit the ones selected in
-//! [`TEARDOWN_EDGES`]' order (line 7's wait-abort before the pool join).
+//! the plan's order: the producer states each teardown spine's process
+//! rows (the ingress quiesce, the wait-abort, the pool join, the
+//! frame's pre-drain) with the edges between them, on all five spines,
+//! and [`spine::LifecyclePlan::process_order`] reads them (line 7's
+//! wait-abort before the pool join).
 //!
 //! **Pending, and why.** Line 17 prefers the deferred spine's join order everywhere, on the
 //! condition that the teardown delivery contract's final-publish
@@ -439,6 +443,10 @@ pub enum ObligationKind {
     Drain,
     /// The bus drain a teardown spine runs before its first entry.
     PreDrain,
+    /// The main-exit ingress quiesce: kernel-accepted listen ingress
+    /// drained through the intact registry while the pools and the
+    /// subscribers are alive (GH #468).
+    IngressQuiesce,
     /// Waking every `or wait` that only teardown ends.
     WaitAbort,
     /// Joining an owned pinned child: mailbox shutdown, the join, the
@@ -486,6 +494,7 @@ impl ObligationKind {
         ObligationKind::Resume,
         ObligationKind::Drain,
         ObligationKind::PreDrain,
+        ObligationKind::IngressQuiesce,
         ObligationKind::WaitAbort,
         ObligationKind::PinnedJoin,
         ObligationKind::PoolJoin,
@@ -520,6 +529,7 @@ impl ObligationKind {
             ObligationKind::Resume => "Resume",
             ObligationKind::Drain => "Drain",
             ObligationKind::PreDrain => "PreDrain",
+            ObligationKind::IngressQuiesce => "IngressQuiesce",
             ObligationKind::WaitAbort => "WaitAbort",
             ObligationKind::PinnedJoin => "PinnedJoin",
             ObligationKind::PoolJoin => "PoolJoin",
@@ -551,15 +561,28 @@ impl ObligationKind {
             ObligationKind::Resume => &["C43", "C48"],
             ObligationKind::Drain => &["C9", "C14", "C30", "C32", "R44"],
             ObligationKind::PreDrain => &["C16", "R29"],
+            ObligationKind::IngressQuiesce => &["R35"],
             ObligationKind::WaitAbort => &["C17", "R34"],
             ObligationKind::PinnedJoin => &["C13", "C16", "C18", "R26", "R27"],
             ObligationKind::PoolJoin => &["C13", "C19", "C21", "C22", "C23", "R20"],
             ObligationKind::JoinProgress => &["C18", "R20"],
             ObligationKind::Cancellation => &["R19", "R19a", "R20a", "R21"],
-            ObligationKind::TeardownDelivery => &["C16", "R33", "R35"],
+            ObligationKind::TeardownDelivery => &["C16", "R33"],
             ObligationKind::Dissolve => &["C31", "C32"],
             ObligationKind::Reclaim => &["C15", "C24", "C25", "C27", "C28", "C29", "C33", "R8", "R10", "R13", "R14", "R47"],
             ObligationKind::ProcessDrain => &["R43"],
+        }
+    }
+
+    /// The capability matrix's obligation a teardown spine's process row
+    /// is (line 16: the target's cells select which of them are
+    /// emitted); `None` for a kind no cell selects.
+    pub fn capability(self) -> Option<crate::capability::Obligation> {
+        match self {
+            ObligationKind::IngressQuiesce => Some(crate::capability::Obligation::IngressQuiesce),
+            ObligationKind::WaitAbort => Some(crate::capability::Obligation::WaitAbort),
+            ObligationKind::PoolJoin => Some(crate::capability::Obligation::PoolJoin),
+            _ => None,
         }
     }
 }
@@ -1039,7 +1062,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "7",
         title: "abort unsatisfiable waits before the join",
         kinds: &[K::WaitAbort, K::PoolJoin],
-        statuses: &[(Status::Shipped, "the wait-abort before the pool join, in every teardown spine (TEARDOWN_EDGES)")],
+        statuses: &[(Status::Shipped, "the wait-abort before the pool join, in every teardown spine (the plan's process rows)")],
     },
     DecisionLine {
         line: "8",
@@ -1167,66 +1190,6 @@ pub const DECISION_LINES: &[DecisionLine] = &[
     },
 ];
 
-// ------------------------------------------- the teardown spines' order
-
-/// An edge between two of the process-wide obligations a teardown spine
-/// owes (the ingress quiesce R35, the wait-abort R34, the pool join
-/// R20): `before` completes before `after` is entered. The capability
-/// matrix selects which of them a target owes
-/// (`crate::capability::Obligation`'s cells); these edges order the
-/// ones selected, in every spine (`notes/f40-capability-matrix.md`
-/// § 3.2: the matrix selects, the plan orders). An omitted obligation
-/// takes its edges with it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TeardownEdge {
-    pub before: crate::capability::Obligation,
-    pub after: crate::capability::Obligation,
-    /// The decision line or issue that states it.
-    pub line: &'static str,
-    pub why: &'static str,
-}
-
-/// The edges among a spine's process-wide obligations. The fourth edge
-/// the design names, the wait-abort before the pinned joins (GH #255),
-/// is kept by position: a spine emits its process obligations before its
-/// frame's pinned joins.
-pub const TEARDOWN_EDGES: &[TeardownEdge] = &[
-    TeardownEdge {
-        before: crate::capability::Obligation::IngressQuiesce,
-        after: crate::capability::Obligation::PoolJoin,
-        line: "GH #468",
-        why: "kernel-accepted ingress drains through the intact registry while the pools and subscribers are alive",
-    },
-    TeardownEdge {
-        before: crate::capability::Obligation::IngressQuiesce,
-        after: crate::capability::Obligation::WaitAbort,
-        line: "7",
-        why: "the quiesce's drain runs handlers, and an `or wait` the drain itself can satisfy is not aborted into a raise",
-    },
-    TeardownEdge {
-        before: crate::capability::Obligation::WaitAbort,
-        after: crate::capability::Obligation::PoolJoin,
-        line: "7",
-        why: "a pool worker parked in a wait only the abort ends is released before the join waits for it",
-    },
-];
-
-/// The order a spine emits the process-wide obligations selected for
-/// it: every [`TEARDOWN_EDGES`] edge between two of them holds, and
-/// otherwise the order given is kept.
-pub fn teardown_order(selected: &[crate::capability::Obligation]) -> Vec<crate::capability::Obligation> {
-    let mut left: Vec<crate::capability::Obligation> = selected.to_vec();
-    let mut out = Vec::with_capacity(left.len());
-    while !left.is_empty() {
-        let next = left
-            .iter()
-            .position(|o| !TEARDOWN_EDGES.iter().any(|e| e.after == *o && left.contains(&e.before)))
-            .expect("the teardown edges are acyclic");
-        out.push(left.remove(next));
-    }
-    out
-}
-
 impl Status {
     /// The status as the decision table writes it.
     pub fn label(self) -> String {
@@ -1270,21 +1233,13 @@ mod tests {
         assert_eq!(pending, BTreeSet::from(["1", "2", "3", "17"]));
     }
 
-    /// The teardown edges are acyclic, and order the three obligations
-    /// as the design states: the quiesce, the wait-abort, the join.
+    /// Every obligation a teardown spine's cells select is a kind of the
+    /// plan, and only those three are.
     #[test]
-    fn the_teardown_order_follows_its_edges() {
+    fn the_spine_obligations_are_kinds_of_the_plan() {
         use crate::capability::Obligation as O;
-        assert_eq!(
-            teardown_order(&[O::PoolJoin, O::WaitAbort, O::IngressQuiesce]),
-            vec![O::IngressQuiesce, O::WaitAbort, O::PoolJoin]
-        );
-        assert_eq!(teardown_order(&[O::PoolJoin, O::WaitAbort]), vec![O::WaitAbort, O::PoolJoin]);
-        assert_eq!(teardown_order(&[O::WaitAbort]), vec![O::WaitAbort]);
-        for e in TEARDOWN_EDGES {
-            let order = teardown_order(&[e.after, e.before]);
-            assert_eq!(order, vec![e.before, e.after], "{} -> {}", e.before.name(), e.after.name());
-        }
+        let selected: Vec<O> = ObligationKind::ALL.iter().filter_map(|k| k.capability()).collect();
+        assert_eq!(selected, vec![O::IngressQuiesce, O::WaitAbort, O::PoolJoin]);
     }
 
     #[test]

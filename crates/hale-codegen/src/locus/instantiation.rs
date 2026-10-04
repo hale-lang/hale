@@ -4965,7 +4965,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the raise path before the pool join and the pinned
                 // joins below. Which of the three the target owes is its
                 // cells', their order the plan's.
-                self.emit_teardown_obligations(false)?;
+                self.emit_teardown_obligations(hale_types::lifecycle::Spine::EagerTeardown)?;
             }
             // GH #253: join this locus's own pinned children (the
             // frame entries pushed during param init above) BEFORE
