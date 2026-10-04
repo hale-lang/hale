@@ -122,7 +122,7 @@
 //! 18    PreDrain                                 KnownOpen C13
 //! 19    RunAdmission Run Cancellation            Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
-//! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
+//! JP    JoinProgress FailureDelivery             Shipped (pinned join, L5); Shipped (pool joins, an ended domain, L5)
 //! ```
 //!
 //! **Line 16** is P3's: the obligations a target owes come from the
@@ -1161,8 +1161,11 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "join progress",
         kinds: &[K::JoinProgress, K::FailureDelivery],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "C18" }, "a pinned join pumps no queue"),
-            (Status::KnownOpen { inventory_row: "R20" }, "the pool joins pump no queue"),
+            (Status::Shipped, "the pinned join runs the failures posted to the joining thread until the thread's domain ends (C18, L5)"),
+            (
+                Status::Shipped,
+                "each pool join does the same until its worker's domain ends; a failure posted to an ended domain runs where it is raised (R20, L5)",
+            ),
         ],
     },
 ];

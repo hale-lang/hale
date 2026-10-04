@@ -95,12 +95,13 @@
 //! asserted to show exactly that profile, so a departure outside it
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
-//! it has been seen to show, and a run shows exactly one of them. The
-//! one remaining cell is a failure raised at teardown after its owner's
-//! pool worker has ended, delivered where it is raised (C36's residue,
-//! join progress). Pinned field drains (C9) and contract-field ordering
-//! (C32) follow the plan since L4's cascade. Nested pinned and pool
-//! initialization retains its anchor's domain (C49/C50).
+//! it has been seen to show, and a run shows exactly one of them. No
+//! cell is open today: the last, a failure raised at teardown after its
+//! owner's pool worker has ended, is delivered where it is raised, which
+//! the plan claims (the shutdown rule, join progress). Pinned field
+//! drains (C9) and contract-field ordering (C32) follow the plan since
+//! L4's cascade. Nested pinned and pool initialization retains its
+//! anchor's domain (C49/C50).
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -397,15 +398,15 @@ type Profile = &'static [&'static str];
 /// entry goes with the fix. An `asan:` departure is owed only where ASan
 /// ran.
 const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
-    // L5's fourth part closed C36's other ten cells ({run, handler,
-    // drain, birth} × {root_child, replica}/pinned and {run, handler}/
+    // Empty since the lifecycle producer's catch-up (L1's fifth part).
+    // L5's fourth part closed C36's ten cells ({run, handler, drain,
+    // birth} × {root_child, replica}/pinned and {run, handler}/
     // root_child/cross_pool): a failure raised off its owner's domain is
-    // posted there and awaited (decision L0-1). This one is teardown's:
-    // `Subj`, a field of the pool-placed `Mid`, drains on the teardown
-    // thread, `main`, after the pool join has ended `side`'s worker, so
-    // `Mid`'s domain consumes nothing more and the delivery runs where it
-    // is raised (join progress: shutdown never drops it).
-    ("drain/grandchild/cross_pool", &[("C36", ENDED_DOMAIN)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
+    // posted there and awaited (decision L0-1). The eleventh,
+    // `drain/grandchild/cross_pool`, was never a defect: `Subj`, a field
+    // of the pool-placed `Mid`, drains on `main` after the pool join has
+    // ended `side`'s worker, so the delivery runs where it is raised, the
+    // shutdown rule (join progress), which the plan now claims.
 ];
 
 /// Cells a fixed defect is held to, sampled with ASan on every PR: a
@@ -425,8 +426,6 @@ const REGRESSIONS: &[&str] = &[
     "run/root_child/pinned", "run/root_child/cross_pool",
 ];
 
-const ENDED_DOMAIN: &str = "the owner's domain, a pool's worker, has ended at the pool join before the teardown thread drains its child, so the delivery runs in place on the teardown thread, as a failure posted to an ended domain does (decision L0-1, join progress)";
-const RAN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pool:side";
 
 // ===================================================================
 // Rendering
