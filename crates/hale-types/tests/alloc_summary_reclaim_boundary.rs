@@ -585,6 +585,7 @@ const PINNED: &[&str] = &[
     "dna/organization_source: 0 go, 0 appear; dump 253 tags, 560 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 14 tags, 19 reclaim, 0 verdicts",
     "dna/ui: 0 go, 0 appear; dump 255 tags, 560 reclaim, 0 verdicts",
+    "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 34 reclaim, 0 verdicts",
     "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 19 reclaim, 0 verdicts",
     "tests/hale/api_binding_run_test.hl: 2 go, 0 appear; dump 7 tags, 10 reclaim, 2 verdicts",
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 36 reclaim, 0 verdicts",

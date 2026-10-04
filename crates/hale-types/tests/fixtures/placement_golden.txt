@@ -5514,6 +5514,19 @@ row	App@literal1.b	Holder	main	default
 dynamic	Holder	on main
 dynamic	Zub	on main
 
+== tests/hale/api_bearer_roles_test.hl
+shared	Api@main2	Api #a23e2495
+shared	Api@main4	Api #a23e2495
+shared	Api@main6	Api #a23e2495
+shared	Api@main8	Api #a23e2495
+shared	Proc@main1	Proc #b18b3dc0
+shared	Proc@main10	Proc #b18b3dc0
+shared	Proc@main3	Proc #b18b3dc0
+shared	Proc@main5	Proc #b18b3dc0
+shared	Proc@main7	Proc #b18b3dc0
+shared	Proc@main9	Proc #b18b3dc0
+shared	dynamic	sites in the seed #8c882889
+
 == tests/hale/api_big_reply_test.hl
 shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0
