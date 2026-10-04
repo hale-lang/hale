@@ -21,7 +21,8 @@ fn unaddressed_from_json_is_flagged() {
     "#,
     );
     assert!(
-        msgs.iter().any(|m| m.contains("error not addressed")),
+        msgs.iter()
+            .any(|m| m.contains("`Order::from_json` can fail (JsonError) and this call says nothing about it")),
         "unaddressed from_json must be flagged; got: {:?}",
         msgs
     );
@@ -36,7 +37,7 @@ fn addressed_from_json_is_clean() {
     "#,
     );
     assert!(
-        !msgs.iter().any(|m| m.contains("error not addressed")),
+        !msgs.iter().any(|m| m.contains("says nothing about it")),
         "addressed from_json must be clean; got: {:?}",
         msgs
     );

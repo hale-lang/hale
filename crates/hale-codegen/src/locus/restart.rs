@@ -166,7 +166,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?;
         let mut ok = self.builder.build_and(bumped, under, "restart.ok").map_err(e)?;
         ok = self.builder.build_and(ok, live, "restart.ok").map_err(e)?;
-        if !self.is_wasm {
+        if self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
             let draining = self.emit_process_draining_load("restart.process_draining")?;
             let not_draining = self
                 .builder

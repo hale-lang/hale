@@ -517,25 +517,62 @@ fn wire_rows(walk: &BusWalk, topics: &TopicRows) -> (BTreeMap<String, WireRow>, 
 
 // === Public graph =================================================
 
-/// Where a subscriber's handler runs relative to the publisher's
-/// thread — mirrors the placement classification computed in
-/// `hale-syntax::desugar` (`collect_off_owner_thread_fields`).
+/// Where a locus type's handlers run relative to the main thread, read
+/// from the placement table: the label of the set of domains its
+/// instances run in ([`crate::placement::PlacementTable::domains_by_type`]).
 ///
-/// `CrossPool`/`Pinned` mean the handler runs on a *different* OS
-/// thread, so any later devirtualization must still route through
-/// the mailbox/queue rather than a same-thread direct call;
-/// `SameThread` is the placement where an intra-thread direct call
+/// `CrossPool`/`Pinned`/`Unknown` mean some instance's handler may run
+/// on a *different* OS thread, so any later devirtualization must still
+/// route through the mailbox/queue rather than a same-thread direct
+/// call; `SameThread` is the placement where an intra-thread direct call
 /// is the lowering #1b would pick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Placement {
-    /// Cooperative on the owner's (main) thread — `cooperative`,
-    /// `cooperative(pool = main)`, or no placement entry at all.
+    /// Every instance runs on main: a root field with no entry or
+    /// `cooperative(pool = main)`, anything nested under one, a literal
+    /// main runs; or no instance is built at all.
     SameThread,
-    /// A named cooperative pool other than `main` — its own OS
-    /// thread shared with co-placed loci.
+    /// An instance runs on a named cooperative pool other than `main`
+    /// (and none on a pinned thread): placed there, or nested under a
+    /// field placed there.
     CrossPool(String),
-    /// `pinned` — the locus owns a dedicated OS thread.
+    /// An instance runs on a pinned thread: a field placed `pinned`,
+    /// anything nested under one, or an adapter in `bindings { }`.
     Pinned,
+    /// An instance runs where the table cannot say (a dynamic site of
+    /// unknown domain), and none on a known thread off main. Never main.
+    Unknown,
+}
+
+impl Placement {
+    /// The label of a type whose instances run in `domains`: `Pinned` if
+    /// any runs pinned, else `CrossPool` of the first pool one runs on,
+    /// else `Unknown` if any runs where the table cannot say, else
+    /// `SameThread`.
+    pub fn of(domains: &crate::placement::TypeDomains, table: &crate::placement::PlacementTable) -> Placement {
+        use crate::placement::DomainKind;
+        let kinds: Vec<&DomainKind> = domains.known.iter().map(|d| &table.domain(*d).kind).collect();
+        if kinds.iter().any(|k| matches!(k, DomainKind::Pinned { .. })) {
+            return Placement::Pinned;
+        }
+        if let Some(name) = kinds.iter().find_map(|k| match k {
+            DomainKind::Pool { name, .. } => Some(name.clone()),
+            _ => None,
+        }) {
+            return Placement::CrossPool(name);
+        }
+        if domains.unknown {
+            return Placement::Unknown;
+        }
+        Placement::SameThread
+    }
+}
+
+/// Every type's [`Placement`], by the name lowering keys on: the bus
+/// graph's labels and `check_bounded_bus`'s. A type the table has no
+/// instance of runs nowhere and is absent (`SameThread` to a reader).
+pub fn type_placements(table: &crate::placement::PlacementTable) -> BTreeMap<String, Placement> {
+    table.domains_by_type().iter().map(|(name, d)| (name.clone(), Placement::of(d, table))).collect()
 }
 
 /// A resolved publish site on a subject.
@@ -614,19 +651,26 @@ pub struct SubjectInfo {
     /// loss of observable meaning. Strictly STRONGER than `eligible`:
     /// it additionally requires that
     ///   (a) the subject has ≥1 subscriber, every one of which is
-    ///       `Placement::SameThread` (a CrossPool / Pinned subscriber
-    ///       runs on another OS thread and CANNOT be direct-called —
-    ///       it must enqueue), and
+    ///       `Placement::SameThread`, and so is every publisher (a
+    ///       CrossPool / Pinned / Unknown one runs, or may run, on
+    ///       another OS thread and CANNOT be direct-called — it must
+    ///       enqueue), and
     ///   (b) every subscriber handler is provably **QUIET** by the
     ///       syntactic effect-walk in [`handler_is_quiet`] — it
     ///       mutates ONLY its own `self` fields with pure expressions
     ///       and has no other effect.
     /// Defaults to `false` (default-bail). The FLAT-payload condition
-    /// is the third leg of the gate but is checked at the codegen
-    /// publish site (it needs the lowered payload type), so this flag
-    /// is ANDed with `bus_payload_is_flat` there. A false positive is
-    /// an observable-ordering bug, so this stays conservative.
+    /// is the third leg of the gate, [`SubjectInfo::payload_flat`]: the
+    /// plan's flavor ANDs the two (`DispatchFlavor::of`). A false
+    /// positive is an observable-ordering bug, so this stays
+    /// conservative.
     pub direct_call_eligible: bool,
+    /// The direct-call gate's third leg: the subject's payload is flat
+    /// ([`payload_is_flat`]) at every site that names its type (the
+    /// publishers', else the subscribers'), and at least one does. A
+    /// direct call hands the publisher's live storage to the handler,
+    /// which only pointer-free POD survives.
+    pub payload_flat: bool,
     /// The sends on this subject the intra-locus rewrite turned into
     /// direct calls, as (publishing locus, subscriber handler) pairs
     /// (F.40 boundary 7). Empty from [`build_bus_graph`]: a graph over
@@ -735,6 +779,7 @@ impl BusGraph {
                 subject: subject.clone(),
                 static_eligible: info.eligible,
                 direct_eligible: info.direct_call_eligible,
+                payload_flat: info.payload_flat,
                 ineligible_reason: info
                     .ineligible_reason
                     .as_ref()
@@ -766,7 +811,7 @@ impl BusGraph {
 /// (locus, handler, payload, placement), applies the eligibility gate,
 /// and builds the canonical subjects the checker's bus rules read. The
 /// bound-topic set is the binding rows' projection.
-pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRows) -> BusGraph {
+pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRows, placement: &crate::placement::PlacementTable) -> BusGraph {
     let walk = collect_bus_walk(bundle, &top.topics, bindings);
     let (wires, holes) = wire_rows(&walk, &top.topics);
 
@@ -791,7 +836,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRo
         })
     });
 
-    let placements = collect_subscriber_placements(bundle);
+    let placements = type_placements(placement);
 
     // Gather every subject that appears on either end.
     let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -863,6 +908,15 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRo
                         .map(handler_is_quiet)
                         .unwrap_or(false)
             });
+        // The third leg: the payload's flatness, over the resolved type
+        // each site names (the publishers', else the subscribers').
+        let site_tys: Vec<Option<&crate::ty::Ty>> = if publishers.is_empty() {
+            subscribers.iter().map(|s| resolve_payload_ty(top, &s.locus, &key)).collect()
+        } else {
+            publishers.iter().map(|p| resolve_payload_ty(top, &p.locus, &key)).collect()
+        };
+        let payload_flat =
+            !site_tys.is_empty() && site_tys.iter().all(|t| t.is_some_and(|t| payload_is_flat(bundle, top, t)));
         subjects.insert(
             key,
             SubjectInfo {
@@ -871,6 +925,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRo
                 eligible,
                 ineligible_reason: reason,
                 direct_call_eligible,
+                payload_flat,
                 direct_sends: Vec::new(),
                 written_topics: Vec::new(),
             },
@@ -931,6 +986,130 @@ fn classify(
     None
 }
 
+/// The resolved payload type of a site on `key`: the declared topic's,
+/// else the locus's publish or subscribe declaration on that subject.
+fn resolve_payload_ty<'t>(top: &'t TopScope, locus: &str, key: &str) -> Option<&'t crate::ty::Ty> {
+    for sym in top.symbols.values() {
+        if let TopSymbol::Topic(t) = sym {
+            if t.name == key || t.wire_subject == key {
+                return Some(&t.payload);
+            }
+        }
+    }
+    if let Some(TopSymbol::Locus(l)) = top.lookup(locus) {
+        if let Some(p) = l.bus_publishes.iter().find(|p| p.subject == key) {
+            return Some(&p.payload);
+        }
+        if let Some(s) = l.bus_subscribes.iter().find(|s| s.subject == key) {
+            return Some(&s.payload);
+        }
+    }
+    None
+}
+
+/// Whether a bus payload of type `ty` is flat: a struct whose every
+/// field is an inline-by-value scalar (`Int`, `Float`, `Bool`,
+/// `Decimal`, `Duration`, or an enum with no payload variant), and
+/// nothing else. A payload-carrying enum, a pointer-bearing field
+/// (`String`, `Bytes`, `Time`, a view, a nested struct, an array, a
+/// tuple, a locus) or a type the scope cannot resolve is not flat: the
+/// default is false. The direct-call gate's third leg (the gate's
+/// `payload_flat` column): codegen's `bus_payload_is_flat` rule, moved
+/// verbatim onto resolved types (F.40 phase 3, P3 3 of 3), so the plan
+/// decides the flavor; the codec keeps its own copy over lowered types,
+/// and lowering refuses a plan whose column disagrees with it.
+pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) -> bool {
+    use crate::symbol::TypeKind;
+    use crate::ty::Ty;
+    // A generic instantiation resolves to its monomorph's name
+    // (`Box<Int>` is `Box_Int`, `crate::resolve`), which no scope
+    // declares: its fields are the generic declaration's, each type
+    // parameter replaced by the argument the name's tokens spell, as
+    // codegen's monomorph lays them out.
+    fn generic_instance_fields(bundle: &Bundle<'_>, name: &str) -> Option<Vec<Ty>> {
+        let decl = bundle.programs.values().find_map(|p| {
+            flat_decls(&p.items).find_map(|it| match it {
+                TopDecl::Type(t)
+                    if !t.generics.is_empty()
+                        && name.strip_prefix(t.name.name.as_str()).is_some_and(|r| r.starts_with('_')) =>
+                {
+                    Some(t)
+                }
+                _ => None,
+            })
+        })?;
+        let tokens: Vec<&str> = name[decl.name.name.len() + 1..].split('_').collect();
+        if tokens.len() != decl.generics.len() {
+            return None;
+        }
+        let arg = |tok: &str| -> Ty {
+            let prim = [
+                PrimType::Int,
+                PrimType::Float,
+                PrimType::Bool,
+                PrimType::String,
+                PrimType::Duration,
+                PrimType::Decimal,
+                PrimType::Time,
+                PrimType::Bytes,
+                PrimType::BytesView,
+                PrimType::BytesMut,
+                PrimType::StringView,
+            ]
+            .into_iter()
+            .find(|p| crate::ty::generic_arg_mangle_token(*p) == Some(tok));
+            prim.map(Ty::Prim).unwrap_or_else(|| Ty::Named(tok.to_string()))
+        };
+        let TypeDeclBody::Struct(fields) = &decl.body else { return None };
+        Some(
+            fields
+                .iter()
+                .map(|f| match &f.ty {
+                    TypeExpr::Primitive(p, _) => Ty::Prim(*p),
+                    TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+                        let n = &path.segments[0].name;
+                        match decl.generics.iter().position(|g| g.name.name == *n) {
+                            Some(i) => arg(tokens[i]),
+                            None => Ty::Named(n.clone()),
+                        }
+                    }
+                    _ => Ty::Unknown,
+                })
+                .collect(),
+        )
+    }
+    fn field_is_flat_scalar(top: &TopScope, ty: &Ty, depth: usize) -> bool {
+        match ty {
+            Ty::Prim(p) => matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal | PrimType::Duration),
+            Ty::Named(n) if depth < 16 => match top.lookup(n) {
+                Some(TopSymbol::Type(t)) => match &t.kind {
+                    TypeKind::Enum(variants) => variants.iter().all(|v| v.fields.is_empty()),
+                    TypeKind::Alias(a) => field_is_flat_scalar(top, a, depth + 1),
+                    TypeKind::Struct(_) => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    fn flat(bundle: &Bundle<'_>, top: &TopScope, ty: &Ty, depth: usize) -> bool {
+        match ty {
+            Ty::Named(n) if depth < 16 => match top.lookup(n) {
+                Some(TopSymbol::Type(t)) => match &t.kind {
+                    TypeKind::Struct(fields) => fields.iter().all(|f| field_is_flat_scalar(top, &f.ty, 0)),
+                    TypeKind::Alias(a) => flat(bundle, top, a, depth + 1),
+                    TypeKind::Enum(_) => false,
+                },
+                None => generic_instance_fields(bundle, n)
+                    .is_some_and(|fields| fields.iter().all(|f| field_is_flat_scalar(top, f, 0))),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    flat(bundle, top, ty, 0)
+}
+
 /// Resolve a site's payload type name. Tries the declared-topic
 /// route first (subject name / wire subject → `TopicInfo.payload`),
 /// then the owning locus's resolved bus entries (literal `of type
@@ -960,79 +1139,7 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
     "?".to_string()
 }
 
-/// Map each locus *type* name to the [`Placement`] it receives
-/// where instantiated as a placed field. Mirrors
-/// `desugar::collect_off_owner_thread_fields`: a `placement { }`
-/// entry keys on the owner's `params` field name, and that field's
-/// declared type names the placed child locus.
-///
-/// First-placement-wins when a type is placed in multiple fields
-/// (the multi-instance case); placement is informational for the
-/// gate, so a conservative single label suffices.
-/// `pub` for the F.40 placement shadow (`tests/shadow_placement.rs`),
-/// which runs this beside the placement table over the corpus; not an
-/// API. A legacy producer of the `placement` family in the registry.
-pub fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
-    let mut out: BTreeMap<String, Placement> = BTreeMap::new();
 
-    fn walk(items: &[TopDecl], out: &mut BTreeMap<String, Placement>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    // field name → declared locus-type name.
-                    let mut field_ty: BTreeMap<String, String> = BTreeMap::new();
-                    for member in &l.members {
-                        if let LocusMember::Params(pb) = member {
-                            for p in &pb.params {
-                                if let Some(ty) = &p.ty {
-                                    if let Some(name) = single_named_type(ty) {
-                                        field_ty.insert(p.name.name.clone(), name);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    for member in &l.members {
-                        if let LocusMember::Placement(pb) = member {
-                            for e in &pb.entries {
-                                let Some(child_ty) = field_ty.get(&e.field.name) else {
-                                    continue;
-                                };
-                                let placement = match &e.spec {
-                                    PlacementSpec::Cooperative { pool, .. } => match pool {
-                                        Some(p) if p.name != "main" => {
-                                            Placement::CrossPool(p.name.clone())
-                                        }
-                                        _ => Placement::SameThread,
-                                    },
-                                    PlacementSpec::Pinned { .. } => Placement::Pinned,
-                                };
-                                out.entry(child_ty.clone()).or_insert(placement);
-                            }
-                        }
-                    }
-                }
-                TopDecl::Module(m) => walk(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk(&program.items, &mut out);
-    }
-    out
-}
-
-/// The single named type a `TypeExpr` denotes (a bare `Named`
-/// path), else `None`. Non-locus field types never appear in a
-/// `placement { }` block (typecheck enforces), so we don't confirm
-/// locus-ness here.
-pub(crate) fn single_named_type(ty: &TypeExpr) -> Option<String> {
-    match ty {
-        TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
-        _ => None,
-    }
-}
 
 // === Quiet-handler classifier (direct-call devirt slice-2) =========
 //

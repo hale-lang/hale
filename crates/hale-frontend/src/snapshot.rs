@@ -183,10 +183,10 @@ pub struct Config {
     /// wraps a bare `fn main` as the wasm `@export` entry before
     /// anything else shapes the program.
     pub wrap_main: bool,
-    /// The rules a build refuses beside the check (the borrow rule and
-    /// bare fallible calls, `hale_types::build_rule_diags`), appended to
-    /// the check's diagnostics, so they block lowering. `hale check`
-    /// runs them itself, beside its reports. Part of the typing stage.
+    /// The rules a build refuses beside the check (the borrow rule,
+    /// `hale_types::build_rule_diags`), appended to the check's
+    /// diagnostics, so they block lowering. `hale check` runs them
+    /// itself, beside its reports. Part of the typing stage.
     pub build_rules: bool,
     /// The allocation advisory (`hale_types::unbounded_alloc_warnings`,
     /// every site surveyed), appended to the typing stage after the
@@ -249,9 +249,9 @@ impl Config {
     /// The LSP's: `hale check <dir>`'s report. It checks a seed only
     /// once every member of it read and parsed, so it holds a whole
     /// program (GH #721), and its check carries the build rules `hale
-    /// check` runs beside its own (the borrow rule, bare fallible
-    /// calls) and the allocation advisory, so the editor shows every
-    /// finding the CLI prints, all of them before the laws.
+    /// check` runs beside its own (the borrow rule) and the allocation
+    /// advisory, so the editor shows every finding the CLI prints, all
+    /// of them before the laws.
     pub fn editor() -> Self {
         Config { build_rules: true, alloc_advisory: true, ..Config::check(true, false) }
     }
@@ -1302,27 +1302,30 @@ impl Snapshot {
     }
 
     /// The bus graph over the checked programs, with the scope's topic
-    /// rows: the model's subjects, endpoints and dispatch gates.
+    /// rows: the model's subjects, endpoints and dispatch gates. Its
+    /// placement labels read the snapshot's placement table.
     pub fn demand_bus_graph(&self) -> Result<&BusGraph, &Blocked> {
         self.bus_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("bus_graph");
-                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings))
+                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings, placement))
             })
             .as_ref()
     }
 
     /// The ownership graph over the checked programs: the checker's
     /// unowned-subscriber rule (type-check rule 20) and the model's
-    /// dynamic births.
+    /// dynamic births. Edge classes read the snapshot's placement table.
     pub fn demand_ownership_graph(&self) -> Result<&OwnershipGraph, &Blocked> {
         self.ownership_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("ownership");
-                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top))
+                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top, placement))
             })
             .as_ref()
     }
@@ -1526,6 +1529,7 @@ impl Snapshot {
                     effects: self.demand_effects().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
+                    placement: self.demand_placement().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1551,6 +1555,11 @@ impl Snapshot {
             .get_or_init(|| self.with_env(|| {
                 let mut diags = self.typing().map_err(Clone::clone)?.to_vec();
                 self.count("typing_stage");
+                // The `bare_fallible` law, with the typing diagnostics:
+                // it reads the typed-body table's fallible column, the
+                // record the typing kept, so it runs no second check.
+                let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+                diags.extend(hale_types::bare_fallible::bare_fallible_calls(typed));
                 hale_types::finish_check_diags(&mut diags);
                 let own = diags.len();
                 let bundle = self.bundle();
@@ -1580,6 +1589,8 @@ impl Snapshot {
                 self.count("laws_stage");
                 let mut diags = Vec::new();
                 let bundle = self.bundle();
+                // The model is the typing's, before the `bare_fallible`
+                // law: a law's finding, like a claim's, hides no law.
                 if hale_types::denotes_a_model(typed) && hale_types::judgment::has_claim_surface(&bundle) {
                     if let Ok(model) = self.demand_model() {
                         self.count("claims");
@@ -1621,8 +1632,11 @@ impl Snapshot {
                         &merged
                     }
                 };
+                // The rewrite keeps a publish into a field the table runs
+                // off its owner's thread on the bus.
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("intra_locus");
-                Ok(hale_types::resolved::rewrite_intra_locus(program))
+                Ok(hale_types::resolved::rewrite_intra_locus(program, placement))
             })
             .as_ref()
     }
@@ -1643,10 +1657,11 @@ impl Snapshot {
 
     /// The view codegen lowers: the check first, then
     /// [`hale_types::resolved::resolve_rewritten`] over the intra-locus
-    /// rewrite ([`Snapshot::demand_intra_locus`]) with the snapshot's
-    /// source map, renames and api config — the topic rewrite as a
-    /// relation, the stdlib merge, the mint over the merged program, and
-    /// the tables. A check that reported an error
+    /// rewrite ([`Snapshot::demand_intra_locus`], which reads the
+    /// placement table) with the snapshot's source map, renames, api
+    /// config and form rows — the topic rewrite as a relation, the
+    /// stdlib merge, the mint over the merged program, and the tables.
+    /// A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
     /// The harness's snapshot ([`Config::harness`]) is not gated.
     pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {
@@ -1675,6 +1690,14 @@ impl Snapshot {
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+                // The effective target's column: what lowering reads for
+                // every behaviour and obligation it emits per target. A
+                // target with no column (Windows) never reaches a snapshot.
+                let class = self.demand_target().map_err(Clone::clone)?.class.ok_or_else(|| Blocked {
+                    family: "lowering_view",
+                    because: Vec::new(),
+                    refused: Some("the target has no column in the capability matrix".to_string()),
+                })?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1686,6 +1709,7 @@ impl Snapshot {
                     bindings,
                     placement,
                     typed,
+                    class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })

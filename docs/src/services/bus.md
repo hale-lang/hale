@@ -204,7 +204,9 @@ rejects arrivals. A consumer bound below the topic bound sheds
 quietly before the publisher ever sees refusal. Pool- and
 pinned-placed subscribers don't take these bounds — their queues
 are already fixed-size rings that push back on producers
-directly.
+directly. That includes a subscriber nested inside a pool- or
+pinned-placed locus, which runs on its owner's thread and receives
+through its owner's ring.
 
 ## Why this doesn't break the tower
 
@@ -255,7 +257,10 @@ hale model dump app.hl        # …then read the dispatch_plan section
 Each row names the wire subject, the flavor it lowers to
 (`dynamic`, `static_bucket`, `static_direct`), why — when the
 answer is "dynamic" — and which thread domains the publishers and
-subscribers actually run in. The decision is part of the build's
+subscribers actually run in. A subject is `static_direct` only when
+its payload is flat (every field an inline scalar: `Int`, `Float`,
+`Bool`, `Decimal`, `Duration`); one carrying a `String`, `Bytes` or
+another struct is a `static_bucket`, however quiet its handlers. The decision is part of the build's
 identity, so a recording made from one build is never replayed
 against another that dispatches differently.
 

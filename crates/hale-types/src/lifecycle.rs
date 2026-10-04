@@ -16,7 +16,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C48, R1–R49, R19a and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C50, R1–R50, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -102,11 +102,11 @@
 //! line  kinds                                    status
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
 //! 2     Closures Run                             Pending (no option chosen)
-//! 3     Accept Birth Run Dissolve                Pending (no option chosen); KnownOpen C12
+//! 3     Accept Birth Run Dissolve                Pending (no option chosen)
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; KnownOpen C8
-//! 7     WaitAbort PoolJoin                       KnownOpen R34
+//! 7     WaitAbort PoolJoin                       Shipped
 //! 8     FailureDelivery Birth                    Shipped
 //! 9     FailureDelivery Closures                 Shipped
 //! 10    Closures Dissolve                        Shipped
@@ -115,7 +115,7 @@
 //! 13    Resume RunAdmission Run                  KnownOpen C43; KnownOpen C48
 //! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
-//! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
+//! 16    PoolJoin WaitAbort                       Shipped (the capability matrix selects)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
 //! 19    RunAdmission Run Cancellation            Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2)
@@ -123,10 +123,11 @@
 //! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
 //! ```
 //!
-//! **Pending, and why.** Line 16 waits for P3: the obligations a target
-//! without threads owes come from the capability matrix, and gating
-//! the eager spine on wasm is an interim correction, not the rule.
-//! Line 17 prefers the deferred spine's join order everywhere, on the
+//! **Line 16** is P3's: the obligations a target owes come from the
+//! capability matrix's cells, and the spines emit the ones selected in
+//! [`TEARDOWN_EDGES`]' order (line 7's wait-abort before the pool join).
+//!
+//! **Pending, and why.** Line 17 prefers the deferred spine's join order everywhere, on the
 //! condition that the teardown delivery contract's final-publish
 //! guarantees (GH #253) survive every eager, deferred and declaration
 //! permutation; it is settled only once that is shown. Line 1's
@@ -456,7 +457,7 @@ pub enum ObligationKind {
     /// The dissolve-epoch closures, then the user's `dissolve()`.
     Dissolve,
     /// The reclaim: the instance's teardown spine and its arena's
-    /// release, exactly once (the `__arena` latch).
+    /// release, exactly once (the `__arena` latch and pending release).
     Reclaim,
     /// The whole-process drain a signal begins: a cooperative flag,
     /// never a lifecycle call from the signal path.
@@ -531,14 +532,14 @@ impl ObligationKind {
     /// The inventory rows the kind stands for.
     pub fn rows(self) -> &'static [&'static str] {
         match self {
-            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "R1", "R5"],
+            ObligationKind::ParamsSettle => &["C3", "C5", "C44", "C49", "C50", "R1", "R5"],
             ObligationKind::ConstructionDelivery => &["C11", "R2", "R3", "R4", "R5"],
             ObligationKind::Accept => &["C2", "C7", "R6"],
-            ObligationKind::Subscribe => &["C8"],
-            ObligationKind::Readiness => &["C8", "C10"],
-            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "R9", "R11", "R12", "R46"],
+            ObligationKind::Subscribe => &["C8", "C49", "C50", "R50"],
+            ObligationKind::Readiness => &["C8", "C10", "C49", "C50"],
+            ObligationKind::Birth => &["C1", "C9", "C10", "C38", "C49", "C50", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
-            ObligationKind::Run => &["C9", "C12", "C48", "R24", "R25"],
+            ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "R24", "R25"],
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
@@ -1002,13 +1003,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "3",
         title: "where lifecycle methods run on a pool",
         kinds: &[K::Accept, K::Birth, K::Run, K::Dissolve],
-        statuses: &[
-            (Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus"),
-            (
-                Status::KnownOpen { inventory_row: "C12" },
-                "a field nested under a pool-placed field runs its run() inline on the instantiating thread, off the pool the placement table gives it",
-            ),
-        ],
+        statuses: &[(Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus")],
     },
     DecisionLine {
         line: "4",
@@ -1038,7 +1033,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "7",
         title: "abort unsatisfiable waits before the join",
         kinds: &[K::WaitAbort, K::PoolJoin],
-        statuses: &[(Status::KnownOpen { inventory_row: "R34" }, "the wait-abort raised after the pool join")],
+        statuses: &[(Status::Shipped, "the wait-abort before the pool join, in every teardown spine (TEARDOWN_EDGES)")],
     },
     DecisionLine {
         line: "8",
@@ -1105,8 +1100,8 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "the target's lifecycle obligations come from the capability matrix",
         kinds: &[K::PoolJoin, K::WaitAbort],
         statuses: &[(
-            Status::Pending { condition: "P3's capability matrix is the authority; gating the eager spine is an interim correction" },
-            "pool and wait actions on a target without threads",
+            Status::Shipped,
+            "every teardown spine emits the pool join, the wait-abort and the ingress quiesce its target's cells select",
         )],
     },
     DecisionLine {
@@ -1137,6 +1132,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
             ),
             (
                 Status::Shipped,
+                "a started run ends before its child's physical reclaim completes, including a field replacement on another pool (L5)",
+            ),
+            (
+                Status::Shipped,
                 "a post refused at shutdown ends NotStarted(Shutdown(PoolShutdown)), a cell freed unrun at the pools' teardown NotStarted(Shutdown(PoolTeardown)) (L5)",
             ),
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
@@ -1161,6 +1160,66 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         ],
     },
 ];
+
+// ------------------------------------------- the teardown spines' order
+
+/// An edge between two of the process-wide obligations a teardown spine
+/// owes (the ingress quiesce R35, the wait-abort R34, the pool join
+/// R20): `before` completes before `after` is entered. The capability
+/// matrix selects which of them a target owes
+/// (`crate::capability::Obligation`'s cells); these edges order the
+/// ones selected, in every spine (`notes/f40-capability-matrix.md`
+/// § 3.2: the matrix selects, the plan orders). An omitted obligation
+/// takes its edges with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TeardownEdge {
+    pub before: crate::capability::Obligation,
+    pub after: crate::capability::Obligation,
+    /// The decision line or issue that states it.
+    pub line: &'static str,
+    pub why: &'static str,
+}
+
+/// The edges among a spine's process-wide obligations. The fourth edge
+/// the design names, the wait-abort before the pinned joins (GH #255),
+/// is kept by position: a spine emits its process obligations before its
+/// frame's pinned joins.
+pub const TEARDOWN_EDGES: &[TeardownEdge] = &[
+    TeardownEdge {
+        before: crate::capability::Obligation::IngressQuiesce,
+        after: crate::capability::Obligation::PoolJoin,
+        line: "GH #468",
+        why: "kernel-accepted ingress drains through the intact registry while the pools and subscribers are alive",
+    },
+    TeardownEdge {
+        before: crate::capability::Obligation::IngressQuiesce,
+        after: crate::capability::Obligation::WaitAbort,
+        line: "7",
+        why: "the quiesce's drain runs handlers, and an `or wait` the drain itself can satisfy is not aborted into a raise",
+    },
+    TeardownEdge {
+        before: crate::capability::Obligation::WaitAbort,
+        after: crate::capability::Obligation::PoolJoin,
+        line: "7",
+        why: "a pool worker parked in a wait only the abort ends is released before the join waits for it",
+    },
+];
+
+/// The order a spine emits the process-wide obligations selected for
+/// it: every [`TEARDOWN_EDGES`] edge between two of them holds, and
+/// otherwise the order given is kept.
+pub fn teardown_order(selected: &[crate::capability::Obligation]) -> Vec<crate::capability::Obligation> {
+    let mut left: Vec<crate::capability::Obligation> = selected.to_vec();
+    let mut out = Vec::with_capacity(left.len());
+    while !left.is_empty() {
+        let next = left
+            .iter()
+            .position(|o| !TEARDOWN_EDGES.iter().any(|e| e.after == *o && left.contains(&e.before)))
+            .expect("the teardown edges are acyclic");
+        out.push(left.remove(next));
+    }
+    out
+}
 
 impl Status {
     /// The status as the decision table writes it.
@@ -1202,7 +1261,24 @@ mod tests {
             .filter(|l| l.statuses.iter().any(|(s, _)| matches!(s, Status::Pending { .. })))
             .map(|l| l.line)
             .collect();
-        assert_eq!(pending, BTreeSet::from(["1", "2", "3", "16", "17"]));
+        assert_eq!(pending, BTreeSet::from(["1", "2", "3", "17"]));
+    }
+
+    /// The teardown edges are acyclic, and order the three obligations
+    /// as the design states: the quiesce, the wait-abort, the join.
+    #[test]
+    fn the_teardown_order_follows_its_edges() {
+        use crate::capability::Obligation as O;
+        assert_eq!(
+            teardown_order(&[O::PoolJoin, O::WaitAbort, O::IngressQuiesce]),
+            vec![O::IngressQuiesce, O::WaitAbort, O::PoolJoin]
+        );
+        assert_eq!(teardown_order(&[O::PoolJoin, O::WaitAbort]), vec![O::WaitAbort, O::PoolJoin]);
+        assert_eq!(teardown_order(&[O::WaitAbort]), vec![O::WaitAbort]);
+        for e in TEARDOWN_EDGES {
+            let order = teardown_order(&[e.after, e.before]);
+            assert_eq!(order, vec![e.before, e.after], "{} -> {}", e.before.name(), e.after.name());
+        }
     }
 
     #[test]

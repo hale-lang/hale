@@ -1,18 +1,18 @@
 // Decision line 7, abort unsatisfiable waits before the join
-// (WaitAbort, PoolJoin). Known open at inventory row R34.
+// (WaitAbort, PoolJoin), formerly inventory row R34.
 //
 // `Evt` holds at most two cells per subscriber and refuses past that.
 // `tally` subscribes on the main pool; `pusher` runs on pool `side` and
 // publishes a burst with `or wait`, after App's run() has returned and
 // fn main's exit is joining the pool workers. Only main drains
 // `tally`'s queue, and main is inside the join, so the third publish
-// waits for space that only the wait-abort would end. Every teardown
-// spine raises the wait-abort after the pool join.
+// waits for space that only the wait-abort can end. Every teardown
+// spine now raises the wait-abort before the pool join.
 //
 // Expected terminal outcome: the wait is aborted before the join, and
 // the aborted publish is not a success: the process ends with the
-// `BusWaitAborted` report, `wait-aborted`. Today the join never
-// returns: `hang-in-pool-join`.
+// `BusWaitAborted` report, `wait-aborted`. The worker exits the process
+// while main is inside the join, before the later teardown runs.
 
 type E { n: Int = 0; }
 topic Evt {

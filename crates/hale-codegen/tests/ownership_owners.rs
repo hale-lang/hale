@@ -31,6 +31,8 @@ mod owner_table;
 mod ownership_bubble;
 #[path = "ownership_bubble_crosspool.rs"]
 mod ownership_bubble_crosspool;
+#[path = "ownership_bubble_mixed.rs"]
+mod ownership_bubble_mixed;
 #[path = "ownership_bubble_multi.rs"]
 mod ownership_bubble_multi;
 #[path = "unowned_literal_pair_leak.rs"]

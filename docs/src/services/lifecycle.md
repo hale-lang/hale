@@ -501,6 +501,13 @@ so nothing tears it down twice. The rules that order gives you:
   the handler, and `restart` reuses it.
 - **Dissolve-epoch closures run before `dissolve()`.** A violation
   there reaches the parent before your cleanup runs.
+- **Replacing a field dissolves the old child before creating the new
+  one.** A started run keeps the old child's storage and owned
+  descendants alive until it returns. If a queued main-thread handler
+  performs the replacement, storage release waits until that handler
+  returns, so another queued handler can answer the old run. Cleanup
+  in `dissolve()`, including closing handles, still happens before the
+  replacement's birth.
 - **Ctrl-C raises a flag.** The signal calls none of your methods;
   the `run()`s that watch `self.draining` return, and the ordinary
   teardown follows.

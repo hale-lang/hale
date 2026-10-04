@@ -370,7 +370,20 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let subj_str = self.global_string(subject);
         let handler_ptr = handler_fn.as_global_value().as_pointer_value();
-        let mailbox_val = mailbox_or_null.unwrap_or_else(|| ptr_t.const_null());
+        // U-6: a subscription that names no route of its own, born in
+        // a thread anchor's params, takes the anchor's: its handler
+        // runs on the thread the locus runs on.
+        let anchor_mailbox = match &self.anchor_route {
+            Some(crate::codegen::AnchorRoute::Mailbox(mb)) => Some(*mb),
+            _ => None,
+        };
+        let anchor_pool = match &self.anchor_route {
+            Some(crate::codegen::AnchorRoute::Pool(p)) => Some(p.clone()),
+            _ => None,
+        };
+        let mailbox_val = mailbox_or_null
+            .or(anchor_mailbox)
+            .unwrap_or_else(|| ptr_t.const_null());
         // F.36 Slice 3b: subscribe-side codec substitution. When
         // main has a `codec(L { ... })` clause for this subject,
         // the synthesized decode thunk replaces the default m70
@@ -433,8 +446,10 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         // accepts both. Lotus_bus_register / _with_pool both
         // delegate to _keyed internally for kind=0 (no filter)
         // → backward compat preserved on the runtime side.
-        let coop_pool_ptr = if let Some(pool_name) =
-            self.current_cooperative_pool.clone()
+        let coop_pool_ptr = if let Some(pool_name) = self
+            .current_cooperative_pool
+            .clone()
+            .or_else(|| if mailbox_or_null.is_none() { anchor_pool.clone() } else { None })
         {
             let name_str = self.global_string(&pool_name);
             let lookup_fn = self

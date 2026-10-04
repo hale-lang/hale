@@ -669,9 +669,11 @@ fn main() { App { }; }
 /// (and the document verdict follows); two asserts on one fn share
 /// one diagnostic anchor, so when a diagnostic exists neither row
 /// can claim it. The subject here calls through a fn-typed
-/// parameter (#353), a call the walk cannot follow. (It used to be a
-/// module-scoped body, which the summary did not walk until it
-/// collected module-nested bodies, F.40 phase 3, E3a part C.)
+/// parameter (#353) that no function value of the program can be, a
+/// call the walk cannot follow. (It used to be a module-scoped body,
+/// which the summary did not walk until it collected module-nested
+/// bodies, F.40 phase 3, E3a part C; and `run` passed it `id`, which
+/// the call resolves to since F.40 E5.)
 #[test]
 fn unenumerated_and_ambiguous_rows_stay_uncertified() {
     let src = r#"
@@ -680,10 +682,9 @@ module billing {
     @effects(causes: { money })
     fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
 }
-fn id(v: Int) -> Int { return v; }
 main locus App {
     params { n: Int = 0; }
-    run() { println(poke(id, 1)); }
+    run() { println(1); }
 }
 fn main() { App { }; }
 "#;

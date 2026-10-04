@@ -263,7 +263,54 @@ cross-pool method call — which the compiler rejects (see below).
 Nesting is the supported pattern for "many loci, one pinned
 thread."
 
+A nested locus's bus handlers run there too. If a helper nested
+under the pinned gateway (or under a locus on `pool = io`)
+subscribes to a topic, its handler runs on the gateway's thread (or
+on `io`'s worker), wherever the publisher is: the runtime routes
+the helper's subscriptions to its anchor's thread.
+
+Under a pinned locus this holds from the start. The gateway's
+params are built on the gateway's own thread, so a helper's
+`birth()` and, for a helper with a `run()`, its `run()` happen
+there too, before the gateway's own `birth()`. A helper whose
+`run()` waits for a message through the gateway's mailbox gets it:
+a `std::time::sleep` on that thread drains the mailbox. The
+literal that builds the gateway returns once its params are built.
+While it waits, the thread running the literal keeps handling its
+own messages, as a `std::time::sleep` there would, so a helper
+whose `run()` asks a locus on that thread for something and waits
+for the answer gets it.
+An override written in that literal (`Gateway { started:
+std::time::monotonic_ns() }`) is your code, not the gateway's, and
+is evaluated where the literal is; a helper the override builds
+(`Gateway { reg: std::metrics::Registry { namespace: "edge" } }`)
+is still the gateway's, built on its thread.
+
+A locus placed on a pool (`cooperative(pool = io)`) gets the same
+start on `io`'s worker: its params, and every helper nested under
+it with that helper's `birth()` and inline `run()`, are built on
+the worker as the locus's first job there, and the literal returns
+once they are. A helper that waits in that `run()` for a message to
+itself gets it: a `std::time::sleep` there lets the worker handle
+`io`'s queued messages. The pool locus's own `birth()` still runs
+where the literal is, and its `run()` is posted to the worker after
+that, as before. Two locus fields on one pool are built in turn,
+one after the other. If the worker is waiting for this constructor
+to settle a held failure, it can perform the initialization during
+that wait, even when its message queue is full. This breaks the
+startup dependency and runs the initialization once on the worker.
+Otherwise the build waits behind whatever the worker is
+already running, so a locus placed after a sibling whose `run()`
+never returns on the same pool (without `where async_io`) is never
+built, and the program stops there.
+
 ## The bus crosses threads for you
+
+An adapter named in `bindings { }` runs on its own pinned thread.
+The same restrictions as an explicit `pinned` placement apply:
+it cannot declare `accept()` or a closure with a `birth` or
+`dissolve` epoch (including an omitted epoch). The checker reports
+these at the binding. Inline closures are supported on that thread.
 
 When a cooperative locus on one pool publishes to a subscriber on
 another pool — or to a pinned locus on its own thread — the

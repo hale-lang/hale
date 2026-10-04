@@ -370,6 +370,17 @@ struct Contribution {
     in_handler: bool,
 }
 
+/// Pinned and pool anchors initialize their params on their own domain
+/// (C49/C50). Their literal and, for a pool anchor, their own birth still
+/// run on the instantiating thread.
+fn initialization_domain(t: &PlacementTable, placed: bool, c: &Contribution) -> Option<DomainId> {
+    if placed && c.own.is_some_and(|d| matches!(t.domains[d.0 as usize].kind, DomainKind::Pinned { .. } | DomainKind::Pool { .. })) {
+        c.own
+    } else {
+        c.it
+    }
+}
+
 /// Where a template's contributions come from.
 enum Source<'t> {
     /// A static row or a literal in a free fn: the one the table gives.
@@ -546,6 +557,9 @@ fn subjects<'a>(
             How::Field
         };
         let owner = row.owner.as_ref().and_then(|k| by_key.get(k).copied());
+        let it = owner.map_or(Some(PlacementTable::MAIN), |o| {
+            initialization_domain(t, out[o].placed, &out[o].contributions[0])
+        });
         let contract = match (owner, key.path.last()) {
             (Some(o), Some(step)) => contract_field(out[o].decl, &step.field, out[o].universe, index),
             _ => false,
@@ -560,7 +574,7 @@ fn subjects<'a>(
             contributions: vec![Contribution {
                 owner,
                 under: None,
-                it: Some(PlacementTable::MAIN),
+                it,
                 own: Some(row.domain),
                 in_handler: false,
             }],
@@ -1053,8 +1067,8 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     /// The instance is a pinned domain's anchor: it runs on a thread of
-    /// its own. A field of a pinned locus shares its anchor's domain for
-    /// its cells, but is built, drained and dissolved off that thread.
+    /// its own. Its fields initialize there too; their later teardown
+    /// remains a separate obligation.
     fn is_pinned(&self, i: usize) -> bool {
         let Template::Static(key) = &self.subjects[i].site.template else { return false };
         self.all(i, |c| c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { anchor, .. } if anchor == key)))
@@ -1080,13 +1094,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.is_pool(c.own) && c.own != c.it
     }
 
-    /// A field nested under a pool-placed field: the table gives it its
-    /// owner's pool, and no pool is chosen for its `run()`, which runs
-    /// inline on the instantiating thread (inventory C12, R17 and R18).
-    fn inline_off_its_pool(&self, i: usize, c: &Contribution) -> bool {
-        self.is_pool(c.own) && !self.subjects[i].placed && c.own != c.it
-    }
-
     /// Its `run()` is posted to the pool worker that tears its owner down
     /// (line 19, the retention L5 shipped): the run is retained against
     /// that teardown, which cancels it if it is still queued before it
@@ -1097,6 +1104,9 @@ impl<'b, 'a> Builder<'b, 'a> {
     fn posted_to_its_owners_teardown(&self, i: usize, c: &Contribution) -> bool {
         let under = self.under(c);
         matches!(self.subjects[i].how, How::Field | How::Accepted { .. })
+            // Static fields inside a pool anchor's init run inline on
+            // its worker; the init does not post them behind itself.
+            && !matches!(self.subjects[i].site.template, Template::Static(_))
             && self.is_pool(c.own)
             && !under.is_empty()
             && under.iter().all(|o| o.it == c.own)
@@ -1145,7 +1155,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         match s.how {
             How::Field => (Spine::Cascade, DomainRole::Teardown),
             How::Accepted { .. } => (Spine::Reclaim, DomainRole::Teardown),
-            How::Top { built: Built::Statement, .. } | How::Body { built: Built::Statement, .. } => {
+            How::Top { built: Built::Statement, .. } | How::Body { built: Built::Statement, .. }
+                if !self.facts[i].subscribes => {
                 (Spine::EagerTeardown, DomainRole::Instantiating)
             }
             How::Top { .. } | How::Body { .. } => (Spine::DeferredEntry, DomainRole::Teardown),
@@ -1183,7 +1194,13 @@ impl<'b, 'a> Builder<'b, 'a> {
         let pinned = self.is_pinned(i);
         let on_pool = self.any(i, |c| self.is_pool(c.own));
         let on_async_pool = self.any(i, |c| self.is_async_pool(c.own));
+        let in_pool_init = matches!(s.site.template, Template::Static(_)) && !s.placed
+            && self.all(i, |c| self.is_pool(c.own) && c.own == c.it);
         let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(i, c));
+        // A posted run can still be executing when a field replacement
+        // enters teardown on another pool. Retention orders its end
+        // before physical reclaim, not before drain or dissolve.
+        let posted_run = on_pool && !in_pool_init && matches!(s.how, How::Field | How::Accepted { .. });
         let accepted = matches!(s.how, How::Accepted { .. });
         let flow = matches!(s.how, How::Accepted { flow: true });
         let let_bound = matches!(s.how, How::Body { built: Built::Let | Built::Nested, .. });
@@ -1197,14 +1214,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         // Params settle (line 1): the bracket, when the declaration has one.
         if brackets {
             let mut o = self.row(i, K::ParamsSettle, instantiation);
+            if pinned || (s.placed && on_pool) {
+                o.holder.domain = DomainRole::Own;
+            }
             o.line = Some("1");
-            // An owner placed on a cooperative pool settles on the
-            // instantiating thread today; which domain it owes is pending.
+            // Anchors settle on their initialization thread. The wider
+            // construction-delivery policy for pool owners is pending.
             o.runs_on = self.claim(i, |c| {
+                let on = initialization_domain(self.inputs.placement, s.placed, c);
                 if self.pool_placed(c) {
-                    Self::on(c.it, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
+                    Self::on(on, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
                 } else {
-                    Self::on(c.it, shipped("1"))
+                    Self::on(on, shipped("1"))
                 }
             });
             r.params_settle = Some(self.push(o));
@@ -1274,7 +1295,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.failures(i, &mut r, &[FailureSource::BirthClosure, FailureSource::BirthCheck]);
         // The run: admitted to its pool (line 19), then executed.
         if run {
-            let posted = on_pool || pinned;
+            let posted = (on_pool && !in_pool_init) || pinned;
             let run_holder = if pinned {
                 Holder { spine: Spine::PinnedMain, domain: DomainRole::Own }
             } else {
@@ -1294,14 +1315,11 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
             let mut o = self.row(i, K::Run, run_holder);
             o.multiplicity = Multiplicity::OncePerIncarnation;
-            // A field nested under a pool-placed field owes its run() to
-            // the pool the table gives it, and runs it inline on the
-            // instantiating thread today (line 3, inventory C12).
+            // A nested field's inline run executes on its anchor's
+            // initialization thread, the pool the table gives it (C50).
             o.runs_on = self.claim(i, |c| {
                 if self.under_pinned(i, c) {
                     None
-                } else if self.inline_off_its_pool(i, c) {
-                    Self::on(c.own, open("3", "C12"))
                 } else {
                     Self::on(c.own, Rule::SHIPPED)
                 }
@@ -1309,11 +1327,11 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
             // Every end an occurrence can reach, under any contribution.
             o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
-            if on_pool {
+            if on_pool && !in_pool_init {
                 o.terminals.push(Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)));
                 o.terminals.push(Terminal::NotStarted(NotStarted::Acknowledged));
             }
-            if on_async_pool {
+            if on_async_pool && !in_pool_init {
                 o.terminals.push(Terminal::CanceledAfterStart);
             }
             o.lifetime.push(Retention {
@@ -1364,10 +1382,9 @@ impl<'b, 'a> Builder<'b, 'a> {
         if pinned {
             o.runs_on = self.claim(i, |c| Self::on(c.own, shipped("12")));
         }
-        // A run queued behind its owner's teardown is canceled by the
-        // reclaim, after this drain: its end is ordered before the reclaim
-        // (for every occurrence, once one contribution posts it there).
-        if let Some(run) = r.run.filter(|_| !posted_to_teardown) {
+        // A posted run may be canceled here or already running on
+        // another pool. Neither case orders its end before this drain.
+        if let Some(run) = r.run.filter(|_| !posted_run) {
             let rule = if flow || let_bound { shipped("11") } else { Rule::SHIPPED };
             o.edges.entry.push(after(run, Point::Ended, rule));
         }
@@ -1448,12 +1465,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         let id = self.push(o);
         self.get(id).lifetime[0].until.obligation = id;
         r.reclaim = Some(id);
+        // Line 19's retention also covers a started run reclaimed off
+        // its worker. Inline runs satisfy the same edge by returning
+        // before teardown; pinned runs satisfy it through their join.
+        if let Some(run) = r.run {
+            self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
+        }
         // A run still queued behind its owner's teardown on the worker is
         // canceled inside the reclaim and named, NotStarted(Acknowledged),
         // before the child is released (line 19, the retention L5
         // shipped).
         // Claimed on the pools of the contributions that post it there.
-        if let Some(run) = r.run.filter(|_| posted_to_teardown) {
+        if r.run.is_some() && posted_to_teardown {
             let mut o = self.row(i, K::Cancellation, reclaim_holder);
             o.line = Some("19");
             o.guard = PathGuard::DrainInFlight;
@@ -1465,7 +1488,6 @@ impl<'b, 'a> Builder<'b, 'a> {
             );
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
-            self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
             // Only an occurrence posted there has a cancellation to wait for.
             if self.all(i, |c| self.posted_to_its_owners_teardown(i, c)) {
                 self.get(id).edges.completion.push(after(cancel, Point::Completed, shipped("19")));
@@ -1648,7 +1670,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         for c in routed {
             let raised_on = self.raised_on(i, c, source);
             for oc in self.under(c) {
-                let settling = oc.it;
+                let owner = c.owner.expect("a routed contribution has an owner");
+                let settling = initialization_domain(self.inputs.placement, self.subjects[owner].placed, oc);
                 let rule = if self.pool_placed(oc) {
                     Rule::line("1", Status::Pending { condition: POOL_OWNER })
                 } else {
@@ -1818,9 +1841,14 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.get(cd).edges.entry.push(after(pd, Point::Completed, Rule::SHIPPED));
             }
         }
-        // Children before their owner's arena (line 14).
+        // Children before their owner's physical release (line 14).
+        // Reclaim can begin by canceling posts and retaining a tree
+        // through a started run; its entry need not free storage yet.
         if let (Some(cr), Some(pr)) = (child.reclaim, parent.reclaim) {
-            self.get(pr).edges.entry.push(after(cr, Point::Completed, shipped("14")));
+            if let Some(cd) = child.dissolve {
+                self.get(pr).edges.entry.push(after(cd, Point::Completed, shipped("14")));
+            }
+            self.get(pr).edges.completion.push(after(cr, Point::Completed, shipped("14")));
         }
         // A held failure: delivered once the owner's last param is
         // stored, completed at its settle, before its birth (line 1).
@@ -1867,10 +1895,11 @@ impl<'b, 'a> Builder<'b, 'a> {
             status,
         };
         let mut first_join: Option<ObligationId> = None;
-        // Each template top a statement in `fn main` builds: torn down by
-        // the eager spine where its statement ends.
+        // A statement-position subscriber remains live until the frame
+        // exits, like a let-bound locus. Only the other statement tops
+        // take the eager spine where their statement ends.
         let eager: Vec<usize> = (0..self.subjects.len())
-            .filter(|&i| matches!(self.subjects[i].how, How::Top { built: Built::Statement, .. }))
+            .filter(|&i| matches!(self.subjects[i].how, How::Top { built: Built::Statement, .. }) && !self.facts[i].subscribes)
             .collect();
         let statements_done: Vec<ObligationId> = eager.iter().filter_map(|&i| self.rows[i].reclaim).collect();
         for i in eager {
@@ -1893,7 +1922,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 continue;
             }
             // The main locus aborts the waits only teardown ends before it
-            // joins the workers they block (line 7; after today, R34).
+            // joins the workers they block (line 7).
             let mut o = process_row(K::WaitAbort, Spine::EagerTeardown, Some("7"), Status::Shipped);
             if let Some(run) = self.rows[i].run {
                 o.edges.entry.push(after(run, Point::Completed, Rule::SHIPPED));
@@ -1901,7 +1930,7 @@ impl<'b, 'a> Builder<'b, 'a> {
             let abort = self.push(o);
             if pools {
                 let mut o = process_row(K::PoolJoin, Spine::EagerTeardown, None, Status::Shipped);
-                o.edges.entry.push(after(abort, Point::Completed, open("7", "R34")));
+                o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
                 if let Some(run) = self.rows[i].run {
                     o.edges.entry.push(after(run, Point::Completed, Rule::SHIPPED));
                 }
@@ -1923,8 +1952,8 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.push(o);
             }
         }
-        // `fn main`'s fall-through exit: the pool join, its pre-drain, the
-        // wait-abort, before the frame's entries are torn down.
+        // `fn main`'s fall-through exit aborts the waits before joining
+        // pools. Without pools, its abort follows the frame pre-drain.
         let has_fn_main = self.inputs.bundle.programs.values().any(|p| {
             p.items.iter().any(|it| matches!(it, TopDecl::Fn(f) if f.name.name == "main"))
         });
@@ -1934,32 +1963,71 @@ impl<'b, 'a> Builder<'b, 'a> {
                 o.edges.entry.extend(statements_done.iter().map(|&r| after(r, Point::Completed, Rule::SHIPPED)));
                 o
             };
-            if pools {
+            let abort = pools.then(|| self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped))));
+            let mut frame_join = None;
+            if let Some(abort) = abort {
                 let mut o = process_row(K::PoolJoin, Spine::MainFallThrough, None, Status::Shipped);
+                o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
                 o.progress = Progress {
                     rule: ProgressRule::Join { pumps: K::FailureDelivery },
                     status: Status::KnownOpen { inventory_row: "R20" },
                 };
                 let join = self.push(after_statements(o));
                 first_join.get_or_insert(join);
+                frame_join = Some(join);
             }
             let pre = self.push(after_statements(process_row(K::PreDrain, Spine::MainFallThrough, Some("18"), Status::Shipped)));
-            self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped)));
+            if let Some(join) = frame_join {
+                self.get(pre).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+            }
+            if abort.is_none() {
+                self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped)));
+            }
             // A let-bound literal of `fn main`: run at its statement, drained
             // and dissolved at the scope's exit, after the pre-drain (line 11).
+            let mut frame_tree = BTreeSet::new();
             for i in 0..self.subjects.len() {
                 let deferred = matches!(
                     self.subjects[i].how,
                     How::Body { built: Built::Let | Built::Nested, in_fn_main: true } | How::Top { built: Built::Let | Built::Nested, .. }
-                );
+                ) || (self.facts[i].subscribes && matches!(
+                    self.subjects[i].how,
+                    How::Body { built: Built::Statement, in_fn_main: true } | How::Top { built: Built::Statement, .. }
+                ));
                 if !deferred {
                     continue;
+                }
+                if !self.is_pinned(i) {
+                    frame_tree.insert(i);
                 }
                 if let Some(run) = self.rows[i].run {
                     self.get(pre).edges.entry.push(after(run, Point::Completed, shipped("11")));
                 }
                 if let Some(d) = self.rows[i].drain {
                     self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                }
+            }
+            // The frame's pre-drain also precedes the recursive drain of
+            // its entries' fields. Their bottom-up drain order cannot
+            // infer this from the edge into the root's drain. A pinned
+            // subtree drains on its own thread; a shared field template
+            // only gets this edge when every owner belongs to this frame.
+            loop {
+                let fields: Vec<usize> = (0..self.subjects.len()).filter(|&i| {
+                    if self.subjects[i].how != How::Field || self.is_pinned(i) || frame_tree.contains(&i) {
+                        return false;
+                    }
+                    let owners = self.owners(i);
+                    !owners.is_empty() && owners.iter().all(|o| frame_tree.contains(o))
+                }).collect();
+                if fields.is_empty() {
+                    break;
+                }
+                for i in fields {
+                    frame_tree.insert(i);
+                    if let Some(d) = self.rows[i].drain {
+                        self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                    }
                 }
             }
         }
@@ -2055,4 +2123,3 @@ mod tests {
         assert_eq!(combine([on(0, delivered), None]), None, "one occurrence's domain unknown: no claim");
     }
 }
-

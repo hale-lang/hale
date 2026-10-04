@@ -35,14 +35,14 @@ fn program(rogue_attr: &str) -> String {
              params {{ n: Int = 0; }}
              @effects(is: {{ audit }})
              fn record(s: String) {{
-                 std::io::fs::write_file(\"/tmp/a.log\", s);
+                 std::io::fs::write_file(\"/tmp/a.log\", s) or discard;
              }}
          }}
          locus Rogue {{
              params {{ n: Int = 0; }}
              {rogue_attr}
              fn sneak(s: String) {{
-                 std::io::fs::write_file(\"/tmp/b.log\", s);
+                 std::io::fs::write_file(\"/tmp/b.log\", s) or discard;
              }}
          }}
          main locus App {{
@@ -93,7 +93,7 @@ fn attribution_is_direct_not_transitive() {
         effect audit;
         locus Raw {
             params { n: Int = 0; }
-            fn io(s: String) { std::io::fs::write_file(\"/tmp/x\", s); }
+            fn io(s: String) { std::io::fs::write_file(\"/tmp/x\", s) or discard; }
         }
         locus Wrapper {
             params { r: Raw = Raw { }; }

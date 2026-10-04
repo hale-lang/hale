@@ -281,6 +281,18 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    itself sits in a default (F.4 call-site rule). This holds
    regardless of where the instantiation executes (fn main, a
    params-init, or another locus's method body — 2026-07-14 fix).
+   For a locus placed `pinned`, the defaults, and every locus
+   nested under it with its whole instantiation, are computed on
+   the locus's own thread, and the literal completes once they
+   are; an override is still evaluated where the literal is,
+   except a locus it builds as the field's value, which is part
+   of the pinned subtree (`runtime.md` § "Placement classes",
+   m27 + m28a). For a field placed on `cooperative(pool = X)`
+   the same holds on X's worker, as the first job of that field:
+   its defaults and every locus nested under it are computed
+   there, and the literal completes once they are (the pool side
+   of m27 + m28a); the field's own `birth()` still runs where
+   the literal is.
 2. The nearest enclosing ancestor that declares `accept(c: I)`
    for the child's interface is the **owner** (innermost-wins —
    interest-based ownership / accept bubbling; see below and
@@ -319,6 +331,21 @@ cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
 compile time. See `runtime.md` "Interest-based ownership (accept
 bubbling)."
+
+Whether the owner is on another pool is a fact of each *instance*
+of the enclosing locus, not of its type: a locus nested under a
+root field placed off main runs on that field's thread, and one
+type can have instances on several threads. The owner is resolved
+once, for every instance; the delivery is chosen per instance. When
+some instances of the enclosing locus run on the owner's thread and
+others do not, and the owner is a `main locus`, a bare `I{};` is
+born in the owner's region where the enclosing instance runs on the
+owner's thread, and handed off where it does not. Where that choice
+cannot be made — a value use of the literal, or an owner with more
+than one instance, which has no single thread to hand off to — the
+literal is refused at compile time, naming every instance of the
+enclosing locus and the thread it runs on. A resolved owner is never
+dropped for a transient birth.
 
 ### Birth order is load-bearing
 
@@ -1385,11 +1412,11 @@ Assigning a fresh locus literal to a locus-typed field —
 `self.<field> = SomeLocus { … };` — is a **lifecycle
 transition**, not a value store. It is lowered **break-before-make**:
 
-1. The instance currently in the field is reclaimed — its full
-   teardown spine runs (drain → dissolve → arena freed), so its
-   resources are released: `@ffi` handles closed, child loci
-   cascaded, region returned. This is the same teardown a child
-   gets when its parent dissolves.
+1. The instance currently in the field runs its teardown spine:
+   drain → dissolve, including its child cascade. Cleanup such as
+   closing `@ffi` handles happens before the replacement's birth.
+   Its storage is released once started runs have given up their
+   holds, as in the teardown when its parent dissolves.
 2. A new instance is constructed from the literal **into self's
    own arena**, owned by the field (not scope-bound) — so it
    outlives the enclosing method and is reclaimed through the
@@ -1397,12 +1424,16 @@ transition**, not a value store. It is lowered **break-before-make**:
    child from params-init.
 3. The field is repointed at the live new instance.
 
-The old and new instances do not coexist: the old is fully torn
-down before the new is constructed. (Treating the assignment as a
-plain value store — the naive lowering — would leave the field
-pointing at a scope-dissolved temporary: closed handles, freed
-arena, use-after-free on next use. The transition lowering exists
-to prevent exactly that.)
+The old instance's drain and dissolve finish before the new instance
+is constructed. There is one storage-retention exception: when a
+queued main-thread handler performs the replacement, waiting for an
+old run inside that handler could deadlock a reply queued behind it.
+Physical release is then deferred until the handler returns. The old
+run retains its arena, forms and owned descendants until it finishes;
+their storage is released before the containing owner's storage.
+This does not postpone `dissolve()` or keep resources closed by that
+method open. Handler bodies keep their completion order. Outside a
+handler, replacement waits for the old run while servicing the queue.
 
 For "same instance, reconfigure," use **in-place mutation**
 (`self.<field>.<x> = v;`), which stays the cheap path and triggers
@@ -4724,25 +4755,61 @@ statement-position recognition is also parser-gated to a
 fallible-body scope (so `let fail = 0;` outside such a body
 stays admissible).
 
-### A bare stdlib call is an error (GH #738)
+### A bare fallible call is an error (GH #738)
 
-Every stdlib entry point the signature table marks `fallible` must be
-called with an `or` disposition. A call with none — including the
-legacy Int-status form of the write fns, `let r: Int =
-std::io::fs::write_file(..)` — is a **type error** naming the callee,
-the payload it can fail with, and the shapes that address it (`or
-raise`, `or <fallback>`, `or discard`, `or handler(err)`). It is
-reported by `hale check`, `hale verify` and `hale build` alike; there
-is no flag or mode that accepts it. The rule was staged (warning,
-then `--strict-fallible`, then this) and the flag is removed.
+One rule holds for every fallible call, whether the callee is a fn or
+method the program declares, an interface method, a container's or
+an array's `get`, or a stdlib entry point: **only an `or` handles
+it.** The call must be the operand of an `or` disposition (`or raise`,
+`or <fallback>`, `or handler(err)`, `or fail <payload>`, `or
+discard`). In any other position the call is **bare**: an argument
+(`g(f())`), an operand (`f() > 1`), a `match` scrutinee (`match f() {
+.. }`), a `let` initializer (`let v = f();`), a statement (`f();`), a
+returned value (`return f();`, in a fallible fn too). A `match` does
+not handle a fallible call.
+
+A bare call is a **type error** naming the callee, the payload it can
+fail with, and the shapes that address it (`or raise`, `or
+<fallback>`, `or discard`, `or handler(err)`). That includes the
+legacy Int-status form of the stdlib write fns, `let r: Int =
+std::io::fs::write_file(..)`. It is reported by `hale check`, `hale
+verify`, `hale build`, `run`, `test` and the language server alike,
+one error per call. There is no flag or mode that accepts it. The rule
+for stdlib calls was staged (a warning, then `--strict-fallible`, then
+this) and the flag is removed. For any other callee the bare call was
+always refused, by the build if not by the check.
 
 A handled call and a deliberately discarded one (`or discard`, which
-needs a `()` success type) are not reported. The inventory of the
-entry points concerned is the table itself (`stdlib_surface.rs`, the
-rows with a payload): 94 at the time of the ruling, across
+needs a `()` success type) are not reported. The stdlib entry points
+concerned are the signature table's rows with a payload
+(`stdlib_surface.rs`): 94 at the time of the ruling, across
 `std::io::fs`, `std::process`, `std::http::client`, `std::io::tcp`,
 `std::compress`, `std::tar`, `std::bytes`, `std::str` and
 `std::time`.
+
+**Limitations to lift.** These are where lowering's support stops
+today, not part of the rule:
+
+- **A fallible handler.** An `or`'s handler that can fail itself
+  (`g() or f(err)`) takes an implicit `or raise` (`spec/types.md`
+  § "Disposition operators (`or`)") only when it is a fn the program declares (not a
+  generic one), an imported or bundled stdlib fn written as Hale, or
+  a locus's member fn called on `self`, a local or a field of `self`.
+  Any other fallible handler is refused with the nested spelling that
+  works, `or (f(err) or raise)`. That covers a stdlib entry point, a
+  generic fn, an interface's or a perspective's method, and a
+  container's, an array's or a stdlib handle's method.
+- **The stdlib's legacy form.** Lowering still carries a bare form
+  for some stdlib entry points (`read_file` returns the success value,
+  the write fns an Int status). The check refuses every bare call, so
+  no program reaches it.
+- **A call through an interface-typed value.** The checker types a
+  local or parameter whose declared type is an interface as unknown
+  (an interface slot accepts any locus that satisfies it), so it does
+  not see a call through one as fallible: a bare `s.put(k)` with `s:
+  Store` passes `hale check`, and `hale build` refuses it (``error not
+  addressed: `Store.put` is fallible``). A call through a locus-typed
+  value is checked.
 
 ### `or` disposition
 

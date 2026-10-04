@@ -76,6 +76,20 @@ Locus methods support defaults too. One caveat: bus-handler
 methods and mode methods reject them — their argument shape is
 fixed by the runtime, so there's no slot to fill at dispatch time.
 
+## Generic calls inside loci
+
+A generic function can also be called from a generic locus. If a
+`Holder<T>` calls `first(self.value)`, a `Holder<Int>` uses the `Int`
+call and a `Holder<String>` uses the `String` call. Binding the field
+to a local first has the same result. Params defaults use the type
+arguments of the locus declaring them.
+
+Function and method defaults use the caller's scope at each invocation.
+If a default calls `first(value)`, one caller can supply an `Int` binding
+named `value` and another can supply a `String` binding. The compiler
+keeps a separate checked call row for each invocation and caller
+specialization, including defaults that call other defaulted functions.
+
 ## Functions are values
 
 A function has a type — `fn(Int, Int) -> Int` — and you can pass
@@ -144,7 +158,9 @@ anything: `len`, `to_string`, the two numeric casts `Int` /
 verification accumulators `sum` / `prod` and `check_closures()`,
 and the `bounded` collection intrinsics. Those are not magic names to
 memorise — you'll meet each one where it's useful — but they are
-why `len(s)` needs no import.
+why `len(s)` needs no import. They are typed like any other call:
+`len(s)` is an `Int`, `to_string(x)` a `String`, `abs(x)` whatever
+`x` is, so `let n: String = len(s)` is refused at the `let`.
 
 A builtin call is the same call wherever you write it. `len(s)` in
 the middle of an expression and `len(s);` on a line of its own are

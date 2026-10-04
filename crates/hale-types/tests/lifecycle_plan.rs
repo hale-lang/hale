@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::lifecycle::{
-    FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
+    DomainRole, FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
     Spine, Status, Template, Terminal, DECISION_LINES,
 };
 use hale_types::placement::{Bound, DomainKind, SiteUniverse};
@@ -193,7 +193,8 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert_eq!(one(p, "Outer", K::Birth).holder.spine, Spine::PinnedMain);
     assert_eq!(one(p, "Outer", K::Run).holder.spine, Spine::PinnedMain, "a pinned thread runs run(), written or not");
     assert_eq!(rows(p, "Outer", K::PinnedJoin).len(), 1);
-    assert_eq!(one(p, "Inner", K::Birth).holder.spine, Spine::Instantiation, "a field of a pinned locus is born off its thread");
+    assert_eq!(one(p, "Inner", K::Birth).holder.spine, Spine::Instantiation, "the field's instantiation runs inside the pinned init");
+    assert_eq!(claimed(p, one(p, "Inner", K::Birth)), labels(&["pinned"]));
     let drain = one(p, "Inner", K::Drain);
     assert_eq!((drain.line, drain.status), (Some("12"), Status::KnownOpen { inventory_row: "C9" }));
     let outer_drain = one(p, "Outer", K::Drain);
@@ -219,7 +220,7 @@ fn a_contract_typed_field_owes_its_drain_before_its_owners() {
 }
 
 /// Line 3: a field nested under a pool-placed field owes its run() to
-/// that pool, and runs it inline today (C12).
+/// that pool, and initializes there inside the anchor's init (C50).
 #[test]
 fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
     let s = snapshot(
@@ -228,7 +229,31 @@ fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
     let p = plan(&s);
     let on = one(p, "Kid", K::Run).runs_on.clone().expect("the table gives it a pool");
     assert!(matches!(&p.domains[on.one().expect("one domain").0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
-    assert_eq!((on.rule.line, on.rule.status), (Some("3"), Status::KnownOpen { inventory_row: "C12" }));
+    assert_eq!(on.rule, Rule::SHIPPED);
+    assert_eq!(claimed(p, one(p, "Kid", K::Birth)), labels(&["pool:side"]));
+    assert!(rows(p, "Kid", K::RunAdmission).is_empty(), "the nested run does not enter the pool queue");
+    assert!(rows(p, "Kid", K::Cancellation).is_empty(), "the nested run is inline, not queued behind the init");
+}
+
+#[test]
+fn an_anchors_params_and_held_delivery_use_its_initialization_domain() {
+    let source = include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_pool_owner_settle.hl");
+    for (placement, domain, birth_domain) in [
+        ("cooperative(pool = side)", "pool:side", "main"),
+        ("pinned", "pinned", "pinned"),
+    ] {
+        let s = snapshot(&source.replace("cooperative(pool = side)", placement));
+        let p = plan(&s);
+        assert_eq!(claimed(p, one(p, "Owner", K::ParamsSettle)), labels(&[domain]));
+        assert_eq!(one(p, "Owner", K::ParamsSettle).holder.domain, DomainRole::Own);
+        assert_eq!(claimed(p, one(p, "Owner", K::Birth)), labels(&[birth_domain]));
+        for kind in [K::Birth, K::Run] {
+            assert_eq!(claimed(p, one(p, "Boom", kind)), labels(&[domain]));
+        }
+        let held = rows(p, "Boom", K::FailureDelivery).into_iter()
+            .find(|o| o.guard == PathGuard::FailedAtSettle).expect("the held alternative");
+        assert_eq!(claimed(p, held), labels(&[domain]));
+    }
 }
 
 /// The labels of the domains a row claims.
@@ -291,7 +316,7 @@ fn a_field_reached_under_parents_on_two_domains_claims_both() {
         assert!(b.edges.entry.iter().any(|pr| pr.event.obligation == leaf_birth));
     }
     for r in rows(p, "Parent", K::Reclaim) {
-        assert!(r.edges.entry.iter().any(|pr| pr.event.obligation == leaf_reclaim));
+        assert!(r.edges.completion.iter().any(|pr| pr.event.obligation == leaf_reclaim));
     }
 }
 
@@ -399,7 +424,7 @@ fn a_body_literal_under_enclosing_templates_on_two_domains_claims_both() {
     let mid_reclaims = rows(p, "Mid", K::Reclaim);
     assert_eq!(mid_reclaims.len(), 2, "two Mid literals, two templates");
     for r in mid_reclaims {
-        assert!(r.edges.entry.iter().any(|pr| pr.event.obligation == leaf_reclaim));
+        assert!(r.edges.completion.iter().any(|pr| pr.event.obligation == leaf_reclaim));
     }
 }
 
@@ -526,6 +551,48 @@ fn a_flow_child_is_reclaimed_at_its_runs_end_before_its_owner() {
     assert!(rows(p, "Kid", K::Drain).iter().all(|o| o.holder.spine == Spine::Reclaim));
     let app_reclaim = one(p, "App", K::Reclaim);
     assert_eq!(app_reclaim.edges.entry.iter().filter(|pr| pr.rule.line == Some("14")).count(), 3);
+    assert_eq!(app_reclaim.edges.completion.iter().filter(|pr| pr.rule.line == Some("14")).count(), 3);
+    for edge in app_reclaim.edges.completion.iter().filter(|pr| pr.rule.line == Some("14")) {
+        assert_eq!(p.obligations[edge.event.obligation.0 as usize].kind, K::Reclaim);
+        assert_eq!(edge.event.point, Point::Completed);
+    }
+}
+
+/// Line 19 holds a started run against cross-pool field replacement as
+/// well as queued cancellation. The replacement's inline run obeys the
+/// same reclaim edge, so the trace projection can hold both instances
+/// to the producer's rule without a hand-written plan.
+#[test]
+fn a_started_run_is_retained_until_reclaim_completes() {
+    for src in [
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_retained.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_retained_async.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_publishes_back.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_started_run_publishes_back_async.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_handler_replaces_started_run.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_handler_replaces_started_run_async.hl"),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        assert!(laws(p).is_empty(), "{:?}", laws(p));
+        assert_eq!(rows(p, "Kid", K::Run).len(), 2);
+        let subscriber = !rows(p, "App", K::Subscribe).is_empty();
+        assert_eq!(one(p, "App", K::Drain).holder.spine,
+                   if subscriber { Spine::DeferredEntry } else { Spine::EagerTeardown });
+        assert_eq!(p.obligations.iter().any(|o| o.kind == K::PoolJoin && o.holder.spine == Spine::EagerTeardown), !subscriber,
+                   "a statement-position subscriber joins at frame exit");
+        for reclaim in rows(p, "Kid", K::Reclaim) {
+            let run = p.obligations.iter().find(|o| o.kind == K::Run && o.site == reclaim.site).expect("this instance's run");
+            let run_id = id_of(p, run);
+            assert!(reclaim.edges.completion.iter().any(|pr| {
+                pr.event.obligation == run_id && pr.event.point == Point::Ended && pr.rule == Rule::line("19", Status::Shipped)
+            }), "each instance owes its run's end before reclaim completes");
+            let drain = p.obligations.iter().find(|o| o.kind == K::Drain && o.site == reclaim.site).expect("this instance's drain");
+            let waits_before_drain = drain.edges.entry.iter().any(|pr| pr.event.obligation == run_id);
+            assert_eq!(waits_before_drain, !matches!(reclaim.site.as_ref().unwrap().template, Template::Static(_)),
+                       "only the inline replacement owes run completion before drain");
+        }
+    }
 }
 
 /// RD: a handler that restarts has its restart performed on one path and
@@ -546,7 +613,7 @@ fn a_restart_is_refused_under_teardown() {
 }
 
 /// Lines 7 and 18: the main locus's eager teardown owes the process its
-/// wait-abort before the pool join (R34 today) and a pre-drain it does
+/// wait-abort before the pool join and a pre-drain it does
 /// not emit (C13).
 #[test]
 fn the_eager_spine_owes_the_wait_abort_before_the_join() {
@@ -556,11 +623,53 @@ fn the_eager_spine_owes_the_wait_abort_before_the_join() {
         p.obligations.iter().find(|o| o.site.is_none() && o.kind == kind && o.holder.spine == spine).expect("a process row")
     };
     let join = process(K::PoolJoin, Spine::EagerTeardown);
-    assert!(join.edges.entry.iter().any(|pr| pr.rule.status == Status::KnownOpen { inventory_row: "R34" }));
+    assert!(join.edges.entry.iter().any(|pr| {
+        pr.rule == Rule { line: Some("7"), status: Status::Shipped }
+            && pr.event.point == Point::Completed
+            && p.obligations[pr.event.obligation.0 as usize].kind == K::WaitAbort
+    }));
     assert_eq!(process(K::PreDrain, Spine::EagerTeardown).status, Status::KnownOpen { inventory_row: "C13" });
     // The pool's run ends before the join completes (line 19).
     let pusher_run = one(p, "Pusher", K::Run);
     let on = pusher_run.runs_on.clone().expect("a placed run names its domain");
     assert!(matches!(&p.domains[on.one().expect("one domain").0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
     assert!(join.edges.completion.iter().any(|pr| pr.rule.line == Some("19") && pr.event.point == Point::Ended));
+}
+
+/// The fall-through spine follows the same abort-before-join rule as
+/// eager teardown, before releasing the main frame's entries.
+#[test]
+fn the_main_fall_through_spine_owes_the_wait_abort_before_the_join() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_main_fall_through.hl"));
+    let p = plan(&s);
+    let join = p.obligations.iter().find(|o| {
+        o.site.is_none() && o.kind == K::PoolJoin && o.holder.spine == Spine::MainFallThrough
+    }).expect("the main fall-through pool join");
+    assert!(join.edges.entry.iter().any(|pr| {
+        let predecessor = &p.obligations[pr.event.obligation.0 as usize];
+        pr.rule == Rule { line: Some("7"), status: Status::Shipped }
+            && pr.event.point == Point::Completed
+            && predecessor.kind == K::WaitAbort
+            && predecessor.holder.spine == Spine::MainFallThrough
+    }));
+    let pre = p.obligations.iter().find(|o| {
+        o.site.is_none() && o.kind == K::PreDrain && o.holder.spine == Spine::MainFallThrough
+    }).expect("the main frame pre-drain");
+    assert!(pre.edges.entry.iter().any(|pr| {
+        let predecessor = &p.obligations[pr.event.obligation.0 as usize];
+        pr.rule.status == Status::Shipped
+            && pr.event.point == Point::Completed
+            && predecessor.kind == K::PoolJoin
+            && predecessor.holder.spine == Spine::MainFallThrough
+    }));
+    for decl in ["App", "Pusher", "Tally"] {
+        let drain = one(p, decl, K::Drain);
+        assert!(drain.edges.entry.iter().any(|pr| {
+            let predecessor = &p.obligations[pr.event.obligation.0 as usize];
+            pr.rule.status == Status::Shipped
+                && pr.event.point == Point::Completed
+                && predecessor.kind == K::PreDrain
+                && predecessor.holder.spine == Spine::MainFallThrough
+        }), "{decl}'s drain waits for the frame pre-drain");
+    }
 }

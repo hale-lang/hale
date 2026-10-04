@@ -22,7 +22,9 @@
 //!    `mean(x)` of its assertion, in [`accumulator_sites`]' order,
 //!    with the element type the checker gave `x`.
 //! 2. `generic_calls`, per call site of a generic fn: the inferred type
-//!    arguments and the unified parameter types.
+//!    arguments and the unified parameter types. An omitted function or
+//!    method default also records its invocation path and the caller's
+//!    specialization, keeping the default expression's source site.
 //! 3. `monomorphs`, one table per snapshot: template site x type
 //!    arguments -> the specialization, for every generic fn a call
 //!    instantiates and every generic type or locus a type expression
@@ -31,7 +33,8 @@
 //!    declarations: whether the locus satisfies the interface, with the
 //!    witness when it does not.
 //! 5. `fallible_calls`, per call site whose callee is fallible, stdlib
-//!    callees included: the callee and its error type.
+//!    callees included: the callee, its error type, and what addresses
+//!    the call where it stands. The `bare_fallible` law reads it.
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -164,10 +167,16 @@ pub struct GenericCall {
 /// How the checker knows a call's callee is fallible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalleeKind {
-    /// The call types as `Fallible`: a fn or method the program
-    /// declares `fallible(E)` (a generic or an imported one included),
-    /// a stdlib handle's fallible method, an array's `get`, a bounded
-    /// intrinsic.
+    /// The call types as `Fallible` and its callee is a fn or locus
+    /// method the program declares `fallible(E)`, spelled the way
+    /// lowering resolves one: a free fn by its name (not a generic
+    /// one), an imported fn or a bundled stdlib fn by its path, a
+    /// locus's member fn on `self`, a local or a field of `self`.
+    Declared,
+    /// Any other call that types as `Fallible`: a generic fn, a
+    /// perspective's or an interface's method, a method on a receiver
+    /// of another shape, a stdlib handle's fallible method, a
+    /// container's or an array's `get`, a bounded intrinsic.
     Typed,
     /// A stdlib entry point the signature table marks fallible. The
     /// checker types the bare call as `Unknown` (its legacy form), so
@@ -175,18 +184,51 @@ pub enum CalleeKind {
     Stdlib,
 }
 
+/// What addresses a fallible call where it stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handling {
+    /// The call is the operand of an `or` (`f() or raise`, `f() or
+    /// 0`, `f() or handler(err)`, ...).
+    Or,
+    /// The call is the handler of an `or` (`g() or f(err)`): its own
+    /// failure takes the enclosing fn's error path, an implicit `or
+    /// raise`. The span is the `or`'s.
+    Handler(Span),
+    /// Nothing: an argument, an operand, a `match` scrutinee, a `let`
+    /// initializer, a statement, a returned value.
+    Bare,
+}
+
 /// A call whose callee is fallible.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FallibleCall {
     pub span: Span,
     pub kind: CalleeKind,
+    /// The callee as the program spells it (`f`, `self.read`,
+    /// `std::str::parse_int`).
+    pub callee: String,
     /// The error type the callee declares.
     pub payload: Ty,
+    pub handled: Handling,
+}
+
+/// Generic calls in defaults evaluated by one caller. Source sites
+/// stay unchanged; the invocation path distinguishes repeated expansion
+/// of a default, and the caller's arguments distinguish its monomorphs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefaultCalls {
+    pub invocations: Vec<u32>,
+    pub specialization: Option<Vec<Ty>>,
+    pub calls: BTreeMap<u32, Typed<GenericCall>>,
 }
 
 /// The rows of one body.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypedBody {
+    /// The generic locus declaring this member or params default.
+    /// Free functions have no enclosing locus, even when a default is
+    /// evaluated while a locus method is being lowered.
+    pub enclosing_locus: Option<NodeId>,
     pub accumulators: Vec<AccumulatorRow>,
     /// A generic locus's closure: its accumulators for each of the
     /// template's monomorphs, by the monomorph's type arguments, each
@@ -194,10 +236,11 @@ pub struct TypedBody {
     pub specialized_accumulators: Vec<(Vec<Ty>, Vec<AccumulatorRow>)>,
     /// By call site.
     pub generic_calls: BTreeMap<u32, Typed<GenericCall>>,
-    /// A generic fn's body: its generic calls for each of the fn's
-    /// monomorphs, by the monomorph's type arguments, typed with the
+    /// A generic fn or locus member: its generic calls for each of the
+    /// enclosing template's monomorphs, by their type arguments, typed with the
     /// template's parameters bound to them.
     pub specialized_generic_calls: Vec<(Vec<Ty>, BTreeMap<u32, Typed<GenericCall>>)>,
+    pub default_calls: Vec<DefaultCalls>,
     /// By call site.
     pub fallible_calls: BTreeMap<u32, FallibleCall>,
 }
@@ -370,6 +413,27 @@ impl TypingRecord {
         self.bodies.entry(decl.0).or_default()
     }
 
+    /// Record a default's call under the caller, without changing the
+    /// default expression's lexical source identity.
+    pub fn default_generic_call(
+        &mut self, body: NodeId, invocations: &[u32],
+        specialization: Option<Vec<Ty>>, call: NodeId, row: Typed<GenericCall>,
+    ) {
+        if call.is_none() || invocations.is_empty() {
+            return;
+        }
+        self.sites.insert(invocations[0], body.0);
+        let rows = &mut self.body(body).default_calls;
+        let at = match rows.iter().position(|r| r.invocations == invocations && r.specialization == specialization) {
+            Some(i) => i,
+            None => {
+                rows.push(DefaultCalls { invocations: invocations.to_vec(), specialization, calls: BTreeMap::new() });
+                rows.len() - 1
+            }
+        };
+        rows[at].calls.insert(call.0, row);
+    }
+
     pub fn generic_call(&mut self, body: NodeId, call: NodeId, row: Typed<GenericCall>) {
         if call.is_none() {
             return;
@@ -382,6 +446,7 @@ impl TypingRecord {
         if call.is_none() {
             return;
         }
+        self.sites.insert(call.0, body.0);
         let rows = &mut self.body(body).specialized_generic_calls;
         let at = match rows.iter().position(|(a, _)| *a == args) {
             Some(i) => i,
@@ -393,12 +458,15 @@ impl TypingRecord {
         rows[at].1.insert(call.0, row);
     }
 
+    /// Record a fallible call; a call already recorded keeps its row
+    /// (the call arm, which knows the callee, records before the walk's
+    /// general recording).
     pub fn fallible_call(&mut self, body: NodeId, call: NodeId, row: FallibleCall) {
         if call.is_none() {
             return;
         }
         self.sites.insert(call.0, body.0);
-        self.body(body).fallible_calls.insert(call.0, row);
+        self.body(body).fallible_calls.entry(call.0).or_insert(row);
     }
 }
 
@@ -444,8 +512,36 @@ impl TypedBodies {
         self.bodies.get(body)?.generic_calls.get(&call.0)
     }
 
-    /// The row of the generic call at `call` inside the generic fn
-    /// declared at `template`, in its monomorph at `args`.
+    /// The declaration owning a generic call's source site. A locus's
+    /// different monomorphs keep this same body identity.
+    pub fn generic_call_body(&self, call: NodeId) -> Option<NodeId> {
+        self.sites.get(&call.0).copied().map(NodeId)
+    }
+
+    /// The generic locus declaring this call's source body, if any.
+    pub fn generic_call_locus(&self, call: NodeId) -> Option<NodeId> {
+        self.body(self.generic_call_body(call)?)?.enclosing_locus
+    }
+
+    /// A default's generic call evaluated along this invocation path,
+    /// in the first invocation's caller and its concrete specialization.
+    pub fn default_generic_call(
+        &self, invocations: &[u32], specialization: Option<&[Ty]>, call: NodeId,
+    ) -> Option<&Typed<GenericCall>> {
+        let body = self.generic_call_body(NodeId(*invocations.first()?))?;
+        self.body(body)?.default_calls.iter()
+            .find(|r| r.invocations == invocations && r.specialization.as_deref() == specialization)?
+            .calls.get(&call.0)
+    }
+
+    /// A generic call's concrete row, in its owning body, for the
+    /// enclosing fn or locus's type arguments.
+    pub fn specialized_generic_call_at(&self, args: &[Ty], call: NodeId) -> Option<&Typed<GenericCall>> {
+        self.specialized_generic_call(self.generic_call_body(call)?, args, call)
+    }
+
+    /// The row of the generic call at `call` inside the body declared
+    /// at `template`, for its enclosing template's monomorph at `args`.
     pub fn specialized_generic_call(&self, template: NodeId, args: &[Ty], call: NodeId) -> Option<&Typed<GenericCall>> {
         self.body(template)?
             .specialized_generic_calls
@@ -460,6 +556,11 @@ impl TypedBodies {
     pub fn fallible_call(&self, call: NodeId) -> Option<&FallibleCall> {
         let body = self.sites.get(&call.0)?;
         self.bodies.get(body)?.fallible_calls.get(&call.0)
+    }
+
+    /// Every fallible call's row, body by body.
+    pub fn fallible_calls(&self) -> impl Iterator<Item = &FallibleCall> {
+        self.bodies.values().flat_map(|b| b.fallible_calls.values())
     }
 
     pub fn monomorphs(&self) -> &Monomorphs {

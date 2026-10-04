@@ -450,13 +450,18 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // time; struct layout is type-level uniform.
         let is_pinned_locus_type =
             self.deployment.pinned_locus_types.contains(&l.name.name);
+        //
+        // U-6: so does a pinned anchor whose nested tree subscribes,
+        // though it subscribes to nothing itself: its descendants'
+        // subscriptions route to its mailbox, drained on its thread.
         let has_subscribe = is_pinned_locus_type
-            && l.members.iter().any(|m| match m {
-                LocusMember::Bus(b) => b.members.iter().any(|bm| {
-                    matches!(bm, BusMember::Subscribe { .. })
-                }),
-                _ => false,
-            });
+            && (self.deployment.route_anchor_types.contains(&l.name.name)
+                || l.members.iter().any(|m| match m {
+                    LocusMember::Bus(b) => b.members.iter().any(|bm| {
+                        matches!(bm, BusMember::Subscribe { .. })
+                    }),
+                    _ => false,
+                }));
         let mailbox_field_idx = if has_subscribe {
             let i = idx;
             llvm_field_tys.push(ptr_t.into());
@@ -1192,6 +1197,11 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let built_params_field_idx = idx;
         llvm_field_tys.push(ptr_t.into());
         idx += 1;
+        // Shared reclaim admission. Kept in the instance, including
+        // while its physical release is queued on another thread.
+        let reclaim_claimed_field_idx = idx;
+        llvm_field_tys.push(self.context.i64_type().into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -1281,6 +1291,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 drain_requested_field_idx,
                 held_by_owner_field_idx,
                 built_params_field_idx,
+                reclaim_claimed_field_idx,
                 slot_borrowed_mask_field_idx,
                 locus_ref_owned_mask_field_idx,
                 locus_ref_bit_per_field,

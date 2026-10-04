@@ -137,7 +137,7 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
 
         let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
         let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top));
+        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
         // PER-ASSERTION outcomes. A function may carry several
         // `causes:` clauses and every one of them anchors its
         // diagnostic at the same fn-name span, so a span is not an
@@ -337,9 +337,12 @@ fn judge(src: &str) -> (Verdict, String) {
 }
 
 /// The reviewer's fixture: an unclassified subscriber is UNKNOWN
-/// behaviour, not absent behaviour.
+/// behaviour, not absent behaviour. Since F.40 E5 the subscriber's call
+/// through `f` resolves to the program's one function value of its
+/// type, `does_syscall`, so the behaviour is known and exceeds the
+/// declaration (it was `Uncertified`; never `Holds`).
 #[test]
-fn an_unclassified_subscriber_is_uncertified_not_holds() {
+fn an_unclassified_subscriber_is_not_holds() {
     let (v, _) = judge(
         r#"
 type Msg { n: Int = 0; }
@@ -363,12 +366,7 @@ main locus App {
 fn main() { App { }; }
 "#,
     );
-    assert_eq!(
-        v,
-        Verdict::Uncertified,
-        "an indirect call the analysis cannot follow makes the \
-         causal set a lower bound, not an answer"
-    );
+    assert_eq!(v, Verdict::Violated, "the call through `f` reaches `does_syscall`");
 }
 
 /// The reviewer's second fixture: publisher and subscriber name ONE
@@ -701,22 +699,27 @@ fn main() { App { }; }
     assert!(msg.contains("syscall"), "{}", msg);
 }
 
-/// …and the anti-control: the SAME indirect call with nothing known
-/// beyond the declaration stays `Uncertified`. Without this, an
-/// engine that answered `Violated` on any uncertainty would pass
-/// the test above.
+/// …and the anti-control: an indirect call the analysis cannot follow
+/// with nothing known beyond the declaration stays `Uncertified`.
+/// Without this, an engine that answered `Violated` on any uncertainty
+/// would pass the test above. (Since F.40 E5 a call through a function
+/// value resolves to the program's function values; a method read as a
+/// value is the one the summary does not follow.)
 #[test]
 fn uncertainty_without_a_known_excess_is_uncertified() {
     let (v, _) = judge(
         r#"
 type Msg { n: Int = 0; }
 topic T { payload: Msg; subject: "t"; }
-fn id(x: Int) -> Int { return x; }
 fn apply(f: fn (Int) -> Int, x: Int) -> Int { return f(x); }
-locus Sink {
+locus Helper {
     params { n: Int = 0; }
+    fn id(x: Int) -> Int { return x; }
+}
+locus Sink {
+    params { n: Int = 0; h: Helper = Helper { }; }
     bus { subscribe T as on_t; }
-    fn on_t(m: Msg) { self.n = apply(id, m.n); }
+    fn on_t(m: Msg) { self.n = apply(self.h.id, m.n); }
 }
 locus Source {
     bus { publish T; }
@@ -1047,7 +1050,7 @@ fn main() { App { }; }
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top));
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
     let reports = hale_types::frontier::causes_reports(
         &vec![&program],
         &hale_types::alloc_summary::derive_alloc_summary(&bundle),
@@ -1129,7 +1132,7 @@ fn main() { App { }; }
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top));
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
     let reports =
         hale_types::frontier::causes_reports(&vec![&program], &hale_types::alloc_summary::derive_alloc_summary(&bundle), &graph);
     assert_eq!(
@@ -1238,14 +1241,18 @@ fn an_uncertified_causes_row_explains_itself() {
     let src = r#"
 type T { n: Int = 0; }
 topic Settled { payload: T; subject: "settled"; }
+locus Bumper {
+    params { n: Int = 0; }
+    fn bump(v: Int) -> Int { return v + 1; }
+}
 locus Ledger {
     bus { subscribe Settled as on_settled; }
-    params { n: Int = 0; }
-    fn on_settled(t: T) { self.n = apply(bump, t.n); }
+    params { n: Int = 0; b: Bumper = Bumper { }; }
+    fn on_settled(t: T) { self.n = apply(self.b.bump, t.n); }
 }
-fn bump(v: Int) -> Int { return v + 1; }
 // An INDIRECT call: its target is chosen by the caller, so what the
-// handler does is not knowable here.
+// handler does is not knowable here (a method read as a value, which
+// the summary does not follow; a fn's name resolves since F.40 E5).
 fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
 main locus App {
     params { l: Ledger = Ledger { }; }

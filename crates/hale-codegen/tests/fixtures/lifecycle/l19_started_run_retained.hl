@@ -1,0 +1,45 @@
+// Decision line 19, a run already started when its child is reclaimed
+// (Run, Cancellation): the admitted run holds its child until it
+// returns.
+//
+// App's placed field `k` has its run() posted to pool `side`, where it
+// starts at once, says so through a gate file, sleeps, and then reads
+// the heap String its birth() built in its arena. App's run(), on main,
+// waits for the gate and replaces `k` while that run is running. The
+// old child's reclaim cancels nothing (its run is not queued), then
+// waits for the started run to return before its arena is released:
+// no join, the retention line 19 promises.
+//
+// Expected terminal outcome: both children's runs read their own
+// names, the old one's run ends before its reclaim completes, and each
+// child is torn down once, judged by the harness: `run-held`.
+
+fn gate() -> String {
+    return "/tmp/hale-l19-started-" + to_string(std::process::pid());
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    run() {
+        if self.tag == 0 { std::io::fs::write_file(gate(), "go") or discard; }
+        std::time::sleep(100ms);
+        println("ev kid-run " + to_string(self.tag) + " " + self.name);
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 0 }; }
+    placement { k: cooperative(pool = side); }
+    run() {
+        while !std::io::fs::file_exists(gate()) {
+            std::time::sleep(1ms);
+        }
+        self.k = Kid { tag: 1 };
+        println("ev replaced");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

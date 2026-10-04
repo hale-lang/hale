@@ -319,11 +319,13 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "model",
                 "typing_stage",
                 "laws_stage",
+                // The check's `bare_fallible` law reads it, and lowering
+                // the same one.
+                "typed_bodies",
             ] {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
             }
             assert_eq!(builds["lowering_view"], u32::from(*lowers), "{consumer}: `lowering_view`");
-            assert_eq!(builds["typed_bodies"], u32::from(*lowers), "{consumer}: lowering reads the typed-body table");
             assert_at_most_once(s, consumer);
         }
         let _ = std::fs::remove_dir_all(&d);

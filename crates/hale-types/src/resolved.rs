@@ -53,7 +53,7 @@
 //! ([`crate::desugar_sequence::desugar_before_check`]) before its
 //! check, and this step does not run any of it again (F.40 phase 2.1b).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{Program, TopDecl};
 
@@ -152,6 +152,60 @@ pub struct LoweringView {
     /// Where lowering routes an allocation, over `merged`: which free
     /// fns are scratch-local (`crate::alloc_routing`).
     pub alloc_routing: crate::alloc_routing::AllocRouting,
+    /// The pinned anchors whose nested tree holds a subscriber, by the
+    /// name lowering declares them under, from the snapshot's placement
+    /// table ([`route_anchors`]): the anchor's mailbox is their route
+    /// (the placement correspondence's U-6).
+    pub route_anchors: BTreeSet<String>,
+    /// The effective target's column of the capability matrix: every
+    /// behaviour and obligation lowering emits or omits per target is
+    /// read here, and lowering refuses options that name a target of
+    /// another class.
+    pub cells: crate::capability::LoweringCells,
+}
+
+/// The pinned anchors of `table` (a root field placed `pinned`, one per
+/// replica, or an adapter in the root's `bindings { }`) with a row
+/// below them, in their own template, that realizes a locus `merged`
+/// declares a `subscribe` in: each by its realized declaration's
+/// lowered name. A locus nested under an anchor runs on the anchor's
+/// thread, so its subscriptions need a route there before they
+/// register; lowering gives these anchors a mailbox for that, whether or
+/// not they subscribe themselves.
+pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program) -> BTreeSet<String> {
+    use crate::placement::DomainKind;
+    use hale_syntax::ast::{flat_decls, BusMember, LocusMember};
+    let subscribers: BTreeSet<&str> = flat_decls(&merged.items)
+        .filter_map(|d| match d {
+            TopDecl::Locus(l)
+                if l.members.iter().any(|m| {
+                    matches!(m, LocusMember::Bus(b)
+                        if b.members.iter().any(|bm| matches!(bm, BusMember::Subscribe { .. })))
+                }) =>
+            {
+                Some(l.name.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = BTreeSet::new();
+    for domain in &table.domains {
+        let DomainKind::Pinned { anchor, .. } = &domain.kind else { continue };
+        let Some(anchor_decl) = table.instances.get(anchor).and_then(|r| r.realizes.as_ref()) else {
+            continue;
+        };
+        let nested_subscriber = table.instances.iter().any(|(key, row)| {
+            key.origin == anchor.origin
+                && key.replica == anchor.replica
+                && key.path.len() > anchor.path.len()
+                && key.path.starts_with(&anchor.path)
+                && row.realizes.as_ref().is_some_and(|d| subscribers.contains(d.lowered.as_str()))
+        });
+        if nested_subscriber {
+            out.insert(anchor_decl.lowered.clone());
+        }
+    }
+    out
 }
 
 /// The name the merged program goes by in its bundle view. Nothing is
@@ -194,8 +248,14 @@ pub struct IntraLocusStage {
 }
 
 /// Run the intra-locus rewrite over `program`, the one the verb
-/// checked.
-pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
+/// checked. `placement` is the snapshot's placement table
+/// (`Snapshot::demand_placement`), which the rewrite reads for the
+/// fields off their owner's thread; a caller with none passes
+/// `&PlacementTable::default()`, which runs no field off its owner.
+pub fn rewrite_intra_locus(
+    program: &Program,
+    placement: &crate::placement::PlacementTable,
+) -> IntraLocusStage {
     // A7 (G16): `BusSubject::QualifiedTopic(alias::Foo)` — cross-seed
     // topic refs the parser admits — are already the plain
     // single-segment `BusSubject::Topic(Ident(mangled_name))` the
@@ -216,14 +276,21 @@ pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
     // continues. A numbering, not a mint: nothing reads rows of the user
     // program on its own, so no snapshot is made of it.
     crate::snapshot::number([&mut program_owned]);
-    let intra_locus = hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
+    // A publish into a field the table runs off its owner's thread stays
+    // on the bus (F.31 pool safety).
+    let intra_locus = hale_syntax::desugar::desugar_intra_locus_topics(
+        &mut program_owned,
+        &placement.off_owner_fields(),
+    );
     IntraLocusStage { program: program_owned, intra_locus, rewritten_in: t_start.elapsed() }
 }
 
 /// Resolve `program` into the view codegen lowers: the intra-locus
 /// rewrite ([`rewrite_intra_locus`]), then [`resolve_rewritten`]. The
 /// snapshot runs the two halves as its `intra_locus` and
-/// `lowering_view` families; this is the bare program's entry.
+/// `lowering_view` families; this is the bare program's entry, and a
+/// bare program is the host's.
+/// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -235,8 +302,10 @@ pub fn resolve_program(
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
+    let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
+        .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     resolve_rewritten(
-        &rewrite_intra_locus(program),
+        &rewrite_intra_locus(program, placement),
         sources,
         import_renames,
         api,
@@ -245,6 +314,7 @@ pub fn resolve_program(
         bindings,
         placement,
         typed,
+        host,
     )
 }
 
@@ -277,7 +347,8 @@ pub fn resolve_program(
 /// gets its written discipline. `typed` is the snapshot's typed-body
 /// table (`Snapshot::demand_typed_bodies`); a caller with none passes
 /// `&TypedBodies::default()`, and lowering refuses every site that reads
-/// a row. The error is the message codegen
+/// a row. `class` is the effective target's column of the capability
+/// matrix, the cells the view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
@@ -290,6 +361,7 @@ pub fn resolve_rewritten(
     bindings: &crate::binding_rows::BindingRows,
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
+    class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
     let mut program_owned = stage.program.clone();
@@ -429,9 +501,9 @@ pub fn resolve_rewritten(
         // The scope's diagnostics are dropped: the checker reported
         // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
+        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement);
         let bubble = graph.bubble_plans();
-        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings);
+        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement);
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
         // on its subject, which the rewrite named by topic and the
@@ -488,6 +560,9 @@ pub fn resolve_rewritten(
     // The snapshot's typed-body table, found by the identities the merge
     // kept, and the conformance of every pair the merged stdlib adds.
     let typed = typed.extended(&merged.items, &top);
+    // The pinned anchors whose nested subscribers route to their mailbox
+    // (U-6), by the names the merged program declares.
+    let route_anchors = route_anchors(placement, &merged);
 
     Ok(LoweringView {
         merged,
@@ -513,6 +588,8 @@ pub fn resolve_rewritten(
         api_roles: api_roles.map(str::to_string),
         top,
         alloc_routing,
+        route_anchors,
+        cells: crate::capability::LoweringCells::of(class),
     })
 }
 

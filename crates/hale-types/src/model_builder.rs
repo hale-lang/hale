@@ -65,6 +65,21 @@ use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
 use crate::handler_routing::ChildRef;
 use crate::symbol::Bundle;
 
+/// The dispatch group a call row shares its site with. The model has no
+/// function-value dispatch kind (its one shared-site dispatch is an
+/// interface's, and its laws hold a shared site to one interface and
+/// method), so each alternative of a function-value dispatch (E5,
+/// `CallEdge::via_value`) is a direct call at a site of its own: the
+/// calls stay exact, and a counting claim over them sums where the
+/// `@budget` engines take the max.
+fn model_group(edge: &alloc_summary::CallEdge) -> Option<u32> {
+    if edge.via_value.is_some() {
+        None
+    } else {
+        edge.dispatch_group
+    }
+}
+
 /// A named TypeExpr's raw path (joined `::`), `"?"` otherwise.
 fn te_name_of(t: &TypeExpr) -> String {
     match t {
@@ -183,10 +198,12 @@ pub use crate::derive_application_model;
 /// What the model reads from the families it does not own, each built
 /// once over the CHECKED programs (F.40 phase 2.3): the top scope with
 /// its topic rows, the bus graph, the ownership graph, the handler
-/// rows and the effect rows. The frontend's snapshot demands each as a
-/// family of its own (`Snapshot::demand_scope`, `demand_bus_graph`,
-/// `demand_ownership_graph`, `demand_handlers`, `demand_effects`) and
-/// hands them here; the model builds none of them.
+/// rows, the effect rows, the form rows and the placement table. The
+/// frontend's snapshot demands each as a family of its own
+/// (`Snapshot::demand_scope`, `demand_bus_graph`,
+/// `demand_ownership_graph`, `demand_handlers`, `demand_effects`,
+/// `demand_forms`, `demand_placement`) and hands them here; the model
+/// builds none of them.
 pub struct ModelInputs<'a> {
     pub top: &'a crate::resolve::TopScope,
     pub bus_graph: &'a crate::bus_graph::BusGraph,
@@ -202,6 +219,9 @@ pub struct ModelInputs<'a> {
     /// The binding rows (F.40 phase 3, P2): main's entries with the
     /// role the ends decide, for the binding thread domains.
     pub bindings: &'a crate::binding_rows::BindingRows,
+    /// The placement table (F.40 phase 3, P1): the arrangement's
+    /// instances, ownership edges and domains are its rows, projected.
+    pub placement: &'a crate::placement::PlacementTable,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -1126,7 +1146,7 @@ pub fn derive_application_model_over(
         for edge in &fs.calls {
             match &edge.callee {
                 Callee::Resolved(next) => {
-                    let site = site_of(edge.dispatch_group);
+                    let site = site_of(model_group(edge));
                     if !user_key(next) {
                         continue;
                     }
@@ -1148,7 +1168,7 @@ pub fn derive_application_model_over(
                     );
                 }
                 Callee::Unresolved(n) => {
-                    let site = site_of(edge.dispatch_group);
+                    let site = site_of(model_group(edge));
                     let anchor = EntityRef::Function(from);
                     let pid = intern_span(&mut records, edge.span);
                     if edge.indirect
@@ -2536,6 +2556,7 @@ pub fn derive_application_model_over(
             Some(g) => {
                 g.static_eligible &= info.eligible;
                 g.direct_eligible &= info.direct_call_eligible;
+                g.payload_flat &= info.payload_flat;
                 if g.ineligible_reason.is_none() {
                     g.ineligible_reason = reason;
                 }
@@ -2549,6 +2570,7 @@ pub fn derive_application_model_over(
                         subject: wire,
                         static_eligible: info.eligible,
                         direct_eligible: info.direct_call_eligible,
+                        payload_flat: info.payload_flat,
                         ineligible_reason: reason,
                         publisher_loci,
                         subscribers,
@@ -2658,8 +2680,26 @@ pub fn derive_application_model_over(
                 }
             }
         };
+        // A function-value dispatch numbers its sites as the program's
+        // own rows hold it (`AllocSummary::own_rows`): an alternative
+        // only the analysis copy supplies is not one of them, and a
+        // dispatch with none of the program's own is its one indirect
+        // call as written.
+        let kept = merged.value_groups_kept(fs);
+        let mut restored: BTreeSet<u32> = BTreeSet::new();
         for edge in &fs.calls {
-            let site = site_of(edge.dispatch_group);
+            if let (Some(_), Some(g)) = (&edge.via_value, edge.dispatch_group) {
+                if !kept.contains(&g) {
+                    if restored.insert(g) {
+                        site_of(None);
+                    }
+                    continue;
+                }
+                if merged.copy_alternative(edge) {
+                    continue;
+                }
+            }
+            let site = site_of(model_group(edge));
             let Callee::Resolved(next) = &edge.callee else {
                 continue;
             };
@@ -2690,7 +2730,7 @@ pub fn derive_application_model_over(
                     (shown, next.fn_name.clone())
                 });
             let entry_in_loop = edge.loop_depth > 0;
-            let entry_group = edge.dispatch_group;
+            let entry_group = model_group(edge);
             let entry_provenance =
                 intern_span(&mut records, edge.span);
             let disp = |kk: &FnKey| -> String {
@@ -2774,7 +2814,7 @@ pub fn derive_application_model_over(
                                         target,
                                         dispatch: dsp,
                                         in_loop: e2.loop_depth > 0,
-                                        group: e2.dispatch_group,
+                                        group: model_group(e2),
                                     },
                                 );
                             }
@@ -2925,7 +2965,7 @@ pub fn derive_application_model_over(
             TransportKind,
         };
         use hale_syntax::ast::{
-            LocusMember, PlacementSpec, TopDecl,
+            LocusMember, TopDecl,
         };
         // Locus decls by RAW name, with their members, across the
         // whole bundle (modules included — a module locus can be
@@ -2956,173 +2996,182 @@ pub fn derive_application_model_over(
         for pr in &programs {
             walk_loci(&pr.items, &mut decls_by_name);
         }
-        // The recursive arrangement walk. Placement semantics
-        // mirror the runtime invariant: `pinned` owns a thread
-        // (its own domain), `cooperative(pool = X ≠ main)` runs on
-        // pool X's single worker, everything else runs on the
-        // OWNER's thread (inherits the parent's domain; the root
-        // is `main`).
+        // The arrangement is the placement table's rows, projected
+        // (F.40 phase 3, P1; `notes/f40-placement-correspondence.md`
+        // § 2.4): the instances of the root lowering deploys (one
+        // template per literal of it, or the entry's implicit
+        // construction of a root no literal builds), each where it
+        // runs. A held instance is arranged under its holder, as the
+        // source's actual rows the table projects there; the source
+        // template's own rows (`PlacementTable::handed_off`) answer
+        // where it was built, and are not arranged.
+        //
+        // A path is the fields from the root, the replica index after
+        // the replicated field (`App.f[2].k`). It has no construction
+        // component, so one path stands for the rows of every template
+        // and alternative that reach it: it is arranged when they agree
+        // on what they realize and where they run, and otherwise it is
+        // left out with everything under it, each declaration realized
+        // there a hole (contract 3).
+        //
+        // The projection is user-only (U-4): a row realizing a stdlib
+        // declaration (a field typed `std::io::tcp::Listener`, a stdlib
+        // locus nested under a user one) is left out with its subtree,
+        // since its declaration is no entity of this model and adding
+        // one would be shape (contract 1). The coverage is partial by
+        // design: the table, not the arrangement, answers every
+        // placement question. An adapter of the root's `bindings { }`
+        // is no instance of the arrangement, and a literal `fn main`
+        // builds besides the root stays outside it, a birth the holes
+        // below account for.
+        use crate::placement::{DomainKind, InstanceKey, InstanceRow, Origin, SiteRef};
         struct Arranged {
             path: String,
-            decl: String,
+            decl: LocusDeclId,
             replica: Option<u32>,
             domain: String,
             parent: Option<String>,
             span: hale_syntax::Span,
         }
-        let mut arranged: Vec<Arranged> = Vec::new();
-        let mut pool_names: BTreeSet<String> = BTreeSet::new();
-        #[allow(clippy::too_many_arguments)]
-        fn walk_arrangement(
-            decl_name: &str,
-            path: &str,
-            domain: &str,
-            decls: &BTreeMap<&str, &hale_syntax::ast::LocusDecl>,
-            stack: &mut Vec<String>,
-            arranged: &mut Vec<Arranged>,
-            pool_names: &mut BTreeSet<String>,
-        ) {
-            if stack.iter().any(|s| s == decl_name)
-                || stack.len() > 32
-            {
-                return; // cycle / depth guard
-            }
-            stack.push(decl_name.to_string());
-            let Some(decl) = decls.get(decl_name) else {
-                stack.pop();
-                return;
-            };
-            // field → (type, span); field → placement spec.
-            let mut field_ty: BTreeMap<
-                &str,
-                (&str, hale_syntax::Span),
-            > = BTreeMap::new();
-            for m in &decl.members {
-                if let LocusMember::Params(pb) = m {
-                    for pa in &pb.params {
-                        if let Some(ty) = &pa.ty {
-                            if let Some(n) =
-                                crate::bus_graph::single_named_type(ty)
-                            {
-                                field_ty.insert(
-                                    pa.name.name.as_str(),
-                                    (
-                                        Box::leak(
-                                            n.into_boxed_str(),
-                                        ),
-                                        pa.name.span,
-                                    ),
-                                );
-                            }
-                        }
+        let table = inputs.placement;
+        // The user's locus declarations by their minted site: what a
+        // row's `realizes` names. A stdlib site is never here.
+        let mut decl_at: BTreeMap<SiteRef, &hale_syntax::ast::LocusDecl> = BTreeMap::new();
+        for pr in &programs {
+            for item in hale_syntax::ast::flat_decls(&pr.items) {
+                if let TopDecl::Locus(l) = item {
+                    if let Some(id) = bundle.snapshot.site_id(l.id) {
+                        decl_at.insert(SiteRef::user(id), l);
                     }
                 }
             }
-            let mut field_place: BTreeMap<
-                &str,
-                &PlacementSpec,
-            > = BTreeMap::new();
-            for m in &decl.members {
-                if let LocusMember::Placement(pb) = m {
-                    for e2 in &pb.entries {
-                        field_place.insert(
-                            e2.field.name.as_str(),
-                            &e2.spec,
-                        );
-                    }
-                }
-            }
-            for (field, (ty, span)) in &field_ty {
-                if !decls.contains_key(ty) {
-                    continue; // not a locus type
-                }
-                let spec = field_place.get(field);
-                let (fanout, pinned, pool) = match spec {
-                    Some(PlacementSpec::Pinned {
-                        replicas,
-                        ..
-                    }) => (
-                        replicas.map(|k| k.max(1)).unwrap_or(1)
-                            as u32,
-                        true,
-                        None,
-                    ),
-                    Some(PlacementSpec::Cooperative {
-                        pool,
-                        ..
-                    }) => (
-                        1,
-                        false,
-                        pool.as_ref()
-                            .filter(|p2| p2.name != "main")
-                            .map(|p2| p2.name.clone()),
-                    ),
-                    None => (1, false, None),
-                };
-                if let Some(p2) = &pool {
-                    pool_names.insert(p2.clone());
-                }
-                for i in 0..fanout {
-                    let child_path = if fanout > 1 {
-                        format!("{}.{}[{}]", path, field, i)
-                    } else {
-                        format!("{}.{}", path, field)
-                    };
-                    let child_domain = if pinned {
-                        format!("pinned:{}", child_path)
-                    } else if let Some(p2) = &pool {
-                        format!("pool:{}", p2)
-                    } else {
-                        domain.to_string()
-                    };
-                    arranged.push(Arranged {
-                        path: child_path.clone(),
-                        decl: (*ty).to_string(),
-                        // The instance's OWN replica index — what
-                        // codegen bakes into replica `i` and what a
-                        // keyed subscriber on this field registers
-                        // under. (`validate` enforces contiguity.)
-                        replica: if fanout > 1 { Some(i) } else { None },
-                        domain: child_domain.clone(),
-                        parent: Some(path.to_string()),
-                        span: *span,
-                    });
-                    walk_arrangement(
-                        ty,
-                        &child_path,
-                        &child_domain,
-                        decls,
-                        stack,
-                        arranged,
-                        pool_names,
-                    );
-                }
-            }
-            stack.pop();
         }
-        let main_decl =
-            ast.loci.iter().find(|l| l.is_main).map(|l| {
-                (l.name.name.clone(), l.name.span)
+        let root_decl = table.root.as_ref().and_then(|r| decl_at.get(&r.realizes.site).copied());
+        let root_name: Option<&str> = root_decl.map(|l| l.name.name.as_str());
+        let root_template = |o: Origin| match o {
+            Origin::Entry(_) => true,
+            Origin::Construction(c) => {
+                table.root.as_ref().is_some_and(|r| r.constructions.iter().any(|x| x.literal == c))
+            }
+            Origin::Binding(_) => false,
+        };
+        let path_of = |k: &InstanceKey| -> String {
+            let mut p = root_name.unwrap_or_default().to_string();
+            for (i, step) in k.path.iter().enumerate() {
+                p.push('.');
+                p.push_str(&step.field);
+                if i == 0 {
+                    if let Some(r) = k.replica {
+                        p.push_str(&format!("[{r}]"));
+                    }
+                }
+            }
+            p
+        };
+        let domain_name = |d: crate::placement::DomainId| -> String {
+            match &table.domain(d).kind {
+                DomainKind::Main => "main".to_string(),
+                DomainKind::Pool { name, .. } => format!("pool:{name}"),
+                DomainKind::Pinned { anchor, .. } => format!("pinned:{}", path_of(anchor)),
+            }
+        };
+        // The model's declaration a row realizes: a user locus.
+        let model_decl = |r: &InstanceRow| -> Option<(LocusDeclId, &hale_syntax::ast::LocusDecl)> {
+            let l = *decl_at.get(&r.realizes.as_ref()?.site)?;
+            Some((*locus_id.get(&l.name.name)?, l))
+        };
+        let prefix = |k: &InstanceKey, i: usize| InstanceKey {
+            origin: k.origin,
+            path: k.path[..i].to_vec(),
+            replica: if i == 0 { None } else { k.replica },
+        };
+        let handed_off = table.handed_off();
+        // Keep coverage before projecting user declarations. A template
+        // or alternative whose subtree is unenumerable must not borrow
+        // a known descendant from another template or alternative.
+        let mut coverage: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
+        let mut parents: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
+        // Per path, every user row that reaches it.
+        let mut at_path: BTreeMap<String, Vec<Arranged>> = BTreeMap::new();
+        for (k, r) in &table.instances {
+            if !root_template(k.origin) || handed_off.contains(k) {
+                continue;
+            }
+            let path = path_of(k);
+            coverage.entry(path.clone()).or_default().insert(k);
+            // The row and every row above it realize a user locus.
+            if !(0..k.path.len()).all(|i| table.instances.get(&prefix(k, i)).and_then(model_decl).is_some()) {
+                continue;
+            }
+            let Some((decl, l)) = model_decl(r) else { continue };
+            // The field's name in its owner's params, as written; the
+            // root's own name for the root.
+            let span = match (k.path.last(), r.owner.as_ref().and_then(|o| table.instances.get(o)).and_then(model_decl)) {
+                (Some(step), Some((_, owner))) => owner
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == step.field),
+                        _ => None,
+                    })
+                    .map(|p| p.name.span)
+                    .next()
+                    .unwrap_or(l.name.span),
+                _ => l.name.span,
+            };
+            if let Some(owner) = &r.owner {
+                parents.entry(path.clone()).or_default().insert(owner);
+            }
+            at_path.entry(path.clone()).or_default().push(Arranged {
+                path,
+                decl,
+                // The instance's OWN replica index — what codegen bakes
+                // into replica `i` and what a keyed subscriber on this
+                // field registers under: the replica row's, never an
+                // ancestor's copied down (`validate` requires `None` on
+                // every path whose last component is not a replica).
+                replica: if k.path.len() == 1 { k.replica } else { None },
+                domain: domain_name(r.domain),
+                parent: r.owner.as_ref().map(path_of),
+                span,
             });
-        if let Some((main_name, main_span)) = &main_decl {
-            arranged.push(Arranged {
-                path: main_name.clone(),
-                decl: main_name.clone(),
-                replica: None,
-                domain: "main".to_string(),
-                parent: None,
-                span: *main_span,
-            });
-            let mut stack = Vec::new();
-            walk_arrangement(
-                main_name,
-                main_name,
-                "main",
-                &decls_by_name,
-                &mut stack,
-                &mut arranged,
-                &mut pool_names,
-            );
+        }
+        let disagree: Vec<String> = at_path
+            .iter()
+            .filter(|(path, rows)| {
+                rows.iter().any(|a| a.decl != rows[0].decl || a.domain != rows[0].domain)
+                    || rows.len() != coverage[*path].len()
+                    // Full instance keys retain construction and
+                    // alternative identity, which the model path omits.
+                    || rows[0].parent.as_ref().is_some_and(|parent| {
+                        parents.get(*path) != coverage.get(parent)
+                    })
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+        let mut arranged: Vec<Arranged> = Vec::new();
+        for (path, rows) in at_path {
+            let under = disagree
+                .iter()
+                .find(|d| path == **d || path.starts_with(&format!("{d}.")) || path.starts_with(&format!("{d}[")));
+            match under {
+                None => arranged.extend(rows.into_iter().take(1)),
+                Some(d) => {
+                    for a in rows {
+                        let pid = intern_span(&mut records, a.span);
+                        holes
+                            .entry((
+                                EntityRef::LocusDecl(a.decl),
+                                HoleKind::RuntimeInheritedPlacement,
+                                format!(
+                                    "the root's construction templates disagree at `{d}`: the arrangement names \
+                                     no instance there"
+                                ),
+                            ))
+                            .or_insert((hale_model::RelationSet::OWNS.union(hale_model::RelationSet::PLACED), None, pid));
+                    }
+                }
+            }
         }
         // Thread domains, canonical order: every domain any
         // instance landed in, plus a reader domain per binding
@@ -3142,13 +3191,13 @@ pub fn derive_application_model_over(
             adapter: bool,
         }
         let mut binding_entries: Vec<BindingEntry> = Vec::new();
-        if let Some((main_name, _)) = &main_decl {
+        if let Some(main_name) = root_name {
             // The binding rows of main's `bindings { }` block, in the
             // order the entries are declared. The role is the row's: the
             // one rule the checker and lowering read (this bundle is not
             // desugared, so the AST field is still `None` on every
             // inferred binding).
-            for row in inputs.bindings.rows.iter().filter(|r| &r.locus == main_name) {
+            for row in inputs.bindings.rows.iter().filter(|r| r.locus == main_name) {
                 binding_entries.push(BindingEntry {
                     topic: row.topic.clone(),
                     span: row.span,
@@ -3172,6 +3221,49 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
+        // The CPU sets (U-5): each arranged domain's resolved affinity,
+        // read from the table's domain, never from the written entries,
+        // so two entries naming one pool give one row. A CPU set is a
+        // column of a thread domain and never a domain of its own: a
+        // pool's is the set its one worker may run on, a pinned
+        // replica's its own thread's. Where the table's domains behind
+        // one name (one per construction template) disagree, or name an
+        // empty set, the domain has no row.
+        let mut cpu_sets: BTreeMap<String, BTreeSet<Vec<u32>>> = BTreeMap::new();
+        let mut clause: BTreeMap<String, hale_syntax::Span> = BTreeMap::new();
+        for d in &table.domains {
+            let cores = match &d.kind {
+                DomainKind::Pool { affinity: Some(c), .. } | DomainKind::Pinned { affinity: Some(c), .. } => c,
+                _ => continue,
+            };
+            let name = domain_name(d.id);
+            if !domain_id.contains_key(&name) {
+                continue;
+            }
+            let set: BTreeSet<u32> = cores.0.iter().filter_map(|c| u32::try_from(*c).ok()).collect();
+            cpu_sets.entry(name.clone()).or_default().insert(set.into_iter().collect());
+            // The affinity clause: the entry that decided a row in the
+            // domain.
+            let entry = table.instances.values().find_map(|r| match &r.decided_by {
+                crate::placement::Decision::Entry { entry, .. } if r.domain == d.id => Some(*entry),
+                _ => None,
+            });
+            if let Some(span) = entry.and_then(|s| bundle.snapshot.site(s.id)).map(|s| s.span) {
+                clause.entry(name).or_insert(span);
+            }
+        }
+        for (name, sets) in &cpu_sets {
+            let Some(cores) = sets.iter().next().filter(|c| sets.len() == 1 && !c.is_empty()) else { continue };
+            let pid = match clause.get(name) {
+                Some(span) => intern_span(&mut records, *span),
+                None => intern_synth(&mut records, "affinity"),
+            };
+            r.affined_to.push(hale_model::AffinedTo {
+                domain: domain_id[name],
+                cores: hale_model::CoreSet(cores.clone()),
+                provenance: pid,
+            });
+        }
         // Instances in canonical (path-sorted) order.
         arranged.sort_by(|a, b| a.path.cmp(&b.path));
         let inst_id: BTreeMap<&String, LocusInstanceId> =
@@ -3186,7 +3278,7 @@ pub fn derive_application_model_over(
             let pid = intern_span(&mut records, a.span);
             e.locus_instances.push(LocusInstance {
                 path: a.path.clone(),
-                decl: locus_id[&a.decl],
+                decl: a.decl,
                 replica: a.replica,
                 provenance: pid,
             });
@@ -3196,7 +3288,7 @@ pub fn derive_application_model_over(
                 intern_synth(&mut records, "arrangement");
             r.realizes.push(Realizes {
                 instance: inst_id[&a.path],
-                decl: locus_id[&a.decl],
+                decl: a.decl,
                 provenance: pid,
             });
             r.placed_in.push(PlacedIn {
@@ -3399,7 +3491,7 @@ pub fn derive_application_model_over(
             // the arrangement is entered, and the root instance is
             // already modeled (path `App`, domain `main`). Every
             // OTHER free-standing birth is outside the arrangement.
-            if main_decl.as_ref().is_some_and(|(n, _)| n == child_ty) {
+            if root_name == Some(child_ty) {
                 continue;
             }
             let in_arrangement = params_spans
@@ -3881,6 +3973,20 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         m.capabilities.exact_placement,
         m.capabilities.exact_routes
     ));
+    // U-5 (F.40 phase 3, P1): the CPU set each thread domain may run on.
+    // Printed only where a domain has one, so a program with no affinity
+    // dumps as it did.
+    if !m.relations.affined_to.is_empty() {
+        s.push_str(&format!("affined_to ({}):\n", m.relations.affined_to.len()));
+        for a in &m.relations.affined_to {
+            let cores: Vec<String> = a.cores.0.iter().map(|c| c.to_string()).collect();
+            s.push_str(&format!(
+                "  {} cpus [{}]\n",
+                m.entities.thread_domains[a.domain.index()].name,
+                cores.join(",")
+            ));
+        }
+    }
     // GH #476 Change 8: the derived lowering plan. Not model rows —
     // a CONCLUSION, printed here because this dump is the survey
     // surface #464's stage 0 asks its question of ("how much queued

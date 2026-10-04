@@ -197,15 +197,18 @@ main locus Org {
   offset space, and a span from there attributed to a bundle file
   would name the wrong source, so a stdlib-interior hop renders by
   name alone.
-- **Unknown ⇒ violation.** An indirect call (function-typed
-  parameter, #353) or a computed publish subject on a path from a
-  `forbid` source cannot be certified and is reported as a
+- **Unknown ⇒ violation.** An indirect call (#353) no function value
+  of the program can be, or a computed publish subject, on a path
+  from a `forbid` source cannot be certified and is reported as a
   violation, exactly as `@no_syscall` treats the same shapes. (A
   call through a local bound by `let` to a fn name or path is not
   indirect: the graph follows the binding through the body's scopes,
   and `let f = pid; f()` is a call of `pid`. A reassigned binding is
   not followed, and one a `while` or `for` loop reassigns is not
-  followed anywhere in the loop or after it.) And
+  followed anywhere in the loop or after it; a call through one, like
+  a call through a function-typed parameter, reaches the program's
+  function values of its type — § Default-on & opt-in analyses, "An
+  indirect call reaches the program's function values".) And
   the **unresolved-callee backstop**: EVERY method call on a
   receiver the summarizer cannot type (a struct-literal receiver,
   a chained `self.a.b` field, a call result, a branch value) fails
@@ -2112,6 +2115,33 @@ assume the others in a build:
   direction beats one wrong in the other, so the conservative form
   lands first and precision becomes an improvement rather than a
   correctness fix.
+- **An indirect call reaches the program's function values** (F.40
+  phase 3, E5). An indirect call is a call through a function-typed
+  parameter, through a local the analysis does not follow to one
+  function (a binding chosen by a branch, a reassigned binding, one a
+  loop reassigns, a binding read from a field or a call's result), or
+  through a computed callee (`pick()(x)`). A function value only
+  arises from a function's name read as a value — there is no lambda,
+  and the FFI refuses function-pointer types — so the closed world
+  enumerates what such a call can reach: the functions some expression
+  of the whole program (its imported seeds and the standard library
+  included) reads as a value — an argument, a `let`, a struct field,
+  a params default, a return — whose parameter count is the call's and
+  whose declared signature can be the callee's declared type (a
+  function-typed parameter's, or every declared field of the name a
+  local was bound from; a type alias or a generic matches anything).
+  Each is judged as the call of that function, and a certificate names
+  it: `@no_syscall` on a fn whose body is `let f = if c { pid } else {
+  pure }; return f();` is violated through `pid`. The standard
+  library's router is this case: `add_fn` reads its handler as a
+  value, so a dispatch reaches the registered handlers of the route's
+  type, and a clean handler keeps an exact certificate. A call no
+  function value of the program can be — none of its type is ever
+  read as a value, or the program reads a locus method as a value,
+  which the analysis does not follow (and the build does not lower) —
+  stays the **may do anything** call above. Until this, a call through
+  a local the analysis did not follow was a call to nothing, and a
+  certificate over one was false (a classified correction).
 - **Closed effect contracts — `@effects(only: {…})`** (#354,
   2026-08-03). The dual of `none:`. `none:` forbids a listed set and
   permits everything else, which makes it **rot**: expressing "this

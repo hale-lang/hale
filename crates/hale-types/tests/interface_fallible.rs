@@ -9,13 +9,17 @@ use hale_syntax::parse_source;
 use hale_types::symbol::Bundle;
 
 fn diags(src: &str) -> Vec<String> {
-    let program = parse_source(src).expect("parse");
+    let mut program = parse_source(src).expect("parse");
+    // Minted as every entry point mints: the fallible law reads the
+    // typed-body table, whose rows are keyed by the calls' sites.
+    let ids = hale_types::snapshot::mint([("test.hl", &mut program)], &[]);
     let mut programs: std::collections::BTreeMap<
         String,
         &hale_syntax::ast::Program,
     > = std::collections::BTreeMap::new();
     programs.insert("test.hl".to_string(), &program);
-    let bundle = Bundle::new(programs);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
     let (scope, mut ds) = hale_types::resolve::build_top_scope(&bundle);
     ds.extend(hale_types::check::check_bundle(&bundle, &scope, true));
     ds.iter().map(|d| d.message.clone()).collect()
@@ -94,5 +98,8 @@ fn an_unaddressed_call_through_a_typed_interface_is_a_check_error() {
     "#
     );
     let ds = diags(&src);
-    assert!(ds.iter().any(|m| m.contains("error not addressed")), "{ds:#?}");
+    assert!(
+        ds.iter().any(|m| m.contains("`self.s.put` can fail (E) and this call says nothing about it")),
+        "{ds:#?}"
+    );
 }

@@ -434,7 +434,18 @@ pub struct CallEdge {
     /// else, and without it the edge is indistinguishable from a call
     /// to an unknown free fn. That indistinguishability is what let an
     /// indirect call void every certificate.
+    ///
+    /// E5 (F.40 phase 3): a call through a local the body's bindings do
+    /// not follow to a fn (`unresolved_local`) and a computed callee
+    /// (`pick()(x)`) are indirect too: a function value whose target
+    /// this body does not name is the same unknown as a parameter's, and
+    /// every certificate and budget reader takes it as one (a classified
+    /// correction: such a call was a call to nothing). The capability
+    /// admission words the shapes apart (`through_param`).
     pub indirect: bool,
+    /// The indirect call is through a function-typed parameter of the
+    /// enclosing fn (#353's shape), not a local or a computed callee.
+    pub through_param: bool,
     /// The call is through a local the body's bindings follow to a fn
     /// (`let f = pid; f()`): the local's name, and the edge's callee is
     /// what a direct call of the bound name or path reaches. A local bound
@@ -442,11 +453,15 @@ pub struct CallEdge {
     /// with the local's name).
     pub via_local: Option<String>,
     /// The call is through a local the body's bindings do not follow to
-    /// a fn (`let f = self.g; f()`, a parameter, a reassigned local). The
-    /// edge is the one it always was, an `Unresolved` call named for the
-    /// local; only the capability admission reads this, as a hole in the
-    /// program's own code.
+    /// a fn (`let f = self.g; f()`, a parameter, a reassigned local): an
+    /// `Unresolved` call named for the local, and `indirect`. The
+    /// capability admission reads this as a hole in the program's own
+    /// code.
     pub unresolved_local: bool,
+    /// E5: that local is bound to a field read (`let f = e.handler_fn`):
+    /// the field's name. Every declaration of a field of that name types
+    /// the call when each declares a function type.
+    pub bound_field: Option<String>,
     pub loop_depth: u32,
     /// True if the call is inside an unbounded loop — then the callee is
     /// invoked unboundedly many times regardless of its own multiplicity.
@@ -493,6 +508,13 @@ pub struct CallEdge {
     /// group where a real call sequence would SUM; reachability and
     /// effect-union judgments walk every alternative as usual.
     pub dispatch_group: Option<u32>,
+    /// E5: this edge is one alternative of an indirect call resolved to
+    /// the program's function values (`resolve_function_values`): the
+    /// callee as written (`f`, `__route_fn`, `<expr>`). Its alternatives
+    /// share a `dispatch_group`, as an interface dispatch's do.
+    pub via_value: Option<String>,
+    /// How many arguments the call passes.
+    pub arity: usize,
     /// How the callee is written.
     pub spelling: CallSpelling,
     /// The call is written inside a loop body (`loop_depth` is reset
@@ -527,6 +549,15 @@ impl CallEdge {
     /// edge). That edge is dead, not unknown — see the field doc.
     pub fn opaque_method_call(&self) -> bool {
         self.receiver_present && self.recv_ty.is_none()
+    }
+
+    /// What an indirect call goes through, as a diagnostic says it.
+    pub fn indirect_through(&self) -> &'static str {
+        if self.through_param {
+            "a function-typed parameter"
+        } else {
+            "a function value"
+        }
     }
 }
 
@@ -763,6 +794,10 @@ pub struct AllocSummary {
     pub analysis_copy_loci: BTreeSet<String>,
     /// The interfaces of the stdlib's analysis copy, likewise.
     pub analysis_copy_interfaces: BTreeSet<String>,
+    /// The unresolved function values (a builtin or a stdlib path read
+    /// as a value) only the stdlib's analysis copy takes: an alternative
+    /// of a function-value dispatch the program alone does not have.
+    pub analysis_copy_values: BTreeSet<String>,
     /// The program's bodies that are no fn's row, each summarized as a
     /// member of its declaration ([`DeclarationBody`]). No judgment reads
     /// them; the declaration dependents relation reads their call edges.
@@ -814,6 +849,29 @@ impl AllocSummary {
         !self.analysis_copy_loci.contains(name)
     }
 
+    /// Whether an alternative of a function-value dispatch
+    /// (`CallEdge::via_value`) is one only the stdlib's analysis copy
+    /// supplies (its fn, or a leaf only it reads as a value): the
+    /// program alone has no such alternative, and [`Self::own_rows`]
+    /// leaves it out.
+    pub fn copy_alternative(&self, e: &CallEdge) -> bool {
+        e.via_value.is_some()
+            && match &e.callee {
+                Callee::Resolved(k) => self.analysis_copy.contains(k),
+                Callee::Unresolved(n) => self.analysis_copy_values.contains(n),
+            }
+    }
+
+    /// The function-value dispatches of `fs` that keep an alternative
+    /// of the program's own ([`Self::copy_alternative`]): by group.
+    pub fn value_groups_kept(&self, fs: &FnSummary) -> BTreeSet<u32> {
+        fs.calls
+            .iter()
+            .filter(|c| c.via_value.is_some() && !self.copy_alternative(c))
+            .filter_map(|c| c.dispatch_group)
+            .collect()
+    }
+
     /// The program's own rows, as the user-program readers (the model,
     /// the `@budget` engines, the artifact's rows) project them: the
     /// program's fns and loci only, and a call into the stdlib's
@@ -831,9 +889,17 @@ impl AllocSummary {
         // A group whose every alternative is the copy's, or whose
         // interface is the copy's, collapses to its written call.
         let mut collapsed: BTreeSet<u32> = BTreeSet::new();
+        // A function-value dispatch (E5) keeps its alternatives among the
+        // program's own fns and the unresolved leaves; with none left it
+        // is the indirect call as written, as the program alone resolves
+        // it to nothing of its own.
+        let mut value_own: BTreeSet<u32> = BTreeSet::new();
+        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+            value_own.extend(self.value_groups_kept(f));
+        }
         for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
             let mut own_alt: BTreeMap<u32, bool> = BTreeMap::new();
-            for c in &f.calls {
+            for c in f.calls.iter().filter(|c| c.via_value.is_none()) {
                 if let (Some(g), Callee::Resolved(k)) = (c.dispatch_group, &c.callee) {
                     let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
                     *own_alt.entry(g).or_default() |= !copy(k) && !through_copy;
@@ -842,12 +908,35 @@ impl AllocSummary {
             collapsed.extend(own_alt.into_iter().filter(|(_, own)| !own).map(|(g, _)| g));
         }
         let mut renumber: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut value_order: Vec<u32> = Vec::new();
         let mut emitted: BTreeSet<u32> = BTreeSet::new();
         let mut fns: BTreeMap<FnKey, FnSummary> = BTreeMap::new();
         for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
             let mut calls: Vec<CallEdge> = Vec::with_capacity(f.calls.len());
             for c in &f.calls {
                 let mut e = c.clone();
+                if let (Some(written), Some(g)) = (&c.via_value, c.dispatch_group) {
+                    if value_own.contains(&g) {
+                        if self.copy_alternative(c) {
+                            continue;
+                        }
+                        // Numbered below, after every interface group.
+                        if !value_order.contains(&g) {
+                            value_order.push(g);
+                        }
+                    } else {
+                        if !emitted.insert(g) {
+                            continue;
+                        }
+                        e.callee = Callee::Unresolved(written.clone());
+                        e.indirect = true;
+                        e.via_value = None;
+                        e.via_local = None;
+                        e.dispatch_group = None;
+                    }
+                    calls.push(e);
+                    continue;
+                }
                 match (c.dispatch_group, &c.callee) {
                     (Some(g), Callee::Resolved(k)) if collapsed.contains(&g) => {
                         if !emitted.insert(g) {
@@ -879,6 +968,17 @@ impl AllocSummary {
             }
             fns.insert(f.key.clone(), FnSummary { calls, ..f.clone() });
         }
+        // The program alone numbers its function-value dispatches after
+        // all of its interface dispatches, each in the fns' order.
+        let first = renumber.len() as u32;
+        for f in fns.values_mut() {
+            for e in f.calls.iter_mut().filter(|e| e.via_value.is_some()) {
+                if let Some(g) = e.dispatch_group {
+                    let at = value_order.iter().position(|v| *v == g).expect("a kept value group is ordered");
+                    e.dispatch_group = Some(first + at as u32);
+                }
+            }
+        }
         let own_locus = |l: &String| self.is_own_locus(l);
         let own_key = |k: &FnKey| self.is_own(k);
         AllocSummary {
@@ -895,6 +995,7 @@ impl AllocSummary {
             analysis_copy_loci: BTreeSet::new(),
             analysis_copy_interfaces: BTreeSet::new(),
             declaration_bodies: self.declaration_bodies.clone(),
+            analysis_copy_values: BTreeSet::new(),
         }
     }
 }
@@ -2372,6 +2473,16 @@ pub fn summarize_identified(
         }
         fs.calls = rewritten;
     }
+    let value_scopes: Vec<ValueScope<'_>> = identified
+        .iter()
+        .map(|(program, ids)| ValueScope {
+            items: program.items.iter().filter(|item| !shadowed(ids, item)).collect(),
+            scope_fns: &scope_fns[scope_index(ids)],
+            renames: if is_stdlib_copy(ids) { &no_renames } else { &rename_map },
+            copy: is_stdlib_copy(ids),
+        })
+        .collect();
+    resolve_function_values(&mut summary, &value_scopes, &known, next_group);
     // What the program reaches, when the stdlib's analysis copy is
     // beside it: its own fns, what their calls reach (the interface
     // fan-out included), and what they start. Starting a locus runs its
@@ -2927,6 +3038,359 @@ fn init_is_scalar_or_static(e: &Expr) -> bool {
     }
 }
 
+/// Whether a value of one declared type can be the other's, as far as
+/// the type expressions say without resolving them: `false` only where
+/// the checker's exact equality of function types cannot hold (two
+/// different primitives; a primitive, function, tuple or array against
+/// one of the others; either against a nominal type). A named type
+/// that is a type alias, a generic parameter, or not a declaration the
+/// bundle names as itself (an import alias's spelling) may be anything,
+/// so it is compatible with everything; so is a projection or a
+/// perspective type. Two named types are always compatible: one type
+/// has several spellings across seeds.
+struct FnTypes<'a> {
+    aliases: &'a BTreeSet<String>,
+    nominal: &'a BTreeSet<String>,
+}
+
+impl FnTypes<'_> {
+    fn compatible(&self, a: &TypeExpr, b: &TypeExpr, generic: &dyn Fn(&str) -> bool) -> bool {
+        // A named type the bundle declares as itself: a struct, enum,
+        // locus, interface or perspective, or a stdlib path.
+        let nominal = |t: &TypeExpr| match t {
+            TypeExpr::Named { path, .. } => {
+                let joined = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                let last = path.segments.last().map(|s| s.name.as_str()).unwrap_or_default();
+                joined.starts_with("std::")
+                    || (path.segments.len() == 1
+                        && self.nominal.contains(last)
+                        && !self.aliases.contains(last)
+                        && !generic(last))
+            }
+            _ => false,
+        };
+        let open = |t: &TypeExpr| match t {
+            TypeExpr::Named { .. } => !nominal(t),
+            TypeExpr::Projection { .. } | TypeExpr::Perspective { .. } => true,
+            _ => false,
+        };
+        if open(a) || open(b) {
+            return true;
+        }
+        match (a, b) {
+            // One type, two spellings (`std::http::Context` and the
+            // stdlib's own declared name) is compatible; two stdlib paths,
+            // or two names the bundle declares, are one type only when
+            // they are one spelling.
+            (TypeExpr::Named { path: pa, .. }, TypeExpr::Named { path: pb, .. }) => {
+                let std = |p: &QualifiedName| p.segments.first().is_some_and(|s| s.name == "std");
+                std(pa) != std(pb) || pa.segments.iter().map(|s| &s.name).eq(pb.segments.iter().map(|s| &s.name))
+            }
+            (TypeExpr::Primitive(p, _), TypeExpr::Primitive(q, _)) => p == q,
+            (
+                TypeExpr::Function { params: pa, ret: ra, .. },
+                TypeExpr::Function { params: pb, ret: rb, .. },
+            ) => {
+                pa.len() == pb.len()
+                    && pa.iter().zip(pb).all(|(x, y)| self.compatible(x, y, generic))
+                    && match (ra, rb) {
+                        (Some(x), Some(y)) => self.compatible(x, y, generic),
+                        _ => true,
+                    }
+            }
+            (TypeExpr::Tuple(xa, _), TypeExpr::Tuple(xb, _)) => {
+                xa.len() == xb.len() && xa.iter().zip(xb).all(|(x, y)| self.compatible(x, y, generic))
+            }
+            (
+                TypeExpr::Array { elem: ea, .. } | TypeExpr::Bounded { elem: ea, .. },
+                TypeExpr::Array { elem: eb, .. } | TypeExpr::Bounded { elem: eb, .. },
+            ) => self.compatible(ea, eb, generic),
+            _ => false,
+        }
+    }
+}
+
+/// One program's declarations, as the function-value pass reads them:
+/// its items (the analysis copy's without those a checked program
+/// declares again), and the scope its names resolve in.
+struct ValueScope<'a> {
+    items: Vec<&'a TopDecl>,
+    scope_fns: &'a BTreeSet<String>,
+    renames: &'a BTreeMap<String, String>,
+    copy: bool,
+}
+
+/// E5 (F.40 phase 3): an indirect call resolves to the program's
+/// function values.
+///
+/// An indirect call (through a function-typed parameter, a local the
+/// walk does not follow to a fn, or a computed callee) reaches a function
+/// value, and a function value only arises from a function's name read
+/// as a value ([`crate::fn_values`]). The closed world makes that set
+/// enumerable: every name read as a value anywhere in the bundle (the
+/// stdlib's analysis copy included), resolved as a `let` binding of it
+/// resolves — a fn of the reading program's scope, an imported fn
+/// through the import renames, a module-nested fn by its bare name, a
+/// builtin or a registered stdlib path as the unresolved leaf a direct
+/// call of it is. The one written call becomes one edge per value whose
+/// fn takes as many parameters as the call passes (a leaf of unknown
+/// arity matches every call), tagged with a dispatch group so counting
+/// judgments take the max over the alternatives, as for an interface
+/// dispatch (#392). Arity is a superset of the checker's type match; a
+/// false extra target only adds edges.
+///
+/// The set is not named, and the call stays the indirect row every
+/// reader fails closed on, when no value matches (a value of the type
+/// cannot exist, but a dead call is not worth a reader of its own), or
+/// when a member is read as a value under a name that is some locus's
+/// method and no declaration's field (a method value: the checker types
+/// it, codegen does not lower it, and this pass does not follow it).
+fn resolve_function_values<'a>(
+    summary: &mut AllocSummary,
+    scopes: &[ValueScope<'a>],
+    known: &BTreeSet<FnKey>,
+    mut next_group: u32,
+) {
+    use crate::fn_values::ValueName;
+    fn each_decl<'a>(item: &'a TopDecl, f: &mut dyn FnMut(&'a TopDecl)) {
+        f(item);
+        if let TopDecl::Module(m) = item {
+            for i in &m.items {
+                each_decl(i, f);
+            }
+        }
+    }
+    // Every free fn's declaration, by name (the values' signatures), and
+    // every free fn's and locus method's, by key (an indirect call's
+    // enclosing declaration, whose function-typed parameter types it).
+    let mut free: BTreeMap<String, &'a FnDecl> = BTreeMap::new();
+    let mut decls: BTreeMap<FnKey, &'a FnDecl> = BTreeMap::new();
+    let mut methods: BTreeSet<String> = BTreeSet::new();
+    // Every declared field, by name: its declared type (`None` where it
+    // has none, or holds no value a call could be through).
+    let mut field_tys: BTreeMap<String, Vec<Option<&'a TypeExpr>>> = BTreeMap::new();
+    let mut aliases: BTreeSet<String> = BTreeSet::new();
+    let mut nominal: BTreeSet<String> = BTreeSet::new();
+    for s in scopes {
+        for item in &s.items {
+            fn type_decl<'a>(
+                t: &'a TypeDecl,
+                aliases: &mut BTreeSet<String>,
+                nominal: &mut BTreeSet<String>,
+                field_tys: &mut BTreeMap<String, Vec<Option<&'a TypeExpr>>>,
+            ) {
+                match &t.body {
+                    TypeDeclBody::Alias(_) => {
+                        aliases.insert(t.name.name.clone());
+                    }
+                    TypeDeclBody::Struct(fs) => {
+                        nominal.insert(t.name.name.clone());
+                        for f in fs {
+                            field_tys.entry(f.name.name.clone()).or_default().push(Some(&f.ty));
+                        }
+                    }
+                    TypeDeclBody::Enum(_) => {
+                        nominal.insert(t.name.name.clone());
+                    }
+                }
+            }
+            each_decl(item, &mut |d| {
+                match d {
+                    TopDecl::Fn(f) => {
+                        free.insert(f.name.name.clone(), f);
+                        decls.insert(FnKey::free_fn(f.name.name.clone()), f);
+                    }
+                    TopDecl::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys),
+                    TopDecl::Interface(i) => {
+                        nominal.insert(i.name.name.clone());
+                    }
+                    TopDecl::Locus(l) => {
+                        nominal.insert(l.name.name.clone());
+                        for m in &l.members {
+                            match m {
+                                LocusMember::Fn(f) => {
+                                    methods.insert(f.name.name.clone());
+                                    decls.insert(FnKey::method(l.name.name.clone(), f.name.name.clone()), f);
+                                }
+                                LocusMember::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys),
+                                LocusMember::Params(pb) => {
+                                    for p in &pb.params {
+                                        field_tys.entry(p.name.name.clone()).or_default().push(p.ty.as_ref());
+                                    }
+                                }
+                                LocusMember::Capacity(cb) => {
+                                    for slot in &cb.slots {
+                                        field_tys.entry(slot.name.name.clone()).or_default().push(None);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    TopDecl::Perspective(p) => {
+                        nominal.insert(p.name.name.clone());
+                        for m in &p.members {
+                            match m {
+                                PerspectiveMember::Fn(f) => {
+                                    methods.insert(f.name.name.clone());
+                                }
+                                PerspectiveMember::Params(pb) => {
+                                    for p in &pb.params {
+                                        field_tys.entry(p.name.name.clone()).or_default().push(p.ty.as_ref());
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            });
+        }
+    }
+    // Each value: its callee, its declaration when it is a fn of the
+    // bundle (a builtin or a stdlib path has none, and matches every
+    // call), and whether a checked program (not only the analysis copy)
+    // takes it.
+    let mut taken: BTreeMap<String, (Callee, Option<&'a FnDecl>, bool)> = BTreeMap::new();
+    let mut method_value = false;
+    for s in scopes {
+        let mut names = Vec::new();
+        for item in &s.items {
+            crate::fn_values::value_names(std::slice::from_ref(*item), &mut names);
+        }
+        let mut take = |callee: Callee, decl: Option<&'a FnDecl>| {
+            let key = match &callee {
+                Callee::Resolved(k) => k.display(),
+                Callee::Unresolved(n) => n.clone(),
+            };
+            taken.entry(key).or_insert((callee, decl, false)).2 |= !s.copy;
+        };
+        let own_fn = |name: &str| {
+            let key = FnKey::free_fn(name.to_string());
+            (known.contains(&key) && s.scope_fns.contains(name)).then(|| (key, free.get(name).copied()))
+        };
+        for name in names {
+            match name {
+                ValueName::Ident(n) => {
+                    if let Some((key, decl)) = own_fn(&n) {
+                        take(Callee::Resolved(key), decl);
+                    } else if crate::check::BARE_BUILTIN_CALLEES.contains(&n.as_str()) {
+                        take(Callee::Unresolved(n), None);
+                    }
+                }
+                ValueName::Path(p) => {
+                    if let Some(mangled) = s.renames.get(&p) {
+                        if let Some((key, decl)) = own_fn(mangled) {
+                            take(Callee::Resolved(key), decl);
+                        }
+                    } else if p.starts_with("std::") {
+                        let segs: Vec<&str> = p.split("::").collect();
+                        if crate::stdlib_surface::effects_for(&segs).is_some() {
+                            take(Callee::Unresolved(p), None);
+                        }
+                    } else if let Some(last) = p.rsplit("::").next() {
+                        if let Some((key, decl)) = own_fn(last) {
+                            take(Callee::Resolved(key), decl);
+                        }
+                    }
+                }
+                ValueName::Member(n) => {
+                    if methods.contains(&n) && !field_tys.contains_key(&n) {
+                        method_value = true;
+                    }
+                }
+            }
+        }
+    }
+    summary.analysis_copy_values =
+        taken.iter().filter(|(_, (c, _, own))| !own && matches!(c, Callee::Unresolved(_))).map(|(k, _)| k.clone()).collect();
+    if method_value {
+        return;
+    }
+    let types = FnTypes { aliases: &aliases, nominal: &nominal };
+    // Declaration bodies carry the same call facts for editor dependents.
+    // Keep their groups after the fn rows, as for interface dispatch.
+    let rows = summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().map(|b| &mut b.summary));
+    for fs in rows {
+        if !fs.calls.iter().any(|e| e.indirect) {
+            continue;
+        }
+        let enclosing = decls.get(&fs.key).copied();
+        let mut rewritten: Vec<CallEdge> = Vec::with_capacity(fs.calls.len());
+        for edge in fs.calls.drain(..) {
+            let written = match &edge.callee {
+                Callee::Unresolved(n) if edge.indirect => n.clone(),
+                _ => {
+                    rewritten.push(edge);
+                    continue;
+                }
+            };
+            // The callee's declared types, when the program states them:
+            // a function-typed parameter's, or every declared type of the
+            // field a local was bound from (each a function type).
+            let declared: Option<Vec<&TypeExpr>> = if edge.through_param {
+                enclosing
+                    .and_then(|d| d.params.iter().find(|p| p.name.name == written))
+                    .map(|p| vec![&p.ty])
+            } else {
+                edge.bound_field.as_ref().and_then(|f| field_tys.get(f)).and_then(|tys| tys.iter().copied().collect())
+            };
+            let declared: Option<Vec<(&Vec<TypeExpr>, Option<&TypeExpr>)>> = declared.and_then(|tys| {
+                tys.into_iter()
+                    .map(|t| match t {
+                        TypeExpr::Function { params, ret, .. } => Some((params, ret.as_deref())),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            let enclosing_generics: Vec<&str> =
+                enclosing.map(|d| d.generics.iter().map(|g| g.name.name.as_str()).collect()).unwrap_or_default();
+            let targets: Vec<&Callee> = taken
+                .values()
+                .filter(|(_, decl, _)| match decl {
+                    None => true,
+                    Some(t) if t.params.len() != edge.arity => false,
+                    Some(t) => declared.as_ref().map_or(true, |sigs| {
+                        let generic =
+                            |n: &str| enclosing_generics.contains(&n) || t.generics.iter().any(|g| g.name.name == n);
+                        sigs.iter().any(|(params, ret)| {
+                            params.len() == t.params.len()
+                                && params.iter().zip(&t.params).all(|(a, b)| types.compatible(a, &b.ty, &generic))
+                                && match (ret, &t.ret) {
+                                    (Some(a), Some(b)) if t.fallible.is_none() => types.compatible(a, b, &generic),
+                                    _ => true,
+                                }
+                        })
+                    }),
+                })
+                .map(|(c, _, _)| c)
+                .collect();
+            if targets.is_empty() {
+                rewritten.push(edge);
+                continue;
+            }
+            let gid = next_group;
+            next_group += 1;
+            for t in targets {
+                let mut e = edge.clone();
+                e.callee = t.clone();
+                e.indirect = false;
+                match e.spelling {
+                    CallSpelling::Ident(_) => e.via_local = Some(written.clone()),
+                    // A computed callee was written with no receiver to
+                    // type; resolved, it is not an opaque method call.
+                    _ => e.receiver_present = false,
+                }
+                e.via_value = Some(written.clone());
+                e.dispatch_group = Some(gid);
+                rewritten.push(e);
+            }
+        }
+        fs.calls = rewritten;
+    }
+}
+
 /// What a call through a local binding reaches.
 #[derive(Debug, Clone)]
 enum Local {
@@ -2940,6 +3404,10 @@ enum Local {
     /// the edge it always was (indirect through a function-typed
     /// parameter, #353).
     Unresolved,
+    /// `let f = <expr>.name`: not followed either, but the field's name
+    /// is kept, whose declared types type a call through `f` (E5,
+    /// `CallEdge::bound_field`).
+    Field(String),
 }
 
 struct Walker<'a> {
@@ -3382,6 +3850,7 @@ impl<'a> Walker<'a> {
             Expr::Ident(id) => match self.local(&id.name) {
                 Some(Local::Fn(c)) => Local::Fn(c.clone()),
                 Some(Local::Unresolved) => Local::Unresolved,
+                Some(Local::Field(f)) => Local::Field(f.clone()),
                 None => {
                     let key = FnKey::free_fn(id.name.clone());
                     if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
@@ -3394,6 +3863,7 @@ impl<'a> Walker<'a> {
                 }
             },
             Expr::Path(qp) => Local::Fn(self.path_callee(qp)),
+            Expr::Field { name, .. } => Local::Field(name.name.clone()),
             _ => Local::Unresolved,
         }
     }
@@ -3779,7 +4249,7 @@ impl<'a> Walker<'a> {
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
             Expr::Call { callee, args, span, .. } => {
-                self.record_call(callee, *span, depth, escape);
+                self.record_call(callee, args.len(), *span, depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }
@@ -3847,11 +4317,13 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, span: Span, depth: u32, escape: Escape) {
+    fn record_call(&mut self, callee: &Expr, arity: usize, span: Span, depth: u32, escape: Escape) {
         let mut recv_ty: Option<String> = None;
         let mut receiver_present = false;
         let mut via_local: Option<String> = None;
         let mut unresolved_local = false;
+        let mut bound_field: Option<String> = None;
+        let mut computed = false;
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
@@ -3871,6 +4343,11 @@ impl<'a> Walker<'a> {
                         }
                         Some(Local::Unresolved) => {
                             unresolved_local = true;
+                            Callee::Unresolved(id.name.clone())
+                        }
+                        Some(Local::Field(f)) => {
+                            unresolved_local = true;
+                            bound_field = Some(f.clone());
                             Callee::Unresolved(id.name.clone())
                         }
                         None => Callee::Unresolved(id.name.clone()),
@@ -3929,27 +4406,36 @@ impl<'a> Walker<'a> {
                 // receiver-present so soundness judgments fail
                 // closed.
                 receiver_present = true;
+                computed = true;
                 Callee::Unresolved("<expr>".to_string())
             }
         };
-        let indirect = match &resolved {
+        // A call through a function-typed parameter, a local the bindings
+        // do not follow to a fn, or a computed callee: a function value
+        // whose target this body does not name.
+        let through_param = match &resolved {
             Callee::Unresolved(n) if via_local.is_none() => self.fn_params.iter().any(|p| p == n),
             _ => false,
         };
+        let indirect = through_param || unresolved_local || computed;
         let spelling = CallSpelling::of(callee);
         self.calls.push(CallEdge {
             recv_ty,
             receiver_present,
             callee: resolved,
             indirect,
+            through_param,
             via_local,
             unresolved_local,
+            bound_field,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,
             receiver_slot: self_slot_receiver(callee),
             via_interface: None,
             dispatch_group: None,
+            via_value: None,
+            arity,
             allocating_recv: spelling.allocating_recv(),
             spelling,
             in_loop: self.loops_as_written > 0,
@@ -5645,7 +6131,35 @@ mod tests {
 
     /// The calls a fn's body writes, as (callee, local, indirect), in
     /// the order written.
+    ///
+    /// The walk's own reading: an indirect call the summary went on to
+    /// resolve to the program's function values (`via_value`) is the one
+    /// indirect call it was written as ([`value_calls`] reads the
+    /// alternatives).
     fn local_calls(src: &str, f: &str) -> Vec<(String, Option<String>, bool)> {
+        let s = summarize(src);
+        let mut seen: BTreeSet<u32> = BTreeSet::new();
+        fns(&s, &FnKey::free_fn(f))
+            .calls
+            .iter()
+            .filter(|c| c.via_value.is_none() || c.dispatch_group.is_some_and(|g| seen.insert(g)))
+            .map(|c| match &c.via_value {
+                Some(written) => (format!("?{written}"), None, true),
+                None => {
+                    let callee = match &c.callee {
+                        Callee::Resolved(k) => k.display(),
+                        Callee::Unresolved(n) => format!("?{n}"),
+                    };
+                    (callee, c.via_local.clone(), c.indirect)
+                }
+            })
+            .collect()
+    }
+
+    /// The calls a fn's body writes, an indirect call resolved to the
+    /// program's function values as its alternatives: (callee, the
+    /// callee as written when it is one).
+    fn value_calls(src: &str, f: &str) -> Vec<(String, Option<String>)> {
         let s = summarize(src);
         fns(&s, &FnKey::free_fn(f))
             .calls
@@ -5655,9 +6169,68 @@ mod tests {
                     Callee::Resolved(k) => k.display(),
                     Callee::Unresolved(n) => format!("?{n}"),
                 };
-                (callee, c.via_local.clone(), c.indirect)
+                (callee, c.via_value.clone())
             })
             .collect()
+    }
+
+    /// E5: an indirect call resolves to the program's function values of
+    /// its arity: a fn read as a value anywhere (an argument, a params
+    /// default, a struct literal), but not a fn only called, nor a name
+    /// a local shadows. A call with no such value stays indirect.
+    #[test]
+    fn an_indirect_call_resolves_to_the_function_values_of_its_arity() {
+        let src = r#"
+            fn one() -> Int { return 1; }
+            fn two() -> Int { return 2; }
+            fn called() -> Int { return 3; }
+            fn inc(n: Int) -> Int { return n + 1; }
+            fn shadowed() -> Int { return 4; }
+            type Slot { f: fn() -> Int; }
+            locus K { params { s: Slot = Slot { f: two }; } }
+            fn g(c: Bool) -> Int {
+                let f = if c { one } else { called() };
+                let shadowed = 0;
+                let k = shadowed;
+                let h = inc;
+                return f() + called() + h(k);
+            }
+            fn binary(p: fn(Int, Int) -> Int) -> Int { return p(1, 2); }
+            fn main() { }
+        "#;
+        let v = |c: &str, w: Option<&str>| (c.to_string(), w.map(str::to_string));
+        assert_eq!(
+            value_calls(src, "g"),
+            vec![v("called", None), v("one", Some("f")), v("two", Some("f")), v("called", None), v("inc", None)],
+        );
+        assert_eq!(value_calls(src, "binary"), vec![v("?p", None)], "no value takes two parameters");
+    }
+
+    /// A call through a function-typed parameter keeps the values whose
+    /// declared signature can be the parameter's: a different primitive,
+    /// or a declared nominal type against a primitive, is not; a type
+    /// alias or a generic is anything.
+    #[test]
+    fn a_parameters_declared_type_narrows_its_values() {
+        let src = r#"
+            type Id = Int;
+            type Tag { n: Int; }
+            fn by_int(n: Int) -> Int { return n; }
+            fn by_string(s: String) -> Int { return 0; }
+            fn by_tag(t: Tag) -> Int { return t.n; }
+            fn by_id(i: Id) -> Int { return i; }
+            fn to_string_(n: Int) -> String { return ""; }
+            fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+            fn main() {
+                let fs = [by_int, by_int];
+                let a = by_string;
+                let b = by_tag;
+                let c = by_id;
+                let d = to_string_;
+            }
+        "#;
+        let v = |c: &str| (c.to_string(), Some("f".to_string()));
+        assert_eq!(value_calls(src, "apply"), vec![v("by_id"), v("by_int")]);
     }
 
     fn through(callee: &str, local: &str) -> (String, Option<String>, bool) {
@@ -5666,6 +6239,13 @@ mod tests {
 
     fn written(callee: &str) -> (String, Option<String>, bool) {
         (callee.to_string(), None, false)
+    }
+
+    /// A call through a function value the walk does not name: indirect
+    /// (F.40 E5, a classified correction: through a local, it was the
+    /// edge as written and a call to nothing).
+    fn indirect(callee: &str) -> (String, Option<String>, bool) {
+        (callee.to_string(), None, true)
     }
 
     /// A call through a local bound to a fn name or path reaches what a
@@ -5744,13 +6324,13 @@ mod tests {
         "#;
         assert_eq!(
             local_calls(src, "g"),
-            vec![written("make"), written("?f"), written("?o"), written("make"), through("target", "f")],
+            vec![written("make"), indirect("?f"), indirect("?o"), written("make"), through("target", "f")],
         );
     }
 
     /// A reassigned local holds whichever value the run took last, and a
-    /// tuple binding is not followed: either call is the edge it always
-    /// was, `Unresolved` with the local's name.
+    /// tuple binding is not followed: either call is `Unresolved` with
+    /// the local's name, and indirect.
     #[test]
     fn a_reassigned_or_tuple_bound_local_is_not_followed() {
         let src = r#"
@@ -5766,12 +6346,12 @@ mod tests {
             }
             fn main() { }
         "#;
-        assert_eq!(local_calls(src, "g"), vec![written("?f"), written("?t"), written("?u")]);
+        assert_eq!(local_calls(src, "g"), vec![indirect("?f"), indirect("?t"), indirect("?u")]);
     }
 
     /// A call through a function-typed parameter stays indirect (#353);
-    /// a local bound to one is not followed, and its call is the edge it
-    /// always was.
+    /// a local bound to one is not followed, and its call is indirect
+    /// too.
     #[test]
     fn a_function_typed_parameter_stays_indirect() {
         let src = r#"
@@ -5782,7 +6362,10 @@ mod tests {
             }
             fn main() { }
         "#;
-        assert_eq!(local_calls(src, "g"), vec![written("?h"), ("?cb".to_string(), None, true)]);
+        assert_eq!(local_calls(src, "g"), vec![indirect("?h"), indirect("?cb")]);
+        let s = summarize(src);
+        let param: Vec<bool> = fns(&s, &FnKey::free_fn("g")).calls.iter().map(|c| c.through_param).collect();
+        assert_eq!(param, [false, true], "only the parameter's own call is through the parameter");
     }
 
     /// A call through a local the bindings do not follow is marked for
@@ -5869,18 +6452,20 @@ mod tests {
         assert_eq!(
             local_calls(src, "g"),
             vec![
-                written("?f"),
-                written("?f"),
-                written("?q"),
-                written("?h"),
+                indirect("?f"),
+                indirect("?f"),
+                indirect("?q"),
+                indirect("?h"),
                 through("width", "k"),
                 through("other", "s"),
                 through("width", "s"),
                 through("width", "k"),
             ],
         );
+        // Each unfollowed call is two alternatives (`width`, `other`), each
+        // still marked as written through an unfollowed local.
         let s = summarize(src);
         let marked: Vec<bool> = fns(&s, &FnKey::free_fn("g")).calls.iter().map(|c| c.unresolved_local).collect();
-        assert_eq!(marked, [true, true, true, true, false, false, false, false]);
+        assert_eq!(marked, [true, true, true, true, true, true, true, true, false, false, false, false]);
     }
 }

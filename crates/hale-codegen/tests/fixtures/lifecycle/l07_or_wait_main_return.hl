@@ -1,0 +1,53 @@
+// Decision line 7, abort unsatisfiable waits before the join
+// (WaitAbort, PoolJoin), in a `return` from `fn main` (C23).
+//
+// l07_pool_or_wait_teardown's program, with App let-bound in `fn main`
+// and main left by `return`: the return's teardown is the first, with
+// `pusher` still on pool `side`. `pusher` publishes a burst with
+// `or wait` into a topic only main drains, and main is in that
+// teardown, so the third publish waits for space that only the
+// wait-abort would end.
+//
+// Expected terminal outcome: the wait is aborted before the join, and
+// the aborted publish is not a success: `wait-aborted`.
+
+type E { n: Int = 0; }
+topic Evt {
+    payload: E;
+    subject: "lifecycle.l07.return";
+    bounded(2);
+    on_full: fail;
+}
+
+locus Tally {
+    params { seen: Int = 0; }
+    bus { subscribe Evt as on_e; }
+    fn on_e(e: E) { self.seen = self.seen + 1; }
+}
+
+locus Pusher {
+    bus { publish Evt; }
+    run() {
+        std::time::sleep(100ms);
+        let mut i = 0;
+        while i < 10 {
+            Evt <- E { n: i } or wait;
+            i = i + 1;
+        }
+        println("outcome: published");
+    }
+}
+
+main locus App {
+    params {
+        tally: Tally = Tally { };
+        pusher: Pusher = Pusher { };
+    }
+    placement { pusher: cooperative(pool = side); }
+    run() { std::time::sleep(10ms); }
+}
+
+fn main() {
+    let app = App { };
+    return;
+}

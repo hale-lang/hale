@@ -26,6 +26,7 @@ pub mod alloc_summary;
 pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
+pub mod builtin_sigs;
 pub mod budget_check;
 pub mod bus_graph;
 pub mod bus_inert;
@@ -69,6 +70,7 @@ mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;
 pub mod flows;
+mod fn_values;
 pub mod sealability;
 pub mod symbol;
 pub mod sync_inference;
@@ -260,9 +262,10 @@ pub fn check_bundle_for_build(
 }
 
 /// The rules a build refuses beside the check, after it: the borrow
-/// rule (GH #730, #1048) and, GH #738, a bare fallible stdlib call — an
-/// error on every build path, as it is in `hale check`. The snapshot's
-/// check appends them for a build's config (`Config::build_rules`).
+/// rule (GH #730, #1048), an error on every build path, as it is in
+/// `hale check`. The snapshot's check appends them for a build's config
+/// (`Config::build_rules`). A bare fallible call (GH #738) is the
+/// check's own: the `bare_fallible` law runs with the typing.
 pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(
@@ -271,7 +274,6 @@ pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
         &bundle.import_renames,
     );
     stdlib_bodies::demangle_imports(&mut diags, &[]);
-    diags.extend(bare_fallible::bare_fallible_calls(&programs));
     diags
 }
 
@@ -331,7 +333,6 @@ fn check_numbered_bundle(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
-    let ownership = bundle_ownership_graph(bundle, &top);
     let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -341,9 +342,10 @@ fn check_numbered_bundle(
     };
     let entry = entry::entry_row(bundle);
     let placement = placement::derive_placement(bundle, &top, &entry);
+    let ownership = bundle_ownership_graph(bundle, &top, &placement);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bundle_bus_graph(bundle, &top, &bindings);
+    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
     let target = capability::target_row(bundle);
     let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let (checked, effect_certificates) = check::check_bundle_reporting(
@@ -358,7 +360,7 @@ fn check_numbered_bundle(
             alloc_summary: &alloc_summary,
             forms: &forms,
             bus: &bus,
-            intra_locus: &bundle_intra_locus(bundle),
+            intra_locus: &bundle_intra_locus(bundle, &placement),
             placement: &placement,
             target: &target,
             uses: &uses,
@@ -385,6 +387,8 @@ fn check_numbered_bundle(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
+        // The bundle is minted ([`with_identities`]), so the table the
+        // model's arrangement reads has its rows.
         let model = model_over_scope(
             bundle,
             &top,
@@ -394,6 +398,7 @@ fn check_numbered_bundle(
             &bus,
             &bindings,
             &ownership,
+            &placement,
         );
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
@@ -418,8 +423,9 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 pub(crate) fn bundle_ownership_graph(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
+    placement: &placement::PlacementTable,
 ) -> ownership_graph::OwnershipGraph {
-    ownership_graph::build_ownership_graph(bundle, top)
+    ownership_graph::build_ownership_graph(bundle, top, placement)
 }
 
 /// The application model of a bundle no snapshot holds: the test
@@ -430,28 +436,40 @@ pub(crate) fn bundle_ownership_graph(
 /// handler rows, the effect rows — once each, and derives over them
 /// ([`model_builder::derive_application_model_over`]). Every verb reads
 /// its snapshot's model instead (`Snapshot::demand_model`).
+///
+/// The arrangement is the placement table's rows, and the table names
+/// minted sites, so a bundle nothing minted (an in-test `Bundle::new`)
+/// is minted first, over clones of its programs, as every verb's load
+/// mints its own; the model is derived over the clones.
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
+    with_identities(bundle, model_of_minted)
+}
+
+/// [`derive_application_model`] over a bundle whose identities are minted.
+fn model_of_minted(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bundle_bus_graph(bundle, &top, &bindings);
-    let ownership = bundle_ownership_graph(bundle, &top);
-    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership)
+    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
+    let ownership = bundle_ownership_graph(bundle, &top, &placement);
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership, &placement)
 }
 
-/// The bus graph of a bundle no snapshot holds, over its scope: what
-/// the test entries' check and model read ([`check_bundle_opts_scoped`],
+/// The bus graph of a bundle no snapshot holds, over its scope and its
+/// placement table ([`placement::bundle_placement`]): what the test
+/// entries' check and model read ([`check_bundle_opts_scoped`],
 /// [`check::check_bundle`], [`derive_application_model`]). Every verb
 /// reads its snapshot's (`Snapshot::demand_bus_graph`).
 pub(crate) fn bundle_bus_graph(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     bindings: &binding_rows::BindingRows,
+    placement: &placement::PlacementTable,
 ) -> bus_graph::BusGraph {
-    bus_graph::build_bus_graph(bundle, top, bindings)
+    bus_graph::build_bus_graph(bundle, top, bindings, placement)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds
@@ -459,21 +477,25 @@ pub(crate) fn bundle_bus_graph(
 /// what the snapshot's `intra_locus` family holds for a verb. The
 /// bundle is one [`with_identities`] numbered, so the rewrite's
 /// numbering of the merge keeps every send's id and the relation names
-/// the sends the bundle's bus graph holds.
-pub(crate) fn bundle_intra_locus(bundle: &Bundle<'_>) -> Vec<hale_syntax::desugar::IntraLocusRewrite> {
+/// the sends the bundle's bus graph holds. `placement` is the bundle's
+/// table, whose off-owner fields the rewrite keeps on the bus.
+pub(crate) fn bundle_intra_locus(
+    bundle: &Bundle<'_>,
+    placement: &placement::PlacementTable,
+) -> Vec<hale_syntax::desugar::IntraLocusRewrite> {
     let mut programs = bundle.programs.values();
     let Some(first) = programs.next() else { return Vec::new() };
     let mut merged = (*first).clone();
     for p in programs {
         merged.items.extend(p.items.iter().cloned());
     }
-    resolved::rewrite_intra_locus(&merged).intra_locus
+    resolved::rewrite_intra_locus(&merged, placement).intra_locus
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary, the form rows, the bus graph, the binding rows
-/// and the ownership graph its caller already built: the effect rows
-/// the model reads beside them are built here.
+/// allocation summary, the form rows, the bus graph, the binding rows,
+/// the ownership graph and the placement table its caller already built:
+/// the effect rows the model reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -483,6 +505,7 @@ fn model_over_scope(
     bus_graph: &bus_graph::BusGraph,
     bindings: &binding_rows::BindingRows,
     ownership: &ownership_graph::OwnershipGraph,
+    placement: &placement::PlacementTable,
 ) -> hale_model::ApplicationModel {
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
@@ -495,6 +518,7 @@ fn model_over_scope(
             effects: &effects,
             forms,
             bindings,
+            placement,
         },
     )
 }
@@ -1783,8 +1807,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.iter().any(|d| d.message.contains("error not addressed")),
-            "expected error-not-addressed diag, got: {:?}",
+            diags.iter().any(|d| d.message.contains("`parse` can fail (E) and this call says nothing about it")),
+            "expected the bare-fallible diag, got: {:?}",
             diags
         );
     }
@@ -1800,8 +1824,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.iter().any(|d| d.message.contains("error not addressed")),
-            "expected error-not-addressed diag, got: {:?}",
+            diags.iter().any(|d| d.message.contains("`doit` can fail (E) and this call says nothing about it")),
+            "expected the bare-fallible diag, got: {:?}",
             diags
         );
     }
@@ -2508,9 +2532,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.iter().any(|d| d.message.contains("error not addressed")
-                || d.message.contains("fallible")),
-            "expected error-not-addressed diag, got: {:?}",
+            diags.iter().any(|d| d.message.contains("`r.get` can fail (KeyError) and this call says nothing about it")),
+            "expected the bare-fallible diag, got: {:?}",
             diags
         );
     }
@@ -2700,8 +2723,8 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("error not addressed")),
-            "expected error-not-addressed on bare get(), got: {:?}",
+                .any(|d| d.message.contains("`l.get` can fail (IndexError) and this call says nothing about it")),
+            "expected the bare-fallible diag on bare get(), got: {:?}",
             diags
         );
     }

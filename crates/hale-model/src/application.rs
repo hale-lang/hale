@@ -179,6 +179,10 @@ pub struct DispatchGate {
     pub static_eligible: bool,
     /// Direct-call eligible (same-thread + quiet + closed world).
     pub direct_eligible: bool,
+    /// The direct-call gate's third leg: the subject's payload is flat
+    /// (pointer-free POD), so a direct call can hand the publisher's
+    /// live storage to each handler.
+    pub payload_flat: bool,
     /// The gate's reason when not static-eligible.
     pub ineligible_reason: Option<String>,
     /// Publisher locus displays (site grain, deduped).

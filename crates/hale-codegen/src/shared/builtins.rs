@@ -2593,6 +2593,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             run_cancel_queued_ty,
             None,
         );
+        self.module.add_function(
+            "lotus_reclaim_defer",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_reclaim_request",
+            void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        for name in ["lotus_reclaim_flush_owned", "lotus_run_cancel_only", "lotus_reclaim_scope_leave", "lotus_reclaim_release_leave"] {
+            self.module.add_function(name, void_t.fn_type(&[ptr_t.into()], false), None);
+        }
+
+        self.module.add_function("lotus_reclaim_pending", i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
+        self.module.add_function("lotus_reclaim_try_claim", i64_t.fn_type(&[ptr_t.into()], false), None);
+        self.module.add_function("lotus_reclaim_scope_enter", ptr_t.fn_type(&[ptr_t.into()], false), None);
+        self.module.add_function("lotus_reclaim_release_enter", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
 
         // m70: lazy global payload arena for cross-process String
         // byte storage. The synthesized __deserialize_T body calls

@@ -377,13 +377,13 @@ fn mangle_token_to_ty(
     }
 }
 
-/// M3 stage 3: Ty-level mirror of codegen's m62
-/// `unify_generic_param_bindings`. Binds generic names appearing in
-/// `param_te` against the actual arg type. Top-level generic names
-/// bind directly; Array/Bounded recurse on the element. Generic
-/// names nested under generic-ARG'd Named types (Box<T> in param
-/// position) stay unbound here — permissive, codegen's own unifier
-/// still runs. Returns Err((name, existing, new)) on a conflict.
+/// M3 stage 3: the one generic unification. Binds generic names
+/// appearing in `param_te` against the actual arg type; the bindings
+/// are the call's typed-body row, which lowering reads (F.40 phase 3,
+/// E4). Top-level generic names bind directly; Array/Bounded recurse
+/// on the element. Generic names nested under generic-ARG'd Named
+/// types (Box<T> in param position) stay unbound here — permissive.
+/// Returns Err((name, existing, new)) on a conflict.
 fn unify_generic_ty(
     param_te: &TypeExpr,
     arg: &Ty,
@@ -551,7 +551,6 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
-    let ownership = crate::bundle_ownership_graph(bundle, top);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -562,10 +561,11 @@ fn check_numbered_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let ownership = crate::bundle_ownership_graph(bundle, top, &placement);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
-    let bus = crate::bundle_bus_graph(bundle, top, &bindings);
-    let intra_locus = crate::bundle_intra_locus(bundle);
+    let bus = crate::bundle_bus_graph(bundle, top, &bindings, &placement);
+    let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let inputs = CheckInputs {
@@ -616,7 +616,9 @@ pub fn check_bundle_scoped(
 /// report beside the diagnostics: the check runs the engine once, for
 /// its `@effects`, `@phase_effects` and placement diagnostics, and the
 /// certificate evidence a law is judged against reads the same run
-/// instead of repeating it.
+/// instead of repeating it. The entry of a bundle no snapshot holds, so
+/// the `bare_fallible` law runs here over the table packaged from the
+/// typing's record, as the snapshot's check runs it over its own.
 pub fn check_bundle_reporting(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -624,8 +626,10 @@ pub fn check_bundle_reporting(
     strict_callees: bool,
     strict_idents: bool,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
-    let (diags, certificates, _) =
+    let (mut diags, certificates, record) =
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
+    let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
+    diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     (diags, certificates)
 }
 
@@ -731,44 +735,74 @@ pub fn check_bundle_by_declaration(
     // the model resolve it. Handed in (phase 2.3): the model reads the
     // same rows.
     let handlers = inputs.handlers;
-    for (key, program) in &bundle.programs {
-        let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
+    let mut fn_decls: BTreeMap<String, &FnDecl> = BTreeMap::new();
+    let mut locus_decls: BTreeMap<String, &LocusDecl> = BTreeMap::new();
+    let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
+    let mut generic_types: BTreeMap<String, &TypeDecl> = BTreeMap::new();
+    let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
+    // The effective target's column, for the FFI type cells. A target
+    // with no column (Windows) is refused before any check runs; the
+    // host's answers stand in, and every target's FFI cells agree.
+    let target_class = inputs
+        .target
+        .class
+        .or_else(|| crate::capability::TargetClass::of(&crate::target::TargetSpec::host()))
+        .unwrap_or(crate::capability::TargetClass::PosixAsync);
+    for program in bundle.programs.values() {
         collect_generic_fns(&program.items, &mut generic_fns);
-        let mut generic_types: BTreeMap<String, &TypeDecl> =
-            BTreeMap::new();
         collect_generic_types(&program.items, &mut generic_types);
-        let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
         collect_generic_loci(&program.items, &mut generic_loci);
-        let mut cx = Checker {
-            top,
-            known,
-            diags: &mut diags,
-            locals: ScopeStack::new(),
-            current_locus: None,
-            in_lifecycle: false,
-            in_closure: false,
-            in_on_failure: false,
-            fallible_ctx: None,
-            return_ctx: None,
-            strict_callees,
-            strict_idents,
-            or_value_discarded: false,
-            generic_params: Vec::new(),
-            generic_fns,
-            generic_types,
-            generic_loci,
-            handlers,
-            bound_topics: &bound_topics,
-            import_renames: &bundle.import_renames,
-            unresolved_import_aliases: &unresolved_import_aliases,
-            typed: &mut typed,
-            body: NodeId::NONE,
-            expr_types: None,
-            locus_decl: None,
-            templates: &templates,
-            generic_bindings: BTreeMap::new(),
-            specializing: None,
-        };
+    }
+    for program in bundle.programs.values().copied().chain(crate::stdlib_bodies::program()) {
+        for decl in hale_syntax::ast::flat_decls(&program.items) {
+            match decl {
+                TopDecl::Fn(f) => {
+                    fn_decls.entry(f.name.name.clone()).or_insert(f);
+                }
+                TopDecl::Locus(l) => {
+                    locus_decls.entry(l.name.name.clone()).or_insert(l);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut cx = Checker {
+        top,
+        target_class,
+        known,
+        diags: &mut diags,
+        locals: ScopeStack::new(),
+        current_locus: None,
+        in_lifecycle: false,
+        in_closure: false,
+        in_on_failure: false,
+        fallible_ctx: None,
+        return_ctx: None,
+        strict_callees,
+        strict_idents,
+        or_value_discarded: false,
+        generic_params: Vec::new(),
+        generic_fns,
+        fn_decls,
+        locus_decls,
+        default_invocations: Vec::new(),
+        generic_types,
+        generic_loci,
+        handlers,
+        bound_topics: &bound_topics,
+        import_renames: &bundle.import_renames,
+        unresolved_import_aliases: &unresolved_import_aliases,
+        typed: &mut typed,
+        body: NodeId::NONE,
+        expr_types: None,
+        locus_decl: None,
+        templates: &templates,
+        generic_bindings: BTreeMap::new(),
+        specializing: None,
+        next_handling: crate::typed_bodies::Handling::Bare,
+        handling: crate::typed_bodies::Handling::Bare,
+    };
+    for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
             match &reused[key.as_str()][i] {
@@ -783,9 +817,9 @@ pub fn check_bundle_by_declaration(
                 }
             }
         }
-        cx.specialize_generic_fns();
         by_decl.insert(key.clone(), per);
     }
+    cx.specialize_generic_bodies();
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -801,7 +835,7 @@ pub fn check_bundle_by_declaration(
     check_phase3_fallback_subscribers(bundle, &top.topics, &mut diags);
     // GH #255 phase 2: bounded-topic pairing + subscriber-bound
     // placement rules.
-    check_bounded_bus(bundle, &mut diags);
+    check_bounded_bus(bundle, inputs.placement, &mut diags);
     // F.31 Phase 5: single-threaded-method invariant. Walks
     // method bodies looking for cross-pool `self.X.foo()` calls
     // where X's locus type is placed on a different pool than
@@ -1009,6 +1043,11 @@ struct GenericTemplates<'a> {
     by_key: BTreeMap<u32, GenericTemplate<'a>>,
     types: BTreeMap<&'a str, u32>,
     loci: BTreeMap<&'a str, u32>,
+}
+
+enum GenericBody<'a> {
+    Fn(&'a FnDecl),
+    Locus(&'a LocusDecl),
 }
 
 impl<'a> GenericTemplates<'a> {
@@ -4760,11 +4799,19 @@ fn check_binding_constraints(
 ///   MAIN-queue subscriber: pool queues and pinned mailboxes are
 ///   already bounded MPSC rings with producer-blocking
 ///   backpressure (GH #125), so shed bounds there would
-///   misdescribe the actual contract.
-fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+///   misdescribe the actual contract. Which subscribers those are is
+///   the placement table's answer per instance (F.40 phase 3, P1,
+///   row B-2): a locus nested under a field placed off main runs off
+///   main as surely as the field does, and so does an adapter. A
+///   locus some instance of which runs where the table cannot say is
+///   not refused: the rule compares known domains only.
+fn check_bounded_bus(
+    bundle: &Bundle<'_>,
+    placement: &crate::placement::PlacementTable,
+    diags: &mut Vec<Diag>,
+) {
     // GH #825: a `topic` and a subscriber inside a `module { … }` are
-    // ordinary bundle members — `collect_subscriber_placements`
-    // already reads them, so only these two walks were short.
+    // ordinary bundle members, so both walks descend into modules.
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
@@ -4788,7 +4835,8 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             }
         });
     }
-    let placements = crate::bus_graph::collect_subscriber_placements(bundle);
+    // The table is read only when a subscriber is bounded.
+    let mut placements: Option<BTreeMap<String, crate::bus_graph::Placement>> = None;
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -4801,11 +4849,17 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     else {
                         continue;
                     };
+                    let placements = placements.get_or_insert_with(|| {
+                        crate::bus_graph::type_placements(placement)
+                    });
                     let placed = placements
                         .get(&l.name.name)
                         .cloned()
                         .unwrap_or(crate::bus_graph::Placement::SameThread);
-                    if placed != crate::bus_graph::Placement::SameThread {
+                    if matches!(
+                        placed,
+                        crate::bus_graph::Placement::CrossPool(_) | crate::bus_graph::Placement::Pinned
+                    ) {
                         diags.push(Diag::ty(
                             b.span,
                             format!(
@@ -5054,6 +5108,24 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
+/// Rule 6 applies to every locus with its own pinned thread, whether
+/// selected by a placement entry or by an adapter binding.
+fn pinned_lifecycle_conflict(info: &LocusInfo) -> Option<&'static str> {
+    if info.accept_param.is_some() {
+        Some("declares `accept()`: a pinned locus owns its own \
+              thread and cannot accept children")
+    } else if info.closures.iter().any(|c| {
+        matches!(c.epoch, EpochSpec::Birth | EpochSpec::Dissolve)
+    }) {
+        Some("declares a closure whose epoch is `birth` or \
+              `dissolve` (dissolve is the default): the \
+              lifecycle cascade cannot route it across a pinned \
+              locus's thread")
+    } else {
+        None
+    }
+}
+
 fn check_main_and_bindings<'e>(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -5162,7 +5234,18 @@ fn check_main_and_bindings<'e>(
             &entry.transport
         {
             match top.lookup(&locus.name) {
-                Some(TopSymbol::Locus(_)) => {
+                Some(TopSymbol::Locus(info)) => {
+                    if let Some(why) = pinned_lifecycle_conflict(info) {
+                        diags.push(Diag::ty(
+                            locus.span,
+                            format!(
+                                "adapter binding for topic `{}`: `{}` runs on its own \
+                                 pinned thread but {}; drop the feature from the \
+                                 adapter locus (rule 6)",
+                                entry.topic.name, locus.name, why
+                            ),
+                        ));
+                    }
                     // Wave B: the bus's adapter contract, by the one
                     // conformance function (its error channel unjudged).
                     const ADAPTER: &str = "__StdBusAdapter";
@@ -6966,94 +7049,21 @@ fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-/// Stage-1 FFI (2026-05-22): predicate returning the rejection
-/// reason if `ty` is not portable across the C-ABI boundary.
-/// Returns `None` when the type is permitted in `@ffi` parameter
-/// and return positions. See `spec/ffi.md` for the contract.
-///
-/// Stage 1 allows: scalar primitives (Int / Float / Bool /
-/// Duration / Time), reference primitives with stable C
-/// representation (String → `const char *`, Bytes → Hale
-/// `[int64 len][payload]` ptr, BytesView / StringView → 16-byte
-/// struct by value), and named user-type structs (layout-
-/// compatible C struct by value — the library author is
-/// responsible for keeping the Hale side and C side in sync;
-/// future spec iteration may add a layout-assertion mechanism).
-///
-/// Stage 1 rejects: `Decimal` (i128 ABI is platform-variable),
-/// `Uint` (Hale-internal type, no portable C mapping at v0),
-/// projections / arrays / tuples / fallibles / functions / unit-
-/// in-param-position. Unit (`Ty::Unit`) is allowed only as a
-/// return type — the parser models `fn ...;` (no `-> T`) as
-/// `ret: None`, which downstream represents as Unit; the caller
-/// of this predicate already handles that path.
-fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
-    match ty {
-        Ty::Bounded(_, _) => Some(
-            "bounded[T; N] has no portable C mapping — pass the \
-             element pointer + count separately",
-        ),
-        Ty::Prim(p) => match p {
-            PrimType::Int
-            | PrimType::Float
-            | PrimType::Bool
-            | PrimType::String
-            | PrimType::Bytes
-            | PrimType::BytesView
-            | PrimType::StringView
-            | PrimType::BytesMut
-            | PrimType::Time
-            | PrimType::Duration => None,
-            PrimType::Decimal => Some(
-                "Decimal (i128) has platform-variable ABI; marshal as \
-                 Int/Float at the Hale side instead",
-            ),
-            PrimType::Uint => Some(
-                "Uint is Hale-internal; declare as Int in the @ffi \
-                 signature",
-            ),
+/// A callee as the program spells it, for a fallible call's row: `f`,
+/// `alias::f`, `self.read`, `self.store.get`, `T::from_json` (which
+/// the desugar sequence rewrote to `__json_parse_T`).
+fn callee_display(callee: &Expr) -> String {
+    match callee {
+        Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
+            Some(t) => format!("{t}::from_json"),
+            None => id.name.clone(),
         },
-        // Unit allowed in return position; check_fn handles `ret:
-        // None`. A `Ty::Unit` reaching this predicate from a param
-        // came from an empty `()` type expr, which is invalid.
-        Ty::Unit => Some(
-            "() (unit) is not a meaningful FFI parameter type",
-        ),
-        // Named user-type structs are permitted at Stage 1. The
-        // library author is responsible for keeping the Hale
-        // struct's field order + types layout-compatible with the
-        // C struct on the other side. Future spec iteration may
-        // add a `@ffi_layout("c")` attribute for compile-time
-        // layout assertions.
-        Ty::Named(_) => None,
-        Ty::Projection(_, _) => Some(
-            "projection-typed values (Rich / Chunked / Recognition) \
-             carry per-locus metadata and don't cross the C-ABI \
-             boundary",
-        ),
-        Ty::Array(_, _) => Some(
-            "fixed-size arrays don't cross the C-ABI boundary at \
-             Stage 1; pass Bytes / a wrapper struct instead",
-        ),
-        Ty::Tuple(_) => Some(
-            "tuples have no portable C struct layout; declare a named \
-             type instead",
-        ),
-        Ty::Function { .. } => Some(
-            "function-pointer types are not yet FFI-portable; declare \
-             the wrapper at the C side and pass a struct/handle",
-        ),
-        Ty::Fallible { .. } => Some(
-            "fallible(E) is an Hale internal channel; C functions \
-             must return an error sentinel and the Hale wrapper \
-             above translates",
-        ),
-        // Unknown comes from unresolved type names. Be permissive
-        // — the named-type resolution may not have completed yet,
-        // or the type may live behind an import this check can't
-        // see. Codegen will catch genuinely-broken signatures at
-        // LLVM-declaration emit time.
-        Ty::Unknown => None,
+        Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+        Expr::KwSelf(_) => "self".to_string(),
+        Expr::Field { receiver, name, .. } => format!("{}.{}", callee_display(receiver), name.name),
+        Expr::Call { callee, .. } => format!("{}(..)", callee_display(callee)),
+        Expr::Index { receiver, .. } => format!("{}[..]", callee_display(receiver)),
+        _ => "..".to_string(),
     }
 }
 
@@ -7061,6 +7071,9 @@ fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
 struct Checker<'a> {
     top: &'a TopScope,
     known: &'a KnownNames,
+    /// The effective target's column of the capability matrix: the FFI
+    /// type cells an `@ffi` or `@export` signature is held to.
+    target_class: crate::capability::TargetClass,
     diags: &'a mut Vec<Diag>,
     locals: ScopeStack,
     current_locus: Option<&'a LocusInfo>,
@@ -7100,6 +7113,10 @@ struct Checker<'a> {
     /// args must match the substituted params — and the call types
     /// as the SUBSTITUTED return instead of Unknown.
     generic_fns: BTreeMap<String, &'a FnDecl>,
+    /// Declarations whose omitted defaults are evaluated in the caller.
+    fn_decls: BTreeMap<String, &'a FnDecl>,
+    locus_decls: BTreeMap<String, &'a LocusDecl>,
+    default_invocations: Vec<u32>,
     /// GH #877: the generic parameters of the declaration being
     /// checked — a fn's `<T>`, a generic `type`'s. They name no
     /// top-level declaration and resolve to `Ty::Unknown` by design,
@@ -7164,13 +7181,22 @@ struct Checker<'a> {
     /// The bundle's generic type and locus templates by identity: what
     /// a monomorph row's template site names.
     templates: &'a GenericTemplates<'a>,
-    /// While a generic fn's body is walked for one of its monomorphs:
+    /// While a generic fn or locus is walked for one of its monomorphs:
     /// the template's parameters bound to the monomorph's arguments
     /// (every annotation the walk resolves substitutes them), and the
     /// arguments the walk's call rows are recorded under. Empty / `None`
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
+    /// What addresses the expression the next `check_expr` walks: an
+    /// `or` sets it for its operand and its handler, and the walk takes
+    /// it, so nothing beneath that expression inherits it.
+    next_handling: crate::typed_bodies::Handling,
+    /// What addresses the expression being walked: a fallible call's
+    /// row records it, and a fallible value anything but an `or`
+    /// addresses types as its success type (the `bare_fallible` law
+    /// reports the call).
+    handling: crate::typed_bodies::Handling,
 }
 
 #[derive(Default)]
@@ -8297,6 +8323,9 @@ impl<'a> Checker<'a> {
     }
 
     fn check_locus(&mut self, decl: &'a LocusDecl) {
+        if !decl.generics.is_empty() {
+            self.typed.body(decl.id).enclosing_locus = Some(decl.id);
+        }
         // GH #734 — reserved member names. Runs before the symbol
         // lookup below so it fires for every parsed locus.
         self.check_reserved_member_names(decl);
@@ -8839,24 +8868,7 @@ impl<'a> Checker<'a> {
                     // program `hale build` refused.
                     if is_locus && matches!(entry.spec, PlacementSpec::Pinned { .. }) {
                         let conflict = match self.top.lookup(name) {
-                            Some(TopSymbol::Locus(li)) if li.accept_param.is_some() => {
-                                Some("declares `accept()`: a pinned locus owns its own \
-                                      thread and cannot accept children")
-                            }
-                            Some(TopSymbol::Locus(li))
-                                if li.closures.iter().any(|c| {
-                                    matches!(
-                                        c.epoch,
-                                        hale_syntax::ast::EpochSpec::Birth
-                                            | hale_syntax::ast::EpochSpec::Dissolve
-                                    )
-                                }) =>
-                            {
-                                Some("declares a closure whose epoch is `birth` or \
-                                      `dissolve` (dissolve is the default): the \
-                                      lifecycle cascade cannot route it across a pinned \
-                                      locus's thread")
-                            }
+                            Some(TopSymbol::Locus(li)) => pinned_lifecycle_conflict(li),
                             _ => None,
                         };
                         if let Some(why) = conflict {
@@ -10325,6 +10337,9 @@ impl<'a> Checker<'a> {
             LocusMember::Fn(f) => self.body = f.id,
             _ => {}
         }
+        if let Some(l) = self.locus_decl.filter(|l| !l.generics.is_empty()) {
+            self.typed.body(self.body).enclosing_locus = Some(l.id);
+        }
         self.check_locus_member_at(member);
         self.body = prev_body;
     }
@@ -11097,9 +11112,13 @@ impl<'a> Checker<'a> {
         // fallible (no C error channel) or take defaults (fixed
         // C arity).
         if decl.export && locus.is_none() {
+            // An `@export fn` is a C-ABI symbol: the FFI type cells for
+            // the `c` ABI, on the effective target.
+            let class = self.target_class;
+            let cell = move |ty: &Ty| crate::capability::ffi_type_refusal(class, ty, crate::capability::Abi::C);
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = ffi_type_unportable(&ty) {
+                if let Some(reason) = cell(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -11126,7 +11145,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = ffi_type_unportable(&ret_ty) {
+                if let Some(reason) = cell(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -11158,9 +11177,14 @@ impl<'a> Checker<'a> {
                      not on locus methods",
                 ));
             }
+            // The FFI type cells for the declaration's ABI (an unknown
+            // ABI name is refused elsewhere; it is judged as `c`).
+            let abi = crate::capability::Abi::of(&ffi.abi).unwrap_or(crate::capability::Abi::C);
+            let class = self.target_class;
+            let cell = move |ty: &Ty| crate::capability::ffi_type_refusal(class, ty, abi);
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = ffi_type_unportable(&ty) {
+                if let Some(reason) = cell(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -11175,7 +11199,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = ffi_type_unportable(&ret_ty) {
+                if let Some(reason) = cell(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -11373,7 +11397,7 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
-                let got = self.check_expr_addressed(value);
+                let got = self.check_expr(value);
                 let bound = match ty {
                     Some(te) => {
                         // GH #877: the one annotation that lives in a
@@ -11424,7 +11448,7 @@ impl<'a> Checker<'a> {
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
-                let got = self.check_expr_addressed(value);
+                let got = self.check_expr(value);
                 // GH #877: `let (a, b): (Int, Strng) = ...` — the
                 // annotation is a tuple type expression, walked the
                 // same way.
@@ -11469,7 +11493,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Assign { target, value, span, .. } => {
-                let got = self.check_expr_addressed(value);
+                let got = self.check_expr(value);
                 let want = self.lvalue_ty(target);
                 // bounded[T; N] fields cannot be whole-assigned
                 // (even from another bounded of the same shape —
@@ -11568,7 +11592,7 @@ impl<'a> Checker<'a> {
             }
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
-                    let got = self.check_expr_addressed(e);
+                    let got = self.check_expr(e);
                     // v1.x-FORM-1: returning from a fallible fn
                     // means returning the success value; payload
                     // type is checked at `fail` sites instead.
@@ -11665,7 +11689,7 @@ impl<'a> Checker<'a> {
                 // to produce a clear diagnostic if a Fail node
                 // is constructed by other means (interpreter
                 // synth, future macro, etc.).
-                let payload_ty = self.check_expr_addressed(value);
+                let payload_ty = self.check_expr(value);
                 match &self.fallible_ctx {
                     None => self.diags.push(Diag::ty(
                         *span,
@@ -11783,7 +11807,7 @@ impl<'a> Checker<'a> {
                 if matches!(e, Expr::Or { .. }) {
                     self.or_value_discarded = true;
                 }
-                let got = self.check_expr_addressed(e);
+                let got = self.check_expr(e);
                 self.or_value_discarded = false;
                 // GH #911 B5: `Cache { cap: 2 };` in statement
                 // position — the other site with no declared type to
@@ -11810,7 +11834,7 @@ impl<'a> Checker<'a> {
                                 topic.name, topic.name),
                     ));
                 }
-                let max_ty = self.check_expr_addressed(max);
+                let max_ty = self.check_expr(max);
                 if !matches!(max_ty, Ty::Prim(PrimType::Int) | Ty::Unknown) {
                     self.diags.push(Diag::ty(
                         max.span(),
@@ -11830,7 +11854,7 @@ impl<'a> Checker<'a> {
                 }
                 match &body.tail {
                     Some(t) => {
-                        let tt = self.check_expr_addressed(t);
+                        let tt = self.check_expr(t);
                         if !matches!(tt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
                             self.diags.push(Diag::ty(
                                 t.span(),
@@ -12161,7 +12185,7 @@ impl<'a> Checker<'a> {
                             },
                         );
                         let new_payload_ty =
-                            self.check_expr_addressed(payload_expr);
+                            self.check_expr(payload_expr);
                         self.locals.pop();
                         match &self.fallible_ctx {
                             None => self.diags.push(Diag::ty(
@@ -12367,7 +12391,16 @@ impl<'a> Checker<'a> {
 
     fn self_ty(&self) -> Ty {
         match self.current_locus {
-            Some(l) => Ty::Named(l.name.clone()),
+            Some(l) => {
+                if let (Some(decl), Some(args)) = (self.locus_decl, &self.specializing) {
+                    if decl.name.name == l.name {
+                        if let Some(m) = self.typed.monomorphs.of(decl.id, args) {
+                            return Ty::Named(m.name.clone());
+                        }
+                    }
+                }
+                Ty::Named(l.name.clone())
+            }
             None => Ty::Unknown,
         }
     }
@@ -12701,46 +12734,80 @@ impl<'a> Checker<'a> {
     }
 
     /// A type expression the walk resolves: through the scope's names,
-    /// and, while a generic fn's body is walked for one of its
+    /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
         if self.generic_bindings.is_empty() {
             resolve_type_expr(te, self.known)
         } else {
+            // Substituted annotations can discover Holder<T> in a
+            // specialized body. This leaves ordinary literal-field
+            // checking's established nested-template tolerance intact.
+            if let TypeExpr::Named { path, generic_args, .. } = te {
+                if !generic_args.is_empty() && path.segments.len() == 1 {
+                    let tokens: Option<Vec<String>> = generic_args.iter()
+                        .map(|arg| crate::typed_bodies::mangle_token(&self.resolve_te(arg)))
+                        .collect();
+                    return tokens.map_or(Ty::Unknown, |tokens| Ty::Named(format!("{}_{}", path.segments[0].name, tokens.join("_"))));
+                }
+            }
             substitute_generic_ty(te, &self.generic_bindings, self.known)
         }
     }
 
-    /// The generic fns' monomorphs, typed (F.40 phase 3, E4): a generic
-    /// fn's body types a use of its parameter `T` as `Unknown`, so a
-    /// generic call inside it pins nothing. Each fn monomorph the table
+    /// The generic bodies' monomorphs, typed (F.40 phase 3, E4): a
+    /// template types a use of its parameter `T` as `Unknown`, so a
+    /// generic call inside it pins nothing. Each fn or locus monomorph the table
     /// names is walked again with the template's parameters bound to its
     /// arguments, as lowering lowers that specialization, and the walk's
     /// generic call rows are recorded under the monomorph's arguments;
     /// a specialization a walk instantiates is walked in turn. The walk
     /// reports nothing: its diagnostics are the template's, reported by
     /// the ordinary walk, and are dropped.
-    fn specialize_generic_fns(&mut self) {
+    fn specialize_generic_bodies(&mut self) {
         const LIMIT: usize = 1024;
         let mut next = 0;
         let mut walked = 0;
         while next < self.typed.monomorphs.rows().len() && walked < LIMIT {
             let m = self.typed.monomorphs.rows()[next].clone();
             next += 1;
-            if m.kind != crate::typed_bodies::TemplateKind::Fn {
+            let (generics, template) = match m.kind {
+                crate::typed_bodies::TemplateKind::Fn => {
+                    let Some(f) = self.generic_fns.values().copied().find(|f| f.id.0 == m.template.0) else {
+                        continue;
+                    };
+                    (&f.generics, GenericBody::Fn(f))
+                }
+                crate::typed_bodies::TemplateKind::Locus => {
+                    let Some(GenericTemplate::Locus(l)) = self.templates.get(m.template) else {
+                        continue;
+                    };
+                    (&l.generics, GenericBody::Locus(l))
+                }
+                crate::typed_bodies::TemplateKind::Type => continue,
+            };
+            if m.args.iter().any(|t| matches!(t, Ty::Unknown)) {
                 continue;
             }
-            let Some(template) = self.generic_fns.values().copied().find(|f| f.id.0 == m.template.0) else {
-                continue;
-            };
             walked += 1;
             let bindings: BTreeMap<String, Ty> =
-                template.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+                generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
             let mark = self.diags.len();
             let prev_bindings = std::mem::replace(&mut self.generic_bindings, bindings);
             let prev_specializing = self.specializing.replace(m.args.clone());
             let prev_locus = self.current_locus.take();
-            self.check_fn(template, None);
+            let prev_decl = self.locus_decl.take();
+            let prev_body = self.body;
+            match template {
+                GenericBody::Fn(f) => self.check_fn(f, None),
+                GenericBody::Locus(l) => {
+                    self.body = l.id;
+                    self.locus_decl = Some(l);
+                    self.check_locus(l);
+                }
+            }
+            self.body = prev_body;
+            self.locus_decl = prev_decl;
             self.current_locus = prev_locus;
             self.specializing = prev_specializing;
             self.generic_bindings = prev_bindings;
@@ -12753,6 +12820,11 @@ impl<'a> Checker<'a> {
     /// expression it accumulates (`seen`, by node). An accumulated
     /// expression the walk did not type, or typed `Unknown`, is a hole.
     fn record_accumulators(&mut self, assertion: &ClosureAssertion, seen: &[(*const Expr, Ty)]) {
+        if self.specializing.is_some() {
+            // This walk fills generic-call rows only. Keep the
+            // template's accumulator rows and their own specializations.
+            return;
+        }
         use crate::typed_bodies::{AccumulatorRow, Hole, Typed};
         let rows: Vec<AccumulatorRow> = crate::typed_bodies::accumulator_sites(assertion)
             .into_iter()
@@ -12971,7 +13043,19 @@ impl<'a> Checker<'a> {
                                     });
                                 }
                             }
-                            return None;
+                            if let Some(f) = ld.members.iter().find_map(|m| match m {
+                                LocusMember::Fn(f) if f.name.name == name => Some(f),
+                                _ => None,
+                            }) {
+                                return Some(Ty::Function {
+                                    params: f.params.iter().map(|p| substitute_generic_ty(&p.ty, &bindings, self.known)).collect(),
+                                    ret: Box::new(f.ret.as_ref().map_or(Ty::Unit, |te| substitute_generic_ty(te, &bindings, self.known))),
+                                });
+                            }
+                            // Synthetic members (draining, children,
+                            // k_max, form methods) retain their ordinary
+                            // signatures instead of becoming holes.
+                            return self.field_ty(&Ty::Named(ld.name.name.clone()), name);
                         }
                     }
                 }
@@ -13269,6 +13353,9 @@ impl<'a> Checker<'a> {
     /// from a `const` there. `hale check <dir>` and every build path
     /// hold the whole program and hold the rule.
     fn check_type_annotation(&mut self, te: &TypeExpr) {
+        if self.specializing.is_some() {
+            self.record_specialized_type(te);
+        }
         // GH #911 B3 (#907): the generic-argument vocabulary is a
         // property of the type expression, not of how much of the
         // program this bundle holds, so it is decided before the
@@ -13343,6 +13430,38 @@ impl<'a> Checker<'a> {
             // names a contract, not a type expression's bare name —
             // its own resolution rules are #724's, unchanged.
             TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// An annotation reached in a specialization can instantiate a
+    /// locus not spelled concretely in the source (`Holder<T>` in a
+    /// generic fn). Queue its concrete monomorph in the same producer
+    /// as the call rows, so that locus's bodies are walked in turn.
+    fn record_specialized_type(&mut self, te: &TypeExpr) {
+        if let Ty::Named(name) = self.resolve_te(te) {
+            if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
+                if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                    self.typed.monomorphs.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
+                }
+            }
+        }
+        match te {
+            TypeExpr::Named { generic_args, .. } | TypeExpr::Tuple(generic_args, _) => {
+                for arg in generic_args {
+                    self.record_specialized_type(arg);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => self.record_specialized_type(inner),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.record_specialized_type(elem),
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.record_specialized_type(p);
+                }
+                if let Some(ret) = ret {
+                    self.record_specialized_type(ret);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
         }
     }
 
@@ -13778,24 +13897,93 @@ impl<'a> Checker<'a> {
         nearest_qualified_segment(head, &types)
     }
 
-    fn check_expr(&mut self, expr: &Expr) -> Ty {
-        let ty = self.check_expr_at(expr);
-        if let Some(seen) = &mut self.expr_types {
-            seen.push((expr as *const Expr, ty.clone()));
+    /// Defaults are expressions at the invocation, with the caller's
+    /// locals and self. Record their generic calls under the invocation
+    /// path and caller monomorph, retaining each default's source site.
+    fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
+        if self.default_invocations.contains(&invocation.0) {
+            return;
         }
+        let decl = match callee {
+            Expr::Ident(id) => self.fn_decls.get(&id.name).copied(),
+            Expr::Path(path) => {
+                let key = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
+                self.known.import_target(&key.join("::"))
+                    .or_else(|| crate::stdlib_bodies::mangled_locus_name(&key))
+                    .and_then(|name| self.fn_decls.get(name).copied())
+            }
+            Expr::Field { receiver, name, .. } => {
+                let mark = self.diags.len();
+                let ty = self.check_expr(receiver);
+                self.diags.truncate(mark);
+                let locus = match ty {
+                    Ty::Named(ref n) => self.locus_decls.get(n).copied().or_else(|| {
+                        let mono = self.typed.monomorphs.named(n)?;
+                        match self.templates.get(mono.template)? {
+                            GenericTemplate::Locus(l) => Some(l),
+                            _ => None,
+                        }
+                    }),
+                    _ => None,
+                };
+                locus.and_then(|l| l.members.iter().find_map(|m| match m {
+                    LocusMember::Fn(f) if f.name.name == name.name => Some(f),
+                    _ => None,
+                }))
+            }
+            _ => None,
+        };
+        let Some(decl) = decl else { return };
+        let defaults: Vec<&Expr> = decl.params.iter().skip(supplied)
+            .filter_map(|p| p.default.as_ref()).collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let mark = self.diags.len();
+        self.default_invocations.push(invocation.0);
+        for default in defaults {
+            let _ = self.check_expr(default);
+        }
+        self.default_invocations.pop();
+        // Preserve the existing default-diagnostic surface. Located
+        // holes remain facts and are refused by the row consumer.
+        self.diags.truncate(mark);
+    }
+
+    fn check_expr(&mut self, expr: &Expr) -> Ty {
+        use crate::typed_bodies::Handling;
+        let handling = std::mem::replace(&mut self.next_handling, Handling::Bare);
+        let outer = std::mem::replace(&mut self.handling, handling);
+        let ty = self.check_expr_at(expr);
+        self.handling = outer;
         // The fallible column (F.40 phase 3, E4): a call this walk
         // typed `Fallible` (the ordinary walk's; a specialization's walk
-        // records its generic calls only).
-        if let (Expr::Call { id, span, .. }, Ty::Fallible { payload, .. }, None) = (expr, &ty, &self.specializing) {
+        // records its generic calls only), unless the call arm recorded
+        // it already with what it knows of the callee.
+        if let (Expr::Call { id, span, callee, .. }, Ty::Fallible { payload, .. }, None) =
+            (expr, &ty, &self.specializing)
+        {
             self.typed.fallible_call(
                 self.body,
                 *id,
                 crate::typed_bodies::FallibleCall {
                     span: *span,
                     kind: crate::typed_bodies::CalleeKind::Typed,
+                    callee: callee_display(callee),
                     payload: (**payload).clone(),
+                    handled: handling,
                 },
             );
+        }
+        // Only an `or` handles a fallible value. Anywhere else it is
+        // its success type, so the position checks it as the value it
+        // would be, and the `bare_fallible` law reports the call.
+        let ty = match ty {
+            Ty::Fallible { success, .. } if handling == Handling::Bare => *success,
+            ty => ty,
+        };
+        if let Some(seen) = &mut self.expr_types {
+            seen.push((expr as *const Expr, ty.clone()));
         }
         ty
     }
@@ -13888,6 +14076,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, id: call_id, .. } => {
+                self.record_omitted_defaults(*call_id, callee, args.len());
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
                 // every way a program reaches a namespace, not only a
@@ -13950,7 +14139,7 @@ impl<'a> Checker<'a> {
                                 }
                                 for (i, a) in args.iter().enumerate() {
                                     let got =
-                                        self.check_expr_addressed(a);
+                                        self.check_expr(a);
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
@@ -13971,14 +14160,24 @@ impl<'a> Checker<'a> {
                                     }
                                 }
                                 return match &f.fallible {
-                                    Some(payload) => Ty::Fallible {
-                                        success: Box::new(
-                                            f.ret.clone(),
-                                        ),
-                                        payload: Box::new(
-                                            payload.clone(),
-                                        ),
-                                    },
+                                    Some(payload) => {
+                                        // A bundled stdlib fn: lowering
+                                        // resolves the path to it.
+                                        self.record_declared_fallible(
+                                            *call_id,
+                                            expr.span(),
+                                            callee,
+                                            payload,
+                                        );
+                                        Ty::Fallible {
+                                            success: Box::new(
+                                                f.ret.clone(),
+                                            ),
+                                            payload: Box::new(
+                                                payload.clone(),
+                                            ),
+                                        }
+                                    }
                                     None => f.ret.clone(),
                                 };
                             }
@@ -14008,7 +14207,9 @@ impl<'a> Checker<'a> {
                                     crate::typed_bodies::FallibleCall {
                                         span: expr.span(),
                                         kind: crate::typed_bodies::CalleeKind::Stdlib,
+                                        callee: sig.display_path(),
                                         payload,
+                                        handled: self.handling,
                                     },
                                 );
                             }
@@ -14031,7 +14232,7 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                             for (i, a) in args.iter().enumerate() {
-                                let got = self.check_expr_addressed(a);
+                                let got = self.check_expr(a);
                                 if let Some(want) = sig.params.get(i) {
                                     if !want.accepts(&got) {
                                         self.diags.push(Diag::ty(
@@ -14068,7 +14269,7 @@ impl<'a> Checker<'a> {
                             "println" | "print" | "to_string" => {
                                 for a in args {
                                     self.warn_if_meant_an_fstring(a);
-                                    let at = self.check_expr_addressed(a);
+                                    let at = self.check_expr(a);
                                     if !self.ty_is_printable(&at) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
@@ -14099,7 +14300,7 @@ impl<'a> Checker<'a> {
                             }
                             "abs" | "min" | "max" => {
                                 for a in args {
-                                    let at = self.check_expr_addressed(a);
+                                    let at = self.check_expr(a);
                                     let numeric = matches!(
                                         &at,
                                         Ty::Prim(
@@ -14180,7 +14381,7 @@ impl<'a> Checker<'a> {
                             if id.name == "set" {
                                 if let Some(i) = args.get(1) {
                                     let it =
-                                        self.check_expr_addressed(i);
+                                        self.check_expr(i);
                                     if !Ty::Prim(PrimType::Int)
                                         .assignable_from(&it)
                                     {
@@ -14196,7 +14397,7 @@ impl<'a> Checker<'a> {
                                 }
                                 if let Some(x) = args.get(2) {
                                     let xt =
-                                        self.check_expr_addressed(x);
+                                        self.check_expr(x);
                                     let widen_ok = matches!(
                                         (elem.as_ref(), &xt),
                                         (
@@ -14229,7 +14430,7 @@ impl<'a> Checker<'a> {
                             if id.name == "truncate" {
                                 if let Some(n) = args.get(1) {
                                     let nt =
-                                        self.check_expr_addressed(n);
+                                        self.check_expr(n);
                                     if !Ty::Prim(PrimType::Int)
                                         .assignable_from(&nt)
                                     {
@@ -14249,7 +14450,7 @@ impl<'a> Checker<'a> {
                                 "push" => {
                                     if let Some(x) = args.get(1) {
                                         let xt =
-                                            self.check_expr_addressed(x);
+                                            self.check_expr(x);
                                         let widen_ok = matches!(
                                             (elem.as_ref(), &xt),
                                             (
@@ -14282,7 +14483,7 @@ impl<'a> Checker<'a> {
                                 "at" => {
                                     if let Some(i) = args.get(1) {
                                         let it =
-                                            self.check_expr_addressed(i);
+                                            self.check_expr(i);
                                         if !Ty::Prim(PrimType::Int)
                                             .assignable_from(&it)
                                         {
@@ -14346,7 +14547,7 @@ impl<'a> Checker<'a> {
                         }
                         let arg_tys: Vec<Ty> = args
                             .iter()
-                            .map(|a| self.check_expr_addressed(a))
+                            .map(|a| self.check_expr(a))
                             .collect();
                         let generic_names: std::collections::BTreeSet<
                             String,
@@ -14473,12 +14674,19 @@ impl<'a> Checker<'a> {
                                 });
                             }
                         }
-                        match &self.specializing {
-                            Some(args) => {
-                                let args = args.clone();
-                                self.typed.specialized_generic_call(self.body, args, *call_id, row);
+                        if !self.default_invocations.is_empty() {
+                            self.typed.default_generic_call(
+                                self.body, &self.default_invocations,
+                                self.specializing.clone(), *call_id, row,
+                            );
+                        } else {
+                            match &self.specializing {
+                                Some(args) => {
+                                    let args = args.clone();
+                                    self.typed.specialized_generic_call(self.body, args, *call_id, row);
+                                }
+                                None => self.typed.generic_call(self.body, *call_id, row),
                             }
-                            None => self.typed.generic_call(self.body, *call_id, row),
                         }
                         // Args vs substituted params.
                         for ((p, at), a) in template
@@ -14898,10 +15106,28 @@ impl<'a> Checker<'a> {
                     Ty::Function { ret, .. } => *ret,
                     _ => Ty::Unknown,
                 };
+                // A bare builtin types by the signature table lowering
+                // reads (F.40 phase 3, E4), where lowering would lower
+                // it; anywhere else it stays Unknown, as before.
+                let base_ret = match (callee.as_ref(), base_ret) {
+                    (Expr::Ident(id), Ty::Unknown)
+                        if self.locals.lookup(&id.name).is_none()
+                            && self.top.lookup(&id.name).is_none()
+                            && !self.generic_fns.contains_key(id.name.as_str()) =>
+                    {
+                        crate::builtin_sigs::bare_builtin_sig(&id.name)
+                            .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
+                            .unwrap_or(Ty::Unknown)
+                    }
+                    (_, t) => t,
+                };
                 // v1.x-FORM-1: if the callee resolves to a
                 // fallible fn, wrap the result type so the
                 // caller is forced to address the error.
-                if let Some(payload) = self.callee_fallible_payload(callee) {
+                if let Some((payload, declared)) = self.callee_fallible_payload(callee) {
+                    if declared {
+                        self.record_declared_fallible(*call_id, expr.span(), callee, &payload);
+                    }
                     Ty::Fallible {
                         success: Box::new(base_ret),
                         payload: Box::new(payload),
@@ -15186,6 +15412,7 @@ impl<'a> Checker<'a> {
             Expr::Or { inner, disposition, span } => {
                 let value_discarded = self.or_value_discarded;
                 self.or_value_discarded = false;
+                self.next_handling = crate::typed_bodies::Handling::Or;
                 let inner_ty = self.check_expr(inner);
                 // M3 stage 2 (2026-07-02): stdlib fallible
                 // path-calls are dual-mode at codegen (bare = the
@@ -15350,7 +15577,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                             },
                         );
-                        let new_payload_ty = self.check_expr_addressed(payload_expr);
+                        let new_payload_ty = self.check_expr(payload_expr);
                         self.locals.pop();
                         match &self.fallible_ctx {
                             None => self.diags.push(Diag::ty(
@@ -15388,6 +15615,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                             },
                         );
+                        self.next_handling = crate::typed_bodies::Handling::Handler(*span);
                         let rhs_ty = self.check_expr(rhs);
                         self.locals.pop();
                         // 2026-05-18 — locus → interface coercion at
@@ -15495,45 +15723,10 @@ impl<'a> Checker<'a> {
                             }
                             return success;
                         }
-                        // Docs/spec pass find (2026-07-02): a
-                        // STDLIB fallible path-call used directly
-                        // as the handler compiles but silently
-                        // yields the un-addressed sret ("" / 0) on
-                        // the handler's OWN failure instead of
-                        // propagating — the codegen handler
-                        // classifier doesn't cover stdlib paths.
-                        // Reject with the working spelling until
-                        // it does.
-                        if let Expr::Call { callee, .. } = rhs.as_ref() {
-                            if let Expr::Path(qn) = callee.as_ref() {
-                                let segs: Vec<&str> = qn
-                                    .segments
-                                    .iter()
-                                    .map(|s| s.name.as_str())
-                                    .collect();
-                                let is_fallible_stdlib =
-                                    crate::stdlib_surface::signature_for(
-                                        &segs,
-                                    )
-                                    .map(|sig| sig.fallible.is_some())
-                                    .unwrap_or(false);
-                                if is_fallible_stdlib {
-                                    self.diags.push(Diag::ty(
-                                        *span,
-                                        format!(
-                                            "`or {}(...)`: a fallible \
-                                             stdlib call can't be the \
-                                             handler directly yet — \
-                                             write the nested form `or \
-                                             ({}(...) or raise)` so its \
-                                             own failure has a path",
-                                            segs.join("::"),
-                                            segs.join("::")
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
+                        // A handler lowering does not classify as
+                        // fallible (a stdlib path-call, a built-in
+                        // method) is refused by the `bare_fallible`
+                        // law, from the handler's row.
                         // The substitute RHS must produce a
                         // value of the success type (or be a
                         // nested `or` that ultimately produces
@@ -15581,50 +15774,37 @@ impl<'a> Checker<'a> {
         self.check_expr(expr)
     }
 
-    /// v1.x-FORM-1: check an expression that's expected to
-    /// produce a regular (non-fallible) value. If the expression
-    /// is fallible-typed at its outermost level, emit an
-    /// `error not addressed` diagnostic and return the
-    /// (would-be) success type so downstream typechecks can
-    /// continue without cascading errors.
-    fn check_expr_addressed(&mut self, expr: &Expr) -> Ty {
-        let ty = self.check_expr(expr);
-        match ty {
-            Ty::Fallible { success, .. } => {
-                self.diags.push(Diag::ty(
-                    expr.span(),
-                    "error not addressed: this expression's fallible result \
-                     must be handled with an `or` clause (`or raise`, \
-                     `or <fallback>`, `or handler(err)`) or a `match`"
-                        .to_string(),
-                ));
-                *success
-            }
-            other => other,
-        }
-    }
-
     /// v1.x-FORM-1: if `callee` is a name reference resolving to
     /// a known fallible fn (or method on a locus / perspective),
     /// return the fn's payload type. Returns None for non-fn
     /// callees or non-fallible callees — caller uses the result
     /// to decide whether to wrap the call's return in
-    /// `Ty::Fallible`.
-    fn callee_fallible_payload(&mut self, callee: &Expr) -> Option<Ty> {
+    /// `Ty::Fallible`. Beside the payload: whether the callee is
+    /// [`crate::typed_bodies::CalleeKind::Declared`], a fn or locus
+    /// method spelled the way lowering resolves one (its classifier
+    /// for a fallible `or` handler, `expr_is_fallible_call`).
+    fn callee_fallible_payload(&mut self, callee: &Expr) -> Option<(Ty, bool)> {
         match callee {
             Expr::Ident(id) => match self.top.lookup(&id.name)? {
-                TopSymbol::Fn(sig) => sig.fallible.clone(),
+                TopSymbol::Fn(sig) => sig
+                    .fallible
+                    .clone()
+                    .map(|p| (p, !self.generic_fns.contains_key(id.name.as_str()))),
                 _ => None,
             },
             Expr::Path(qn) if qn.segments.len() == 1 => {
-                match self.top.lookup(&qn.segments[0].name)? {
-                    TopSymbol::Fn(sig) => sig.fallible.clone(),
+                let name = &qn.segments[0].name;
+                match self.top.lookup(name)? {
+                    TopSymbol::Fn(sig) => sig
+                        .fallible
+                        .clone()
+                        .map(|p| (p, !self.generic_fns.contains_key(name.as_str()))),
                     _ => None,
                 }
             }
             // GH #1028: an imported seed's fn, `alias::f(..)` — typed
             // like a bare one, fallibility included.
-            Expr::Path(qn) => self.imported_fn(qn).and_then(|(_, sig)| sig.fallible),
+            Expr::Path(qn) => self.imported_fn(qn).and_then(|(_, sig)| sig.fallible).map(|p| (p, true)),
             // v1.x-FORM-1 PR3b: method calls like `l.get(i)`. The
             // callee is a Field expression whose receiver resolves
             // to a locus/perspective; we look up the method by
@@ -15635,29 +15815,60 @@ impl<'a> Checker<'a> {
                     Ty::Named(n) => n,
                     _ => return None,
                 };
+                // Lowering resolves a locus method's receiver on
+                // `self`, a local, or a field of `self`.
+                let resolvable = match receiver.as_ref() {
+                    Expr::KwSelf(_) | Expr::Ident(_) => true,
+                    Expr::Field { receiver: r, .. } => matches!(r.as_ref(), Expr::KwSelf(_)),
+                    _ => false,
+                };
                 match self.top.lookup(&type_name)? {
                     TopSymbol::Locus(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone()),
+                        .and_then(|m| m.fallible.clone())
+                        .map(|p| (p, resolvable)),
                     TopSymbol::Perspective(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone()),
+                        .and_then(|m| m.fallible.clone())
+                        .map(|p| (p, false)),
                     // GH #732: a call through an interface carries the
                     // method's declared error channel.
                     TopSymbol::Interface(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone()),
+                        .and_then(|m| m.fallible.clone())
+                        .map(|p| (p, false)),
                     _ => None,
                 }
             }
             _ => None,
         }
+    }
+
+    /// The fallible column's row for a call whose callee is
+    /// [`crate::typed_bodies::CalleeKind::Declared`], recorded by the
+    /// call arm before the walk's general recording would mark it
+    /// `Typed`.
+    fn record_declared_fallible(&mut self, call: NodeId, span: Span, callee: &Expr, payload: &Ty) {
+        if self.specializing.is_some() {
+            return;
+        }
+        self.typed.fallible_call(
+            self.body,
+            call,
+            crate::typed_bodies::FallibleCall {
+                span,
+                kind: crate::typed_bodies::CalleeKind::Declared,
+                callee: callee_display(callee),
+                payload: payload.clone(),
+                handled: self.handling,
+            },
+        );
     }
 
     /// Whether a value of type `t` can be auto-coerced to String
@@ -15768,7 +15979,7 @@ impl<'a> Checker<'a> {
             ));
             return;
         }
-        let vt = self.check_expr_addressed(&args[0]);
+        let vt = self.check_expr(&args[0]);
         if !self.ty_is_printable(&vt) {
             self.diags.push(Diag::ty(
                 args[0].span(),

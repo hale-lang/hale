@@ -38,7 +38,6 @@ use hale_graph::ids::SiteId;
 use hale_syntax::ast::*;
 use hale_syntax::Span;
 
-use crate::bus_graph::Placement;
 use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
 use crate::placement::{Enclosing, HoleAt, HoleKind, Origin, PlacementTable, SiteRef, SiteUniverse};
 use crate::resolve::TopScope;
@@ -111,15 +110,21 @@ pub enum OwnerKind {
 }
 
 /// Where the owner runs relative to the enclosing (instantiating)
-/// locus. `SameTower` — same OS thread (both same-thread, or
-/// identically placed); `CrossPool` — different thread placement (a
-/// pinned / non-`main` cooperative pool on one side); `Open` — not a
-/// closed world, or no single owner to compare, so no tower relation
-/// can be asserted. Conservative: an unresolved owner is `Open`.
+/// locus, read from the placement table: the domains of every instance
+/// of the enclosing locus against the owner's. `SameTower` — every
+/// enclosing instance runs in the owner's one domain (or neither is
+/// built); `CrossPool` — none does, and the owner has one known domain;
+/// `Mixed` — some do and some do not, or an instance runs where the
+/// table cannot say, so the delivery mechanism differs per enclosing
+/// instance (the placement correspondence's U-1: the resolved owner is
+/// kept, and only the mechanism varies); `Open` — not a closed world,
+/// or no single owner to compare, so no tower relation can be asserted.
+/// Conservative: an unresolved owner is `Open`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdgeClass {
     SameTower,
     CrossPool,
+    Mixed,
     Open,
 }
 
@@ -136,8 +141,14 @@ pub struct OwnedSite {
     pub resolution: OwnerResolution,
     /// Best-effort classification of the owner instance.
     pub owner_kind: OwnerKind,
-    /// Same-thread vs cross-pool vs open, per the owner's placement.
+    /// Same-thread vs cross-pool vs mixed vs open, per the domains of
+    /// the enclosing locus's instances and the owner's.
     pub edge_class: EdgeClass,
+    /// For a `Mixed` edge: every instance of the enclosing locus, with
+    /// the domain it runs in (`App.w on main`, `App.p.w on pinned:App.p`,
+    /// `a literal in Spawner on an unknown domain`), the owner's last;
+    /// what a refusal names. Empty for every other class.
+    pub instances: Vec<String>,
     /// The projection class declared on the *owner* (the acceptor),
     /// when the owner is resolved and annotates one. Informational —
     /// it does not affect resolution.
@@ -518,6 +529,11 @@ impl OwnershipGraph {
         // → NOT admitted (stays transient, deferred).
         let mut crosspool: BTreeMap<(String, String), String> =
             BTreeMap::new();
+        // U-1: a `Mixed` edge keeps its resolved owner; the mechanism is
+        // chosen per enclosing instance where lowering can emit both
+        // arms (a singleton owner: same-tower on its thread, a cross-pool
+        // post off it), and refused, located, where it cannot.
+        let mut mixed: BTreeMap<(String, String), MixedPlan> = BTreeMap::new();
         for site in &self.sites {
             if let OwnerResolution::Ancestor(owner) = &site.resolution {
                 let key =
@@ -532,6 +548,16 @@ impl OwnershipGraph {
                     (EdgeClass::CrossPool, OwnerKind::SingletonConst) => {
                         crosspool.insert(key, owner.clone());
                     }
+                    (EdgeClass::Mixed, kind) => {
+                        mixed.insert(
+                            key,
+                            MixedPlan {
+                                owner: owner.clone(),
+                                singleton: *kind == OwnerKind::SingletonConst,
+                                instances: site.instances.clone(),
+                            },
+                        );
+                    }
                     // CrossPool + non-singleton (no static pool handle),
                     // Open, per-path, orphan: stay transient.
                     _ => {}
@@ -543,18 +569,19 @@ impl OwnershipGraph {
             singleton: plan,
             nonsingleton,
             crosspool,
+            mixed,
             forwarding,
         }
     }
 }
 
 /// The bubble plans lowering reads, projected from the graph by
-/// [`OwnershipGraph::bubble_plans`]. The three plans key on
+/// [`OwnershipGraph::bubble_plans`]. The four plans key on
 /// `(enclosing locus, child type)` and carry the owner locus type `A`;
 /// they are DISJOINT (a site has one edge class and one owner kind).
 /// Every other resolution (SelfOwned direct-parent, non-singleton
 /// cross-pool, per-path, orphan, open) is in none of them and stays
-/// transient. `BubblePlans::default()` is the empty plan: no bubble,
+/// transient; a `Mixed` edge never does (its plan is `mixed`). `BubblePlans::default()` is the empty plan: no bubble,
 /// no threading field, nothing stitched — the differential control
 /// arm codegen's `LOTUS_NO_OWNERSHIP_BUBBLE=1` selects.
 #[derive(Debug, Clone, Default)]
@@ -575,6 +602,13 @@ pub struct BubblePlans {
     /// thread through the async post + dispatch path (a bare `I{};`
     /// statement only).
     pub crosspool: BTreeMap<(String, String), String>,
+    /// U-1, the `Mixed` plan: some instances of `B` run on `A`'s thread
+    /// and some do not (or run where the table cannot say). `A` stays
+    /// the owner of every one. For a singleton `A` a bare `I{};` takes
+    /// the same-tower bubble on `A`'s thread and the cross-pool post off
+    /// it, chosen at the site; a value use, or a non-singleton `A` (no
+    /// static handle for the post), is refused at the literal.
+    pub mixed: BTreeMap<(String, String), MixedPlan>,
     /// #2b's forwarding sets ([`OwnershipGraph::compute_forwarding_sets`]):
     /// locus type → the interest types `I` it carries an
     /// `__owner_for_I` field for.
@@ -710,6 +744,18 @@ fn free_fn_names(bundle: &Bundle<'_>) -> BTreeMap<SiteId, String> {
         walk(&program.items, &bundle.snapshot, &mut out);
     }
     out
+}
+
+/// One `Mixed` edge's plan ([`BubblePlans::mixed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MixedPlan {
+    /// The resolved owner, `A`.
+    pub owner: String,
+    /// `A` is a program-start singleton, so a post has a static target.
+    pub singleton: bool,
+    /// The enclosing instances and their domains, then the owner's
+    /// ([`OwnedSite::instances`]): what a refusal names.
+    pub instances: Vec<String>,
 }
 
 /// DFS upward from `node` toward `owner` via `instantiated_by`, adding
@@ -1042,13 +1088,19 @@ fn identify_child(
 /// analysis passes over a bundle); ownership resolution needs no
 /// resolved-type scope, so it is unused today. Structural twin of
 /// `build_bus_graph`: one shared walk ([`collect_ownership_walk`]),
-/// then per-site owner resolution + edge classification.
+/// then per-site owner resolution + edge classification. `placement`
+/// is the snapshot's table (a bundle no snapshot holds reads
+/// [`crate::placement::bundle_placement`]): each edge's class compares
+/// the domains of the enclosing locus's instances with the owner's.
+/// Resolution never reads it: who owns a child is a fact of the site,
+/// whatever thread delivers it (U-1).
 pub fn build_ownership_graph(
     bundle: &Bundle<'_>,
     _top: &TopScope,
+    placement: &crate::placement::PlacementTable,
 ) -> OwnershipGraph {
     let walk = collect_ownership_walk(bundle);
-    let placement_of = collect_placements(bundle);
+    let domains = placement.domains_by_type();
 
     // The ancestor-edge relation: child locus type → the set of locus
     // types that instantiate it in a method body.
@@ -1103,6 +1155,7 @@ pub fn build_ownership_graph(
                     ),
                     owner_kind: OwnerKind::Ancestor,
                     edge_class: EdgeClass::Open,
+                    instances: Vec::new(),
                     owner_projection: None,
                     span: site.span,
                     enclosing_decl: site.enclosing_decl,
@@ -1116,8 +1169,15 @@ pub fn build_ownership_graph(
             let resolution =
                 resolve_owner(enclosing, child, &accepts, &instantiated_by);
             let owner_kind = classify_owner_kind(&resolution, &singletons);
-            let edge_class =
-                classify_edge(enclosing, &resolution, &placement_of);
+            let edge_class = classify_edge(enclosing, &resolution, placement, &domains);
+            let instances = match (&edge_class, resolution.owner()) {
+                (EdgeClass::Mixed, Some(owner)) => {
+                    let mut v = placement.instances_of(enclosing);
+                    v.extend(placement.instances_of(owner).into_iter().map(|i| format!("the owner {i}")));
+                    v
+                }
+                _ => Vec::new(),
+            };
             let owner_projection = resolution
                 .owner()
                 .and_then(|o| walk.facts.get(o).and_then(|of| of.projection));
@@ -1128,6 +1188,7 @@ pub fn build_ownership_graph(
                 resolution,
                 owner_kind,
                 edge_class,
+                instances,
                 owner_projection,
                 span: site.span,
                 enclosing_decl: site.enclosing_decl,
@@ -1266,43 +1327,32 @@ fn classify_owner_kind(
     }
 }
 
-/// Classify the edge by comparing the owner's placement to the
-/// enclosing locus's placement. Conservative: an unresolved owner
-/// yields `Open`; an unknown placement defaults to `SameThread`
-/// (matching how an unplaced locus runs on the owner's thread).
+/// Classify the edge by comparing where the enclosing locus's instances
+/// run with where the owner's do, both read from the placement table
+/// (F.40 phase 3, P1, rows O-1 to O-7). Per instance, never per type: an
+/// enclosing locus nested under a field placed off main runs on that
+/// field's thread (O-1, O-2), an adapter on its own (O-7), and a locus
+/// born in a method body where its enclosing scope runs. Conservative:
+/// an unresolved owner yields `Open`, and an instance the table cannot
+/// place is never taken for the owner's thread.
 fn classify_edge(
     enclosing: &str,
     resolution: &OwnerResolution,
-    placement_of: &BTreeMap<String, Placement>,
+    placement: &crate::placement::PlacementTable,
+    domains: &BTreeMap<String, crate::placement::TypeDomains>,
 ) -> EdgeClass {
-    let pe = placement_of
-        .get(enclosing)
-        .cloned()
-        .unwrap_or(Placement::SameThread);
     match resolution {
         // Owner == enclosing: always the same thread.
         OwnerResolution::SelfOwned(_) => EdgeClass::SameTower,
-        OwnerResolution::Ancestor(o) => {
-            let po =
-                placement_of.get(o).cloned().unwrap_or(Placement::SameThread);
-            if po == pe {
-                EdgeClass::SameTower
-            } else {
-                EdgeClass::CrossPool
-            }
-        }
+        OwnerResolution::Ancestor(o) => relate(enclosing, o, placement, domains),
         OwnerResolution::PerPath(os) => {
-            let all_same = os.iter().all(|o| {
-                placement_of
-                    .get(o)
-                    .cloned()
-                    .unwrap_or(Placement::SameThread)
-                    == pe
-            });
-            if all_same {
+            let classes: Vec<EdgeClass> = os.iter().map(|o| relate(enclosing, o, placement, domains)).collect();
+            if classes.iter().all(|c| *c == EdgeClass::SameTower) {
                 EdgeClass::SameTower
-            } else {
+            } else if classes.iter().all(|c| *c == EdgeClass::CrossPool) {
                 EdgeClass::CrossPool
+            } else {
+                EdgeClass::Mixed
             }
         }
         // No single owner to compare against.
@@ -1312,85 +1362,66 @@ fn classify_edge(
     }
 }
 
-// === Placement (mirrors bus_graph::collect_subscriber_placements) ==
-
-/// Map each locus *type* to the [`Placement`] it receives where placed
-/// as a `main locus` field. Same shape as
-/// `bus_graph::collect_subscriber_placements`: a `placement { }` entry
-/// keys on the owner's `params` field name, and that field's declared
-/// type names the placed child locus. First-placement-wins.
-pub(crate) fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
-    let mut out: BTreeMap<String, Placement> = BTreeMap::new();
-
-    fn walk(items: &[TopDecl], out: &mut BTreeMap<String, Placement>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    let mut field_ty: BTreeMap<String, String> =
-                        BTreeMap::new();
-                    for member in &l.members {
-                        if let LocusMember::Params(pb) = member {
-                            for p in &pb.params {
-                                if let Some(ty) = &p.ty {
-                                    if let Some(name) = named_type(ty) {
-                                        field_ty
-                                            .insert(p.name.name.clone(), name);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    for member in &l.members {
-                        if let LocusMember::Placement(pb) = member {
-                            for e in &pb.entries {
-                                let Some(child_ty) = field_ty.get(&e.field.name)
-                                else {
-                                    continue;
-                                };
-                                let placement = match &e.spec {
-                                    PlacementSpec::Cooperative { pool, .. } => {
-                                        match pool {
-                                            Some(p) if p.name != "main" => {
-                                                Placement::CrossPool(
-                                                    p.name.clone(),
-                                                )
-                                            }
-                                            _ => Placement::SameThread,
-                                        }
-                                    }
-                                    PlacementSpec::Pinned { .. } => {
-                                        Placement::Pinned
-                                    }
-                                };
-                                out.entry(child_ty.clone())
-                                    .or_insert(placement);
-                            }
-                        }
-                    }
-                }
-                TopDecl::Module(m) => walk(&m.items, out),
-                _ => {}
+/// One enclosing locus against one owner, per instance: each row of the
+/// enclosing locus is paired with the row that owns it, the nearest row
+/// above it in its template realizing the owner, and each instance the
+/// table has no such row for (a literal in a body, a row below no owner
+/// row) with every domain the owner runs in. `SameTower` when every pair
+/// shares its domain (or nothing is built), `CrossPool` when none does
+/// and the owner runs in one known domain, `Mixed` otherwise (U-1), and
+/// whenever an instance runs where the table cannot say.
+fn relate(
+    enclosing: &str,
+    owner: &str,
+    placement: &crate::placement::PlacementTable,
+    domains: &BTreeMap<String, crate::placement::TypeDomains>,
+) -> EdgeClass {
+    use crate::placement::{DomainId, InstanceKey};
+    let of = |t: &str| domains.get(t).cloned().unwrap_or_default();
+    let (e, o) = (of(enclosing), of(owner));
+    if e.unknown || o.unknown {
+        return EdgeClass::Mixed;
+    }
+    let realizes = |k: &InstanceKey, t: &str| {
+        placement.instances.get(k).and_then(|r| r.realizes.as_ref()).is_some_and(|d| d.lowered == t)
+    };
+    let handed_off = placement.handed_off();
+    let mut pairs: Vec<(DomainId, DomainId)> = Vec::new();
+    for (k, r) in &placement.instances {
+        if handed_off.contains(k) || !realizes(k, enclosing) {
+            continue;
+        }
+        let mut up = r.owner.clone();
+        let mut found = None;
+        while let Some(key) = up {
+            if realizes(&key, owner) {
+                found = placement.instances.get(&key).map(|a| a.domain);
+                break;
+            }
+            up = placement.instances.get(&key).and_then(|a| a.owner.clone());
+        }
+        match found {
+            Some(a) => pairs.push((r.domain, a)),
+            None => pairs.extend(o.known.iter().map(|a| (r.domain, *a))),
+        }
+    }
+    for s in &placement.dynamic {
+        if s.realizes.as_ref().is_some_and(|d| d.lowered == enclosing) {
+            for d in &s.domains {
+                pairs.extend(o.known.iter().map(|a| (*d, *a)));
             }
         }
     }
-    for program in bundle.programs.values() {
-        walk(&program.items, &mut out);
+    if pairs.iter().all(|(d, a)| d == a) {
+        return EdgeClass::SameTower;
     }
-    out
+    match o.known.iter().collect::<Vec<_>>().as_slice() {
+        [a] if pairs.iter().all(|(d, _)| d != *a) => EdgeClass::CrossPool,
+        _ => EdgeClass::Mixed,
+    }
 }
 
 // === Instantiation-literal walk ===================================
-
-/// The single named type a param's `TypeExpr` denotes (a bare `Named`
-/// path's last segment), else `None`.
-fn named_type(ty: &TypeExpr) -> Option<String> {
-    match ty {
-        TypeExpr::Named { path, .. } => {
-            path.segments.last().map(|s| s.name.clone())
-        }
-        _ => None,
-    }
-}
 
 /// GH #476 Change 8: locus births in FREE functions — `fn main() {
 /// EchoL { }; }` and friends.

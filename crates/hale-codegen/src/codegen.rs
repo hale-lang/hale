@@ -19,7 +19,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
-use hale_types::capability::Transport;
+use hale_types::capability::{Capability, Obligation, Transport};
 use hale_types::resolved::LoweringView;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
@@ -1101,15 +1101,17 @@ pub fn build_executable_with_options(
 ) -> Result<(), CodegenError> {
     use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
     let spec = options.target.spec();
-    // A harness build names its target exactly when it asks for one
-    // other than the host; lowering follows `options.target` either way.
+    // A harness build names its target, the host included: the view's
+    // effective target is the one lowering emits for, so its cells are
+    // the ones the build reads (a harness native build of a program
+    // that declares `target wasm` lowers natively, as it always has).
     let target = Target {
         name: match options.target {
             CompileTarget::Native => "host".to_string(),
             _ => spec.triple.to_string(),
         },
         spec,
-        explicit: options.target != CompileTarget::Native,
+        explicit: true,
     };
     let mut config = Config::harness(target);
     config.api = options.api.clone();
@@ -1150,20 +1152,26 @@ pub fn build_resolved(
             options.api, options.api_roles, resolved.api, resolved.api_roles
         )));
     }
+    // The view's cells are its effective target's: lowering for another
+    // class would emit what that target's cells never selected.
+    if hale_types::capability::TargetClass::of(&options.target.spec()) != Some(resolved.cells.class) {
+        return Err(CodegenError::Unsupported(format!(
+            "the build options name target `{}`, but the program was resolved for a {} target",
+            options.target.spec().triple,
+            resolved.cells.class.name()
+        )));
+    }
     // T4 (F.40 P3): a link library is the `LinkLibrary` cell's question,
     // which depends on the program, the configuration and the target
     // only, so it is answered before anything is lowered and before any
     // tool is looked up; a machine without clang meets the refusal, not
     // "is clang installed?". (It used to be asked inside `link_wasm`,
     // after the runtime had been compiled.)
-    if let Some(class) = hale_types::capability::TargetClass::of(&options.target.spec()) {
-        if !options.link_libs.is_empty() {
-            let m = hale_types::capability::derive_capability_matrix();
-            let cell = m.behaviour(class, hale_types::capability::Capability::LinkLibrary).expect("a row");
-            if let Some(r) = cell.refusal() {
-                let libs = hale_types::capability::libs_hole(&options.link_libs);
-                return Err(CodegenError::CapabilityRefused(r.render(&cell.witness, &[("libs", &libs)]), None));
-            }
+    if !options.link_libs.is_empty() {
+        let cell = resolved.cells.behaviour(hale_types::capability::Capability::LinkLibrary);
+        if let Some(r) = cell.refusal() {
+            let libs = hale_types::capability::libs_hole(&options.link_libs);
+            return Err(CodegenError::CapabilityRefused(r.render(&cell.witness, &[("libs", &libs)]), None));
         }
     }
     // #8 (2026-07-02): `BuildOptions::time_phases` (the CLI's
@@ -1201,11 +1209,14 @@ pub fn build_resolved(
         ..
     } = resolved;
 
-    let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
     // agree today (Native == host) and the answers are unchanged; the
     // point is that they stop agreeing safely. See GH #445.
     let target_spec = options.target.spec();
+    // An emission choice (the backend, triple, CPU, optimization, LTO,
+    // pass pipeline, DWARF, the link path): a `TargetSpec` query, never
+    // a cell. What a target can do is `resolved.cells`'.
+    let is_wasm = target_spec.is_wasm();
     // GH #970: a foreign native target has no business with the
     // host's backend — initialize the target's own architecture, as
     // wasm always has.
@@ -1289,7 +1300,7 @@ pub fn build_resolved(
     };
     if options.dispatch_trace {
         for s in &plan.subjects {
-            eprintln!("[hale-dispatch] {} {}", s.subject, s.flavor.as_str());
+            eprintln!("[hale-dispatch] {} {} payload_flat={}", s.subject, s.flavor.as_str(), s.payload_flat);
         }
     }
     // Deterministic ids: static subjects in wire-string order (the plan
@@ -1425,8 +1436,7 @@ pub fn build_resolved(
         module,
         builder,
         target_data,
-        is_wasm,
-        target: target_spec.clone(),
+        cells: resolved.cells,
         wasm_exports: Vec::new(),
         native_exports: Vec::new(),
         ts_call_span: None,
@@ -1439,6 +1449,9 @@ pub fn build_resolved(
         forms: &resolved.forms,
         bindings: &resolved.bindings,
         typed: &resolved.typed,
+        current_specialization: None,
+        current_call: None,
+        default_invocations: Vec::new(),
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -1449,6 +1462,7 @@ pub fn build_resolved(
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
+        specialized_locus_decls: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         current_user_fn_scratch_local: false,
@@ -1479,6 +1493,8 @@ pub fn build_resolved(
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
         ownership_bubble_crosspool_plan: bubble.crosspool,
+        ownership_bubble_mixed_plan: bubble.mixed,
+        mixed_bubble_arm: None,
         ownership_accepts: ownership.accepts.clone(),
         ownership_accept_rows: &ownership.accept_rows,
         specialized_accepts: BTreeMap::new(),
@@ -1487,6 +1503,8 @@ pub fn build_resolved(
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
+        head_aborted_waits: false,
+        dispatch_trace: options.dispatch_trace,
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
@@ -1519,10 +1537,15 @@ pub fn build_resolved(
         params_init_initialized: None,
         cooperative_pool_for_next_locus_instantiation: None,
         current_cooperative_pool: None,
+        anchor_route: None,
+        pool_init: false,
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
         restart_fns: BTreeMap::new(),
-        deployment: Default::default(),
+        deployment: crate::deployment::DeploymentPlan {
+            route_anchor_types: resolved.route_anchors.clone(),
+            ..Default::default()
+        },
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
@@ -2003,10 +2026,20 @@ pub fn build_resolved(
     if is_wasm {
         // Compile the self-contained wasm runtime (arena core + bundled
         // libc) and link it into the user object with wasm-ld, producing
-        // a runnable `.wasm`. No native libs / no clang link line.
+        // a runnable `.wasm`. No native libs / no clang link line. The
+        // module's fixed exports are `ExportSurface`'s lowering data.
+        let Some(hale_types::capability::Lowering::Exports(fixed)) =
+            cx.cells.lowering(Capability::ExportSurface)
+        else {
+            return Err(CodegenError::Unsupported(format!(
+                "a {} target's export surface is not a module's export list",
+                cx.cells.class.name()
+            )));
+        };
         link_wasm(
             &obj_path,
             output_path,
+            fixed,
             &cx.wasm_exports,
             &options.csrc_files,
             &options.link_libs,
@@ -2791,6 +2824,9 @@ fn resolve_tool(base: &str) -> String {
 fn link_wasm(
     user_obj: &Path,
     output: &Path,
+    // The module's fixed exports, in order: the `ExportSurface` cell's
+    // lowering data (`hale_types::capability::WASM_FIXED_EXPORTS`).
+    fixed_exports: &[hale_types::capability::Export],
     extra_exports: &[String],
     // #213: a package's `[ffi] csrc` translation units. These never
     // reached the wasm path — `options` was simply not passed — so
@@ -2895,17 +2931,16 @@ fn link_wasm(
     for o in &csrc_objs {
         cmd.arg(o);
     }
-    cmd
-        .arg("--no-entry")
-        .arg("--export-if-defined=main")
-        .arg("--export=__heap_base")
-        .arg("--export-if-defined=memory")
-        // WASM host seam: the JS loader writes an inbound message into wasm
-        // memory via lotus_wasm_alloc, then publishes it with
-        // lotus_wasm_set_inbox; the Hale side reads it with lotus_wasm_inbox
-        // (reached via @ffi("c"), so kept without an explicit export).
-        .arg("--export=lotus_wasm_alloc")
-        .arg("--export=lotus_wasm_set_inbox");
+    cmd.arg("--no-entry");
+    // `main`, `__heap_base`, `memory`, and the WASM host seam: the JS
+    // loader writes an inbound message into wasm memory via
+    // lotus_wasm_alloc, then publishes it with lotus_wasm_set_inbox; the
+    // Hale side reads it with lotus_wasm_inbox (reached via @ffi("c"),
+    // so kept without an explicit export).
+    for e in fixed_exports {
+        let flag = if e.if_defined { "--export-if-defined" } else { "--export" };
+        cmd.arg(format!("{flag}={}", e.name));
+    }
     // Entry-inversion: `@export` fn wrappers + `_hale_start` (collected
     // by synthesize_wasm_export_wrappers).
     for name in extra_exports {
@@ -3175,13 +3210,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// where `Type::size_of()` (a constant-expression) can't be folded to
     /// an integer. E.g. the foreign-ring descriptor's `value_size`.
     pub(crate) target_data: inkwell::targets::TargetData,
-    /// WASM plan: true when compiling for wasm32. Gates the wasm-incompatible
-    /// `main` startup (transport/pool/thread bring-up) for entry inversion.
-    pub(crate) is_wasm: bool,
-    /// The target being emitted for. `is_wasm` above is one bit of this;
-    /// anything else lowering needs to know about the platform asks here
-    /// rather than asking the host through `cfg!` (GH #445).
-    pub(crate) target: crate::target::TargetSpec,
+    /// The effective target's cells (the lowering view's): every
+    /// behaviour and obligation emitted or omitted per target reads one
+    /// here, and decides nothing itself (F.40 phase 3, P3 3 of 3). An
+    /// emission choice asks the build's `TargetSpec` rather than the
+    /// host through `cfg!` (GH #445).
+    pub(crate) cells: hale_types::capability::LoweringCells,
     /// WASM entry-inversion: names of `@export` free fns whose
     /// arena-less wrappers were emitted; passed to `wasm-ld
     /// --export=`. Empty on native builds.
@@ -3240,6 +3274,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the checker's answers here instead of typing again, and refuses
     /// a hole at its span.
     pub(crate) typed: &'p hale_types::typed_bodies::TypedBodies,
+    /// While a generic fn's specialization is lowered: its template's
+    /// site and its type arguments, under which the table holds the
+    /// rows of the generic calls its body makes.
+    pub(crate) current_specialization: Option<(hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)>,
+    /// Source invocation whose omitted defaults are being lowered.
+    current_call: Option<NodeId>,
+    default_invocations: Vec<u32>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -3284,6 +3325,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_program`; carries the LLVM struct type for the
     /// locus's params + the lifecycle methods compiled against it.
     pub(crate) user_loci: BTreeMap<String, LocusInfo<'ctx>>,
+    /// Substituted source declarations used to declare the concrete
+    /// locus methods. Signature lookup must read these same declarations
+    /// instead of searching the unspecialized program for a mangled name.
+    specialized_locus_decls: BTreeMap<String, LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -3433,11 +3478,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the differential-test control arm).
     pub(crate) bus_devirt_ids: std::collections::BTreeMap<String, u32>,
     /// Direct-call devirt (build #1b slice-2): the SUBSET of
-    /// `bus_devirt_ids` whose every subscriber is same-thread AND whose
-    /// every handler is provably QUIET (the `direct_call_eligible`
-    /// flag off the `BusGraph`). A compile-time-literal publish on such
-    /// a subject — when its payload is ALSO flat (the third gate leg,
-    /// ANDed in at the publish site via `bus_payload_is_flat`) — lowers
+    /// `bus_devirt_ids` the plan lowers `static_direct`: every subscriber
+    /// same-thread, every handler provably QUIET (the
+    /// `direct_call_eligible` flag off the `BusGraph`) and the payload
+    /// flat (the third gate leg, the gate's `payload_flat` column). A
+    /// compile-time-literal publish on such a subject lowers
     /// to a SYNCHRONOUS direct call (`lotus_bus_dispatch_static_direct`)
     /// instead of the deferred static enqueue: the cooperative-queue
     /// round-trip is collapsed away. A subject in this set still uses
@@ -3509,6 +3554,23 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
     pub(crate) ownership_bubble_crosspool_plan:
         std::collections::BTreeMap<(String, String), String>,
+    /// The placement correspondence's U-1 (F.40 phase 3, P1): the
+    /// `Mixed` edges, same key, whose enclosing locus runs both on the
+    /// owner's thread and off it. The owner is kept for every instance;
+    /// the mechanism is chosen per instance. For a singleton owner a
+    /// bare `I { };` branches at the literal on `lotus_on_main_thread`
+    /// (the owner is a `main locus`, on main) between this plan's two
+    /// arms, the same-tower bubble and the cross-pool post
+    /// ([`Self::mixed_bubble_arm`]); a value use, or a non-singleton
+    /// owner, is refused at the literal. Empty under
+    /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
+    pub(crate) ownership_bubble_mixed_plan:
+        std::collections::BTreeMap<(String, String), hale_types::ownership_graph::MixedPlan>,
+    /// Which arm of a `Mixed` site the next instantiation lowers: set by
+    /// the bare statement immediately before each arm and taken at the
+    /// top of `lower_locus_instantiation`, like
+    /// [`Self::bare_locus_instantiation_stmt`].
+    pub(crate) mixed_bubble_arm: Option<MixedArm>,
     /// locus type → the child types it declares `accept(_: T)` for: the
     /// ownership graph's `accepts` relation, from the resolved program.
     /// `lower_locus_instantiation` reads it to decide whether the
@@ -3573,7 +3635,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// True while lowering the body of `main`. `return` is treated
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
-    in_main: bool,
+    pub(crate) in_main: bool,
+    /// Set while one of fn main's exits tears its frame down after its
+    /// head aborted the waits (ahead of the pool join it emits), so the
+    /// frame teardown does not abort them a second time.
+    head_aborted_waits: bool,
+    /// `BuildOptions::dispatch_trace`: the publish sites print the
+    /// codec's payload flatness beside the plan's rows.
+    pub(crate) dispatch_trace: bool,
     /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
     /// pushed. Identifies "we are at main's top frame" so a
     /// recorded-assertion-failure branch only routes through main's
@@ -3892,6 +3961,22 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// to the prior value at function exit. None means
     /// "default — main pool / global queue."
     pub(crate) current_cooperative_pool: Option<String>,
+    /// The route of the thread anchor whose params are being
+    /// initialized (F.40 phase 3, P1 3 of 6, the correspondence's
+    /// U-6): a pinned anchor's mailbox, or a pool anchor's pool.
+    /// Set by the anchor's instantiation BEFORE its params-init loop
+    /// and restored after it, so every locus born in that loop, at any
+    /// depth, registers its subscriptions with the thread it runs on
+    /// (a nested locus runs on its anchor's thread) instead of the
+    /// program-wide queue only main drains. `None` outside any
+    /// anchor's params: main's queue, as before.
+    pub(crate) anchor_route: Option<AnchorRoute<'ctx>>,
+    /// True while lowering a pool-placed root's params init
+    /// (`__pool_init_<L>`, inventory C50), which the pool's worker runs:
+    /// a nested cooperative `run()` there runs inline, in the params
+    /// loop, as it does everywhere else a params loop runs, instead of
+    /// being posted to the pool the worker is on.
+    pub(crate) pool_init: bool,
     /// F.31 Phase 4b: synthesized `__coop_pool_run_<L>` fn ptrs.
     /// Each wrapper takes `(self_ptr, _payload_ptr)` matching
     /// the pool-handler signature and calls the locus's run()
@@ -4167,6 +4252,28 @@ pub(crate) struct AccumulatorCtx<'ctx> {
 /// LLVM-side handles the prior `BusState` carried are gone.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BusState;
+
+/// The two arms of a `Mixed` ownership edge's birth (U-1;
+/// [`Cx::ownership_bubble_mixed_plan`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MixedArm {
+    /// On the owner's thread: the same-tower bubble into its arena.
+    SameTower,
+    /// Off it: the cross-pool post of a create cell to its thread.
+    CrossPool,
+}
+
+/// The route a thread anchor's descendants register their
+/// subscriptions with ([`Cx::anchor_route`]).
+#[derive(Debug, Clone)]
+pub(crate) enum AnchorRoute<'ctx> {
+    /// A pinned anchor's mailbox, created before its params-init loop
+    /// and drained by its thread.
+    Mailbox(inkwell::values::PointerValue<'ctx>),
+    /// A pool anchor's pool, by name: one worker per pool, registered
+    /// in the prelude and joined before any arena is destroyed.
+    Pool(String),
+}
 
 /// Form K4c/K6b (2026-05-20): per-shm_ring-binding info kept on
 /// the codegen context, keyed in `shm_ring_subjects` by the
@@ -4932,6 +5039,11 @@ pub(crate) struct LocusInfo<'ctx> {
     /// instance was built with, for `restart_in_place` (see
     /// `locus::restart`). Null unless the locus is restarted in place.
     pub(crate) built_params_field_idx: u32,
+    /// Atomic, monotonic admission to the shared reclaim spine. A run
+    /// ending on another thread must not repeat a retiring owner's
+    /// logical teardown or release its still-retained descendants.
+    /// Initialized to zero for each new instance, including slot reuse.
+    pub(crate) reclaim_claimed_field_idx: u32,
     /// v1.x-4b: index of the synthetic `__slot_borrowed_mask:
     /// i64` field. Always present (uniform locus-struct layout).
     /// Bit N (LSB = slot 0 in declaration order) is set iff this
@@ -5777,6 +5889,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// destroying the arena concurrently with still-active
     /// worker threads. Idempotent + no-op when no pools were
     /// registered.
+    /// The process-wide obligations a teardown spine owes at its head
+    /// (the ingress quiesce R35, the pool join R20 where the program has
+    /// pools, the wait-abort R34), as the target's cells select them, in
+    /// the lifecycle plan's order (`hale_types::lifecycle::teardown_order`:
+    /// R35, then R34, then R20, so a pool worker parked in an `or wait`
+    /// only the abort ends is released before the join waits for it).
+    /// `frame_aborts`: the spine's frame teardown aborts the waits after
+    /// its pre-drain (fn main's three exits), so the head takes the
+    /// wait-abort only where the plan orders it ahead of a join the head
+    /// emits. Returns whether the head aborted the waits.
+    pub(crate) fn emit_teardown_obligations(&mut self, frame_aborts: bool) -> Result<bool, CodegenError> {
+        let joins = self.cells.emits(Obligation::PoolJoin) && !self.deployment.main_cooperative_pools.is_empty();
+        let mut selected = Vec::new();
+        if self.cells.emits(Obligation::IngressQuiesce) {
+            selected.push(Obligation::IngressQuiesce);
+        }
+        if joins {
+            selected.push(Obligation::PoolJoin);
+        }
+        if self.cells.emits(Obligation::WaitAbort) && (joins || !frame_aborts) {
+            selected.push(Obligation::WaitAbort);
+        }
+        for o in hale_types::lifecycle::teardown_order(&selected) {
+            match o {
+                Obligation::IngressQuiesce => self.emit_bus_ingress_quiesce()?,
+                Obligation::PoolJoin => self.emit_coop_pool_shutdown_all()?,
+                Obligation::WaitAbort => self.emit_bus_wait_abort_all()?,
+                other => unreachable!("{} is not a teardown spine's obligation", other.name()),
+            }
+        }
+        Ok(selected.contains(&Obligation::WaitAbort))
+    }
+
     pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
         if !self.deployment.main_cooperative_pools.is_empty() {
             let shutdown_fn = self
@@ -5954,8 +6099,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // teardown — wake `or wait` parked publishers into the
         // raise path before the pinned joins below would block on
         // them. Gated on in_main: every other fn's flush must not
-        // disable waits program-wide.
-        if self.in_main {
+        // disable waits program-wide. A main exit whose head already
+        // aborted them (ahead of its pool join) owes no second abort.
+        if self.in_main && !self.head_aborted_waits && self.cells.emits(Obligation::WaitAbort) {
             self.emit_bus_wait_abort_all()?;
         }
         self.lc_spine = lc_outer;
@@ -6131,10 +6277,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
             );
-            if is_main_entry && !self.is_wasm {
-                self.emit_bus_ingress_quiesce()?;
-                self.emit_coop_pool_shutdown_all()?;
-                self.emit_bus_wait_abort_all()?;
+            if is_main_entry {
+                self.emit_teardown_obligations(false)?;
             }
             // m28a + m28b: pinned loci — pthread_join blocks until
             // the pinned thread's full lifecycle (birth → run →
@@ -6288,6 +6432,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_load(ptr_t, mb_slot, "mailbox.destroy.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .into_pointer_value();
+            // U-6: a route anchor's mailbox also carries the
+            // subscriptions of the tree nested under it. Each descendant
+            // deregisters in its own dissolve, on the anchor's thread,
+            // before the join returns; the retire is the backstop for a
+            // registration still routed here once the thread is gone, so
+            // none outlives the mailbox. (Declared here, at its one use,
+            // so a program with no route anchor carries no declaration
+            // of it.)
+            if self.deployment.route_anchor_types.contains(locus_name) {
+                let retire_fn = self.module.get_function("lotus_bus_retire_mailbox").unwrap_or_else(|| {
+                    self.module.add_function(
+                        "lotus_bus_retire_mailbox",
+                        self.context.void_type().fn_type(&[ptr_t.into()], false),
+                        None,
+                    )
+                });
+                self.builder
+                    .build_call(retire_fn, &[mb.into()], &format!("{}.mailbox.retire", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             let destroy_fn = self
                 .module
                 .get_function("lotus_mailbox_destroy")
@@ -6330,8 +6494,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// between passes that use the builder (notably between A2
     /// and the body-lowering passes C/D).
     /// 2026-06-01: synthesize `__reclaim_<L>(self_ptr)` — the single
-    /// per-child teardown spine. Idempotent: the `__arena`-null latch
-    /// at entry makes a second reclaim of the same locus a full no-op
+    /// per-child teardown spine. Idempotent: an atomic instance claim
+    /// before any arena read makes a second shared reclaim a full no-op
     /// (a flow child reclaimed at run-completion, then walked again by
     /// the parent's dissolve cascade, runs the spine exactly once).
     /// The spine: drain (children-first) → `release(owner, self)` for
@@ -6377,9 +6541,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Synthesized for every locus (mirrors the run-wrappers;
             // DCE drops unused). Arena-elidable loci borrow the
             // caller's arena: emit_locus_arena_destroy bails on them,
-            // so the spine is harmless (and they're never in a
-            // double-reclaim path, so the __arena-null latch being a
-            // no-op for them doesn't matter).
+            // so the spine is harmless. The instance claim still
+            // prevents a second shared entry for an elided arena.
             let reclaim = self
                 .reclaim_fns
                 .get(locus_name)
@@ -6394,39 +6557,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get_nth_param(0)
                 .expect("reclaim self_ptr param")
                 .into_pointer_value();
-            // Full-spine idempotency latch (2026-06-01). `__arena` is
-            // NULL'd by emit_locus_arena_destroy on the FIRST reclaim,
-            // so a second entry here loads NULL and skips the entire
-            // spine — not just the arena destroy (which had its own
-            // inner latch), but drain / release / dissolve too, which
-            // would otherwise double-run their user bodies. Single-
-            // threaded by construction at the colliding call sites
-            // (pool workers are joined before the dissolve cascade;
-            // a parent and its accept'd children share one worker), so
-            // a plain load/compare suffices — no atomic.
-            let arena_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_arg,
-                    info.arena_field_idx,
-                    &format!("{}.reclaim.arena.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let arena = self
-                .builder
-                .build_load(ptr_t, arena_ptr, &format!("{}.reclaim.arena", locus_name))
+            let claim_ptr = self.builder.build_struct_gep(
+                info.struct_ty, self_arg, info.reclaim_claimed_field_idx, "reclaim.claim.ptr",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // Check the shared claim before reading __arena. The winner
+            // may be on another worker, including one finishing run().
+            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "reclaim.pending")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
-            let already = self
-                .builder
-                .build_is_null(arena, &format!("{}.reclaim.done", locus_name))
+                .try_as_basic_value().left().expect("i64").into_int_value();
+            let pending = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, pending, i64_t.const_zero(), "reclaim.retired",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let ready_bb = self.context.append_basic_block(reclaim, "reclaim.ready");
+            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_conditional_branch(already, ret_bb, do_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-            self.builder.position_at_end(do_bb);
+            self.builder.position_at_end(ready_bb);
             // A child whose failure its parent is still holding (the
             // parent's params are not settled — spec/semantics.md §
             // "on_failure(c, err)") must outlive the handler that reads
@@ -6504,6 +6650,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(spine_bb);
             }
+            // Failure deferral precedes admission: its callback must
+            // still be able to enter the spine after the handler. Race
+            // the other reclaim entrants once, before any arena read.
+            let claim = self.module.get_function("lotus_reclaim_try_claim").expect("claim declared");
+            let claimed = self.builder.build_call(claim, &[claim_ptr.into()], "reclaim.claimed")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value().left().expect("i64").into_int_value();
+            let won = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, claimed, i64_t.const_zero(), "reclaim.won",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_conditional_branch(won, do_bb, ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(do_bb);
+            // An inline cascade can already have completed this
+            // instance without entering the shared reclaim function.
+            let arena_ptr = self.builder.build_struct_gep(
+                info.struct_ty, self_arg, info.arena_field_idx, "reclaim.arena.ptr",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena = self.builder.build_load(ptr_t, arena_ptr, "reclaim.arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.into_pointer_value();
+            let already = self.builder.build_is_null(arena, "reclaim.done")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let body_bb = self.context.append_basic_block(reclaim, "reclaim.body");
+            self.builder.build_conditional_branch(already, ret_bb, body_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(body_bb);
             let prev_fn = self.current_fn.take();
             let prev_self = self.current_self.take();
             self.current_fn = Some(reclaim);
@@ -7185,6 +7357,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(f) => f,
             None => return Ok(()),
         };
+        let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let func = self.current_fn.expect("dissolve frame current fn");
@@ -7295,6 +7468,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(header)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(cont);
+        self.emit_reclaim_scope_leave(retain)?;
         Ok(())
     }
 
@@ -7752,7 +7926,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // fn or locus is lowered at any depth, so the
                 // "this wasm module has entry points of its own"
                 // test has to see the same set.
-                let has_exports = self.is_wasm
+                let has_exports = self
+                    .cells
+                    .behaviour(Capability::EntryInversion(hale_types::capability::Inversion::ExportOnly))
+                    .is_lower()
                     && hale_syntax::ast::flat_decls(&self.program.items).any(
                         |item| {
                             matches!(item, TopDecl::Fn(f) if f.export)
@@ -7944,6 +8121,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut seen_mangles,
             &mut requests,
         )?;
+        // A generic fn can spell Holder<T> before T is bound. The
+        // typed producer records the concrete monomorphs discovered
+        // while specializing its body. Queue those concrete rows;
+        // the source walk below leaves unbound template uses out.
+        for m in self.typed.monomorphs().rows() {
+            let template = match m.kind {
+                hale_types::typed_bodies::TemplateKind::Locus => generic_locus_decls.values()
+                    .find(|l| l.id.0 == m.template.0).map(|l| l.name.name.clone()),
+                hale_types::typed_bodies::TemplateKind::Type => generic_type_decls.values()
+                    .find(|t| t.id.0 == m.template.0).map(|t| t.name.name.clone()),
+                hale_types::typed_bodies::TemplateKind::Fn => None,
+            };
+            let Some(template) = template else { continue };
+            let span = hale_syntax::Span::new(0, 0);
+            let args: Option<Vec<TypeExpr>> = m.args.iter().map(|t| match t {
+                hale_types::ty::Ty::Prim(p) => Some(TypeExpr::Primitive(*p, span)),
+                hale_types::ty::Ty::Named(n) => Some(TypeExpr::Named {
+                    path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
+                    generic_args: Vec::new(),
+                    span,
+                }),
+                _ => None,
+            }).collect();
+            if let Some(args) = args {
+                if seen_mangles.insert(m.name.clone()) {
+                    requests.push((template, args));
+                }
+            }
+        }
         // m63: process requests as a queue — synthesizing one
         // instantiation may surface NEW generic uses inside its
         // substituted body (e.g., `Holder<Int>` instantiates
@@ -8040,6 +8246,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &mut requests,
                     )?;
                 }
+                self.specialized_locus_decls.insert(mangled, synthesized.clone());
                 synthesized_loci.push(synthesized);
             }
         }
@@ -8359,8 +8566,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         // WASM entry-inversion: emit the arena-less export wrappers for
-        // `@export` fns + the `_hale_start` setup entry. No-op on native.
-        if self.is_wasm {
+        // `@export` fns + the `_hale_start` setup entry, where the
+        // target's export surface is a module's export list beside its
+        // fixed exports (`ExportSurface`'s lowering data).
+        if matches!(
+            self.cells.lowering(Capability::ExportSurface),
+            Some(hale_types::capability::Lowering::Exports(_))
+        ) {
             self.synthesize_wasm_export_wrappers(&user_fn_decls)?;
         } else {
             // Crumb batch-2 item 1: native C-ABI export wrappers
@@ -8427,7 +8639,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // WASM plan (entry inversion): skip on wasm — `lotus_io_init`
         // calls `setvbuf` (a host import) to line-buffer stdout, which is
         // a no-op concept in the browser. The host loader owns output.
-        if !self.is_wasm {
+        // It installs SIGPIPE's disposition too: the `SignalInstall`
+        // obligation, omitted where no signal reaches the program.
+        if self.cells.emits(Obligation::SignalInstall) {
             let io_init = self
                 .module
                 .get_function("lotus_io_init")
@@ -8573,7 +8787,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the host, which meant a macOS-hosted build of a Linux
                 // artifact would have silently dropped the enable call.
                 if self.deployment.async_io_pools.contains(name)
-                    && self.target.has_async_io()
+                    && self.cells.behaviour(Capability::AsyncIoPool).is_lower()
                 {
                     self.builder
                         .build_call(
@@ -8656,7 +8870,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // row on the consumer. Cheap: one strdup'd table entry
         // per topic, consulted lazily if/when observation
         // initializes.
-        if !self.is_wasm {
+        if self.cells.emits(Obligation::ObservationIdentity) {
             // #399: subject and shape both come from the SHARED
             // identity implementation (`hale_types::topic_identity`),
             // which the topology artifact also exports — the manifest
@@ -8807,7 +9021,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // identity fields, which the setters have already published.
         // Still before any user code. No-op when neither
         // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
-        if !self.is_wasm {
+        if self.cells.emits(Obligation::ObservationIdentity) {
             let eager_fn = self
                 .module
                 .get_function("lotus_obs_eager_init")
@@ -8832,7 +9046,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // reachable from `main`) would otherwise survive gc-sections and
         // become host imports. The browser bus is in-memory / WebSocket-
         // adapter-driven (a later slice), never cross-process sockets.
-        if !self.is_wasm {
+        // The transport half is the `BindingConfig` obligation, the
+        // drain installer between its two parts `SignalInstall`.
+        if self.cells.emits(Obligation::BindingConfig) {
             // GH #529 prep (DNA F.12): tell the runtime how to derive a
             // keyed topic's key from an inbound payload, so a listen
             // binding delivers to `where key == …` subscribers exactly
@@ -8859,28 +9075,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
-            // GH #1039: SIGINT / SIGTERM begin the whole-process drain
-            // — for a program that reads `draining` anywhere. Which
-            // is known only once every body has lowered, so the
-            // argument is a private global whose initializer the end
-            // of `lower_program` writes.
-            {
-                let i64_t = self.context.i64_type();
-                let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
-                reads.set_linkage(inkwell::module::Linkage::Private);
-                reads.set_initializer(&i64_t.const_zero());
-                let observes = self
-                    .builder
-                    .build_load(i64_t, reads.as_pointer_value(), "drain.observes")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let install = self
-                    .module
-                    .get_function("lotus_drain_signals_install")
-                    .expect("lotus_drain_signals_install declared");
-                self.builder
-                    .build_call(install, &[observes.into()], "drain.install")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
+        }
+        // GH #1039: SIGINT / SIGTERM begin the whole-process drain
+        // — for a program that reads `draining` anywhere. Which
+        // is known only once every body has lowered, so the
+        // argument is a private global whose initializer the end
+        // of `lower_program` writes.
+        if self.cells.emits(Obligation::SignalInstall) {
+            let i64_t = self.context.i64_type();
+            let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
+            reads.set_linkage(inkwell::module::Linkage::Private);
+            reads.set_initializer(&i64_t.const_zero());
+            let observes = self
+                .builder
+                .build_load(i64_t, reads.as_pointer_value(), "drain.observes")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let install = self
+                .module
+                .get_function("lotus_drain_signals_install")
+                .expect("lotus_drain_signals_install declared");
+            self.builder
+                .build_call(install, &[observes.into()], "drain.install")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if self.cells.emits(Obligation::BindingConfig) {
             let load_cfg_fn = self
                 .module
                 .get_function("lotus_bus_load_config")
@@ -8968,16 +9186,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainFallThrough");
-            if !self.is_wasm {
-                // GH #468: drain kernel-accepted LISTEN ingress
-                // through the intact registry BEFORE pools join and
-                // loci dissolve — the exit half of the delivery
-                // contract (the boot half is the readers' early-
-                // ingress buffer).
-                self.emit_bus_ingress_quiesce()?;
-                self.emit_coop_pool_shutdown_all()?;
-            }
+            // GH #468: drain kernel-accepted LISTEN ingress
+            // through the intact registry BEFORE pools join and
+            // loci dissolve — the exit half of the delivery
+            // contract (the boot half is the readers' early-
+            // ingress buffer). The obligations are the cells' and their
+            // order the plan's (`emit_teardown_obligations`).
+            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             self.flush_dissolve_frame()?;
+            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
@@ -9015,12 +9232,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
-            if !self.is_wasm {
-                self.emit_bus_ingress_quiesce()?;
-                self.emit_coop_pool_shutdown_all()?;
-            }
+            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
+            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
@@ -11820,159 +12035,122 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// m62: convert a CodegenTy back to a TypeExpr for the
-    /// generic-fn inference path. The resulting TypeExpr is used
-    /// to mangle the instantiation name and to substitute into
-    /// the template's body — both purely structural operations,
-    /// so the synthetic spans are fine.
-    fn codegen_ty_to_type_expr(
-        t: &CodegenTy,
-    ) -> Result<TypeExpr, CodegenError> {
-        // Synthetic span for the synthesized TypeExpr — these
-        // never surface in user-visible diagnostics because m62
-        // structural ops only inspect shape, not source location.
+    /// The declaration used for a locus's emitted methods, retaining
+    /// source identities while substituting its type arguments.
+    fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
+        self.specialized_locus_decls.get(name).or_else(|| {
+            hale_syntax::ast::flat_decls(&self.program.items).find_map(|d| match d {
+                TopDecl::Locus(l) if l.name.name == name => Some(l),
+                _ => None,
+            })
+        })
+    }
+
+    /// m62: the specialization a generic fn call instantiates — its
+    /// type arguments, in the template's `generics` order, and its
+    /// name. Both are the checker's (F.40 phase 3, E4): the call's
+    /// typed-body row (the arguments the checker's unification bound)
+    /// and the monomorph table's row for the template at those
+    /// arguments. An argument lowering cannot name a specialization for
+    /// (m62 v0.1: primitives and named types) is refused as it always
+    /// was; a hole, or a call the table holds no row for, at the call.
+    fn generic_call_instance(
+        &self,
+        name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
+    ) -> Result<(Vec<TypeExpr>, String, (hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)), CodegenError> {
+        use hale_types::typed_bodies::Typed;
+        // Select by the call's lexical body, including params defaults
+        // evaluated inside another specialization. Defaults use the
+        // declaring locus, just as their `self.X` reads do; literal
+        // overrides keep the caller's context. No type is inferred here.
+        // NodeId structural equality ignores metadata; compare the raw
+        // source identities when choosing a specialization.
+        let context = self.default_invocations.first().map(|id| NodeId(*id)).unwrap_or(call);
+        let fn_specialization = self.current_specialization.as_ref().filter(|(body, _)| {
+            self.typed.generic_call_body(context).map(|id| id.0) == Some(body.0)
+        });
+        let locus = if self.in_params_default {
+            self.params_init_self.as_ref().or(self.current_self.as_ref())
+        } else {
+            self.current_self.as_ref().or(self.params_init_self.as_ref())
+        };
+        let locus_specialization = locus
+            .and_then(|l| self.typed.monomorphs().named(&l.locus_name))
+            .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus
+                && self.typed.generic_call_locus(context).map(|id| id.0) == Some(m.template.0));
+        let row = if self.default_invocations.is_empty() {
+            match (fn_specialization, locus_specialization) {
+                (Some((body, args)), _) => self.typed.specialized_generic_call(*body, args, call),
+                (None, Some(m)) => self.typed.specialized_generic_call_at(&m.args, call),
+                (None, None) => self.typed.generic_call(call),
+            }
+        } else {
+            let args = fn_specialization.map(|(_, args)| args.as_slice())
+                .or_else(|| locus_specialization.map(|m| m.args.as_slice()));
+            self.typed.default_generic_call(&self.default_invocations, args, call)
+        };
+        let row = match row {
+            Some(Typed::Known(row)) => row,
+            Some(Typed::Hole(h)) => return Err(CodegenError::UnsupportedAt(h.reason.clone(), h.span)),
+            None => {
+                return Err(CodegenError::UnsupportedAt(
+                    format!(
+                        "generic fn `{}`: this call has no typed-body row: the checker did not walk it",
+                        name
+                    ),
+                    call_span,
+                ))
+            }
+        };
+        let args = row
+            .type_args
+            .iter()
+            .map(|t| self.generic_type_arg(t))
+            .collect::<Result<Vec<TypeExpr>, CodegenError>>()?;
+        let mono = self.typed.monomorphs().of(row.template, &row.type_args).ok_or_else(|| {
+            CodegenError::UnsupportedAt(
+                format!(
+                    "generic fn `{}`: the monomorph table names no specialization for this call's \
+                     type arguments",
+                    name
+                ),
+                call_span,
+            )
+        })?;
+        Ok((args, mono.name.clone(), (row.template, row.type_args.clone())))
+    }
+
+    /// m62: a type argument the checker bound, as the type expression a
+    /// specialization substitutes: a primitive, or a declared type or
+    /// enum by its name (m62 v0.1).
+    fn generic_type_arg(&self, t: &hale_types::ty::Ty) -> Result<TypeExpr, CodegenError> {
+        use hale_types::ty::Ty;
         let span = hale_syntax::span::Span::new(0, 0);
         match t {
-            CodegenTy::Int => Ok(TypeExpr::Primitive(PrimType::Int, span)),
-            CodegenTy::Float => {
-                Ok(TypeExpr::Primitive(PrimType::Float, span))
-            }
-            CodegenTy::Bool => Ok(TypeExpr::Primitive(PrimType::Bool, span)),
-            CodegenTy::String => {
-                Ok(TypeExpr::Primitive(PrimType::String, span))
-            }
-            CodegenTy::Duration => {
-                Ok(TypeExpr::Primitive(PrimType::Duration, span))
-            }
-            CodegenTy::Decimal => {
-                Ok(TypeExpr::Primitive(PrimType::Decimal, span))
-            }
-            CodegenTy::Time => Ok(TypeExpr::Primitive(PrimType::Time, span)),
-            CodegenTy::TypeRef(name) | CodegenTy::Enum(name) => {
+            Ty::Prim(
+                p @ (PrimType::Int
+                | PrimType::Float
+                | PrimType::Bool
+                | PrimType::String
+                | PrimType::Duration
+                | PrimType::Decimal
+                | PrimType::Time),
+            ) => Ok(TypeExpr::Primitive(*p, span)),
+            Ty::Named(n) if self.user_types.contains_key(n) || self.user_enums.contains_key(n) => {
                 Ok(TypeExpr::Named {
-                    path: QualifiedName {
-                        segments: vec![Ident::new(name.clone(), span)],
-                        span,
-                    },
+                    path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
                     generic_args: Vec::new(),
                     span,
                 })
             }
             other => Err(CodegenError::Unsupported(format!(
-                "codegen_ty_to_type_expr: form `{:?}` not supported \
-                 (m62 v0.1 limits inference to primitives + named \
-                 types as generic args)",
-                other
+                "generic type argument `{}` not supported (m62 v0.1 limits \
+                 inference to primitives + named types as generic args)",
+                other.display()
             ))),
         }
-    }
-
-    /// m62: structurally walk a declared TypeExpr against an
-    /// actual CodegenTy, recording bindings for any generic
-    /// param refs. `params` names which idents in the TypeExpr
-    /// represent generic params (vs. concrete user types).
-    /// Errors if a param binds to multiple distinct types
-    /// (inconsistent inference).
-    fn unify_generic_param_bindings(
-        declared: &TypeExpr,
-        actual: &CodegenTy,
-        params: &BTreeSet<String>,
-        bindings: &mut BTreeMap<String, TypeExpr>,
-    ) -> Result<(), CodegenError> {
-        // Generic-param ref: bind to actual.
-        if let TypeExpr::Named {
-            path, generic_args, ..
-        } = declared
-        {
-            if path.segments.len() == 1
-                && generic_args.is_empty()
-                && params.contains(&path.segments[0].name)
-            {
-                let bound = Self::codegen_ty_to_type_expr(actual)?;
-                let name = &path.segments[0].name;
-                if let Some(prior) = bindings.get(name) {
-                    if prior != &bound {
-                        return Err(CodegenError::Unsupported(format!(
-                            "generic param `{}` inferred as both \
-                             `{:?}` and `{:?}` from call site",
-                            name, prior, bound
-                        )));
-                    }
-                } else {
-                    bindings.insert(name.clone(), bound);
-                }
-                return Ok(());
-            }
-        }
-        // Otherwise structural recurse where shapes match.
-        match (declared, actual) {
-            (TypeExpr::Array { elem, .. }, CodegenTy::Array(a_elem, _)) => {
-                Self::unify_generic_param_bindings(
-                    elem, a_elem, params, bindings,
-                )
-            }
-            (TypeExpr::Tuple(parts, _), CodegenTy::Tuple(a_parts))
-                if parts.len() == a_parts.len() =>
-            {
-                for (p, a) in parts.iter().zip(a_parts) {
-                    Self::unify_generic_param_bindings(
-                        p, a, params, bindings,
-                    )?;
-                }
-                Ok(())
-            }
-            // Concrete-vs-concrete shapes: nothing to bind.
-            // Mismatches don't error here — the typechecker (or
-            // the call site type check after substitution) will
-            // surface them.
-            _ => Ok(()),
-        }
-    }
-
-    /// m62: infer the concrete type-args tuple for a generic fn
-    /// call by unifying each declared param TypeExpr against the
-    /// actual arg CodegenTy. Returns the args in the same order
-    /// as the template's `generics: Vec<GenericParam>`.
-    fn infer_generic_fn_args(
-        template: &FnDecl,
-        actual_arg_tys: &[CodegenTy],
-    ) -> Result<Vec<TypeExpr>, CodegenError> {
-        let visible_args = template.params.len().min(actual_arg_tys.len());
-        let generic_param_names: BTreeSet<String> = template
-            .generics
-            .iter()
-            .map(|g| g.name.name.clone())
-            .collect();
-        let mut bindings: BTreeMap<String, TypeExpr> = BTreeMap::new();
-        for (p, actual_ty) in template
-            .params
-            .iter()
-            .zip(actual_arg_tys.iter())
-            .take(visible_args)
-        {
-            Self::unify_generic_param_bindings(
-                &p.ty,
-                actual_ty,
-                &generic_param_names,
-                &mut bindings,
-            )?;
-        }
-        let mut args: Vec<TypeExpr> = Vec::new();
-        for gp in &template.generics {
-            match bindings.get(&gp.name.name) {
-                Some(t) => args.push(t.clone()),
-                None => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "generic fn `{}`: could not infer param `{}` \
-                         from call site (m62 v0.1 requires every \
-                         generic param to appear in an arg position \
-                         that pins it)",
-                        template.name.name, gp.name.name
-                    )));
-                }
-            }
-        }
-        Ok(args)
     }
 
     /// m62: synthesize a concrete (non-generic) FnDecl from a
@@ -12124,6 +12302,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
+        fn mentions_parameter(te: &TypeExpr, names: &BTreeSet<&str>) -> bool {
+            match te {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    (path.segments.len() == 1 && names.contains(path.segments[0].name.as_str()))
+                        || generic_args.iter().any(|t| mentions_parameter(t, names))
+                }
+                TypeExpr::Projection { inner, .. } => mentions_parameter(inner, names),
+                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => mentions_parameter(elem, names),
+                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions_parameter(t, names)),
+                TypeExpr::Function { params, ret, .. } => params.iter().any(|t| mentions_parameter(t, names))
+                    || ret.as_ref().is_some_and(|t| mentions_parameter(t, names)),
+                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+            }
+        }
         // GH #884: module nesting flattened — a generic
         // instantiation written one brace deeper needs the same
         // monomorph synthesized, and the `TopDecl::Module` arm
@@ -12178,13 +12370,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     /* generic template — its own body's `T`
                      * references aren't instantiations. */
                 }
-                TopDecl::Fn(f) => {
+                TopDecl::Fn(f) if f.generics.is_empty() => {
                     Self::collect_in_fn_decl(
                         f,
                         generic_names,
                         seen,
                         requests,
                     )?;
+                }
+                TopDecl::Fn(f) => {
+                    // Like type and locus templates, unbound fn
+                    // annotations are not concrete instantiations.
+                    // Keep concretely spelled uses (including builtin
+                    // Option/Result); the typed rows supply bound uses.
+                    let names = f.generics.iter().map(|g| g.name.name.as_str()).collect();
+                    let mut local_seen = BTreeSet::new();
+                    let mut local_requests = Vec::new();
+                    Self::collect_in_fn_decl(f, generic_names, &mut local_seen, &mut local_requests)?;
+                    for (name, args) in local_requests {
+                        if !args.iter().any(|t| mentions_parameter(t, &names)) {
+                            let mangled = Self::mangle_generic_name(&name, &args)?;
+                            if seen.insert(mangled) {
+                                requests.push((name, args));
+                            }
+                        }
+                    }
                 }
                 TopDecl::Locus(l) if l.generics.is_empty() => {
                     for member in &l.members {
@@ -13308,11 +13518,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (JS `number`) instead of i64 (JS `BigInt`). `@ffi("c")`
         // keeps i64 — on wasm those resolve to linked runtime C
         // symbols that expect i64, not the JS boundary.
-        let ffi_js = f
-            .ffi
-            .as_ref()
-            .map(|a| a.abi == "js")
-            .unwrap_or(false);
+        // The marshalling is `ForeignAbi(js)`'s lowering data on the
+        // target; a target that rejects the ABI never lowers the
+        // declaration (the admission refuses it first).
+        let ffi_js = f.ffi.as_ref().is_some_and(|a| {
+            hale_types::capability::Abi::of(&a.abi) == Some(hale_types::capability::Abi::Js)
+                && self.cells.lowering(Capability::ForeignAbi(hale_types::capability::Abi::Js))
+                    == Some(hale_types::capability::Lowering::IntAsF64)
+        });
         let mut param_tys = Vec::with_capacity(f.params.len());
         let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
             Vec::with_capacity(f.params.len());
@@ -14290,8 +14503,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// fns. Used from both expression-position and statement-position
     /// call sites.
     /// m62: lower a call to a generic free fn. Lowers each arg
-    /// once (so side effects fire at most once), infers concrete
-    /// type args from the resulting CodegenTys, mangles, and —
+    /// once (so side effects fire at most once), reads the type
+    /// args and the specialization's name from the call's
+    /// typed-body row (`generic_call_instance`), and —
     /// if this instantiation hasn't been seen before — synthesizes
     /// + lowers a specialized fn body (saving and restoring
     /// builder state so the surrounding caller's IR isn't
@@ -14300,6 +14514,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_generic_fn_call(
         &mut self,
         name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
@@ -14322,10 +14538,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 arg_pairs.len()
             )));
         }
-        let arg_tys: Vec<CodegenTy> =
-            arg_pairs.iter().map(|(_, t)| t.clone()).collect();
-        let inferred = Self::infer_generic_fn_args(&template, &arg_tys)?;
-        let mangled = Self::mangle_generic_name(name, &inferred)?;
+        let (inferred, mangled, instance) = self.generic_call_instance(name, call, call_span)?;
 
         // Synthesize + lower the specialized fn if we haven't
         // seen this instantiation before.
@@ -14351,6 +14564,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_scratch_local = self.current_user_fn_scratch_local;
             let saved_exit_bb = self.current_user_fn_exit_bb;
             let saved_ret_alloca = self.current_user_fn_ret_alloca;
+            // A free fn must not emit loads from the caller method's
+            // allocas. Nested specialization also restores the caller's
+            // fallible channel after lowering the new function.
+            let saved_method_scratch = self.current_method_scratch.take();
+            let saved_method_caller = self.current_method_caller_arena.take();
+            let saved_fallible = self.current_user_fn_fallible.take();
+            let saved_defaults = std::mem::take(&mut self.default_invocations);
+            let saved_call = self.current_call.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
@@ -14366,7 +14587,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_self = None;
 
             self.declare_user_fn(&synth)?;
+            let saved_specialization = self.current_specialization.replace(instance);
             self.lower_user_fn_body(&synth)?;
+            self.current_specialization = saved_specialization;
 
             // Restore caller-side state.
             if let Some(b) = saved_block {
@@ -14389,6 +14612,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_user_fn_scratch_local = saved_scratch_local;
             self.current_user_fn_exit_bb = saved_exit_bb;
             self.current_user_fn_ret_alloca = saved_ret_alloca;
+            self.current_method_scratch = saved_method_scratch;
+            self.current_method_caller_arena = saved_method_caller;
+            self.current_user_fn_fallible = saved_fallible;
+            self.default_invocations = saved_defaults;
+            self.current_call = saved_call;
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
@@ -14785,7 +15013,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // arbitrary expressions they execute in the caller's
                 // scope (matching the interpreter's semantics).
                 let default = sig.defaults[i].as_ref().expect("checked above");
-                self.lower_expr(default, scope)?
+                self.lower_default_in_caller(default, scope)?
             };
             // F.20 Phase B: implicit locus → interface coercion. If
             // the param is an Interface and the arg is a LocusRef
@@ -16207,6 +16435,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        let previous = self.current_call;
+        if let Stmt::Expr(expr) = stmt {
+            if let Some(call) = Self::invocation_id(expr) {
+                self.current_call = Some(call);
+            }
+        }
+        let result = self.lower_stmt_at(stmt, scope);
+        self.current_call = previous;
+        result
+    }
+
+    fn lower_stmt_at(
+        &mut self,
+        stmt: &Stmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
         match stmt {
             Stmt::Expr(Expr::Struct { path, inits, .. }) => {
                 // m73a: rewrite recognized `std::*` paths to the
@@ -16241,15 +16485,86 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // its top, so nested/param-default instantiations
                     // see false and a value-use of a cross-pool `I{}` is
                     // rejected there.
-                    self.bare_locus_instantiation_stmt = true;
-                    // GH #921 A2: hand the pre-pass's id for THIS node
-                    // to the instantiation, which takes it like a flag.
-                    let site = self.owner_site_for_stmt(stmt);
-                    self.owner_site = Some(site);
-                    let r = self.lower_locus_instantiation(name, inits, scope);
-                    self.bare_locus_instantiation_stmt = false;
-                    self.owner_site = None;
-                    let _ = r?;
+                    //
+                    // U-1 (F.40 phase 3, P1): at a `Mixed` site whose
+                    // owner is a singleton on main, the enclosing
+                    // instance decides the arm at runtime: on main the
+                    // same-tower bubble, off it the cross-pool post. The
+                    // literal is lowered once per arm.
+                    let mixed = self
+                        .current_self
+                        .as_ref()
+                        .map(|cs| (cs.locus_name.clone(), name.to_string()))
+                        .is_some_and(|k| self.ownership_bubble_mixed_plan.get(&k).is_some_and(|p| p.singleton));
+                    let arms: Vec<(Option<inkwell::basic_block::BasicBlock<'ctx>>, Option<MixedArm>)> = if mixed {
+                        let on_main_fn = self.module.get_function("lotus_on_main_thread").unwrap_or_else(|| {
+                            self.module.add_function(
+                                "lotus_on_main_thread",
+                                self.context.i32_type().fn_type(&[], false),
+                                None,
+                            )
+                        });
+                        let on_main = self
+                            .builder
+                            .build_call(on_main_fn, &[], "mixed.on_main")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_on_main_thread returns i32")
+                            .into_int_value();
+                        let is_main = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                on_main,
+                                self.context.i32_type().const_zero(),
+                                "mixed.is_main",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let f = self
+                            .builder
+                            .get_insert_block()
+                            .and_then(|b| b.get_parent())
+                            .expect("a statement inside a function");
+                        let same = self.context.append_basic_block(f, "mixed.same_tower");
+                        let cross = self.context.append_basic_block(f, "mixed.cross_pool");
+                        self.builder
+                            .build_conditional_branch(is_main, same, cross)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        vec![(Some(same), Some(MixedArm::SameTower)), (Some(cross), Some(MixedArm::CrossPool))]
+                    } else {
+                        vec![(None, None)]
+                    };
+                    let born = mixed.then(|| {
+                        let f = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("a function");
+                        self.context.append_basic_block(f, "mixed.born")
+                    });
+                    for (bb, arm) in arms {
+                        if let Some(bb) = bb {
+                            self.builder.position_at_end(bb);
+                        }
+                        self.mixed_bubble_arm = arm;
+                        self.bare_locus_instantiation_stmt = true;
+                        // GH #921 A2: hand the pre-pass's id for THIS node
+                        // to the instantiation, which takes it like a flag.
+                        let site = self.owner_site_for_stmt(stmt);
+                        self.owner_site = Some(site);
+                        let r = self.lower_locus_instantiation(name, inits, scope);
+                        self.bare_locus_instantiation_stmt = false;
+                        self.owner_site = None;
+                        self.mixed_bubble_arm = None;
+                        let _ = r?;
+                        if let Some(born) = born {
+                            if self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() {
+                                self.builder
+                                    .build_unconditional_branch(born)
+                                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            }
+                        }
+                    }
+                    if let Some(born) = born {
+                        self.builder.position_at_end(born);
+                    }
                 } else if self.user_types.contains_key(name) {
                     // Statement-position type literal: build it,
                     // discard the pointer. Useful for side-effect-
@@ -16335,7 +16650,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // position — synthesize on-demand,
                             // discard return value.
                             let _ = self
-                                .lower_generic_fn_call(name, args, scope)?;
+                                .lower_generic_fn_call(name, *call_id, callee.span(), args, scope)?;
                         } else if let Some((slot_ptr, CodegenTy::FnPtr {
                             args: arg_tys,
                             ret: ret_ty,
@@ -18069,6 +18384,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `user_fn_shadows_bounded_intrinsic` (`form/bounded.rs`) — so
     /// the guarded arms no longer hijack it and still need no
     /// refusal here.
+    /// A bare builtin's row of the signature table the checker types
+    /// its calls by (F.40 phase 3, E4): lowering reads the arity and
+    /// the result from it.
+    fn builtin_sig(name: &str) -> &'static hale_types::builtin_sigs::BuiltinSig {
+        hale_types::builtin_sigs::bare_builtin_sig(name).expect("every lowered bare builtin has a signature row")
+    }
+
+    /// The type a builtin's row gives a call over its (first) operand.
+    fn builtin_result(sig: &hale_types::builtin_sigs::BuiltinSig, operand: &CodegenTy) -> CodegenTy {
+        use hale_types::builtin_sigs::Returns;
+        match sig.returns {
+            Returns::Prim(PrimType::Int) => CodegenTy::Int,
+            Returns::Prim(PrimType::Float) => CodegenTy::Float,
+            Returns::Prim(PrimType::Bool) => CodegenTy::Bool,
+            Returns::Prim(PrimType::String) => CodegenTy::String,
+            Returns::Prim(other) => unreachable!("no builtin row returns {other:?}"),
+            Returns::Operand => operand.clone(),
+        }
+    }
+
     fn reject_builtin_over_user_fn(
         &self,
         name: &str,
@@ -18101,7 +18436,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("len");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`len` expects exactly 1 argument, got {}",
                 args.len()
@@ -18126,7 +18462,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_len returns i64");
-                Ok((val, CodegenTy::Int))
+                Ok((val, Self::builtin_result(sig, &ty)))
             }
             CodegenTy::Bytes | CodegenTy::BytesView => {
                 // m89: Bytes carries an explicit length prefix —
@@ -18147,11 +18483,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_bytes_len returns i64");
-                Ok((val, CodegenTy::Int))
+                Ok((val, Self::builtin_result(sig, &ty)))
             }
             CodegenTy::Array(_, n) => {
                 let val = self.context.i64_type().const_int(n, true);
-                Ok((val.into(), CodegenTy::Int))
+                Ok((val.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`len` not supported for argument type {:?}",
@@ -18171,7 +18507,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("Int");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`Int` cast expects exactly 1 argument, got {}",
                 args.len()
@@ -18179,7 +18516,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Int => Ok((v, CodegenTy::Int)),
+            CodegenTy::Int => Ok((v, Self::builtin_result(sig, &ty))),
             CodegenTy::Float => {
                 let res = self
                     .builder
@@ -18189,7 +18526,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Int.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), CodegenTy::Int))
+                Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Int(...)` cast not supported for argument type {:?} \
@@ -18214,7 +18551,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("Float");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`Float` cast expects exactly 1 argument, got {}",
                 args.len()
@@ -18222,7 +18560,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Float => Ok((v, CodegenTy::Float)),
+            CodegenTy::Float => Ok((v, Self::builtin_result(sig, &ty))),
             CodegenTy::Int => {
                 let res = self
                     .builder
@@ -18232,7 +18570,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Float.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), CodegenTy::Float))
+                Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
@@ -18253,7 +18591,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let arity = if name == "abs" { 1 } else { 2 };
+        let sig = Self::builtin_sig(name);
+        let arity = sig.arity;
         if args.len() != arity {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly {} argument(s), got {}",
@@ -18293,7 +18632,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, at))
+                Ok((v, Self::builtin_result(sig, &at)))
             }
             CodegenTy::Float => {
                 let pred = match name {
@@ -18314,7 +18653,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, at))
+                Ok((v, Self::builtin_result(sig, &at)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`{}` not supported for type {:?}",
@@ -18358,7 +18697,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, ty.clone()))
+                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             CodegenTy::Float => {
                 let fv = v.into_float_value();
@@ -18380,7 +18719,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, ty.clone()))
+                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`abs` not supported for type {:?}",
@@ -18398,7 +18737,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 2 {
+        let sig = Self::builtin_sig(name);
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly 2 arguments, got {}",
                 name,
@@ -18442,7 +18782,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &format!("str.{}.bool", name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((v.into(), CodegenTy::Bool))
+        Ok((v.into(), Self::builtin_result(sig, &st)))
     }
 
     /// m37: lower a `to_string(x)` builtin call. Routes by the
@@ -18503,7 +18843,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("to_string");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`to_string` expects exactly 1 argument, got {}",
                 args.len()
@@ -18511,7 +18852,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
-        Ok((res, CodegenTy::String))
+        Ok((res, Self::builtin_result(sig, &ty)))
     }
 
     /// m47-payloads-followup: convert any single value to a
@@ -21546,13 +21887,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainReturn");
-            if !self.is_wasm {
-                // GH #468: same exit-quiesce as the fallthrough
-                // main-exit path — return-from-main must not lose
-                // kernel-accepted ingress either.
-                self.emit_bus_ingress_quiesce()?;
-                self.emit_coop_pool_shutdown_all()?;
-            }
+            // GH #468: same exit-quiesce as the fallthrough
+            // main-exit path — return-from-main must not lose
+            // kernel-accepted ingress either. The obligations are the
+            // cells' and their order the plan's.
+            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             // GH #789: emit the teardown for everything main owns at
             // this point, but LEAVE the frame on the stack. `return`
             // terminates its own block, so the frame is still the
@@ -21587,6 +21926,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let frame =
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
+            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
@@ -22243,7 +22583,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
+    fn invocation_id(expr: &Expr) -> Option<NodeId> {
+        match expr {
+            Expr::Call { id, .. } => Some(*id),
+            Expr::Or { inner, .. } => Self::invocation_id(inner),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn lower_default_in_caller(
+        &mut self,
+        default: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let call = self.current_call.ok_or_else(|| CodegenError::UnsupportedAt(
+            "function default has no source invocation".into(), default.span(),
+        ))?;
+        if self.default_invocations.contains(&call.0) {
+            return Err(CodegenError::UnsupportedAt("recursive function default evaluation".into(), default.span()));
+        }
+        self.default_invocations.push(call.0);
+        let result = self.lower_expr(default, scope);
+        self.default_invocations.pop();
+        result
+    }
+
     pub(crate) fn lower_expr(
+        &mut self,
+        e: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let previous = self.current_call;
+        if let Some(call) = Self::invocation_id(e) {
+            self.current_call = Some(call);
+        }
+        let result = self.lower_expr_at(e, scope);
+        self.current_call = previous;
+        result
+    }
+
+    fn lower_expr_at(
         &mut self,
         e: &Expr,
         scope: &Scope<'ctx>,
@@ -23051,7 +23430,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (v, t) = self.lower_expr(operand, scope)?;
                 self.lower_unop(*op, v, &t)
             }
-            Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Call { callee, args, id: call_id, .. } => match callee.as_ref() {
                 // m46-vocab: count() / mean(x) accumulator builtins
                 // — when an accumulator-eval ctx is active, route
                 // to the next slot. count() takes 0 args; mean(x)
@@ -23162,7 +23541,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if self.generic_fn_templates.contains_key(&i.name) =>
                 {
                     let result =
-                        self.lower_generic_fn_call(&i.name, args, scope)?;
+                        self.lower_generic_fn_call(&i.name, *call_id, i.span, args, scope)?;
                     result.ok_or_else(|| {
                         CodegenError::Unsupported(format!(
                             "generic fn `{}` returns no value but is \
@@ -28133,9 +28512,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ret: Option<TypeExpr>,
         }
         // GH #884: module nesting flattened.
-        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == cs.locus_name => l
+        let sig: MethodSig = self.locus_declaration(&cs.locus_name)
+            .and_then(|l| l
                     .members
                     .iter()
                     .find_map(|m| match m {
@@ -28161,9 +28539,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                         _ => None,
-                    }),
-                _ => None,
-            })
+                    }))
             .expect("method declaration was visited in pass A2");
         // Caller may omit a contiguous tail of defaulted params
         // (suffix-only rule enforced at decl time). Each missing
@@ -28197,7 +28573,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 let default_expr =
                     sig.params[i].default.as_ref().expect("checked above");
-                self.lower_expr(default_expr, scope)?
+                self.lower_default_in_caller(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             // 2026-05-18 — locus → interface coercion at self-method
@@ -28595,9 +28971,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fallible: Option<TypeExpr>,
         }
         // GH #884: module nesting flattened.
-        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Locus(l) if l.name.name == locus_name => l
+        let sig: MethodSig = self.locus_declaration(&locus_name)
+            .and_then(|l| l
                     .members
                     .iter()
                     .find_map(|m| match m {
@@ -28635,9 +29010,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                         _ => None,
-                    }),
-                _ => None,
-            })
+                    }))
             .ok_or_else(|| {
                 CodegenError::Unsupported(format!(
                     "method `{}` declaration not found on locus `{}`",
@@ -28698,7 +29071,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             locus_name, method_name, sig.params[i].name.name
                         ))
                     })?;
-                self.lower_expr(default_expr, scope)?
+                self.lower_default_in_caller(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             // 2026-05-18 — locus → interface coercion at locus-method
@@ -32147,10 +32520,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
         if let Some(reclaim) = self.reclaim_fns.get(field_locus).copied() {
+            let request = self.module.get_function("lotus_reclaim_request")
+                .expect("reclaim request declared");
             self.builder
                 .build_call(
-                    reclaim,
-                    &[old_ptr.into()],
+                    request,
+                    &[
+                        old_ptr.into(), cs.self_ptr.into(),
+                        reclaim.as_global_value().as_pointer_value().into(),
+                    ],
                     &format!("{}.reassign.reclaim_old", field_locus),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -32550,7 +32928,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         delta: i64,
     ) -> Result<(), CodegenError> {
-        if self.is_wasm {
+        if !self.cells.emits(Obligation::DrainObserver) {
             return Ok(());
         }
         let i64_t = self.context.i64_type();

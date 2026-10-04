@@ -551,9 +551,15 @@ and the direction is fixed: *uncertainty may add possible edges;
 it may never delete an edge and report success.* Concretely, any
 judgment that traverses calls refuses to certify over:
 
-- an **indirect call** through a function-typed parameter (a call
-  through a local bound to a function by `let` is not one: `let f =
-  pid; f()` is judged as the call of `pid` it is);
+- an **indirect call** that no function value of the program can
+  answer. A call through a function value — a function-typed
+  parameter, a local the compiler can't pin to one function, a
+  computed callee — is judged as a call of each function the program
+  reads as a value whose signature fits (the router's `add_fn`
+  handlers are the everyday case), and a call through a local bound
+  to a function by `let` is the call of that function (`let f = pid;
+  f()` is judged as the call of `pid` it is); only a call none of
+  them can be stays unknowable;
 - a **method call on a receiver the compiler cannot type**. The
   summarizer types bare vars, `self` fields, chained fields
   (through locus and struct field maps), struct-literal receivers,

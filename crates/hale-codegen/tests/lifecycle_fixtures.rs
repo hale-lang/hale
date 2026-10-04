@@ -74,6 +74,119 @@ use lifecycle_plan::{normalized, plan, render};
 /// outcome of its own (`timeout`), not a stalled suite.
 const DEADLINE: Duration = Duration::from_secs(10);
 
+/// A slot's key is claimed before its instance number is assigned. Stop
+/// the creator in that window and make a second thread look up the same
+/// subject: it must wait for publication, never return instance zero.
+#[test]
+fn trace_subject_is_initialized_before_another_thread_uses_it() {
+    let runtime = include_str!("../runtime/lotus_arena.c");
+    let subject = runtime.split_once("#define LOTUS_LC_SLOTS").unwrap().1;
+    let subject = subject.split_once("static void lotus_lc_domain").unwrap().0;
+    // Compile the production lookup itself. These test-only wrappers stop
+    // the mint just before assignment and observe the reader's ready wait;
+    // neither hook is part of a shipped runtime or relies on a timed sleep.
+    let source = format!(r#"
+#include <assert.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static void mint_pause(void);
+static void ready_read(void);
+#define __atomic_add_fetch(...) \
+    ({{ __auto_type value = __atomic_add_fetch(__VA_ARGS__); mint_pause(); value; }})
+#undef atomic_load_explicit
+#define atomic_load_explicit(...) \
+    ({{ __auto_type value = __c11_atomic_load(__VA_ARGS__); ready_read(); value; }})
+
+#define LOTUS_LC_SLOTS{subject}
+
+#undef __atomic_add_fetch
+#undef atomic_load_explicit
+#define atomic_load_explicit __c11_atomic_load
+
+static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
+static int creator_paused, release_creator, reader_waiting, reader_done;
+static _Thread_local int reader;
+static int object;
+static uint64_t creator_inst, reader_inst;
+
+static void mint_pause(void) {{
+    pthread_mutex_lock(&gate);
+    creator_paused = 1;
+    pthread_cond_broadcast(&changed);
+    while (!release_creator) pthread_cond_wait(&changed, &gate);
+    pthread_mutex_unlock(&gate);
+}}
+
+static void ready_read(void) {{
+    if (!reader) return;
+    pthread_mutex_lock(&gate);
+    reader_waiting = 1;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&gate);
+}}
+
+static void *create_subject(void *unused) {{
+    (void)unused;
+    creator_inst = lotus_lc_subject(&object, NULL)->inst;
+    return NULL;
+}}
+
+static void *read_subject(void *unused) {{
+    (void)unused;
+    reader = 1;
+    lotus_lc_slot_t *slot = lotus_lc_subject(&object, "Subject");
+    reader_inst = slot->inst;
+    pthread_mutex_lock(&gate);
+    reader_done = 1;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&gate);
+    return NULL;
+}}
+
+int main(void) {{
+    alarm(5);
+    pthread_t creator, observer;
+    assert(pthread_create(&creator, NULL, create_subject, NULL) == 0);
+    pthread_mutex_lock(&gate);
+    while (!creator_paused) pthread_cond_wait(&changed, &gate);
+    pthread_mutex_unlock(&gate);
+    assert(pthread_create(&observer, NULL, read_subject, NULL) == 0);
+    pthread_mutex_lock(&gate);
+    while (!reader_waiting && !reader_done) pthread_cond_wait(&changed, &gate);
+    release_creator = 1;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&gate);
+    assert(pthread_join(creator, NULL) == 0);
+    assert(pthread_join(observer, NULL) == 0);
+    assert(reader_inst != 0 && reader_inst == creator_inst);
+    lotus_lc_slot_t *slot = lotus_lc_subject(&object, NULL);
+    assert(strcmp(slot->type, "Subject") == 0);
+    assert(slot->inc == 0 && slot->running == 0);
+    return 0;
+}}
+"#);
+    let bin = harness::unique_bin("hale_trace_subject_publication");
+    let c = bin.with_extension("c");
+    std::fs::write(&c, source).unwrap();
+    let built = Command::new("clang")
+        .args(["-std=gnu11", "-pthread"])
+        .arg(&c).arg("-o").arg(&bin)
+        .output().expect("compile the trace subject publication probe");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&bin).output().expect("run the trace subject publication probe");
+    let _ = std::fs::remove_file(&c);
+    let _ = std::fs::remove_file(&bin);
+    assert!(ran.status.success(), "trace subject publication: {}\n{}",
+        ran.status, String::from_utf8_lossy(&ran.stderr));
+}
+
 struct Fixture {
     file: &'static str,
     /// The inventory's decision line, or `RD` / `JP`.
@@ -133,6 +246,10 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l06_readiness_main.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l06_readiness_pool.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l07_pool_or_wait_teardown.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_deferred_main_entry.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_main_fall_through.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_main_return.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_main_test_failure.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l08_birth_failure_kept.hl", line: "8", adopted: Some("closure-violation-child-kept"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l09_delivery_at_epoch.hl", line: "9", adopted: Some("delivered-at-epoch"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l10_dissolve_closures_first.hl", line: "10", adopted: Some("closures-before-dissolve"), run: RunMode::Plain, judge: closures_before_dissolve },
@@ -149,6 +266,12 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_self_post_overflow.hl", line: "19", adopted: Some("all-completed"), run: RunMode::Plain, judge: all_completed },
     Fixture { file: "l19_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: queued_run_canceled },
     Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
+    Fixture { file: "l19_started_run_retained.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_started_run_retained_async.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_started_run_publishes_back.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
+    Fixture { file: "l19_started_run_publishes_back_async.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
+    Fixture { file: "l19_handler_replaces_started_run.hl", line: "19", adopted: Some("answered-after-handler"), run: RunMode::Plain, judge: answered_after_handler },
+    Fixture { file: "l19_handler_replaces_started_run_async.hl", line: "19", adopted: Some("answered-after-handler"), run: RunMode::Plain, judge: answered_after_handler },
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Env(SMALL_RING), judge: full_ring },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Plain, judge: empty_ring },
@@ -165,7 +288,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l06_readiness_main.hl", "C8", "delivered-during-birth"),
     ("l06_readiness_pool.hl", "C8", "delivered-during-birth"),
-    ("l07_pool_or_wait_teardown.hl", "R34", "hang-in-pool-join"),
     ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
@@ -186,17 +308,31 @@ const PENDING: &[(&str, &str)] = &[
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
+    (
+        "l07_or_wait_deferred_main_entry.hl",
+        "-: WaitAbort@DeferredMainEntry PoolJoin@DeferredMainEntry
+         edge -.WaitAbort@DeferredMainEntry.Completed -> -.PoolJoin@DeferredMainEntry.Entered",
+    ),
+    (
+        "l07_or_wait_main_return.hl",
+        "-: WaitAbort@MainReturn PoolJoin@MainReturn
+         edge -.WaitAbort@MainReturn.Completed -> -.PoolJoin@MainReturn.Entered",
+    ),
+    (
+        "l07_or_wait_main_test_failure.hl",
+        "-: WaitAbort@MainTestFailure PoolJoin@MainTestFailure
+         edge -.WaitAbort@MainTestFailure.Completed -> -.PoolJoin@MainTestFailure.Entered",
+    ),
     // R19 across pools: the run queued on `side` is canceled by the
     // reclaim on main, inside its bracket. The replacement's run is the
     // judge's, since one plan step cannot owe two ends.
     (
         "l19_cross_pool_queued_run_canceled.hl",
         "App: Birth Run Drain Dissolve Reclaim
-         Holder: Birth Run!pool:side Drain Dissolve Reclaim
+         Holder: Birth Drain Dissolve Reclaim
          Kid*2: Birth Drain Dissolve Reclaim
          Kid: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered
-         edge Holder.Run.Ended -> Holder.Drain.Entered",
+         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
     ),
     // R19's other half: a run admitted after the worker's last check is
     // canceled by its child's reclaim; once the canceled cells fill the
@@ -296,8 +432,12 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l06_readiness_main.hl" | "l06_readiness_pool.hl" => &["6"],
         // Line 7 today: the pool join never returns.
-        "l07_pool_or_wait_teardown.hl" => {
-            p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(Spine::EagerTeardown) });
+        // The aborted wait is an unhandled structural failure: the
+        // worker exits the process while main is joining it. The abort
+        // completed, but neither the join nor later teardown completes.
+        "l07_pool_or_wait_teardown.hl" | "l07_or_wait_main_fall_through.hl" => {
+            let spine = if file == "l07_pool_or_wait_teardown.hl" { Spine::EagerTeardown } else { Spine::MainFallThrough };
+            p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(spine) });
             &["7"]
         }
         "l08_birth_failure_kept.hl" => {
@@ -349,6 +489,18 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
             &["19"]
         }
+        // The placed child's started run and the inline replacement
+        // both end before their own physical reclaim (line 19).
+        "l19_started_run_retained.hl" | "l19_started_run_retained_async.hl"
+        => {
+            p.occurrences = count(&[("Kid", 2)]);
+            &["19"]
+        }
+        "l19_started_run_publishes_back.hl" | "l19_started_run_publishes_back_async.hl"
+        | "l19_handler_replaces_started_run.hl" | "l19_handler_replaces_started_run_async.hl" => {
+            p.occurrences = count(&[("Kid", 2), ("Rows", 2)]);
+            &["19"]
+        }
         "rd_restart_during_teardown.hl" => {
             p.failures.push(fails("Kid", FailureSource::Run, false, true, 0));
             &["RD"]
@@ -365,13 +517,18 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
 
 /// Fixtures with a plan the producer does not derive yet, held to their
 /// hand-written one alone: (file, what the producer does not state).
-/// L5's second part wrote them after the producer. Each needs a fact a
+/// Each needs a fact a
 /// run path cannot carry or a row the producer does not emit: R19a's
 /// cancellation at a reclaim off the run's pool, the instances of one
 /// declaration whose runs end differently in one run (the trace names
 /// an instance by its declaration), and a main locus built more than
-/// once, each literal with its own teardown.
+/// once, each literal with its own teardown. The producer also does not
+/// enumerate deferred main-entry, return or test-failure process spines
+/// yet; P3's fixtures pin those spines until their producer rows exist.
 const UNDERIVED: &[(&str, &str)] = &[
+    ("l07_or_wait_deferred_main_entry.hl", "the producer has no deferred main-entry process spine"),
+    ("l07_or_wait_main_return.hl", "the producer has no main-return process spine or exit-path selection"),
+    ("l07_or_wait_main_test_failure.hl", "the producer has no test-failure process spine or exit-path selection"),
     (
         "l19_cross_pool_queued_run_canceled.hl",
         "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
@@ -437,16 +594,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         "l04_dissolve_route_cascade.hl",
         "C31",
         &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
-    ),
-    // Line 7: the host joins the pools and only then aborts the waits,
-    // and the join never returns, so the abort never comes.
-    (
-        "l07_pool_or_wait_teardown.hl",
-        "R34",
-        &[
-            "edge: -.PoolJoin@EagerTeardown.Entered (process) with -.WaitAbort@EagerTeardown.Completed not reached",
-            "missing: -.WaitAbort@EagerTeardown",
-        ],
     ),
     // Late declares no run(), and its resumed incarnation enters one.
     ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
@@ -530,17 +677,17 @@ const POOL_WORKER_PLAN: &str = "Worker: Birth Run!pool:side Drain Dissolve Recla
      edge Worker.Run.Ended -> -.PoolJoin@EagerTeardown.Completed";
 
 const CONTROLS: &[Control] = &[
-    // The first control, the host's own order (inventory decision 7):
-    // quiesce, join, then abort. The trace shows the join entered
-    // before any wait-abort completed.
+    // Inventory decision 7 undone: the wait-abort skipped, so the join
+    // is entered before any wait-abort completed (the host's order
+    // before P3 3 of 3 put the abort ahead of the join).
     Control {
-        name: "host_joins_before_it_aborts_waits",
+        name: "join_entered_with_no_wait_abort",
         covers: ObligationKind::WaitAbort,
         fixture: "l16_eager_spine_pool_join.hl",
-        skip: "",
+        skip: "WaitAbort",
         plan: Some(LINE_7_PLAN),
         fails_with: "edge: -.PoolJoin@EagerTeardown.Entered",
-        baseline_passes: false,
+        baseline_passes: true,
     },
     // The deferred-pool-join regression's shape: teardown reaches the
     // worker's fields with its run() still going.
@@ -572,7 +719,7 @@ const CONTROLS: &[Control] = &[
         fixture: "l14_reclaim_exactly_once.hl",
         skip: "Reclaim.Completed",
         plan: None,
-        fails_with: "edge: App.Reclaim.Entered",
+        fails_with: "unended: Kid.Reclaim",
         baseline_passes: false,
     },
     // A child reclaimed with its handler not seen to complete.
@@ -602,7 +749,7 @@ const CONTROLS: &[Control] = &[
         fixture: "l19_parked_started_coroutine.hl",
         skip: "Run.Terminal(CanceledAfterStart)",
         plan: None,
-        fails_with: "edge: __StdIoTcpListener.Drain.Entered",
+        fails_with: "edge: __StdIoTcpListener.Reclaim.Completed",
         baseline_passes: false,
     },
     Control {
@@ -623,6 +770,17 @@ const CONTROLS: &[Control] = &[
         skip: "Run.Terminal(NotStarted(Acknowledged))",
         plan: None,
         fails_with: "missing: Kid.Run",
+        baseline_passes: true,
+    },
+    // R19a: without the reclaim's wait for the run hold, the old child's
+    // reclaim completes while its started run is still running.
+    Control {
+        name: "run_hold_wait_removed",
+        covers: ObligationKind::Run,
+        fixture: "l19_started_run_retained.hl",
+        skip: "RunHold",
+        plan: None,
+        fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Run.Ended not reached",
         baseline_passes: true,
     },
     Control {
@@ -1060,13 +1218,68 @@ fn queued_run_canceled(r: &Ran) -> String {
     }
 }
 
-/// What the cross-pool fixture printed: the first child's run never
-/// started, the replacement's ran, each child dissolved once.
+/// The queued child's run never started, the replacement's ran, and
+/// each child dissolved once.
 fn cross_pool_printed(r: &Ran) -> bool {
     count(r, "ev kid-run 0") == 0
         && count(r, "ev kid-run 1") == 1
         && count(r, "ev kid-dissolve 0") == 1
         && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// Both children's runs read their own names, and each child is torn
+/// down once.
+fn started_printed(r: &Ran) -> bool {
+    count(r, "ev kid-run 0 kid-0-name") == 1
+        && count(r, "ev kid-run 1 kid-1-name") == 1
+        && count(r, "ev kid-dissolve 0") == 1
+        && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// The started run returned, reading its own child, and the trace's
+/// plan holds its end before its child's reclaim completes.
+fn run_held(r: &Ran) -> String {
+    match (started_printed(r), r.code) {
+        (true, Some(0)) => "run-held".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
+/// As [`started_printed`], and App's handler heard the run's note on
+/// main before the reassignment completed: inside the reclaim's wait.
+fn answered_in_wait_printed(r: &Ran) -> bool {
+    let heard = r.stdout.find("ev heard 0");
+    let replaced = r.stdout.find("ev replaced");
+    started_printed(r)
+        && count(r, "ev rows 0 1") == 1 && count(r, "ev rows 1 1") == 1
+        && matches!((heard, replaced), (Some(h), Some(p)) if h < p)
+}
+
+fn answered_in_wait(r: &Ran) -> String {
+    match (answered_in_wait_printed(r), r.code) {
+        (true, Some(0)) => "answered-in-wait".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
+fn answered_after_handler_printed(r: &Ran) -> bool {
+    started_printed(r)
+        && count(r, "ev rows 0 1") == 1
+        && count(r, "ev rows 1 1") == 1
+        && count(r, "ev scratch-dissolve") == 1
+        && matches!((pos(r, "ev scratch-dissolve"), pos(r, "ev replaced")), (Some(d), Some(p)) if d < p)
+        && matches!((pos(r, "ev replaced"), pos(r, "ev heard 0")), (Some(p), Some(h)) if p < h)
+        && matches!((pos(r, "ev kid-dissolve 0"), pos(r, "ev kid-run 1 kid-1-name")), (Some(d), Some(n)) if d < n)
+}
+
+fn answered_after_handler(r: &Ran) -> String {
+    match (answered_after_handler_printed(r), r.code) {
+        (true, Some(0)) => "answered-after-handler".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
 }
 
 /// The run queued on `side` is canceled by the reclaim on main and
@@ -1276,7 +1489,7 @@ fn every_planned_kind_has_a_negative_control() {
 /// and the main one's completes (`=Ended`). The edges between the
 /// Parents and their fields are not held: two occurrences of each, and
 /// the trace does not say which is whose. The control, both parents on
-/// main, claims main alone and renders byte for byte what it did before.
+/// main, claims main alone. Every run is held until reclaim completes.
 const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains.hl",
@@ -1285,11 +1498,13 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
          edge Leaf.Run.Ended -> Leaf.Reclaim.Completed\n\
          edge Leaf.Reclaim.Entered -> Leaf.Cancellation.Entered",
     ),
@@ -1301,11 +1516,13 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
          edge Twig.Run.Ended -> Twig.Reclaim.Completed\n\
          edge Twig.Reclaim.Entered -> Twig.Cancellation.Entered",
     ),
@@ -1316,12 +1533,16 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Parent: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
          edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
 ];
 
@@ -1332,7 +1553,8 @@ const FIELD_PLANS: &[(&str, &str)] = &[
 /// two domains named no one). Each occurrence's run() runs inline at its
 /// statement and ends before its drain, on side as on main: a body
 /// literal's run is never posted behind its owner's teardown. The
-/// control, both Mids on main, renders byte for byte what it did before.
+/// control, both Mids on main, retains that inline ordering. Both also
+/// carry the started-run retention edge through physical reclaim.
 const BODY_PLANS: &[(&str, &str)] = &[
     (
         "l03_body_literal_two_domains.hl",
@@ -1341,12 +1563,15 @@ const BODY_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
     (
         "l03_body_literal_one_domain.hl",
@@ -1355,12 +1580,16 @@ const BODY_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
          edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
 ];
 
@@ -1458,6 +1687,10 @@ fixture_tests! {
     l06_readiness_main => "l06_readiness_main.hl",
     l06_readiness_pool => "l06_readiness_pool.hl",
     l07_pool_or_wait_teardown => "l07_pool_or_wait_teardown.hl",
+    l07_or_wait_deferred_main_entry => "l07_or_wait_deferred_main_entry.hl",
+    l07_or_wait_main_fall_through => "l07_or_wait_main_fall_through.hl",
+    l07_or_wait_main_return => "l07_or_wait_main_return.hl",
+    l07_or_wait_main_test_failure => "l07_or_wait_main_test_failure.hl",
     l08_birth_failure_kept => "l08_birth_failure_kept.hl",
     l09_delivery_at_epoch => "l09_delivery_at_epoch.hl",
     l10_dissolve_closures_first => "l10_dissolve_closures_first.hl",
@@ -1474,6 +1707,12 @@ fixture_tests! {
     l19_self_post_overflow => "l19_self_post_overflow.hl",
     l19_queued_run_canceled => "l19_queued_run_canceled.hl",
     l19_cross_pool_queued_run_canceled => "l19_cross_pool_queued_run_canceled.hl",
+    l19_started_run_retained => "l19_started_run_retained.hl",
+    l19_started_run_retained_async => "l19_started_run_retained_async.hl",
+    l19_started_run_publishes_back => "l19_started_run_publishes_back.hl",
+    l19_started_run_publishes_back_async => "l19_started_run_publishes_back_async.hl",
+    l19_handler_replaces_started_run => "l19_handler_replaces_started_run.hl",
+    l19_handler_replaces_started_run_async => "l19_handler_replaces_started_run_async.hl",
     l19_resumed_run_at_shutdown => "l19_resumed_run_at_shutdown.hl",
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
@@ -1540,6 +1779,151 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
 }
 
+/// Decision line 19, a started run, under AddressSanitizer with chunk
+/// pooling off (GH #816): main reclaims a child whose run is running on
+/// `side`, and the run then reads the heap String in the child's arena.
+/// Before the run hold the reclaim released that arena under the run (a
+/// heap-use-after-free); with it the reclaim waits for the run to return.
+fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
+    let program = hale_syntax::parse_source(&source(file)).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
+    let bin = harness::unique_bin(&format!("hale_lifecycle_asan_{tag}"));
+    harness::build_asan(&program, &bin);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let _ = std::fs::remove_file(&bin);
+    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
+    let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
+    assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
+    assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+#[test]
+fn l19_started_run_retained_under_asan() {
+    assert_clean_under_asan("l19_started_run_retained.hl", "l19_started", started_printed);
+}
+
+#[test]
+fn l19_started_run_retained_async_under_asan() {
+    assert_clean_under_asan("l19_started_run_retained_async.hl", "l19_started_async", started_printed);
+}
+
+#[test]
+fn l19_started_run_publishes_back_under_asan() {
+    assert_clean_under_asan("l19_started_run_publishes_back.hl", "l19_publishes_back", answered_in_wait_printed);
+}
+
+#[test]
+fn l19_started_run_publishes_back_async_under_asan() {
+    assert_clean_under_asan("l19_started_run_publishes_back_async.hl", "l19_publishes_back_async", answered_in_wait_printed);
+}
+
+/// A handler replacement and its run-body control, on classic and async
+/// pools, in both dispatch modes. The trace holds memory retention to
+/// the producer's plan; stdout separately holds handler completion order.
+#[test]
+fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
+    for file in [
+        "l19_handler_replaces_started_run.hl",
+        "l19_handler_replaces_started_run_async.hl",
+        "l19_started_run_publishes_back.hl",
+        "l19_started_run_publishes_back_async.hl",
+    ] {
+        let f = fixture(file);
+        let program = hale_syntax::parse_source(&source(file)).expect("parse the fixture");
+        for no_bus_devirt in [false, true] {
+            let bin = harness::unique_bin("hale_handler_reclaim_asan");
+            let options = hale_codegen::BuildOptions {
+                asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+            };
+            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            let image = std::fs::read(&bin).expect("read ASan binary");
+            assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let _ = std::fs::remove_file(&bin);
+            let report = format!("{}\n{}", ran.stdout, ran.stderr);
+            for marker in SANITIZER_MARKERS {
+                assert!(!report.contains(marker), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            }
+            assert_eq!(Some((f.judge)(&ran).as_str()), f.adopted, "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            assert_trace(file, &ran);
+        }
+    }
+}
+
+/// PR #1324 review: a retired child must not release itself on its
+/// worker while the replacing thread still owns the deferred release.
+/// Exercise explicit termination and automatic flow completion, with
+/// heap-backed form storage, on both pool and dispatch implementations.
+#[test]
+fn retired_run_self_reclaim_has_one_owner_under_asan() {
+    for file in ["l19_handler_replaces_started_run.hl", "l19_handler_replaces_started_run_async.hl"] {
+        for end in ["terminate", "flow"] {
+            let original = source(file);
+            let src = match end {
+                "terminate" => original.replace(
+                    "println(\"ev kid-run \" + to_string(self.tag) + \" \" + self.name);",
+                    "println(\"ev kid-run \" + to_string(self.tag) + \" \" + self.name); if self.tag == 0 { terminate; }",
+                ),
+                _ => original.replace("main locus App {", "main locus App { accept(c: Kid) { } release(c: Kid) { }"),
+            };
+            assert_ne!(src, original, "the self-reclaim variant must be installed");
+            let program = hale_syntax::parse_source(&src).expect("parse the self-reclaim variant");
+            let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::check(false, false))
+                .unwrap_or_else(|_| panic!("{file}, {end}: load failed"));
+            let checked = snap.demand_check().expect("check");
+            assert!(!checked.diags.iter().any(|d| d.is_error()), "{file}, {end}: {:?}", checked.diags);
+            for no_bus_devirt in [false, true] {
+                let bin = harness::unique_bin("hale_retired_self_reclaim_asan");
+                let options = hale_codegen::BuildOptions {
+                    asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+                };
+                build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+                let image = std::fs::read(&bin).expect("ASan binary");
+                assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
+                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+                let _ = std::fs::remove_file(&bin);
+                let report = format!("{}\n{}", ran.stdout, ran.stderr);
+                for marker in SANITIZER_MARKERS {
+                    assert!(!report.contains(marker), "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
+                }
+                assert_eq!(answered_after_handler(&ran), "answered-after-handler", "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
+                assert_eq!(ran.code, Some(0), "{report}");
+            }
+        }
+    }
+}
+
+/// Removing the handler boundary restores the original deadlock: the
+/// child has dissolved, but replacement cannot finish and the queued
+/// reply cannot run. The ASan cases above are its completing controls.
+#[test]
+fn synchronous_handler_storage_wait_restores_the_deadlock() {
+    let program = hale_syntax::parse_source(&source("l19_handler_replaces_started_run.hl")).expect("parse");
+    let bin = harness::unique_bin("hale_handler_storage_negative");
+    let options = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    let ran = run_bin(&bin, RunMode::Plain, &[("LOTUS_LIFECYCLE_SKIP", "HandlerStorage")]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(ran.timed_out, "synchronous handler wait unexpectedly completed: {} {}", ran.stdout, ran.stderr);
+    assert_eq!(count(&ran, "ev kid-dissolve 0"), 1);
+    assert_eq!(count(&ran, "ev replaced"), 0);
+    assert_eq!(count(&ran, "ev heard 0"), 0);
+}
+
+#[test]
+fn owner_release_cannot_finish_before_its_child_release() {
+    let file = "l14_reclaim_exactly_once.hl";
+    let mut ran = run_fixture(fixture(file), &[]);
+    assert_trace(file, &ran);
+    let parent = ran.trace.events.iter().find(|e| e.decl.as_deref() == Some("App")
+        && e.kind == ObligationKind::Reclaim && e.point == Point::Completed).expect("owner completion").seq;
+    let child = ran.trace.events.iter_mut().find(|e| e.decl.as_deref() == Some("Kid")
+        && e.kind == ObligationKind::Reclaim && e.point == Point::Completed).expect("child completion");
+    child.seq = parent + 1;
+    ran.trace.events.sort_by_key(|e| e.seq);
+    let violations = trace_violations(file, &ran);
+    assert!(violations.iter().any(|v| v.to_string().starts_with("edge: App.Reclaim.Completed")), "{violations:#?}");
+}
+
 macro_rules! control_tests {
     ($($name:ident),* $(,)?) => {
         mod controls {
@@ -1552,7 +1936,7 @@ macro_rules! control_tests {
 }
 
 control_tests! {
-    host_joins_before_it_aborts_waits,
+    join_entered_with_no_wait_abort,
     pool_join_removed,
     hold_removed_delivers_before_settle,
     reclaim_completion_omitted,
@@ -1561,6 +1945,7 @@ control_tests! {
     canceled_run_unnamed,
     cancellation_completion_omitted,
     queued_run_cancel_unnamed,
+    run_hold_wait_removed,
     restart_completion_omitted,
     wait_abort_removed,
     birth_removed,
