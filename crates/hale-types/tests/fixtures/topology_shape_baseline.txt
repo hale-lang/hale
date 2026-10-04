@@ -1608,6 +1608,8 @@ crates/hale-types/tests/model_arrangement.rs#0 f9d60755d77ddbcb
 crates/hale-types/tests/model_arrangement.rs#1 59a01f7667f8dbf9
 crates/hale-types/tests/model_arrangement.rs#2 7a3dab914ecdbe5c
 crates/hale-types/tests/model_arrangement.rs#3 0c8b7bcce04251ee
+crates/hale-types/tests/model_arrangement.rs#4 82950132085d2132
+crates/hale-types/tests/model_arrangement.rs#5 703d318df42a5e06
 crates/hale-types/tests/model_builder.rs#1 edeedb35b2b7fe31
 crates/hale-types/tests/model_builder.rs#10 93de17504f35f3b9
 crates/hale-types/tests/model_builder.rs#11 199146dcdfc4cd48

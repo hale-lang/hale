@@ -2967,35 +2967,6 @@ pub fn derive_application_model_over(
         use hale_syntax::ast::{
             LocusMember, TopDecl,
         };
-        // Locus decls by RAW name, with their members, across the
-        // whole bundle (modules included — a module locus can be
-        // arranged like any other).
-        let mut decls_by_name: BTreeMap<
-            &str,
-            &hale_syntax::ast::LocusDecl,
-        > = BTreeMap::new();
-        fn walk_loci<'a>(
-            items: &'a [TopDecl],
-            out: &mut BTreeMap<
-                &'a str,
-                &'a hale_syntax::ast::LocusDecl,
-            >,
-        ) {
-            for item in items {
-                match item {
-                    TopDecl::Locus(l) => {
-                        out.entry(l.name.name.as_str()).or_insert(l);
-                    }
-                    TopDecl::Module(m) => {
-                        walk_loci(&m.items, out)
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for pr in &programs {
-            walk_loci(&pr.items, &mut decls_by_name);
-        }
         // The arrangement is the placement table's rows, projected
         // (F.40 phase 3, P1; `notes/f40-placement-correspondence.md`
         // § 2.4): the instances of the root lowering deploys (one
@@ -3434,84 +3405,35 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
-        // Dynamic births: a method-body instantiation site's
-        // instance is not in the arrangement — its ownership and
-        // placement are runtime facts. Typed holes keep the
-        // capability account honest (RuntimeInheritedPlacement is
-        // exactly this shape).
+        // C3: the ownership walk records where each birth occurs.
+        // Params defaults can contain expressions copied from bindings,
+        // whose source spans lie outside the params block. Read that
+        // structural provenance and the graph's free-function rows;
+        // never reconstruct either from AST spans in the model.
         let og = inputs.ownership;
-        let free_fn_births =
-            crate::ownership_graph::free_fn_birth_sites(bundle);
-        // Params-default births ARE the arrangement — only sites
-        // outside every params block of their enclosing locus are
-        // dynamic.
-        let params_spans: BTreeMap<
-            &str,
-            Vec<hale_syntax::Span>,
-        > = decls_by_name
-            .iter()
-            .map(|(n, d)| {
-                (
-                    *n,
-                    d.members
-                        .iter()
-                        .filter_map(|m| match m {
-                            LocusMember::Params(pb) => {
-                                Some(pb.span)
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        // Method-body births (the ownership graph's sites) PLUS
-        // free-function births — `fn main() { EchoL { }; }` is the
-        // most common arrangement-free program shape in the corpus,
-        // and it must not read as "no instances, exact placement".
-        let dyn_sites: Vec<(&str, &str, hale_syntax::Span)> = og
-            .sites
-            .iter()
-            .map(|s| {
-                (
-                    s.child_ty.as_str(),
-                    s.enclosing_locus.as_str(),
-                    s.span,
-                )
-            })
-            .chain(
-                free_fn_births
-                    .iter()
-                    .map(|(ty, sp)| (ty.as_str(), "", *sp)),
-            )
-            .collect();
-        for (child_ty, enclosing, span) in dyn_sites {
-            // `fn main() { App { }; }` — the birth of the
-            // arrangement ROOT — is not a dynamic birth: it is how
-            // the arrangement is entered, and the root instance is
-            // already modeled (path `App`, domain `main`). Every
-            // OTHER free-standing birth is outside the arrangement.
-            if root_name == Some(child_ty) {
+        let dyn_sites = og.sites.iter()
+            .filter(|s| !s.params_default)
+            .map(|s| (s.child_decl, s.span))
+            .chain(og.free_fn_sites.iter().map(|s| (s.child_decl, s.span)));
+        for (child_decl, span) in dyn_sites {
+            let Some(decl) = child_decl.map(|i| &og.declarations[i]) else { continue };
+            // The root's construction is already the arrangement.
+            let root = table.root.as_ref().map(|r| r.realizes.site);
+            if decl.id.is_some_and(|id| Some(SiteRef::user(id)) == root) {
                 continue;
             }
-            let in_arrangement = params_spans
-                .get(enclosing)
-                .is_some_and(|spans| {
-                    spans.iter().any(|ps| {
-                        span.start >= ps.start && span.end <= ps.end
-                    })
-                });
-            if in_arrangement {
-                continue;
-            }
-            let pid = intern_span(&mut records, span);
-            // Anchored at the BORN locus, not the birthplace: the
-            // fact hidden is "instances of this locus exist that
-            // the arrangement does not name", which is true of the
-            // child whether it was born in a method or a free fn.
-            let Some(lid) = locus_id.get(&child_ty.to_string()) else {
-                continue;
+            // As with supervision, a minted declaration joins by site;
+            // an unminted bundle retains the name fallback. A qualified
+            // literal that resolves outside the user declarations has
+            // no entity in this model, even if its last segment matches
+            // one of the user's loci.
+            let lid = match decl.id {
+                Some(id) => locus_by_site.get(&id.index),
+                None if root_name == Some(decl.name.as_str()) => continue,
+                None => locus_id.get(&decl.name),
             };
+            let Some(lid) = lid else { continue };
+            let pid = intern_span(&mut records, span);
             let at = EntityRef::LocusDecl(*lid);
             holes
                 .entry((

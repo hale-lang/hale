@@ -204,6 +204,12 @@ builds besides the root is a birth outside the arrangement, recorded
 as a hole. The placement table, not the arrangement, answers every
 placement question the checker asks.
 
+API bindings keep the placement of their generated adapters in the
+model's dispatch report, including the adapters' I/O pool. Initializer
+expressions copied from a binding remain params defaults even though
+their diagnostic locations point back to the binding. Connection peers
+created as requests arrive still carry dynamic-placement holes.
+
 An instance's id is its position in path order, so adding a field
 renumbers what sorts after it. Join instances across builds by path,
 never by id. None of this is in the shape hash: rearranging instances

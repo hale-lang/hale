@@ -488,3 +488,91 @@ fn main() {
     let m = model(&s);
     assert!(arrangement(m).iter().any(|row| row.contains(" App.h.roles.router RouterV1 ")));
 }
+
+/// C3: API binding expressions are copied into generated params with
+/// their source spans intact. Their source location is not their birth
+/// context, and must not erase the adapter's model dispatch domains.
+#[test]
+fn copied_api_binding_expressions_keep_params_birth_provenance() {
+    let src = include_str!("../../../tests/hale/api_binding_run_test.hl");
+    let program = hale_syntax::parse_source(src).expect("parse API fixture");
+    let mut config = Config::check(false, false);
+    // This fixture exercises async_io. Derive its Linux model on every
+    // test host; no native code is emitted or run here.
+    config.target = hale_frontend::snapshot::Target {
+        name: "x86_64-unknown-linux-gnu".into(),
+        spec: hale_types::target::TargetSpec::parse("x86_64-unknown-linux-gnu").unwrap(),
+        explicit: true,
+    };
+    let s = Snapshot::from_program(program, Vec::new(), config).unwrap_or_else(|_| panic!("load"));
+    let m = model(&s);
+    let graph = s.demand_ownership_graph().expect("ownership");
+    for child in ["Table", "Tokens", "__ApiBinding", "__ApiHttp"] {
+        let sites: Vec<_> = graph.sites.iter().filter(|site| site.child_ty == child).collect();
+        assert!(!sites.is_empty(), "binding copy of {child} is a graph row");
+        assert!(sites.iter().all(|site| site.params_default), "{sites:?}");
+        let lid = m.entities.loci.iter().position(|l| l.name == child).unwrap();
+        assert!(!m.holes.iter().any(|h| h.at == hale_model::EntityRef::LocusDecl(hale_model::LocusDeclId(lid as u32))
+            && h.kind == hale_model::HoleKind::RuntimeInheritedPlacement), "{child}: {:?}", locus_holes(m));
+    }
+    let plan = hale_model::dispatch_plan::DispatchPlan::derive(m);
+    let pings = plan.subjects.iter().find(|p| p.subject == "__api.call.Pings").expect("API call dispatch");
+    assert_eq!(pings.publisher_domains, ["pool:__api_io"], "the API adapter's publisher is arranged: {pings:?}");
+    assert_eq!(pings.subscriber_domains, ["pool:work"]);
+    assert_eq!(locus_holes(m), [
+        "__ApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
+        "__ApiPeer instance born outside the arrangement: owner and placement resolve at runtime",
+    ], "connection peers remain dynamic");
+}
+
+/// C3: even an overlapping span cannot turn a method-body birth into a
+/// params default. The model must keep the child's dynamic-placement
+/// hole beside its arranged instance.
+#[test]
+fn body_birth_with_a_params_span_stays_dynamic() {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    let mut p = hale_syntax::parse_source(r#"
+        locus Kid { }
+        main locus App {
+            params { k: Kid = Kid { }; }
+            run() { let extra = Kid { }; }
+        }
+        fn main() { App { }; }
+    "#).unwrap();
+    for item in &mut p.items {
+        if let TopDecl::Locus(l) = item {
+            for member in &mut l.members {
+                if let LocusMember::Params(pb) = member {
+                    pb.span = l.span;
+                }
+            }
+        }
+    }
+    let s = Snapshot::from_program(p, Vec::new(), Config::check(false, false)).unwrap_or_else(|_| panic!("load"));
+    let m = model(&s);
+    let graph = s.demand_ownership_graph().expect("ownership");
+    let flags: Vec<_> = graph.sites.iter().filter(|s| s.child_ty == "Kid").map(|s| s.params_default).collect();
+    assert_eq!(flags, [true, false]);
+    assert!(locus_holes(m).iter().any(|h| h.starts_with("Kid instance born outside the arrangement")), "{:?}", locus_holes(m));
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.k Kid - main 0"]);
+}
+
+/// C3: a qualified stdlib birth whose leaf matches a user declaration
+/// belongs to the stdlib, so it cannot add a placement hole to that
+/// user's locus. The model intentionally contains user declarations.
+#[test]
+fn qualified_birth_does_not_join_an_unrelated_user_name() {
+    let s = snapshot(r#"
+        locus Stream { }
+        main locus App {
+            params { own: Stream = Stream { }; }
+            run() {
+                let external = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+            }
+        }
+        fn main() { App { }; }
+    "#);
+    let m = model(&s);
+    assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.own Stream - main 0"]);
+}

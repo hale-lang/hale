@@ -4735,6 +4735,18 @@ row	~.roles.router	RouterV1	main	inherited
 row	~	Roles	main	default
 row	~.router	RouterV2	main	inherited
 
+== crates/hale-types/tests/model_arrangement.rs#67df74cb
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.k	Kid	main	default
+dynamic	Kid	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#a75cca3a
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.own	Stream	main	default
+dynamic	__StdIoTcpStream	on main	in the seed
+
 == crates/hale-types/tests/model_builder.rs#0bc750a5
 root	App	the entry
 row	App@literal1	App	main	default

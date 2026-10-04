@@ -129,13 +129,13 @@ pub enum EdgeClass {
 }
 
 /// One resolved instantiation site: `enclosing_locus` gives birth to
-/// `child_ty` in one of its method bodies, and the pass has resolved
-/// which ancestor owns it.
+/// `child_ty` in a member body or params initializer, and the pass has
+/// resolved which ancestor owns it.
 #[derive(Debug, Clone)]
 pub struct OwnedSite {
     /// The locus type being instantiated (`I`).
     pub child_ty: String,
-    /// The locus whose method body writes `I { ... }` (`B`).
+    /// The locus whose member or params initializer writes `I { ... }` (`B`).
     pub enclosing_locus: String,
     /// The resolved owner + how it was found.
     pub resolution: OwnerResolution,
@@ -174,6 +174,22 @@ pub struct OwnedSite {
     /// specializes. `child_ty` and `resolution` stay keyed by the
     /// literal's last segment, as lowering and the model read them.
     pub child_key: Option<String>,
+    /// This literal was walked inside a params initializer, including
+    /// nested expressions. Structural provenance survives desugars that
+    /// copy an expression with its original source span (F.40 C3).
+    pub params_default: bool,
+}
+
+/// A locus birth in a free function. Collected by the same walk as
+/// [`OwnershipGraph::sites`], without an enclosing owning locus.
+#[derive(Debug, Clone)]
+pub struct FreeFnSite {
+    pub child_ty: String,
+    pub span: Span,
+    /// The declaration the literal names, in the graph's declaration
+    /// table, using the same resolver as [`OwnedSite::child_decl`].
+    pub child_decl: Option<usize>,
+    pub child_key: Option<String>,
 }
 
 /// One locus declaration, in the bundle's declaration order (programs
@@ -197,6 +213,8 @@ pub struct LocusDeclRow {
 pub struct OwnershipGraph {
     /// Every resolved instantiation site, in walk order.
     pub sites: Vec<OwnedSite>,
+    /// Free-function births from the graph's one walk, in source order.
+    pub free_fn_sites: Vec<FreeFnSite>,
     /// Every locus declaration, in declaration order.
     pub declarations: Vec<LocusDeclRow>,
     /// locus type → the child types it declares `accept(_: T)` for, each
@@ -802,7 +820,7 @@ struct LocusFacts {
     /// `child_locus_name` (a type that names no locus is accepted by
     /// no one).
     accepts: BTreeSet<String>,
-    /// Locus-typed literals born in this locus's method bodies.
+    /// Locus-typed literals born in this locus's members or params defaults.
     instantiates: Vec<RawSite>,
     /// Projection class from a `: projection …` annotation, if any.
     projection: Option<ProjectionClass>,
@@ -822,6 +840,7 @@ struct RawSite {
     /// See [`OwnedSite::enclosing_decl`] and [`OwnedSite::member`].
     enclosing_decl: usize,
     member: Option<String>,
+    params_default: bool,
 }
 
 /// The product of one walk: per-locus facts + the whole-bundle set of
@@ -833,12 +852,13 @@ struct OwnershipWalk {
     declared: DeclaredNames,
     has_entry_point: bool,
     accept_rows: AcceptRows,
+    free_fn_sites: Vec<RawSite>,
 }
 
-/// Walk every locus once, collecting accepts + method-body
-/// instantiations + projection + singleton-ness, plus the set of all
-/// locus type names and the closed-world entry-point flag. This is the
-/// single source of truth `build_ownership_graph` consumes.
+/// Walk every locus and free function once, collecting accepts,
+/// instantiations and their birth context, projection and singleton
+/// facts, plus the set of locus names and the closed-world entry flag.
+/// This is the single source of truth `build_ownership_graph` consumes.
 fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
     // Pass 1: gather every locus type name, so pass 2 can tell a
     // locus-instantiation literal apart from a plain struct literal.
@@ -879,6 +899,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
     let mut facts: BTreeMap<String, LocusFacts> = BTreeMap::new();
     let mut declarations: Vec<LocusDeclRow> = Vec::new();
     let mut accept_rows: Vec<AcceptRow> = Vec::new();
+    let mut free_fn_sites: Vec<RawSite> = Vec::new();
     struct WalkCx<'a> {
         locus_types: &'a BTreeSet<String>,
         declared: &'a DeclaredNames,
@@ -891,6 +912,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         facts: &mut BTreeMap<String, LocusFacts>,
         declarations: &mut Vec<LocusDeclRow>,
         accept_rows: &mut Vec<AcceptRow>,
+        free_fn_sites: &mut Vec<RawSite>,
     ) {
         let (locus_types, declared, renames) = (cx.locus_types, cx.declared, cx.renames);
         for item in items {
@@ -995,6 +1017,9 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                             e,
                                             p.ty.as_ref(),
                                         );
+                                        for site in &mut entry.instantiates[at..] {
+                                            site.params_default = true;
+                                        }
                                     }
                                 }
                             }
@@ -1005,17 +1030,19 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                         s.enclosing_decl = decl;
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows),
+                TopDecl::Fn(f) => collect_sites_block(&f.body, locus_types, free_fn_sites),
+                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites),
                 _ => {}
             }
         }
     }
     let cx = WalkCx { locus_types: &locus_types, declared: &declared, renames, snapshot: &bundle.snapshot };
     for program in &programs {
-        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows);
+        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites);
     }
 
     OwnershipWalk {
+        free_fn_sites,
         facts,
         declarations,
         declared: declared.clone(),
@@ -1162,6 +1189,7 @@ pub fn build_ownership_graph(
                     member: site.member.clone(),
                     child_decl,
                     child_key,
+                    params_default: site.params_default,
                 });
                 continue;
             }
@@ -1195,12 +1223,20 @@ pub fn build_ownership_graph(
                 member: site.member.clone(),
                 child_decl,
                 child_key,
+                params_default: site.params_default,
             });
         }
     }
 
+    let free_fn_sites = walk.free_fn_sites.iter().map(|site| {
+        let (child_decl, child_key) = identify_child(
+            site, &walk.declarations, &walk.declared, &bundle.import_renames,
+        );
+        FreeFnSite { child_ty: site.child_ty.clone(), span: site.span, child_decl, child_key }
+    }).collect();
     OwnershipGraph {
         sites,
+        free_fn_sites,
         declarations: walk.declarations,
         accepts,
         instantiated_by,
@@ -1423,59 +1459,6 @@ fn relate(
 
 // === Instantiation-literal walk ===================================
 
-/// GH #476 Change 8: locus births in FREE functions — `fn main() {
-/// EchoL { }; }` and friends.
-///
-/// The ownership graph deliberately walks locus MEMBER bodies only:
-/// its question is "which owning locus does this child bubble to",
-/// and a free function has no owner to bubble toward. The model's
-/// arrangement asks a different question — "is this instance in the
-/// static arrangement, or does it appear at runtime?" — and a
-/// free-function birth is emphatically the latter. Without this
-/// walk, a whole program whose loci are all born in `fn main` would
-/// model zero instances while claiming exact placement.
-///
-/// Returns `(locus type, literal span)` per site, in source order.
-pub fn free_fn_birth_sites(
-    bundle: &Bundle<'_>,
-) -> Vec<(String, Span)> {
-    let mut locus_types: BTreeSet<String> = BTreeSet::new();
-    fn names(items: &[TopDecl], out: &mut BTreeSet<String>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    out.insert(l.name.name.clone());
-                }
-                TopDecl::Module(m) => names(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        names(&program.items, &mut locus_types);
-    }
-    let mut out: Vec<RawSite> = Vec::new();
-    fn walk(
-        items: &[TopDecl],
-        locus_types: &BTreeSet<String>,
-        out: &mut Vec<RawSite>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Fn(f) => {
-                    collect_sites_block(&f.body, locus_types, out)
-                }
-                TopDecl::Module(m) => walk(&m.items, locus_types, out),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk(&program.items, &locus_types, &mut out);
-    }
-    out.into_iter().map(|s| (s.child_ty, s.span)).collect()
-}
-
 /// Collect every locus-instantiation literal (`I { ... }` where `I` is
 /// a known locus type) reachable from a block, walking every
 /// sub-statement and sub-expression.
@@ -1610,6 +1593,7 @@ fn collect_sites_expr(
                         declared: None,
                         enclosing_decl: 0,
                         member: None,
+                        params_default: false,
                     });
                 }
             }
