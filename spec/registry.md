@@ -13,6 +13,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 1 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, qualified bus subjects, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `form_rows` | 1 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the domains each of its instances is called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
+| `unit_catalogue` | Layer 2 | Canonical | derivation | `close` | 0 | Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. This is a compiler API; source declarations and expression typing do not demand it yet. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
@@ -225,6 +226,31 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `effect_defs` may be referenced from: `crates/hale-syntax/src/ast.rs` ×1, `crates/hale-syntax/src/parser.rs` ×9, `crates/hale-frontend/src/frontend.rs` ×3, `crates/hale-types/src/effect_classes.rs` ×2, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-syntax/src/shift.rs` ×1
 
 ## Layer 2 — declaration graphs
+
+### `unit_catalogue` — Canonical · derivation
+
+**Answers.** Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. This is a compiler API; source declarations and expression typing do not demand it yet.
+
+**Inputs.** unit declaration SiteIds; equations with declaration SiteIds and positive exact rational factors
+
+**Producer.** `crates/hale-types/src/unit_graph.rs` · `close`
+
+**Consumers.** conversion queries (reduced factor, exactness and equation witness) (`crates/hale-types/src/unit_graph.rs` · `conversion`); unpinned denomination queries (rational gcd and necessary input witnesses) (`crates/hale-types/src/unit_graph.rs` · `meet`)
+
+**Invariants.**
+
+- unit identity is the snapshot's SiteId, never a display spelling, span or NodeId equality
+- factors are positive arbitrary-precision rationals; no machine overflow, rounding, runtime base unit or default loss policy
+- every cycle has product one; an inconsistent catalogue returns only errors with witnessed cycles, never a partially usable closure
+- a conversion between disconnected components or through an unknown unit has no answer
+- denomination is the rational gcd of the input units, potentially unnamed, with an irredundant set of input witnesses; 6, 10 and 15 require three witnesses
+- a denominator of one proves denomination conversion exactness only, not that a runtime range or representation width can hold the result
+
+**Missing data.** a missing required row is a compiler error
+
+**Focused tests.** crates/hale-types/src/unit_graph.rs
+
+**Spec.** spec/units.md
 
 ### `top_scope` — Migrating · derivation
 

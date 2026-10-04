@@ -66,6 +66,7 @@ pub mod purity;
 pub mod quantitative;
 pub mod resolve;
 pub mod resolved;
+pub mod unit_graph;
 mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;
