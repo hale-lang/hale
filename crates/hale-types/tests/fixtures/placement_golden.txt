@@ -4666,6 +4666,22 @@ row	App@literal2	App	main	default
 shared	App@literal1.gw	Gateway #85305e8b
 shared	App@literal2.gw	Gateway #7eef2531
 
+== crates/hale-types/tests/model_arrangement.rs#85075003
+root	App	the entry
+hole	App@literal1.h.roles	reuse `r`
+row	App@literal1	App	main	default
+row	App@literal2	App	main	default
+-- App@literal1.h	Holder
+row	~	Holder	main	default
+row	~.roles	Roles	main	inherited
+-- App@literal2.h	Holder
+row	~	Holder	main	default
+row	~.roles	Roles	main	inherited
+row	~.roles.router	RouterV1	main	inherited
+-- Roles@main1	Roles
+row	~	Roles	main	default
+row	~.router	RouterV2	main	inherited
+
 == crates/hale-types/tests/model_builder.rs#0bc750a5
 root	App	the entry
 row	App@literal1	App	main	default
