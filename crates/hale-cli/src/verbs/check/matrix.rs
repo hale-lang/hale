@@ -7,7 +7,7 @@ use crate::shared::frontend::collect_checkable;
 use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
-use hale_frontend::snapshot::inject_adopt;
+use hale_frontend::snapshot::adopt_into_root;
 use super::run_impl::run_check_impl;
 use super::run_impl::run_check_impl_labelled;
 /// GH #409: check every (entrypoint, environment) pair declared in
@@ -220,7 +220,7 @@ pub(crate) fn role_coverage(
         return Vec::new();
     };
     let refs: Vec<&hale_syntax::ast::Program> = programs.values().collect();
-    let declared = hale_syntax::api_gen::declared_roles(&refs);
+    let declared = hale_syntax::api_gen::declared_roles(&refs, hale_types::entry::lowering_root_decl(&refs));
     let mut out = Vec::new();
     let missing: Vec<&String> = declared.iter().filter(|r| !table.contains_key(*r)).collect();
     if !missing.is_empty() {
@@ -261,11 +261,8 @@ pub(crate) fn constitution_identities(
         Err(_) => return Vec::new(),
     };
     let mut programs = programs;
-    for c in adopt {
-        for prog in programs.values_mut() {
-            inject_adopt(prog, c);
-        }
-    }
+    let mut refs: Vec<&mut Program> = programs.values_mut().collect();
+    adopt_into_root(&mut refs, adopt);
     let bundle_programs: BTreeMap<String, &Program> = programs
         .iter()
         .map(|(p, prog)| (p.display().to_string(), prog))

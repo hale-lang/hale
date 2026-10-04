@@ -1007,7 +1007,10 @@ identifier, a member spelling outside those five, or an account name
 outside letters, digits, `.`, `_`, `-` and `@` (the table travels as
 one line, so a name may not carry a separator) is a manifest error. `--matrix` proves, per (entrypoint,
 environment) pair, that every role the entrypoint declares — and
-`owner`, once it has an api binding — is mapped there (`[]` says
+`owner`, once it has an api binding (the one generated from the
+deployed `main locus`, `spec/semantics.md` § "The api binding (GH
+#1106)": a second `main locus`'s `api:` entry adds no `owner`) — is
+mapped there (`[]` says
 explicitly that nobody holds it), and that nothing is mapped that the
 entrypoint does not declare: an omission is indistinguishable from a
 mistake, and a misspelt key would otherwise map nobody quietly. `hale

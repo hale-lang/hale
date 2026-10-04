@@ -1947,14 +1947,20 @@ as any other, under its qualified name. An imported seed's `main locus` is not t
 either: renamed with its seed, it does not count toward the one-main
 rule, its `placement { }` places nothing here, and an `api:` entry
 it carries is inert — a composed head that
-imports the standalone head declares its own entry to get a socket. A subscription by literal subject
+imports the standalone head declares its own entry to get a socket.
+The binding is generated from the entry of the `main locus` the build
+deploys, whose param it becomes (with a second `main locus`, rule 1's
+error, the first: a second one's entry binds nothing). A subscription by literal subject
 (`subscribe "log.**" ...`) names no topic and is not part of the
 API; a command reaches the loci that subscribe the topic by name,
 not those hearing it through a parent topic. `hale run --api
 <path>` (and `hale build --api <path>`, flags before the target)
 synthesizes the entry above with the dev defaults, `bound: 64,
-on_full: refuse`, and needs a `main locus` to put it on: a bare
-`fn main` program is refused with the rule. The path is an expression
+on_full: refuse`, and needs a `main locus` of the seed's own to put
+it on: a bare `fn main` program is refused with the rule, and so is a
+seed whose only `main locus` is an imported library's ("the only
+`main locus` here is an imported library's, whose bindings are
+inert"). The path is an expression
 the main locus evaluates as a param default — a literal, or
 `self.<param>` the program computed, so a head may listen at one
 socket per record under `XDG_RUNTIME_DIR` rather than at a fixed

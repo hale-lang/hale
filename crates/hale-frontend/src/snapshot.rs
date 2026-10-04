@@ -72,7 +72,7 @@ use std::sync::Arc;
 use hale_graph::ids::SiteId;
 use hale_model::ApplicationModel;
 use hale_syntax::api_gen::ApiSurface;
-use hale_syntax::ast::{Import, Program, TopDecl};
+use hale_syntax::ast::{Import, Program};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
 use hale_types::capability::uses::CapabilityUses;
@@ -684,15 +684,13 @@ impl Snapshot {
             }
         }
         if let Some(env) = &snap.config.environment {
-            // The constitutions land in the main locus. Whether there is
-            // an entry to deploy is the entry row's, read once the load
-            // is minted (below): a seed without one is refused, so what
-            // landed here is never checked.
-            for c in &env.adopt {
-                for prog in snap.programs.values_mut() {
-                    inject_adopt(prog, c);
-                }
-            }
+            // The constitutions land in the seed's own `main locus` the
+            // build deploys. Whether there is an entry to deploy is the
+            // entry row's, read once the load is minted (below): a seed
+            // without one is refused, so what landed here is never
+            // checked.
+            let mut refs: Vec<&mut Program> = snap.programs.values_mut().collect();
+            adopt_into_root(&mut refs, &env.adopt);
         }
         // The editor's seed with a member that did not parse or read, or
         // whose imports did not link, is not a program: nothing is
@@ -1887,43 +1885,54 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
     }
 }
 
-/// GH #409: adopt constitution `name` into `prog`'s main locus, as if
+/// GH #409: adopt constitution `name` into the `main locus` `l`, as if
 /// the source had written `adopt name;` — the same evaluation, the same
 /// closed world, the same union with whatever the source already
-/// adopts — creating the `claims` block if the main has none. False
-/// when `prog` declares no main locus.
+/// adopts — creating the `claims` block if `l` has none. `l` is the
+/// seed's own `main locus` the build deploys ([`adopt_into_root`]).
 ///
 /// A duplicate is not added: an entrypoint that already writes
 /// `adopt Dev;` and is also deployed to an environment requiring `Dev`
 /// adopts it once, not twice.
-pub fn inject_adopt(prog: &mut Program, name: &str) -> bool {
+pub fn inject_adopt(l: &mut hale_syntax::ast::LocusDecl, name: &str) {
     use hale_syntax::ast::{ClaimsBlock, Ident, LocusMember};
-    let mut found = false;
-    for item in &mut prog.items {
-        let TopDecl::Locus(l) = item else { continue };
-        if !l.is_main {
-            continue;
+    let id = Ident::new(name, l.name.span);
+    if let Some(LocusMember::Claims(cb)) = l
+        .members
+        .iter_mut()
+        .find(|m| matches!(m, LocusMember::Claims(_)))
+    {
+        if !cb.adopts.iter().any(|a| a.name == name) {
+            cb.adopts.push(id);
         }
-        found = true;
-        let id = Ident::new(name, l.name.span);
-        if let Some(LocusMember::Claims(cb)) = l
-            .members
-            .iter_mut()
-            .find(|m| matches!(m, LocusMember::Claims(_)))
-        {
-            if !cb.adopts.iter().any(|a| a.name == name) {
-                cb.adopts.push(id);
-            }
-        } else {
-            l.members.push(LocusMember::Claims(ClaimsBlock {
-                entries: Vec::new(),
-                adopts: vec![id],
-                lib_tier: false,
-                span: l.name.span,
-            }));
+    } else {
+        l.members.push(LocusMember::Claims(ClaimsBlock {
+            entries: Vec::new(),
+            adopts: vec![id],
+            lib_tier: false,
+            span: l.name.span,
+        }));
+    }
+}
+
+/// Adopt each of `names` ([`inject_adopt`]) into the seed's own `main
+/// locus` the build deploys: the entry row's lowering root, found over
+/// the programs as they stand (F.40 phase 3), never an imported
+/// library's `main locus` or a second one. In every seed an
+/// environment may be bound to it is the entry (a seed with no entry is
+/// refused once the load is minted, so what lands there is never
+/// checked), and it is the entry once lowering deploys the entry (L4).
+pub fn adopt_into_root(programs: &mut [&mut Program], names: &[String]) {
+    let row = {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        hale_types::entry::entry_row_in(&ro)
+    };
+    let Some((at, item)) = row.lowering_root.as_ref().and_then(|m| m.index_in()) else { return };
+    if let Some(l) = hale_syntax::ast::locus_at_mut(&mut programs[at].items, item) {
+        for name in names {
+            inject_adopt(l, name);
         }
     }
-    found
 }
 
 /// FNV-1a/64 over length-framed fields: two different field lists
@@ -1973,6 +1982,7 @@ impl Digest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hale_syntax::ast::TopDecl;
     use crate::source::{Disk, Overlay};
     use hale_types::target::TargetSpec;
 

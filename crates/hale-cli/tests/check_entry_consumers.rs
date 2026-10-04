@@ -6,7 +6,10 @@
 //! the row's lowering root, the `main locus` lowering deploys (the
 //! first of the seed's own, a module-nested one included). Each test
 //! here pins one reader's answer on one of those shapes, beside a
-//! control that shows the reading still fires where it should.
+//! control that shows the reading still fires where it should. Section
+//! 1 is the checker's readers; section 2 the api binding, `--api` and
+//! the roles `--matrix` maps, which read the lowering root: the `main
+//! locus` the binding joins.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -132,4 +135,76 @@ fn the_async_io_advisory_reads_a_module_nested_root() {
     let out = check(&seed(&root, "nested", &format!("{BLOCKING_WORKER}\nmodule inner {{\n{body}}}\n\nfn main() {{ App {{ }}; }}\n")));
     assert!(out.contains(ADVISORY), "the deployed nested main's pool is advised on: {out}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------- 2 of 4
+
+fn hale(args: &[&std::ffi::OsStr]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(Path::new("/")).output().expect("hale");
+    format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+}
+
+/// `--api` puts its entry on the `main locus` the binding joins, the
+/// seed's own; an imported library's bindings are inert, so a seed whose
+/// only `main` is imported has nowhere to put it and is refused, saying
+/// why. Before the row, the entry went on the library's `main locus`,
+/// no binding was generated from it, and the build succeeded with no
+/// api.
+#[test]
+fn api_refuses_a_seed_whose_only_main_is_imported() {
+    let root = scratch("api_flag");
+    seed(&root, "lib", "main locus Head { }\nfn main() { Head { }; }\n");
+    let out_bin = root.join("out.bin");
+    let build = |dir: &Path| {
+        hale(&[
+            "build".as_ref(),
+            "--api".as_ref(),
+            "/tmp/hale-entry-consumers-api.sock".as_ref(),
+            dir.as_os_str(),
+            "-o".as_ref(),
+            out_bin.as_os_str(),
+        ])
+    };
+    // The control: a bare `fn main` is refused as before.
+    let bare = build(&seed(&root, "bare", "fn main() { println(\"hi\"); }\n"));
+    assert!(bare.contains("--api needs a `main locus` to bind"), "{bare}");
+    let out = build(&seed(&root, "app", "import \"../lib\" as lib;\nfn main() { println(\"hi\"); }\n"));
+    assert!(
+        out.contains(
+            "--api needs the seed's own `main locus` to bind: the api entry lives in its `bindings { }` block, \
+             and the only `main locus` here is an imported library's, whose bindings are inert"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("built:"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+const OWNER_UNMAPPED: &str = "role(s) `owner` are not mapped";
+
+/// `owner` joins the roles `--matrix` asks an environment to map when
+/// the program has an api binding, and the binding is the one generated
+/// into the `main locus` lowering deploys (the first of the seed's
+/// own): with two, the second one's `api:` entry binds nothing and gates
+/// nothing. Before the row, any `main locus` of the seed's own carrying
+/// one declared `owner`.
+#[test]
+fn the_matrix_roles_read_the_deployed_roots_binding() {
+    let api = "    bindings { api: unix(\"/tmp/hale-entry-consumers-roles.sock\", bound: 8, on_full: refuse); }\n";
+    let manifest =
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"two\"]\n\n[environments.dev.roles]\n";
+    let matrix = |tag: &str, program: String| {
+        let root = scratch(tag);
+        seed(&root, "two", &program);
+        std::fs::write(root.join("hale.toml"), manifest).unwrap();
+        let out = hale(&["check".as_ref(), "--matrix".as_ref(), root.as_os_str()]);
+        let _ = std::fs::remove_dir_all(&root);
+        out
+    };
+    // The control: the deployed root carries the entry.
+    let first = matrix("roles_first", format!("main locus App {{\n{api}}}\nmain locus Other {{ }}\nfn main() {{ App {{ }}; }}\n"));
+    assert!(first.contains(OWNER_UNMAPPED), "{first}");
+    let second = matrix("roles_second", format!("main locus App {{ }}\nmain locus Other {{\n{api}}}\nfn main() {{ App {{ }}; }}\n"));
+    assert!(second.contains("more than one `main` locus declared"), "{second}");
+    assert!(!second.contains(OWNER_UNMAPPED), "the second main's entry binds nothing: {second}");
 }

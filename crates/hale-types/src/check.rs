@@ -4581,7 +4581,7 @@ fn check_main_and_bindings<'e>(
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    check_api_binding(&programs_vec, diags);
+    check_api_binding(&programs_vec, entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)), diags);
     check_api_roles(&programs_vec, &top.topics, bindings, diags);
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
@@ -4601,9 +4601,10 @@ fn check_main_and_bindings<'e>(
 /// GH #1106: the `api:` entry. The knobs the entry must carry, the
 /// one-replier rule, and what the api leaves out. The surface is the
 /// one `api_gen` emitted from, so a warning here names exactly what
-/// the binding will not serve.
-fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
-    let Some(surface) = hale_syntax::api_gen::api_surface(programs) else {
+/// the binding will not serve. `root` is the entry row's lowering root,
+/// the `main locus` the binding was generated into.
+fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mut Vec<Diag>) {
+    let Some(surface) = hale_syntax::api_gen::api_surface(programs, root) else {
         return;
     };
     let b = &surface.binding;
