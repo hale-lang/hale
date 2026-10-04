@@ -60,11 +60,14 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
 ///
 /// Read off the ownership graph's cross-pool bubble plan, keyed
 /// (enclosing locus, child locus) as lowering keys it while it lowers a
-/// literal in that locus's own member bodies. A literal in a params
-/// default is not judged here: lowering expands a default in the scope
-/// that instantiates the locus, under that scope's locus, so which plan
-/// entry it meets depends on the instantiation, a relation no row holds
-/// yet, and lowering keeps its own refusal for that shape.
+/// literal: a literal in a locus's own member bodies under that locus,
+/// and a literal in a params default under each locus lowering expands
+/// the default in ([`OwnershipGraph::default_contexts`]: the locus whose
+/// body holds a literal leaving the field unsupplied, through any chain
+/// of defaults). A params default is a field's value, never a bare
+/// statement, so every plan entry it meets is refused, at the literal
+/// in the default (C3 rest; lowering kept a spanless refusal of its own
+/// for that shape until then).
 fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     // A cross-pool edge needs a locus placed off the main thread; a
     // table whose one domain is main has none, and the graph is not
@@ -92,6 +95,23 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
                 "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
                  `{owner}`'s thread and cannot be used here. Write it as a bare statement \
                  (`{child} {{ ... }};`), not as a value (let-binding, sub-expression, or field)."
+            ),
+        ));
+    }
+    for (i, context) in ownership.default_contexts(&crosspool) {
+        let site = &ownership.sites[i];
+        let child = &site.child_ty;
+        let Some(owner) = crosspool.get(&(context.clone(), child.clone())) else { continue };
+        let holder = &ownership.declarations[site.enclosing_decl].name;
+        let field = site.params_field.as_deref().unwrap_or_default();
+        diags.push(Diag::ty(
+            site.span,
+            format!(
+                "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{holder}`'s param \
+                 `{field}`, which is built in `{context}` (a `{holder}` built there leaves `{field}` to its \
+                 default), so the instance is created on `{owner}`'s thread and cannot be the field's value. \
+                 Write it as a bare statement (`{child} {{ ... }};`), not as a value (let-binding, \
+                 sub-expression, or field)."
             ),
         ));
     }

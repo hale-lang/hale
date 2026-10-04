@@ -182,6 +182,12 @@ pub struct OwnedSite {
     /// nested initializer or a block tail is a value use even when an
     /// enclosing expression's result is discarded.
     pub bare_statement: bool,
+    /// The fields the literal writes out. Every other param of the
+    /// child takes its default, which lowering expands where this
+    /// literal is lowered.
+    pub supplied: BTreeSet<String>,
+    /// For a `params_default` site, the param whose default holds it.
+    pub params_field: Option<String>,
 }
 
 /// A locus birth in a free function. Collected by the same walk as
@@ -671,6 +677,56 @@ impl OwnershipGraph {
             mixed,
             forwarding,
         }
+    }
+
+    /// The locus each params-default literal is lowered under (F.40
+    /// phase 3, C3 rest). Lowering expands a default where the literal
+    /// that leaves its field unsupplied is lowered, under that scope's
+    /// locus, not under the locus that declares the default; so a
+    /// default's context is a locus whose own member bodies hold a
+    /// literal reaching it, through any chain of defaults each literal
+    /// on the way leaves unsupplied. Each (index into [`Self::sites`],
+    /// context locus) pair once, in site order.
+    ///
+    /// A literal in a free fn (`fn main` included) or a binding entry is
+    /// lowered under no locus, so what it reaches has no context here.
+    /// `posted` is the cross-pool plan: a literal it holds for its
+    /// context is posted to its owner's thread before its params are
+    /// built, so no default beneath it is expanded under that context.
+    pub fn default_contexts(&self, posted: &BTreeMap<(String, String), String>) -> Vec<(usize, String)> {
+        let mut defaults: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (i, site) in self.sites.iter().enumerate() {
+            if site.params_default {
+                defaults.entry(site.enclosing_decl).or_default().push(i);
+            }
+        }
+        // (site, context declaration): the defaults site `i`'s literal
+        // expands, lowered under `context`.
+        let reach = |i: usize, context: usize, pending: &mut Vec<(usize, usize)>| {
+            let site = &self.sites[i];
+            if posted.contains_key(&(self.declarations[context].name.clone(), site.child_ty.clone())) {
+                return;
+            }
+            let Some(child) = site.child_decl else { return };
+            for &d in defaults.get(&child).into_iter().flatten() {
+                if self.sites[d].params_field.as_ref().is_some_and(|f| !site.supplied.contains(f)) {
+                    pending.push((d, context));
+                }
+            }
+        };
+        let mut pending = Vec::new();
+        for (i, site) in self.sites.iter().enumerate() {
+            if !site.params_default {
+                reach(i, site.enclosing_decl, &mut pending);
+            }
+        }
+        let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
+        while let Some((i, context)) = pending.pop() {
+            if seen.insert((i, context)) {
+                reach(i, context, &mut pending);
+            }
+        }
+        seen.into_iter().map(|(i, context)| (i, self.declarations[context].name.clone())).collect()
     }
 }
 
@@ -1302,6 +1358,8 @@ pub fn build_ownership_graph(
                     child_key,
                     params_default: site.params_default,
                     bare_statement: site.bare_statement,
+                    supplied: site.supplied.clone(),
+                    params_field: site.params_field.clone(),
                 });
                 continue;
             }
@@ -1337,6 +1395,8 @@ pub fn build_ownership_graph(
                 child_key,
                 params_default: site.params_default,
                 bare_statement: site.bare_statement,
+                supplied: site.supplied.clone(),
+                params_field: site.params_field.clone(),
             });
         }
     }

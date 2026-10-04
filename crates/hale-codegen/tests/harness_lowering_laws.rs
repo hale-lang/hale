@@ -138,19 +138,22 @@ fn a_cross_pool_spawn_used_as_a_value_is_refused_by_the_law() {
     assert_eq!(msg.matches(FIRE_AND_FORGET).count(), 2, "expected the law's two refusals, got: {msg}");
 }
 
-/// The residue lowering keeps: `Driver` spawns `Ship` itself (a bare
-/// statement, legal), so the plan holds (Driver, Ship); `Holder`'s
-/// params default builds a `Ship` too, expanded under `Driver`'s self,
-/// which no row relates to the literal. Lowering's own refusal is still
-/// its only evaluator (the check passes it: hale-types'
-/// `ownership_graph.rs`).
+/// The shape lowering refused alone until C3 rest: `Driver` spawns
+/// `Ship` itself (a bare statement, legal), so the plan holds (Driver,
+/// Ship); `Holder`'s params default builds a `Ship` too, expanded under
+/// `Driver`'s self. The ownership graph gives the default that context
+/// (`default_contexts`), and the law refuses it before lowering, with
+/// its wording; lowering keeps no refusal of its own.
 #[test]
-fn a_cross_pool_spawn_in_another_locus_default_is_refused_by_lowering_alone() {
+fn a_cross_pool_spawn_in_another_locus_default_is_refused_by_the_law() {
     let err = build_err("hale_c7_xpool_default", &crosspool_src("Ship { hull: 7 }; Holder { };"));
     let msg = err.to_string();
     assert!(
-        msg.starts_with("unsupported in codegen v0: cross-pool spawn `Ship{ }` is fire-and-forget"),
-        "expected lowering's own refusal, got: {msg}"
+        msg.contains(
+            "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of `Holder`'s param `s`, \
+             which is built in `Driver`"
+        ),
+        "expected the law's refusal, got: {msg}"
     );
 }
 

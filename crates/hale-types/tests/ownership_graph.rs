@@ -662,22 +662,70 @@ fn a_bare_cross_pool_spawn_is_clean() {
     assert!(errs.is_empty(), "a bare statement is the legal spelling: {errs:?}");
 }
 
-/// The residue lowering still refuses alone: `Driver` spawns `Ship`
-/// itself (bare, legal), so the plan holds (Driver, Ship); `Holder`'s
-/// params default builds a `Ship` too, and lowering expands it under
-/// `Driver`'s self, where that entry applies. The graph keys the literal
-/// by `Holder`, whose edge to `World` is same-thread, so the law cannot
-/// see it; the harness pin is in hale-codegen's
-/// `harness_lowering_laws.rs`.
+/// The shape lowering refused alone until C3 rest: `Driver` spawns
+/// `Ship` itself (bare, legal), so the plan holds (Driver, Ship);
+/// `Holder`'s params default builds a `Ship` too, and lowering expands
+/// it under `Driver`'s self, where that entry applies. The graph keys the
+/// literal by `Holder` and gives it its context, `Driver`
+/// (`default_contexts`), so the law refuses it at the literal in the
+/// default.
+const FIRE_AND_FORGET_DEFAULT: &str = "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of \
+                                       `Holder`'s param `s`, which is built in `Driver` (a `Holder` built there \
+                                       leaves `s` to its default), so the instance is created on `World`'s \
+                                       thread and cannot be the field's value";
+
 #[test]
-fn a_cross_pool_spawn_in_another_locus_default_is_not_judged_by_the_law() {
+fn a_cross_pool_spawn_in_another_locus_default_is_refused_at_the_default() {
     let g = graph(&crosspool_src("        Ship { hull: 7 };\n        Holder { };"));
-    assert!(g.bubble_plans().crosspool.contains_key(&("Driver".to_string(), "Ship".to_string())));
+    let crosspool = g.bubble_plans().crosspool;
+    assert!(crosspool.contains_key(&("Driver".to_string(), "Ship".to_string())));
+    let contexts: Vec<(String, String)> = g
+        .default_contexts(&crosspool)
+        .into_iter()
+        .map(|(i, cx)| (format!("{}.{}", g.declarations[g.sites[i].enclosing_decl].name, g.sites[i].child_ty), cx))
+        .collect();
+    assert!(contexts.contains(&("Holder.Ship".to_string(), "Driver".to_string())), "{contexts:?}");
     let errs = crosspool_errors("        Ship { hull: 7 };\n        Holder { };");
-    assert!(
-        !errs.iter().any(|(m, _)| m.contains("fire-and-forget")),
-        "the law judges a locus's own bodies only: {errs:?}"
-    );
+    assert_eq!(errs.len(), 1, "the law's refusal and nothing else: {errs:?}");
+    let (msg, at) = &errs[0];
+    assert!(msg.starts_with(FIRE_AND_FORGET_DEFAULT), "{msg}");
+    assert_eq!(at, "Ship { hull: 1 }", "located at the literal in the default");
+}
+
+/// Two defaults deep: `Driver` builds a `Dock`, whose default builds the
+/// `Holder` whose default builds the `Ship`; both expand under `Driver`.
+#[test]
+fn a_cross_pool_spawn_two_defaults_deep_is_refused_at_the_default() {
+    let src = crosspool_src("        Ship { hull: 7 };\n        Dock { };")
+        .replace("fn keep(", "locus Dock { params { h: Holder = Holder { }; } }\nfn keep(");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<(String, String)> = hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
+        .collect();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(FIRE_AND_FORGET_DEFAULT), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "Ship { hull: 1 }");
+}
+
+/// A default no cross-pool context expands is clean: the `Holder` that
+/// `Driver` builds supplies `s` (a value it was handed), and the one
+/// `World` builds expands the default on `World`'s own thread, where
+/// `World` accepts the `Ship`.
+#[test]
+fn a_default_no_cross_pool_context_expands_is_clean() {
+    let src = crosspool_src("        Ship { hull: 7 };")
+        .replace("locus Driver {\n", "locus Driver {\n    params { got: Ship; }\n    fn hold() { Holder { s: self.got }; }\n")
+        .replace("    run() { }\n}\n", "    run() { Holder { }; }\n}\n")
+        .replace("Driver { }", "Driver { got: Ship { } }");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<String> = hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error() && d.message.contains("fire-and-forget"))
+        .map(|d| d.message)
+        .collect();
+    assert!(errs.is_empty(), "{errs:?}");
 }
 
 // --- Real corpus regression ---------------------------------------

@@ -494,23 +494,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
         if let Some(owner_name) = crosspool_owner {
-            // A literal in the enclosing locus's own member bodies is
-            // judged before lowering, located (`hale_types::lowering_laws`,
-            // F.40 phase 3, C7). This refusal stays for the one shape the
-            // law cannot see: a literal in another locus's params default,
-            // expanded here under `current_self`, the instantiating
-            // locus, which no row relates to the literal.
-            if !is_bare_stmt {
-                return Err(CodegenError::Unsupported(format!(
-                    "cross-pool spawn `{child}{{ }}` is fire-and-forget: \
-                     the instance is created on `{owner}`'s thread and \
-                     cannot be used here. Write it as a bare statement \
-                     (`{child} {{ ... }};`), not as a value (let-binding, \
-                     sub-expression, or field).",
-                    child = locus_name,
-                    owner = owner_name,
-                )));
-            }
+            // A value use is judged before lowering at every entry point,
+            // located (`hale_types::lowering_laws`, F.40 phase 3, C7): a
+            // literal in the enclosing locus's own member bodies, and one
+            // in a params default under each locus that expands it here
+            // as `current_self` (`OwnershipGraph::default_contexts`, C3
+            // rest). So only a bare statement reaches this post.
+            debug_assert!(is_bare_stmt, "a cross-pool value use of `{locus_name}` reached lowering");
             // Restore the cooperative-pool context we swapped in above
             // (the normal path restores it at fn exit; we early-return).
             self.current_cooperative_pool = prev_current_coop_pool;

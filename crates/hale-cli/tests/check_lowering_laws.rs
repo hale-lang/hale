@@ -48,6 +48,20 @@ const XPOOL_VALUE: &str = "locus Ship { params { hull: Int = 0; } }\n\
 
 const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget";
 
+/// A cross-pool spawn in another locus's params default (C3 rest):
+/// `Driver` builds a `Holder` that leaves `s` to its default, which
+/// lowering expands under `Driver`, where `Ship` is a cross-pool birth.
+/// The default's literal is line 2, column 35.
+const XPOOL_DEFAULT: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     locus Holder { params { s: Ship = Ship { hull: 1 }; } }\n\
+     locus Driver { run() { Ship { hull: 7 }; Holder { }; } }\n\
+     main locus World { params { driver: Driver = Driver { }; } placement { driver: cooperative(pool = workers); } \
+     accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+const FIRE_AND_FORGET_DEFAULT: &str =
+    "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of `Holder`'s param `s`, which is built in `Driver`";
+
 /// Rule 18 (GH #890), the review of PR #1338: a root literal written in
 /// another locus's params default overrides the placed field with a
 /// factory call. The override is line 8, column 45.
@@ -240,6 +254,11 @@ fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
 #[test]
 fn check_and_build_refuse_a_cross_pool_spawn_used_as_a_value_at_the_literal() {
     both_verbs_refuse("xpool", XPOOL_VALUE, FIRE_AND_FORGET, ":2:32:");
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_spawn_in_another_locus_default_at_the_default() {
+    both_verbs_refuse("xpool_default", XPOOL_DEFAULT, FIRE_AND_FORGET_DEFAULT, ":2:35:");
 }
 
 #[test]
