@@ -253,7 +253,7 @@ table's own definition rather than assume a common shape.
 | `payloads` | a payload contract — deliberately a different sort from the subject |
 | `phases` | lifecycle phases |
 | `seeds` | imported seeds |
-| `thread_domains` | pools and their placement |
+| `thread_domains` | where arranged instances run: `main`, a pool, a pinned anchor, a binding's reader |
 | `bindings` | transport bindings, with a `role` |
 | `groups` | resolved claim groups |
 | `types`, `interfaces` | type and interface declarations |
@@ -273,6 +273,63 @@ Two distinctions in that table are load-bearing:
   arrangement. `LocusDecl::params` records what a locus may hold
   even where no instance is born; `LocusInstance::replica` is the
   0-based index the runtime pins, not a count.
+
+### The arrangement
+
+`locus_instances`, `realizes`, `owns`, `placed_in`, `thread_domains`
+and `affined_to` are the **placement table's rows, projected** (F.40
+phase 3, the `placement` family); the builder walks no declaration of
+its own for them.
+
+- **What is arranged.** The instances of the root lowering deploys
+  (the entry row's `lowering_root`, never an imported `main`): one
+  template per literal of the root, or the entry's implicit
+  construction of a root no literal builds. Each instance is arranged
+  where it runs: a held instance under its holder, as the rows its
+  source actually built. A field is arranged as the declaration the
+  table says it realizes, so an aliased field is the aliased locus and
+  a contract-typed field the implementation that was built.
+- **Paths and replicas.** A path is the fields from the root, with
+  the replica index after the replicated field (`App.f[2].k`). A path
+  has no construction component: it is arranged when every template
+  and alternative enumerates it and agrees on the declaration and the
+  domain; otherwise it is left out with everything under it, each
+  declaration realized there a `RuntimeInheritedPlacement` hole naming
+  the path. An unenumerable subtree in any template or alternative is
+  disagreement, even if the other templates agree.
+  `LocusInstance::replica` is the replica row's own index;
+  an instance under a replica carries the index in its path and
+  `None` in its `replica`.
+- **Domains.** `thread_domains` are the domains the arranged instances
+  run in (`main`, `pool:<name>`, `pinned:<anchor path>`) and one
+  `binding:<topic>` per entry of the deployed root's `bindings { }`.
+  `affined_to` gives a domain its resolved CPU set (a `cores` range or
+  set, or a `node` / `l3` affinity resolved against the root's
+  `topology { }`): a pool's is the set its one worker may run on, a
+  pinned replica's its own thread's. A CPU set is a column of a domain,
+  never a domain; two entries naming one pool give one row, and a
+  domain with no affinity has none.
+- **What is not arranged.** The projection is user-only and partial
+  by design: a row realizing a stdlib declaration is left out with
+  its subtree (its declaration is no entity of this model, and adding
+  one would be shape), with no hole for it; an adapter of the root's
+  `bindings { }` is no instance; a literal `fn main` builds besides the
+  root is a birth outside the arrangement, a `RuntimeInheritedPlacement`
+  hole on its declaration. Every placement question the checker and
+  lowering ask is answered by the table, never by the arrangement.
+
+Three identity contracts hold the projection, each separately:
+
+1. **Shape identity.** The arrangement is outside the shape half:
+   `shape_hash` reads none of these tables, so no change to the
+   arrangement moves it.
+2. **Observation entity ids.** `obs_entity_ids` stamps subjects,
+   locus declarations and bindings, never instances; the bindings are
+   the deployed root's.
+3. **Arrangement-instance correspondence.** `LocusInstanceId` is the
+   index in path order, so an added or removed path renumbers every
+   later instance. No numeric instance id is stable across builds; a
+   consumer that holds an instance across builds joins by path.
 
 ## Relations
 
@@ -307,7 +364,7 @@ See below.
 | `publishes` | **site**; carries `key_domain`, `in_loop`, `disposition` |
 | `declares_publish` | the endpoint grain (`bus { publish T; }`) |
 | `subscribes` | carries `key_predicate` — the filter half of delivery |
-| `placed_in`, `affined_to` | placement |
+| `placed_in`, `affined_to` | placement: an instance's domain, a domain's CPU set (§ The arrangement) |
 | `binds` | topic ↔ transport, with `role` |
 | `supervises` | supervision edges |
 | `group_members`, `group_selectors` | resolved vs authored |

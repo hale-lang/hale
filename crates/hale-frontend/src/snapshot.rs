@@ -1529,6 +1529,7 @@ impl Snapshot {
                     effects: self.demand_effects().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
+                    placement: self.demand_placement().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1631,8 +1632,11 @@ impl Snapshot {
                         &merged
                     }
                 };
+                // The rewrite keeps a publish into a field the table runs
+                // off its owner's thread on the bus.
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("intra_locus");
-                Ok(hale_types::resolved::rewrite_intra_locus(program))
+                Ok(hale_types::resolved::rewrite_intra_locus(program, placement))
             })
             .as_ref()
     }
@@ -1653,10 +1657,11 @@ impl Snapshot {
 
     /// The view codegen lowers: the check first, then
     /// [`hale_types::resolved::resolve_rewritten`] over the intra-locus
-    /// rewrite ([`Snapshot::demand_intra_locus`]) with the snapshot's
-    /// source map, renames and api config — the topic rewrite as a
-    /// relation, the stdlib merge, the mint over the merged program, and
-    /// the tables. A check that reported an error
+    /// rewrite ([`Snapshot::demand_intra_locus`], which reads the
+    /// placement table) with the snapshot's source map, renames, api
+    /// config and form rows — the topic rewrite as a relation, the
+    /// stdlib merge, the mint over the merged program, and the tables.
+    /// A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
     /// The harness's snapshot ([`Config::harness`]) is not gated.
     pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {

@@ -1141,17 +1141,6 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
 
 
 
-/// The single named type a `TypeExpr` denotes (a bare `Named`
-/// path), else `None`. Non-locus field types never appear in a
-/// `placement { }` block (typecheck enforces), so we don't confirm
-/// locus-ness here.
-pub(crate) fn single_named_type(ty: &TypeExpr) -> Option<String> {
-    match ty {
-        TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
-        _ => None,
-    }
-}
-
 // === Quiet-handler classifier (direct-call devirt slice-2) =========
 //
 // The soundness theorem: loci are ISOLATED — a publisher cannot read a

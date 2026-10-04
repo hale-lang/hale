@@ -330,7 +330,7 @@ fn intra_locus_send_rewrites_to_self_call() {
         }
         fn main() { Loop { }; }
     "#);
-    desugar_intra_locus_topics(&mut p);
+    desugar_intra_locus_topics(&mut p, &Default::default());
     // Locate Loop.birth's first stmt — should be Stmt::Expr(Call(...self.on_beat...))
     let mut found = false;
     for it in &p.items {
@@ -373,7 +373,7 @@ fn intra_locus_optimization_skipped_when_pub_and_sub_in_different_loci() {
         }
         fn main() { Sub { }; Pub { }; }
     "#);
-    desugar_intra_locus_topics(&mut p);
+    desugar_intra_locus_topics(&mut p, &Default::default());
     // Pub.birth's first stmt should still be a Stmt::Send (no rewrite).
     let mut still_send = false;
     for it in &p.items {
@@ -411,7 +411,7 @@ fn intra_locus_optimization_skipped_when_topic_is_bound() {
         }
         fn main() { App { }; Loop { }; }
     "#);
-    desugar_intra_locus_topics(&mut p);
+    desugar_intra_locus_topics(&mut p, &Default::default());
     // Bound topic must NOT be optimized — the binding may publish
     // to remote subscribers we can't see at compile time.
     let mut still_send = false;
@@ -452,7 +452,7 @@ fn tower_parent_publishes_child_subscribes_rewrites_to_chained_call() {
         }
         fn main() { Parent { }; }
     "#);
-    desugar_intra_locus_topics(&mut p);
+    desugar_intra_locus_topics(&mut p, &Default::default());
     let mut found = false;
     for it in &p.items {
         if let TopDecl::Locus(l) = it {
@@ -506,7 +506,7 @@ fn tower_optimization_skipped_when_parent_has_two_subscriber_children() {
         }
         fn main() { Parent { }; }
     "#);
-    desugar_intra_locus_topics(&mut p);
+    desugar_intra_locus_topics(&mut p, &Default::default());
     let mut still_send = false;
     for it in &p.items {
         if let TopDecl::Locus(l) = it {
@@ -547,7 +547,7 @@ fn tower_optimization_skipped_when_subscriber_is_two_hops_away() {
         }
         fn main() { Outer { }; }
     "#);
-    desugar_intra_locus_topics(&mut p);
+    desugar_intra_locus_topics(&mut p, &Default::default());
     let mut still_send = false;
     for it in &p.items {
         if let TopDecl::Locus(l) = it {

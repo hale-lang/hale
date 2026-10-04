@@ -161,6 +161,54 @@ obviously correct in one form and is quietly wrong in another,
 which is precisely why the semantics live in a written contract
 rather than in whichever walk happened to be written first.
 
+## The arrangement
+
+The instance tables — which locus instances exist, who owns each,
+the thread each runs on, the CPUs a thread may use — are not the
+model's own walk. They are the **placement table's** rows, projected:
+the compiler decides where every instance runs once, and the model
+reads that decision rather than deriving a second one.
+
+So the arrangement holds the instances of the main locus the build
+deploys, each where it runs:
+
+```hale
+type Held = Holder;
+
+main locus App {
+    params {
+        h: Held = Holder { };          // App.h, realizing Holder
+        r: Router = RouterV1 { };      // App.r, realizing RouterV1
+        workers: Worker = Worker { };
+    }
+    placement {
+        h: pinned;                     // App.h and all below it: pinned:App.h
+        workers: pinned(cores = 0..4, replicas = 4);
+    }
+}
+```
+
+An aliased field is arranged as the locus the alias names, and an
+interface-typed one as the locus that was actually built. A replica
+carries its own index (`App.workers[2]`), and the instances under it
+carry it in their path. `affined_to` gives each pinned replica, and
+each pool, the CPUs it may run on — a set of cores is something a
+thread *has*, never a thread itself.
+
+Some instances are deliberately not arranged, and the gap is stated
+rather than hidden. An instance of a standard-library locus (a
+`std::io::tcp::Listener` field) is placed by the compiler but not
+arranged, since the model's declarations are the program's own. An
+imported library's `main locus` is never the root. A locus `fn main`
+builds besides the root is a birth outside the arrangement, recorded
+as a hole. The placement table, not the arrangement, answers every
+placement question the checker asks.
+
+An instance's id is its position in path order, so adding a field
+renumbers what sorts after it. Join instances across builds by path,
+never by id. None of this is in the shape hash: rearranging instances
+never changes a program's `shape_hash` or its observation ids.
+
 ## What it doesn't do
 
 The model lives **inside the compiler process**. There is one way

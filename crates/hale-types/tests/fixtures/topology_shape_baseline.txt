@@ -1396,6 +1396,7 @@ crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
 crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6
 crates/hale-stdlib/hl/text.hl 191eff77c1d03506
 crates/hale-stdlib/hl/ts.hl 8aa733706f2db819
+crates/hale-syntax/tests/intra_locus_pool_safety.rs#0 136877c05cbac3b6
 crates/hale-syntax/tests/wrap_main.rs#0 865d341109268295
 crates/hale-syntax/tests/wrap_main.rs#1 80e8e4543ac850e6
 crates/hale-types/tests/alloc_summary_construction_correction.rs#1 8b8b4884fce28645
@@ -1551,6 +1552,7 @@ crates/hale-types/tests/interface_dispatch.rs#3 3e8236394613d0b0
 crates/hale-types/tests/interface_dispatch.rs#5 28000b6d0e512b10
 crates/hale-types/tests/interface_dispatch.rs#6 6d6f6da0dc6377b2
 crates/hale-types/tests/interface_slot_override.rs#1 c180c95dda5b3cc4
+crates/hale-types/tests/intra_locus_pool_safety.rs#1 136877c05cbac3b6
 crates/hale-types/tests/judgment_causes.rs#11 c81fa6ad060c49cb
 crates/hale-types/tests/judgment_causes.rs#3 e29c8ecbbd11aea2
 crates/hale-types/tests/judgment_causes.rs#8 0f41594939b4eca0
@@ -1586,6 +1588,10 @@ crates/hale-types/tests/locus_field_store.rs#6 fb576285cf6c267e
 crates/hale-types/tests/locus_member_const.rs#3 36c5f94439f06042
 crates/hale-types/tests/locus_member_const.rs#4 36c5f94439f06042
 crates/hale-types/tests/locus_member_type.rs#2 7c7d6de5bd37c6a5
+crates/hale-types/tests/model_arrangement.rs#0 f9d60755d77ddbcb
+crates/hale-types/tests/model_arrangement.rs#1 59a01f7667f8dbf9
+crates/hale-types/tests/model_arrangement.rs#2 7a3dab914ecdbe5c
+crates/hale-types/tests/model_arrangement.rs#3 0c8b7bcce04251ee
 crates/hale-types/tests/model_builder.rs#1 edeedb35b2b7fe31
 crates/hale-types/tests/model_builder.rs#10 93de17504f35f3b9
 crates/hale-types/tests/model_builder.rs#11 199146dcdfc4cd48

@@ -1,0 +1,9 @@
+// M-1: the seed has no `main locus` of its own and builds the
+// library's by literal. The arrangement was rooted at the imported
+// `main` (the first in program order); lowering deploys no root, so the
+// arrangement is empty and the literal is a birth outside it.
+import "../lib" as lib;
+
+fn main() {
+    lib::App { };
+}
