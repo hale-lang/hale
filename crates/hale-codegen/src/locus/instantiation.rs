@@ -36,72 +36,23 @@ pub(crate) trait LocusInstantiate<'ctx> {
 }
 
 impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
-    /// GH #813: the re-entry guard, and then the lowering.
+    /// The lowering, with the frame's holder and supervisor restored.
     ///
-    /// A locus reachable from its own param defaults — `locus Node {
-    /// params { next: Node = Node { n: 1 }; } }`, or the same cycle
-    /// through two types — sent this function through the default,
-    /// into the `Node` it builds, into ITS default, until the
-    /// compiler's stack ran out. `hale check` now refuses the
-    /// program with a located error at the param, but
-    /// `build_executable` never runs the checker, so the lowering
-    /// carries its own floor: a stack trace is not a diagnostic.
-    ///
-    /// The path holds the instantiations the lowering is currently
-    /// inside, keyed on (locus, the field names the literal
-    /// supplies) — the pair, because the defaults a literal expands
-    /// are exactly the ones it does NOT supply, so `A { n: 1, m: 2 }`
-    /// written inside `A`'s own default expands nothing and
-    /// terminates.
-    ///
-    /// Re-entry is only refused from inside a param DEFAULT
-    /// (`in_params_default`). Nesting written out in source is
-    /// bounded by the AST that spells it — `Box { inner: Box { inner:
-    /// Dot { } } }` is an ordinary program and stays one — so it is
-    /// the re-entered default text, and only that, which has no
-    /// floor. An unbounded chain must expand a default infinitely
-    /// often, the states are finite, and so it repeats one here.
-    ///
-    /// The teardown side took the same measure in GH #750 / #811
-    /// (`locus_cascade_path`), defensively, because instantiation
-    /// never got that far.
+    /// GH #813: a locus reachable from its own param defaults —
+    /// `locus Node { params { next: Node = Node { n: 1 }; } }`, or the
+    /// same cycle through two types — would send this function through
+    /// the default, into the `Node` it builds, into ITS default, until
+    /// the compiler's stack ran out. The law that refuses it (a cycle of
+    /// (locus, supplied fields) states through param defaults) is judged
+    /// before lowering at every entry point, the harness's included
+    /// (`hale_types::lowering_laws`, F.40 phase 3, C7), so no program
+    /// that reaches here has one, and lowering keeps no re-entry guard.
     fn lower_locus_instantiation(
         &mut self,
         locus_name: &str,
         inits: &[StructInit],
         scope: &Scope<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let mut supplied: Vec<String> =
-            inits.iter().map(|i| i.name.name.clone()).collect();
-        supplied.sort();
-        supplied.dedup();
-        let state = (locus_name.to_string(), supplied);
-        let reentered = self
-            .locus_instantiation_path
-            .iter()
-            .position(|s| *s == state)
-            .filter(|_| self.in_params_default);
-        if let Some(at) = reentered {
-            let ring: Vec<&str> = self.locus_instantiation_path[at..]
-                .iter()
-                .map(|s| s.0.as_str())
-                .collect();
-            let chain = if ring.len() > 1 {
-                format!(" (`{}` → `{}`)", ring.join("` → `"), ring[0])
-            } else {
-                String::new()
-            };
-            return Err(CodegenError::Unsupported(format!(
-                "locus `{}` is built by its own param default{} — a \
-                 locus cannot contain itself by value. Every `{}` the \
-                 default builds needs another one, so no instance can \
-                 ever be finished. Drop the default and take the \
-                 child from the caller, or hold a value rather than a \
-                 locus.",
-                locus_name, chain, locus_name
-            )));
-        }
-        self.locus_instantiation_path.push(state);
         // GH #1035: the inner lowering takes `field_holder` and sets
         // `supervising_parent` for itself; both belong to the frame
         // that called us once it returns, on every exit path.
@@ -110,7 +61,6 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         let out = self.lower_locus_instantiation_inner(locus_name, inits, scope);
         self.field_holder = saved_holder;
         self.supervising_parent = saved_supervisor;
-        self.locus_instantiation_path.pop();
         out
     }
 }
@@ -546,6 +496,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
         if let Some(owner_name) = crosspool_owner {
+            // A literal in the enclosing locus's own member bodies is
+            // judged before lowering, located (`hale_types::lowering_laws`,
+            // F.40 phase 3, C7). This refusal stays for the one shape the
+            // law cannot see: a literal in another locus's params default,
+            // expanded here under `current_self`, the instantiating
+            // locus, which no row relates to the literal.
             if !is_bare_stmt {
                 return Err(CodegenError::Unsupported(format!(
                     "cross-pool spawn `{child}{{ }}` is fire-and-forget: \
@@ -2668,48 +2624,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .deployment.main_placement_node
                     .get(fname.as_str())
                     .copied();
-                // GH #890 backstop. All three overrides above are
-                // consumed by the next locus LITERAL lowered — and by
-                // nothing else. A field initialised any other way (a
-                // factory call is the shape that bites) leaves them
-                // untaken, and the next field's turn through this loop
-                // resets them: no thread, no pool, no diagnostic.
-                // `check_placement_entry_consumed` refuses the shape
-                // with a located diagnostic, so nothing that runs the
-                // checker reaches this. `build_executable` does NOT
-                // run the checker, and neither does a direct codegen
-                // embedder — refuse there rather than drop the
-                // placement the author wrote. An entry that decides no
-                // field family (the table's hole) is refused the same.
-                if self
-                    .deployment
-                    .main_placement_map
-                    .contains_key(fname.as_str())
-                    || self.deployment.undecided_fields.contains(fname.as_str())
-                {
-                    let init =
-                        overrides.get(fname.as_str()).copied().or(
-                            match default {
-                                DefaultInit::Expr(e) => Some(e),
-                                _ => None,
-                            },
-                        );
-                    if let Some(e) = init {
-                        if !matches!(e, Expr::Struct { .. }) {
-                            return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` field `{}` carries a `placement \
-                                 {{ }}` entry but is initialised by an \
-                                 expression that is not a locus literal; a \
-                                 placement is carried by the literal lowered \
-                                 for the field, so this entry would be \
-                                 silently dropped. Write the literal in the \
-                                 field (`{}: T = T {{ }};`) — see \
-                                 spec/semantics.md § Placement block rule 18",
-                                locus_name, fname, fname
-                            )));
-                        }
-                    }
-                }
+                // All three overrides above are consumed by the next
+                // locus LITERAL lowered, and by nothing else: a placed
+                // field initialised any other way would leave them
+                // untaken. Rule 18 (GH #890) refuses that before
+                // lowering, at every entry point
+                // (`hale_types::lowering_laws`), so every placed field
+                // reaching here is initialised by a literal.
             }
             // Topology Phase 1c: fan out the extra replicas. For a
             // `pinned(..., replicas = K)` field (K > 1) we emit K-1
@@ -3832,50 +3753,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )));
             }
         }
-        if is_pinned {
-            if info.methods.contains_key("accept") {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares `accept()`; pinned coordinators \
-                     wait on a future cross-thread cascade-dissolve milestone",
-                    locus_name
-                )));
-            }
-            if info.birth_closures_fn.is_some()
-                || info.dissolve_closures_fn.is_some()
-            {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares closures; cross-thread closure \
-                     routing not yet supported",
-                    locus_name
-                )));
-            }
-            // GH #826 backstop. This branch's join record — the
-            // deferred-dissolve slot below and the `pthread_t`
-            // alloca it carries — is ONE alloca per instantiation
-            // SITE, hoisted to the fn's entry block. A site inside a
-            // loop rewrites both every iteration, so the scope-exit
-            // flush joins and arena-destroys only the LAST instance
-            // and every earlier pinned thread is orphaned with its
-            // arena live (GH #815's per-iteration slot reclaim
-            // deliberately steps over a pinned entry: reclaiming it
-            // means joining the previous thread).
-            //
-            // `check_pinned_locus_in_loop` rejects the shape with a
-            // located diagnostic, so nothing that runs the checker
-            // reaches this. `build_executable` does NOT run the
-            // checker, and neither does a direct codegen embedder —
-            // refuse there rather than emit the leak.
-            if !self.loops.is_empty() {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` is instantiated inside a loop; its \
-                     thread's join record is one slot per site, so every \
-                     iteration but the last would be orphaned with its arena \
-                     live. Instantiate it once outside the loop (see \
-                     spec/semantics.md § Placement block rule 17)",
-                    locus_name
-                )));
-            }
-        }
+        // Rules 6 and 17 are enforced by the shared lowering laws,
+        // including on the harness path, before lifecycle emission.
         let mut mailbox_ptr_opt: Option<PointerValue<'ctx>> = if is_pinned {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
             if let Some(idx) = info.mailbox_field_idx {
@@ -4219,9 +4098,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and the deferred-dissolve flush (which signals
         // shutdown) can both reach it.
         //
-        // Still gated: accept (children of pinned would need
-        // cross-thread cascade-dissolve coordination which adds
-        // significant complexity beyond m28b), closures.
+        // A pinned locus accepts no children and declares no birth
+        // or dissolve closure (rule 6), and is never instantiated
+        // inside a loop (rule 17, GH #826): this branch's join record
+        // — the deferred-dissolve slot below and the `pthread_t`
+        // alloca it carries — is ONE alloca per instantiation SITE,
+        // hoisted to the fn's entry block, so a site in a loop would
+        // orphan every thread but the last. The laws judge both over
+        // the placement table before lowering, at every entry point
+        // (`hale_types::lowering_laws`), so lowering does not.
         if is_pinned {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
             let i32_t = self.context.i32_type();

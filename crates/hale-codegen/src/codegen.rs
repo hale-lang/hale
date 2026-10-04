@@ -1526,7 +1526,6 @@ pub fn build_resolved(
         instantiating_program_lifetime: false,
         declared_owner: None,
         locus_cascade_path: Vec::new(),
-        locus_instantiation_path: Vec::new(),
         instantiating_into_payload_arena: false,
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
@@ -3819,17 +3818,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type is already on the path is left to the teardown of the
     /// ancestor that owns it. Empty outside a cascade.
     pub(crate) locus_cascade_path: Vec<String>,
-    /// GH #813: the instantiations `lower_locus_instantiation` is
-    /// currently inside, keyed on (locus, the field names the literal
-    /// supplies). A locus reachable from its own param defaults —
-    /// `params { next: Node = Node { n: 1 }; }` — re-entered the
-    /// lowering through the default until the compiler's stack ran
-    /// out; re-entering a state already on this path is an
-    /// `Unsupported` error instead. The supplied names are part of
-    /// the key because the defaults a literal expands are exactly the
-    /// ones it does not supply. The instantiation twin of
-    /// `locus_cascade_path`. Empty outside an instantiation.
-    pub(crate) locus_instantiation_path: Vec<(String, Vec<String>)>,
     /// 2026-05-24 — when an outer locus is being m90-routed
     /// to the payload arena (because the enclosing fn declares
     /// it as the return type, fallible or not), every nested
@@ -9579,7 +9567,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// rows answer for a field. Fields no entry decides keep the
     /// locus's own default class (Cooperative under F.31).
     fn collect_main_placement(&mut self) {
-        use hale_types::placement::{Decision, DomainKind, HoleKind, InstanceKey, InstanceRow, Origin};
+        use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
         let Some(root) = table.root.as_ref() else { return };
         self.deployment.main_locus_name = Some(root.realizes.lowered.clone());
@@ -9674,11 +9662,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (k, r) in &table.instances {
             if matches!(k.origin, Origin::Binding(_)) && k.path.is_empty() {
                 self.deployment.pinned_locus_types.extend(r.realizes.as_ref().map(|d| d.lowered.clone()));
-            }
-        }
-        for h in &table.holes {
-            if let HoleKind::EntryDecidesNothing { field } = &h.kind {
-                self.deployment.undecided_fields.insert(field.clone());
             }
         }
     }

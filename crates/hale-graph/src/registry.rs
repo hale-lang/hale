@@ -234,6 +234,7 @@ const LIFECYCLE_DERIVE: &str = "crates/hale-types/src/lifecycle/derive.rs";
 const LIFECYCLE_PROJECT: &str = "crates/hale-types/src/lifecycle/project.rs";
 const LIFECYCLE_SPINE: &str = "crates/hale-types/src/lifecycle/spine.rs";
 const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
+const LOWERING_LAWS: &str = "crates/hale-types/src/lowering_laws.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -626,7 +627,6 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "collect_shm_ring_subjects", "the shm-ring subjects are read through `root_bindings`, which takes the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again", "same"),
             legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
             // The checker's own readers of `main` that E0 did not switch.
-            legacy(CHECK, "check_placement_entry_consumed", "rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error)", "reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4"),
             legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
             legacy(CHECK, "check_pool_affinity", "validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4)"),
             legacy(CHECK, "let api_bound", "`check_bus_graph`'s orphan lint is lifted when ANY `is_main` declaration carries an `api:` binding: a module-nested one, or an imported one whose api entry is inert (GH #1104 piece 5)", "reads the entry, whose binding is the one that binds (L4)"),
@@ -691,7 +691,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 3, as a judgment migration: the carrier fold widens the set lowering reads and the checker reads the unextended set, so giving the checker the extended set changes which bindings it checks as factory-returned (lowering-only at the phase-2 close; deferred in its exit comment)"),
             legacy("crates/hale-types/src/borrow_lifetime.rs", "accepts", "the borrow-lifetime law rebuilds the accept sets from the AST for itself", "reads `accepts_ancestor`"),
         ],
-        consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("codegen (a monomorph's accept rows: its template's, specialized at synthesis)", CG, "specialized_accepts"), consumer_at("codegen (whether the enclosing locus accepts the child it births)", CG_INST, "parent_accepts_us"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer_at("model (dynamic births: the snapshot's graph)", SNAPSHOT, "demand_ownership_graph"), consumer_at("a declaration's dependents (X2: a locus's births, accepts and instantiations make its neighbours through the ownership graph, the snapshot's graph)", SNAPSHOT, "declaration_dependents"), consumer_at("check (type-check rule 20, the unowned-subscriber rule: `owner_of_site` over the snapshot's graph, handed in through `CheckInputs`)", CHECK, "check_unowned_subscriber_locus"), consumer("alloc_summary (eager-only accept sets)")],
+        consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("codegen (a monomorph's accept rows: its template's, specialized at synthesis)", CG, "specialized_accepts"), consumer_at("codegen (whether the enclosing locus accepts the child it births)", CG_INST, "parent_accepts_us"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer_at("model (dynamic births: the snapshot's graph)", SNAPSHOT, "demand_ownership_graph"), consumer_at("a declaration's dependents (X2: a locus's births, accepts and instantiations make its neighbours through the ownership graph, the snapshot's graph)", SNAPSHOT, "declaration_dependents"), consumer_at("check (type-check rule 20, the unowned-subscriber rule: `owner_of_site` over the snapshot's graph, handed in through `CheckInputs`)", CHECK, "check_unowned_subscriber_locus"), consumer("alloc_summary (eager-only accept sets)"), consumer_at("check and the harness (the cross-pool spawn law reads the bubble plan)", LOWERING_LAWS, "cross_pool_spawn_used_as_a_value")],
         invariants: &[
             "a locus instantiation with no row is a CodegenError (F.39)",
             "ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files",
@@ -712,12 +712,12 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "resolve_owners(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
             Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "fresh_factories(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1), (CHECK, 1)] },
+            Seam { symbol: "fresh_factories(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1), (LOWERING_LAWS, 1)] },
             Seam { symbol: "resolve_binding_facts(", allowed: &[(TY_OWN, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "returned_bindings(", allowed: &[(TY_OWN, 3)] },
-            Seam { symbol: "bubble_plans(", allowed: &[(OWNERSHIP_GRAPH, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "bubble_plans(", allowed: &[(OWNERSHIP_GRAPH, 1), (TY_RESOLVED, 1), (LOWERING_LAWS, 1)] },
             Seam { symbol: "owner_of_site(", allowed: &[(CHECK, 1)] },
-            Seam { symbol: "demand_ownership_graph(", allowed: &[(SNAPSHOT, 4)] },
+            Seam { symbol: "demand_ownership_graph(", allowed: &[(SNAPSHOT, 5)] },
             Seam { symbol: "bundle_ownership_graph(", allowed: &[(TLIB, 3), (CHECK, 1)] },
         ],
     },
@@ -1212,11 +1212,10 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["placement and topology blocks", "entrypoint (the lowering root, never the entry)", "the construction templates: the root's literals, the entry's implicit construction of a root no literal builds, `fn main`'s own literals, the root's `bindings { }` adapters", "the params towers each template builds", "the minted sites of the snapshot and of the stdlib analysis copy", "free fns and locus bodies (dynamic sites, their domains and bounds)"],
         producer: Some(site(PLACEMENT, "derive_placement")),
         legacy: &[
-            legacy(CHECK, "check_placement_entry_consumed", "rule 18 selects its own root and reconstructs which placement entries each initializer consumes", "judge the placement table's deciding entries, construction rows and holes; keep the authored-initializer diagnostic"),
             legacy(CHECK, "check_instance_aliasing", "builds a separate root-field placement map through placement_spec_to_pool before checking shared instances", "read the table's root and instance domains when relating aliases"),
             legacy(CHECK, "check_pool_affinity", "builds a per-declaration pool-to-authored-affinity map, including declarations outside the deployed root", "judge declared affinity constraints from rows, preserving validation of undeployed declarations"),
         ],
-        consumers: &[consumer("check (rules 2-5, 13-18)"), consumer_at("check (F.31: the caller per instance, the receiver by its row's `owner_relative`)", CHECK, "check_placement_single_thread"), consumer_at("check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes)", CHECK, "root_field_placements"), consumer_at("check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop)", CHECK, "check_pinned_locus_in_loop"), consumer_at("check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself)", CHECK, "check_unowned_subscriber_locus"), consumer_at("sync_inference (accessor domains per instance)", SYNC, "infer_sync_for_bundle"), consumer("dispatch (domains)"), consumer_at("model (the arrangement: instances, owners, placed_in and affined_to, the table's rows projected, user-only)", MODEL_BUILDER, "derive_application_model_over"), consumer_at("the intra-locus rewrite (a publish into a field off its owner's thread stays on the bus: `PlacementTable::off_owner_fields`)", TY_RESOLVED, "rewrite_intra_locus"), consumer_at("codegen (the deployment plan, the table's lowering view: the root, and per root field an entry decides its schedule class, pool, NUMA node and replica cores; the pools' async_io and affinity; the pinned anchors' and pooled rows' realized declarations, an adapter among the anchors; the entries that decide nothing, for the GH #890 backstop)", CG, "collect_main_placement"), consumer_at("resource budget (the threads, partitioned by the scope that creates them: the root's pinned anchors under their construction's bound, the adapters once; the worker pools, main never one)", "crates/hale-types/src/resource_budget.rs", "budget_for_programs"), consumer_at("codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in)", CG, "program_has_offthread"),consumer_at("codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to)", TY_RESOLVED, "route_anchors"), consumer_at("bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains)", BUS_GRAPH, "type_placements"), consumer_at("check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded)", CHECK, "check_bounded_bus"), consumer_at("ownership (each bubbling edge's class: the enclosing instances paired with their owner rows)", OWNERSHIP_GRAPH, "relate"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
+        consumers: &[consumer_at("check (rule 6, the lowering laws)", LOWERING_LAWS, "pinned_features"), consumer_at("check (rule 17, the lowering laws: the root's constructions and their bounds)", LOWERING_LAWS, "pinned_root_in_a_loop"), consumer_at("check (rule 18, the lowering laws: the root and its constructions)", LOWERING_LAWS, "placement_entry_consumed"), consumer("check (rules 2-5, 13-16)"), consumer_at("check (F.31: the caller per instance, the receiver by its row's `owner_relative`)", CHECK, "check_placement_single_thread"), consumer_at("check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes)", CHECK, "root_field_placements"), consumer_at("check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself)", CHECK, "check_unowned_subscriber_locus"), consumer_at("sync_inference (accessor domains per instance)", SYNC, "infer_sync_for_bundle"), consumer("dispatch (domains)"), consumer_at("model (the arrangement: instances, owners, placed_in and affined_to, the table's rows projected, user-only)", MODEL_BUILDER, "derive_application_model_over"), consumer_at("the intra-locus rewrite (a publish into a field off its owner's thread stays on the bus: `PlacementTable::off_owner_fields`)", TY_RESOLVED, "rewrite_intra_locus"), consumer_at("codegen (the deployment plan, the table's lowering view: the root, and per root field an entry decides its schedule class, pool, NUMA node and replica cores; the pools' async_io and affinity; the pinned anchors' and pooled rows' realized declarations, an adapter among the anchors)", CG, "collect_main_placement"), consumer_at("resource budget (the threads, partitioned by the scope that creates them: the root's pinned anchors under their construction's bound, the adapters once; the worker pools, main never one)", "crates/hale-types/src/resource_budget.rs", "budget_for_programs"), consumer_at("codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in)", CG, "program_has_offthread"),consumer_at("codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to)", TY_RESOLVED, "route_anchors"), consumer_at("bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains)", BUS_GRAPH, "type_placements"), consumer_at("check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded)", CHECK, "check_bounded_bus"), consumer_at("ownership (each bubbling edge's class: the enclosing instances paired with their owner rows)", OWNERSHIP_GRAPH, "relate"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
         invariants: &[
             "placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains",
             "the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once",
@@ -1393,6 +1392,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("deployment (reserved)"),
         ],
         invariants: &[
+            "equivalent parent execution contexts are represented once per owner (instantiating domain, queue domain, handler state); occurrence bounds still sum every owner, and domain claims retain every distinct context without enumerating ancestry paths",
             "handlers run only on the queue owner's thread, so cross-thread failure delivery follows spec/runtime.md (a typed bus message): the first named decision, with its own regression test",
             "a spec/implementation disagreement is settled as a named decision, never by extraction picking a side",
             "an obligation is keyed by its source site (the declaration and P1's construction template); the runtime mints the instance and its incarnation, the table never does",
@@ -1449,17 +1449,25 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Lowering,
         state: State::Migrating,
         kind: Kind::Law,
-        answers: "The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops.",
-        inputs: &["the AST", "the lowering context"],
-        producer: None,
+        answers: "The laws that replaced lowering's own refusals of rules the spec states, and the one refusal still left: a cross-pool spawn used as a value in another locus's params default.",
+        inputs: &["the AST", "the placement table", "the binding rows", "the ownership graph"],
+        producer: Some(site(LOWERING_LAWS, "lowering_laws")),
         legacy: &[
-            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (rule 6's checker evaluator landed in phase 0 and covers adapter bindings since P1-3; the backstop stays for harness builds that skip the checker); for a placed locus the checker types as Unknown and for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), it is the only evaluator", "phase 3, when one pipeline guarantees the checker ran before lowering and the refusals become dead: every verb checks before it lowers, but the test harness's adapter `build_executable_with_options` builds through a harness snapshot that does not gate lowering on a check (`Config::harness`), and over three hundred test files build through it (at the phase-2 close)"),
+            legacy(CG_INST, "CodegenError::Unsupported", "one spanless refusal left at lowering: the cross-pool spawn used as a value where the literal sits in another locus's params default (lowering expands the default under the instantiating locus's self and keys the bubble plan by it, so the plan entry the literal meets depends on who instantiates its locus)", "the cross-pool residue: a row giving each params-default literal its instantiation context, the locus whose self lowering expands it under"),
         ],
-        consumers: &[consumer("codegen harness builds")],
-        invariants: &["a law is judged once, with a span"],
+        consumers: &[consumer_at("the check (every verb and the LSP)", CHECK, "lowering_laws"), consumer_at("the harness's lowering view (`Config::harness`), which is not gated on the check", SNAPSHOT, "lowering_laws")],
+        invariants: &[
+            "a law is judged once, with a span",
+            "lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)",
+            "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)",
+            "rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)",
+            "rule 18 is judged per entry of the lowering root (the placement table's root) over the inits its constructions supply, or the params default when one leaves the field or none builds the root (C7, 3)",
+            "a cross-pool spawn is judged per locus literal in a locus's own member bodies, against the ownership graph's cross-pool bubble plan keyed (that locus, the literal's locus) as lowering keys it there: one that is not a bare statement is refused at the literal (C7, 4)",
+            "self-containment (GH #813, #870) is judged over every locus's params defaults, keyed (locus, supplied fields) as lowering expands them, through every literal anywhere in a default (each branch of an `if` or `match`, each statement of a block) and every fresh-factory product: a cycle is refused at the param that closes it, and lowering keeps no re-entry guard (C7, 5)",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
-        spec: &["spec/semantics.md rules 6, 17, 18; GH #813, #876"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`)", "crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check)", "crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness)", "crates/hale-codegen/tests/placement_factory_default.rs (rule 18 at the harness)", "crates/hale-types/tests/ownership_graph.rs (the cross-pool spawn law and its residue)", "crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
+        spec: &["spec/semantics.md rules 6, 17, 18 and § accept bubbling", "spec/types.md § A locus may not contain itself by value; GH #813, #870, #876"],
         owned: &[],
         seams: &[],
     },
@@ -1698,10 +1706,10 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/6",
-        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) at the placement entry or adapter binding",
+        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
-        evaluator: Some(site(CHECK, "pinned_lifecycle_conflict")),
-        state: State::Migrating,
+        evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/7",
@@ -1777,15 +1785,15 @@ pub const RULES: &[Rule] = &[
         id: "semantics/placement/17",
         gist: "a pinned locus is not instantiated in a loop",
         family: "placement",
-        evaluator: Some(site(CHECK, "check_pinned_locus_in_loop")),
-        state: State::Migrating,
+        evaluator: Some(site(LOWERING_LAWS, "pinned_root_in_a_loop")),
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/18",
         gist: "every placement entry is consumed exactly once",
         family: "placement",
-        evaluator: Some(site(CHECK, "check_placement_entry_consumed")),
-        state: State::Migrating,
+        evaluator: Some(site(LOWERING_LAWS, "placement_entry_consumed")),
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/19",

@@ -5,9 +5,11 @@
 //!   1. Field exists in this locus's params block.
 //!   2. Field type is a locus type.
 //!   3. No duplicate field keys across placement entries.
-//!   4. Rule 6: a locus placed `pinned` declares neither `accept()`
-//!      nor a birth or dissolve closure (F.40 phase 0; codegen keeps
-//!      a spanless backstop).
+//!   4. Rule 6: an instance that runs pinned (a `pinned` entry's, an
+//!      adapter binding's) realizes a locus that declares neither
+//!      `accept()` nor a birth or dissolve closure (F.40 phase 0; read
+//!      off the placement table since phase 3, C7, when lowering's
+//!      spanless refusal was deleted).
 
 use hale_syntax::parse_source;
 use hale_types::check_program;
@@ -2052,7 +2054,9 @@ fn main() { App { }; }
 // every iteration and the scope-exit flush joins only the LAST
 // instance — every earlier thread is orphaned with its arena live.
 // `placement { }` is main-only, so the reachable shape is the main
-// locus itself instantiated inside a loop.
+// locus itself instantiated inside a loop. Judged since F.40 phase 3,
+// C7 over the placement table's root constructions
+// (`hale_types::lowering_laws`), which the harness demands too.
 
 /// The GH #826 rejection, keyed on a substring stable across message
 /// edits.
@@ -2338,7 +2342,9 @@ fn pinned_loop_diagnostic_points_at_the_placement_entry() {
 //
 // The rule is not factory-shaped: EVERY entry must be consumed by
 // exactly one instantiation, whether the value comes from the params
-// default or from the init at the instantiation site.
+// default or from the init at the instantiation site. Judged since F.40
+// phase 3, C7 over the placement table's root and its constructions
+// (`hale_types::lowering_laws`), which the harness demands too.
 
 const UNCONSUMED: &str = "names a field no locus literal initialises";
 
@@ -2595,6 +2601,30 @@ fn main() { }
     assert!(
         !msgs.iter().any(|m| m.contains(UNCONSUMED)),
         "an imported seed's main is not the deployment root: {:?}",
+        msgs
+    );
+}
+
+/// F.40 phase 3, C7: rule 18 judges the placement table's constructions
+/// of the root, every literal of the root declaration wherever a scope
+/// holds it. The walk it replaced did not descend into a block
+/// statement, so this program checked clean and lowering then refused
+/// it without a span. (Spelled without a raw string so the corpus does
+/// not harvest it.)
+#[test]
+fn a_factory_supplied_at_a_site_inside_a_block_statement_is_rejected() {
+    let src = "locus Worker { run() { } }\n\
+               fn make_worker() -> Worker { return Worker { }; }\n\
+               main locus App { params { a: Worker; } placement { a: pinned; } }\n\
+               fn main() {\n\
+               \x20   {\n\
+               \x20       App { a: make_worker() };\n\
+               \x20   }\n\
+               }\n";
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED) && m.contains("the value supplied for `a` here is a call")),
+        "expected rule 18 at the site inside the block, got: {:?}",
         msgs
     );
 }
@@ -2932,4 +2962,141 @@ fn main() { App { }; }
     let inline = src.replace("self.n ~~ self.n within 0; epoch birth;", "epoch inline;");
     let msgs = errors(&inline);
     assert!(msgs.is_empty(), "inline closures run on the adapter's thread: {msgs:?}");
+}
+
+// Rule 6 over the placement table (F.40 phase 3, C7): the judgment
+// reads what each pinned instance realizes, so the shapes the entry
+// walk missed, which lowering then refused without a span, are refused
+// here, located. Each program's only error is the refusal, so it pins
+// exactly what the deleted lowering refusal used to say late. (The
+// third shape, a field the checker types `Unknown`, is a `std::` locus
+// today, and none declares either feature: that its pinned row realizes
+// the stdlib's declaration, where the law reads it, is pinned in
+// `placement_table.rs`.)
+
+fn the_only_error(src: &str) -> String {
+    let msgs = errors(src);
+    assert_eq!(msgs.len(), 1, "expected the rule 6 refusal and nothing else, got: {:?}", msgs);
+    msgs.into_iter().next().unwrap()
+}
+
+/// `accept()` written with no parameter: the entry walk read the
+/// resolved `accept_param`, which a parameterless accept leaves empty,
+/// while lowering keyed on the member.
+#[test]
+fn pinned_locus_with_a_parameterless_accept_is_refused_at_the_entry() {
+    let src = r#"
+locus Coord {
+    accept() { }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Coord = Coord { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msg = the_only_error(src);
+    assert!(
+        msg.starts_with("placement entry `w`: `Coord` is placed `pinned` but declares `accept()`")
+            && msg.ends_with("(rule 6)"),
+        "expected the rule 6 refusal for a parameterless accept, got: {msg}"
+    );
+}
+
+/// An adapter inline in `bindings { }` has a thread of its own with no
+/// placement entry naming it: the entry walk never saw it.
+#[test]
+fn an_adapter_binding_that_accepts_children_is_refused_at_the_binding_entry() {
+    let src = r#"
+type Tick { n: Int; }
+topic Beat { payload: Tick; subject: "beat"; }
+
+locus Child { run() { } }
+locus Sink {
+    accept(c: Child) { }
+    fn send(subject: String, bytes: Bytes) { }
+}
+
+locus Pub {
+    bus { publish Beat; }
+    run() { Beat <- Tick { n: 1 }; }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; }
+    bindings { Beat: Sink { }; }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(
+        the_only_error(src),
+        "adapter binding for topic `Beat`: `Sink` runs on its own pinned thread but declares `accept()`: a pinned locus owns its own thread and cannot \
+         accept children; drop the feature from the adapter locus (rule 6)"
+    );
+}
+
+#[test]
+fn an_adapter_binding_with_a_dissolve_closure_is_refused_at_the_binding_entry() {
+    let src = r#"
+type Tick { n: Int; }
+topic Beat { payload: Tick; subject: "beat"; }
+
+locus Sink {
+    params { sent: Int = 0; }
+    closure settled { self.sent ~~ self.sent within 0; }
+    fn send(subject: String, bytes: Bytes) { self.sent = self.sent + 1; }
+}
+
+locus Pub {
+    bus { publish Beat; }
+    run() { Beat <- Tick { n: 1 }; }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; }
+    bindings { Beat: Sink { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msg = the_only_error(src);
+    assert!(
+        msg.starts_with("adapter binding for topic `Beat`: `Sink` runs on its own pinned thread")
+            && msg.contains("dissolve is the default")
+            && msg.ends_with("(rule 6)"),
+        "expected the rule 6 refusal for an adapter's dissolve closure, got: {msg}"
+    );
+}
+
+/// Replicas are one entry: the refusal is said once, not per replica.
+#[test]
+fn a_replicated_pinned_entry_is_refused_once() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure settled { self.n ~~ self.n within 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(cores = 0..2, replicas = 2);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msg = the_only_error(src);
+    assert!(msg.contains("placement entry `w`") && msg.ends_with("(rule 6)"), "got: {msg}");
 }

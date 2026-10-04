@@ -1,0 +1,13 @@
+// A `std::` locus placed `pinned`: the field's type is `Unknown` to the
+// checker's entry walk, and the table's row realizes the stdlib's own
+// declaration (rule 6's reach, F.40 phase 3, C7).
+main locus App {
+    params {
+        s: std::log::StdoutSink = std::log::StdoutSink { };
+    }
+    placement {
+        s: pinned;
+    }
+}
+
+fn main() { App { }; }

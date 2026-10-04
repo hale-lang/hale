@@ -1,4 +1,4 @@
-//! The `lifecycle_flow` integration-test binary: 20 test files of this area, kept
+//! The `lifecycle_flow` integration-test binary: 23 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -15,6 +15,8 @@ mod generic_monomorph_agreement;
 mod generics;
 #[path = "gh730_interface_identity.rs"]
 mod gh730_interface_identity;
+#[path = "harness_lowering_laws.rs"]
+mod harness_lowering_laws;
 #[path = "interface_dispatch.rs"]
 mod interface_dispatch;
 #[path = "interface_in_composites.rs"]

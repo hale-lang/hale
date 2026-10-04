@@ -19,7 +19,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
-| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 28 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
+| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 27 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 4 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 2 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
@@ -40,12 +40,12 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `bare_fallible` | Layer 4 | Canonical | law | `bare_fallible_calls` | 0 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Canonical | law | `run_statically_nonreturning` | 0 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
-| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 3 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
+| `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 2 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Canonical | capability | `derive_capability_matrix` | 0 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | `derive_lifecycle` | 6 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
 | `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
-| `law_backstops` | Layer 8 | Migrating | law | — | 1 | The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops. |
+| `law_backstops` | Layer 8 | Migrating | law | `lowering_laws` | 1 | The laws that replaced lowering's own refusals of rules the spec states, and the one refusal still left: a cross-pool spawn used as a value in another locus's params default. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
@@ -254,7 +254,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1
 
 ### `expression_typing` — Canonical · derivation
 
@@ -408,7 +408,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `crates/hale-codegen/src/codegen.rs` · `in_main` — whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects` — the shm-ring subjects are read through `root_bindings`, which takes the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `synthesize_codec_thunks_for_main_bindings` — the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again. *Removed when:* same.
-- `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` — rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error). *Removed when:* reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4.
 - `crates/hale-types/src/check.rs` · `check_instance_aliasing` — instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included). *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `check_pool_affinity` — validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact. *Removed when:* none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4).
 - `crates/hale-types/src/check.rs` · `let api_bound` — `check_bus_graph`'s orphan lint is lifted when ANY `is_main` declaration carries an `api:` binding: a module-nested one, or an imported one whose api entry is inert (GH #1104 piece 5). *Removed when:* reads the entry, whose binding is the one that binds (L4).
@@ -469,7 +468,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-types/src/ownership.rs` · `resolve_binding_facts`; `crates/hale-types/src/ownership_graph.rs` · `bubble_plans`; `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets`; `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind`; `crates/hale-types/src/ownership_graph.rs` · `classify_edge`; `crates/hale-types/src/ownership.rs` · `fresh_factories`
 
-**Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); codegen (a monomorph's accept rows: its template's, specialized at synthesis) (`crates/hale-codegen/src/codegen.rs` · `specialized_accepts`); codegen (whether the enclosing locus accepts the child it births) (`crates/hale-codegen/src/locus/instantiation.rs` · `parent_accepts_us`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model (dynamic births: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_ownership_graph`); a declaration's dependents (X2: a locus's births, accepts and instantiations make its neighbours through the ownership graph, the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `declaration_dependents`); check (type-check rule 20, the unowned-subscriber rule: `owner_of_site` over the snapshot's graph, handed in through `CheckInputs`) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); alloc_summary (eager-only accept sets)
+**Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); codegen (a monomorph's accept rows: its template's, specialized at synthesis) (`crates/hale-codegen/src/codegen.rs` · `specialized_accepts`); codegen (whether the enclosing locus accepts the child it births) (`crates/hale-codegen/src/locus/instantiation.rs` · `parent_accepts_us`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model (dynamic births: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_ownership_graph`); a declaration's dependents (X2: a locus's births, accepts and instantiations make its neighbours through the ownership graph, the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `declaration_dependents`); check (type-check rule 20, the unowned-subscriber rule: `owner_of_site` over the snapshot's graph, handed in through `CheckInputs`) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); alloc_summary (eager-only accept sets); check and the harness (the cross-pool spawn law reads the bubble plan) (`crates/hale-types/src/lowering_laws.rs` · `cross_pool_spawn_used_as_a_value`)
 
 **Invariants.**
 
@@ -495,12 +494,12 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `resolve_owners(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 - `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/lowering_laws.rs` ×1
 - `resolve_binding_facts(` may be referenced from: `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `returned_bindings(` may be referenced from: `crates/hale-types/src/ownership.rs` ×3
-- `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/lowering_laws.rs` ×1
 - `owner_of_site(` may be referenced from: `crates/hale-types/src/check.rs` ×1
-- `demand_ownership_graph(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×4
+- `demand_ownership_graph(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×5
 - `bundle_ownership_graph(` may be referenced from: `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/check.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
@@ -701,7 +700,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `flows::survey(` may be referenced from: `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×2
+- `flows::survey(` may be referenced from: `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×2, `crates/hale-types/src/lifecycle/derive.rs` ×1
 
 ### `restart` — Migrating · derivation
 
@@ -1082,11 +1081,10 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` — rule 18 selects its own root and reconstructs which placement entries each initializer consumes. *Removed when:* judge the placement table's deciding entries, construction rows and holes; keep the authored-initializer diagnostic.
 - `crates/hale-types/src/check.rs` · `check_instance_aliasing` — builds a separate root-field placement map through placement_spec_to_pool before checking shared instances. *Removed when:* read the table's root and instance domains when relating aliases.
 - `crates/hale-types/src/check.rs` · `check_pool_affinity` — builds a per-declaration pool-to-authored-affinity map, including declarations outside the deployed root. *Removed when:* judge declared affinity constraints from rows, preserving validation of undeployed declarations.
 
-**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (the arrangement: instances, owners, placed_in and affined_to, the table's rows projected, user-only) (`crates/hale-types/src/model_builder.rs` · `derive_application_model_over`); the intra-locus rewrite (a publish into a field off its owner's thread stays on the bus: `PlacementTable::off_owner_fields`) (`crates/hale-types/src/resolved.rs` · `rewrite_intra_locus`); codegen (the deployment plan, the table's lowering view: the root, and per root field an entry decides its schedule class, pool, NUMA node and replica cores; the pools' async_io and affinity; the pinned anchors' and pooled rows' realized declarations, an adapter among the anchors; the entries that decide nothing, for the GH #890 backstop) (`crates/hale-codegen/src/codegen.rs` · `collect_main_placement`); resource budget (the threads, partitioned by the scope that creates them: the root's pinned anchors under their construction's bound, the adapters once; the worker pools, main never one) (`crates/hale-types/src/resource_budget.rs` · `budget_for_programs`); codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`); codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to) (`crates/hale-types/src/resolved.rs` · `route_anchors`); bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains) (`crates/hale-types/src/bus_graph.rs` · `type_placements`); check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded) (`crates/hale-types/src/check.rs` · `check_bounded_bus`); ownership (each bubbling edge's class: the enclosing instances paired with their owner rows) (`crates/hale-types/src/ownership_graph.rs` · `relate`); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rule 6, the lowering laws) (`crates/hale-types/src/lowering_laws.rs` · `pinned_features`); check (rule 17, the lowering laws: the root's constructions and their bounds) (`crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop`); check (rule 18, the lowering laws: the root and its constructions) (`crates/hale-types/src/lowering_laws.rs` · `placement_entry_consumed`); check (rules 2-5, 13-16); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (the arrangement: instances, owners, placed_in and affined_to, the table's rows projected, user-only) (`crates/hale-types/src/model_builder.rs` · `derive_application_model_over`); the intra-locus rewrite (a publish into a field off its owner's thread stays on the bus: `PlacementTable::off_owner_fields`) (`crates/hale-types/src/resolved.rs` · `rewrite_intra_locus`); codegen (the deployment plan, the table's lowering view: the root, and per root field an entry decides its schedule class, pool, NUMA node and replica cores; the pools' async_io and affinity; the pinned anchors' and pooled rows' realized declarations, an adapter among the anchors) (`crates/hale-codegen/src/codegen.rs` · `collect_main_placement`); resource budget (the threads, partitioned by the scope that creates them: the root's pinned anchors under their construction's bound, the adapters once; the worker pools, main never one) (`crates/hale-types/src/resource_budget.rs` · `budget_for_programs`); codegen (whether a thread crosses the bus boundary: a domain that is not main, `places_off_main`, over the lowering view's table, the snapshot's, handed in) (`crates/hale-codegen/src/codegen.rs` · `program_has_offthread`); codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to) (`crates/hale-types/src/resolved.rs` · `route_anchors`); bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains) (`crates/hale-types/src/bus_graph.rs` · `type_placements`); check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded) (`crates/hale-types/src/check.rs` · `check_bounded_bus`); ownership (each bubbling edge's class: the enclosing instances paired with their owner rows) (`crates/hale-types/src/ownership_graph.rs` · `relate`); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 
@@ -1120,7 +1118,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
-- `bundle_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1
+- `bundle_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1
 - `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 - `route_anchors(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2
 - `placed_in.push(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
@@ -1211,6 +1209,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Invariants.**
 
+- equivalent parent execution contexts are represented once per owner (instantiating domain, queue domain, handler state); occurrence bounds still sum every owner, and domain claims retain every distinct context without enumerating ancestry paths
 - handlers run only on the queue owner's thread, so cross-thread failure delivery follows spec/runtime.md (a typed bus message): the first named decision, with its own regression test
 - a spec/implementation disagreement is settled as a named decision, never by extraction picking a side
 - an obligation is keyed by its source site (the declaration and P1's construction template); the runtime mints the instance and its incarnation, the table never does
@@ -1271,27 +1270,33 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 ### `law_backstops` — Migrating · law
 
-**Answers.** The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops.
+**Answers.** The laws that replaced lowering's own refusals of rules the spec states, and the one refusal still left: a cross-pool spawn used as a value in another locus's params default.
 
-**Inputs.** the AST; the lowering context
+**Inputs.** the AST; the placement table; the binding rows; the ownership graph
 
-**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+**Producer (today's authority, migrating).** `crates/hale-types/src/lowering_laws.rs` · `lowering_laws`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering for rules the checker already states (rule 6's checker evaluator landed in phase 0 and covers adapter bindings since P1-3; the backstop stays for harness builds that skip the checker); for a placed locus the checker types as Unknown and for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), it is the only evaluator. *Removed when:* phase 3, when one pipeline guarantees the checker ran before lowering and the refusals become dead: every verb checks before it lowers, but the test harness's adapter `build_executable_with_options` builds through a harness snapshot that does not gate lowering on a check (`Config::harness`), and over three hundred test files build through it (at the phase-2 close).
+- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — one spanless refusal left at lowering: the cross-pool spawn used as a value where the literal sits in another locus's params default (lowering expands the default under the instantiating locus's self and keys the bubble plan by it, so the plan entry the literal meets depends on who instantiates its locus). *Removed when:* the cross-pool residue: a row giving each params-default literal its instantiation context, the locus whose self lowering expands it under.
 
-**Consumers.** codegen harness builds
+**Consumers.** the check (every verb and the LSP) (`crates/hale-types/src/check.rs` · `lowering_laws`); the harness's lowering view (`Config::harness`), which is not gated on the check (`crates/hale-frontend/src/snapshot.rs` · `lowering_laws`)
 
 **Invariants.**
 
 - a law is judged once, with a span
+- lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)
+- rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)
+- rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)
+- rule 18 is judged per entry of the lowering root (the placement table's root) over the inits its constructions supply, or the params default when one leaves the field or none builds the root (C7, 3)
+- a cross-pool spawn is judged per locus literal in a locus's own member bodies, against the ownership graph's cross-pool bubble plan keyed (that locus, the literal's locus) as lowering keys it there: one that is not a bare statement is refused at the literal (C7, 4)
+- self-containment (GH #813, #870) is judged over every locus's params defaults, keyed (locus, supplied fields) as lowering expands them, through every literal anywhere in a default (each branch of an `if` or `match`, each statement of a block) and every fresh-factory product: a cycle is refused at the param that closes it, and lowering keeps no re-entry guard (C7, 5)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/self_containing_locus.rs; crates/hale-codegen/tests/self_containing_locus.rs
+**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`); crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check); crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness); crates/hale-codegen/tests/placement_factory_default.rs (rule 18 at the harness); crates/hale-types/tests/ownership_graph.rs (the cross-pool spawn law and its residue); crates/hale-types/tests/self_containing_locus.rs; crates/hale-codegen/tests/self_containing_locus.rs
 
-**Spec.** spec/semantics.md rules 6, 17, 18; GH #813, #876
+**Spec.** spec/semantics.md rules 6, 17, 18 and § accept bubbling; spec/types.md § A locus may not contain itself by value; GH #813, #870, #876
 
 ## The law engine
 
@@ -1497,7 +1502,7 @@ A registered rule without an evaluator fails the compiler's own build.
 | semantics/placement/3 | field values are locus types | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
 | semantics/placement/4 | at most one entry per field | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
 | semantics/placement/5 | pool names are identifiers; `main` always exists | `placement` | `crates/hale-syntax/src/parser.rs` · `parse_placement_block` | Canonical |
-| semantics/placement/6 | pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) at the placement entry or adapter binding | `placement` | `crates/hale-types/src/check.rs` · `pinned_lifecycle_conflict` | Migrating |
+| semantics/placement/6 | pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_features` | Canonical |
 | semantics/placement/7 | dead bus receiver on a cooperative pool is an error | `blocking` | `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` | Migrating |
 | semantics/placement/8 | a blocking syscall on a cooperative pool is a warning | `blocking` | `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` | Migrating |
 | semantics/placement/9 | orphan bus topic (closed world) | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_graph` | Migrating |
@@ -1508,8 +1513,8 @@ A registered rule without an evaluator fails the compiler's own build.
 | semantics/placement/14 | topology consistency and node/l3 resolution | `placement` | `crates/hale-types/src/check.rs` · `check_topology_block` | Canonical |
 | semantics/placement/15 | `replicas = K`: K >= 1, pinned only | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
 | semantics/placement/16 | pool affinity agrees per pool | `placement` | `crates/hale-types/src/check.rs` · `check_pool_affinity` | Migrating |
-| semantics/placement/17 | a pinned locus is not instantiated in a loop | `placement` | `crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop` | Migrating |
-| semantics/placement/18 | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` | Migrating |
+| semantics/placement/17 | a pinned locus is not instantiated in a loop | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop` | Canonical |
+| semantics/placement/18 | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/lowering_laws.rs` · `placement_entry_consumed` | Canonical |
 | semantics/placement/19 | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | Migrating |
 | semantics/placement/20 | a subscriber born in a bus handler is owned | `ownership` | `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` | Canonical |
 

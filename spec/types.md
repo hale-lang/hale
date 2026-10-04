@@ -905,10 +905,11 @@ around a cycle through other loci — is an error at the param
 contain itself by value"). Every instance the default builds needs
 another, and no call site can end the chain: `Node { next: ... }`
 needs a `Node` to hand over, and building one asks the same
-question again. The rule is over locus LITERALS in a default, and a
-literal's own supplied fields count — a default that spells out
-every param of the locus it builds expands no default of its own
-and is not a cycle.
+question again. The rule is over locus LITERALS in a default,
+anywhere in it — inside an `if` or `match` arm or a block's
+statements too, since every branch is lowered — and a literal's own
+supplied fields count: a default that spells out every param of the
+locus it builds expands no default of its own and is not a cycle.
 
 **A call that builds one counts (GH #870).** `next: Node = make()`
 with `fn make() -> Node { return Node { }; }` is the same ring
@@ -932,10 +933,9 @@ rule only reports the rings it can prove.
 
 A cycle whose loci live in different files of one seed
 is reported when the seed is checked together, since a single file
-holds no declaration for its sibling's types. Codegen enforces the
-literal half of the rule for itself, as an `Unsupported` error, so a
-path that bypasses the checker terminates too — the call half needs
-no backstop, since lowering a call was never what recursed.
+holds no declaration for its sibling's types. The test harness's
+build, which skips the rest of the check, judges this rule too, so
+lowering keeps no guard of its own (F.40 phase 3, C7).
 
 ## `inferred` params
 

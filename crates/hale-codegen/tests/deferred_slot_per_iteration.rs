@@ -355,10 +355,12 @@ fn a_factory_result_bound_in_a_loop_dissolves_every_iteration() {
 // inside a loop, and it leaked N-1 arenas and orphaned N-1 threads
 // (LSan: "Direct leak of N objects ... lotus_arena_create_labeled").
 //
-// `check_pinned_locus_in_loop` now rejects that program with a
-// located diagnostic. `build_executable` does NOT run the checker,
-// so codegen keeps a backstop: refuse the lowering rather than emit
-// the leak. This is that backstop.
+// Rule 17 rejects that program with a located diagnostic. It is a law
+// over the placement table (`hale_types::lowering_laws`, F.40 phase 3,
+// C7) that the harness's lowering view demands too, since
+// `build_executable` does NOT run the checker: the harness refuses
+// the program before lowering, with the law's wording, and lowering
+// keeps no refusal of its own. This pins that.
 
 /// A main locus that pins a field, instantiated inside a loop.
 fn pinned_in_loop_src(loop_body: &str) -> String {
@@ -393,7 +395,7 @@ fn pinned_in_loop_src(loop_body: &str) -> String {
 }
 
 #[test]
-fn codegen_refuses_a_pinned_locus_lowered_inside_a_loop() {
+fn the_harness_refuses_a_pinned_root_inside_a_loop_by_the_law() {
     let src = pinned_in_loop_src("App { };");
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("gh826_pinned_loop");
@@ -402,16 +404,18 @@ fn codegen_refuses_a_pinned_locus_lowered_inside_a_loop() {
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();
     assert!(
-        msg.contains("pinned locus `Worker` is instantiated inside a loop"),
-        "expected the GH #826 backstop, got: {msg}"
+        msg.contains(
+            "locus `App` is instantiated inside a loop, but its `placement { }` block pins field `w`"
+        ),
+        "expected the rule 17 law, got: {msg}"
     );
     assert!(
-        msg.contains("Instantiate it once outside the loop"),
-        "the backstop should name the fix: {msg}"
+        msg.contains("instantiate `App` once, outside the loop"),
+        "the law should name the fix: {msg}"
     );
 }
 
-/// The control that keeps the backstop honest: the same program with
+/// The control that keeps the refusal honest: the same program with
 /// the instantiation hoisted out of the loop still builds and runs.
 /// Without it, "refuses" could mean "refuses every pinned program".
 #[test]

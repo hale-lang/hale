@@ -3184,13 +3184,6 @@ row	World@literal1	World	main	default
 dynamic	Ship	on pinned:World@literal1.o	in the seed
 shared	World@literal1.o	Owner #415028ff
 
-== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#545f5bef
-root	World	the entry
-domain	pool:workers
-row	World@literal1	World	main	default
-row	World@literal1.driver	Driver	pool:workers	entry	off owner
-dynamic	Ship	on pool:workers	in the seed
-
 == crates/hale-codegen/tests/ownership_bubble_mixed.rs#8b9e625f
 root	App	the entry
 domain	pinned:App@literal1.o
@@ -12654,6 +12647,12 @@ row	App@literal1.j	Churner	main	default
 -- App@literal1.gw	Gateway
 row	~	Gateway	pool:io	entry	off owner
 row	~.router	RouterV2	pool:io	inherited
+
+== crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
+root	App	the entry
+domain	pinned:App@literal1.s
+row	App@literal1	App	main	default
+row	App@literal1.s	__StdLogStdoutSink	pinned:App@literal1.s	entry	off owner
 
 == crates/hale-types/tests/fixtures/placement/qualified.hl
 root	App	the entry

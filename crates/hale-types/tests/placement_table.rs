@@ -242,6 +242,23 @@ fn the_table_is_demanded_once_per_snapshot() {
     assert_eq!(s.builds()["placement"], 1);
 }
 
+/// Rule 6's reach (C7): a field the checker types `Unknown` is a
+/// `std::` locus, and the pinned row realizes the stdlib's own
+/// declaration, by its stdlib-universe site, which is where the law
+/// reads the locus's members. No stdlib locus declares `accept` or a
+/// cascade closure today, so the program checks clean.
+#[test]
+fn a_pinned_stdlib_locus_realizes_its_stdlib_declaration() {
+    let s = clean("pinned_stdlib.hl");
+    let t = table(&s);
+    let (_, row) = one(t, "s");
+    assert!(matches!(row.decided_by, Decision::Entry { .. }));
+    assert!(matches!(t.domain(row.domain).kind, DomainKind::Pinned { .. }));
+    let realizes = row.realizes.as_ref().expect("the pinned row realizes a declaration");
+    assert_eq!(realizes.site.universe, SiteUniverse::StdlibAnalysis);
+    assert_eq!(realizes.lowered, "__StdLogStdoutSink");
+}
+
 /// Case 1: one type, three instances, three domains; each nested `K`
 /// inherits its own owner's.
 #[test]
