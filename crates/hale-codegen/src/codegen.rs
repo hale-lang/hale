@@ -1465,6 +1465,7 @@ pub fn build_resolved(
         specialized_locus_decls: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
+        lifecycle: resolved.lifecycle(),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -3346,6 +3347,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// and modes lower without their per-call scratch (`locus_elision`),
     /// with the elidable-method sets the noalias-self proof reads.
     pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
+    /// The view's lifecycle plan (`LoweringView::lifecycle`): the
+    /// emitters read each spine's obligations, in order, from it
+    /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
+    pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
     /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
     /// User-defined `type` declarations indexed by name. Filled
@@ -15491,6 +15496,64 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Some((self.topic_wire(&row.subject), payload))
     }
 
+    /// A rewritten send can run in a helper reached during birth. Preserve
+    /// its exact receiver while that receiver's readiness window is open,
+    /// including payloads held in variables; otherwise keep the direct call.
+    fn lower_ready_publish_call(
+        &mut self,
+        id: NodeId,
+        callee: &Expr,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)
+            .expect("the caller identified a rewritten send");
+        let subject = Expr::Literal(Literal::String(self.topic_wire(&row.subject)), callee.span());
+        let value = args.first().expect("a rewritten send has its payload argument");
+        let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
+            .expect("a publish is inside a function");
+        let held = self.emit_any_subscriber_unready()?;
+        let parked = self.context.append_basic_block(func, "publish.unready");
+        let direct = self.context.append_basic_block(func, "publish.ready");
+        let join = self.context.append_basic_block(func, "publish.ready.join");
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let check = self.context.append_basic_block(func, "publish.receiver.readiness");
+        self.builder.build_conditional_branch(held, check, direct).map_err(e)?;
+        self.builder.position_at_end(check);
+        let Expr::Field { receiver, .. } = callee else {
+            unreachable!("a rewritten publish calls a method");
+        };
+        let (receiver, _) = self.lower_expr(receiver, scope)?;
+        let query = self.module.get_function("lotus_bus_is_unready").unwrap_or_else(|| {
+            self.module.add_function("lotus_bus_is_unready", self.context.i32_type().fn_type(
+                &[self.context.ptr_type(AddressSpace::default()).into()], false), None)
+        });
+        let unready = self.builder.build_call(query, &[receiver.into()], "publish.receiver.unready")
+            .map_err(e)?.try_as_basic_value().left().expect("is_unready returns i32").into_int_value();
+        let unready = self.builder.build_int_compare(inkwell::IntPredicate::NE, unready,
+            self.context.i32_type().const_zero(), "publish.receiver.held").map_err(e)?;
+        self.builder.build_conditional_branch(unready, parked, direct).map_err(e)?;
+        self.builder.position_at_end(parked);
+        self.lower_send(&subject, value, None, scope, Some(receiver))?;
+        self.builder.build_unconditional_branch(join).map_err(e)?;
+        self.builder.position_at_end(direct);
+        if let Some(target) = self.intra_locus_rewrite(id, args) {
+            self.lower_reclaimed_publish_call(callee, args, target, scope)?;
+        } else {
+            let Expr::Field { receiver, name, .. } = callee else {
+                unreachable!("a rewritten send calls its subscriber's method");
+            };
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                self.lower_self_method_call(&name.name, args, scope)?;
+            } else {
+                self.lower_external_method_call(receiver, &name.name, args, scope)?;
+            }
+        }
+        self.builder.build_unconditional_branch(join).map_err(e)?;
+        self.builder.position_at_end(join);
+        Ok(BlockEnd::Open)
+    }
+
     /// Lower an intra-locus-publish direct handler call with its payload
     /// confined to a per-delivery arena subregion. The payload (and any
     /// interior allocations, e.g. a `String` slice field) build into the
@@ -16567,13 +16630,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // this call; the payload is dead the moment the
                     // synchronous handler returns.
                     Expr::Field { .. }
-                        if self.intra_locus_rewrite(*call_id, args).is_some() =>
+                        if !call_id.is_none() && self.intra_locus.iter().any(|r| r.send.0 == call_id.0) =>
                     {
-                        let target = self
-                            .intra_locus_rewrite(*call_id, args)
-                            .expect("matched by the guard");
-                        return self
-                            .lower_reclaimed_publish_call(callee, args, target, scope);
+                        return self.lower_ready_publish_call(*call_id, callee, args, scope);
                     }
                     Expr::Field { receiver, name, .. }
                         if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
@@ -17672,7 +17731,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Send { subject, value, or_disposition, .. } => {
-                self.lower_send(subject, value, or_disposition.as_ref(), scope)?;
+                self.lower_send(subject, value, or_disposition.as_ref(), scope, None)?;
                 Ok(BlockEnd::Open)
             }
             Stmt::ShmWrite { topic, max, binding, body, .. } => {

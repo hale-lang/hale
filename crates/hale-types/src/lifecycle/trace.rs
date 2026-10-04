@@ -460,6 +460,7 @@ pub fn laws(trace: &Trace, complete: bool) -> Vec<Violation> {
                 match e.kind {
                     ObligationKind::ParamsSettle
                     | ObligationKind::Accept
+                    | ObligationKind::Subscribe
                     | ObligationKind::Birth
                     | ObligationKind::PinnedJoin => {
                         built.insert(inst);
@@ -497,7 +498,7 @@ pub fn laws(trace: &Trace, complete: bool) -> Vec<Violation> {
                                 out.push(what("born twice in one incarnation"));
                             }
                         }
-                        ObligationKind::ParamsSettle | ObligationKind::Accept => {
+                        ObligationKind::ParamsSettle | ObligationKind::Accept | ObligationKind::Subscribe => {
                             born.entry(s.instance.raw()).or_insert(0);
                         }
                         ObligationKind::Reclaim => {

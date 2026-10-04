@@ -1101,6 +1101,7 @@ crates/hale-codegen/tests/replay_canceled_run.rs#0 678d19f49c43f9f5
 crates/hale-codegen/tests/replay_canceled_run.rs#2 3a362a43162c3f7d
 crates/hale-codegen/tests/replay_canceled_run.rs#4 3a362a43162c3f7d
 crates/hale-codegen/tests/replay_canceled_run.rs#5 66fddf3c588649b0
+crates/hale-codegen/tests/replay_canceled_run.rs#6 ecc12e0a0e15596c
 crates/hale-codegen/tests/replay_determinism.rs#0 4ff23f87ca9a42ec
 crates/hale-codegen/tests/replay_ingress.rs#10 ba3d943f9e5d705f
 crates/hale-codegen/tests/replay_ingress.rs#12 82ec73bcc9d9adc1
@@ -1295,14 +1296,17 @@ crates/hale-codegen/tests/topic_declarations.rs#1 d4ca137022da0bf8
 crates/hale-codegen/tests/topic_declarations.rs#3 d3ec293843e01ef7
 crates/hale-codegen/tests/topic_declarations.rs#4 cf790668f079ff9f
 crates/hale-codegen/tests/topic_phase2.rs#0 38fe3ffcab279e34
-crates/hale-codegen/tests/topic_phase2.rs#13 fc818d4db009dc28
+crates/hale-codegen/tests/topic_phase2.rs#13 71b85bca7f0054ab
 crates/hale-codegen/tests/topic_phase2.rs#14 282c0c9b1fbb59d1
 crates/hale-codegen/tests/topic_phase2.rs#16 e9c25a8ab877abf8
 crates/hale-codegen/tests/topic_phase2.rs#17 e9c25a8ab877abf8
 crates/hale-codegen/tests/topic_phase2.rs#18 9aeec2d32f757b50
 crates/hale-codegen/tests/topic_phase2.rs#19 22280eaf54b8f6c4
 crates/hale-codegen/tests/topic_phase2.rs#2 a214d7cfa5f2aa9f
-crates/hale-codegen/tests/topic_phase2.rs#20 3b60bc3202887b80
+crates/hale-codegen/tests/topic_phase2.rs#20 3e995928c76ce2a9
+crates/hale-codegen/tests/topic_phase2.rs#21 2d7511cd1c559a60
+crates/hale-codegen/tests/topic_phase2.rs#22 b9ff769c93248f19
+crates/hale-codegen/tests/topic_phase2.rs#23 e579889511606565
 crates/hale-codegen/tests/topic_phase2.rs#5 5a84e746e49f8ca1
 crates/hale-codegen/tests/topic_phase2.rs#6 0ecec793a60226ee
 crates/hale-codegen/tests/topic_phase2_adapter_binding.rs#0 6ec8c48834e8ef70

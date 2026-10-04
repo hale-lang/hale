@@ -357,7 +357,7 @@ struct Contribution {
     /// literal's enclosing locus. `None` for a template's top, a literal
     /// in a free fn, and the occurrences of a cycle of owners.
     owner: Option<usize>,
-    /// The owner's contribution this one is built under: for a field,
+    /// A representative of the owner's execution context: for a field,
     /// its owner's context with the field's own placement; for a body or
     /// accepted literal, the enclosing occurrence that runs it. `None`
     /// pairs it with every contribution of the owner.
@@ -416,6 +416,17 @@ fn push_unique(v: &mut Vec<Contribution>, c: Contribution) {
     }
 }
 
+/// The first parent contribution for each execution context. Consumers of
+/// `under` read the parent's instantiating and queue domains, never its
+/// ancestry. Fields also inherit whether construction is in a handler.
+/// Retain those distinctions without expanding every path through shared
+/// owners: a chain of two literals per level otherwise doubles its contexts
+/// at every level, although all paths on one thread make the same claims.
+fn parent_contexts(all: &[Contribution]) -> impl Iterator<Item = (usize, &Contribution)> {
+    let mut seen = BTreeSet::new();
+    all.iter().enumerate().filter(move |(_, c)| seen.insert((c.it, c.own, c.in_handler)))
+}
+
 /// A template's contributions from its owners' current ones; `cut` are
 /// the owners whose edge closed a cycle, built under none of theirs.
 fn derived_contributions(
@@ -433,7 +444,7 @@ fn derived_contributions(
             let one = (domains.len() == 1).then(|| *domains.iter().next().expect("one"));
             let on = |d: Option<DomainId>| one.or(d.filter(|d| domains.contains(d)));
             for &o in owners {
-                for (k, c) in out[o].contributions.iter().enumerate() {
+                for (k, c) in parent_contexts(&out[o].contributions) {
                     let d = on(c.own);
                     v.push(Contribution { owner: Some(o), under: Some(k), it: d, own: d, in_handler: *in_handler });
                 }
@@ -446,7 +457,7 @@ fn derived_contributions(
         // under that owner.
         Source::Field { .. } => {
             for &p in owners {
-                for (k, c) in out[p].contributions.iter().enumerate() {
+                for (k, c) in parent_contexts(&out[p].contributions) {
                     v.push(Contribution { owner: Some(p), under: Some(k), ..c.clone() });
                 }
             }
@@ -1279,18 +1290,21 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         let birth = self.push(o);
         r.birth = Some(birth);
-        if subscribe.is_some() {
-            let mut o = self.row(i, K::Readiness, Holder { spine: Spine::Instantiation, domain: DomainRole::Own });
+        // Readiness (line 6): delivery eligible once birth() has
+        // completed, on the thread that ran it; what was published to the
+        // instance before then is retained, never dropped (L4's birth
+        // spine).
+        let readiness = subscribe.map(|_| {
+            let mut o = self.row(i, K::Readiness, Holder { spine: birth_holder.spine, domain: DomainRole::Own });
             o.line = Some("6");
-            o.status = Status::KnownOpen { inventory_row: "C8" };
-            o.edges.entry.push(after(birth, Point::Completed, open("6", "C8")));
+            o.edges.entry.push(after(birth, Point::Completed, shipped("6")));
             o.lifetime.push(Retention {
                 resource: Resource::Cell,
                 until: Event { obligation: birth, point: Point::Completed },
-                status: Status::KnownOpen { inventory_row: "C8" },
+                status: Status::Shipped,
             });
-            self.push(o);
-        }
+            self.push(o)
+        });
         // The birth-epoch closures and the birth_check (lines 8, 9).
         self.failures(i, &mut r, &[FailureSource::BirthClosure, FailureSource::BirthCheck]);
         // The run: admitted to its pool (line 19), then executed.
@@ -1311,6 +1325,9 @@ impl<'b, 'a> Builder<'b, 'a> {
                 ];
                 o.multiplicity = Multiplicity::OncePerTrigger;
                 o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
+                if let Some(ready) = readiness {
+                    o.edges.entry.push(after(ready, Point::Completed, shipped("6")));
+                }
                 self.push(o);
             }
             let mut o = self.row(i, K::Run, run_holder);
@@ -1325,6 +1342,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 }
             });
             o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
+            // The run starts with its instance's delivery eligible (line 6).
+            if let Some(ready) = readiness {
+                o.edges.entry.push(after(ready, Point::Completed, shipped("6")));
+            }
             // Every end an occurrence can reach, under any contribution.
             o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
             if on_pool && !in_pool_init {
@@ -1534,8 +1555,9 @@ impl<'b, 'a> Builder<'b, 'a> {
                 FailureSource::Dissolve => r.dissolve,
             };
             // Where the existence rule is not yet kept.
+            // A pinned locus's birth_check runs on its thread, after
+            // birth() and before run() (C38, closed by L4's birth spine).
             let (line, status) = match source {
-                FailureSource::BirthCheck if pinned => ("8", Status::KnownOpen { inventory_row: "C38" }),
                 FailureSource::Dissolve if flow => ("4", Status::KnownOpen { inventory_row: "C25" }),
                 FailureSource::Dissolve if in_fn_main_cascade => ("4", Status::KnownOpen { inventory_row: "C31" }),
                 FailureSource::BirthClosure | FailureSource::BirthCheck => ("8", Status::Shipped),
@@ -2100,6 +2122,37 @@ mod tests {
 
     fn on(d: u32, rule: Rule) -> Option<RunsOn> {
         Some(RunsOn { domains: BTreeSet::from([DomainId(d)]), rule })
+    }
+
+    /// The number of ancestry paths doubles at each level, but the
+    /// execution contexts do not. This is the shape that exhausted memory
+    /// while deriving the plan for dna/api through shared owner templates.
+    #[test]
+    fn shared_ancestry_does_not_multiply_execution_contexts() {
+        let mut src = "locus L0 { }\n".to_string();
+        for level in 1..=16 {
+            let child = level - 1;
+            src.push_str(&format!("locus L{level} {{ fn make() {{ L{child} {{ }}; L{child} {{ }}; }} }}\n"));
+        }
+        src.push_str("fn main() { L16 { }; }\n");
+        let program = hale_syntax::parse_source(&src).expect("parse");
+        let bundle = Bundle::new(BTreeMap::from([("app.hl".to_string(), &program)]));
+        crate::with_identities(&bundle, |bundle| {
+            let (top, diags) = crate::resolve::build_top_scope(bundle);
+            assert!(diags.is_empty(), "{diags:?}");
+            let placement = crate::placement::bundle_placement(bundle, &top);
+            let handlers = HandlerRouting::default();
+            let bus = BusGraph::default();
+            let programs: Vec<_> = bundle.programs.values().copied().collect();
+            let flows = crate::flows::survey(&programs, &bundle.import_renames);
+            let inputs = LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus };
+            let index = LocusIndex::of(bundle);
+            let all = subjects(&inputs, &index, &literal_positions(bundle));
+            assert_eq!(all.len(), 33, "one template per literal");
+            for subject in all {
+                assert!(subject.contributions.len() <= 2, "{}: {} contexts for at most two same-thread owners", subject.site.decl.lowered, subject.contributions.len());
+            }
+        });
     }
 
     /// A known limit: contributions that state different rules for one

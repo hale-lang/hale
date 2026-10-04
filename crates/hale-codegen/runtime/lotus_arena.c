@@ -8048,6 +8048,11 @@ typedef struct lotus_mailbox {
  * mailbox's own (pinned consumer) thread, which must not block. */
 lotus_mailbox_t *lotus_mailbox_get_current(void);
 
+/* Defined with the readiness windows below: a producer about to block
+ * on a full ring wakes the threads waiting at a readiness cap, so a
+ * consumer among them stops waiting and drains (decision line 6). */
+static void lotus_bus_ready_kick(void);
+
 lotus_mailbox_t *lotus_mailbox_create(void) {
     lotus_mailbox_t *mb = NULL;
     /* 64-byte alignment: the ring's enqueue/dequeue cursors are
@@ -8179,6 +8184,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
             atomic_thread_fence(memory_order_seq_cst);
             enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
             if (!enq) {
+                lotus_bus_ready_kick();
                 pthread_cond_wait(&mb->not_full, &mb->lock);
                 atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
                                           memory_order_seq_cst);
@@ -8381,12 +8387,14 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
         return;
     }
     lotus_bus_cell_t cell;
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
     /* Non-blocking: drain the ring, then the consumer-local overflow list,
      * until both are empty. Cells posted DURING a handler land in the ring
      * (or overflow, on self-publish) and are seen by a later iteration. */
     for (;;) {
         if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
             lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             continue;
         }
@@ -8396,10 +8404,20 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
             if (!mb->overflow_head) mb->overflow_tail = NULL;
             cell = node->cell;
             free(node);
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             continue;
         }
-        return;                                 /* both empty */
+        /* Readiness, yield and sleep use this drain before the blocking
+         * mailbox loop. A held delivery can become next after the last
+         * queued cell ran, so release it here too. If nothing matches yet,
+         * return to the caller; a later drain retries without blocking the
+         * pinned lifecycle on a delivery it may still need to publish. */
+        if (replaying && t_rp_pending_len > 0 && lotus_replay_gate_idle(&cell)) {
+            lotus_mailbox_dispatch_cell(&cell);
+            continue;
+        }
+        return;                                 /* no eligible cell */
     }
 }
 
@@ -9433,6 +9451,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
             atomic_thread_fence(memory_order_seq_cst);
             enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
             if (!enq) {
+                lotus_bus_ready_kick();
                 pthread_cond_wait(&p->not_full, &p->lock);
                 atomic_fetch_sub_explicit(&p->producers_waiting, 1,
                                           memory_order_seq_cst);
@@ -12255,6 +12274,284 @@ void lotus_bus_register_static(uint32_t id,
  * silent-drop diagnostic. */
 static int lotus_bus_log_drop_enabled(void);
 
+/* Readiness (decision line 6, F.40 phase 3, L4). A new subscriber's
+ * subscriptions are registered before its birth() (so birth can
+ * publish on, or rely on, them), and delivery to it becomes eligible
+ * once birth() has completed: a cell published to it before then is
+ * PARKED, in arrival order, never dropped, and posted to its target
+ * (its mailbox, its pool's worker, or the cooperative queue) by
+ * `lotus_bus_ready`, which the birth spine emits right after birth()
+ * and its checks. `lotus_bus_hold_delivery` opens the window, before
+ * the first registration.
+ *
+ * The gate sits where a cell is posted (`lotus_bus_post_entry`, the
+ * no-pinned `_st` sites, the direct flavor), not where it is drained:
+ * every cell for a held subscriber is parked, so the ones posted at
+ * ready go out in the order they were published, ahead of any
+ * published after. Outside a window the gate is one acquire load of
+ * `lotus_bus_unready_count` (exported: a baked direct publish reads
+ * it to take the helper while any subscriber is held). Parking is
+ * bounded as the queue is: a publisher on another thread waits at the
+ * queue's cap until the birth completes, except the subscriber's own
+ * consumer (its pool's worker, the pinned thread draining its mailbox)
+ * and a consumer a producer is blocked on, which park past it so the
+ * readiness step's posts always drain (`lotus_bus_ready_may_wait`).
+ * A subscriber quarantined or torn down with its window open drops
+ * what it parked (`lotus_bus_quarantine_self`). Pinned subscribers use
+ * the same window:
+ * their mailbox stays current so already-born nested subscribers can
+ * make progress, and a birth that publishes beyond the mailbox cap
+ * never waits on its own consumer. */
+typedef struct lotus_bus_parked {
+    struct lotus_bus_parked *next;
+    void *handler;
+    void *self_ptr;
+    lotus_mailbox_t *mailbox;
+    lotus_coop_pool_t *coop_pool;
+    lotus_bus_queue_t *queue;
+    void *payload;
+    size_t size;
+    uint64_t rec_pub;
+    void *wire_deser;
+} lotus_bus_parked_t;
+
+typedef struct {
+    void *self;
+    lotus_bus_parked_t *head, *tail;
+    size_t parked;
+    /* Only the thread actually running birth may exceed this bound.
+     * A pinned registration precedes that thread's handoff. */
+    pthread_t birth_thread;
+    int has_birth_thread;
+} lotus_bus_unready_t;
+
+static pthread_mutex_t g_bus_ready_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Signalled when a window closes or its parked cells are posted. */
+static pthread_cond_t g_bus_ready_cond = PTHREAD_COND_INITIALIZER;
+static lotus_bus_unready_t *g_bus_unready = NULL;
+static size_t g_bus_unready_len = 0, g_bus_unready_cap = 0;
+int64_t lotus_bus_unready_count = 0;
+
+/* The held subscriber `self`, under the lock. */
+static lotus_bus_unready_t *lotus_bus_unready_find(void *self) {
+    for (size_t i = g_bus_unready_len; i-- > 0;)
+        if (g_bus_unready[i].self == self) return &g_bus_unready[i];
+    return NULL;
+}
+
+static void lotus_bus_parked_free(lotus_bus_parked_t *p) {
+    while (p) {
+        lotus_bus_parked_t *next = p->next;
+        free(p->payload);
+        free(p);
+        p = next;
+    }
+}
+
+void lotus_bus_hold_delivery(void *self, int32_t on_birth_thread) {
+    pthread_mutex_lock(&g_bus_ready_lock);
+    /* A pinned subscriber registers on its instantiating thread, then
+     * begins birth on its own thread. Re-entering transfers the window's
+     * publisher exemption without reopening it or losing parked cells. */
+    lotus_bus_unready_t *held = lotus_bus_unready_find(self);
+    if (held) {
+        held->birth_thread = pthread_self();
+        held->has_birth_thread = on_birth_thread;
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        return;
+    }
+    if (g_bus_unready_len == g_bus_unready_cap) {
+        size_t cap = g_bus_unready_cap ? g_bus_unready_cap * 2 : 8;
+        lotus_bus_unready_t *grown = realloc(g_bus_unready, cap * sizeof *grown);
+        if (!grown) {
+            pthread_mutex_unlock(&g_bus_ready_lock);
+            fprintf(stderr, "lotus: out of memory holding a subscriber's delivery\n");
+            abort();
+        }
+        g_bus_unready = grown;
+        g_bus_unready_cap = cap;
+    }
+    g_bus_unready[g_bus_unready_len++] = (lotus_bus_unready_t){ self, NULL, NULL, 0, pthread_self(), on_birth_thread };
+    __atomic_add_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+    pthread_mutex_unlock(&g_bus_ready_lock);
+}
+
+/* A fused send names one receiver. Another instance's birth must not
+ * send that receiver's otherwise-direct call through a broadcast. */
+int32_t lotus_bus_is_unready(void *self) {
+    if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
+        return 0;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    int32_t held = lotus_bus_unready_find(self) != NULL;
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    return held;
+}
+
+/* Threads waiting at a readiness cap, counted under the lock. */
+static int g_bus_ready_waiters = 0;
+
+/* A producer about to block on a full ring (its `producers_waiting`
+ * already counted): wake the cap waiters, so the ring's consumer, if it
+ * is one of them, sees that count and stops waiting. The two counts
+ * are a Dekker pair (seq_cst): a waiter counts itself before it reads
+ * a ring's, and the producer counts itself before it reads this one,
+ * so at least one sees the other. Lock order: a ring's lock, then this
+ * one; nothing takes a ring's lock while holding this one. */
+static void lotus_bus_ready_kick(void) {
+    if (__atomic_load_n(&g_bus_ready_waiters, __ATOMIC_SEQ_CST) == 0) return;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    pthread_cond_broadcast(&g_bus_ready_cond);
+    pthread_mutex_unlock(&g_bus_ready_lock);
+}
+
+/* Whether this thread may wait at `u`'s cap, for a cell routed to
+ * `mailbox` or `coop_pool`. Not the thread running its birth (it would
+ * wait on itself). Not the cell's own consumer, the worker of the pool
+ * it goes to or the pinned thread draining its mailbox: readiness
+ * posts what is parked into that ring, so the consumer parks past the
+ * cap, as a self-publish never blocks on its own full ring. And not a
+ * consumer some producer is blocked on: that producer may be a
+ * readiness step posting parked cells (or wait on one that is), and
+ * only this thread frees its slots. */
+static int lotus_bus_ready_may_wait(const lotus_bus_unready_t *u,
+                                    lotus_mailbox_t *mailbox,
+                                    lotus_coop_pool_t *coop_pool) {
+    if (u->has_birth_thread && pthread_equal(u->birth_thread, pthread_self()))
+        return 0;
+    lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
+    lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
+    if (mailbox ? mailbox == own_mb : (coop_pool && coop_pool == own_pool))
+        return 0;
+    if (own_mb && atomic_load_explicit(&own_mb->producers_waiting, memory_order_seq_cst) > 0)
+        return 0;
+    if (own_pool && atomic_load_explicit(&own_pool->producers_waiting, memory_order_seq_cst) > 0)
+        return 0;
+    return 1;
+}
+
+/* 1 = parked: `self` is held, and the cell waits for its readiness. */
+static int lotus_bus_park_if_unready(void *handler, void *self,
+                                     lotus_mailbox_t *mailbox,
+                                     lotus_coop_pool_t *coop_pool,
+                                     lotus_bus_queue_t *queue,
+                                     const void *payload, size_t size,
+                                     uint64_t rec_pub) {
+    if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
+        return 0;
+    if (!mailbox && !coop_pool && !queue) return 0;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    lotus_bus_unready_t *u = lotus_bus_unready_find(self);
+    /* Bounded as the queue is: a publisher waits at the queue's cap
+     * for the birth to complete, unless waiting could hold up the
+     * readiness step it waits for (`lotus_bus_ready_may_wait`). It
+     * still parks behind every earlier cell. */
+    if (u && u->parked >= bus_queue_max_cap()) {
+        __atomic_add_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
+        while (u && u->parked >= bus_queue_max_cap()
+               && lotus_bus_ready_may_wait(u, mailbox, coop_pool)) {
+            pthread_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
+            u = lotus_bus_unready_find(self);
+        }
+        __atomic_sub_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
+    }
+    if (!u) {
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        return 0;
+    }
+    lotus_bus_parked_t *p = calloc(1, sizeof *p);
+    void *copy = malloc(size > 0 ? size : 1);
+    if (!p || !copy) {
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        fprintf(stderr, "lotus: out of memory parking a cell\n");
+        abort();
+    }
+    if (size > 0 && payload) memcpy(copy, payload, size);
+    *p = (lotus_bus_parked_t){ NULL, handler, self, mailbox, coop_pool, queue,
+                               copy, size, rec_pub, g_bus_pending_wire_deser };
+    if (u->tail) u->tail->next = p; else u->head = p;
+    u->tail = p;
+    u->parked++;
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    return 1;
+}
+
+/* Delivery to `self` is eligible from here: post what it parked, in
+ * order. The list is taken out under the lock and posted outside it
+ * (a post can drain inline, and a handler then publish); what is
+ * parked meanwhile is posted in the next round, behind it, so order
+ * holds, and the window closes once a round finds nothing. */
+void lotus_bus_ready(void *self) {
+    if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
+        return;
+    for (;;) {
+        pthread_mutex_lock(&g_bus_ready_lock);
+        lotus_bus_unready_t *u = lotus_bus_unready_find(self);
+        if (!u) {
+            pthread_mutex_unlock(&g_bus_ready_lock);
+            return;
+        }
+        lotus_bus_parked_t *p = u->head;
+        if (!p) {
+            *u = g_bus_unready[--g_bus_unready_len];
+            __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+            pthread_cond_broadcast(&g_bus_ready_cond);
+            pthread_mutex_unlock(&g_bus_ready_lock);
+            return;
+        }
+        u->head = u->tail = NULL;
+        u->parked = 0;
+        pthread_cond_broadcast(&g_bus_ready_cond);
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        size_t posted_to_own_mailbox = 0;
+        for (lotus_bus_parked_t *c = p; c; c = c->next) {
+            g_bus_pending_wire_deser = c->wire_deser;
+            if (c->rec_pub) g_bus_pending_rec_pub = c->rec_pub;
+            if (c->mailbox) {
+                lotus_mailbox_post(c->mailbox, c->handler, c->self_ptr, c->payload, c->size);
+            } else if (c->coop_pool) {
+                lotus_coop_pool_post_bus(c->coop_pool, c->handler, c->self_ptr, c->payload, c->size);
+            } else {
+                lotus_bus_queue_enqueue(c->queue, c->handler, c->self_ptr, c->payload, c->size);
+            }
+            g_bus_pending_wire_deser = NULL;
+            g_bus_pending_rec_pub = 0;
+            if (c->rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
+                lotus_obs_record_enqueue(c->rec_pub, c->self_ptr);
+            }
+            if (c->mailbox && c->mailbox == lotus_mailbox_get_current()) {
+                if (++posted_to_own_mailbox >= bus_queue_max_cap()) {
+                    lotus_mailbox_drain_pending(c->mailbox);
+                    posted_to_own_mailbox = 0;
+                }
+            }
+        }
+        /* Birth has finished. Service the consumer's mailbox between
+         * batches so an external producer cannot turn repeated bounded
+         * windows into an unbounded consumer-local overflow list. */
+        if (posted_to_own_mailbox)
+            lotus_mailbox_drain_pending(lotus_mailbox_get_current());
+        lotus_bus_parked_free(p);
+    }
+}
+
+/* `self` stops subscribing with its window open: what it parked goes. */
+static void lotus_bus_ready_forget(void *self) {
+    if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
+        return;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    lotus_bus_unready_t *u = lotus_bus_unready_find(self);
+    if (u) {
+        lotus_bus_parked_t *p = u->head;
+        *u = g_bus_unready[--g_bus_unready_len];
+        __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+        pthread_cond_broadcast(&g_bus_ready_cond);
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        lotus_bus_parked_free(p);
+        return;
+    }
+    pthread_mutex_unlock(&g_bus_ready_lock);
+}
+
 /* Dispatch a published message to every subscriber of `subject`.
  * `queue` is the program-wide cooperative queue (passed in by
  * codegen rather than C-runtime-owned because the queue's
@@ -12284,6 +12581,10 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
                                        const void *payload,
                                        size_t size,
                                        uint64_t rec_pub) {
+    /* Decision line 6: a subscriber whose birth has not completed. */
+    if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
+                                  queue, payload, size, rec_pub))
+        return 1;
     /* GH #296: the TLS is scoped to exactly this post (the wire-deser
      * pattern) so a structural cell posted outside any fanout can
      * never inherit a stale publish identity. Stores are guarded so
@@ -13123,6 +13424,48 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
     lotus_bus_local_dispatch(queue, subject, struct_payload, struct_size);
 }
 
+/* A closed-world send names one receiver, including while that receiver
+ * is being born. Queue exactly that registered receiver, retaining the
+ * normal wire codec for managed payloads and the normal readiness gate.
+ * Such subjects have no binding or key filter by the rewrite's contract. */
+void lotus_bus_dispatch_fused(lotus_bus_queue_t *queue,
+                               const char *subject, void *receiver,
+                               const void *payload, uint64_t size,
+                               lotus_serialize_fn serialize, int32_t flat) {
+    ssize_t wire_size = 0;
+    int owned = 0;
+    char *wire = NULL;
+    if (!flat) {
+        wire = lotus_bus_wire_encode(serialize, payload, &wire_size, &owned);
+        if (!wire || wire_size <= 0) {
+            free(owned ? wire : NULL);
+            return;
+        }
+        payload = wire;
+        size = (uint64_t)wire_size;
+    }
+    uint64_t rec_pub = 0;
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        rec_pub = lotus_obs_record_publish_payload(subject, payload, size, flat);
+    }
+    uint64_t obs_tok = 0;
+    if (lotus_obs_bus_publish && lotus_obs_live)
+        obs_tok = lotus_obs_bus_publish(subject, NULL, size);
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (e->self_ptr != receiver || !e->subject || e->key_filter_kind != 0
+            || !lotus_subject_match(e->subject, subject)) continue;
+        if (!flat && !e->deserialize) continue;
+        g_bus_pending_wire_deser = flat ? NULL : (void *)e->deserialize;
+        int posted = lotus_bus_post_entry(e, queue, payload, (size_t)size, rec_pub);
+        g_bus_pending_wire_deser = NULL;
+        if (posted && lotus_obs_bus_deliver && lotus_obs_live)
+            lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
+    }
+    free(owned ? wire : NULL);
+}
+
 /* Flat-payload fast path (2026-06-28). For a transitively pointer-free
  * POD payload there is NOTHING to rebind: a verbatim cell copy is a
  * complete, self-contained value, so local fanout is correct WITHOUT
@@ -13185,6 +13528,8 @@ void lotus_bus_quarantine_self(void *self_ptr) {
      * materialization, on their consumer's thread — see
      * `bus_self_dead`. Only a self that ever subscribed can have one. */
     if (subscribed) bus_dead_add(self_ptr);
+    /* Decision line 6: and the cells it parked before it was ready. */
+    lotus_bus_ready_forget(self_ptr);
 }
 
 /* U-1 (F.40 phase 3, P1): the process's main thread, captured by a
@@ -20543,29 +20888,11 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         ssize_t struct_size = e->deserialize(
             wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
         if (struct_size <= 0) continue;
-        g_bus_pending_rec_pub = rec_pub;
-        if (e->mailbox) {
-            lotus_mailbox_post(
-                e->mailbox, e->handler, e->self_ptr,
-                struct_buf, (size_t)struct_size);
-        } else if (e->coop_pool) {
-            /* F.31 Phase 4 (2026-05-28): mirror lotus_bus_local_dispatch's
-             * coop_pool branch. Without this, subscribers on non-main
-             * cooperative pools (e.g. cooperative(pool=ws_workers))
-             * receive via the global queue and run on the publisher's
-             * drain thread instead of their pool's worker, silently
-             * violating the single-threaded-method invariant. */
-            lotus_coop_pool_post_bus(e->coop_pool, e->handler, e->self_ptr,
-                                 struct_buf, (size_t)struct_size);
-        } else if (g_bus_queue_for_remote) {
-            lotus_bus_queue_enqueue(
-                g_bus_queue_for_remote, e->handler, e->self_ptr,
-                struct_buf, (size_t)struct_size);
-        }
-        g_bus_pending_rec_pub = 0;
-        if (rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
-            lotus_obs_record_enqueue(rec_pub, e->self_ptr);
-        }
+        /* The one per-entry post (R4): a pool-placed subscriber's
+         * worker, a pinned one's mailbox, the cooperative queue
+         * (F.31 Phase 4), and readiness's gate (decision line 6). */
+        (void)lotus_bus_post_entry(e, g_bus_queue_for_remote, struct_buf,
+                                   (size_t)struct_size, rec_pub);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -20598,24 +20925,8 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             ssize_t struct_size = e->deserialize(
                 wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
             if (struct_size <= 0) continue;
-            g_bus_pending_rec_pub = rec_pub;
-            if (e->mailbox) {
-                lotus_mailbox_post(
-                    e->mailbox, e->handler, e->self_ptr,
-                    struct_buf, (size_t)struct_size);
-            } else if (e->coop_pool) {
-                lotus_coop_pool_post_bus(e->coop_pool, e->handler,
-                                     e->self_ptr, struct_buf,
-                                     (size_t)struct_size);
-            } else if (g_bus_queue_for_remote) {
-                lotus_bus_queue_enqueue(
-                    g_bus_queue_for_remote, e->handler, e->self_ptr,
-                    struct_buf, (size_t)struct_size);
-            }
-            g_bus_pending_rec_pub = 0;
-            if (rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
-                lotus_obs_record_enqueue(rec_pub, e->self_ptr);
-            }
+            (void)lotus_bus_post_entry(e, g_bus_queue_for_remote, struct_buf,
+                                       (size_t)struct_size, rec_pub);
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
@@ -20829,7 +21140,11 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
                  * else routes through lotus_bus_post_entry. */
-                if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
+                if (no_pinned && !e->mailbox && !e->coop_pool && queue
+                    && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
+                                                 struct_payload, (size_t)struct_size, rec_pub)) {
+                    delivered++; /* decision line 6: parked until ready */
+                } else if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
                     g_bus_pending_rec_pub = rec_pub;
                     lotus_bus_queue_enqueue_st(queue, e->handler,
                                                e->self_ptr, struct_payload,
@@ -20914,7 +21229,11 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
                  * else routes through lotus_bus_post_entry. */
-                if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
+                if (no_pinned && !e->mailbox && !e->coop_pool && queue
+                    && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
+                                                 struct_payload, (size_t)struct_size, rec_pub)) {
+                    delivered++; /* decision line 6: parked until ready */
+                } else if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
                     g_bus_pending_rec_pub = rec_pub;
                     lotus_bus_queue_enqueue_st(queue, e->handler,
                                                e->self_ptr, struct_payload,
@@ -20995,7 +21314,11 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             if (ssz <= 0) continue;
             /* R4 exception: build #3 no-pinned _st fast path; the
              * rest routes through lotus_bus_post_entry. */
-            if (no_pinned && !e->mailbox && !e->coop_pool
+            if (no_pinned && !e->mailbox && !e->coop_pool && g_bus_queue_for_remote
+                && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, g_bus_queue_for_remote,
+                                             struct_buf, (size_t)ssz, rec_pub)) {
+                delivered++; /* decision line 6: parked until ready */
+            } else if (no_pinned && !e->mailbox && !e->coop_pool
                 && g_bus_queue_for_remote) {
                 g_bus_pending_rec_pub = rec_pub;
                 lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
@@ -21099,7 +21422,11 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
              * direct flavor's identity is the same-thread handler
              * CALL in the else branch (no queue). Off-thread targets
              * (defensive; the gate excludes them) still enqueue. */
-            if (e->mailbox) {
+            if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
+                                          g_bus_queue_for_remote, payload, (size_t)size, 0)) {
+                /* Decision line 6: its birth has not completed; the
+                 * cell waits on the cooperative queue's side. */
+            } else if (e->mailbox) {
                 /* off-thread; gate should have excluded — enqueue. */
                 lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                                    payload, (size_t)size);
