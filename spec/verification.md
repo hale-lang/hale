@@ -2363,6 +2363,38 @@ assume the others in a build:
   `--warn-resource-leak` (an fd-acquiring call whose result is stored
   resident in an unbounded context). See `notes/resource-budgets.md`.
 
+  The budget counts the resource, not the declaration that asks for it,
+  and reads the threads and pools from the placement table (F.40 phase
+  3, P1):
+
+  - **OS threads** (`pinned_threads`) are the threads placement spawns,
+    partitioned by the scope that creates each. A pinned anchor of the
+    deployed root (a root field placed `pinned`, one per replica, so
+    `replicas = K` is K) counts once per live occurrence of the
+    construction that builds it: its count in one construction times
+    that construction's bound, summed over the root's constructions.
+    The alternatives of one choice take their maximum (one construction
+    takes one), and replica rows are counted once, never multiplied by
+    K again. A construction with no static bound (a root built in a
+    loop, by a fn called in a loop, or by a recursive fn) makes the
+    count **uncertain**, with the reason; an uncertain count is within
+    no declared ceiling, and the gate fails with that reason. An
+    adapter of the root's `bindings { }` is one thread, counted once
+    whatever the root's bound. A nested instance runs on its anchor's
+    thread and adds none. Only the deployed root's rows count: an
+    imported `main` or a module-nested one lowering does not deploy
+    costs nothing.
+  - **Cooperative pools** (`cooperative_pools`) are worker pools: one per
+    named pool however many instances it holds, and an affinity is a
+    property of its pool, never a thread. `main` is the program's own
+    thread and never a pool, whether or not a program spells
+    `pool = main`; the dump shows it on a line of its own.
+  - **Not counted:** a transport binding's reader thread and the serve
+    thread a stdlib transport's birth spawns are not placement facts.
+    The dump names them on a line of its own, with the root's transport
+    bindings counted, and never folds them into the thread total, which
+    is no bound on all of a process's threads.
+
   The ceiling file is TOML; every key is optional (an absent key leaves
   that resource unconstrained, an unknown key is an error):
 

@@ -19,12 +19,15 @@ the fd ceiling — intentional?"), not a proof.
 
 ## The resources (language-visible)
 
-- **OS threads** = **pinned loci** (`PlacementSpec::Pinned` placement
-  entries on the main locus). The issue calls this "essentially free" — the
-  compiler already knows the count. One pinned placement = one
-  `pthread`.
-- **Cooperative pools** = distinct `cooperative(pool = X)` names — each is
-  one shared OS thread.
+- **OS threads** = the threads placement spawns, read from the placement
+  table (F.40 phase 3, P1 5 of 6; the correspondence's § 2.8): each pinned
+  anchor of the deployed root (one per replica) times the bound of the
+  construction that builds it, summed over the constructions, plus one per
+  adapter in the root's `bindings { }`. An unbounded construction makes the
+  count an uncertainty with its reason. Binding reader threads and stdlib
+  transport serve threads are named as not counted.
+- **Cooperative pools** = the table's worker pools, one per name however
+  many instances run on it; `main` is never one.
 - **Bus subjects** = distinct registered subject strings
   (subscribe/publish `subject.canonical()` + `topic` decls). Each is a
   router table entry.
@@ -75,11 +78,12 @@ if a real use case (e.g. a user-defined pool of GPU contexts) appears.
 
 ## Landed: the count slice
 
-`crates/hale-types/src/resource_budget.rs` — `budget_for_programs(&[&Program])`
-tallies pinned threads, cooperative pools, and bus subjects by a top-level
-walk (loci → `Placement` entries; bus members + `topic` decls →
-`subject.canonical()`). Surfaced via `hale check --dump-resource-budget`.
-No false positives (it's a count). Validated by unit tests.
+`crates/hale-types/src/resource_budget.rs` — `budget_for_programs(bundle,
+table, summary)` reads the threads and pools from the snapshot's placement
+table and tallies bus subjects by a top-level walk (bus members + `topic`
+decls → `subject.canonical()`). Surfaced via `hale check
+--dump-resource-budget`. The placement accounting is pinned by
+`crates/hale-types/tests/resource_budget.rs`.
 
 ## Staging
 

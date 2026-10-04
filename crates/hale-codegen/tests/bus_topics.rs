@@ -37,6 +37,8 @@ mod gate_counters;
 mod nested_offthread_delivery;
 #[path = "nested_struct_bus_payload.rs"]
 mod nested_struct_bus_payload;
+#[path = "placement_occurrences.rs"]
+mod placement_occurrences;
 #[path = "replica_keys.rs"]
 mod replica_keys;
 #[path = "serializer_shape.rs"]

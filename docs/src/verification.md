@@ -191,7 +191,16 @@ the build, because you opted into it.
 **Resource budgets** *(opt-in).* Static counts of file descriptors, OS
 threads, cooperative pools, and bus subjects, with a
 `--check-resource-budget budget.toml` ceiling gate for CI and fd-leak
-detection.
+detection. The threads are the ones placement spawns, counted per
+instance: a `pinned` field is one thread (`replicas = K` is K), once
+for every construction of `main` that can be live at once, and an
+adapter in `bindings { }` is one more. A `main` built in a loop has no
+static bound, so its count is *uncertain* (the dump says why), and a
+thread ceiling refuses it. A pool is one worker however many loci run
+on it, and `main` is the program's own thread, never a pool. Threads
+outside placement (a binding's reader, a stdlib transport's serve
+thread) are named on a "not counted" line, never folded into the
+total.
 
 **A `module { … }` hides none of it.** A module is a namespace, not an
 analysis boundary: a locus, fn, topic or `bindings` entry declared

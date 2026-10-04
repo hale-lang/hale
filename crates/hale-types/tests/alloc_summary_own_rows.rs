@@ -178,19 +178,19 @@ fn the_resource_budget_counts_the_programs_own_fd_sites() {
     let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, config).ok().expect("http-hello loads");
     let summary = snap.demand_alloc_summary().expect("http-hello has a summary");
     let bundle = snap.bundle();
-    let programs: Vec<_> = bundle.programs.values().copied().collect();
+    let table = snap.demand_placement().expect("http-hello has a placement table");
     let reached = summary.reached.as_ref().expect("the copy is beside the program");
     assert!(
         reached.iter().any(|k| k.locus.as_deref() == Some("__StdIoTcpListener") && !summary.is_own(k)),
         "http-hello starts the Listener, and its hooks are reached"
     );
-    let budget = hale_types::resource_budget::budget_for_programs(&programs, summary);
+    let budget = hale_types::resource_budget::budget_for_programs(&bundle, table, summary);
     assert_eq!(budget.fd_open_sites, 1, "the program's own Listener");
     let mut whole = summary.clone();
     whole.analysis_copy.clear();
     whole.analysis_copy_loci.clear();
     whole.analysis_copy_interfaces.clear();
-    let read_whole = hale_types::resource_budget::budget_for_programs(&programs, &whole);
+    let read_whole = hale_types::resource_budget::budget_for_programs(&bundle, table, &whole);
     assert_eq!(read_whole.fd_open_sites, 9, "the copy's bodies hold 8 more, which are not the program's");
     assert!(hale_types::resource_budget::resource_leak_diags(summary).is_empty(), "no fd leak");
 }

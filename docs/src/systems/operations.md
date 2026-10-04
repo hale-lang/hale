@@ -96,7 +96,7 @@ flags report on allocation shape:
 |---|---|
 | *(default on every check/build)* | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings; `--no-warn-unbounded-alloc` opts out) |
 | `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict; plus each locus's storage shape (capacity slots, `@form`, projection cap) and the `self.<field>` / `self.<slot>` an allocation targets |
-| `--dump-resource-budget` | a static count of pinned threads, cooperative pools, bus subjects and fd-acquisition sites (`--check-resource-budget <file>` gates it against declared ceilings) |
+| `--dump-resource-budget` | a static count of the threads placement spawns (pinned fields per replica and per live construction of `main`, plus adapters), worker pools, bus subjects and fd-acquisition sites, with what it does not count named (`--check-resource-budget <file>` gates it against declared ceilings) |
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 
 The memory-bound warnings run **by default** on every `hale check`
