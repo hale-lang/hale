@@ -2146,17 +2146,30 @@ handle to it, and the binding holds it as a `std::api::RoleSource`
 overrides at run time. The table travels as one line the binding
 re-splits, so it is held to one rule at check, at build and at
 birth: a key is a role the program declares (an identifier), a
-member is `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>` (an
-account name: letters, digits, `.`, `_`, `-`, `@`) or `*`; a table
-outside that rule is a manifest error, and at birth the binding
-refuses to start, saying which entry. A `gid:` member matches the
-peer's primary group or one of the supplementary groups the kernel
-holds for the connection (`SO_PEERGROUPS`; nothing is looked up per
-request); `user:` and `group:` resolve once, at birth, per the
-host's account database. Without a table every gate refuses, and
-the build says so once. A principal the binding could not
-authenticate (uid -1) holds no role whatever the table says, and is
-refused every request. The description the
+member is `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>`,
+`bearer:<name>` (the name the bearer source answers, an OIDC subject
+say: 1 to 255 printable ASCII characters other than a blank and the
+table's own `,`, `;` and `=`) or `*`; a table outside that rule is a manifest error, and at birth the
+binding refuses to start, saying which entry. `*` is any
+authenticated caller on either transport: a socket peer the kernel
+vouches for (uid ≥ 0), or a bearer principal its source named (a
+non-empty `name`). `bearer:<name>` matches a bearer principal whose
+`name` is exactly `<name>`, as the bearer source spells it (it is
+never resolved against the account database), and never a socket
+peer; `uid:`, `gid:`, `user:` and `group:` match socket peers and
+never a bearer principal, even one whose `name` or `uid` reads the
+same: a Unix account and a token subject are different identities.
+A `gid:` member matches the peer's primary group or one of the
+supplementary groups the kernel holds for the connection
+(`SO_PEERGROUPS`; nothing is looked up per request); `user:` and
+`group:` resolve once, at birth, per the host's account database.
+Without a table every gate refuses, and the build says so once. A
+principal the binding could not authenticate (a socket peer with
+uid -1, a bearer principal with an empty `name`) holds no role
+whatever the table says, and is refused every request. Deferred:
+bearer groups — a member matching a group the bearer source reports
+for the principal (an OIDC `groups` claim); today a bearer principal
+is granted by its own name or by `*`. The description the
 binding serves is the caller's slice: the commands, reads and
 streams it may use (an ungated item always), with the schemas those
 items reference; the whole document is itself a read gated on the

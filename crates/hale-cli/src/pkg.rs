@@ -186,7 +186,8 @@ pub struct EnvSpec {
     #[serde(default)]
     pub entrypoints: Vec<String>,
     /// GH #1109: `[environments.<name>.roles]` — who holds which
-    /// role here, `role = ["uid:1000", "group:ops", "user:riley"]`.
+    /// role here, `role = ["uid:1000", "group:ops", "user:riley",
+    /// "bearer:front-desk"]`.
     /// The requirement is form (`@gated(role:)` on the operation);
     /// this is the params half. A role mapped to `[]` is explicitly
     /// nobody, which `--matrix` accepts; an absent role it does not.
@@ -199,7 +200,16 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
     if m == "*" {
         return Ok(());
     }
-    for (prefix, numeric) in [("uid:", true), ("gid:", true), ("user:", false), ("group:", false)] {
+    // `bearer:<name>` is a name the program's bearer source answers (an
+    // OIDC subject, say), not an account: never resolved, and held only to
+    // what the one-line table can carry (`bearer_name_ok`).
+    for (prefix, numeric) in [
+        ("uid:", true),
+        ("gid:", true),
+        ("user:", false),
+        ("group:", false),
+        ("bearer:", false),
+    ] {
         if let Some(rest) = m.strip_prefix(prefix) {
             if rest.is_empty() {
                 return Err(format!("`{}` names nothing after `{}`", m, prefix));
@@ -207,9 +217,18 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
             if numeric && rest.parse::<u64>().is_err() {
                 return Err(format!("`{}` is not `{}<number>`", m, prefix));
             }
-            // The table travels as one line the binding re-splits, so an
-            // account name is confined to what an account name is:
-            // never `;`, `,`, `=`, blanks or control characters.
+            // The table travels as one line the binding re-splits, so a
+            // name is confined to what an account name is: never `;`,
+            // `,`, `=`, blanks or control characters.
+            if prefix == "bearer:" {
+                if !bearer_name_ok(rest) {
+                    return Err(format!(
+                        "`{}` is not a bearer name (printable ASCII without blanks, `,`, `;` or `=`, at most 255)",
+                        m
+                    ));
+                }
+                return Ok(());
+            }
             if !numeric && !account_name_ok(rest) {
                 return Err(format!(
                     "`{}` is not an account name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
@@ -221,9 +240,19 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
     }
     Err(format!(
         "`{}` is not a role member: write `uid:<n>`, `gid:<n>`, `user:<name>`, \
-         `group:<name>` or `*` (any authenticated peer)",
+         `group:<name>`, `bearer:<name>` or `*` (any authenticated caller)",
         m
     ))
+}
+
+/// A `bearer:` member's name: 1 to 255 printable ASCII characters (an OIDC
+/// subject is at most 255 ASCII characters), never a blank or the table's
+/// own separators `,` `;` `=`, since the table travels as one line the
+/// binding re-splits.
+pub fn bearer_name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && s.bytes().all(|c| c.is_ascii_graphic() && !matches!(c, b',' | b';' | b'='))
 }
 
 /// An account name the table may carry: `[A-Za-z0-9._@-]`, 1 to 64.
