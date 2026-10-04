@@ -2225,11 +2225,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // inside the loop below (set immediately before
         // lower_expr, consumed by the recursive call to
         // lower_locus_instantiation).
-        let is_main_locus = self
-            .deployment.main_locus_name
-            .as_ref()
-            .map(|n| n == locus_name)
-            .unwrap_or(false);
+        let is_main_locus = self.is_lowering_root(locus_name);
         // F.31 Phase 3b (2026-05-23): during the params-init
         // loop, surface this locus as a "params-init parent"
         // context so children instantiated as field defaults

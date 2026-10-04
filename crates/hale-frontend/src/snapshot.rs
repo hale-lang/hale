@@ -1734,6 +1734,9 @@ impl Snapshot {
                 })?;
                 // The emitters read the lifecycle plan (F.40 phase 3, L4).
                 let lifecycle = self.demand_lifecycle().map_err(Clone::clone)?.clone();
+                // Lowering reads which `main locus` it deploys from the
+                // entry row (F.40 phase 3, L4).
+                let entry = self.demand_entry().map_err(Clone::clone)?.clone();
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1749,6 +1752,7 @@ impl Snapshot {
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;
                 view.lifecycle = Some(lifecycle);
+                view.entry = Some(entry);
                 Ok(view)
             })
             .as_ref()
@@ -2455,6 +2459,37 @@ mod tests {
         // Lowering takes the first in declaration order (rule 1 refuses
         // the program before it builds).
         assert_eq!(root(&all).as_deref(), Some("Other"), "{all:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The lowering view carries the snapshot's entry row (F.40 phase 3,
+    /// L4), and lowering reads which `main locus` it deploys from the
+    /// row's lowering root. The two disagree on one shape: a seed whose
+    /// only `main` is module-nested has no entry (decision 2) and still a
+    /// lowering root, which lowering deploys until it reads the entry.
+    #[test]
+    fn the_lowering_view_carries_the_entry_row() {
+        let d = scratch("view_entry");
+        let view_of = |name: &str, text: &str| {
+            let seed = d.join(name);
+            std::fs::create_dir_all(&seed).unwrap();
+            std::fs::write(seed.join("main.hl"), text).unwrap();
+            let s = load(&seed, &Disk, Config::check(true, false));
+            let row = s.demand_entry().expect("an entry row").clone();
+            let view = s.demand_lowering().unwrap_or_else(|b| panic!("{name}: the view is blocked: {:?}", b.because));
+            assert_eq!(view.entry(), Some(&row), "{name}: the view carries the snapshot's row");
+            row
+        };
+        let root = |row: &hale_types::entry::EntryRow| row.lowering_root.as_ref().map(|m| m.name.clone());
+        let top = view_of("top", "main locus App { params { n: Int = 0; } }\nfn main() { App { }; }\n");
+        assert_eq!(top.entry().map(|m| m.name.as_str()), Some("App"));
+        assert_eq!(root(&top).as_deref(), Some("App"), "the entry is the root lowering deploys");
+        let nested = view_of(
+            "nested",
+            "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { App { }; }\n",
+        );
+        assert!(nested.entry().is_none(), "decision 2: no entry");
+        assert_eq!(root(&nested).as_deref(), Some("App"), "and still the root lowering deploys");
         let _ = std::fs::remove_dir_all(&d);
     }
 

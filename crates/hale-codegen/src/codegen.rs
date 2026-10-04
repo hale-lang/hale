@@ -1070,6 +1070,22 @@ fn compile_cached_runtime_object_with(
     }
 }
 
+/// The `main locus` lowering deploys: the entry row's lowering root
+/// (`hale_types::entry::EntryRow::lowering_root`), found in lowering's
+/// program by its site (a user site is the node of the same index in the
+/// merged program, as the placement table's root is). A view with no row
+/// (a bare program's) or a row with no root deploys none.
+fn lowering_root<'p>(
+    entry: Option<&hale_types::entry::EntryRow>,
+    program: &'p Program,
+) -> Option<&'p hale_syntax::ast::LocusDecl> {
+    let site = entry?.lowering_root.as_ref()?.site?;
+    hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
+        TopDecl::Locus(l) if l.id.0 == site.index => Some(l),
+        _ => None,
+    })
+}
+
 /// Compile `program` to an executable at `output_path`, linking it with
 /// `clang`. The one entry point: what to build with (the cache directory
 /// the caller chose, the link surface for `@ffi("c")` consumers the CLI's
@@ -1467,6 +1483,7 @@ pub fn build_resolved(
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle: resolved.lifecycle(),
+        lowering_root: lowering_root(resolved.entry(), merged),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -3354,6 +3371,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// emitters read each spine's obligations, in order, from it
     /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
     pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
+    /// The `main locus` lowering deploys, read from the view's entry row
+    /// (`LoweringView::entry`, its lowering root) and found in lowering's
+    /// program by identity: every comparison against "the main locus"
+    /// reads it (`is_lowering_root`). `None` with no root.
+    pub(crate) lowering_root: Option<&'p hale_syntax::ast::LocusDecl>,
     /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
     /// User-defined `type` declarations indexed by name. Filled
@@ -6333,11 +6355,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // as it unwound, and the process died on every stop
             // (downstream handoff). Joining here is idempotent: the pools'
             // later join at main's exit finds no worker left.
-            let is_main_entry = self
-                .deployment
-                .main_locus_name
-                .as_deref()
-                .is_some_and(|n| n == locus_name);
+            let is_main_entry = self.is_lowering_root(&locus_name);
             let lc_outer = std::mem::replace(
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
@@ -8250,9 +8268,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // F.31: main's deployment, read from the placement table.
         // Populates `main_placement_map` keyed by `params` field
-        // name, plus caches `main_locus_name` so the params-init loop
-        // in `lower_locus_instantiation` can decide whether to
-        // override the per-field placement.
+        // name, which the params-init loop in
+        // `lower_locus_instantiation` reads for the lowering root
+        // (`is_lowering_root`) to override the per-field placement.
         self.collect_main_placement();
 
         // Pass A0: declare every user-defined `type` so locus
@@ -9578,8 +9596,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// F.31: main's deployment, read from the placement table (F.40
-    /// phase 3, P1 5 of 6) before any lowering runs: the root lowering
-    /// deploys (`main_locus_name`), and per root field a `placement { }`
+    /// phase 3, P1 5 of 6) before any lowering runs: for the root lowering
+    /// deploys (the table's, seeded from the entry row's lowering root,
+    /// which `is_lowering_root` reads), per root field a `placement { }`
     /// entry decides, its schedule class, pool, NUMA node and replicas,
     /// keyed by field name for the params init of the root. The domains
     /// give the pools their `async_io` and affinity; the type sets are
@@ -9602,7 +9621,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
         let Some(root) = table.root.as_ref() else { return };
-        self.deployment.main_locus_name = Some(root.realizes.lowered.clone());
         // The root's placement entries, by their sites: a user site is
         // the node of the same index in lowering's program.
         let root_id = NodeId(root.realizes.site.id.index);
@@ -9977,10 +9995,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // dispatcher needed. The handler is main's routing row for
         // the locus the connect entry's row names as its transport.
         if let Some(transport) = connect_transport {
-            let main_handler = self
-                .deployment.main_locus_name
-                .as_ref()
-                .and_then(|n| self.failure_handler_for(n, transport));
+            let main_handler = self.lowering_root.and_then(|l| self.failure_handler_for(&l.name.name, transport));
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler, transport)?;
             }
@@ -9988,22 +10003,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Whether `locus_name` is the `main locus` lowering deploys, the
+    /// entry row's lowering root (`lowering_root`).
+    pub(crate) fn is_lowering_root(&self, locus_name: &str) -> bool {
+        self.lowering_root.is_some_and(|l| l.name.name == locus_name)
+    }
+
     /// The lowering root's `bindings { }` entries, each with the row
-    /// that decides it (F.40 phase 3, P2): the root is the first `main
-    /// locus` over the flat declarations that is not a library's, as
-    /// `collect_main_placement` takes it. An entry the view holds no row
-    /// for is a missing required row, an error, not a guess.
+    /// that decides it (F.40 phase 3, P2): the root is the entry row's
+    /// (`lowering_root`). An entry the view holds no row for is a missing
+    /// required row, an error, not a guess.
     fn root_bindings(
         &self,
     ) -> Result<Vec<(&'p hale_syntax::ast::BindingEntry, &'p hale_types::binding_rows::BindingRow)>, CodegenError>
     {
-        let program: &'p Program = self.program;
         let rows = self.bindings;
-        let root = hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
-            _ => None,
-        });
-        let Some(l) = root else { return Ok(Vec::new()) };
+        let Some(l) = self.lowering_root else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for m in &l.members {
             let LocusMember::Bindings(b) = m else { continue };
