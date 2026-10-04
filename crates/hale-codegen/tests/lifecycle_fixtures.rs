@@ -262,6 +262,12 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_self_post_overflow.hl", line: "19", adopted: Some("all-completed"), run: RunMode::Plain, judge: all_completed },
     Fixture { file: "l19_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: queued_run_canceled },
     Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
+    Fixture { file: "l19_started_run_retained.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_started_run_retained_async.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_started_run_publishes_back.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
+    Fixture { file: "l19_started_run_publishes_back_async.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
+    Fixture { file: "l19_handler_replaces_started_run.hl", line: "19", adopted: Some("answered-after-handler"), run: RunMode::Plain, judge: answered_after_handler },
+    Fixture { file: "l19_handler_replaces_started_run_async.hl", line: "19", adopted: Some("answered-after-handler"), run: RunMode::Plain, judge: answered_after_handler },
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Env(SMALL_RING), judge: full_ring },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Plain, judge: empty_ring },
@@ -459,6 +465,18 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l19_resumed_run_at_shutdown.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
+            &["19"]
+        }
+        // The placed child's started run and the inline replacement
+        // both end before their own physical reclaim (line 19).
+        "l19_started_run_retained.hl" | "l19_started_run_retained_async.hl"
+        => {
+            p.occurrences = count(&[("Kid", 2)]);
+            &["19"]
+        }
+        "l19_started_run_publishes_back.hl" | "l19_started_run_publishes_back_async.hl"
+        | "l19_handler_replaces_started_run.hl" | "l19_handler_replaces_started_run_async.hl" => {
+            p.occurrences = count(&[("Kid", 2), ("Rows", 2)]);
             &["19"]
         }
         "rd_restart_during_teardown.hl" => {
@@ -684,7 +702,7 @@ const CONTROLS: &[Control] = &[
         fixture: "l14_reclaim_exactly_once.hl",
         skip: "Reclaim.Completed",
         plan: None,
-        fails_with: "edge: App.Reclaim.Entered",
+        fails_with: "unended: Kid.Reclaim",
         baseline_passes: false,
     },
     // A child reclaimed with its handler not seen to complete.
@@ -714,7 +732,7 @@ const CONTROLS: &[Control] = &[
         fixture: "l19_parked_started_coroutine.hl",
         skip: "Run.Terminal(CanceledAfterStart)",
         plan: None,
-        fails_with: "edge: __StdIoTcpListener.Drain.Entered",
+        fails_with: "edge: __StdIoTcpListener.Reclaim.Completed",
         baseline_passes: false,
     },
     Control {
@@ -735,6 +753,17 @@ const CONTROLS: &[Control] = &[
         skip: "Run.Terminal(NotStarted(Acknowledged))",
         plan: None,
         fails_with: "missing: Kid.Run",
+        baseline_passes: true,
+    },
+    // R19a: without the reclaim's wait for the run hold, the old child's
+    // reclaim completes while its started run is still running.
+    Control {
+        name: "run_hold_wait_removed",
+        covers: ObligationKind::Run,
+        fixture: "l19_started_run_retained.hl",
+        skip: "RunHold",
+        plan: None,
+        fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Run.Ended not reached",
         baseline_passes: true,
     },
     Control {
@@ -1181,6 +1210,61 @@ fn cross_pool_printed(r: &Ran) -> bool {
         && count(r, "ev kid-dissolve 1") == 1
 }
 
+/// Both children's runs read their own names, and each child is torn
+/// down once.
+fn started_printed(r: &Ran) -> bool {
+    count(r, "ev kid-run 0 kid-0-name") == 1
+        && count(r, "ev kid-run 1 kid-1-name") == 1
+        && count(r, "ev kid-dissolve 0") == 1
+        && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// The started run returned, reading its own child, and the trace's
+/// plan holds its end before its child's reclaim completes.
+fn run_held(r: &Ran) -> String {
+    match (started_printed(r), r.code) {
+        (true, Some(0)) => "run-held".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
+/// As [`started_printed`], and App's handler heard the run's note on
+/// main before the reassignment completed: inside the reclaim's wait.
+fn answered_in_wait_printed(r: &Ran) -> bool {
+    let heard = r.stdout.find("ev heard 0");
+    let replaced = r.stdout.find("ev replaced");
+    started_printed(r)
+        && count(r, "ev rows 0 1") == 1 && count(r, "ev rows 1 1") == 1
+        && matches!((heard, replaced), (Some(h), Some(p)) if h < p)
+}
+
+fn answered_in_wait(r: &Ran) -> String {
+    match (answered_in_wait_printed(r), r.code) {
+        (true, Some(0)) => "answered-in-wait".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
+fn answered_after_handler_printed(r: &Ran) -> bool {
+    started_printed(r)
+        && count(r, "ev rows 0 1") == 1
+        && count(r, "ev rows 1 1") == 1
+        && count(r, "ev scratch-dissolve") == 1
+        && matches!((pos(r, "ev scratch-dissolve"), pos(r, "ev replaced")), (Some(d), Some(p)) if d < p)
+        && matches!((pos(r, "ev replaced"), pos(r, "ev heard 0")), (Some(p), Some(h)) if p < h)
+        && matches!((pos(r, "ev kid-dissolve 0"), pos(r, "ev kid-run 1 kid-1-name")), (Some(d), Some(n)) if d < n)
+}
+
+fn answered_after_handler(r: &Ran) -> String {
+    match (answered_after_handler_printed(r), r.code) {
+        (true, Some(0)) => "answered-after-handler".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
 /// The run queued on `side` is canceled by the reclaim on main and
 /// named there.
 fn cross_pool_run_canceled(r: &Ran) -> String {
@@ -1388,7 +1472,7 @@ fn every_planned_kind_has_a_negative_control() {
 /// and the main one's completes (`=Ended`). The edges between the
 /// Parents and their fields are not held: two occurrences of each, and
 /// the trace does not say which is whose. The control, both parents on
-/// main, claims main alone and renders byte for byte what it did before.
+/// main, claims main alone. Every run is held until reclaim completes.
 const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains.hl",
@@ -1397,11 +1481,13 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
          edge Leaf.Run.Ended -> Leaf.Reclaim.Completed\n\
          edge Leaf.Reclaim.Entered -> Leaf.Cancellation.Entered",
     ),
@@ -1413,11 +1499,13 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
          edge Twig.Run.Ended -> Twig.Reclaim.Completed\n\
          edge Twig.Reclaim.Entered -> Twig.Cancellation.Entered",
     ),
@@ -1428,12 +1516,16 @@ const FIELD_PLANS: &[(&str, &str)] = &[
          Parent: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
          edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
 ];
 
@@ -1444,7 +1536,8 @@ const FIELD_PLANS: &[(&str, &str)] = &[
 /// two domains named no one). Each occurrence's run() runs inline at its
 /// statement and ends before its drain, on side as on main: a body
 /// literal's run is never posted behind its owner's teardown. The
-/// control, both Mids on main, renders byte for byte what it did before.
+/// control, both Mids on main, retains that inline ordering. Both also
+/// carry the started-run retention edge through physical reclaim.
 const BODY_PLANS: &[(&str, &str)] = &[
     (
         "l03_body_literal_two_domains.hl",
@@ -1453,12 +1546,15 @@ const BODY_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
-         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
     (
         "l03_body_literal_one_domain.hl",
@@ -1467,12 +1563,16 @@ const BODY_PLANS: &[(&str, &str)] = &[
          Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Run.Ended -> App.Reclaim.Completed\n\
          edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
          edge Worker.Birth.Completed -> App.Birth.Entered\n\
          edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Run.Ended -> Worker.Reclaim.Completed\n\
          edge Worker.Drain.Completed -> App.Drain.Entered\n\
-         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
-         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+         edge Worker.Dissolve.Completed -> App.Reclaim.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Completed\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed",
     ),
 ];
 
@@ -1586,6 +1686,12 @@ fixture_tests! {
     l19_self_post_overflow => "l19_self_post_overflow.hl",
     l19_queued_run_canceled => "l19_queued_run_canceled.hl",
     l19_cross_pool_queued_run_canceled => "l19_cross_pool_queued_run_canceled.hl",
+    l19_started_run_retained => "l19_started_run_retained.hl",
+    l19_started_run_retained_async => "l19_started_run_retained_async.hl",
+    l19_started_run_publishes_back => "l19_started_run_publishes_back.hl",
+    l19_started_run_publishes_back_async => "l19_started_run_publishes_back_async.hl",
+    l19_handler_replaces_started_run => "l19_handler_replaces_started_run.hl",
+    l19_handler_replaces_started_run_async => "l19_handler_replaces_started_run_async.hl",
     l19_resumed_run_at_shutdown => "l19_resumed_run_at_shutdown.hl",
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
@@ -1652,6 +1758,151 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
 }
 
+/// Decision line 19, a started run, under AddressSanitizer with chunk
+/// pooling off (GH #816): main reclaims a child whose run is running on
+/// `side`, and the run then reads the heap String in the child's arena.
+/// Before the run hold the reclaim released that arena under the run (a
+/// heap-use-after-free); with it the reclaim waits for the run to return.
+fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
+    let program = hale_syntax::parse_source(&source(file)).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
+    let bin = harness::unique_bin(&format!("hale_lifecycle_asan_{tag}"));
+    harness::build_asan(&program, &bin);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let _ = std::fs::remove_file(&bin);
+    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
+    let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
+    assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
+    assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+#[test]
+fn l19_started_run_retained_under_asan() {
+    assert_clean_under_asan("l19_started_run_retained.hl", "l19_started", started_printed);
+}
+
+#[test]
+fn l19_started_run_retained_async_under_asan() {
+    assert_clean_under_asan("l19_started_run_retained_async.hl", "l19_started_async", started_printed);
+}
+
+#[test]
+fn l19_started_run_publishes_back_under_asan() {
+    assert_clean_under_asan("l19_started_run_publishes_back.hl", "l19_publishes_back", answered_in_wait_printed);
+}
+
+#[test]
+fn l19_started_run_publishes_back_async_under_asan() {
+    assert_clean_under_asan("l19_started_run_publishes_back_async.hl", "l19_publishes_back_async", answered_in_wait_printed);
+}
+
+/// A handler replacement and its run-body control, on classic and async
+/// pools, in both dispatch modes. The trace holds memory retention to
+/// the producer's plan; stdout separately holds handler completion order.
+#[test]
+fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
+    for file in [
+        "l19_handler_replaces_started_run.hl",
+        "l19_handler_replaces_started_run_async.hl",
+        "l19_started_run_publishes_back.hl",
+        "l19_started_run_publishes_back_async.hl",
+    ] {
+        let f = fixture(file);
+        let program = hale_syntax::parse_source(&source(file)).expect("parse the fixture");
+        for no_bus_devirt in [false, true] {
+            let bin = harness::unique_bin("hale_handler_reclaim_asan");
+            let options = hale_codegen::BuildOptions {
+                asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+            };
+            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            let image = std::fs::read(&bin).expect("read ASan binary");
+            assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let _ = std::fs::remove_file(&bin);
+            let report = format!("{}\n{}", ran.stdout, ran.stderr);
+            for marker in SANITIZER_MARKERS {
+                assert!(!report.contains(marker), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            }
+            assert_eq!(Some((f.judge)(&ran).as_str()), f.adopted, "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            assert_trace(file, &ran);
+        }
+    }
+}
+
+/// PR #1324 review: a retired child must not release itself on its
+/// worker while the replacing thread still owns the deferred release.
+/// Exercise explicit termination and automatic flow completion, with
+/// heap-backed form storage, on both pool and dispatch implementations.
+#[test]
+fn retired_run_self_reclaim_has_one_owner_under_asan() {
+    for file in ["l19_handler_replaces_started_run.hl", "l19_handler_replaces_started_run_async.hl"] {
+        for end in ["terminate", "flow"] {
+            let original = source(file);
+            let src = match end {
+                "terminate" => original.replace(
+                    "println(\"ev kid-run \" + to_string(self.tag) + \" \" + self.name);",
+                    "println(\"ev kid-run \" + to_string(self.tag) + \" \" + self.name); if self.tag == 0 { terminate; }",
+                ),
+                _ => original.replace("main locus App {", "main locus App { accept(c: Kid) { } release(c: Kid) { }"),
+            };
+            assert_ne!(src, original, "the self-reclaim variant must be installed");
+            let program = hale_syntax::parse_source(&src).expect("parse the self-reclaim variant");
+            let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::check(false, false))
+                .unwrap_or_else(|_| panic!("{file}, {end}: load failed"));
+            let checked = snap.demand_check().expect("check");
+            assert!(!checked.diags.iter().any(|d| d.is_error()), "{file}, {end}: {:?}", checked.diags);
+            for no_bus_devirt in [false, true] {
+                let bin = harness::unique_bin("hale_retired_self_reclaim_asan");
+                let options = hale_codegen::BuildOptions {
+                    asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+                };
+                build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+                let image = std::fs::read(&bin).expect("ASan binary");
+                assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
+                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+                let _ = std::fs::remove_file(&bin);
+                let report = format!("{}\n{}", ran.stdout, ran.stderr);
+                for marker in SANITIZER_MARKERS {
+                    assert!(!report.contains(marker), "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
+                }
+                assert_eq!(answered_after_handler(&ran), "answered-after-handler", "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
+                assert_eq!(ran.code, Some(0), "{report}");
+            }
+        }
+    }
+}
+
+/// Removing the handler boundary restores the original deadlock: the
+/// child has dissolved, but replacement cannot finish and the queued
+/// reply cannot run. The ASan cases above are its completing controls.
+#[test]
+fn synchronous_handler_storage_wait_restores_the_deadlock() {
+    let program = hale_syntax::parse_source(&source("l19_handler_replaces_started_run.hl")).expect("parse");
+    let bin = harness::unique_bin("hale_handler_storage_negative");
+    let options = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    let ran = run_bin(&bin, RunMode::Plain, &[("LOTUS_LIFECYCLE_SKIP", "HandlerStorage")]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(ran.timed_out, "synchronous handler wait unexpectedly completed: {} {}", ran.stdout, ran.stderr);
+    assert_eq!(count(&ran, "ev kid-dissolve 0"), 1);
+    assert_eq!(count(&ran, "ev replaced"), 0);
+    assert_eq!(count(&ran, "ev heard 0"), 0);
+}
+
+#[test]
+fn owner_release_cannot_finish_before_its_child_release() {
+    let file = "l14_reclaim_exactly_once.hl";
+    let mut ran = run_fixture(fixture(file), &[]);
+    assert_trace(file, &ran);
+    let parent = ran.trace.events.iter().find(|e| e.decl.as_deref() == Some("App")
+        && e.kind == ObligationKind::Reclaim && e.point == Point::Completed).expect("owner completion").seq;
+    let child = ran.trace.events.iter_mut().find(|e| e.decl.as_deref() == Some("Kid")
+        && e.kind == ObligationKind::Reclaim && e.point == Point::Completed).expect("child completion");
+    child.seq = parent + 1;
+    ran.trace.events.sort_by_key(|e| e.seq);
+    let violations = trace_violations(file, &ran);
+    assert!(violations.iter().any(|v| v.to_string().starts_with("edge: App.Reclaim.Completed")), "{violations:#?}");
+}
+
 macro_rules! control_tests {
     ($($name:ident),* $(,)?) => {
         mod controls {
@@ -1673,6 +1924,7 @@ control_tests! {
     canceled_run_unnamed,
     cancellation_completion_omitted,
     queued_run_cancel_unnamed,
+    run_hold_wait_removed,
     restart_completion_omitted,
     wait_abort_removed,
     birth_removed,

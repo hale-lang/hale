@@ -1155,7 +1155,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         match s.how {
             How::Field => (Spine::Cascade, DomainRole::Teardown),
             How::Accepted { .. } => (Spine::Reclaim, DomainRole::Teardown),
-            How::Top { built: Built::Statement, .. } | How::Body { built: Built::Statement, .. } => {
+            How::Top { built: Built::Statement, .. } | How::Body { built: Built::Statement, .. }
+                if !self.facts[i].subscribes => {
                 (Spine::EagerTeardown, DomainRole::Instantiating)
             }
             How::Top { .. } | How::Body { .. } => (Spine::DeferredEntry, DomainRole::Teardown),
@@ -1196,6 +1197,10 @@ impl<'b, 'a> Builder<'b, 'a> {
         let in_pool_init = matches!(s.site.template, Template::Static(_)) && !s.placed
             && self.all(i, |c| self.is_pool(c.own) && c.own == c.it);
         let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(i, c));
+        // A posted run can still be executing when a field replacement
+        // enters teardown on another pool. Retention orders its end
+        // before physical reclaim, not before drain or dissolve.
+        let posted_run = on_pool && !in_pool_init && matches!(s.how, How::Field | How::Accepted { .. });
         let accepted = matches!(s.how, How::Accepted { .. });
         let flow = matches!(s.how, How::Accepted { flow: true });
         let let_bound = matches!(s.how, How::Body { built: Built::Let | Built::Nested, .. });
@@ -1377,10 +1382,9 @@ impl<'b, 'a> Builder<'b, 'a> {
         if pinned {
             o.runs_on = self.claim(i, |c| Self::on(c.own, shipped("12")));
         }
-        // A run queued behind its owner's teardown is canceled by the
-        // reclaim, after this drain: its end is ordered before the reclaim
-        // (for every occurrence, once one contribution posts it there).
-        if let Some(run) = r.run.filter(|_| !posted_to_teardown) {
+        // A posted run may be canceled here or already running on
+        // another pool. Neither case orders its end before this drain.
+        if let Some(run) = r.run.filter(|_| !posted_run) {
             let rule = if flow || let_bound { shipped("11") } else { Rule::SHIPPED };
             o.edges.entry.push(after(run, Point::Ended, rule));
         }
@@ -1461,12 +1465,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         let id = self.push(o);
         self.get(id).lifetime[0].until.obligation = id;
         r.reclaim = Some(id);
+        // Line 19's retention also covers a started run reclaimed off
+        // its worker. Inline runs satisfy the same edge by returning
+        // before teardown; pinned runs satisfy it through their join.
+        if let Some(run) = r.run {
+            self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
+        }
         // A run still queued behind its owner's teardown on the worker is
         // canceled inside the reclaim and named, NotStarted(Acknowledged),
         // before the child is released (line 19, the retention L5
         // shipped).
         // Claimed on the pools of the contributions that post it there.
-        if let Some(run) = r.run.filter(|_| posted_to_teardown) {
+        if r.run.is_some() && posted_to_teardown {
             let mut o = self.row(i, K::Cancellation, reclaim_holder);
             o.line = Some("19");
             o.guard = PathGuard::DrainInFlight;
@@ -1478,7 +1488,6 @@ impl<'b, 'a> Builder<'b, 'a> {
             );
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
-            self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
             // Only an occurrence posted there has a cancellation to wait for.
             if self.all(i, |c| self.posted_to_its_owners_teardown(i, c)) {
                 self.get(id).edges.completion.push(after(cancel, Point::Completed, shipped("19")));
@@ -1832,9 +1841,14 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.get(cd).edges.entry.push(after(pd, Point::Completed, Rule::SHIPPED));
             }
         }
-        // Children before their owner's arena (line 14).
+        // Children before their owner's physical release (line 14).
+        // Reclaim can begin by canceling posts and retaining a tree
+        // through a started run; its entry need not free storage yet.
         if let (Some(cr), Some(pr)) = (child.reclaim, parent.reclaim) {
-            self.get(pr).edges.entry.push(after(cr, Point::Completed, shipped("14")));
+            if let Some(cd) = child.dissolve {
+                self.get(pr).edges.entry.push(after(cd, Point::Completed, shipped("14")));
+            }
+            self.get(pr).edges.completion.push(after(cr, Point::Completed, shipped("14")));
         }
         // A held failure: delivered once the owner's last param is
         // stored, completed at its settle, before its birth (line 1).
@@ -1881,10 +1895,11 @@ impl<'b, 'a> Builder<'b, 'a> {
             status,
         };
         let mut first_join: Option<ObligationId> = None;
-        // Each template top a statement in `fn main` builds: torn down by
-        // the eager spine where its statement ends.
+        // A statement-position subscriber remains live until the frame
+        // exits, like a let-bound locus. Only the other statement tops
+        // take the eager spine where their statement ends.
         let eager: Vec<usize> = (0..self.subjects.len())
-            .filter(|&i| matches!(self.subjects[i].how, How::Top { built: Built::Statement, .. }))
+            .filter(|&i| matches!(self.subjects[i].how, How::Top { built: Built::Statement, .. }) && !self.facts[i].subscribes)
             .collect();
         let statements_done: Vec<ObligationId> = eager.iter().filter_map(|&i| self.rows[i].reclaim).collect();
         for i in eager {
@@ -1965,7 +1980,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 let deferred = matches!(
                     self.subjects[i].how,
                     How::Body { built: Built::Let | Built::Nested, in_fn_main: true } | How::Top { built: Built::Let | Built::Nested, .. }
-                );
+                ) || (self.facts[i].subscribes && matches!(
+                    self.subjects[i].how,
+                    How::Body { built: Built::Statement, in_fn_main: true } | How::Top { built: Built::Statement, .. }
+                ));
                 if !deferred {
                     continue;
                 }

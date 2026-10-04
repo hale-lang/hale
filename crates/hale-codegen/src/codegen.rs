@@ -5009,6 +5009,11 @@ pub(crate) struct LocusInfo<'ctx> {
     /// instance was built with, for `restart_in_place` (see
     /// `locus::restart`). Null unless the locus is restarted in place.
     pub(crate) built_params_field_idx: u32,
+    /// Atomic, monotonic admission to the shared reclaim spine. A run
+    /// ending on another thread must not repeat a retiring owner's
+    /// logical teardown or release its still-retained descendants.
+    /// Initialized to zero for each new instance, including slot reuse.
+    pub(crate) reclaim_claimed_field_idx: u32,
     /// v1.x-4b: index of the synthetic `__slot_borrowed_mask:
     /// i64` field. Always present (uniform locus-struct layout).
     /// Bit N (LSB = slot 0 in declaration order) is set iff this
@@ -6427,8 +6432,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// between passes that use the builder (notably between A2
     /// and the body-lowering passes C/D).
     /// 2026-06-01: synthesize `__reclaim_<L>(self_ptr)` — the single
-    /// per-child teardown spine. Idempotent: the `__arena`-null latch
-    /// at entry makes a second reclaim of the same locus a full no-op
+    /// per-child teardown spine. Idempotent: an atomic instance claim
+    /// before any arena read makes a second shared reclaim a full no-op
     /// (a flow child reclaimed at run-completion, then walked again by
     /// the parent's dissolve cascade, runs the spine exactly once).
     /// The spine: drain (children-first) → `release(owner, self)` for
@@ -6474,9 +6479,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Synthesized for every locus (mirrors the run-wrappers;
             // DCE drops unused). Arena-elidable loci borrow the
             // caller's arena: emit_locus_arena_destroy bails on them,
-            // so the spine is harmless (and they're never in a
-            // double-reclaim path, so the __arena-null latch being a
-            // no-op for them doesn't matter).
+            // so the spine is harmless. The instance claim still
+            // prevents a second shared entry for an elided arena.
             let reclaim = self
                 .reclaim_fns
                 .get(locus_name)
@@ -6491,39 +6495,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get_nth_param(0)
                 .expect("reclaim self_ptr param")
                 .into_pointer_value();
-            // Full-spine idempotency latch (2026-06-01). `__arena` is
-            // NULL'd by emit_locus_arena_destroy on the FIRST reclaim,
-            // so a second entry here loads NULL and skips the entire
-            // spine — not just the arena destroy (which had its own
-            // inner latch), but drain / release / dissolve too, which
-            // would otherwise double-run their user bodies. Single-
-            // threaded by construction at the colliding call sites
-            // (pool workers are joined before the dissolve cascade;
-            // a parent and its accept'd children share one worker), so
-            // a plain load/compare suffices — no atomic.
-            let arena_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_arg,
-                    info.arena_field_idx,
-                    &format!("{}.reclaim.arena.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let arena = self
-                .builder
-                .build_load(ptr_t, arena_ptr, &format!("{}.reclaim.arena", locus_name))
+            let claim_ptr = self.builder.build_struct_gep(
+                info.struct_ty, self_arg, info.reclaim_claimed_field_idx, "reclaim.claim.ptr",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // Check the shared claim before reading __arena. The winner
+            // may be on another worker, including one finishing run().
+            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "reclaim.pending")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
-            let already = self
-                .builder
-                .build_is_null(arena, &format!("{}.reclaim.done", locus_name))
+                .try_as_basic_value().left().expect("i64").into_int_value();
+            let pending = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, pending, i64_t.const_zero(), "reclaim.retired",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let ready_bb = self.context.append_basic_block(reclaim, "reclaim.ready");
+            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_conditional_branch(already, ret_bb, do_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-            self.builder.position_at_end(do_bb);
+            self.builder.position_at_end(ready_bb);
             // A child whose failure its parent is still holding (the
             // parent's params are not settled — spec/semantics.md §
             // "on_failure(c, err)") must outlive the handler that reads
@@ -6601,6 +6588,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(spine_bb);
             }
+            // Failure deferral precedes admission: its callback must
+            // still be able to enter the spine after the handler. Race
+            // the other reclaim entrants once, before any arena read.
+            let claim = self.module.get_function("lotus_reclaim_try_claim").expect("claim declared");
+            let claimed = self.builder.build_call(claim, &[claim_ptr.into()], "reclaim.claimed")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value().left().expect("i64").into_int_value();
+            let won = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, claimed, i64_t.const_zero(), "reclaim.won",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_conditional_branch(won, do_bb, ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(do_bb);
+            // An inline cascade can already have completed this
+            // instance without entering the shared reclaim function.
+            let arena_ptr = self.builder.build_struct_gep(
+                info.struct_ty, self_arg, info.arena_field_idx, "reclaim.arena.ptr",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena = self.builder.build_load(ptr_t, arena_ptr, "reclaim.arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.into_pointer_value();
+            let already = self.builder.build_is_null(arena, "reclaim.done")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let body_bb = self.context.append_basic_block(reclaim, "reclaim.body");
+            self.builder.build_conditional_branch(already, ret_bb, body_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(body_bb);
             let prev_fn = self.current_fn.take();
             let prev_self = self.current_self.take();
             self.current_fn = Some(reclaim);
@@ -7282,6 +7295,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(f) => f,
             None => return Ok(()),
         };
+        let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let func = self.current_fn.expect("dissolve frame current fn");
@@ -7392,6 +7406,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(header)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(cont);
+        self.emit_reclaim_scope_leave(retain)?;
         Ok(())
     }
 
@@ -32430,10 +32445,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
         if let Some(reclaim) = self.reclaim_fns.get(field_locus).copied() {
+            let request = self.module.get_function("lotus_reclaim_request")
+                .expect("reclaim request declared");
             self.builder
                 .build_call(
-                    reclaim,
-                    &[old_ptr.into()],
+                    request,
+                    &[
+                        old_ptr.into(), cs.self_ptr.into(),
+                        reclaim.as_global_value().as_pointer_value().into(),
+                    ],
                     &format!("{}.reassign.reclaim_old", field_locus),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

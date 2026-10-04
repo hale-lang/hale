@@ -456,7 +456,7 @@ pub enum ObligationKind {
     /// The dissolve-epoch closures, then the user's `dissolve()`.
     Dissolve,
     /// The reclaim: the instance's teardown spine and its arena's
-    /// release, exactly once (the `__arena` latch).
+    /// release, exactly once (the `__arena` latch and pending release).
     Reclaim,
     /// The whole-process drain a signal begins: a cooperative flag,
     /// never a lifecycle call from the signal path.
@@ -1128,6 +1128,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
             (
                 Status::Shipped,
                 "a queued run is retained against its child's teardown, which cancels it first: NotStarted(Acknowledged) (L5)",
+            ),
+            (
+                Status::Shipped,
+                "a started run ends before its child's physical reclaim completes, including a field replacement on another pool (L5)",
             ),
             (
                 Status::Shipped,

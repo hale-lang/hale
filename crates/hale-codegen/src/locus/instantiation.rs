@@ -1063,6 +1063,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
 
+        // Reset admission before publishing this incarnation to any
+        // worker. Recycled owner and deferred slots carry the old claim.
+        let reclaim_claim = self.builder.build_struct_gep(
+            info.struct_ty, self_ptr, info.reclaim_claimed_field_idx, "reclaim.claim.init",
+        ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.build_store(reclaim_claim, self.context.i64_type().const_zero())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         // First — initialize the synthetic `__arena` field
         // (struct slot 0) with a fresh arena. Allocations made
         // on behalf of this locus during the rest of
@@ -5059,7 +5067,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // it). Step over the spine then, as the owner cascades do
             // (GH #1036): its dissolve() ran once and its arena is gone.
             let eager_skip_bb = self.emit_reclaimed_child_skip(
-                &info, self_ptr, locus_name, "self", "eager",
+                &info, self_ptr, locus_name, "self", "eager", false,
             )?;
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()
@@ -6209,6 +6217,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Ok(())
         };
         let null = ptr_t.const_null();
+        store_ptr_field(self, child_info.reclaim_claimed_field_idx, i64_t.const_zero().into(), "xpool.reclaim.claim.set")?;
         store_ptr_field(self, child_info.arena_field_idx, child_arena.into(), "xpool.arena.set")?;
         store_ptr_field(self, child_info.owner_self_field_idx, a_self.into(), "xpool.owner.set")?;
         store_ptr_field(self, child_info.parent_self_field_idx, null.into(), "xpool.parent.set")?;

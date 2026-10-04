@@ -22,6 +22,7 @@ race, use-after-free, or assertion failure in any model fails the build.
 | Cooperative pool queue | the same ring and wake on the cooperative pool |
 | Bus queue | the cooperative-pool conditional lock, and a grow racing a drain |
 | Arena subregion lock | the parent's child-slot freelist |
+| Failure cascade | a failure held while its owner is constructed, delivered at settle with the child and the violation kept alive until the handler returns; a queued run's cancel against the worker starting it; a started run holding its child until it returns, against a reclaim no join orders |
 
 Each model carries a **negative control**: delete the synchronization
 and GenMC reports the exact bug the real code prevents — proof the
@@ -49,6 +50,16 @@ That has consequences worth stating rather than burying:
   release-acquire model — the one that corresponds to the runtime's
   actual orderings. That is a gap in the model-level justification, not
   a demonstrated bug in the runtime, and it is open.
+- The models check safety, not liveness: GenMC has no condition
+  variables. The failure-cascade model says so in its header: that a
+  waiter is always woken, and that a parent waiting for a child never
+  deadlocks with a child waiting for its parent, rests on the
+  deadline and lifecycle-matrix tests, not on the model. So does the
+  reclaim's wait for a started run ending; the model checks only that
+  the child's memory outlives the run. The handler-boundary release
+  queue and retention of an owner's descendant storage are exercised
+  by deadline, trace-order and ASan tests; they are not represented by
+  that model.
 - The CI gate is conditional: a prose-only diff skips the model
   checker, on the reasoning that no sentence in a `.md` alters a memory
   ordering.
@@ -70,6 +81,14 @@ introduce a data race in the first place:
   from the wrong pool's thread is a compile error.
 - **Vertical-only failure.** No lateral references between siblings; a
   failure travels up to a parent's `on_failure`, never sideways.
+
+The lifecycle trace tests use the compiler's derived plan to check
+retention as well as event order. For example, replacing a child whose
+run has started on another pool must keep its memory until the run
+ends. That rule permits drain and dissolve to overlap the run; it does
+not require the run to finish before teardown starts. The tests also
+distinguish an immediate teardown from a subscriber's teardown at scope
+exit.
 
 ## Checked at build time
 

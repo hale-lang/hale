@@ -92,6 +92,7 @@ pub(crate) trait LocusDissolve<'ctx> {
         locus_name: &str,
         fname: &str,
         tag: &str,
+        owns_claim: bool,
     ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError>;
     fn emit_birth_check(
         &mut self,
@@ -356,6 +357,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
+        let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // F.31 Phase 3b: when this locus IS the main locus, skip
         // the cascade for fields whose placement is `pinned`. The
@@ -468,7 +470,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // GH #1036: step over a child that was already reclaimed
             // (see `emit_reclaimed_child_skip`).
             let skip_bb = self.emit_reclaimed_child_skip(
-                &inner_info, inner_ptr, locus_name, &fname, "cascade",
+                &inner_info, inner_ptr, locus_name, &fname, "cascade", false,
             )?;
             // __dissolve_closures → dissolve → arena_destroy. The
             // drain step ran earlier via `emit_locus_field_drains`
@@ -533,7 +535,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // Inner's arena_destroy. Even when inner allocates
             // nothing in its arena, the slot was created at birth
             // and must be destroyed for symmetry.
-            self.emit_locus_arena_destroy(&inner_info, inner_ptr, &inner_name)?;
+            self.emit_locus_arena_destroy_owned(&inner_info, inner_ptr, &inner_name, Some(self_ptr))?;
             self.builder
                 .build_unconditional_branch(skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -548,6 +550,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 self.builder.position_at_end(after_bb);
             }
         }
+        self.emit_reclaim_scope_leave(retain)?;
         Ok(())
     }
 
@@ -795,13 +798,12 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         } else {
             held
         };
-        let reclaim_ty =
-            self.context.void_type().fn_type(&[ptr_t.into()], false);
+        let request = self.module.get_function("lotus_reclaim_request")
+            .expect("reclaim request declared");
         self.builder
-            .build_indirect_call(
-                reclaim_ty,
-                reclaim_fp,
-                &[child.into()],
+            .build_call(
+                request,
+                &[child.into(), self_ptr.into(), reclaim_fp.into()],
                 &format!("{}.{}.contract.reclaim.call", locus_name, fname),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -830,9 +832,10 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
     /// dissolve walk used to, descended into the freed grandchildren
     /// first and re-ran the child's `drain()` / `dissolve()`.
     ///
-    /// Emits `null ptr or null latch -> skip`, leaves the builder in
-    /// the live block, and returns the skip block: the caller emits
-    /// the per-child body, branches to it, and continues there.
+    /// Emits `null ptr, pending claim, or null latch -> skip`. Only
+    /// the winning shared spine's own storage step bypasses its claim.
+    /// Leaves the builder in the live block and returns the skip block:
+    /// the caller emits the per-child body and continues there.
     fn emit_reclaimed_child_skip(
         &mut self,
         inner_info: &LocusInfo<'ctx>,
@@ -840,6 +843,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         locus_name: &str,
         fname: &str,
         tag: &str,
+        owns_claim: bool,
     ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let func = self
@@ -863,6 +867,25 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_conditional_branch(is_null, skip_bb, nonnull_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(nonnull_bb);
+        // The winning shared spine must finish its own storage release.
+        // A null claim pointer bypasses only that claim, preserving the
+        // current thread's queued/active retirement checks.
+        let claim_ptr = if owns_claim {
+            ptr_t.const_null()
+        } else {
+            self.builder.build_struct_gep(
+                inner_info.struct_ty, inner_ptr, inner_info.reclaim_claimed_field_idx, &name("claim.ptr"),
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+        let pending = self.builder.build_call(pending, &[inner_ptr.into(), claim_ptr.into()], "reclaim.pending")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.try_as_basic_value().left().expect("i64").into_int_value();
+        let pending = self.builder.build_int_compare(inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "reclaim.retired")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let unclaimed_bb = self.context.append_basic_block(func, &name("unclaimed"));
+        self.builder.build_conditional_branch(pending, skip_bb, unclaimed_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(unclaimed_bb);
         let latch_ptr = self
             .builder
             .build_struct_gep(inner_info.struct_ty, inner_ptr, 0, &name("latch.ptr"))
@@ -988,7 +1011,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // the dissolve half does — its `drain()` already ran, and
             // its fields lived in its freed arena.
             let skip_bb = self.emit_reclaimed_child_skip(
-                &inner_info, inner_ptr, locus_name, &fname, "drain",
+                &inner_info, inner_ptr, locus_name, &fname, "drain", false,
             )?;
             if descend {
                 self.locus_cascade_path.push(locus_name.to_string());
@@ -1267,6 +1290,63 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
+        self.emit_locus_arena_destroy_owned(info, self_ptr, locus_name, None)
+    }
+
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    pub(crate) fn emit_reclaim_scope_enter(
+        &mut self,
+        owner: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let f = self
+            .module
+            .get_function("lotus_reclaim_scope_enter")
+            .expect("scope enter declared");
+        Ok(self
+            .builder
+            .build_call(f, &[owner.into()], "reclaim.scope")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("ptr")
+            .into_pointer_value())
+    }
+
+    pub(crate) fn emit_reclaim_scope_leave(
+        &mut self,
+        scope: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let f = self
+            .module
+            .get_function("lotus_reclaim_scope_leave")
+            .expect("scope leave declared");
+        self.builder
+            .build_call(f, &[scope.into()], "")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Logical teardown stays at the replacement/cascade site. Only the
+    /// physical release may cross a main-queue handler boundary: a started
+    /// run can need a later handler before giving up its storage hold.
+    fn emit_locus_arena_destroy_owned(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        owner: Option<PointerValue<'ctx>>,
+    ) -> Result<(), CodegenError> {
+        // Only the exact instance claimed by this generated reclaim
+        // function may bypass its claim. Recursive field releases still
+        // check the child's claim independently.
+        let owns_claim = self.current_fn.is_some()
+            && self.current_fn == self.reclaim_fns.get(locus_name).copied()
+            && self.current_self.as_ref().is_some_and(|s| s.self_ptr == self_ptr);
+        let skip = self.emit_reclaimed_child_skip(
+            info, self_ptr, locus_name, "storage", "release", owns_claim,
+        )?;
         // iris P4: LOCUS_DISSOLVE probe at THE teardown
         // chokepoint (every dissolve path funnels here). No-op
         // unless LOTUS_OBS=1.
@@ -1311,6 +1391,228 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(obs_cont_bb);
         }
+        if !info.arena_elidable {
+            // 2026-06-01: reclaim this locus's accept'd children BEFORE
+            // tearing down its arena (their subregions live inside it).
+            // This is the single teardown chokepoint every dissolve path
+            // funnels through — graceful-shutdown frame, parent
+            // field-dissolve, a reclaimed flow/terminated child, and the
+            // ephemeral scope-exit — so the cascade is uniform and
+            // recursive (a reclaimed child reclaims its own grandchildren)
+            // without duplicating the walk at each site. No-op unless this
+            // locus both `accept`s and tracks a children buffer; idempotent
+            // (each child's __reclaim is latched), and flow children that
+            // self-reclaimed mid-life already removed themselves from the
+            // tracker, so they aren't re-touched here.
+            self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
+            // Deregister from the bus router BEFORE freeing the arena.
+            // Without this step, a stale entry in the C-runtime entries
+            // vec would point self_ptr at memory whose arena is about
+            // to be freed; a subsequent `<-` to one of this locus's
+            // subscriptions would have dispatch read `*(arena_t **)
+            // self_ptr` after free, then memcpy a payload into freed
+            // chunks. Today's programs don't publish post-dissolve,
+            // but the invariant is fragile — close it here using the
+            // same null-subject-sentinel mechanism `quarantine(c)`
+            // already uses (m41b / m45-followup-2). No-op when the
+            // program has no subscribes.
+            if self.bus_state.is_some() {
+                let unsub_fn = self
+                    .module
+                    .get_function("lotus_bus_quarantine_self")
+                    .expect("lotus_bus_quarantine_self declared");
+                self.builder
+                    .build_call(
+                        unsub_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.bus.deregister.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+        self.emit_drain_observer_count(locus_name, -1)?;
+        self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
+        let cancel = self
+            .module
+            .get_function("lotus_run_cancel_only")
+            .expect("cancel declared");
+        self.builder
+            .build_call(cancel, &[self_ptr.into()], "")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let release = self.locus_storage_release_fn(info, locus_name)?;
+        if let Some(owner) = owner {
+            let request = self
+                .module
+                .get_function("lotus_reclaim_request")
+                .expect("request declared");
+            self.builder
+                .build_call(
+                    request,
+                    &[
+                        self_ptr.into(),
+                        owner.into(),
+                        release.as_global_value().as_pointer_value().into(),
+                    ],
+                    "",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        } else {
+            self.builder
+                .build_call(release, &[self_ptr.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder
+            .build_unconditional_branch(skip)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(skip);
+        Ok(())
+    }
+
+    fn locus_storage_release_fn(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_name: &str,
+    ) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
+        let name = format!("__release_storage_{}_{}", locus_name, self.lc_spine);
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let f = self.module.add_function(
+            &name,
+            self.context.void_type().fn_type(&[ptr_t.into()], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        let saved_block = self.builder.get_insert_block();
+        let saved_fn = self.current_fn.replace(f);
+        let saved_di_loc = self.di_current_loc;
+        let saved_di_pos = self.di_current_pos;
+        let entry = self.context.append_basic_block(f, "entry");
+        let live = self.context.append_basic_block(f, "live");
+        let release = self.context.append_basic_block(f, "release");
+        let done = self.context.append_basic_block(f, "done");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let child = f.get_first_param().expect("self").into_pointer_value();
+        let arena_slot = self
+            .builder
+            .build_struct_gep(info.struct_ty, child, info.arena_field_idx, "arena.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let arena = self
+            .builder
+            .build_load(ptr_t, arena_slot, "arena")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let dead = self
+            .builder
+            .build_is_null(arena, "dead")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(dead, done, live)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(live);
+        let owner_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                child,
+                info.owner_self_field_idx,
+                "owner.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let owner = self
+            .builder
+            .build_load(ptr_t, owner_slot, "owner")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let defer = self
+            .module
+            .get_function("lotus_reclaim_defer")
+            .expect("defer declared");
+        let deferred = self
+            .builder
+            .build_call(
+                defer,
+                &[
+                    child.into(),
+                    owner.into(),
+                    f.as_global_value().as_pointer_value().into(),
+                ],
+                "deferred",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("i64")
+            .into_int_value();
+        let deferred = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                deferred,
+                i64_t.const_zero(),
+                "pending",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(deferred, done, release)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(release);
+        let enter = self
+            .module
+            .get_function("lotus_reclaim_release_enter")
+            .expect("release enter declared");
+        let active = self
+            .builder
+            .build_call(enter, &[child.into(), owner.into()], "release.active")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("ptr");
+        // The wait precedes tracker, form, recognition-pool and arena
+        // destruction. A replaced child also keeps its owner's storage.
+        self.emit_run_cancel_queued(child, locus_name)?;
+        let flush = self
+            .module
+            .get_function("lotus_reclaim_flush_owned")
+            .expect("flush declared");
+        self.builder
+            .build_call(flush, &[child.into()], "")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_locus_storage_release_now(info, child, locus_name)?;
+        let leave = self
+            .module
+            .get_function("lotus_reclaim_release_leave")
+            .expect("release leave declared");
+        self.builder
+            .build_call(leave, &[active.into()], "")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(done)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(done);
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.current_fn = saved_fn;
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        self.di_current_loc = saved_di_loc;
+        self.di_current_pos = saved_di_pos;
+        match saved_di_loc {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
+        }
+        Ok(f)
+    }
+
+    fn emit_locus_storage_release_now(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
         // Arena-elision counterpart: when `__arena` was pointed
         // at the caller's arena at instantiation (see
         // the locus's arena elision row + the matching branch in
@@ -1374,12 +1676,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 .build_conditional_branch(already, after_bb, do_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(do_bb);
-            self.emit_drain_observer_count(locus_name, -1)?;
             self.builder
                 .build_store(arena_field_ptr, ptr_t.const_null())
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
-            self.emit_run_cancel_queued(self_ptr, locus_name)?;
             let owner_self_slot = self
                 .builder
                 .build_struct_gep(
@@ -1423,44 +1722,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             self.builder.position_at_end(after_bb);
             return Ok(());
         }
-        // 2026-06-01: reclaim this locus's accept'd children BEFORE
-        // tearing down its arena (their subregions live inside it).
-        // This is the single teardown chokepoint every dissolve path
-        // funnels through — graceful-shutdown frame, parent
-        // field-dissolve, a reclaimed flow/terminated child, and the
-        // ephemeral scope-exit — so the cascade is uniform and
-        // recursive (a reclaimed child reclaims its own grandchildren)
-        // without duplicating the walk at each site. No-op unless this
-        // locus both `accept`s and tracks a children buffer; idempotent
-        // (each child's __reclaim is latched), and flow children that
-        // self-reclaimed mid-life already removed themselves from the
-        // tracker, so they aren't re-touched here.
-        self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        // Deregister from the bus router BEFORE freeing the arena.
-        // Without this step, a stale entry in the C-runtime entries
-        // vec would point self_ptr at memory whose arena is about
-        // to be freed; a subsequent `<-` to one of this locus's
-        // subscriptions would have dispatch read `*(arena_t **)
-        // self_ptr` after free, then memcpy a payload into freed
-        // chunks. Today's programs don't publish post-dissolve,
-        // but the invariant is fragile — close it here using the
-        // same null-subject-sentinel mechanism `quarantine(c)`
-        // already uses (m41b / m45-followup-2). No-op when the
-        // program has no subscribes.
-        if self.bus_state.is_some() {
-            let unsub_fn = self
-                .module
-                .get_function("lotus_bus_quarantine_self")
-                .expect("lotus_bus_quarantine_self declared");
-            self.builder
-                .build_call(
-                    unsub_fn,
-                    &[self_ptr.into()],
-                    &format!("{}.bus.deregister.call", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        }
         // 2026-05-29: free the growable accept'd-children tracker
         // buffer (heap-allocated by lotus_children_push, separate
         // from the arena). NULL-safe in the runtime, so a parent
@@ -1843,16 +2105,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_conditional_branch(arena_is_null, after_bb, do_destroy_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(do_destroy_bb);
-        // GH #1077: past the latch, once per instance — one drain
-        // observer fewer.
-        self.emit_drain_observer_count(locus_name, -1)?;
-        // The trace's Reclaim is the arena's release past the latch:
-        // exactly once per instance (decision line 14). It begins by
-        // canceling the runs still queued for this instance (decision
-        // line 19), before anything of it is released.
-        self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
-        self.emit_run_cancel_queued(self_ptr, locus_name)?;
-
         let is_zero = self
             .builder
             .build_int_compare(
@@ -1998,9 +2250,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
-}
-
-impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Decision line 19: the Reclaim bracket begins by canceling the
     /// runs still queued for the instance, on whatever pool, before its
     /// arena or struct is released, so a queued run finds the child
