@@ -32,9 +32,10 @@
 //! program (which accepting ancestor owns each method-body birth, and
 //! which locus accepts which child type) and the bubble plans lowering
 //! projects from it (F.40 phase 1.3), built here once, the
-//! `on_failure` handler rows (F.40 phase 1.4), and the bus graph over
+//! `on_failure` handler rows (F.40 phase 1.4), and the bus graph of
 //! the same program with the dispatch plan lowering reads (F.40
-//! phase 1.5).
+//! phase 1.5): not built here, but the snapshot's graph's rows read
+//! through the view's correspondence (F.40 phase 3, C5).
 //!
 //! After the rewrites, the stdlib is appended and the merged program
 //! minted before the pre-pass, with the bundle's source map, so every
@@ -125,10 +126,14 @@ pub struct LoweringView {
     /// Whether the program can ever have a bus cell in flight, so
     /// lowering can elide every drain (`crate::bus_inert`).
     pub bus_inert: bool,
-    /// The message graph over `merged`, keyed by wire subject (the
+    /// The message graph of `merged`, keyed by wire subject (the
     /// topic rewrite has run), with its devirtualization gates (F.40
     /// phase 1.5), and on each subject the sends `intra_locus` rewrote
-    /// and the topic references `topic_rewrites` turned into it.
+    /// and the topic references `topic_rewrites` turned into it: the
+    /// snapshot's rows through the correspondence, then the stdlib's
+    /// (`bus_graph::lowering_graph`; F.40 phase 3, C5). Its subjects and
+    /// rows only: the checker's wire rows, holes, declarations and edges
+    /// are the snapshot's graph's.
     pub bus: BusGraph,
     /// Lowering's dispatch plan, derived from `bus`'s gates with an
     /// empty domain map: the flavor each subject is lowered to.
@@ -318,7 +323,10 @@ pub fn rewrite_intra_locus(
 /// bare program is the host's.
 /// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
 /// The program is minted first, as an entry point's load mints it, and
-/// those identities are the checked ones the view corresponds to.
+/// those identities are the checked ones the view corresponds to. A bare
+/// program has no snapshot to hand the view its bus graph, so the graph
+/// is built here over the minted program, by the snapshot's own producer
+/// (`bus_graph::build_bus_graph`), with `bindings` and `placement`.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -334,6 +342,11 @@ pub fn resolve_program(
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     let mut minted = program.clone();
     let checked = crate::snapshot::mint([("program", &mut minted)], sources);
+    let bus = {
+        let bundle = merged_bundle(&minted, import_renames, &checked);
+        let (top, _diags) = crate::resolve::build_top_scope(&bundle);
+        crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement)
+    };
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
         &checked,
@@ -345,6 +358,7 @@ pub fn resolve_program(
         bindings,
         placement,
         typed,
+        &bus,
         host,
     )
 }
@@ -382,10 +396,14 @@ pub fn resolve_program(
 /// gets its written discipline. `typed` is the snapshot's typed-body
 /// table (`Snapshot::demand_typed_bodies`); a caller with none passes
 /// `&TypedBodies::default()`, and lowering refuses every site that reads
-/// a row. `class` is the effective target's column of the capability
-/// matrix, the cells the view hands lowering. The error is the message codegen
+/// a row. `bus` is the snapshot's bus graph (`Snapshot::demand_bus_graph`),
+/// over the checked programs: lowering's graph is its rows, read through
+/// the correspondence (`bus_graph::lowering_graph`). `class` is the
+/// effective target's column of the capability matrix, the cells the
+/// view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
-/// not parse, or a locus-producing node the mint left unnumbered.
+/// not parse, a locus-producing node the mint left unnumbered, or a
+/// site the correspondence cannot place.
 pub fn resolve_rewritten(
     stage: &IntraLocusStage,
     checked: &Snapshot,
@@ -397,6 +415,7 @@ pub fn resolve_rewritten(
     bindings: &crate::binding_rows::BindingRows,
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
+    bus: &BusGraph,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
@@ -529,12 +548,14 @@ pub fn resolve_rewritten(
     // so nothing keyed by program name moves; the scope's diagnostics
     // are the checker's to report, not this step's.
     //
-    // F.40 phase 1.5: and the bus graph and lowering's dispatch plan,
-    // over the same bundle and scope. The topic desugars above have
-    // run, so every bus-block subject is its wire literal — the string
-    // the register and publish sites see — and the stdlib is merged,
-    // so the gates are sound against its wildcard subscribers
-    // (`log.**`). A bundle with no entry point is open world: every
+    // F.40 phase 1.5: and the bus graph and lowering's dispatch plan.
+    // The graph is the snapshot's rows read through the correspondence
+    // (F.40 phase 3, C5, `bus_graph::lowering_graph`): each user site
+    // keyed by the wire literal the topic rewrite gave it — the string
+    // the register and publish sites see — and after them the stdlib's,
+    // the one part derived here, over the merged program's tail and
+    // scope, so the gates are sound against its wildcard subscribers
+    // (`log.**`). A program with no entry point is open world: every
     // subject is ineligible, and the plan is all dynamic.
     let (ownership, bubble, bus, plan, top) = {
         let bundle = merged_bundle(&merged, import_renames, &snapshot);
@@ -543,7 +564,8 @@ pub fn resolve_rewritten(
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement);
         let bubble = graph.bubble_plans();
-        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement);
+        let stdlib = crate::bus_graph::stdlib_rows(&bundle, &top, &merged.items[user_items..]);
+        let mut bus = crate::bus_graph::lowering_graph(bus, stdlib, &topic_rewrites, &correspondence, placement)?;
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
         // on its subject, which the rewrite named by topic and the

@@ -1724,6 +1724,8 @@ impl Snapshot {
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+                // Lowering's bus graph is this one's rows (C5).
+                let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
                 // target with no column (Windows) never reaches a snapshot.
@@ -1746,6 +1748,7 @@ impl Snapshot {
                     bindings,
                     placement,
                     typed,
+                    bus,
                     class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;

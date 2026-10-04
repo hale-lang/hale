@@ -38,21 +38,6 @@ use crate::topic_identity::TopicRows;
 
 // === The walk =====================================================
 
-/// One end of the bus graph: the wildcard patterns seen on that end,
-/// which the gate matches against each subject.
-#[derive(Default)]
-pub(crate) struct BusEnd {
-    pub(crate) wildcards: Vec<String>,
-}
-
-impl BusEnd {
-    fn record(&mut self, key: String) {
-        if key.contains("**") {
-            self.wildcards.push(key);
-        }
-    }
-}
-
 /// A single publish site, captured during the walk with enough
 /// context (owning locus type, payload-resolution key) to build a
 /// `PublisherSite` later.
@@ -61,6 +46,7 @@ pub(crate) struct RawPub {
     pub(crate) key: String,
     pub(crate) subject: Subject,
     pub(crate) span: Span,
+    pub(crate) id: NodeId,
 }
 
 /// A single subscribe site. `qualified` flags the cross-seed
@@ -73,6 +59,7 @@ pub(crate) struct RawSub {
     pub(crate) key: String,
     pub(crate) subject: Subject,
     pub(crate) span: Span,
+    pub(crate) id: NodeId,
     pub(crate) qualified: bool,
     pub(crate) keyed: bool,
 }
@@ -82,8 +69,6 @@ pub(crate) struct RawSub {
 /// each site's canonical subject, from which the graph's wire rows are
 /// built.
 pub(crate) struct BusWalk {
-    pub(crate) publishers: BusEnd,
-    pub(crate) subscribers: BusEnd,
     pub(crate) bound: BTreeSet<String>,
     /// The wire subjects of the bound topics (the rows' `bound`).
     pub(crate) bound_wires: BTreeSet<String>,
@@ -98,10 +83,11 @@ pub(crate) struct BusWalk {
 
 /// Walk every locus's `bus { }` + `bindings { }` blocks once,
 /// collecting the publisher/subscriber ends AND the per-site detail,
-/// each site's subject resolved through the topic rows. The one walk
-/// [`build_bus_graph`] reads — do not duplicate it.
-pub(crate) fn collect_bus_walk(
-    bundle: &Bundle<'_>,
+/// each site's subject resolved through the topic rows, over each
+/// program's items. The one walk [`build_bus_graph`] and
+/// [`stdlib_rows`] read — do not duplicate it.
+pub(crate) fn collect_bus_walk<'p>(
+    programs: impl IntoIterator<Item = (&'p str, &'p [TopDecl])>,
     topics: &TopicRows,
     bindings: &BindingRows,
 ) -> BusWalk {
@@ -118,8 +104,6 @@ pub(crate) fn collect_bus_walk(
         })
         .collect();
     let mut w = BusWalk {
-        publishers: BusEnd::default(),
-        subscribers: BusEnd::default(),
         bound: bindings.bound_subjects(),
         bound_wires,
         cross_seed: BTreeSet::new(),
@@ -142,12 +126,11 @@ pub(crate) fn collect_bus_walk(
                             LocusMember::Bus(bb) => {
                                 for bm in &bb.members {
                                     match bm {
-                                        BusMember::Publish { subject, span, .. } => {
+                                        BusMember::Publish { subject, span, id, .. } => {
                                             let key = subject.canonical().to_string();
                                             if matches!(subject, BusSubject::QualifiedTopic(_)) {
                                                 w.cross_seed.insert(key.clone());
                                             }
-                                            w.publishers.record(key.clone());
                                             let subject = Subject::of(subject, topics);
                                             if let Some(d) = w.decls.last_mut() {
                                                 d.publishes.push(subject.clone());
@@ -157,6 +140,7 @@ pub(crate) fn collect_bus_walk(
                                                 key,
                                                 subject,
                                                 span: *span,
+                                                id: *id,
                                             });
                                         }
                                         BusMember::Subscribe {
@@ -164,6 +148,7 @@ pub(crate) fn collect_bus_walk(
                                             handler,
                                             key_filter,
                                             span,
+                                            id,
                                             ..
                                         } => {
                                             let key = subject.canonical().to_string();
@@ -174,7 +159,6 @@ pub(crate) fn collect_bus_walk(
                                             if qualified {
                                                 w.cross_seed.insert(key.clone());
                                             }
-                                            w.subscribers.record(key.clone());
                                             let subject = Subject::of(subject, topics);
                                             if let Some(d) = w.decls.last_mut() {
                                                 d.subscribes.push((subject.clone(), handler.name.clone()));
@@ -185,6 +169,7 @@ pub(crate) fn collect_bus_walk(
                                                 key,
                                                 subject,
                                                 span: *span,
+                                                id: *id,
                                                 qualified,
                                                 keyed: key_filter.is_some(),
                                             });
@@ -206,9 +191,9 @@ pub(crate) fn collect_bus_walk(
             at.path.pop();
         }
     }
-    for (name, program) in &bundle.programs {
-        let mut at = LocusDeclRow { program: name.clone(), ..LocusDeclRow::default() };
-        walk(&program.items, &mut w, topics, &mut at);
+    for (name, items) in programs {
+        let mut at = LocusDeclRow { program: name.to_string(), ..LocusDeclRow::default() };
+        walk(items, &mut w, topics, &mut at);
     }
     w
 }
@@ -688,6 +673,69 @@ pub struct SubjectInfo {
     pub written_topics: Vec<(hale_syntax::ast::NodeId, String)>,
 }
 
+/// A `publish` site with what the gate reads of it, in the site's own
+/// program: its subject as the graph keys it, its payload and whether
+/// the payload is flat.
+#[derive(Debug, Clone)]
+pub struct PublishRow {
+    /// The `publish` member's identity.
+    pub id: NodeId,
+    pub locus: String,
+    /// The subject as written (`BusSubject::canonical`): a topic's
+    /// name, a literal subject, a qualified path joined with `::`.
+    pub key: String,
+    /// The payload's type name, `"?"` when it does not resolve.
+    pub payload: String,
+    /// The payload resolves and is flat ([`payload_is_flat`]).
+    pub flat: bool,
+    pub span: Span,
+}
+
+/// A `subscribe` site with what the gate reads of it, in the site's own
+/// program.
+#[derive(Debug, Clone)]
+pub struct SubscribeRow {
+    /// The `subscribe` member's identity.
+    pub id: NodeId,
+    pub locus: String,
+    pub handler: String,
+    /// The subject as written, as [`PublishRow::key`].
+    pub key: String,
+    pub payload: String,
+    pub flat: bool,
+    /// The handler is the locus's own `fn` and provably quiet
+    /// ([`handler_is_quiet`]): the direct-call gate's second leg.
+    pub quiet: bool,
+    /// A cross-seed qualified subject (`alias::Topic`).
+    pub qualified: bool,
+    /// A Phase-3 `where key == …` routing filter.
+    pub keyed: bool,
+    pub span: Span,
+}
+
+/// The sites of a graph, each with the facts its program answers for it,
+/// and the program-wide facts the gate reads: everything the gate
+/// decides a subject from except the placement table, which labels a
+/// locus when the subjects are assembled ([`BusRows::subjects`]). Rows
+/// over two programs concatenate into rows over both (F.40 phase 3,
+/// C5): lowering's graph is the snapshot's rows, rekeyed by the topic
+/// rewrite, followed by the stdlib's ([`lowering_graph`]).
+#[derive(Debug, Clone, Default)]
+pub struct BusRows {
+    /// The program has an entry point (a top-level `main locus` or
+    /// `fn main`): its bus graph is complete.
+    pub closed_world: bool,
+    /// The subjects a `bindings { }` entry binds, at both grains (the
+    /// topic name and its wire subject).
+    pub bound: BTreeSet<String>,
+    /// The subjects a cross-seed qualified path names.
+    pub cross_seed: BTreeSet<String>,
+    /// Every `publish` site, in walk order.
+    pub publishes: Vec<PublishRow>,
+    /// Every `subscribe` site, in walk order.
+    pub subscribes: Vec<SubscribeRow>,
+}
+
 /// The whole-bundle bus graph. `subjects` is keyed by
 /// `BusSubject::canonical()` (the gates, the model, hale/busGraph);
 /// `wires` by the canonical subject, the wire, which the checker's bus
@@ -695,6 +743,8 @@ pub struct SubjectInfo {
 #[derive(Debug, Clone, Default)]
 pub struct BusGraph {
     pub subjects: BTreeMap<String, SubjectInfo>,
+    /// The sites `subjects` is assembled from ([`BusRows::subjects`]).
+    pub rows: BusRows,
     /// Every wire subject a site names or an unbroken topic carries.
     pub wires: BTreeMap<String, WireRow>,
     /// The sites whose subject the graph cannot resolve, in walk order.
@@ -804,17 +854,29 @@ impl BusGraph {
     }
 }
 
-/// Build the authoritative [`BusGraph`] for a bundle. Run this
-/// AFTER typecheck so `top` carries resolved payload types.
+/// Build the authoritative [`BusGraph`] for a bundle: the snapshot's
+/// `bus_graph` family (`Snapshot::demand_bus_graph`), and the one
+/// producer a bundle no snapshot holds builds through. Run this AFTER
+/// typecheck so `top` carries resolved payload types.
 ///
-/// Reads the one walk, [`collect_bus_walk`]: joins per-site detail
-/// (locus, handler, payload, placement), applies the eligibility gate,
-/// and builds the canonical subjects the checker's bus rules read. The
+/// Reads the one walk, [`collect_bus_walk`]: each site's row, with what
+/// its program answers for it ([`BusRows`]), the subjects assembled from
+/// the rows with the placement table's labels ([`BusRows::subjects`]),
+/// and the canonical subjects the checker's bus rules read. The
 /// bound-topic set is the binding rows' projection.
 pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRows, placement: &crate::placement::PlacementTable) -> BusGraph {
-    let walk = collect_bus_walk(bundle, &top.topics, bindings);
+    let programs = bundle.programs.iter().map(|(name, p)| (name.as_str(), p.items.as_slice()));
+    let walk = collect_bus_walk(programs, &top.topics, bindings);
     let (wires, holes) = wire_rows(&walk, &top.topics);
+    let rows = bus_rows(bundle, top, &walk);
+    let subjects = rows.subjects(placement);
+    BusGraph { subjects, rows, wires, holes, decls: walk.decls, edges: walk.edges }
+}
 
+/// The rows of a walk: each site with its payload, its flatness and
+/// (a subscription's) whether its handler is quiet, as the site's own
+/// program answers them.
+fn bus_rows(bundle: &Bundle<'_>, top: &TopScope, walk: &BusWalk) -> BusRows {
     // Closed-world gate input (DEVIRT-ONLY notion): a complete,
     // closed-world program is one with an ENTRY POINT — a bare
     // top-level `fn main` free function OR a `main locus`. Either
@@ -835,155 +897,253 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRo
                 || matches!(i, TopDecl::Fn(f) if f.name.name == "main")
         })
     });
-
-    let placements = type_placements(placement);
-
-    // Gather every subject that appears on either end.
-    let mut keys: BTreeSet<String> = BTreeSet::new();
-    for p in &walk.pub_sites {
-        keys.insert(p.key.clone());
-    }
-    for s in &walk.sub_sites {
-        keys.insert(s.key.clone());
-    }
-
-    let mut subjects: BTreeMap<String, SubjectInfo> = BTreeMap::new();
-    for key in keys {
-        let publishers: Vec<PublisherSite> = walk
+    // The payload's flatness, over the resolved type the site names.
+    let flat = |locus: &str, key: &str| {
+        resolve_payload_ty(top, locus, key).is_some_and(|t| payload_is_flat(bundle, top, t))
+    };
+    BusRows {
+        closed_world: has_entry_point,
+        bound: walk.bound.clone(),
+        cross_seed: walk.cross_seed.clone(),
+        publishes: walk
             .pub_sites
             .iter()
-            .filter(|p| p.key == key)
-            .map(|p| PublisherSite {
+            .map(|p| PublishRow {
+                id: p.id,
                 locus: p.locus.clone(),
-                payload: resolve_payload(top, &p.locus, &key),
+                key: p.key.clone(),
+                payload: resolve_payload(top, &p.locus, &p.key),
+                flat: flat(&p.locus, &p.key),
                 span: p.span,
             })
-            .collect();
-        let subscribers: Vec<SubscriberSite> = walk
+            .collect(),
+        subscribes: walk
             .sub_sites
             .iter()
-            .filter(|s| s.key == key)
-            .map(|s| SubscriberSite {
+            .map(|s| SubscribeRow {
+                id: s.id,
                 locus: s.locus.clone(),
                 handler: s.handler.clone(),
-                placement: placements
-                    .get(&s.locus)
-                    .cloned()
-                    .unwrap_or(Placement::SameThread),
-                payload: resolve_payload(top, &s.locus, &key),
+                key: s.key.clone(),
+                payload: resolve_payload(top, &s.locus, &s.key),
+                flat: flat(&s.locus, &s.key),
+                quiet: find_handler_fn(bundle, &s.locus, &s.handler).map(handler_is_quiet).unwrap_or(false),
+                qualified: s.qualified,
+                keyed: s.keyed,
                 span: s.span,
             })
-            .collect();
-
-        let reason = classify(&key, &walk, has_entry_point);
-        let eligible = reason.is_none();
-        // Direct-call gate (slice-2). STRONGER than `eligible`:
-        // additionally every subscriber must be same-thread AND its
-        // handler provably quiet (the flat-payload leg is ANDed in at
-        // the codegen publish site). Default-bail: a missing handler
-        // body or any unmodeled placement/effect ⟹ not direct.
-        //
-        // GH #253 follow-up (caught by the devirt differential on
-        // corpus fixture 72): every PUBLISHER must be same-thread
-        // too. A direct call executes the handler on the PUBLISHING
-        // thread — a pinned (or pooled) publisher would run a
-        // same-thread subscriber's handler off-main, and two such
-        // publishers run it CONCURRENTLY: a `self.seen + 1`
-        // read-modify-write loses updates (observed as a rare
-        // saw-1-of-2 under CI load). Off-thread publishers must
-        // stay on the enqueue path, which serializes dispatch on
-        // the draining thread.
-        let direct_call_eligible = eligible
-            && !subscribers.is_empty()
-            && publishers.iter().all(|p| {
-                placements
-                    .get(&p.locus)
-                    .cloned()
-                    .unwrap_or(Placement::SameThread)
-                    == Placement::SameThread
-            })
-            && subscribers.iter().all(|s| {
-                s.placement == Placement::SameThread
-                    && find_handler_fn(bundle, &s.locus, &s.handler)
-                        .map(handler_is_quiet)
-                        .unwrap_or(false)
-            });
-        // The third leg: the payload's flatness, over the resolved type
-        // each site names (the publishers', else the subscribers').
-        let site_tys: Vec<Option<&crate::ty::Ty>> = if publishers.is_empty() {
-            subscribers.iter().map(|s| resolve_payload_ty(top, &s.locus, &key)).collect()
-        } else {
-            publishers.iter().map(|p| resolve_payload_ty(top, &p.locus, &key)).collect()
-        };
-        let payload_flat =
-            !site_tys.is_empty() && site_tys.iter().all(|t| t.is_some_and(|t| payload_is_flat(bundle, top, t)));
-        subjects.insert(
-            key,
-            SubjectInfo {
-                publishers,
-                subscribers,
-                eligible,
-                ineligible_reason: reason,
-                direct_call_eligible,
-                payload_flat,
-                direct_sends: Vec::new(),
-                written_topics: Vec::new(),
-            },
-        );
+            .collect(),
     }
-
-    BusGraph { subjects, wires, holes, decls: walk.decls, edges: walk.edges }
 }
 
-/// The soundness-critical gate. Returns `None` when the subject is
-/// statically devirtualizable, else the first failing reason in the
-/// canonical check order. DEFAULTS TO INELIGIBLE: every condition
-/// must be positively cleared.
-fn classify(
-    key: &str,
-    walk: &BusWalk,
-    has_entry_point: bool,
-) -> Option<StaticIneligible> {
-    // 1) Closed-world: the bundle has an entry point (`fn main` or
-    //    a `main locus`), so its bus graph is complete.
-    if !has_entry_point {
-        return Some(StaticIneligible::OpenWorld);
-    }
-    // 2) No transport adapter binding.
-    if walk.bound.contains(key) {
-        return Some(StaticIneligible::TransportBound);
-    }
-    // 3) No wildcard — neither the subject itself nor any pattern
-    //    covering it on either end.
-    if key.contains("**")
-        || walk.publishers.wildcards.iter().any(|p| crate::wildcard_match(p, key))
-        || walk.subscribers.wildcards.iter().any(|p| crate::wildcard_match(p, key))
-    {
-        return Some(StaticIneligible::Wildcard);
-    }
-    // 4) Not referenced cross-seed.
-    if walk.cross_seed.contains(key) {
-        return Some(StaticIneligible::CrossSeed);
-    }
-    // 5) Every subscriber resolves to a concrete local handler:
-    //    a plain `Topic`/literal subject with no routing key. A
-    //    qualified subject or a Phase-3 `where key` filter is not
-    //    a single-call dispatch — ineligible.
-    for s in walk.sub_sites.iter().filter(|s| s.key == key) {
-        if s.qualified {
-            return Some(StaticIneligible::Unanalyzable(format!(
-                "subscriber `{}` on `{}` uses a cross-seed qualified subject",
-                s.handler, key
-            )));
+impl BusRows {
+    /// The subjects the rows assemble into, each with its gate, the
+    /// placement table labelling each site's locus: one per subject a
+    /// site names, keyed as the site writes it.
+    pub fn subjects(&self, placement: &crate::placement::PlacementTable) -> BTreeMap<String, SubjectInfo> {
+        let placements = type_placements(placement);
+        let label = |locus: &str| placements.get(locus).cloned().unwrap_or(Placement::SameThread);
+
+        // Gather every subject that appears on either end.
+        let keys: BTreeSet<&str> = self
+            .publishes
+            .iter()
+            .map(|p| p.key.as_str())
+            .chain(self.subscribes.iter().map(|s| s.key.as_str()))
+            .collect();
+
+        let mut subjects: BTreeMap<String, SubjectInfo> = BTreeMap::new();
+        for key in keys {
+            let pubs: Vec<&PublishRow> = self.publishes.iter().filter(|p| p.key == key).collect();
+            let subs: Vec<&SubscribeRow> = self.subscribes.iter().filter(|s| s.key == key).collect();
+            let publishers: Vec<PublisherSite> = pubs
+                .iter()
+                .map(|p| PublisherSite { locus: p.locus.clone(), payload: p.payload.clone(), span: p.span })
+                .collect();
+            let subscribers: Vec<SubscriberSite> = subs
+                .iter()
+                .map(|s| SubscriberSite {
+                    locus: s.locus.clone(),
+                    handler: s.handler.clone(),
+                    placement: label(&s.locus),
+                    payload: s.payload.clone(),
+                    span: s.span,
+                })
+                .collect();
+
+            let reason = self.classify(key);
+            let eligible = reason.is_none();
+            // Direct-call gate (slice-2). STRONGER than `eligible`:
+            // additionally every subscriber must be same-thread AND its
+            // handler provably quiet (the flat-payload leg is ANDed in at
+            // the codegen publish site). Default-bail: a missing handler
+            // body or any unmodeled placement/effect ⟹ not direct.
+            //
+            // GH #253 follow-up (caught by the devirt differential on
+            // corpus fixture 72): every PUBLISHER must be same-thread
+            // too. A direct call executes the handler on the PUBLISHING
+            // thread — a pinned (or pooled) publisher would run a
+            // same-thread subscriber's handler off-main, and two such
+            // publishers run it CONCURRENTLY: a `self.seen + 1`
+            // read-modify-write loses updates (observed as a rare
+            // saw-1-of-2 under CI load). Off-thread publishers must
+            // stay on the enqueue path, which serializes dispatch on
+            // the draining thread.
+            let direct_call_eligible = eligible
+                && !subscribers.is_empty()
+                && pubs.iter().all(|p| label(&p.locus) == Placement::SameThread)
+                && subscribers.iter().all(|s| s.placement == Placement::SameThread)
+                && subs.iter().all(|s| s.quiet);
+            // The third leg: the payload's flatness at each site that
+            // names its type (the publishers', else the subscribers').
+            let site_flat: Vec<bool> = if pubs.is_empty() {
+                subs.iter().map(|s| s.flat).collect()
+            } else {
+                pubs.iter().map(|p| p.flat).collect()
+            };
+            let payload_flat = !site_flat.is_empty() && site_flat.iter().all(|f| *f);
+            subjects.insert(
+                key.to_string(),
+                SubjectInfo {
+                    publishers,
+                    subscribers,
+                    eligible,
+                    ineligible_reason: reason,
+                    direct_call_eligible,
+                    payload_flat,
+                    direct_sends: Vec::new(),
+                    written_topics: Vec::new(),
+                },
+            );
         }
-        if s.keyed {
-            return Some(StaticIneligible::Unanalyzable(format!(
-                "subscriber `{}` on `{}` carries a Phase-3 routing-key filter",
-                s.handler, key
-            )));
-        }
+        subjects
     }
-    None
+
+    /// The soundness-critical gate. Returns `None` when the subject is
+    /// statically devirtualizable, else the first failing reason in the
+    /// canonical check order. DEFAULTS TO INELIGIBLE: every condition
+    /// must be positively cleared.
+    fn classify(&self, key: &str) -> Option<StaticIneligible> {
+        // 1) Closed-world: the program has an entry point (`fn main` or
+        //    a `main locus`), so its bus graph is complete.
+        if !self.closed_world {
+            return Some(StaticIneligible::OpenWorld);
+        }
+        // 2) No transport adapter binding.
+        if self.bound.contains(key) {
+            return Some(StaticIneligible::TransportBound);
+        }
+        // 3) No wildcard — neither the subject itself nor any pattern
+        //    covering it on either end.
+        let covers = |pattern: &str| pattern.contains("**") && crate::wildcard_match(pattern, key);
+        if key.contains("**")
+            || self.publishes.iter().any(|p| covers(&p.key))
+            || self.subscribes.iter().any(|s| covers(&s.key))
+        {
+            return Some(StaticIneligible::Wildcard);
+        }
+        // 4) Not referenced cross-seed.
+        if self.cross_seed.contains(key) {
+            return Some(StaticIneligible::CrossSeed);
+        }
+        // 5) Every subscriber resolves to a concrete local handler:
+        //    a plain `Topic`/literal subject with no routing key. A
+        //    qualified subject or a Phase-3 `where key` filter is not
+        //    a single-call dispatch — ineligible.
+        for s in self.subscribes.iter().filter(|s| s.key == key) {
+            if s.qualified {
+                return Some(StaticIneligible::Unanalyzable(format!(
+                    "subscriber `{}` on `{}` uses a cross-seed qualified subject",
+                    s.handler, key
+                )));
+            }
+            if s.keyed {
+                return Some(StaticIneligible::Unanalyzable(format!(
+                    "subscriber `{}` on `{}` carries a Phase-3 routing-key filter",
+                    s.handler, key
+                )));
+            }
+        }
+        None
+    }
+}
+
+/// The rows of the stdlib's sites in a merged program: `stdlib` is the
+/// stdlib's items, the tail of the program `bundle` holds, and `top` the
+/// scope over it. The snapshot's families are derived over the checked
+/// programs, which hold no stdlib, so the stdlib's rows are the one part
+/// of lowering's graph the merged program answers itself
+/// ([`lowering_graph`]); each site answers over the whole merged program,
+/// as it did when the graph was built over it. The stdlib has no entry
+/// point and binds nothing.
+pub fn stdlib_rows(bundle: &Bundle<'_>, top: &TopScope, stdlib: &[TopDecl]) -> BusRows {
+    let walk = collect_bus_walk([(crate::snapshot::STDLIB_SEED, stdlib)], &top.topics, &BindingRows::default());
+    BusRows { closed_world: false, ..bus_rows(bundle, top, &walk) }
+}
+
+/// Lowering's bus graph (F.40 phase 3, C5): the snapshot's rows, read
+/// for the program lowering walks through the view's correspondence,
+/// followed by the stdlib's ([`stdlib_rows`]), assembled into subjects
+/// with the placement table's labels.
+///
+/// A user site keeps its identity in the merged program
+/// ([`crate::correspondence::Image::Checked`]), and the topic rewrite
+/// turned the topic it named into the topic's wire literal, so its row
+/// is keyed by the relation's wire (`TopicRewrite::wire`), the subject
+/// the merged site spells. Every other fact of the row is the checked
+/// site's: a site's payload, flatness and handler are its own program's
+/// facts, which neither the rewrites nor the merge change. A stdlib
+/// row's site is a stdlib site of the correspondence
+/// ([`crate::correspondence::Image::Stdlib`]).
+///
+/// The graph is its subjects and its rows: the checker's rows (the wire
+/// rows, the holes, the declarations and the edges) are the snapshot's,
+/// over the checked programs, and lowering reads none of them.
+pub fn lowering_graph(
+    snapshot: &BusGraph,
+    stdlib: BusRows,
+    topic_rewrites: &[hale_syntax::desugar::TopicRewrite],
+    correspondence: &crate::correspondence::Correspondence,
+    placement: &crate::placement::PlacementTable,
+) -> Result<BusGraph, String> {
+    use crate::correspondence::Image;
+    let wire_of: BTreeMap<u32, &str> =
+        topic_rewrites.iter().filter(|r| !r.site.is_none()).map(|r| (r.site.0, r.wire.as_str())).collect();
+    let rekey = |id: NodeId, key: &mut String| -> Result<(), String> {
+        let Some(Image::Checked(_)) = correspondence.image(id) else {
+            return Err(format!("the bus site {} has no checked image in the merged program", id.0));
+        };
+        if let Some(wire) = wire_of.get(&id.0) {
+            *key = wire.to_string();
+        }
+        Ok(())
+    };
+    let stdlib_site = |id: NodeId| -> Result<(), String> {
+        match correspondence.image(id) {
+            Some(Image::Stdlib(_)) => Ok(()),
+            _ => Err(format!("the stdlib's bus site {} is no stdlib site of the merged program", id.0)),
+        }
+    };
+    let mut rows = snapshot.rows.clone();
+    for p in &mut rows.publishes {
+        rekey(p.id, &mut p.key)?;
+    }
+    for s in &mut rows.subscribes {
+        rekey(s.id, &mut s.key)?;
+    }
+    for p in &stdlib.publishes {
+        stdlib_site(p.id)?;
+    }
+    for s in &stdlib.subscribes {
+        stdlib_site(s.id)?;
+    }
+    rows.closed_world |= stdlib.closed_world;
+    rows.bound.extend(stdlib.bound);
+    rows.cross_seed.extend(stdlib.cross_seed);
+    rows.publishes.extend(stdlib.publishes);
+    rows.subscribes.extend(stdlib.subscribes);
+    let subjects = rows.subjects(placement);
+    Ok(BusGraph { subjects, rows, ..BusGraph::default() })
 }
 
 /// The resolved payload type of a site on `key`: the declared topic's,
