@@ -766,6 +766,50 @@ fn an_alternative_under_replicas_keeps_its_replica_and_its_guard() {
     assert_eq!(threads, 3, "three replicas, three threads, whatever the alternatives");
 }
 
+/// The instances one occurrence of each template holds, summed over the
+/// templates with their bounds (every bound here is `Once`).
+fn live_instances(t: &PlacementTable) -> Vec<u64> {
+    t.templates()
+        .iter()
+        .map(|(top, bound)| {
+            assert_eq!(*bound, Bound::Once, "{top:?}");
+            t.per_occurrence(top, &|_, r| r.built_by.is_none())
+        })
+        .collect()
+}
+
+/// Checkpoint 4, counted (the correspondence's § 1, how live bounds
+/// combine): one occurrence takes one alternative, so the alternatives of
+/// one step take their maximum; replicas are rows already, each counted
+/// once; constructions sum. Under each of `v`'s three replicas the choice
+/// at `inner` is a box holding a leaf (2 instances) or a box holding a
+/// pair (4), so one occurrence holds `1 + 3 × (1 + max(2, 4)) = 16`
+/// instances, not the 22 a sum over alternatives gives, and its anchors
+/// are the 3 replicas, not 6 and not 9. The first shape the checkpoint
+/// names, a choice at the placed field itself, is refused by rule 18
+/// (`a_choice_at_a_placed_field_is_refused`).
+#[test]
+fn alternatives_take_a_maximum_and_constructions_a_sum() {
+    let s = clean("alternatives_under_replicas.hl");
+    let t = table(&s);
+    assert_eq!(live_instances(t), [16]);
+    let (top, _) = &t.templates()[0];
+    assert_eq!(t.per_occurrence(top, &|k, r| t.is_anchor(k, r)), 3);
+
+    // The same root built at a second site with its defaults: a box
+    // holding a leaf under each replica, `1 + 3 × (1 + 2) = 10`, and three
+    // anchors of its own.
+    let s = clean("alternatives_two_constructions.hl");
+    let t = table(&s);
+    let mut each = live_instances(t);
+    each.sort();
+    assert_eq!(each, [10, 16], "one count per construction, summed: 26");
+    let anchors: Vec<u64> = t.templates().iter().map(|(top, _)| t.per_occurrence(top, &|k, r| t.is_anchor(k, r))).collect();
+    assert_eq!(anchors, [3, 3]);
+    let pinned = t.domains.iter().filter(|d| matches!(d.kind, DomainKind::Pinned { .. })).count();
+    assert_eq!(pinned, 6, "a domain per replica per template");
+}
+
 /// Case 12, the table's half: the stdlib rows are minted by the analysis
 /// copy and say so, the colliding user declaration keeps its own key,
 /// and every site the table names resolves into lowering's merged mint

@@ -1682,6 +1682,36 @@ assume the others in a build:
   param fields — not inferred ones.) Zero corpus false positives. Type-aware
   String-concat sites and untyped-receiver collection inserts remain
   deferred. See `notes/memory-bound-proofs.md`.
+
+  **The reclaim boundary.** Each site carries the boundary at which its
+  memory is reclaimed (the dump's `reclaim@…` column): a bus payload at
+  its dispatch (`reclaim@bus-dispatch`); a non-escaping (`local`)
+  allocation in a **scratch-local** free fn at that fn's return
+  (`reclaim@fn-return`); everything else when its locus dissolves
+  (`reclaim@locus-dissolve`), a method's or handler's local at its
+  per-call scratch destroy aside, as above. Scratch-local is the class
+  lowering gives a subregion of its own, freed at return after the
+  return value is copied out: `String` and scalar params and return, no
+  struct or locus literal, no method call, no publish, no `self`, calls
+  only within the class; the check reads the classification lowering
+  reads, over the same declarations, so the two never disagree. The
+  boundary is judged **relative to the loop analyzed**: a fn's return
+  falls inside each iteration of a loop that calls the fn and outside
+  every iteration of a loop in the fn's own body, so a function return
+  is not an iteration's reclamation. A scratch-local fn called once per
+  iteration does not accumulate its temporaries across the loop, and the
+  temporaries of its own loop are bounded by one call, as a method's
+  are. **`local` is not scratch**: a local allocation in any other free
+  fn lands in its caller's arena, so when that fn runs once per
+  iteration of an unbounded loop in a long-lived frame (`main`, `run`, or
+  a free fn they call) it accumulates across the loop and is reported
+  (it "lands in its caller's arena"). A value that escapes the fn — its
+  return value, a store to `self`, a bus payload — keeps its own
+  boundary; a recursive scratch-local fn keeps the locus boundary (its
+  activations' subregions are alive at once, to an unbounded depth); a
+  locus instantiation is not a value in its caller's arena (the
+  instance's arena is its own). `--dump-alloc-summary` tags a
+  scratch-local fn `[scratch-local]`, or `[scratch-local, recursive]`.
 - **Hot-path allocation contract — `@budget(alloc_per_call = N)`** (2026-07-16).
   The dual of `@unbounded`: where `@unbounded` acknowledges intentional
   unbounded allocation, `@budget` declares an *opt-in per-call ceiling* and
@@ -2362,6 +2392,38 @@ assume the others in a build:
   when a count exceeds a declared ceiling); and **fd-leak detection**
   `--warn-resource-leak` (an fd-acquiring call whose result is stored
   resident in an unbounded context). See `notes/resource-budgets.md`.
+
+  The budget counts the resource, not the declaration that asks for it,
+  and reads the threads and pools from the placement table (F.40 phase
+  3, P1):
+
+  - **OS threads** (`pinned_threads`) are the threads placement spawns,
+    partitioned by the scope that creates each. A pinned anchor of the
+    deployed root (a root field placed `pinned`, one per replica, so
+    `replicas = K` is K) counts once per live occurrence of the
+    construction that builds it: its count in one construction times
+    that construction's bound, summed over the root's constructions.
+    The alternatives of one choice take their maximum (one construction
+    takes one), and replica rows are counted once, never multiplied by
+    K again. A construction with no static bound (a root built in a
+    loop, by a fn called in a loop, or by a recursive fn) makes the
+    count **uncertain**, with the reason; an uncertain count is within
+    no declared ceiling, and the gate fails with that reason. An
+    adapter of the root's `bindings { }` is one thread, counted once
+    whatever the root's bound. A nested instance runs on its anchor's
+    thread and adds none. Only the deployed root's rows count: an
+    imported `main` or a module-nested one lowering does not deploy
+    costs nothing.
+  - **Cooperative pools** (`cooperative_pools`) are worker pools: one per
+    named pool however many instances it holds, and an affinity is a
+    property of its pool, never a thread. `main` is the program's own
+    thread and never a pool, whether or not a program spells
+    `pool = main`; the dump shows it on a line of its own.
+  - **Not counted:** a transport binding's reader thread and the serve
+    thread a stdlib transport's birth spawns are not placement facts.
+    The dump names them on a line of its own, with the root's transport
+    bindings counted, and never folds them into the thread total, which
+    is no bound on all of a process's threads.
 
   The ceiling file is TOML; every key is optional (an absent key leaves
   that resource unconstrained, an unknown key is an error):

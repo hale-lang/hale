@@ -1,0 +1,51 @@
+// Checkpoint 4 across constructions: the root of
+// `alternatives_under_replicas.hl` built at two sites. `fn main`'s
+// literal chooses at `v.inner` between a box holding a leaf and a box
+// holding a pair; `again`'s takes the defaults. Constructions sum,
+// alternatives take their maximum, and replicas are rows, counted once.
+interface Shape {
+    fn size() -> Int;
+}
+
+locus Leaf {
+    fn size() -> Int { return 1; }
+}
+
+locus Pair {
+    params {
+        a: Leaf = Leaf { };
+        b: Leaf = Leaf { };
+    }
+    fn size() -> Int { return 2; }
+}
+
+locus Box {
+    params {
+        slot: Shape = Leaf { };
+    }
+}
+
+locus Wide {
+    params {
+        inner: Box = Box { };
+    }
+}
+
+main locus App {
+    params {
+        v: Wide = Wide { };
+    }
+    placement {
+        v: pinned(replicas = 3);
+    }
+}
+
+fn again() {
+    App { };
+}
+
+fn main() {
+    let c = true;
+    App { v: Wide { inner: if c { Box { } } else { Box { slot: Pair { } } } } };
+    again();
+}

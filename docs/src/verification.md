@@ -168,6 +168,21 @@ dispatches to is invoked once per request when your program starts
 that loop, and not otherwise. Run-to-exit programs (a `main` with no
 `run` loop and no bus handler of their own) warn nothing — a script
 owes no bound proof.
+Whether an allocation accumulates depends on where it is reclaimed,
+judged against the loop in question. A small helper that takes and
+returns only Strings and numbers, builds no struct and calls no
+method — a *scratch-local* function — frees its temporaries when it
+returns. For a nonrecursive helper, those temporaries do not accumulate
+across iterations of its caller's loop. Values returned to the caller
+keep the caller's lifetime, and a loop inside the helper retains its
+temporaries until the call returns. Recursive helpers keep the survey's
+conservative locus-lifetime boundary. Any other free function allocates
+into its caller's memory: called once per
+iteration of an unbounded loop in `main` or `run`, even a temporary it
+never returns piles up there until the locus dissolves, and the survey
+says it "lands in its caller's arena". Make such a helper
+scratch-local, or move the work into a method, whose per-call scratch
+reclaims it. `--dump-alloc-summary` tags each scratch-local function.
 `@unbounded fn` is the in-source carve-out for an acknowledged
 site; `--no-warn-unbounded-alloc` opts a run out. A site in code
 the compiler generated (the api binding, a `json:` parser) has no
@@ -191,7 +206,16 @@ the build, because you opted into it.
 **Resource budgets** *(opt-in).* Static counts of file descriptors, OS
 threads, cooperative pools, and bus subjects, with a
 `--check-resource-budget budget.toml` ceiling gate for CI and fd-leak
-detection.
+detection. The threads are the ones placement spawns, counted per
+instance: a `pinned` field is one thread (`replicas = K` is K), once
+for every construction of `main` that can be live at once, and an
+adapter in `bindings { }` is one more. A `main` built in a loop has no
+static bound, so its count is *uncertain* (the dump says why), and a
+thread ceiling refuses it. A pool is one worker however many loci run
+on it, and `main` is the program's own thread, never a pool. Threads
+outside placement (a binding's reader, a stdlib transport's serve
+thread) are named on a "not counted" line, never folded into the
+total.
 
 **A `module { … }` hides none of it.** A module is a namespace, not an
 analysis boundary: a locus, fn, topic or `bindings` entry declared

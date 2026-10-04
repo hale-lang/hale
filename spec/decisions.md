@@ -3595,7 +3595,9 @@ oracle. The facility is `hale_graph::shadow` (phase 0): a report
 over a corpus, a classified fixture beside the test, and the gate
 "no unexplained divergences"; its first instance runs the checker's
 placement map beside the bus graph's over the whole corpus
-(`crates/hale-types/tests/shadow_placement.rs`) over the programs
+(`crates/hale-types/tests/shadow_placement.rs`, since retired into
+the placement table's golden, `placement_golden.rs`, once every
+legacy producer it compared read the table) over the programs
 that check clean and classified 20 divergences, all known old bugs:
 the checker's map has no row for a qualified locus type, and the bus
 graph's walk does not inherit a nested locus's placement from its

@@ -1,0 +1,28 @@
+// The resource budget under an unbounded construction (R-5): the root
+// is built by a fn called in a loop, which is legal (each call joins
+// its own pinned thread), so its pinned field is one thread per live
+// occurrence and the count has no static bound.
+locus Worker {
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn boot() {
+    App { };
+}
+
+fn main() {
+    let mut i = 0;
+    while i < 2 {
+        boot();
+        i = i + 1;
+    }
+}
