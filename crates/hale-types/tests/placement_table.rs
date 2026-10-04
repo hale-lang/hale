@@ -611,6 +611,9 @@ fn generic_constructions_keep_qualified_template_identity() {
 #[test]
 fn generic_constructions_do_not_resolve_parameters_as_global_names() {
     let s = clean("generic_parameter.hl");
+    let typed = s.demand_typed_bodies().expect("typed template and specializations");
+    assert!(typed.monomorphs().named("Box_T").is_none(), "a parameter is not the global locus T");
+    assert!(typed.monomorphs().named("Box_Int").is_some());
     let t = table(&s);
     let dynamic: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
     assert_eq!(dynamic.len(), 2);

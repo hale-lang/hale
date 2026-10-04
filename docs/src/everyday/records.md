@@ -274,6 +274,10 @@ fn main() {
 }
 ```
 
+The parameter belongs to the template. In `Box<T>`, `T` still means
+the supplied type argument even if the seed also declares a type,
+locus or alias named `T`.
+
 Behind the scenes the compiler calls that instance's type
 `Cache_Int_String`, and you will see the name in a diagnostic. For
 a record you may write that name yourself — `Box_Int { value: 1 }`

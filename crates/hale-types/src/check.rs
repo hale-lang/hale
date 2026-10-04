@@ -465,7 +465,13 @@ fn substitute_generic_ty(
             Box::new(substitute_generic_ty(elem, bindings, known)),
             *cap,
         ),
-        _ => resolve_type_expr(te, known),
+        _ => {
+            // Nested applications retain the template's unbound view until
+            // the monomorph table records that specialization. Even there,
+            // an unbound parameter must never resolve as a global name.
+            let unbound = bindings.keys().map(|name| (name.clone(), Ty::Unknown)).collect();
+            crate::resolve::resolve_type_expr_with(te, known, &unbound)
+        },
     }
 }
 
@@ -1130,34 +1136,34 @@ fn monomorph_table(
     if templates.by_key.is_empty() {
         return;
     }
-    fn spelled(te: &TypeExpr, known: &KnownNames, names: &mut std::collections::BTreeSet<String>) {
+    fn spelled(te: &TypeExpr, known: &KnownNames, bindings: &BTreeMap<String, Ty>, names: &mut std::collections::BTreeSet<String>) {
         match te {
             TypeExpr::Named { path, generic_args, .. } => {
                 for a in generic_args {
-                    spelled(a, known, names);
+                    spelled(a, known, bindings, names);
                 }
-                if path.segments.len() != 1 {
+                if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
                     return;
                 }
                 if generic_args.is_empty() {
                     names.insert(path.segments[0].name.clone());
-                } else if let Ty::Named(n) = resolve_type_expr(te, known) {
+                } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
                     names.insert(n);
                 }
             }
-            TypeExpr::Projection { inner, .. } => spelled(inner, known, names),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, names),
+            TypeExpr::Projection { inner, .. } => spelled(inner, known, bindings, names),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, bindings, names),
             TypeExpr::Tuple(parts, _) => {
                 for p in parts {
-                    spelled(p, known, names);
+                    spelled(p, known, bindings, names);
                 }
             }
             TypeExpr::Function { params, ret, .. } => {
                 for p in params {
-                    spelled(p, known, names);
+                    spelled(p, known, bindings, names);
                 }
                 if let Some(r) = ret {
-                    spelled(r, known, names);
+                    spelled(r, known, bindings, names);
                 }
             }
             TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
@@ -1165,11 +1171,14 @@ fn monomorph_table(
     }
     let mut names = std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
-        crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s| match s {
-            TypeSpelling::Annotation(te) => spelled(te, known, &mut names),
-            TypeSpelling::Literal(path) => {
-                if path.segments.len() == 1 {
-                    names.insert(path.segments[0].name.clone());
+        crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s, parameters| {
+            let bindings = parameters.iter().map(|p| (p.clone(), Ty::Unknown)).collect();
+            match s {
+                TypeSpelling::Annotation(te) => spelled(te, known, &bindings, &mut names),
+                TypeSpelling::Literal(path) => {
+                    if path.segments.len() == 1 && !parameters.contains(&path.segments[0].name) {
+                        names.insert(path.segments[0].name.clone());
+                    }
                 }
             }
         });
@@ -11877,22 +11886,10 @@ impl<'a> Checker<'a> {
     /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
-        if self.generic_bindings.is_empty() {
-            resolve_type_expr(te, self.known)
-        } else {
-            // Substituted annotations can discover Holder<T> in a
-            // specialized body. This leaves ordinary literal-field
-            // checking's established nested-template tolerance intact.
-            if let TypeExpr::Named { path, generic_args, .. } = te {
-                if !generic_args.is_empty() && path.segments.len() == 1 {
-                    let tokens: Option<Vec<String>> = generic_args.iter()
-                        .map(|arg| crate::typed_bodies::mangle_token(&self.resolve_te(arg)))
-                        .collect();
-                    return tokens.map_or(Ty::Unknown, |tokens| Ty::Named(format!("{}_{}", path.segments[0].name, tokens.join("_"))));
-                }
-            }
-            substitute_generic_ty(te, &self.generic_bindings, self.known)
-        }
+        let mut bindings: BTreeMap<String, Ty> = self.generic_params.iter()
+            .map(|name| (name.clone(), Ty::Unknown)).collect();
+        bindings.extend(self.generic_bindings.iter().map(|(name, ty)| (name.clone(), ty.clone())));
+        crate::resolve::resolve_type_expr_with(te, self.known, &bindings)
     }
 
     /// The generic bodies' monomorphs, typed (F.40 phase 3, E4): a
@@ -13827,6 +13824,12 @@ impl<'a> Checker<'a> {
                                 }
                                 None => self.typed.generic_call(self.body, *call_id, row),
                             }
+                        }
+                        // Preserve holes in the template's lexical scope. A
+                        // global declaration with the same name cannot fill an
+                        // argument that this call did not infer.
+                        for name in &generic_names {
+                            bindings.entry(name.clone()).or_insert(Ty::Unknown);
                         }
                         // Args vs substituted params.
                         for ((p, at), a) in template

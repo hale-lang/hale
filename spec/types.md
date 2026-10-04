@@ -740,6 +740,11 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+A declared type parameter shadows a same-named top-level declaration or
+alias throughout its template's signatures, fields and body annotations.
+Before specialization it remains unbound; a global name cannot supply
+its type or create an apparent concrete monomorph.
+
 **Generic loci monomorphize the same way.** `locus Cache<K, V>` is
 a template; `Cache<Int, String>` names the monomorph
 `Cache_Int_String`, whose `params` are the template's with the
