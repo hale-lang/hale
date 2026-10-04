@@ -411,3 +411,33 @@ locus Store { capacity { pool entries of Entry indexed_by k; } }
     let engine = summary.with_sync_forms(&[&program], &rows_of(&program));
     assert!(engine.sync_forms.contains("Store"), "the engine adds the program's row");
 }
+
+/// The form row carries the form's fixed capacity (C3 rest): a ring
+/// buffer's, an LRU cache's and a lockfree map's written `cap = N`, the
+/// column lowering lays each slot out by. A form with no positive
+/// literal `cap` has none.
+#[test]
+fn the_row_carries_the_forms_fixed_capacity() {
+    let program = hale_syntax::parse_source(
+        r#"
+type Entry { k: Int; v: Int; }
+@form(ring_buffer, cap = 16)
+locus Ring { capacity { pool items of Int; } }
+@form(lru_cache, cap = 8)
+locus Recent { capacity { pool entries of Entry indexed_by k; } }
+@form(hashmap, sync = lockfree, cap = 64)
+locus Fixed { capacity { pool entries of Entry indexed_by k; } }
+@form(hashmap)
+locus Plain { capacity { pool entries of Entry indexed_by k; } }
+@form(ring_buffer, cap = 0)
+locus Empty { capacity { pool items of Int; } }
+"#,
+    )
+    .expect("parse");
+    let r = FormRows::configured(&program.items);
+    for (locus, cap) in [("Ring", Some(16)), ("Recent", Some(8)), ("Fixed", Some(64)), ("Plain", None), ("Empty", None)] {
+        assert_eq!(r.named(locus).unwrap().cap, cap, "{locus}");
+        assert_eq!(r.cap(decl(&program, locus)), cap, "{locus}");
+    }
+    assert_eq!(FormRows::default().cap(decl(&program, "Ring")), Some(16), "no row: the written argument");
+}

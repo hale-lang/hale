@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::{
     BusMember, CapacitySlotKind, ClosureAssertion,
     ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind,
-    Literal, LocusAnnotation, LocusDecl, LocusMember, ModeKind,
+    LocusAnnotation, LocusDecl, LocusMember, ModeKind,
     ParamInit, ProjectionClass, ScheduleClass,
     TypeExpr,
 };
@@ -1008,23 +1008,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     form,
                     Some(SlotForm::RingBuffer) | Some(SlotForm::LruCache)
                 ) {
-                    // Extract `cap = N` from the form annotation
-                    // args. Typecheck guarantees presence + valid
-                    // form on @form(ring_buffer) / @form(lru_cache);
-                    // codegen reads the int literal directly. (The
+                    // The form row's `cap` (F.40 phase 3, C3 rest).
+                    // Typecheck guarantees presence + valid form on
+                    // @form(ring_buffer) / @form(lru_cache). (The
                     // `ring_buffer_cap` field name predates lru but
-                    // carries the same fixed-cap-literal role.)
-                    l.form
-                        .as_ref()
-                        .and_then(|f| {
-                            f.args.iter().find(|a| a.name.name == "cap")
-                        })
-                        .and_then(|a| match &a.value {
-                            Expr::Literal(Literal::Int(n), _) if *n > 0 => {
-                                Some(*n as u64)
-                            }
-                            _ => None,
-                        })
+                    // carries the same fixed-cap role.)
+                    self.forms.cap(l)
                 } else {
                     None
                 };
@@ -1042,20 +1031,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         Discipline::Striped => SyncMode::Striped,
                         Discipline::Lockfree => {
                             // F.32-1γ-v1: lockfree requires
-                            // `cap = N` (validated by typecheck;
-                            // codegen reads the int literal).
-                            let cap = l.form
-                                .as_ref()
-                                .and_then(|f| {
-                                    f.args.iter().find(|a| a.name.name == "cap")
-                                })
-                                .and_then(|a| match &a.value {
-                                    Expr::Literal(Literal::Int(n), _) if *n > 0 => {
-                                        Some(*n as u64)
-                                    }
-                                    _ => None,
-                                })
-                                .unwrap_or(0);
+                            // `cap = N` (validated by typecheck);
+                            // the form row's `cap`.
+                            let cap = self.forms.cap(l).unwrap_or(0);
                             SyncMode::Lockfree { fixed_cap: cap }
                         }
                     }

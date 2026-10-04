@@ -31,7 +31,7 @@
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{Expr, FormAnnotation, LocusDecl, NodeId, TopDecl};
+use hale_syntax::ast::{Expr, FormAnnotation, Literal, LocusDecl, NodeId, TopDecl};
 
 use crate::placement::PlacementTable;
 use crate::resolve::TopScope;
@@ -112,6 +112,11 @@ pub struct FormRow {
     /// Inference's reasoning, for a `hashmap` form the author did not
     /// configure: the pools it observed and whether a mutate is hot.
     pub inferred: Option<InferredSync>,
+    /// The form's fixed capacity, its written `cap = N` (a positive
+    /// integer literal): a ring buffer's or an LRU cache's, and a
+    /// lockfree map's. Lowering lays the slot out by it; the form check
+    /// reports a form that needs one and has none.
+    pub cap: Option<u64>,
 }
 
 impl FormRow {
@@ -187,6 +192,16 @@ impl FormRows {
         l.form.is_some() && self.effective(l).synchronizes()
     }
 
+    /// Declaration `l`'s fixed capacity: its row's `cap`. A declaration
+    /// with no row reads its written argument, as [`FormRows::effective`]
+    /// does.
+    pub fn cap(&self, l: &LocusDecl) -> Option<u64> {
+        match self.of(l) {
+            Some(row) => row.cap,
+            None => l.form.as_ref().and_then(form_cap),
+        }
+    }
+
     fn push(&mut self, row: FormRow) {
         let i = self.rows.len();
         self.by_name.entry(row.locus.clone()).or_insert(i);
@@ -219,6 +234,7 @@ impl FormRows {
                                 SyncConfig::Omitted | SyncConfig::Invalid => Discipline::None,
                             },
                             inferred: None,
+                            cap: form_cap(form),
                         });
                     }
                     _ => {}
@@ -260,6 +276,15 @@ pub fn sync_config(form: &FormAnnotation) -> SyncConfig {
             _ => SyncConfig::Invalid,
         },
     }
+}
+
+/// `form`'s fixed capacity: its first `cap =` argument when that is a
+/// positive integer literal.
+fn form_cap(form: &FormAnnotation) -> Option<u64> {
+    form.args.iter().find(|a| a.name.name == "cap").and_then(|a| match &a.value {
+        Expr::Literal(Literal::Int(n), _) if *n > 0 => Some(*n as u64),
+        _ => None,
+    })
 }
 
 /// The producer: every `@form` declaration of `bundle` with its written
