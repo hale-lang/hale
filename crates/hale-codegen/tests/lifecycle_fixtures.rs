@@ -1828,6 +1828,49 @@ fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
     }
 }
 
+/// PR #1324 review: a retired child must not release itself on its
+/// worker while the replacing thread still owns the deferred release.
+/// Exercise explicit termination and automatic flow completion, with
+/// heap-backed form storage, on both pool and dispatch implementations.
+#[test]
+fn retired_run_self_reclaim_has_one_owner_under_asan() {
+    for file in ["l19_handler_replaces_started_run.hl", "l19_handler_replaces_started_run_async.hl"] {
+        for end in ["terminate", "flow"] {
+            let original = source(file);
+            let src = match end {
+                "terminate" => original.replace(
+                    "println(\"ev kid-run \" + to_string(self.tag) + \" \" + self.name);",
+                    "println(\"ev kid-run \" + to_string(self.tag) + \" \" + self.name); if self.tag == 0 { terminate; }",
+                ),
+                _ => original.replace("main locus App {", "main locus App { accept(c: Kid) { } release(c: Kid) { }"),
+            };
+            assert_ne!(src, original, "the self-reclaim variant must be installed");
+            let program = hale_syntax::parse_source(&src).expect("parse the self-reclaim variant");
+            let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::check(false, false))
+                .unwrap_or_else(|_| panic!("{file}, {end}: load failed"));
+            let checked = snap.demand_check().expect("check");
+            assert!(!checked.diags.iter().any(|d| d.is_error()), "{file}, {end}: {:?}", checked.diags);
+            for no_bus_devirt in [false, true] {
+                let bin = harness::unique_bin("hale_retired_self_reclaim_asan");
+                let options = hale_codegen::BuildOptions {
+                    asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+                };
+                build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+                let image = std::fs::read(&bin).expect("ASan binary");
+                assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
+                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+                let _ = std::fs::remove_file(&bin);
+                let report = format!("{}\n{}", ran.stdout, ran.stderr);
+                for marker in SANITIZER_MARKERS {
+                    assert!(!report.contains(marker), "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
+                }
+                assert_eq!(answered_after_handler(&ran), "answered-after-handler", "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
+                assert_eq!(ran.code, Some(0), "{report}");
+            }
+        }
+    }
+}
+
 /// Removing the handler boundary restores the original deadlock: the
 /// child has dissolved, but replacement cannot finish and the queued
 /// reply cannot run. The ASan cases above are its completing controls.

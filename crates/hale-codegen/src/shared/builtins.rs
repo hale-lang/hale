@@ -2607,7 +2607,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.module.add_function(name, void_t.fn_type(&[ptr_t.into()], false), None);
         }
 
-        self.module.add_function("lotus_reclaim_pending", i64_t.fn_type(&[ptr_t.into()], false), None);
+        self.module.add_function("lotus_reclaim_pending", i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
+        self.module.add_function("lotus_reclaim_try_claim", i64_t.fn_type(&[ptr_t.into()], false), None);
         self.module.add_function("lotus_reclaim_scope_enter", ptr_t.fn_type(&[ptr_t.into()], false), None);
         self.module.add_function("lotus_reclaim_release_enter", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
 

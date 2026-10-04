@@ -7440,7 +7440,22 @@ static void *lotus_reclaim_owner_for(void *child, void *owner) {
     return NULL;
 }
 
-int64_t lotus_reclaim_pending(void *child) {
+/* Shared-spine admission belongs to the instance, not the thread's
+ * physical-release queue. A started run can finish on another worker
+ * while this thread is waiting to release that same instance. The
+ * loser returns without touching the arena or descendants; its run
+ * hold still ends normally and wakes the winning release. The claim
+ * stays set until a constructor initializes a new incarnation. */
+int64_t lotus_reclaim_try_claim(int64_t *claimed) {
+    int64_t expected = 0;
+    return __atomic_compare_exchange_n(claimed, &expected, 1, 0,
+                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+/* A null claim pointer is reserved for the winning spine's final
+ * storage step. Its TLS retirement guards still apply. */
+int64_t lotus_reclaim_pending(void *child, int64_t *claimed) {
+    if (claimed && __atomic_load_n(claimed, __ATOMIC_ACQUIRE)) return 1;
     for (lotus_retired_reclaim_t *r = t_reclaim_head; r; r = r->next)
         if (r->child == child) return 1;
     for (lotus_retired_reclaim_t *r = t_reclaim_active; r; r = r->next)

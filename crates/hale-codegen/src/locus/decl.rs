@@ -1197,6 +1197,11 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let built_params_field_idx = idx;
         llvm_field_tys.push(ptr_t.into());
         idx += 1;
+        // Shared reclaim admission. Kept in the instance, including
+        // while its physical release is queued on another thread.
+        let reclaim_claimed_field_idx = idx;
+        llvm_field_tys.push(self.context.i64_type().into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -1286,6 +1291,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 drain_requested_field_idx,
                 held_by_owner_field_idx,
                 built_params_field_idx,
+                reclaim_claimed_field_idx,
                 slot_borrowed_mask_field_idx,
                 locus_ref_owned_mask_field_idx,
                 locus_ref_bit_per_field,

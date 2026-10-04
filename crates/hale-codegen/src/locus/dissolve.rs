@@ -92,6 +92,7 @@ pub(crate) trait LocusDissolve<'ctx> {
         locus_name: &str,
         fname: &str,
         tag: &str,
+        owns_claim: bool,
     ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError>;
     fn emit_birth_check(
         &mut self,
@@ -469,7 +470,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // GH #1036: step over a child that was already reclaimed
             // (see `emit_reclaimed_child_skip`).
             let skip_bb = self.emit_reclaimed_child_skip(
-                &inner_info, inner_ptr, locus_name, &fname, "cascade",
+                &inner_info, inner_ptr, locus_name, &fname, "cascade", false,
             )?;
             // __dissolve_closures → dissolve → arena_destroy. The
             // drain step ran earlier via `emit_locus_field_drains`
@@ -831,9 +832,10 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
     /// dissolve walk used to, descended into the freed grandchildren
     /// first and re-ran the child's `drain()` / `dissolve()`.
     ///
-    /// Emits `null ptr or null latch -> skip`, leaves the builder in
-    /// the live block, and returns the skip block: the caller emits
-    /// the per-child body, branches to it, and continues there.
+    /// Emits `null ptr, pending claim, or null latch -> skip`. Only
+    /// the winning shared spine's own storage step bypasses its claim.
+    /// Leaves the builder in the live block and returns the skip block:
+    /// the caller emits the per-child body and continues there.
     fn emit_reclaimed_child_skip(
         &mut self,
         inner_info: &LocusInfo<'ctx>,
@@ -841,6 +843,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         locus_name: &str,
         fname: &str,
         tag: &str,
+        owns_claim: bool,
     ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let func = self
@@ -864,6 +867,25 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_conditional_branch(is_null, skip_bb, nonnull_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(nonnull_bb);
+        // The winning shared spine must finish its own storage release.
+        // A null claim pointer bypasses only that claim, preserving the
+        // current thread's queued/active retirement checks.
+        let claim_ptr = if owns_claim {
+            ptr_t.const_null()
+        } else {
+            self.builder.build_struct_gep(
+                inner_info.struct_ty, inner_ptr, inner_info.reclaim_claimed_field_idx, &name("claim.ptr"),
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+        let pending = self.builder.build_call(pending, &[inner_ptr.into(), claim_ptr.into()], "reclaim.pending")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.try_as_basic_value().left().expect("i64").into_int_value();
+        let pending = self.builder.build_int_compare(inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "reclaim.retired")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let unclaimed_bb = self.context.append_basic_block(func, &name("unclaimed"));
+        self.builder.build_conditional_branch(pending, skip_bb, unclaimed_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(unclaimed_bb);
         let latch_ptr = self
             .builder
             .build_struct_gep(inner_info.struct_ty, inner_ptr, 0, &name("latch.ptr"))
@@ -876,13 +898,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let reclaimed = self
             .builder
             .build_is_null(latch, &name("done"))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
-        let pending = self.builder.build_call(pending, &[inner_ptr.into()], "reclaim.pending")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.try_as_basic_value().left().expect("i64").into_int_value();
-        let pending = self.builder.build_int_compare(inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "reclaim.retired")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let reclaimed = self.builder.build_or(reclaimed, pending, "reclaim.unavailable")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_conditional_branch(reclaimed, skip_bb, live_bb)
@@ -996,7 +1011,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // the dissolve half does — its `drain()` already ran, and
             // its fields lived in its freed arena.
             let skip_bb = self.emit_reclaimed_child_skip(
-                &inner_info, inner_ptr, locus_name, &fname, "drain",
+                &inner_info, inner_ptr, locus_name, &fname, "drain", false,
             )?;
             if descend {
                 self.locus_cascade_path.push(locus_name.to_string());
@@ -1323,8 +1338,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         owner: Option<PointerValue<'ctx>>,
     ) -> Result<(), CodegenError> {
-        let skip =
-            self.emit_reclaimed_child_skip(info, self_ptr, locus_name, "storage", "release")?;
+        // Only the exact instance claimed by this generated reclaim
+        // function may bypass its claim. Recursive field releases still
+        // check the child's claim independently.
+        let owns_claim = self.current_fn.is_some()
+            && self.current_fn == self.reclaim_fns.get(locus_name).copied()
+            && self.current_self.as_ref().is_some_and(|s| s.self_ptr == self_ptr);
+        let skip = self.emit_reclaimed_child_skip(
+            info, self_ptr, locus_name, "storage", "release", owns_claim,
+        )?;
         // iris P4: LOCUS_DISSOLVE probe at THE teardown
         // chokepoint (every dissolve path funnels here). No-op
         // unless LOTUS_OBS=1.

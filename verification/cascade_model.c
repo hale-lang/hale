@@ -51,6 +51,8 @@
  *     thread here. The handler-boundary retirement queue, active-release
  *     guards, owner links and retained descendant trees are NOT modeled;
  *     deadline, trace-order and ASan regressions exercise those paths.
+ *     The shared reclaim entry's per-instance atomic claim is covered
+ *     separately by reclaim_claim_model.c, which races two entrants.
  *   - `pthread_self()` / `pthread_equal()` are a model thread id passed
  *     in: the opener test in lotus_failure_await compares ids, and the
  *     thread-local `t_run_running` (the caller's own run, which its

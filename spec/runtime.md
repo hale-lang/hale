@@ -2109,6 +2109,18 @@ its `KNOWN_OPEN` table.
   Removing the handler boundary restores the original deadlock under
   the fixture's deadline.
 
+  Admission to a child's shared reclaim spine is an atomic claim on
+  that instance. It precedes arena reads and logical teardown, and stays
+  claimed while physical release is deferred. A started run ending in
+  `terminate` or automatic flow reclamation on another worker cannot
+  reclaim the retired child again: it returns from the reclaim entry,
+  ends its run hold, and lets the thread that owns retirement complete
+  release. Failure-handler deferral happens before claiming, so its
+  later callback can enter the spine. A constructor resets the claim
+  for each new instance, including recycled storage. The handler
+  retention regression exercises termination and flow completion under
+  ASan on classic and async pools, in both dispatch modes.
+
   Physical release waits before freeing forms, children trackers,
   recognition pools, arenas or recyclable structs. While an owner's
   run can still read its descendants, their logical teardown collects
