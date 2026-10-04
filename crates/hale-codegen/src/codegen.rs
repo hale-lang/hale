@@ -1505,7 +1505,7 @@ pub fn build_resolved(
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
-        head_aborted_waits: false,
+        main_exit: None,
         dispatch_trace: options.dispatch_trace,
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
@@ -3644,10 +3644,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
     pub(crate) in_main: bool,
-    /// Set while one of fn main's exits tears its frame down after its
-    /// head aborted the waits (ahead of the pool join it emits), so the
-    /// frame teardown does not abort them a second time.
-    head_aborted_waits: bool,
+    /// The spine of the fn main exit tearing its frame down, set after its
+    /// head and taken by its flush, which emits that spine's process rows
+    /// from the frame's pre-drain on (`emit_flush_obligations`).
+    main_exit: Option<Spine>,
     /// `BuildOptions::dispatch_trace`: the publish sites print the
     /// codec's payload flatness beside the plan's rows.
     pub(crate) dispatch_trace: bool,
@@ -5899,21 +5899,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// where the target's cells select it (line 16) and the program has
     /// what it acts on (a pool join needs a pool). A known-open row is
     /// one the code does not emit (the eager spine's pre-drain, C13).
-    /// Returns whether the head aborted the waits.
-    pub(crate) fn emit_teardown_obligations(&mut self, spine: Spine) -> Result<bool, CodegenError> {
+    pub(crate) fn emit_teardown_obligations(&mut self, spine: Spine) -> Result<(), CodegenError> {
+        self.emit_process_rows(spine, false, true)
+    }
+
+    /// The rest of a `fn main` exit's process obligations, emitted by its
+    /// frame flush: the spine's rows from the frame's pre-drain on, in the
+    /// plan's order (line 18's pre-drain, then, where the spine owes no
+    /// pool join, line 7's wait-abort, so a handler the pre-drain runs may
+    /// still wait). `pre_drain` is false where the flush elides the drain
+    /// (a non-allocating body with an empty frame cannot have published).
+    fn emit_flush_obligations(&mut self, spine: Spine, pre_drain: bool) -> Result<(), CodegenError> {
+        self.emit_process_rows(spine, true, pre_drain)
+    }
+
+    /// The spine's process rows in the plan's order, the head's (those
+    /// before the frame's pre-drain) or the flush's (the pre-drain and
+    /// those after it), each where the target's cells select it.
+    fn emit_process_rows(&mut self, spine: Spine, flush: bool, pre_drain: bool) -> Result<(), CodegenError> {
         let plan = self.lifecycle.ok_or_else(|| {
             CodegenError::Unsupported(format!(
                 "the lowering view carries no lifecycle plan, and the {} spine's process obligations are read from it",
                 spine.name()
             ))
         })?;
-        let mut aborted = false;
+        let mut in_flush = false;
         for step in plan.process_order(spine).map_err(CodegenError::Unsupported)? {
+            // A known-open row (the eager spine's pre-drain, C13) is not
+            // emitted, and divides nothing.
             if matches!(plan.obligations[step.obligation.0 as usize].status, hale_types::lifecycle::Status::KnownOpen { .. }) {
                 continue;
             }
+            in_flush |= step.kind == ObligationKind::PreDrain;
+            if in_flush != flush {
+                continue;
+            }
             match step.kind {
-                ObligationKind::PreDrain => break,
+                ObligationKind::PreDrain if pre_drain => self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?,
                 ObligationKind::IngressQuiesce if self.cells.emits(Obligation::IngressQuiesce) => {
                     self.emit_bus_ingress_quiesce()?
                 }
@@ -5922,16 +5944,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     self.emit_coop_pool_shutdown_all()?
                 }
-                ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort) => {
-                    self.emit_bus_wait_abort_all()?;
-                    aborted = true;
-                }
-                // Omitted by the target's cells, or no runtime call (the
-                // join's progress).
+                ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort) => self.emit_bus_wait_abort_all()?,
+                // Omitted by the target's cells, elided, or no runtime
+                // call (the join's progress).
                 _ => {}
             }
         }
-        Ok(aborted)
+        Ok(())
     }
 
     pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
@@ -6098,25 +6117,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // skip the per-call drain entirely. See
         // `current_fn_skip_exit_drain`.
         let frame_statically_empty = frame.is_empty();
-        // The trace names fn main's three exits by the spine their
-        // caller set; any other fn's flush is the deferred spine.
-        let lc_spine = if self.lc_spine.starts_with("Main") { self.lc_spine } else { "DeferredEntry" };
-        let lc_outer = std::mem::replace(&mut self.lc_spine, lc_spine);
-        if drain_queue
-            && !(frame_statically_empty && self.current_fn_skip_exit_drain)
-        {
-            self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?;
+        let pre_drain = drain_queue && !(frame_statically_empty && self.current_fn_skip_exit_drain);
+        match self.main_exit.take() {
+            // GH #255: at one of fn main's exits this flush IS main
+            // teardown, and owes the rest of its spine's process rows:
+            // the pre-drain, and the wait-abort where the head (ahead of
+            // its pool join) did not abort the waits, so `or wait` parked
+            // publishers take the raise path before the pinned joins below
+            // would block on them. The trace names the exit's spine.
+            Some(spine) => {
+                let lc_outer = std::mem::replace(&mut self.lc_spine, spine.name());
+                self.emit_flush_obligations(spine, pre_drain)?;
+                self.lc_spine = lc_outer;
+            }
+            // Any other fn's flush drains only: it must not disable waits
+            // program-wide. The trace names it the deferred spine.
+            None if pre_drain => {
+                let lc_outer = std::mem::replace(&mut self.lc_spine, "DeferredEntry");
+                self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?;
+                self.lc_spine = lc_outer;
+            }
+            None => {}
         }
-        // GH #255: at fn-main's scope exit this flush IS main
-        // teardown — wake `or wait` parked publishers into the
-        // raise path before the pinned joins below would block on
-        // them. Gated on in_main: every other fn's flush must not
-        // disable waits program-wide. A main exit whose head already
-        // aborted them (ahead of its pool join) owes no second abort.
-        if self.in_main && !self.head_aborted_waits && self.cells.emits(Obligation::WaitAbort) {
-            self.emit_bus_wait_abort_all()?;
-        }
-        self.lc_spine = lc_outer;
         // GH #253: join subscription-less pinned entries FIRST,
         // before any cooperative teardown. Reverse push order
         // alone processed a parent (and its cascade of subscriber
@@ -9363,9 +9385,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // contract (the boot half is the readers' early-
             // ingress buffer). The obligations are the cells' and their
             // order the plan's (`emit_teardown_obligations`).
-            self.head_aborted_waits = self.emit_teardown_obligations(Spine::MainFallThrough)?;
+            self.emit_teardown_obligations(Spine::MainFallThrough)?;
+            self.main_exit = Some(Spine::MainFallThrough);
             self.flush_dissolve_frame()?;
-            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
@@ -9403,10 +9425,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
-            self.head_aborted_waits = self.emit_teardown_obligations(Spine::MainTestFailure)?;
+            self.emit_teardown_obligations(Spine::MainTestFailure)?;
+            self.main_exit = Some(Spine::MainTestFailure);
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
             self.emit_frame_teardown(frame, true)?;
-            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
@@ -21944,7 +21966,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // main-exit path — return-from-main must not lose
             // kernel-accepted ingress either. The obligations are the
             // cells' and their order the plan's.
-            self.head_aborted_waits = self.emit_teardown_obligations(Spine::MainReturn)?;
+            self.emit_teardown_obligations(Spine::MainReturn)?;
             // GH #789: emit the teardown for everything main owns at
             // this point, but LEAVE the frame on the stack. `return`
             // terminates its own block, so the frame is still the
@@ -21978,8 +22000,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // `in_main` clear.
             let frame =
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
+            self.main_exit = Some(Spine::MainReturn);
             self.emit_frame_teardown(frame, true)?;
-            self.head_aborted_waits = false;
             self.lc_spine = lc_outer;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
