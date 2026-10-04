@@ -936,7 +936,7 @@ fn placed(snap: &Snapshot, diags: &[hale_syntax::Diag]) -> BTreeMap<PathBuf, Vec
     let mut per_file: BTreeMap<PathBuf, Vec<Value>> =
         snap.files().iter().map(|f| (f.clone(), Vec::new())).collect();
     let mut diags = diags.to_vec();
-    hale_types::stdlib_bodies::demangle_imports(&mut diags, snap.import_renames());
+    snap.demangler().demangle_diags(&mut diags);
     retain_owned_advisories(&mut diags, snap.own_files(), snap.file_bases());
     place_checker_diags(&diags, snap.file_bases(), snap.sources(), &mut per_file);
     per_file

@@ -192,7 +192,7 @@ struct Graph<'a> {
     /// The stdlib's locus names, by their public path's namespace.
     std_loci: BTreeMap<String, &'static str>,
     /// Merged and stdlib names to the spelling the author writes.
-    demangle: Vec<(String, String)>,
+    demangle: crate::stdlib_bodies::Demangler,
     /// Per locus beyond the horizon, what its existence runs that the
     /// summary keys no body for — each params initializer and its
     /// `on_failure` handler — as a node of the graph: its key, its link
@@ -212,7 +212,7 @@ impl<'a> Graph<'a> {
             .iter()
             .filter_map(|(path, mangled)| std_namespace(m, &path.join("::")).map(|ns| (mangled.to_string(), ns)))
             .collect();
-        let demangle = crate::stdlib_bodies::demangle_table(import_renames);
+        let demangle = crate::stdlib_bodies::Demangler::new(import_renames);
         let mut g = Graph { summary, m, renames, std_loci, demangle, members: BTreeMap::new() };
         // The imported seeds' loci are in the bundle under their merged
         // names; the stdlib's are its analysis copy's.
@@ -282,7 +282,7 @@ impl<'a> Graph<'a> {
 
     /// A name as the author spells it.
     fn public(&self, name: &str) -> String {
-        crate::stdlib_bodies::demangle_with(name, &self.demangle)
+        self.demangle.demangle(name)
     }
 
     /// Whether a fn is the program's own: neither the stdlib's analysis
@@ -1207,8 +1207,8 @@ pub fn admission_diags(
         return Vec::new();
     }
     let m = super::derive_capability_matrix();
-    let table = crate::stdlib_bodies::demangle_table(import_renames);
-    let name = |s: &str| crate::stdlib_bodies::demangle_with(s, &table);
+    let table = crate::stdlib_bodies::Demangler::new(import_renames);
+    let name = |s: &str| table.demangle(s);
     let witness = |chain: &[String]| chain.iter().map(|l| format!("`{}`", name(l))).collect::<Vec<_>>().join(" → ");
     let rejects_std = m.behaviours.iter().any(|r| {
         matches!(r.capability, Capability::StdNamespace(_)) && !r.cells.get(class).is_lower()

@@ -220,7 +220,8 @@ pub fn render_flows(
     sources: &BTreeMap<PathBuf, String>,
     import_renames: &[(Vec<String>, String)],
 ) -> String {
-    let spell = |s: &str| hale_types::stdlib_bodies::demangle_str(s, import_renames);
+    let demangler = hale_types::stdlib_bodies::Demangler::new(import_renames);
+    let spell = |s: &str| demangler.demangle(s);
     if flows.is_empty() {
         return "flows: none — every accept'd child is a resident: it ends by its own `terminate;` or in its owner's dissolve cascade\n".to_string();
     }
