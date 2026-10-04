@@ -246,20 +246,18 @@ Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs u
 
 ## Counts
 
-**Codegen sites: 51 (C1–C51).** Each sits under the registry row it belongs to. C47 was added by L3, C48 by L1’s producer, and C49 and C50 by the review of PR #1319. C51 was added by L4.
+**Codegen sites: 53 (C1–C53).** Each sits under the registry row it belongs to. C47 was added by L3, C48 by L1’s producer, and C49 and C50 by the review of PR #1319. C51 was added by L4, C52 and C53 by L4's process spines.
 
-- `lifecycle_order` · `lower_locus_instantiation_inner`: C1, C2, C5–C14, C49, C50, C51
+- `lifecycle_order` · `lower_locus_instantiation_inner`: C1, C2, C5–C14, C49, C50, C51, C52, C53
 - `handler_routing` · `settles_failures`: C3
-- `entrypoint` · `let is_main_locus` (inst): C4
+- `entrypoint` · `let is_main_locus` (inst): C4 (the row closed with L4's process spines: it reads the entry row's lowering root, `is_lowering_root`)
 - `lifecycle_order` · `emit_frame_teardown`: C16
 - `entrypoint` · `in_main`: C17
 - `lifecycle_order` · `emit_deferred_entry_teardown`: C18, and C15, which reaches it
-- `entrypoint` · `is_main_entry`: C19
-- `lifecycle_order` · `lower_program`: C20, C21
-- `lifecycle_order` · `main_test_fail_bb`: C22
-- `lifecycle_order` · `lower_return_inner`: C23, with C24 as the tail all three main exits share
+- `entrypoint` · `is_main_entry`: C19 (closed with L4's process spines, as C4)
+- `lifecycle_order` · `lower_program`, `main_test_fail_bb`, `lower_return_inner`: C20–C23, with C24 as the tail all three main exits share (the three rows became one helper, `emit_main_exit`, which closed with L4's process spines: it emits each exit spine's process rows from the plan)
 - `lifecycle_order` · `__reclaim_`: C25, and C26–C29, which call it (the row closed with L4's reclaim spine, which emits the reclaim from the plan)
-- `lifecycle_order` · `emit_locus_arena_destroy`: C33, and its cascade C30–C32 (the row closed with L4's reclaim and cascade spines). `entrypoint` · `let is_main_locus` (dis) is C31.
+- `lifecycle_order` · `emit_locus_arena_destroy`: C33, and its cascade C30–C32 (the row closed with L4's reclaim and cascade spines). `entrypoint` · `let is_main_locus` (dis) is C31 (closed with L4's process spines, as C4).
 - `handler_routing` · `resolve_failure_route`: C34
 - `handler_routing` · `failure_handler_for`: C35
 - the failure-delivery sites those two rows feed: C36–C40
@@ -267,7 +265,7 @@ Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs u
 - `restart` · `locus_declares_failures`: C41
 - `lifecycle_order` · `define_restart_fns`: C42, C43, C48, and C44, which it reads
 - `restart` · `RecoveryModifier::For`: C45
-- `entrypoint` · `emit_bindings_prelude` and `handler_routing` · `__StdBusUnixConnectTransport`: C46
+- `entrypoint` · `emit_bindings_prelude` (closed with L4's process spines, as C4) and `handler_routing` · `__StdBusUnixConnectTransport`: C46
 
 **Registry sites that are not rows,** because they are not lifecycle emission:
 

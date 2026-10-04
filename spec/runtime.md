@@ -2123,7 +2123,12 @@ its `KNOWN_OPEN` table.
   shows no waiter is live at teardown; the host owes all three
   (`l16_eager_spine_pool_join.hl` for the native half,
   `crates/hale-codegen/tests/target_lifecycle_cells.rs` per spine on
-  both targets).
+  both targets). The compiler emits them from the plan: each spine's
+  process rows, in the plan's order, its head before the frame and,
+  at `fn main`'s three exits (one emitter for the fall-through, the
+  test failure and `return`), the frame's pre-drain and the rows the
+  plan places after it in the frame's flush
+  (`crates/hale-codegen/tests/frame_flush_ir.rs`).
 - **Line 17, the pinned join set and order.** **Pending,
   conditionally:** the deferred spine's rule (subscription-less
   pinned children first, pinned subscribers in their slots) is the
@@ -2136,7 +2141,15 @@ its `KNOWN_OPEN` table.
   cooperative sibling field's `dissolve()` publishes to it under
   both spines, because a locus's own pinned entries are moved after
   its frame entry (`l17_pinned_join_eager.hl`,
-  `l17_pinned_join_deferred.hl`).
+  `l17_pinned_join_deferred.hl`). The join order is the compiler's,
+  not yet the plan's, and the plan and the two spines disagree on one
+  shape: for a main locus with a pinned field in a program with
+  pools, the plan places the main locus's head (the ingress quiesce,
+  the wait-abort, the pool join) before every field's drain, the
+  eager spine emits it so, and the deferred spine joins the pinned
+  field first (inventory row C14), at the exit of `fn main` or of
+  whichever fn built the main locus. The line's settlement decides
+  which.
 - **Line 18, the pre-drain.** Every teardown spine drains the bus
   before its first step. The pre-drain is a delivery point, not a
   witness that anything has quiesced. Not yet emitted by the eager
