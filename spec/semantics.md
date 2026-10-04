@@ -3135,7 +3135,7 @@ Dispatch (`lotus_bus_local_dispatch_keyed`):
 
 ```c
 int matched_specific = 0;
-for (entry in g_bus_entries with matching subject):
+for (entry in the registration table with matching subject):
     if (entry.key_filter_kind == 1
         && entry.key_lo == msg.key_lo
         && entry.key_hi == msg.key_hi) {
@@ -3145,7 +3145,7 @@ for (entry in g_bus_entries with matching subject):
         fire(entry);                  /* unkeyed receive-all */
     }
 if (!matched_specific) {
-    for (entry in g_bus_entries with matching subject):
+    for (entry in the registration table with matching subject):
         if (entry.key_filter_kind == 2) fire(entry);
 }
 ```
@@ -3155,6 +3155,14 @@ with a second pass only when there's no specific match (fallback
 case). For workloads with thousands of keyed subscribers per
 subject, a per-`(subject, key_lo, key_hi)` open-addressing index
 can be added later — YAGNI until a workload demands.
+
+A registration may come from any thread (the instantiating thread,
+a pinned anchor's thread initializing its subtree, a pool's worker
+initializing a pool root's), while any thread dispatches. The table
+is append-only: a registration appends under a lock, and a dispatch
+walks the entries published when the walk began, without one; an
+entry registered meanwhile is not in that walk (`spec/runtime.md`
+§ "Bus message router" and `lotus_arena.c`, inventory row R50).
 
 Two new runtime symbols:
 

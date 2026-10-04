@@ -1436,8 +1436,9 @@ binding-emit time.
 from their protocol layer call `std::bus::__local_dispatch(
 subject, bytes)`; the primitive backs onto
 `lotus_bus_dispatch_wire`, which looks up the subject's
-registered deserialize fn in `g_bus_entries` (same table the
-publish-side fanout consults), reconstructs the struct-layout
+registered deserialize fn in the registration table (`g_bus_table`,
+the same table the publish-side fanout consults), reconstructs the
+struct-layout
 bytes, and fans into local subscribers via
 `lotus_bus_local_dispatch`. Symmetric to the unix reader-
 thread path; out-of-band recv loops (any code holding wire
