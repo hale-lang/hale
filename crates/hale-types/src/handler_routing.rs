@@ -299,13 +299,29 @@ pub fn child_locus(
     declared: &DeclaredNames,
     import_renames: &[(Vec<String>, String)],
 ) -> (ChildRef, Option<DeclAt>) {
-    match resolve(te, declared, import_renames, &mut Vec::new()) {
-        Some((name, decl)) => {
-            let at = declared.decls.get(&decl).copied();
-            (ChildRef::Locus(name), at)
-        }
+    match resolve_locus_type(te, declared, import_renames) {
+        Some(r) => (ChildRef::Locus(r.name), r.at),
         None => (ChildRef::External(written_name(te)), None),
     }
+}
+
+/// One resolution, retaining both the lowered name and its declaring
+/// template. Ownership uses the latter even for an unminted bundle;
+/// neither consumer reconstructs a template from a mangled suffix.
+pub(crate) struct ResolvedLocusType {
+    pub name: String,
+    pub declaration: String,
+    pub at: Option<DeclAt>,
+}
+
+pub(crate) fn resolve_locus_type(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+) -> Option<ResolvedLocusType> {
+    let (name, declaration) = resolve(te, declared, import_renames, &mut Vec::new())?;
+    let at = declared.decls.get(&declaration).copied();
+    Some(ResolvedLocusType { name, declaration, at })
 }
 
 /// The locus name `te` denotes if it denotes one, with the name of the

@@ -341,3 +341,39 @@ fn non_singleton_ancestor_now_bubbles_via_threading() {
         stdout
     );
 }
+
+/// Resolve a written alias or import before building the bubble plan.
+/// `spawn` is synchronous, so the ownership/retention assertion needs
+/// neither a polling window nor the threaded bubble fixture's lock.
+fn resolved_birth_bubbles(tag: &str, birth: &str, alias: &str, renames: &[(Vec<String>, String)]) {
+    let src = format!("{alias}\n") + &[
+        "locus Ship { params { hull: Int = 0; } contract { expose hull: Int; }\n",
+        "    dissolve() { println(\"ship dissolved=\", self.hull); } }\n",
+        "locus Yard { fn spawn() { ", birth, " { hull: 7 }; ", birth, " { hull: 35 }; } }\n",
+        "main locus World {\n",
+        "    params { yard: Yard = Yard { }; }\n",
+        "    contract { consume hull: Int; }\n",
+        "    accept(s: Ship) { }\n",
+        "    mode harmonic() -> Int { let mut n: Int = 0; for c in self.children { n = n + 1; } return n; }\n",
+        "    mode bulk() -> Int { let mut n: Int = 0; for c in self.children { n = n + c.hull; } return n; }\n",
+        "    run() { self.yard.spawn(); println(\"count=\", self.harmonic()); println(\"total=\", self.bulk()); }\n",
+        "}\nfn main() { World { }; }\n",
+    ].concat();
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let bin = harness::unique_bin(tag);
+    hale_codegen::build_executable_with_options(&program, &bin, renames, &sanitize::options()).expect("build");
+    let out = run(&bin);
+    assert!(out.contains("count=2") && out.contains("total=42"), "both children belong to World: {out}");
+    assert_eq!(out.matches("ship dissolved=").count(), 2, "each child dissolves once: {out}");
+}
+
+#[test]
+fn aliased_birth_bubbles_to_the_accepting_ancestor() {
+    resolved_birth_bubbles("hale_c3_bubble_alias", "Vessel", "type Vessel = Ship;", &[]);
+}
+
+#[test]
+fn imported_birth_bubbles_to_the_accepting_ancestor() {
+    resolved_birth_bubbles("hale_c3_bubble_import", "lib::Vessel", "",
+        &[(vec!["lib".into(), "Vessel".into()], "Ship".into())]);
+}

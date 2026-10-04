@@ -576,3 +576,57 @@ fn qualified_birth_does_not_join_an_unrelated_user_name() {
     assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.own Stream - main 0"]);
 }
+
+/// C3: a real import has no bare `Kid` declaration in the seed. Both
+/// params and body births must join the imported declaration identity;
+/// the static instance remains beside its dynamic-placement hole.
+#[test]
+fn imported_births_join_the_declaration_the_loader_resolved() {
+    let dir = std::env::temp_dir().join(format!("hale-c3-imported-births-{}", std::process::id()));
+    let seed = dir.join("seed");
+    let lib = dir.join("lib");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("lib.hl"), "locus Kid { }\n").unwrap();
+    std::fs::write(seed.join("main.hl"), r#"
+        import "../lib" as lib;
+        main locus App {
+            params { k: lib::Kid = lib::Kid { }; }
+            run() { lib::Kid { }; }
+        }
+        fn main() { App { }; lib::Kid { }; }
+    "#).unwrap();
+    let s = Snapshot::load(&seed, LoadMode::WholeSeed, &Disk, Config::check(true, false))
+        .unwrap_or_else(|_| panic!("load imported seed"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    let kid = s.import_renames().iter()
+        .find(|(path, _)| path == &["lib", "Kid"])
+        .map(|(_, name)| name.as_str()).expect("resolved import");
+    let g = s.demand_ownership_graph().expect("ownership");
+    let births: Vec<_> = g.sites.iter().filter(|b| b.child_ty == kid).collect();
+    assert_eq!(births.len(), 2, "qualified births are collected: {:?}", g.sites);
+    assert_eq!(births.iter().map(|b| b.params_default).collect::<Vec<_>>(), [true, false]);
+    let declared = &g.declarations[births[0].child_decl.unwrap()];
+    assert!(declared.id.is_some(), "the loader minted the declaration");
+    assert!(births.iter().all(|b| b.child_decl == births[0].child_decl && b.child_key.as_deref() == Some(kid)));
+    assert!(g.free_fn_sites.iter().any(|b| b.child_key.as_deref() == Some(kid) && b.child_decl == births[0].child_decl));
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -".to_string(), format!("1 App.k {kid} - main 0")]);
+    assert_eq!(locus_holes(m), [format!("{kid} instance born outside the arrangement: owner and placement resolve at runtime")]);
+}
+
+#[test]
+fn aliased_body_and_free_function_births_are_dynamic() {
+    let s = snapshot(r#"
+        locus Kid { }
+        type Held = Kid;
+        main locus App {
+            params { k: Kid = Kid { }; }
+            run() { Held { }; }
+        }
+        fn main() { App { }; Held { }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.k Kid - main 0"]);
+    assert_eq!(locus_holes(m), ["Kid instance born outside the arrangement: owner and placement resolve at runtime"]);
+}

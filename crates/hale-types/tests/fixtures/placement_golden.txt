@@ -4747,6 +4747,18 @@ row	App@literal1	App	main	default
 row	App@literal1.own	Stream	main	default
 dynamic	__StdIoTcpStream	on main	in the seed
 
+== crates/hale-types/tests/model_arrangement.rs#61954067
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	<hole>	on main|unresolved declaration `lib::Kid`	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#f143a939
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.k	Kid	main	default
+row	Kid@main1	Kid	main	default
+dynamic	Kid	on main	in the seed
+
 == crates/hale-types/tests/model_builder.rs#0bc750a5
 root	App	the entry
 row	App@literal1	App	main	default
@@ -5055,6 +5067,16 @@ shared	dynamic	sites in the seed #a43e7c60
 == crates/hale-types/tests/ownership_graph.rs#da6bfa63
 row	Parent@main1	Parent	main	default
 dynamic	<hole>	on main|unresolved declaration `lib::Child`	in the seed
+
+== crates/hale-types/tests/ownership_graph.rs#dca2b001
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	Kid	on main	in the seed
+
+== crates/hale-types/tests/ownership_graph.rs#360aa0af
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	<hole>	on main|unresolved declaration `lib::Kid`|unresolved declaration `unknown::Kid`	in the seed
 
 == crates/hale-types/tests/perspective_serves.rs#a0f42efe
 root	App	the entry

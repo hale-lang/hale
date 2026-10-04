@@ -38,7 +38,7 @@ use hale_graph::ids::SiteId;
 use hale_syntax::ast::*;
 use hale_syntax::Span;
 
-use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
+use crate::handler_routing::{child_locus_name, resolve_locus_type, ChildRef, DeclAt, DeclaredNames};
 use crate::placement::{Enclosing, HoleAt, HoleKind, Origin, PlacementTable, SiteRef, SiteUniverse};
 use crate::resolve::TopScope;
 use crate::symbol::Bundle;
@@ -162,22 +162,26 @@ pub struct OwnedSite {
     /// mode, a failure handler or a params default.
     pub member: Option<String>,
     /// The declaration the literal names, an index into
-    /// [`OwnershipGraph::declarations`]: the first of its name in
-    /// declaration order, a qualified path resolved as an `accept`'s
-    /// type is. `None` for a path that names no declaration here.
+    /// [`OwnershipGraph::declarations`], joined by the resolved declaration
+    /// identity (by name only for unminted input). `None` for a locus
+    /// declared outside this graph, such as bundled stdlib analysis.
     pub child_decl: Option<usize>,
     /// The literal's child in the terms of [`OwnershipGraph::accepts`]:
     /// the locus `child_locus_name` resolves it to, a generic template
     /// specialized by the binding's or field's declared type. `None`
-    /// where the graph cannot say which locus is born: a qualified path
-    /// that resolves to none, a generic template no declared type
-    /// specializes. `child_ty` and `resolution` stay keyed by the
-    /// literal's last segment, as lowering and the model read them.
+    /// where a generic template has no declared type to specialize it.
+    /// `child_ty` uses this resolved name too (the template
+    /// name where no specialization is known), so bubbling never keys
+    /// an imported or aliased birth by its written final segment.
     pub child_key: Option<String>,
     /// This literal was walked inside a params initializer, including
     /// nested expressions. Structural provenance survives desugars that
     /// copy an expression with its original source span (F.40 C3).
     pub params_default: bool,
+    /// The literal itself is a discarded expression statement. A
+    /// nested initializer or a block tail is a value use even when an
+    /// enclosing expression's result is discarded.
+    pub bare_statement: bool,
 }
 
 /// A locus birth in a free function. Collected by the same walk as
@@ -830,7 +834,11 @@ struct LocusFacts {
 
 /// A single instantiation literal captured during the walk.
 struct RawSite {
+    // Filled once by `identify_child` after the structural walk, when
+    // the literal's declared binding type is also known.
     child_ty: String,
+    child_decl: Option<usize>,
+    child_key: Option<String>,
     span: Span,
     /// The literal's path as written.
     path: Vec<String>,
@@ -841,15 +849,14 @@ struct RawSite {
     enclosing_decl: usize,
     member: Option<String>,
     params_default: bool,
+    bare_statement: bool,
 }
 
-/// The product of one walk: per-locus facts + the whole-bundle set of
-/// locus type names (so a literal can be told apart from a plain
-/// struct literal) + the closed-world entry-point flag.
+/// The product of one structural walk and shared child resolution:
+/// per-locus facts, declaration identities and the closed-world entry flag.
 struct OwnershipWalk {
     facts: BTreeMap<String, LocusFacts>,
     declarations: Vec<LocusDeclRow>,
-    declared: DeclaredNames,
     has_entry_point: bool,
     accept_rows: AcceptRows,
     free_fn_sites: Vec<RawSite>,
@@ -857,27 +864,9 @@ struct OwnershipWalk {
 
 /// Walk every locus and free function once, collecting accepts,
 /// instantiations and their birth context, projection and singleton
-/// facts, plus the set of locus names and the closed-world entry flag.
+/// facts, plus declaration identities and the closed-world entry flag.
 /// This is the single source of truth `build_ownership_graph` consumes.
 fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
-    // Pass 1: gather every locus type name, so pass 2 can tell a
-    // locus-instantiation literal apart from a plain struct literal.
-    let mut locus_types: BTreeSet<String> = BTreeSet::new();
-    fn names(items: &[TopDecl], out: &mut BTreeSet<String>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    out.insert(l.name.name.clone());
-                }
-                TopDecl::Module(m) => names(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        names(&program.items, &mut locus_types);
-    }
-
     // Closed-world gate, mirroring `build_bus_graph`'s
     // `has_entry_point`: a bare top-level `fn main` OR a `main locus`
     // makes the ownership DAG complete (no dynamic attach construct).
@@ -895,13 +884,13 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
     let declared = DeclaredNames::of(&programs);
     let renames = bundle.import_renames.as_slice();
 
-    // Pass 2: per-locus facts.
+    // Collect candidates before resolving them: their whole binding
+    // supplies any specialization, and all declarations are then known.
     let mut facts: BTreeMap<String, LocusFacts> = BTreeMap::new();
     let mut declarations: Vec<LocusDeclRow> = Vec::new();
     let mut accept_rows: Vec<AcceptRow> = Vec::new();
     let mut free_fn_sites: Vec<RawSite> = Vec::new();
     struct WalkCx<'a> {
-        locus_types: &'a BTreeSet<String>,
         declared: &'a DeclaredNames,
         renames: &'a [(Vec<String>, String)],
         snapshot: &'a crate::snapshot::Snapshot,
@@ -914,7 +903,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         accept_rows: &mut Vec<AcceptRow>,
         free_fn_sites: &mut Vec<RawSite>,
     ) {
-        let (locus_types, declared, renames) = (cx.locus_types, cx.declared, cx.renames);
+        let (declared, renames) = (cx.declared, cx.renames);
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
@@ -968,31 +957,30 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                 }
                                 collect_sites_block(
                                     &ld.body,
-                                    locus_types,
                                     &mut entry.instantiates,
                                 );
                             }
                             LocusMember::Fn(fd) => {
                                 let from = entry.instantiates.len();
-                                collect_sites_block(
-                                    &fd.body,
-                                    locus_types,
-                                    &mut entry.instantiates,
-                                );
+                                collect_sites_fn(fd, &mut entry.instantiates);
                                 for s in &mut entry.instantiates[from..] {
                                     s.member = Some(fd.name.name.clone());
                                 }
                             }
                             LocusMember::Mode(md) => collect_sites_block(
                                 &md.body,
-                                locus_types,
                                 &mut entry.instantiates,
                             ),
                             LocusMember::Failure(fl) => collect_sites_block(
                                 &fl.body,
-                                locus_types,
                                 &mut entry.instantiates,
                             ),
+                            LocusMember::BirthCheck(bc) => {
+                                collect_sites_expr(&bc.cond, &mut entry.instantiates);
+                                if let Some(payload) = &bc.payload {
+                                    collect_sites_expr(payload, &mut entry.instantiates);
+                                }
+                            }
                             // A params default `child: C = C { ... }` is
                             // a real ownership edge (this locus gives
                             // birth to `C` as its own initial state) —
@@ -1008,7 +996,6 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                         let at = entry.instantiates.len();
                                         collect_sites_expr(
                                             e,
-                                            locus_types,
                                             &mut entry.instantiates,
                                         );
                                         declare_site(
@@ -1030,22 +1017,25 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                         s.enclosing_decl = decl;
                     }
                 }
-                TopDecl::Fn(f) => collect_sites_block(&f.body, locus_types, free_fn_sites),
+                TopDecl::Fn(f) => collect_sites_fn(f, free_fn_sites),
                 TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites),
                 _ => {}
             }
         }
     }
-    let cx = WalkCx { locus_types: &locus_types, declared: &declared, renames, snapshot: &bundle.snapshot };
+    let cx = WalkCx { declared: &declared, renames, snapshot: &bundle.snapshot };
     for program in &programs {
         walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites);
     }
 
+    for facts in facts.values_mut() {
+        facts.instantiates.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
+    }
+    free_fn_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     OwnershipWalk {
         free_fn_sites,
         facts,
         declarations,
-        declared: declared.clone(),
         has_entry_point,
         accept_rows: AcceptRows {
             rows: accept_rows,
@@ -1058,10 +1048,11 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
 /// Record `declared` as the type of the site `value` pushed at `at`, when
 /// `value` is itself the literal (not a literal nested inside it).
 fn declare_site(out: &mut [RawSite], at: usize, value: &Expr, declared: Option<&TypeExpr>) {
-    let (Some(te), Expr::Struct { span, .. }) = (declared, value) else {
-        return;
-    };
-    if let Some(site) = out.get_mut(at).filter(|s| s.span == *span) {
+    let (Some(te), Expr::Struct { .. }) = (declared, value) else { return };
+    // The walk pushes the whole literal before its initializer values,
+    // even when that literal later resolves to a plain record. A nested
+    // locus cannot inherit the record's type through an overlapping span.
+    if let Some(site) = out.get_mut(at) {
         site.declared = Some(te.clone());
     }
 }
@@ -1070,40 +1061,46 @@ fn declare_site(out: &mut [RawSite], at: usize, value: &Expr, declared: Option<&
 /// site: the declaration the literal names and the child an `accept`
 /// would have to name to own it.
 fn identify_child(
-    site: &RawSite,
+    site: &mut RawSite,
     declarations: &[LocusDeclRow],
     declared: &DeclaredNames,
     renames: &[(Vec<String>, String)],
-) -> (Option<usize>, Option<String>) {
-    let first = |name: &str| declarations.iter().position(|d| d.name == name);
-    if site.path.len() > 1 {
-        // A qualified literal names what the same path names in an
-        // `accept`: an import or a `std::` path, resolved.
-        let te = TypeExpr::Named {
-            path: QualifiedName {
-                segments: site.path.iter().map(|s| Ident::new(s.clone(), site.span)).collect(),
-                span: site.span,
-            },
-            generic_args: Vec::new(),
+    snapshot: &crate::snapshot::Snapshot,
+) -> bool {
+    let written = TypeExpr::Named {
+        path: QualifiedName {
+            segments: site.path.iter().map(|s| Ident::new(s.clone(), site.span)).collect(),
             span: site.span,
-        };
-        return match child_locus_name(&te, declared, renames) {
-            ChildRef::Locus(name) => (first(&name), Some(name)),
-            ChildRef::External(_) => (None, None),
-        };
-    }
-    let decl = first(&site.child_ty);
-    let generic = decl.is_some_and(|d| declarations[d].generic);
-    if !generic {
-        return (decl, Some(site.child_ty.clone()));
-    }
-    // A template is born as the specialization its binding or field
-    // declares; without one the graph cannot say which.
-    let key = site.declared.as_ref().and_then(|te| match child_locus_name(te, declared, renames) {
-        ChildRef::Locus(name) => Some(name),
-        ChildRef::External(_) => None,
-    });
-    (decl, key)
+        },
+        generic_args: Vec::new(),
+        span: site.span,
+    };
+    // The same resolver as accept and handler types follows aliases,
+    // imports and stdlib paths. Plain records and unresolved paths are
+    // not ownership births, even if their final segment names a locus.
+    let Some(resolved) = resolve_locus_type(&written, declared, renames) else { return false };
+    let child_decl = match resolved.at {
+        Some(DeclAt::Program(node)) if !node.is_none() => snapshot.site_id(node)
+            .and_then(|id| declarations.iter().position(|d| d.id == Some(id))),
+        Some(DeclAt::Program(_)) => declarations.iter().position(|d| d.name == resolved.declaration),
+        Some(DeclAt::Stdlib(_)) | None => None,
+    };
+    let generic = child_decl.is_some_and(|d| declarations[d].generic);
+    let key = if generic && resolved.name == resolved.declaration {
+        // A bare template needs its whole binding's declared type. An
+        // alias that already resolves to a specialization keeps that
+        // answer; it does not need an additional type annotation.
+        site.declared.as_ref()
+            .and_then(|te| resolve_locus_type(te, declared, renames))
+            .filter(|r| r.declaration == resolved.declaration && r.name != r.declaration)
+            .map(|r| r.name)
+    } else {
+        Some(resolved.name)
+    };
+    site.child_ty = key.clone().unwrap_or(resolved.declaration);
+    site.child_decl = child_decl;
+    site.child_key = key;
+    true
 }
 
 // === Build ========================================================
@@ -1162,12 +1159,8 @@ pub fn build_ownership_graph(
     for (enclosing, f) in &walk.facts {
         for site in &f.instantiates {
             let child = &site.child_ty;
-            let (child_decl, child_key) = identify_child(
-                site,
-                &walk.declarations,
-                &walk.declared,
-                &bundle.import_renames,
-            );
+            let child_decl = site.child_decl;
+            let child_key = site.child_key.clone();
 
             // Open world: the DAG may be completed by a downstream
             // consumer — resolve everything conservatively.
@@ -1190,6 +1183,7 @@ pub fn build_ownership_graph(
                     child_decl,
                     child_key,
                     params_default: site.params_default,
+                    bare_statement: site.bare_statement,
                 });
                 continue;
             }
@@ -1224,15 +1218,16 @@ pub fn build_ownership_graph(
                 child_decl,
                 child_key,
                 params_default: site.params_default,
+                bare_statement: site.bare_statement,
             });
         }
     }
 
     let free_fn_sites = walk.free_fn_sites.iter().map(|site| {
-        let (child_decl, child_key) = identify_child(
-            site, &walk.declarations, &walk.declared, &bundle.import_renames,
-        );
-        FreeFnSite { child_ty: site.child_ty.clone(), span: site.span, child_decl, child_key }
+        FreeFnSite {
+            child_ty: site.child_ty.clone(), span: site.span,
+            child_decl: site.child_decl, child_key: site.child_key.clone(),
+        }
     }).collect();
     OwnershipGraph {
         sites,
@@ -1459,82 +1454,97 @@ fn relate(
 
 // === Instantiation-literal walk ===================================
 
-/// Collect every locus-instantiation literal (`I { ... }` where `I` is
-/// a known locus type) reachable from a block, walking every
-/// sub-statement and sub-expression.
+/// Collect every literal candidate in fn defaults and bodies. The shared
+/// resolver later retains the locus births; the walk itself makes no
+/// name-based classification.
+fn collect_sites_fn(f: &FnDecl, out: &mut Vec<RawSite>) {
+    for param in &f.params {
+        if let Some(value) = &param.default {
+            let at = out.len();
+            collect_sites_expr(value, out);
+            declare_site(out, at, value, Some(&param.ty));
+        }
+    }
+    collect_sites_block(&f.body, out);
+}
+
 fn collect_sites_block(
     b: &Block,
-    locus_types: &BTreeSet<String>,
     out: &mut Vec<RawSite>,
 ) {
     for s in &b.stmts {
-        collect_sites_stmt(s, locus_types, out);
+        collect_sites_stmt(s, out);
     }
     if let Some(tail) = &b.tail {
-        collect_sites_expr(tail, locus_types, out);
+        collect_sites_expr(tail, out);
     }
 }
 
 fn collect_sites_stmt(
     s: &Stmt,
-    locus_types: &BTreeSet<String>,
     out: &mut Vec<RawSite>,
 ) {
     match s {
         Stmt::Let { value, ty, .. } => {
             let at = out.len();
-            collect_sites_expr(value, locus_types, out);
+            collect_sites_expr(value, out);
             declare_site(out, at, value, ty.as_ref());
         }
         Stmt::LetTuple { value, .. } => {
-            collect_sites_expr(value, locus_types, out)
+            collect_sites_expr(value, out)
         }
         Stmt::Assign { target, value, .. } => {
             for seg in &target.tail {
                 if let LValueSeg::Index(e) = seg {
-                    collect_sites_expr(e, locus_types, out);
+                    collect_sites_expr(e, out);
                 }
             }
-            collect_sites_expr(value, locus_types, out);
+            collect_sites_expr(value, out);
         }
-        Stmt::If(ifstmt) => collect_sites_if(ifstmt, locus_types, out),
-        Stmt::Match(m) => collect_sites_match(m, locus_types, out),
+        Stmt::If(ifstmt) => collect_sites_if(ifstmt, out),
+        Stmt::Match(m) => collect_sites_match(m, out),
         Stmt::For { iter, body, .. } => {
-            collect_sites_expr(iter, locus_types, out);
-            collect_sites_block(body, locus_types, out);
+            collect_sites_expr(iter, out);
+            collect_sites_block(body, out);
         }
         Stmt::While { cond, body, .. } => {
-            collect_sites_expr(cond, locus_types, out);
-            collect_sites_block(body, locus_types, out);
+            collect_sites_expr(cond, out);
+            collect_sites_block(body, out);
         }
         Stmt::Return(opt, _) => {
             if let Some(e) = opt {
-                collect_sites_expr(e, locus_types, out);
+                collect_sites_expr(e, out);
             }
         }
         Stmt::Fail { value, .. } => {
-            collect_sites_expr(value, locus_types, out)
+            collect_sites_expr(value, out)
         }
         Stmt::Recovery { args, .. } => {
             for a in args {
-                collect_sites_expr(a, locus_types, out);
+                collect_sites_expr(a, out);
             }
         }
         Stmt::Violate { payload, .. } => {
             if let Some(e) = payload {
-                collect_sites_expr(e, locus_types, out);
+                collect_sites_expr(e, out);
             }
         }
         Stmt::Send { subject, value, .. } => {
-            collect_sites_expr(subject, locus_types, out);
-            collect_sites_expr(value, locus_types, out);
+            collect_sites_expr(subject, out);
+            collect_sites_expr(value, out);
         }
         Stmt::ShmWrite { max, body, .. } => {
-            collect_sites_expr(max, locus_types, out);
-            collect_sites_block(body, locus_types, out);
+            collect_sites_expr(max, out);
+            collect_sites_block(body, out);
         }
-        Stmt::Block(b) => collect_sites_block(b, locus_types, out),
-        Stmt::Expr(e) => collect_sites_expr(e, locus_types, out),
+        Stmt::Block(b) => collect_sites_block(b, out),
+        Stmt::Expr(e) => {
+            let at = out.len();
+            collect_sites_expr(e, out);
+            if matches!(e, Expr::Struct { .. }) {
+                out[at].bare_statement = true;
+            }
+        }
         // No sub-expressions to walk.
         Stmt::Reperspective { .. }
         | Stmt::Yield(_)
@@ -1546,91 +1556,87 @@ fn collect_sites_stmt(
 
 fn collect_sites_if(
     ifstmt: &IfStmt,
-    locus_types: &BTreeSet<String>,
     out: &mut Vec<RawSite>,
 ) {
-    collect_sites_expr(&ifstmt.cond, locus_types, out);
-    collect_sites_block(&ifstmt.then_block, locus_types, out);
+    collect_sites_expr(&ifstmt.cond, out);
+    collect_sites_block(&ifstmt.then_block, out);
     match ifstmt.else_block.as_deref() {
         None => {}
-        Some(ElseBranch::Else(b)) => collect_sites_block(b, locus_types, out),
+        Some(ElseBranch::Else(b)) => collect_sites_block(b, out),
         Some(ElseBranch::ElseIf(inner)) => {
-            collect_sites_if(inner, locus_types, out)
+            collect_sites_if(inner, out)
         }
     }
 }
 
 fn collect_sites_match(
     m: &MatchStmt,
-    locus_types: &BTreeSet<String>,
     out: &mut Vec<RawSite>,
 ) {
-    collect_sites_expr(&m.scrutinee, locus_types, out);
+    collect_sites_expr(&m.scrutinee, out);
     for arm in &m.arms {
         if let Some(g) = &arm.guard {
-            collect_sites_expr(g, locus_types, out);
+            collect_sites_expr(g, out);
         }
         match &arm.body {
-            MatchArmBody::Expr(e) => collect_sites_expr(e, locus_types, out),
-            MatchArmBody::Block(b) => collect_sites_block(b, locus_types, out),
+            MatchArmBody::Expr(e) => collect_sites_expr(e, out),
+            MatchArmBody::Block(b) => collect_sites_block(b, out),
         }
     }
 }
 
 fn collect_sites_expr(
     e: &Expr,
-    locus_types: &BTreeSet<String>,
     out: &mut Vec<RawSite>,
 ) {
     match e {
         Expr::Struct { path, inits, span, .. } => {
-            if let Some(name) = path.segments.last().map(|s| &s.name) {
-                if locus_types.contains(name) {
-                    out.push(RawSite {
-                        child_ty: name.clone(),
-                        span: *span,
-                        path: path.segments.iter().map(|s| s.name.clone()).collect(),
-                        declared: None,
-                        enclosing_decl: 0,
-                        member: None,
-                        params_default: false,
-                    });
-                }
-            }
+            out.push(RawSite {
+                child_ty: String::new(),
+                child_decl: None,
+                child_key: None,
+                span: *span,
+                path: path.segments.iter().map(|s| s.name.clone()).collect(),
+                declared: None,
+                enclosing_decl: 0,
+                member: None,
+                params_default: false,
+                bare_statement: false,
+            });
             for init in inits {
-                collect_sites_expr(&init.value, locus_types, out);
+                collect_sites_expr(&init.value, out);
             }
         }
         Expr::Binary { left, right, .. } => {
-            collect_sites_expr(left, locus_types, out);
-            collect_sites_expr(right, locus_types, out);
+            collect_sites_expr(left, out);
+            collect_sites_expr(right, out);
         }
         Expr::Unary { operand, .. } => {
-            collect_sites_expr(operand, locus_types, out)
+            collect_sites_expr(operand, out)
         }
         Expr::Call { callee, args, .. } => {
-            collect_sites_expr(callee, locus_types, out);
+            collect_sites_expr(callee, out);
             for a in args {
-                collect_sites_expr(a, locus_types, out);
+                collect_sites_expr(a, out);
             }
         }
         Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            collect_sites_expr(receiver, locus_types, out)
+            collect_sites_expr(receiver, out)
         }
         Expr::Index { receiver, index, .. } => {
-            collect_sites_expr(receiver, locus_types, out);
-            collect_sites_expr(index, locus_types, out);
+            collect_sites_expr(receiver, out);
+            collect_sites_expr(index, out);
         }
         Expr::Tuple(items, _) | Expr::Array(items, _) => {
             for it in items {
-                collect_sites_expr(it, locus_types, out);
+                collect_sites_expr(it, out);
             }
         }
-        Expr::Block(b) => collect_sites_block(b, locus_types, out),
-        Expr::If(ifstmt) => collect_sites_if(ifstmt, locus_types, out),
-        Expr::Match(m) => collect_sites_match(m, locus_types, out),
+        Expr::Block(b) => collect_sites_block(b, out),
+        Expr::If(ifstmt) => collect_sites_if(ifstmt, out),
+        Expr::Match(m) => collect_sites_match(m, out),
         Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
-            collect_sites_expr(inner, locus_types, out)
+            collect_sites_expr(inner, out)
         }
         Expr::Approx {
             left,
@@ -1638,24 +1644,24 @@ fn collect_sites_expr(
             tolerance,
             ..
         } => {
-            collect_sites_expr(left, locus_types, out);
-            collect_sites_expr(right, locus_types, out);
-            collect_sites_expr(tolerance, locus_types, out);
+            collect_sites_expr(left, out);
+            collect_sites_expr(right, out);
+            collect_sites_expr(tolerance, out);
         }
         Expr::Range { lo, hi, .. } => {
-            collect_sites_expr(lo, locus_types, out);
-            collect_sites_expr(hi, locus_types, out);
+            collect_sites_expr(lo, out);
+            collect_sites_expr(hi, out);
         }
         Expr::ArrayRepeat { val, .. } => {
-            collect_sites_expr(val, locus_types, out)
+            collect_sites_expr(val, out)
         }
         Expr::Or {
             inner, disposition, ..
         } => {
-            collect_sites_expr(inner, locus_types, out);
+            collect_sites_expr(inner, out);
             match disposition {
                 OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    collect_sites_expr(e, locus_types, out)
+                    collect_sites_expr(e, out)
                 }
                 OrDisposition::Raise(_)
                 | OrDisposition::Discard(_)

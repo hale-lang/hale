@@ -153,3 +153,13 @@ fn a_cross_pool_spawn_in_another_locus_default_is_refused_by_lowering_alone() {
         "expected lowering's own refusal, got: {msg}"
     );
 }
+
+/// Two aliased value uses must be rejected by the shared law before
+/// lowering gets to the first one, with the resolved child's plan.
+#[test]
+fn aliased_cross_pool_births_are_refused_together_by_the_law() {
+    let src = format!("type Vessel = Ship;\n{}", crosspool_src("let a = Vessel { hull: 7 }; let b = Vessel { hull: 8 };"));
+    let err = build_err("hale_c3_xpool_alias", &src);
+    let msg = err.to_string();
+    assert_eq!(msg.matches(FIRE_AND_FORGET).count(), 2, "expected the law's two refusals, got: {msg}");
+}

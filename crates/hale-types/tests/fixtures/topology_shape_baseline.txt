@@ -1610,6 +1610,8 @@ crates/hale-types/tests/model_arrangement.rs#2 7a3dab914ecdbe5c
 crates/hale-types/tests/model_arrangement.rs#3 0c8b7bcce04251ee
 crates/hale-types/tests/model_arrangement.rs#4 82950132085d2132
 crates/hale-types/tests/model_arrangement.rs#5 703d318df42a5e06
+crates/hale-types/tests/model_arrangement.rs#6 e28243cd81fc42d6
+crates/hale-types/tests/model_arrangement.rs#7 82950132085d2132
 crates/hale-types/tests/model_builder.rs#1 edeedb35b2b7fe31
 crates/hale-types/tests/model_builder.rs#10 93de17504f35f3b9
 crates/hale-types/tests/model_builder.rs#11 199146dcdfc4cd48
@@ -1655,6 +1657,7 @@ crates/hale-types/tests/ownership_graph.rs#16 0c1de97f91580545
 crates/hale-types/tests/ownership_graph.rs#17 85057b1521345b40
 crates/hale-types/tests/ownership_graph.rs#18 16924f2abbf29e62
 crates/hale-types/tests/ownership_graph.rs#2 096454646c768f24
+crates/hale-types/tests/ownership_graph.rs#20 a51804050b3969db
 crates/hale-types/tests/ownership_graph.rs#3 cfc3e38749c718c5
 crates/hale-types/tests/ownership_graph.rs#4 a650508b938fd80a
 crates/hale-types/tests/ownership_graph.rs#5 5bb8e742c071c47c

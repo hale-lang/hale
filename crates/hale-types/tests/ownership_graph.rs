@@ -835,4 +835,157 @@ fn resolved_graph_resolves_an_imported_accept_type() {
     let want: std::collections::BTreeSet<String> = ["ImportedChild".to_string()].into();
     assert_eq!(resolved.ownership.accepts.get("Parent"), Some(&want));
     assert_eq!(resolved.bundle().import_renames, renames, "the bundle view carries them too");
+    let birth = site(&resolved.ownership, "Parent", "ImportedChild");
+    assert_eq!(birth.child_key.as_deref(), Some("ImportedChild"));
+    assert_eq!(birth.resolution, OwnerResolution::SelfOwned("Parent".into()));
+    let declaration = &resolved.ownership.declarations[birth.child_decl.unwrap()];
+    assert_eq!(declaration.name, "ImportedChild");
+    assert!(declaration.id.is_some(), "lowering's bundle carries the minted snapshot");
+    let child = resolved.merged.items.iter().find_map(|d| match d {
+        hale_syntax::ast::TopDecl::Locus(l) if l.name.name == "ImportedChild" => Some(l.id),
+        _ => None,
+    }).unwrap();
+    assert_eq!(declaration.id, resolved.snapshot.site_id(child));
+}
+
+/// An alias is a birth of its target declaration, including in a free
+/// function. The written alias is never an ownership or bubbling key.
+#[test]
+fn aliased_births_use_the_resolved_child() {
+    let g = graph(r#"
+        locus Kid { }
+        type First = Kid;
+        type Held = First;
+        main locus App {
+            accept(k: Held) { }
+            run() { Held { }; }
+        }
+        fn make() { Held { }; }
+        fn main() { App { }; make(); }
+    "#);
+    let birth = site(&g, "App", "Kid");
+    assert_eq!(birth.child_key.as_deref(), Some("Kid"));
+    assert_eq!(birth.resolution, OwnerResolution::SelfOwned("App".into()));
+    assert_eq!(g.declarations[birth.child_decl.unwrap()].name, "Kid");
+    let free = g.free_fn_sites.iter().find(|s| s.child_ty == "Kid").expect("free-function birth");
+    assert_eq!(free.child_decl, birth.child_decl);
+    assert_eq!(free.child_key, birth.child_key);
+}
+
+/// A bound template and a specialized alias have the same accepting
+/// key, while retaining the template's declaration for the model join.
+#[test]
+fn generic_births_retain_template_and_specialization() {
+    let g = graph(r#"
+        locus Cell<T> { }
+        type IntCell = Cell<Int>;
+        main locus App {
+            accept(c: Cell<Int>) { }
+            run() {
+                let explicit: Cell<Int> = Cell { };
+                let aliased = IntCell { };
+            }
+        }
+        fn main() { App { }; }
+    "#);
+    let births: Vec<_> = g.sites.iter().filter(|s| s.enclosing_locus == "App").collect();
+    assert_eq!(births.len(), 2);
+    for birth in births {
+        assert_eq!(birth.child_ty, "Cell_Int");
+        assert_eq!(birth.child_key.as_deref(), Some("Cell_Int"));
+        assert_eq!(g.declarations[birth.child_decl.unwrap()].name, "Cell");
+        assert_eq!(birth.resolution, OwnerResolution::SelfOwned("App".into()));
+    }
+}
+
+/// A qualified plain record and an unresolved path must not become
+/// births of a user locus whose bare name happens to match their leaf.
+#[test]
+fn qualified_records_and_unknown_paths_are_not_locus_births() {
+    let prog = parse_source(r#"
+        locus Kid { }
+        type ImportedRecord { n: Int = 0; }
+        main locus App {
+            run() { lib::Kid { }; unknown::Kid { }; }
+        }
+        fn main() { App { }; }
+    "#).unwrap();
+    let renames = vec![(vec!["lib".into(), "Kid".into()], "ImportedRecord".into())];
+    let mut programs = BTreeMap::new();
+    programs.insert(String::new(), &prog);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = renames;
+    let (top, _) = build_top_scope(&bundle);
+    let g = build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top));
+    assert!(g.sites.is_empty(), "{:?}", g.sites);
+    assert_eq!(g.free_fn_sites.len(), 1, "only the actual App birth remains");
+}
+
+/// The cross-pool law consumes the birth row's resolved key and value
+/// context. An alias does not evade it, and bare aliases remain legal.
+#[test]
+fn aliased_cross_pool_birth_uses_the_resolved_plan() {
+    for (body, count) in [("let s = Vessel { hull: 7 };", 1), ("Vessel { hull: 7 };", 0)] {
+        let src = format!("type Vessel = Ship;\n{}", crosspool_src(body));
+        let prog = parse_source(&src).unwrap();
+        let errors: Vec<_> = hale_types::check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), count, "{body}: {errors:?}");
+        for error in errors {
+            assert!(error.message.starts_with(FIRE_AND_FORGET), "{error:?}");
+            assert_eq!(&src[error.span.start.as_usize()..error.span.end.as_usize()], "Vessel { hull: 7 }");
+        }
+    }
+}
+
+#[test]
+fn imported_cross_pool_birth_uses_the_resolved_plan() {
+    for (body, count) in [("let s = lib::Vessel { hull: 7 };", 1), ("lib::Vessel { hull: 7 };", 0)] {
+        let src = crosspool_src(body);
+        let prog = parse_source(&src).unwrap();
+        let renames = vec![(vec!["lib".into(), "Vessel".into()], "Ship".into())];
+        let s = hale_frontend::snapshot::Snapshot::from_program(prog, renames, hale_frontend::snapshot::Config::check(false, false))
+            .unwrap_or_else(|_| panic!("load"));
+        let checked = s.demand_check().expect("check");
+        let errors: Vec<_> = checked.diags.iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), count, "{body}: {errors:?}");
+        for error in errors {
+            assert!(error.message.contains("is fire-and-forget"), "{error:?}");
+            assert_eq!(&src[error.span.start.as_usize()..error.span.end.as_usize()], "lib::Vessel { hull: 7 }");
+        }
+    }
+}
+
+/// Defaults belong to the fn's birth inventory too. Their declared
+/// parameter type specializes a template, while the body keeps its
+/// independent statement/value context.
+#[test]
+fn function_defaults_are_resolved_in_the_same_birth_walk() {
+    let g = graph("locus Cell<T> { }\n\
+        locus Kid { }\n\
+        main locus App {\n\
+            fn take(c: Cell<Int> = Cell { }) { Kid { }; let held = Kid { }; }\n\
+        }\n\
+        fn make(k: Kid = Kid { }) { }\n\
+        fn main() { App { }; }\n");
+    let cell = site(&g, "App", "Cell_Int");
+    assert!(!cell.params_default && !cell.bare_statement);
+    assert_eq!(cell.member.as_deref(), Some("take"));
+    let kinds: Vec<_> = g.sites.iter().filter(|b| b.child_ty == "Kid").map(|b| b.bare_statement).collect();
+    assert_eq!(kinds, [true, false]);
+    assert!(g.free_fn_sites.iter().any(|b| b.child_key.as_deref() == Some("Kid")));
+}
+
+#[test]
+fn birth_checks_contribute_value_births() {
+    let g = graph("locus Kid { }\n\
+        fn failed(k: Kid) -> Bool { return false; }\n\
+        main locus App {\n\
+            params { n: Int = 0; }\n\
+            closure broken { captures: n; epoch inline; }\n\
+            birth_check { failed(Kid { }) } -> violate broken;\n\
+        }\n\
+        fn main() { App { }; }\n");
+    let birth = site(&g, "App", "Kid");
+    assert!(!birth.bare_statement && !birth.params_default);
+    assert_eq!(birth.child_key.as_deref(), Some("Kid"));
 }

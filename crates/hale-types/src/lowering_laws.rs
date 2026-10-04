@@ -46,7 +46,7 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     pinned_features(bundle, inputs, &mut diags);
     pinned_root_in_a_loop(bundle, inputs, &mut diags);
     placement_entry_consumed(bundle, inputs, &mut diags);
-    cross_pool_spawn_used_as_a_value(bundle, inputs, &mut diags);
+    cross_pool_spawn_used_as_a_value(inputs, &mut diags);
     self_containing_locus(bundle, &mut diags);
     diags
 }
@@ -65,7 +65,7 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
 /// that instantiates the locus, under that scope's locus, so which plan
 /// entry it meets depends on the instantiation, a relation no row holds
 /// yet, and lowering keeps its own refusal for that shape.
-fn cross_pool_spawn_used_as_a_value(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     // A cross-pool edge needs a locus placed off the main thread; a
     // table whose one domain is main has none, and the graph is not
     // built.
@@ -77,38 +77,23 @@ fn cross_pool_spawn_used_as_a_value(bundle: &Bundle<'_>, inputs: &LoweringLawInp
     if crosspool.is_empty() {
         return;
     }
-    fn loci<'a>(items: &'a [TopDecl], out: &mut Vec<&'a LocusDecl>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => out.push(l),
-                TopDecl::Module(m) => loci(&m.items, out),
-                _ => {}
-            }
+    // The ownership walk owns both the resolved child and its use
+    // context. Joining by a written leaf or reconstructing the context
+    // here would miss aliases/imports or misclassify nested literals.
+    for site in &ownership.sites {
+        if site.params_default || site.bare_statement {
+            continue;
         }
-    }
-    let mut all: Vec<&LocusDecl> = Vec::new();
-    for program in bundle.programs.values() {
-        loci(&program.items, &mut all);
-    }
-    for l in all {
-        let enclosing = l.name.name.as_str();
-        let mut walk = literals(|e, bare| {
-            let Expr::Struct { path, span, .. } = e else { return };
-            if bare {
-                return;
-            }
-            let Some(child) = path.segments.last().map(|s| s.name.as_str()) else { return };
-            let Some(owner) = crosspool.get(&(enclosing.to_string(), child.to_string())) else { return };
-            diags.push(Diag::ty(
-                *span,
-                format!(
-                    "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
-                     `{owner}`'s thread and cannot be used here. Write it as a bare statement \
-                     (`{child} {{ ... }};`), not as a value (let-binding, sub-expression, or field)."
-                ),
-            ));
-        });
-        walk.locus_bodies(l);
+        let child = &site.child_ty;
+        let Some(owner) = crosspool.get(&(site.enclosing_locus.clone(), child.clone())) else { continue };
+        diags.push(Diag::ty(
+            site.span,
+            format!(
+                "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
+                 `{owner}`'s thread and cannot be used here. Write it as a bare statement \
+                 (`{child} {{ ... }};`), not as a value (let-binding, sub-expression, or field)."
+            ),
+        ));
     }
 }
 
