@@ -405,6 +405,58 @@ fn an_accessor_call_in_a_default_is_not_a_cycle() {
     assert!(containment(&ds).is_empty(), "no report: {:?}", ds);
 }
 
+/// F.40 phase 3, C5: a factory that hands back a carrier whose every
+/// arm is freshly built is a factory to the rule, as it is to lowering
+/// (the carrier fold, `ownership::extended_factory_rows`). It had no
+/// row of the unextended set, so `make` was no edge and the ring checked
+/// clean; it builds a `Node` on either arm, and each one's `next`
+/// defaults to `make` again.
+#[test]
+fn a_factory_returning_a_carrier_is_reported() {
+    let src = r#"
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = make(true);
+            }
+        }
+        fn make(c: Bool) -> Node { return if c { Node { n: 1 } } else { Node { n: 2 } }; }
+        fn main() { let node = Node { n: 1 }; println("n=", node.n); }
+    "#;
+    let ds = diags(src);
+    let hits = containment(&ds);
+    assert_eq!(hits.len(), 1, "exactly one report: {:?}", ds);
+    assert!(
+        hits[0].contains("param `next` of `Node` defaults to `make()`, which builds a fresh `Node`"),
+        "the report names the param, the factory and what it builds: {}",
+        hits[0]
+    );
+}
+
+/// The carrier counts only when every arm is fresh: an arm that hands
+/// back a locus somebody else owns leaves the fn out, so it is no edge.
+#[test]
+fn a_carrier_with_an_accessor_arm_is_not_a_cycle() {
+    let src = r#"
+        locus Depot {
+            params { node: Node = Node { n: 7 }; }
+        }
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = pick(true);
+            }
+        }
+        fn pick(c: Bool) -> Node {
+            let d = Depot { };
+            return if c { Node { n: 1 } } else { d.node };
+        }
+        fn main() { println("declared"); }
+    "#;
+    let ds = diags(src);
+    assert!(containment(&ds).is_empty(), "no report: {:?}", ds);
+}
+
 /// The control the issue asks for on the other side: a fresh factory
 /// of a DIFFERENT locus is the ordinary parent/child shape. This one
 /// builds and runs — `Tree`'s default builds one `Leaf` and stops.

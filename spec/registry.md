@@ -21,7 +21,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 27 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
-| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 1 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
+| `ownership` | Layer 3 | Canonical | derivation | `resolve_owners` | 0 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Canonical | derivation | `build_bus_graph` | 0 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
@@ -477,17 +477,13 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/placement.rs` ×1
 
-### `ownership` — Migrating · derivation
+### `ownership` — Canonical · derivation
 
 **Answers.** Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array.
 
 **Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories (one producer); returned bindings; placement (the table: each bubbling edge's class, per instance)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/ownership.rs` · `resolve_owners`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 3, as a judgment migration: the carrier fold widens the set lowering reads and the checker reads the unextended set, so giving the checker the extended set changes which bindings it checks as factory-returned (lowering-only at the phase-2 close; deferred in its exit comment).
+**Producer.** `crates/hale-types/src/ownership.rs` · `resolve_owners`
 
 **Also owned.** `crates/hale-types/src/ownership.rs` · `resolve_binding_facts`; `crates/hale-types/src/ownership_graph.rs` · `bubble_plans`; `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets`; `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind`; `crates/hale-types/src/ownership_graph.rs` · `classify_edge`; `crates/hale-types/src/ownership.rs` · `fresh_factories`
 
@@ -501,7 +497,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - the model's `Owns` edges are the placement table's `owner` column projected with the arrangement (P1 4 of 6, C3): an arranged instance is owned by the arranged instance its row names as owner; `owns.push(` has that one writer
 - the model reads construction context from the ownership graph (C3): the shared walk records body births, field defaults and binding adapters with their explicit fields and literal identities. `unarranged_births` follows the defaults each construction actually evaluates; the same default can be arranged for one holder and dynamic for another, while an overridden default adds no birth. The model supplies the literal identities its placement rows represent, including held sources, and joins each remaining birth by resolved declaration site (name fallback only for unminted bundles). No model-side params-span test or free-function walk remains; copied API-binding expressions retain their construction context despite overlapping spans
 - the graph keeps each `accept` param as a row of the declaring locus's identity, its type as written (`AcceptRows`); a monomorph's accept set is its template's rows, asked for by the template's identity and specialized by the instantiation's substitution (`AcceptRows::specialize`, as `FlowRows::specialize` does for release clauses), filled at synthesis; lowering never reads a monomorph's own `accept_param` for ownership
-- `fresh_factories` is read by lowering and the checker with the bundle's import renames; a factory's returned name is the declaration the snapshot resolves it to, so a fn whose returned name an inner `let` shadows is a factory of the outer binding (the #1140 shape; its escape walk still reads every binding spelling the name as the returned one, the conservative side). The carrier-arm extension (`extend_fresh_factories`) is folded in for lowering only
+- `fresh_factories` is read by lowering and the checker with the bundle's import renames; a factory's returned name is the declaration the snapshot resolves it to, so a fn whose returned name an inner `let` shadows is a factory of the outer binding (the #1140 shape; its escape walk still reads every binding spelling the name as the returned one, the conservative side). The carrier-arm extension (`extend_fresh_factories`) is one set both read: lowering through the owner table, and the checker's self-containment law through `extended_factory_rows`, which gives each fn the fold adds a row whose products are its arms' (F.40 phase 3, C5: the decision measured no diagnostic moving over the corpus, `tests/hale` and the DNA seeds; the fold's one addition there, in the DNA core, already had a row)
 - which declaration a returned or escaping name denotes is read from the snapshot (`Snapshot::declaration_of` over `binding_of`, resolved once by the mint), never resolved again: `returned_bindings` (the binding facts and the pre-pass), `fresh_factories`, borrow_lifetime's `returned_decls` and alloc_summary's escape tags each key a binding by its declaration's SiteId; a `let` or a use the snapshot did not mint answers by name in `returned_bindings` (the conservative side) and resolves to nothing elsewhere, and every entry point mints
 - the checker builds no graph: the snapshot demands it before the check and hands it in (`CheckInputs::ownership`), so a check with a law builds it once for the checker and the model together; a bundle no snapshot holds (the test entries) builds it once, through the producer (`build_ownership_graph`), and the model over that bundle reads the same build
 - one graph per snapshot (F.40 phase 3, C5): the graph keeps the rows it is assembled from (`OwnershipRows`), and lowering's graph is the snapshot's rows, each site and accepting locus found in the merged program through the view's correspondence, followed by the stdlib's rows over the merged program's tail (`stdlib_ownership_rows`), the one part no snapshot holds; one procedure assembles either (`lowering_ownership_graph`)
@@ -524,7 +520,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `stdlib_ownership_rows(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `lowering_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `accepts_ancestor(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×3, `crates/hale-types/src/borrow_lifetime.rs` ×1
-- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/lowering_laws.rs` ×1
+- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×2
+- `extended_factory_rows(` may be referenced from: `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/lowering_laws.rs` ×1
+- `extend_fresh_factories(` may be referenced from: `crates/hale-types/src/ownership.rs` ×3
 - `resolve_binding_facts(` may be referenced from: `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `returned_bindings(` may be referenced from: `crates/hale-types/src/ownership.rs` ×3
 - `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/lowering_laws.rs` ×1

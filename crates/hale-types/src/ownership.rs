@@ -1686,7 +1686,7 @@ pub fn resolve_owners(
     let accepts = collect_accepts(program, import_renames);
 
     let fresh = extend_fresh_factories(
-        program,
+        &[program],
         ids,
         fresh_factories,
         &loci,
@@ -2555,9 +2555,12 @@ pub fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
 
 /// Seed from [`fresh_factories`]'s map and add the fns whose every
 /// return arm is fresh once carriers are flattened. `ids` are the
-/// identities `program` was minted with.
+/// identities `programs` were minted with; their fns are one fixpoint,
+/// as [`fresh_factories`]'s are. Lowering reads the set through the
+/// owner table ([`resolve_owners`]), the checker's self-containment law
+/// through [`extended_factory_rows`].
 fn extend_fresh_factories(
-    program: &Program,
+    programs: &[&Program],
     ids: &crate::snapshot::Snapshot,
     base: &BTreeMap<String, (String, Option<String>)>,
     loci: &BTreeSet<String>,
@@ -2576,7 +2579,9 @@ fn extend_fresh_factories(
         .map(|(k, (l, _))| (k.clone(), l.clone()))
         .collect();
     let mut fns: Vec<&FnDecl> = Vec::new();
-    collect_fns(&program.items, &mut fns);
+    for program in programs {
+        collect_fns(&program.items, &mut fns);
+    }
     loop {
         let mut added = false;
         for f in &fns {
@@ -2672,6 +2677,106 @@ fn arm_is_fresh(
                 && inner.iter().all(|x| {
                     arm_is_fresh(x, l, known, renames, bindings, depth + 1)
                 })
+        }
+        _ => false,
+    }
+}
+
+/// The fresh-factory rows of the extended set (F.40 phase 3, C5): every
+/// row [`fresh_factories`] finds, and one for each fn the carrier fold
+/// adds ([`extend_fresh_factories`]: every arm of every value it hands
+/// back, through an `if`, a `match` or a block, is fresh), whose
+/// products are its arms' together. What the checker's self-containment
+/// law reads (GH #870), so a carrier-return factory in a param default
+/// is an edge as it is a factory to lowering. `programs` are walked
+/// together, as [`fresh_factories`] walks them.
+pub fn extended_factory_rows(
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    renames: &[(Vec<String>, String)],
+) -> FreshFactories {
+    let mut rows = fresh_factories(programs, ids, renames);
+    let base: BTreeMap<String, (String, Option<String>)> = rows
+        .iter()
+        .filter_map(|(f, row)| Some((f.clone(), (row.locus.clone(), row.fresh.as_ref()?.returned_binding.clone()))))
+        .collect();
+    let mut loci = BTreeSet::new();
+    for program in programs {
+        collect_loci(&program.items, &mut loci, &mut BTreeMap::new(), &mut BTreeMap::new());
+    }
+    let extended = extend_fresh_factories(programs, ids, &base, &loci, renames);
+    let mut fns: Vec<&FnDecl> = Vec::new();
+    for program in programs {
+        collect_fns(&program.items, &mut fns);
+    }
+    // A fold-added fn's products, once every factory its arms call has
+    // a row: a fixpoint, as the fold is.
+    loop {
+        let mut added = false;
+        for f in &fns {
+            let name = &f.name.name;
+            let Some(l) = extended.get(name) else { continue };
+            if rows.contains_key(name) {
+                continue;
+            }
+            let bindings = body_bindings(&f.body, ids);
+            let mut arms: Vec<&Expr> = Vec::new();
+            for r in &bindings.returns {
+                return_arms(r, &mut arms);
+            }
+            let mut products = Vec::new();
+            if !arms.is_empty() && arms.iter().all(|a| arm_products(a, l, &rows, renames, &bindings, 0, &mut products)) {
+                products.sort();
+                products.dedup();
+                let row = FactoryRow { locus: l.clone(), products, fresh: Some(Fresh { returned_binding: None }) };
+                rows.insert(name.clone(), row);
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    rows
+}
+
+/// What a fresh return arm of a fn returning `l` constructs, into `out`:
+/// a literal's (locus, supplied fields), a factory call's products, a
+/// binding's value's arms. `false` when a callee has no row yet.
+fn arm_products(
+    a: &Expr,
+    l: &str,
+    rows: &FreshFactories,
+    renames: &[(Vec<String>, String)],
+    bindings: &BodyBindings<'_, '_>,
+    depth: u32,
+    out: &mut Vec<(String, Vec<String>)>,
+) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    match a {
+        Expr::Struct { inits, .. } => {
+            let mut supplied: Vec<String> = inits.iter().map(|i| i.name.name.clone()).collect();
+            supplied.sort();
+            supplied.dedup();
+            out.push((l.to_string(), supplied));
+            true
+        }
+        Expr::Call { callee, .. } => match callee_fn_name(callee, renames).and_then(|n| rows.get(&n)) {
+            Some(row) => {
+                out.extend(row.products.iter().cloned());
+                true
+            }
+            None => false,
+        },
+        Expr::Ident(i) => {
+            let Some(rhs) = bindings.let_at(i).and_then(|d| bindings.rhs.get(&d)) else {
+                return false;
+            };
+            let mut inner = Vec::new();
+            return_arms(rhs, &mut inner);
+            !inner.is_empty() && inner.iter().all(|x| arm_products(x, l, rows, renames, bindings, depth + 1, out))
         }
         _ => false,
     }

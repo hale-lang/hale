@@ -1736,7 +1736,8 @@ crates/hale-types/tests/reserved_locus_members.rs#3 f2c1228edb650960
 crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/self_containing_locus.rs#12 99f6a1d57c1a8668
 crates/hale-types/tests/self_containing_locus.rs#14 7fcd9d3c87565eae
-crates/hale-types/tests/self_containing_locus.rs#15 1d9bb2dd607e1c91
+crates/hale-types/tests/self_containing_locus.rs#16 7fcd9d3c87565eae
+crates/hale-types/tests/self_containing_locus.rs#17 1d9bb2dd607e1c91
 crates/hale-types/tests/self_containing_locus.rs#4 ef994cf13a5419f6
 crates/hale-types/tests/snapshot.rs#0 36036aa68555ae99
 crates/hale-types/tests/snapshot.rs#1 79c6c4f8b494f43b
