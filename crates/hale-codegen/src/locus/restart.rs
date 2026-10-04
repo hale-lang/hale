@@ -89,6 +89,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Call `__restart_<L>` as the instance's traced `Restart`, on the
+    /// spine of the caller that decided it: the posted run's loop
+    /// (`PoolRun`), the pinned thread's (`PinnedMain`), the run gate of
+    /// the instantiation (`Instantiation`), the resume at settle
+    /// (`Settle`). The restart's own body cannot name it, since every
+    /// one of them calls the one function.
+    pub(crate) fn emit_restart_call(
+        &mut self,
+        restart: FunctionValue<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        spine: &'static str,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        self.lc_in_spine(spine, |cx| {
+            cx.lc_step("Restart", Some(self_ptr), Some(locus_name), |cx| {
+                cx.builder
+                    .build_call(restart, &[self_ptr.into()], name)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            })
+        })
+    }
+
     /// The child's `__restart_count`, now.
     pub(crate) fn emit_restart_count(
         &mut self,
@@ -510,11 +534,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fields: info.fields.clone(),
         });
         let prev_ipd = std::mem::replace(&mut self.in_params_default, false);
-        // The trace: a restart performed begins the instance's next
-        // incarnation (the runtime counts it at this event). Its spine
-        // is the deciding thread's, which this fn cannot name.
+        // The trace: the caller brackets this body as the instance's
+        // `Restart` on its own spine (`emit_restart_call`), whose entry
+        // begins the next incarnation. The re-birth inside it is that
+        // incarnation's and names no spine.
         let lc_outer = std::mem::replace(&mut self.lc_spine, "-");
-        self.lc_event("Restart", "Entered", Some(self_arg), Some(name))?;
 
         // restart_in_place: back to the params as built first.
         let rip_ptr = self
@@ -584,7 +608,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_call(bc, &[self_arg.into(), ps.into(), h.into()], "restart.birth_closures")
                 .map_err(e)?;
         }
-        self.lc_event("Restart", "Completed", Some(self_arg), Some(name))?;
         self.lc_spine = lc_outer;
         self.builder.build_return(None).map_err(e)?;
 
@@ -619,13 +642,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let do_run_bb = self.context.append_basic_block(f, "resume.do_run");
         let ret_bb = self.context.append_basic_block(f, "resume.ret");
 
+        // The trace: the resume, on the settle's spine, is its decision
+        // (restart, start `run()`, or end); what it decides is traced as
+        // its own step after it.
+        self.lc_in_spine("Settle", |cx| cx.lc_event("Resume", "Entered", Some(self_arg), Some(name)))?;
         let req = self.emit_restart_requested(info, self_arg, pre)?;
+        self.lc_in_spine("Settle", |cx| cx.lc_event("Resume", "Completed", Some(self_arg), Some(name)))?;
         self.builder.build_conditional_branch(req, restart_bb, carry_on_bb).map_err(e)?;
 
         self.builder.position_at_end(restart_bb);
-        self.builder
-            .build_call(fns.restart, &[self_arg.into()], "resume.restart.call")
-            .map_err(e)?;
+        self.emit_restart_call(fns.restart, self_arg, name, "Settle", "resume.restart.call")?;
         self.builder.build_unconditional_branch(run_bb).map_err(e)?;
 
         // No restart. Phase 1 (run() not started yet): start it, as the

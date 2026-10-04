@@ -24,6 +24,9 @@
 //! shutdown adds ([`PathGuard::DrainInFlight`]: a queued run's
 //! cancellation inside its child's reclaim, a parked run abandoned at
 //! the pool join), so a run that took that path is compared too.
+//! [`LifecyclePlan::recovery_spine`] reads a failure's recovery rows (the
+//! resume and the restart, [`RECOVERY_KINDS`]) on the path one failure
+//! takes, held or not, its restart performed or not.
 //!
 //! **The law.** The steps an emitter emits for a spine are exactly the
 //! plan's ordered obligations for it: the trace build (L2) records each
@@ -33,7 +36,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Event, LifecyclePlan, ObligationId, ObligationKind, PathGuard, Point, Resource, SourceSite, Spine};
+use super::{
+    Event, FailureSource, LifecyclePlan, ObligationId, ObligationKind, PathGuard, Point, Resource, SourceSite, Spine,
+};
 
 /// One obligation a spine discharges for a template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +60,11 @@ pub const BIRTH_KINDS: &[ObligationKind] = &[
     ObligationKind::RunAdmission,
     ObligationKind::Run,
 ];
+
+/// The kinds a failure's recovery is emitted as, on whichever spine the
+/// decision is carried out: the resume of a held failure at its owner's
+/// settle, and the restart ([`LifecyclePlan::recovery_spine`]).
+pub const RECOVERY_KINDS: &[ObligationKind] = &[ObligationKind::Resume, ObligationKind::Restart];
 
 /// A step inside one instance's reclaim. The plan states the reclaim as
 /// one row ([`ObligationKind::Reclaim`], exactly once per instance) and
@@ -470,6 +480,48 @@ fn order_by<T: Copy + Ord + std::fmt::Debug>(
 }
 
 impl LifecyclePlan {
+    /// The recovery steps ([`RECOVERY_KINDS`]) `site` owes on `spine`
+    /// after one failure of `source`: on the path where the failure was
+    /// held at its owner's settle (`held`) or delivered in place, and its
+    /// restart performed (`performed`) or not. A restart refused under
+    /// teardown owes no step: its every terminal is a not-started one.
+    /// In the plan's order, once each; how many restarts a run performs
+    /// is the run's.
+    pub fn recovery_spine(
+        &self,
+        site: &SourceSite,
+        spine: Spine,
+        source: FailureSource,
+        held: bool,
+        performed: bool,
+    ) -> Vec<SpineStep> {
+        // The path a restart row is on is its decision's: the decision
+        // after the held delivery, or after the one in place.
+        let decided_held = |o: &super::Obligation| {
+            o.edges.entry.iter().any(|p| {
+                self.get(p.event.obligation).is_some_and(|d| {
+                    d.kind == ObligationKind::RecoveryDecision && (d.guard == PathGuard::FailedAtSettle) == held
+                })
+            })
+        };
+        let chosen: Vec<ObligationId> = self
+            .iter()
+            .filter(|(_, o)| {
+                RECOVERY_KINDS.contains(&o.kind)
+                    && o.holder.spine == spine
+                    && o.source == Some(source)
+                    && o.site.as_ref() == Some(site)
+                    && match (o.kind, o.guard) {
+                        (ObligationKind::Resume, PathGuard::FailedAtSettle) => held,
+                        (ObligationKind::Restart, PathGuard::Restart) => performed && decided_held(o),
+                        _ => false,
+                    }
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.in_order(chosen)
+    }
+
     /// The rows `keep` selects on the paths `guards` names (no failure
     /// on any), each after every row its entry edges reach, ties in the
     /// producer's order.
@@ -479,6 +531,12 @@ impl LifecyclePlan {
             .filter(|(_, o)| guards.contains(&o.guard) && o.source.is_none() && keep(o))
             .map(|(id, _)| id)
             .collect();
+        self.in_order(chosen)
+    }
+
+    /// `chosen`, each after every row its entry edges reach, ties in the
+    /// producer's order.
+    fn in_order(&self, chosen: Vec<ObligationId>) -> Vec<SpineStep> {
         // What each chosen row's entry edges reach, transitively.
         let mut reach: BTreeMap<ObligationId, BTreeSet<ObligationId>> = BTreeMap::new();
         for &id in &chosen {

@@ -2321,7 +2321,11 @@ lc <seq> <Kind> <Point> spine=<Spine> dom=<domain> type=<T> inst=<n> inc=<n>
 `Kind` is an `ObligationKind`, `Point` is `Entered`, `Completed` or
 `Terminal(<terminal>)`, and `Spine` is the spine that emitted the
 step (`-` where the site cannot name it: a failure delivered in
-place, a restart). The domain is the thread the event ran on: `main`,
+place, a restart's re-birth). A `Restart` carries the spine of the
+step that decided it (the posted run's loop, `PoolRun`; a pinned
+locus's thread, `PinnedMain`; the run gate of an instantiation,
+`Instantiation`; the resume at settle, `Settle`), and a `Resume` the
+settle's. The domain is the thread the event ran on: `main`,
 `pool:<name>` for a cooperative pool's worker, `pinned:<n>` for a
 pinned locus's thread, `thread:<n>` for any other. `type`, `inst` and
 `inc` name the subject; a process-level obligation (the pool join, a
@@ -2343,7 +2347,9 @@ the posting thread; `Shutdown(PoolTeardown)`, with a
 `Cancellation`, when the pools' teardown frees its cell), `FailureDelivery` (entered
 where the failure is raised, completed when the handler returns,
 in place or at settle), `ConstructionDelivery` (a held failure,
-from the hold to its handler's return at settle), `Restart`, `Drain`,
+from the hold to its handler's return at settle), `Restart`,
+`Resume` (a held failure's resume at settle: its decision to restart,
+start `run()` or end, each traced as its own step after it), `Drain`,
 `Dissolve` (the dissolve-epoch closures and `dissolve()`),
 `Reclaim` (past the `__arena` latch: the queued runs' cancellation,
 then the arena's release), `PreDrain`,

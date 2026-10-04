@@ -7731,9 +7731,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, end_bb)
                     .map_err(e)?;
                 self.builder.position_at_end(restart_bb);
-                self.builder
-                    .build_call(rf.restart, &[self_arg.into()], "run.restart.call")
-                    .map_err(e)?;
+                self.emit_restart_call(rf.restart, self_arg, locus_name, "PoolRun", "run.restart.call")?;
                 self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
                 self.builder.position_at_end(end_bb);
                 self.builder

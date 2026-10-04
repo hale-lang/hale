@@ -142,6 +142,7 @@ pub const TRACED: &[super::ObligationKind] = &[
     K::Run,
     K::FailureDelivery,
     K::Restart,
+    K::Resume,
     K::Drain,
     K::PreDrain,
     K::WaitAbort,

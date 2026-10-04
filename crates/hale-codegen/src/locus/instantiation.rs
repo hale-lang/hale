@@ -4278,7 +4278,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // A check's failure is decided before run() starts.
             if let (false, Some(rf)) = (checks.is_empty(), restart) {
                 let pre = self.emit_restart_count(&info, thread_self)?;
-                self.emit_pinned_birth_gate(&info, thread_self, rf.restart, pre)?;
+                self.emit_pinned_birth_gate(&info, thread_self, rf.restart, pre, locus_name)?;
             }
             if let Some(method) = info.methods.get("run") {
                 let loop_bb = self
@@ -4349,9 +4349,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_conditional_branch(req, restart_bb, done_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(restart_bb);
-                    self.builder
-                        .build_call(rf.restart, &[thread_self.into()], "pinned.restart")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_restart_call(rf.restart, thread_self, locus_name, "PinnedMain", "pinned.restart")?;
                     self.builder
                         .build_unconditional_branch(loop_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -4604,9 +4602,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, go_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(restart_bb);
-                self.builder
-                    .build_call(rf.restart, &[self_ptr.into()], "gate.restart.call")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let spine = self.lc_spine;
+                self.emit_restart_call(rf.restart, self_ptr, locus_name, spine, "gate.restart.call")?;
                 self.builder
                     .build_unconditional_branch(go_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

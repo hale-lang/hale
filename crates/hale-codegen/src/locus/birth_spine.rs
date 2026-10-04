@@ -304,6 +304,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         thread_self: PointerValue<'ctx>,
         restart: FunctionValue<'ctx>,
         pre: inkwell::values::IntValue<'ctx>,
+        locus_name: &str,
     ) -> Result<(), CodegenError> {
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
         let func = self
@@ -317,7 +318,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let go_bb = self.context.append_basic_block(func, "pinned.gate.go");
         self.builder.build_conditional_branch(req, restart_bb, go_bb).map_err(e)?;
         self.builder.position_at_end(restart_bb);
-        self.builder.build_call(restart, &[thread_self.into()], "pinned.gate.restart.call").map_err(e)?;
+        self.emit_restart_call(restart, thread_self, locus_name, "PinnedMain", "pinned.gate.restart.call")?;
         self.builder.build_unconditional_branch(go_bb).map_err(e)?;
         self.builder.position_at_end(go_bb);
         Ok(())
