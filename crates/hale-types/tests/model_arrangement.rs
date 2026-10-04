@@ -300,6 +300,7 @@ fn the_entry_adds_no_arrangement_row_of_its_own() {
     let claims_only = snapshot("locus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\n");
     let m = model(&claims_only);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.l Leaf - main 0"]);
+    assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
     identities_hold(m, "09f0e56b070be72d", "ccc8c3ec47f273ff");
 
     let with_side = snapshot(
@@ -519,10 +520,12 @@ fn copied_api_binding_expressions_keep_params_birth_provenance() {
     let pings = plan.subjects.iter().find(|p| p.subject == "__api.call.Pings").expect("API call dispatch");
     assert_eq!(pings.publisher_domains, ["pool:__api_io"], "the API adapter's publisher is arranged: {pings:?}");
     assert_eq!(pings.subscriber_domains, ["pool:work"]);
+    // Each dynamically accepted peer constructs its frames default.
     assert_eq!(locus_holes(m), [
+        "__ApiFrameQ instance born outside the arrangement: owner and placement resolve at runtime",
         "__ApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
         "__ApiPeer instance born outside the arrangement: owner and placement resolve at runtime",
-    ], "connection peers remain dynamic");
+    ], "connection peers and their default children remain dynamic");
 }
 
 /// C3: even an overlapping span cannot turn a method-body birth into a
@@ -629,4 +632,94 @@ fn aliased_body_and_free_function_births_are_dynamic() {
     let m = model(&s);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.k Kid - main 0"]);
     assert_eq!(locus_holes(m), ["Kid instance born outside the arrangement: owner and placement resolve at runtime"]);
+}
+
+/// A params default is evaluated for each construction of its holder.
+/// A static occurrence does not account for an additional dynamic one.
+#[test]
+fn dynamic_holder_defaults_keep_their_children_dynamic() {
+    let s = snapshot(r#"
+        locus Leaf { }
+        locus Holder { params { leaf: Leaf = Leaf { }; } }
+        main locus App {
+            params { held: Holder = Holder { }; }
+            run() { Holder { }; }
+        }
+        fn main() { App { }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), [
+        "0 App App - main -",
+        "1 App.held Holder - main 0",
+        "2 App.held.leaf Leaf - main 1",
+    ]);
+    assert_eq!(locus_holes(m), [
+        "Holder instance born outside the arrangement: owner and placement resolve at runtime",
+        "Leaf instance born outside the arrangement: owner and placement resolve at runtime",
+    ]);
+}
+
+/// An overridden default does not execute. Merely following all params
+/// edges from a dynamic holder would invent a second Leaf instance.
+#[test]
+fn overriding_a_dynamic_holders_default_creates_no_extra_birth() {
+    let s = snapshot(r#"
+        locus Leaf { }
+        locus Holder { params { leaf: Leaf = Leaf { }; } }
+        main locus App {
+            params { leaf: Leaf = Leaf { }; }
+            run() { Holder { leaf: self.leaf }; }
+        }
+        fn main() { App { }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.leaf Leaf - main 0"]);
+    assert_eq!(locus_holes(m), ["Holder instance born outside the arrangement: owner and placement resolve at runtime"]);
+}
+
+/// An explicitly initialized root field is part of that construction's
+/// arrangement even though its literal is written inside a free fn.
+#[test]
+fn an_explicit_arranged_field_is_not_an_extra_dynamic_birth() {
+    let s = snapshot(r#"
+        locus Leaf { }
+        main locus App { params { leaf: Leaf; } }
+        fn main() { App { leaf: Leaf { } }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.leaf Leaf - main 0"]);
+    assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
+}
+
+/// Binding adapters are outside the arrangement, but their construction
+/// still decides which defaults execute. An explicit held field does not
+/// create the default child a second time.
+#[test]
+fn binding_adapter_defaults_follow_the_binding_construction() {
+    let src = r#"
+type Ping { n: Int = 0; }
+topic Beat { payload: Ping; }
+locus Leaf { }
+locus Adapter {
+    params { leaf: Leaf = Leaf { }; }
+    fn send(subject: String, bytes: Bytes) { }
+}
+main locus App {
+    params { leaf: Leaf = Leaf { }; }
+    bindings { Beat: Adapter { }; }
+    bus { publish Beat; }
+}
+fn main() { App { }; }
+"#;
+    let s = snapshot(src);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.leaf Leaf - main 0"]);
+    assert_eq!(locus_holes(m), [
+        "Adapter instance born outside the arrangement: owner and placement resolve at runtime",
+        "Leaf instance born outside the arrangement: owner and placement resolve at runtime",
+    ]);
+    let s = snapshot(&src.replace("Beat: Adapter { }", "Beat: Adapter { leaf: self.leaf }"));
+    assert_eq!(locus_holes(model(&s)), [
+        "Adapter instance born outside the arrangement: owner and placement resolve at runtime",
+    ]);
 }

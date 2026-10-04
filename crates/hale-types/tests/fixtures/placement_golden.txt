@@ -3481,9 +3481,7 @@ row	~	Worker	main	default
 row	~.t	Tries	main	inherited
 
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
--- Holder@main1	Holder
-row	~	Holder	main	default
-row	~.leaf	Leaf	main	inherited
+shared	Holder@main1	Holder #5d65043f
 
 == crates/hale-codegen/tests/self_containing_locus.rs#928d62e3
 row	Dot@main2	Dot	main	default
@@ -4758,6 +4756,32 @@ row	App@literal1	App	main	default
 row	App@literal1.k	Kid	main	default
 row	Kid@main1	Kid	main	default
 dynamic	Kid	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#084fd02c
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	Holder	on main	in the seed
+shared	App@literal1.held	Holder #5d65043f
+
+== crates/hale-types/tests/model_arrangement.rs#615caf8e
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.leaf	Leaf	main	default
+dynamic	Holder	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#e4c7e3ba
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.leaf	Leaf	main	default
+
+== crates/hale-types/tests/model_arrangement.rs#1b270a16
+root	App	the entry
+domain	pinned:Adapter@binding1
+row	App@literal1	App	main	default
+row	App@literal1.leaf	Leaf	main	default
+-- Adapter@binding1	Adapter
+row	~	Adapter	pinned:~	binding
+row	~.leaf	Leaf	pinned:~	inherited
 
 == crates/hale-types/tests/model_builder.rs#0bc750a5
 root	App	the entry
@@ -13066,6 +13090,10 @@ row	~.router	RouterV2	main	inherited
 == shared Holder #532e241f
 row	~	Holder	pool:side	entry	off owner
 row	~.i	Inner	pool:side	inherited
+
+== shared Holder #5d65043f
+row	~	Holder	main	default
+row	~.leaf	Leaf	main	inherited
 
 == shared Holder #8b4b183a
 row	~	Holder	main	default

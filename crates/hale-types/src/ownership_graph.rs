@@ -219,6 +219,10 @@ pub struct OwnershipGraph {
     pub sites: Vec<OwnedSite>,
     /// Free-function births from the graph's one walk, in source order.
     pub free_fn_sites: Vec<FreeFnSite>,
+    /// Construction context, from the same walk and child resolution.
+    /// This includes binding adapters, whose births do not participate
+    /// in the legacy body-bubbling relation.
+    births: Vec<BirthRow>,
     /// Every locus declaration, in declaration order.
     pub declarations: Vec<LocusDeclRow>,
     /// locus type → the child types it declares `accept(_: T)` for, each
@@ -232,6 +236,25 @@ pub struct OwnershipGraph {
     /// its param type as written: what a specialization of a generic
     /// template accepts ([`AcceptRows::specialize`]).
     pub accept_rows: AcceptRows,
+}
+
+/// A resolved construction and the defaults it overrides. The model
+/// asks the graph which of these constructions occur outside its
+/// arrangement; it never infers execution context from source spans.
+#[derive(Debug, Clone)]
+pub(crate) struct BirthRow {
+    pub child_decl: Option<usize>,
+    pub span: Span,
+    literal: Option<SiteId>,
+    supplied: BTreeSet<String>,
+    context: BirthContext,
+}
+
+#[derive(Debug, Clone)]
+enum BirthContext {
+    Body,
+    Default { owner: usize, field: String },
+    Binding(Option<SiteId>),
 }
 
 /// One `accept` param, by the locus that declares it.
@@ -294,6 +317,60 @@ impl AcceptRows {
 }
 
 impl OwnershipGraph {
+    /// Births not represented by the model's arrangement. A default
+    /// executes only when a particular construction leaves its field
+    /// unsupplied. The same default literal may therefore be arranged
+    /// for one construction and dynamic for another. Each (literal,
+    /// context) is visited at most once, even for recursive templates.
+    pub(crate) fn unarranged_births(
+        &self,
+        placement: &PlacementTable,
+        represented: &BTreeSet<SiteId>,
+    ) -> Vec<&BirthRow> {
+        let mut defaults: BTreeMap<usize, Vec<(usize, &str)>> = BTreeMap::new();
+        for (i, row) in self.births.iter().enumerate() {
+            if let BirthContext::Default { owner, field } = &row.context {
+                defaults.entry(*owner).or_default().push((i, field));
+            }
+        }
+        let covered = |row: &BirthRow| row.literal.is_some_and(|id| represented.contains(&id));
+        let bindings: BTreeSet<SiteId> = placement.instances.keys().filter_map(|k| match k.origin {
+            Origin::Binding(site) if site.universe == SiteUniverse::User => Some(site.id),
+            _ => None,
+        }).collect();
+        let mut pending: Vec<(usize, bool)> = self.births.iter().enumerate().filter_map(|(i, row)| {
+            match &row.context {
+                BirthContext::Body => Some((i, !covered(row))),
+                BirthContext::Binding(Some(id)) if bindings.contains(id) => Some((i, !covered(row))),
+                _ => None,
+            }
+        }).collect();
+        // An implicit entry has no source literal to seed its defaults.
+        if let Some(root) = placement.root.as_ref().filter(|r| r.constructions.is_empty()) {
+            if root.realizes.site.universe == SiteUniverse::User {
+                if let Some(owner) = self.declarations.iter().position(|d| d.id == Some(root.realizes.site.id)) {
+                    for (i, _) in defaults.get(&owner).into_iter().flatten() {
+                        pending.push((*i, !covered(&self.births[*i])));
+                    }
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut outside = BTreeSet::new();
+        while let Some((i, dynamic)) = pending.pop() {
+            if !seen.insert((i, dynamic)) { continue; }
+            let row = &self.births[i];
+            if dynamic { outside.insert(i); }
+            let Some(owner) = row.child_decl else { continue };
+            for (child, field) in defaults.get(&owner).into_iter().flatten() {
+                if !row.supplied.contains(*field) {
+                    pending.push((*child, dynamic || !covered(&self.births[*child])));
+                }
+            }
+        }
+        outside.into_iter().map(|i| &self.births[i]).collect()
+    }
+
     /// Count of sites resolved to a positive owner (`SelfOwned` or
     /// `Ancestor`).
     pub fn resolved_count(&self) -> usize {
@@ -834,6 +911,10 @@ struct LocusFacts {
 
 /// A single instantiation literal captured during the walk.
 struct RawSite {
+    id: NodeId,
+    supplied: BTreeSet<String>,
+    params_field: Option<String>,
+    binding: Option<NodeId>,
     // Filled once by `identify_child` after the structural walk, when
     // the literal's declared binding type is also known.
     child_ty: String,
@@ -860,6 +941,7 @@ struct OwnershipWalk {
     has_entry_point: bool,
     accept_rows: AcceptRows,
     free_fn_sites: Vec<RawSite>,
+    binding_sites: Vec<RawSite>,
 }
 
 /// Walk every locus and free function once, collecting accepts,
@@ -890,6 +972,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
     let mut declarations: Vec<LocusDeclRow> = Vec::new();
     let mut accept_rows: Vec<AcceptRow> = Vec::new();
     let mut free_fn_sites: Vec<RawSite> = Vec::new();
+    let mut binding_sites: Vec<RawSite> = Vec::new();
     struct WalkCx<'a> {
         declared: &'a DeclaredNames,
         renames: &'a [(Vec<String>, String)],
@@ -902,6 +985,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         declarations: &mut Vec<LocusDeclRow>,
         accept_rows: &mut Vec<AcceptRow>,
         free_fn_sites: &mut Vec<RawSite>,
+        binding_sites: &mut Vec<RawSite>,
     ) {
         let (declared, renames) = (cx.declared, cx.renames);
         for item in items {
@@ -1006,7 +1090,27 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                         );
                                         for site in &mut entry.instantiates[at..] {
                                             site.params_default = true;
+                                            site.params_field = Some(p.name.name.clone());
                                         }
+                                    }
+                                }
+                            }
+                            LocusMember::Bindings(bb) => {
+                                for binding in &bb.entries {
+                                    let TransportSpec::Adapter { locus, inits, .. } = &binding.transport else { continue };
+                                    let at = binding_sites.len();
+                                    binding_sites.push(RawSite {
+                                        id: binding.id,
+                                        supplied: inits.iter().map(|i| i.name.name.clone()).collect(),
+                                        params_field: None,
+                                        binding: Some(binding.id),
+                                        child_ty: String::new(), child_decl: None, child_key: None,
+                                        span: binding.span, path: vec![locus.name.clone()], declared: None,
+                                        enclosing_decl: decl, member: None, params_default: false, bare_statement: false,
+                                    });
+                                    for init in inits { collect_sites_expr(&init.value, binding_sites); }
+                                    for site in &mut binding_sites[at..] {
+                                        site.binding = Some(binding.id);
                                     }
                                 }
                             }
@@ -1018,22 +1122,24 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                     }
                 }
                 TopDecl::Fn(f) => collect_sites_fn(f, free_fn_sites),
-                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites),
+                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites, binding_sites),
                 _ => {}
             }
         }
     }
     let cx = WalkCx { declared: &declared, renames, snapshot: &bundle.snapshot };
     for program in &programs {
-        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites);
+        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites, &mut binding_sites);
     }
 
     for facts in facts.values_mut() {
         facts.instantiates.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     }
     free_fn_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
+    binding_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     OwnershipWalk {
         free_fn_sites,
+        binding_sites,
         facts,
         declarations,
         has_entry_point,
@@ -1125,6 +1231,18 @@ pub fn build_ownership_graph(
 ) -> OwnershipGraph {
     let walk = collect_ownership_walk(bundle);
     let domains = placement.domains_by_type();
+    let births = walk.facts.values().flat_map(|f| &f.instantiates)
+        .chain(&walk.free_fn_sites).chain(&walk.binding_sites).map(|site| BirthRow {
+            child_decl: site.child_decl,
+            span: site.span,
+            literal: bundle.snapshot.site_id(site.id),
+            supplied: site.supplied.clone(),
+            context: match (&site.params_field, site.binding) {
+                (Some(field), _) => BirthContext::Default { owner: site.enclosing_decl, field: field.clone() },
+                (_, Some(entry)) => BirthContext::Binding(bundle.snapshot.site_id(entry)),
+                _ => BirthContext::Body,
+            },
+        }).collect();
 
     // The ancestor-edge relation: child locus type → the set of locus
     // types that instantiate it in a method body.
@@ -1231,6 +1349,7 @@ pub fn build_ownership_graph(
     }).collect();
     OwnershipGraph {
         sites,
+        births,
         free_fn_sites,
         declarations: walk.declarations,
         accepts,
@@ -1590,8 +1709,12 @@ fn collect_sites_expr(
     out: &mut Vec<RawSite>,
 ) {
     match e {
-        Expr::Struct { path, inits, span, .. } => {
+        Expr::Struct { path, inits, span, id, .. } => {
             out.push(RawSite {
+                id: *id,
+                supplied: inits.iter().map(|i| i.name.name.clone()).collect(),
+                params_field: None,
+                binding: None,
                 child_ty: String::new(),
                 child_decl: None,
                 child_key: None,

@@ -3405,31 +3405,25 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
-        // C3: the ownership walk records where each birth occurs.
-        // Params defaults can contain expressions copied from bindings,
-        // whose source spans lie outside the params block. Read that
-        // structural provenance and the graph's free-function rows;
-        // never reconstruct either from AST spans in the model.
+        // C3: the ownership graph evaluates defaults per construction,
+        // including explicit overrides and additional dynamic holders.
+        // Tell it which source literals this arrangement represents;
+        // a held row represents the literal of its construction source.
+        // Disagreeing template paths already have their own holes above.
+        let represented: BTreeSet<_> = table.instances.iter()
+            .filter(|(key, _)| root_template(key.origin))
+            .filter_map(|(_, row)| row.literal.or_else(|| row.built_by.as_ref()
+                .and_then(|key| table.instances.get(key)).and_then(|source| source.literal)))
+            .filter(|site| site.universe == crate::placement::SiteUniverse::User)
+            .map(|site| site.id).collect();
         let og = inputs.ownership;
-        let dyn_sites = og.sites.iter()
-            .filter(|s| !s.params_default)
-            .map(|s| (s.child_decl, s.span))
-            .chain(og.free_fn_sites.iter().map(|s| (s.child_decl, s.span)));
-        for (child_decl, span) in dyn_sites {
-            let Some(decl) = child_decl.map(|i| &og.declarations[i]) else { continue };
-            // The root's construction is already the arrangement.
-            let root = table.root.as_ref().map(|r| r.realizes.site);
-            if decl.id.is_some_and(|id| Some(SiteRef::user(id)) == root) {
-                continue;
-            }
-            // As with supervision, a minted declaration joins by site;
-            // an unminted bundle retains the name fallback. A qualified
-            // literal that resolves outside the user declarations has
-            // no entity in this model, even if its last segment matches
-            // one of the user's loci.
+        for birth in og.unarranged_births(table, &represented) {
+            let Some(decl) = birth.child_decl.map(|i| &og.declarations[i]) else { continue };
+            let span = birth.span;
+            // Minted declarations join by site; the legacy unminted
+            // bundle keeps its name fallback.
             let lid = match decl.id {
                 Some(id) => locus_by_site.get(&id.index),
-                None if root_name == Some(decl.name.as_str()) => continue,
                 None => locus_id.get(&decl.name),
             };
             let Some(lid) = lid else { continue };
