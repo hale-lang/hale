@@ -357,7 +357,7 @@ struct Contribution {
     /// literal's enclosing locus. `None` for a template's top, a literal
     /// in a free fn, and the occurrences of a cycle of owners.
     owner: Option<usize>,
-    /// The owner's contribution this one is built under: for a field,
+    /// A representative of the owner's execution context: for a field,
     /// its owner's context with the field's own placement; for a body or
     /// accepted literal, the enclosing occurrence that runs it. `None`
     /// pairs it with every contribution of the owner.
@@ -416,6 +416,17 @@ fn push_unique(v: &mut Vec<Contribution>, c: Contribution) {
     }
 }
 
+/// The first parent contribution for each execution context. Consumers of
+/// `under` read the parent's instantiating and queue domains, never its
+/// ancestry. Fields also inherit whether construction is in a handler.
+/// Retain those distinctions without expanding every path through shared
+/// owners: a chain of two literals per level otherwise doubles its contexts
+/// at every level, although all paths on one thread make the same claims.
+fn parent_contexts(all: &[Contribution]) -> impl Iterator<Item = (usize, &Contribution)> {
+    let mut seen = BTreeSet::new();
+    all.iter().enumerate().filter(move |(_, c)| seen.insert((c.it, c.own, c.in_handler)))
+}
+
 /// A template's contributions from its owners' current ones; `cut` are
 /// the owners whose edge closed a cycle, built under none of theirs.
 fn derived_contributions(
@@ -433,7 +444,7 @@ fn derived_contributions(
             let one = (domains.len() == 1).then(|| *domains.iter().next().expect("one"));
             let on = |d: Option<DomainId>| one.or(d.filter(|d| domains.contains(d)));
             for &o in owners {
-                for (k, c) in out[o].contributions.iter().enumerate() {
+                for (k, c) in parent_contexts(&out[o].contributions) {
                     let d = on(c.own);
                     v.push(Contribution { owner: Some(o), under: Some(k), it: d, own: d, in_handler: *in_handler });
                 }
@@ -446,7 +457,7 @@ fn derived_contributions(
         // under that owner.
         Source::Field { .. } => {
             for &p in owners {
-                for (k, c) in out[p].contributions.iter().enumerate() {
+                for (k, c) in parent_contexts(&out[p].contributions) {
                     v.push(Contribution { owner: Some(p), under: Some(k), ..c.clone() });
                 }
             }
@@ -2111,6 +2122,37 @@ mod tests {
 
     fn on(d: u32, rule: Rule) -> Option<RunsOn> {
         Some(RunsOn { domains: BTreeSet::from([DomainId(d)]), rule })
+    }
+
+    /// The number of ancestry paths doubles at each level, but the
+    /// execution contexts do not. This is the shape that exhausted memory
+    /// while deriving the plan for dna/api through shared owner templates.
+    #[test]
+    fn shared_ancestry_does_not_multiply_execution_contexts() {
+        let mut src = "locus L0 { }\n".to_string();
+        for level in 1..=16 {
+            let child = level - 1;
+            src.push_str(&format!("locus L{level} {{ fn make() {{ L{child} {{ }}; L{child} {{ }}; }} }}\n"));
+        }
+        src.push_str("fn main() { L16 { }; }\n");
+        let program = hale_syntax::parse_source(&src).expect("parse");
+        let bundle = Bundle::new(BTreeMap::from([("app.hl".to_string(), &program)]));
+        crate::with_identities(&bundle, |bundle| {
+            let (top, diags) = crate::resolve::build_top_scope(bundle);
+            assert!(diags.is_empty(), "{diags:?}");
+            let placement = crate::placement::bundle_placement(bundle, &top);
+            let handlers = HandlerRouting::default();
+            let bus = BusGraph::default();
+            let programs: Vec<_> = bundle.programs.values().copied().collect();
+            let flows = crate::flows::survey(&programs, &bundle.import_renames);
+            let inputs = LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus };
+            let index = LocusIndex::of(bundle);
+            let all = subjects(&inputs, &index, &literal_positions(bundle));
+            assert_eq!(all.len(), 33, "one template per literal");
+            for subject in all {
+                assert!(subject.contributions.len() <= 2, "{}: {} contexts for at most two same-thread owners", subject.site.decl.lowered, subject.contributions.len());
+            }
+        });
     }
 
     /// A known limit: contributions that state different rules for one
