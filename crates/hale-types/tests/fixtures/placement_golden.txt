@@ -12754,6 +12754,23 @@ row	Roles@main1	Roles	main	default
 row	~	Holder	main	default
 row	~.roles	Roles	main	inherited	built by Roles@main1
 
+== crates/hale-types/tests/fixtures/placement/root_in_defaults.hl
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+-- Outer@main1	Outer
+row	~	Outer	main	default
+row	~.s	Shell	main	inherited
+row	~.s.inner	Holder	main	inherited
+row	~.s.inner.app	App	main	inherited
+row	~.s.inner.app.w	Worker	main	inherited
+-- Shell@main2	Shell
+row	~	Shell	main	default
+row	~.inner	Holder	main	inherited
+row	~.inner.app	App	main	inherited
+row	~.inner.app.w	Worker	main	inherited
+
 == crates/hale-types/tests/fixtures/placement/static_field_default.hl
 root	App	the entry
 domain	pinned:App@literal1.w

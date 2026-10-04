@@ -458,7 +458,15 @@ placement and the locus's shape are known at compile time:
   ever joined and the earlier ones are orphaned with their memory
   still live. Placement describes a *static* topology (a core, a NUMA
   node, `replicas = K`): one thread per entry, for the program's
-  life. Instantiate it once, outside the loop. A loop that calls a
+  life. Instantiate it once, outside the loop. The same goes for a
+  locus whose `params` default builds `main`: `Holder { }` in a loop,
+  where `Holder`'s default is `App { }`, builds an `App` per iteration
+  and is refused at `Holder { }`. A `const`'s value, a type's field
+  default and a closure's assertion are built again at every use (each
+  read of the const, each literal of the type, each evaluation of the
+  closure), so the compiler can't show a `main` written in one is built
+  once: it is refused there outright, loop or no loop. Build it in a
+  locus's `params` or a function body instead. A loop that calls a
   *function* holding the literal is fine — each call joins its own
   thread before it returns:
 
@@ -502,9 +510,10 @@ placement and the locus's shape are known at compile time:
 
   The same holds at the instantiation site for a field declared
   without a default: `App { a: Worker { } }` carries the entry,
-  `App { a: make_worker() }` does not. If the factory did setup
-  work, move it into the locus's own `params` defaults or its
-  `birth()`.
+  `App { a: make_worker() }` does not — wherever that `App { }` is
+  written, another locus's `params` default included. If the factory
+  did setup work, move it into the locus's own `params` defaults or
+  its `birth()`.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

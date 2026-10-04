@@ -3557,7 +3557,27 @@ main locus App {
     the rule is positional on that literal, so it is not a rule
     about the whole call graph. The typechecker judges it over the
     placement table's constructions of the root (every literal of
-    the root declaration, as resolved), and the test harness's
+    the root declaration, as resolved, in a fn or locus body), and
+    over the root literals written in another locus's `params`
+    default: such a literal is built wherever a literal of that
+    locus takes the default, so it inherits that literal's loop,
+    through any depth of defaults, and is rejected at the outermost
+    literal written in a loop (`for i in 0..3 { Holder { }; }`,
+    where `Holder`'s default is `App { }`, at `Holder { }`). A root
+    literal written in a position lowering emits again at every use
+    — a `const`'s value (at each read of the const), a type's field
+    default (at each literal of the type that takes it), a closure's
+    assertion (at each evaluation of the closure) — or reached
+    through `params` defaults from a literal written in one, has no
+    construction the table records, so the position does not let
+    the compiler show the root is built once: when the root pins a
+    field it is rejected outright at that position's literal, loop
+    or no loop, and the fix is to build it in a locus's `params` or
+    a fn body. A root literal in an adapter's inits is built once,
+    by the bindings prelude, and one in a perspective's members is
+    never lowered (a contract fn's body is not the `serves`-ing
+    locus's method); neither is judged. A `const` or `type` written
+    in a locus body is refused on its own rule. The test harness's
     build, which skips the rest of the check, judges it too, so
     lowering keeps no refusal of its own. (GH #826, 2026-09-20;
     F.40 phase 3, C7.)
@@ -3584,8 +3604,15 @@ main locus App {
     the value returns. Scope matches rule 17's: an imported seed's
     main locus is renamed `__lib_*`, is not the deployment root, and
     its entries never reach the plan; the instantiation sites judged
-    are the placement table's constructions of the root, every
-    literal of the root declaration as resolved. The test harness's
+    are every literal of the root declaration as resolved, wherever it
+    is written: the placement table's constructions of the root (a
+    literal in a fn or locus body), and the literals the table records
+    where no body reaches — another locus's `params` default, at any
+    depth of defaults, a perspective's `params`, a const, a type's
+    field default — which lowering expands wherever their holder is
+    built (`locus Holder { params { app: App = App { w:
+    make_worker() }; } }` is rejected at `make_worker()`). Only a
+    construction stops the root's own default being live. The test harness's
     build, which skips the rest of the check, judges it too, so
     lowering keeps no refusal of its own. (GH #890, 2026-09-20;
     F.40 phase 3, C7.)

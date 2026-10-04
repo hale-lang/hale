@@ -95,8 +95,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
-    OrDisposition, ParamInit, Pattern, PinAffinity, PlacementConstraint, PlacementSpec, Program, RecoveryModifier, Stmt,
-    StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDeclBody, TypeExpr,
+    OrDisposition, ParamInit, Pattern, PerspectiveMember, PinAffinity, PlacementConstraint, PlacementSpec, Program,
+    RecoveryModifier, Stmt, StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::sites::{for_each_site_in_item, SiteKind};
 
@@ -274,7 +274,8 @@ impl Bound {
     }
 }
 
-/// One literal of the root declaration: a construction template.
+/// One literal of the root declaration: a construction template. In an
+/// [`Expanded`]'s `built_by`, a literal that builds one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Construction {
     /// The root literal; `Origin::Construction` of every key under it.
@@ -377,10 +378,79 @@ pub struct RootRow {
     pub realizes: DeclRef,
     /// False when lowering deploys a module-nested `main`.
     pub is_entry: bool,
-    /// Every literal of the root declaration, each a template. Empty when
-    /// no literal builds the root: its one template is then the entry's
-    /// ([`Origin::Entry`]).
+    /// Every literal of the root declaration in a scope's bodies, each a
+    /// template. Empty when no such literal builds the root: its one
+    /// template is then the entry's ([`Origin::Entry`]).
     pub constructions: Vec<Construction>,
+    /// Every other literal of the root declaration: one written where no
+    /// scope's bodies reach (a params default of a locus or a
+    /// perspective, a const, a type's field default, a closure's
+    /// assertion, an adapter's inits). Lowering expands it wherever the
+    /// declaration holding it is built, so it is no template of its own,
+    /// but it builds the root as surely as a construction does, and a law
+    /// that judges every literal of the root reads it beside
+    /// `constructions`.
+    pub expanded: Vec<Expanded>,
+}
+
+/// A root literal written where no scope's bodies reach, and the
+/// literals whose building expands it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expanded {
+    pub literal: SiteRef,
+    /// The outermost literals that build it, each with its bound: a
+    /// literal of the locus whose params default holds it, one that takes
+    /// that default, written in a scope's body; through nested defaults,
+    /// the outermost such literal of each chain (`for i in 0..3 { Shell {
+    /// }; }`, where `Shell`'s default builds a `Holder` whose default
+    /// builds the root, records `Shell { }` built in a loop). A literal
+    /// on the way written in a loop inside its default is the end of its
+    /// chain, built in a loop. Empty for a position no locus literal
+    /// expands: one lowering emits at every use (`per_use`), once (an
+    /// adapter's inits) or never (a perspective's members); and for a
+    /// default only the entry's own template takes.
+    pub built_by: Vec<Construction>,
+    /// The literals on its chains written where lowering emits them
+    /// again at every use, by constructions the table does not record
+    /// (`const C: Holder = Holder { };`, whose `Holder { }` is lowered
+    /// at each read of `C`): no bound says how often they build the
+    /// root.
+    pub per_use: Vec<PerUse>,
+}
+
+/// A literal written in a position lowering emits at every use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PerUse {
+    pub literal: SiteRef,
+    pub position: PerUsePosition,
+}
+
+/// The positions lowering emits at every use rather than at a
+/// construction of a declaration holding them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PerUsePosition {
+    /// A `const`'s value, lowered at each read of the const.
+    Const,
+    /// A type's field default, lowered at each literal of the type
+    /// that omits the field.
+    TypeFieldDefault,
+    /// A closure's assertion, lowered at each evaluation of the closure.
+    ClosureAssertion,
+}
+
+impl PerUsePosition {
+    /// The position and where lowering emits it, for a diagnostic.
+    pub fn describe(self) -> &'static str {
+        match self {
+            PerUsePosition::Const => "a `const`'s value, which lowering emits again at every read of the const",
+            PerUsePosition::TypeFieldDefault => {
+                "a type's field default, which lowering emits again at every literal of the type that takes it"
+            }
+            PerUsePosition::ClosureAssertion => {
+                "a closure's assertion, which lowering emits again at every evaluation of the closure"
+            }
+        }
+    }
 }
 
 /// The scope that encloses a dynamic literal.
@@ -1345,6 +1415,21 @@ impl<'d, 'a> Builder<'d, 'a> {
             }
         }
         constructions.sort_by_key(|(s, _, _, _, _)| *s);
+        let mut expanded: Vec<Expanded> = scopes
+            .elsewhere
+            .iter()
+            .filter(|e| e.literal.decl == Some(site) && e.literal.site.universe == SiteUniverse::User)
+            .map(|e| {
+                let mut x = Expanded { literal: e.literal.site, built_by: Vec::new(), per_use: Vec::new() };
+                scopes.built_by(e, &mut x, &mut BTreeSet::new());
+                x.built_by.sort_by_key(|c: &Construction| c.literal);
+                x.built_by.dedup();
+                x.per_use.sort();
+                x.per_use.dedup();
+                x
+            })
+            .collect();
+        expanded.sort_by_key(|e| e.literal);
         let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
@@ -1354,6 +1439,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 .iter()
                 .map(|(literal, _, bound, _, _)| Construction { literal: *literal, bound: bound.clone() })
                 .collect(),
+            expanded,
         });
         // A root no literal builds is the entry's implicit template, from
         // the declaration's defaults; its top's literal is the entry's
@@ -1955,6 +2041,24 @@ struct Literal<'a> {
     written: String,
 }
 
+/// A locus literal written where no scope's bodies reach.
+struct Elsewhere<'a> {
+    literal: Literal<'a>,
+    /// Where it is written, which says what builds it; `None` where
+    /// lowering emits it once (an adapter's inits, by the bindings
+    /// prelude) or never (a perspective's members).
+    position: Option<Position<'a>>,
+}
+
+#[derive(Clone, Copy)]
+enum Position<'a> {
+    /// A params default, of the locus and the field: a literal of that
+    /// locus that takes the default builds it.
+    Default(SiteRef, &'a str),
+    /// A position lowering emits at every use.
+    PerUse(PerUsePosition),
+}
+
 enum ScopeKind {
     /// A free fn: its name, its site, whether it is a top-level `fn main`.
     Fn { name: String, site: SiteRef, is_main: bool },
@@ -1983,6 +2087,12 @@ enum Count {
 
 struct Scopes<'a> {
     scopes: Vec<Scope<'a>>,
+    /// The locus literals written where no scope's bodies reach: a params
+    /// default, a const, a type's field default, a closure's assertion, an
+    /// adapter's inits, a perspective's members. Each is lowered wherever
+    /// the declaration holding it is built, in a scope no row relates it
+    /// to, so it joins no scope.
+    elsewhere: Vec<Elsewhere<'a>>,
     fns: BTreeMap<(SiteUniverse, String), usize>,
     loci: BTreeMap<SiteRef, usize>,
     counts: Vec<Count>,
@@ -1994,7 +2104,13 @@ impl<'a> Scopes<'a> {
         stdlib: Option<(&'a Program, &'a Snapshot)>,
         decls: &Decls<'a>,
     ) -> Scopes<'a> {
-        let mut s = Scopes { scopes: Vec::new(), fns: BTreeMap::new(), loci: BTreeMap::new(), counts: Vec::new() };
+        let mut s = Scopes {
+            scopes: Vec::new(),
+            elsewhere: Vec::new(),
+            fns: BTreeMap::new(),
+            loci: BTreeMap::new(),
+            counts: Vec::new(),
+        };
         for program in bundle.programs.values() {
             s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls, true);
         }
@@ -2016,6 +2132,107 @@ impl<'a> Scopes<'a> {
     }
 
     fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, decls: &Decls<'a>, top: bool) {
+        // The positions no scope's bodies reach, walked for their
+        // literals alone.
+        let mut rest = BodyWalk::new(ids, universe, decls);
+        // The literals of each position that has a builder, by index
+        // into `rest`'s (a locus params default's, with the locus and the
+        // field), or that lowering emits at every use.
+        let mut positions: Vec<(std::ops::Range<usize>, Position<'a>)> = Vec::new();
+        let per_use =
+            |rest: &BodyWalk<'a, '_>, start: usize, p: PerUsePosition| (start..rest.literals.len(), Position::PerUse(p));
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    let decl = ids.site_id(l.id).map(|id| SiteRef { universe, id });
+                    for m in &l.members {
+                        let start = rest.literals.len();
+                        match m {
+                            LocusMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        let start = rest.literals.len();
+                                        rest.expr(e);
+                                        if let Some(d) = decl {
+                                            positions.push((
+                                                start..rest.literals.len(),
+                                                Position::Default(d, p.name.name.as_str()),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            // A locus-member const or type is refused on
+                            // its own rule; judged as a top-level one.
+                            LocusMember::Const(c) => {
+                                rest.expr(&c.value);
+                                positions.push(per_use(&rest, start, PerUsePosition::Const));
+                            }
+                            LocusMember::Type(td) => {
+                                rest.type_defaults(td);
+                                positions.push(per_use(&rest, start, PerUsePosition::TypeFieldDefault));
+                            }
+                            LocusMember::Closure(c) => {
+                                if let Some(a) = &c.assertion {
+                                    rest.expr(&a.left);
+                                    rest.expr(&a.right);
+                                    rest.expr(&a.tolerance);
+                                }
+                                positions.push(per_use(&rest, start, PerUsePosition::ClosureAssertion));
+                            }
+                            LocusMember::Bindings(bb) => {
+                                for e in &bb.entries {
+                                    if let TransportSpec::Adapter { inits, .. } = &e.transport {
+                                        for i in inits {
+                                            rest.expr(&i.value);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(p) => {
+                    for m in &p.members {
+                        match m {
+                            PerspectiveMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        rest.expr(e);
+                                    }
+                                }
+                            }
+                            PerspectiveMember::StableWhen(b) => rest.block(b),
+                            PerspectiveMember::Fn(fd) => {
+                                for p in &fd.params {
+                                    if let Some(d) = &p.default {
+                                        rest.expr(d);
+                                    }
+                                }
+                                rest.block(&fd.body);
+                            }
+                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
+                        }
+                    }
+                }
+                TopDecl::Const(c) => {
+                    let start = rest.literals.len();
+                    rest.expr(&c.value);
+                    positions.push(per_use(&rest, start, PerUsePosition::Const));
+                }
+                TopDecl::Type(td) => {
+                    let start = rest.literals.len();
+                    rest.type_defaults(td);
+                    positions.push(per_use(&rest, start, PerUsePosition::TypeFieldDefault));
+                }
+                _ => {}
+            }
+        }
+        self.elsewhere.extend(rest.literals.into_iter().enumerate().map(|(i, literal)| Elsewhere {
+            literal,
+            position: positions.iter().find(|(r, _)| r.contains(&i)).map(|(_, p)| *p),
+        }));
         for item in items {
             match item {
                 TopDecl::Fn(fd) => {
@@ -2165,6 +2382,40 @@ impl<'a> Scopes<'a> {
             Count::Unbounded(why) => Bound::Unbounded(why.clone()),
         }
     }
+
+    /// The outermost literals whose building expands `e` ([`Expanded`]'s
+    /// `built_by`): the literals of the locus whose params default holds
+    /// it that take the default, each a scope's construction with its
+    /// bound, or written in another default and followed outward. A
+    /// literal on the way written in a position lowering emits at every
+    /// use ends its chain in `per_use`. `seen` ends a cycle of defaults
+    /// (a self-containing locus, refused on its own rule).
+    fn built_by(&self, e: &Elsewhere<'a>, out: &mut Expanded, seen: &mut BTreeSet<SiteRef>) {
+        if e.literal.in_loop {
+            out.built_by
+                .push(Construction { literal: e.literal.site, bound: Bound::Unbounded(BUILT_IN_A_LOOP.to_string()) });
+            return;
+        }
+        let (decl, field) = match e.position {
+            Some(Position::Default(decl, field)) => (decl, field),
+            Some(Position::PerUse(position)) => {
+                out.per_use.push(PerUse { literal: e.literal.site, position });
+                return;
+            }
+            None => return,
+        };
+        let takes_default = |lit: &Literal<'_>| lit.decl == Some(decl) && !lit.inits.iter().any(|i| i.name.name == field);
+        for s in &self.scopes {
+            for lit in s.literals.iter().filter(|l| takes_default(l)) {
+                out.built_by.push(Construction { literal: lit.site, bound: self.bound(s, lit.in_loop) });
+            }
+        }
+        for outer in self.elsewhere.iter().filter(|o| takes_default(&o.literal)) {
+            if seen.insert(outer.literal.site) {
+                self.built_by(outer, out, seen);
+            }
+        }
+    }
 }
 
 /// One scope's walk over its bodies.
@@ -2240,6 +2491,17 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         }
         if let Some(t) = &b.tail {
             self.expr(t);
+        }
+    }
+
+    /// A struct type's field defaults.
+    fn type_defaults(&mut self, td: &'a TypeDecl) {
+        if let TypeDeclBody::Struct(fields) = &td.body {
+            for f in fields {
+                if let Some(d) = &f.default {
+                    self.expr(d);
+                }
+            }
         }
     }
 

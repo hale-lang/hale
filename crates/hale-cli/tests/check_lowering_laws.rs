@@ -48,6 +48,121 @@ const XPOOL_VALUE: &str = "locus Ship { params { hull: Int = 0; } }\n\
 
 const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget";
 
+/// Rule 18 (GH #890), the review of PR #1338: a root literal written in
+/// another locus's params default overrides the placed field with a
+/// factory call. The override is line 8, column 45.
+const ROOT_IN_A_DEFAULT: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     fn make_worker() -> Worker { Worker { } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: make_worker() }; } }\n\
+     fn main() { Holder { }; }\n";
+
+/// The same literal two params defaults deep (`Outer` builds `Holder`).
+const ROOT_TWO_DEFAULTS_DEEP: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     fn make_worker() -> Worker { Worker { } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: make_worker() }; } }\n\
+     locus Outer { params { h: Holder = Holder { }; } }\n\
+     fn main() { Outer { }; }\n";
+
+const RULE_18: &str =
+    "placement entry `w` names a field no locus literal initialises: the value supplied for `w` here is a call";
+
+/// Rule 17, the review of PR #1338: a root literal in another locus's
+/// params default inherits the loop of the literal that builds it. The
+/// loop's `Holder { }` is line 9, column 21.
+const ROOT_DEFAULT_IN_A_LOOP: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: Worker { } }; } }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { Holder { }; }\n\
+     }\n";
+
+/// Two params defaults deep: the loop builds `Shell`, whose default builds
+/// `Holder`. The loop's `Shell { }` is line 10, column 21.
+const ROOT_DEFAULT_TWO_DEEP_IN_A_LOOP: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: Worker { } }; } }\n\
+     locus Shell { params { inner: Holder = Holder { }; } }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { Shell { }; }\n\
+     }\n";
+
+/// Rule 17, the positions lowering emits at every use: a root literal
+/// in a const's value is lowered again at each read of the const, so
+/// the loop's `C` builds `App` per iteration. The const's `App { }` is
+/// line 7, column 16.
+const ROOT_IN_A_CONST: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     const C: App = App { };\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { let a = C; }\n\
+     }\n";
+
+/// Through a params default: the const builds `Holder`, whose default
+/// builds the root. The const's `Holder { }` is line 8, column 19.
+const ROOT_THROUGH_A_CONST: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { }; } }\n\
+     const C: Holder = Holder { };\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { let h = C; }\n\
+     }\n";
+
+/// A type's field default, lowered at each literal of the type that
+/// takes it. The default's `App { }` is line 8, column 23.
+const ROOT_IN_A_TYPE_DEFAULT: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     fn n(a: App) -> Int { return 1; }\n\
+     type Box { k: Int = n(App { }); }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { let b = Box { }; }\n\
+     }\n";
+
+/// A closure's assertion, lowered at each evaluation of the closure.
+/// The assertion's `App { }` is line 8, column 53.
+const ROOT_IN_A_CLOSURE: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     fn n(a: App) -> Int { return 1; }\n\
+     locus Holder { params { x: Int = 1; } closure c { n(App { }) ~~ self.x within 0; } }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { Holder { }; }\n\
+     }\n";
+
+const RULE_17_PER_USE: &str = "locus `App` is built by this literal, written in";
+
 fn seed(tag: &str, src: &str) -> PathBuf {
     let d: PathBuf = std::env::temp_dir().join(format!(
         "hale_check_lowering_laws_{}_{}",
@@ -125,4 +240,84 @@ fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
 #[test]
 fn check_and_build_refuse_a_cross_pool_spawn_used_as_a_value_at_the_literal() {
     both_verbs_refuse("xpool", XPOOL_VALUE, FIRE_AND_FORGET, ":2:32:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_in_a_params_default_at_the_override() {
+    both_verbs_refuse("rule18_default", ROOT_IN_A_DEFAULT, RULE_18, ":8:45:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_two_params_defaults_deep_at_the_override() {
+    both_verbs_refuse("rule18_two_deep", ROOT_TWO_DEFAULTS_DEEP, RULE_18, ":8:45:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_in_a_params_default_built_in_a_loop_at_the_loops_literal() {
+    both_verbs_refuse("rule17_default", ROOT_DEFAULT_IN_A_LOOP, RULE_17, ":9:21:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_two_params_defaults_deep_built_in_a_loop_at_the_loops_literal() {
+    both_verbs_refuse("rule17_two_deep", ROOT_DEFAULT_TWO_DEEP_IN_A_LOOP, RULE_17, ":10:21:");
+}
+
+/// The control: `Holder { }` hoisted out of the loop is admitted.
+#[test]
+fn check_admits_a_root_literal_in_a_params_default_built_outside_a_loop() {
+    let src = ROOT_DEFAULT_IN_A_LOOP.replace("    for i in 0..3 { Holder { }; }\n", "    Holder { };\n    for i in 0..3 { }\n");
+    assert_ne!(src, ROOT_DEFAULT_IN_A_LOOP, "the loop's literal was hoisted");
+    let d = seed("rule17_default_control", &src);
+    let (ok, out) = hale(&["check", &d.to_string_lossy()]);
+    assert!(ok, "check must pass:\n{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn check_and_build_refuse_a_pinned_root_in_a_const_at_the_consts_literal() {
+    both_verbs_refuse("rule17_const", ROOT_IN_A_CONST, &format!("{RULE_17_PER_USE} a `const`'s value"), ":7:16:");
+}
+
+#[test]
+fn check_and_build_refuse_a_pinned_root_built_through_a_const_at_the_consts_literal() {
+    both_verbs_refuse(
+        "rule17_through_const",
+        ROOT_THROUGH_A_CONST,
+        &format!("{RULE_17_PER_USE} a `const`'s value"),
+        ":8:19:",
+    );
+}
+
+#[test]
+fn check_and_build_refuse_a_pinned_root_in_a_type_field_default_at_the_defaults_literal() {
+    both_verbs_refuse(
+        "rule17_type_default",
+        ROOT_IN_A_TYPE_DEFAULT,
+        &format!("{RULE_17_PER_USE} a type's field default"),
+        ":8:23:",
+    );
+}
+
+#[test]
+fn check_and_build_refuse_a_pinned_root_in_a_closure_assertion_at_the_assertions_literal() {
+    both_verbs_refuse("rule17_closure", ROOT_IN_A_CLOSURE, &format!("{RULE_17_PER_USE} a closure's assertion"), ":8:53:");
+}
+
+/// The controls: in each position, a root with no `pinned` entry is
+/// admitted. The refusal is the pinned thread's, not the position's.
+#[test]
+fn check_admits_a_root_with_no_pinned_entry_in_a_position_emitted_at_every_use() {
+    for (tag, src) in [
+        ("const", ROOT_IN_A_CONST),
+        ("through_const", ROOT_THROUGH_A_CONST),
+        ("type_default", ROOT_IN_A_TYPE_DEFAULT),
+        ("closure", ROOT_IN_A_CLOSURE),
+    ] {
+        let unpinned = src.replace("    placement { w: pinned; }\n", "");
+        assert_ne!(unpinned, src, "{tag}: the entry was removed");
+        let d = seed(&format!("rule17_per_use_control_{tag}"), &unpinned);
+        let (ok, out) = hale(&["check", &d.to_string_lossy()]);
+        assert!(ok, "{tag}: check must pass:\n{out}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

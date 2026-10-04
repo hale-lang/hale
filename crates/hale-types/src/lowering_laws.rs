@@ -16,14 +16,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     Block, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember,
-    MatchArmBody, MatchStmt, OrDisposition, ParamInit, Program, RecoveryModifier, Stmt, StructInit, TopDecl,
-    TypeExpr,
+    MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program, RecoveryModifier, Stmt,
+    StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
 use crate::binding_rows::BindingRows;
 use crate::ownership_graph::OwnershipGraph;
-use crate::placement::{Decision, DomainKind, Origin, PlacementTable, SiteRef, SiteUniverse};
+use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
 use crate::Bundle;
 
@@ -116,10 +116,15 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
 /// literal builds the root, and the entry builds it from its defaults);
 /// both spellings are judged, and a default every literal overrides is
 /// dead text, not a dropped placement. Read off the placement table: the
-/// root is the lowering root, and its literals are the table's
-/// constructions of it, every literal of the root declaration as
-/// resolved (an imported seed's `main` is not the root, and a literal of
-/// another locus that shares its name is not one of them).
+/// root is the lowering root, and its literals are every literal of the
+/// root declaration as resolved (an imported seed's `main` is not the
+/// root, and a literal of another locus that shares its name is not one
+/// of them): the table's constructions, written in a scope's bodies, and
+/// the literals it records where no body reaches, which lowering expands
+/// wherever their holder is built (`locus Holder { params { app: App =
+/// App { w: make_worker() }; } }` places nothing, as a construction
+/// would not). Only the constructions decide whether the entry builds
+/// the root from its defaults.
 fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     let Some(root) = &inputs.placement.root else { return };
     let decls = declarations(bundle);
@@ -136,8 +141,9 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
     }) else {
         return;
     };
-    // Each construction's field inits.
-    let wanted: BTreeSet<SiteRef> = root.constructions.iter().map(|c| c.literal).collect();
+    // Each literal's field inits.
+    let wanted: BTreeSet<SiteRef> =
+        root.constructions.iter().map(|c| c.literal).chain(root.expanded.iter().map(|e| e.literal)).collect();
     let mut sites: Vec<&[StructInit]> = Vec::new();
     {
         let mut found = literals(|e, _bare| {
@@ -185,10 +191,10 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
             }
         }
         // The default is live when some site omits the field, and when
-        // no literal builds the root at all (the entry's implicit
+        // no construction builds the root (the entry's implicit
         // template, or a library seed checked on its own: the default is
         // the only initialiser there is).
-        if !(any_site_takes_default || sites.is_empty()) {
+        if !(any_site_takes_default || root.constructions.is_empty()) {
             continue;
         }
         // No default and no site init: the missing-required-param rule
@@ -244,7 +250,9 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
 /// every other expression). The bodies are where the placement table's
 /// scopes find literals: every fn body (its parameters' defaults
 /// included) and every locus member body, at any nesting, through every
-/// statement and expression form; `expr` walks one expression alone.
+/// statement and expression form; `items` walks the positions the table
+/// records apart from them too (`PlacementTable`'s root `expanded`), and
+/// `expr` walks one expression alone.
 struct Literals<F> {
     f: F,
 }
@@ -254,13 +262,73 @@ fn literals<'a, F: FnMut(&'a Expr, bool)>(f: F) -> Literals<F> {
 }
 
 impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
+    /// Every expression written in `items`: the bodies, and the positions
+    /// no body reaches (a params default of a locus or a perspective, a
+    /// const, a type's field default, a closure's assertion, an adapter's
+    /// inits, a perspective's members).
     fn items(&mut self, items: &'a [TopDecl]) {
         for item in items {
             match item {
                 TopDecl::Fn(fd) => self.fn_decl(fd),
-                TopDecl::Locus(l) => self.locus_bodies(l),
+                TopDecl::Locus(l) => {
+                    self.locus_bodies(l);
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Params(pb) => self.params(pb),
+                            LocusMember::Const(c) => self.expr(&c.value),
+                            LocusMember::Type(td) => self.type_defaults(td),
+                            LocusMember::Closure(c) => {
+                                if let Some(a) = &c.assertion {
+                                    self.expr(&a.left);
+                                    self.expr(&a.right);
+                                    self.expr(&a.tolerance);
+                                }
+                            }
+                            LocusMember::Bindings(bb) => {
+                                for e in &bb.entries {
+                                    if let TransportSpec::Adapter { inits, .. } = &e.transport {
+                                        for i in inits {
+                                            self.expr(&i.value);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(p) => {
+                    for m in &p.members {
+                        match m {
+                            PerspectiveMember::Params(pb) => self.params(pb),
+                            PerspectiveMember::StableWhen(b) => self.block(b),
+                            PerspectiveMember::Fn(fd) => self.fn_decl(fd),
+                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
+                        }
+                    }
+                }
+                TopDecl::Const(c) => self.expr(&c.value),
+                TopDecl::Type(td) => self.type_defaults(td),
                 TopDecl::Module(m) => self.items(&m.items),
                 _ => {}
+            }
+        }
+    }
+
+    fn params(&mut self, pb: &'a ParamsBlock) {
+        for p in &pb.params {
+            if let ParamInit::Value(e) = &p.init {
+                self.expr(e);
+            }
+        }
+    }
+
+    fn type_defaults(&mut self, td: &'a TypeDecl) {
+        if let TypeDeclBody::Struct(fields) = &td.body {
+            for f in fields {
+                if let Some(d) = &f.default {
+                    self.expr(d);
+                }
             }
         }
     }
@@ -473,6 +541,18 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
 /// in a loop is not one (its literal is not in a loop, and each call
 /// joins its own thread at the factory's exit), nor is an adapter, which
 /// the bindings prelude builds once however often the root is built.
+///
+/// A root literal written in a params default (the root's `expanded`)
+/// is built wherever a literal taking that default is, and inherits its
+/// loop: it is judged at each of the outermost literals that build it
+/// (its `built_by`) that is built in a loop, as if that literal were the
+/// root's construction, and it pins what the declaration's entries pin
+/// (lowering pins every literal of the root). A chain that passes
+/// through a position lowering emits at every use (a const's value, a
+/// type's field default, a closure's assertion: its `per_use`) has no
+/// construction the table records, so no bound shows the root built
+/// once: it is refused outright at that position's literal, loop or no
+/// loop, naming the hoist.
 fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     let placement = inputs.placement;
     let Some(root) = &placement.root else { return };
@@ -480,24 +560,75 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
         SiteUniverse::User => bundle.snapshot.site(site.id).map(|s| s.span),
         SiteUniverse::StdlibAnalysis => None,
     };
-    for construction in root.constructions.iter().filter(|c| c.bound.built_in_a_loop()) {
-        let origin = Origin::Construction(construction.literal);
-        // The first entry in source order that pins a field of this
-        // template.
-        let pinned = placement
+    // The first entry in source order that pins a field of the templates
+    // `origin` admits.
+    let first_pinned = |origin: &dyn Fn(&Origin) -> bool| {
+        placement
             .instances
             .iter()
             .filter(|(key, row)| {
-                key.origin == origin && matches!(placement.domain(row.domain).kind, DomainKind::Pinned { .. })
+                origin(&key.origin) && matches!(placement.domain(row.domain).kind, DomainKind::Pinned { .. })
             })
             .filter_map(|(key, row)| match &row.decided_by {
                 Decision::Entry { entry, .. } => Some((span_of(*entry)?, key.path.first()?.field.as_str())),
                 _ => None,
             })
-            .min_by_key(|(span, _)| span.start.0);
-        let Some((entry_span, field)) = pinned else { continue };
-        let Some(span) = span_of(construction.literal) else { continue };
-        let locus = root.realizes.lowered.as_str();
+            .min_by_key(|(span, _)| span.start.0)
+    };
+    let mut sites: Vec<(SiteRef, (Span, &str))> = Vec::new();
+    for construction in root.constructions.iter().filter(|c| c.bound.built_in_a_loop()) {
+        let origin = Origin::Construction(construction.literal);
+        if let Some(pinned) = first_pinned(&|o| *o == origin) {
+            sites.push((construction.literal, pinned));
+        }
+    }
+    let in_a_loop: BTreeSet<SiteRef> = root
+        .expanded
+        .iter()
+        .flat_map(|e| e.built_by.iter().filter(|c| c.bound.built_in_a_loop()).map(|c| c.literal))
+        .collect();
+    if !in_a_loop.is_empty() {
+        if let Some(pinned) = first_pinned(&|_| true) {
+            for literal in in_a_loop {
+                if !sites.iter().any(|(s, _)| *s == literal) {
+                    sites.push((literal, pinned));
+                }
+            }
+        }
+    }
+    let locus = root.realizes.lowered.as_str();
+    // A chain through a position lowering emits at every use has no
+    // bound to judge: refused outright at that position's literal.
+    let per_use: BTreeMap<SiteRef, PerUsePosition> =
+        root.expanded.iter().flat_map(|e| e.per_use.iter().map(|p| (p.literal, p.position))).collect();
+    if let Some((entry_span, field)) = first_pinned(&|_| true).filter(|_| !per_use.is_empty()) {
+        for (literal, position) in per_use {
+            if sites.iter().any(|(s, _)| *s == literal) {
+                continue;
+            }
+            let Some(span) = span_of(literal) else { continue };
+            diags.push(
+                Diag::ty(
+                    span,
+                    format!(
+                        "locus `{}` is built by this literal, written in {}, but its `placement {{ }}` \
+                         block pins field `{}` to its own OS thread. The position does not let the \
+                         compiler show that `{}` is built once, and every build past the first spawns a \
+                         fresh pinned thread while only the last one is joined. Build `{}` in a locus's \
+                         `params` or a fn body instead, where the compiler sees how often it is built.",
+                        locus,
+                        position.describe(),
+                        field,
+                        locus,
+                        locus
+                    ),
+                )
+                .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+            );
+        }
+    }
+    for (literal, (entry_span, field)) in sites {
+        let Some(span) = span_of(literal) else { continue };
         diags.push(
             Diag::ty(
                 span,
