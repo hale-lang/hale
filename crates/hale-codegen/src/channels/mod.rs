@@ -52,15 +52,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info.failure_handlers.get(&row.id?).map(|(_, f)| *f)
     }
 
+    /// The concrete locus `name` as the routing rows key it: its
+    /// declaration's site, and a monomorph's specialization
+    /// (`HandlerRouting::instance_key`).
+    pub(crate) fn routing_key(
+        &self,
+        name: &str,
+    ) -> hale_types::handler_routing::InstanceKey {
+        let decl = self
+            .user_loci
+            .get(name)
+            .map_or(hale_syntax::ast::NodeId::NONE, |info| info.decl);
+        self.handlers.instance_key(decl, name)
+    }
+
     /// Resolve the (parent_self, on_failure_fn) pair for a child
     /// of `child_locus_name` whose closure may fail at dissolve.
-    /// Which parent INSTANCE is the lowering context's: the
-    /// supervising parent of a literal written as another literal's
-    /// field, else `current_self` (set while we're in the parent's
-    /// lifecycle body), else `params_init_self`. Which handler is the
-    /// routing row's (`failure_handler_for`). Otherwise returns
-    /// (null, null) — the closure-fail path will fall back to the v0
-    /// dprintf+exit report.
+    /// Which parent INSTANCE is the lowering context's (a runtime
+    /// pointer, which no snapshot row holds): the supervising parent
+    /// of a literal written as another literal's field, matched to
+    /// the child by the child's declaration (`routing_key`), else
+    /// `current_self` (set while we're in the parent's lifecycle
+    /// body), else `params_init_self`. Which handler is the routing
+    /// row's (`failure_handler_for`). Otherwise returns (null, null)
+    /// — the closure-fail path will fall back to the v0 dprintf+exit
+    /// report.
     pub(crate) fn resolve_failure_route(
         &self,
         child_locus_name: &str,
@@ -82,7 +98,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let supervisor = self
             .supervising_parent
             .as_ref()
-            .filter(|(child, _)| child == child_locus_name)
+            .filter(|(child, _)| *child == self.routing_key(child_locus_name))
             .map(|(_, cs)| cs);
         let cs = match supervisor.or(self.current_self.as_ref()) {
             Some(cs) => cs,

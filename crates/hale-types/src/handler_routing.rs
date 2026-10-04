@@ -234,6 +234,22 @@ impl HandlerRouting {
         self.handlers_of_instance(decl, name).find(|r| r.child.name() == child)
     }
 
+    /// The identity the rows key the concrete locus `name`, declared at
+    /// `decl`, by: the declaration's site, and for a monomorph the
+    /// specialization `specialize` registered (two instances of one
+    /// template share the site). A declaration no mint numbered is
+    /// keyed by its name.
+    pub fn instance_key(&self, decl: NodeId, name: &str) -> InstanceKey {
+        if decl.is_none() {
+            return InstanceKey::Unminted(name.to_string());
+        }
+        let specialization = self
+            .specialized
+            .contains_key(&(decl.0, name.to_string()))
+            .then(|| name.to_string());
+        InstanceKey::Decl(decl.0, specialization)
+    }
+
     /// Whether some handler, in any parent, restarts a child of locus
     /// type `child` in place: such a child keeps a copy of the params
     /// it was built with.
@@ -255,6 +271,16 @@ impl HandlerRouting {
             .or_insert(i);
         self.rows.push(row);
     }
+}
+
+/// A concrete locus as the routing rows key it
+/// ([`HandlerRouting::instance_key`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceKey {
+    /// The declaration's site index, with a monomorph's specialization.
+    Decl(u32, Option<String>),
+    /// An unminted declaration, by its name.
+    Unminted(String),
 }
 
 /// What [`child_locus_name`] resolves against: the loci a program

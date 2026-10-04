@@ -372,3 +372,44 @@ locus Second {
     assert_eq!(routing.handlers_of_decl(parent.id).next().unwrap().child, original[0].child);
     assert_eq!(routing.rows().len(), 7, "specialization does not change snapshot rows");
 }
+
+/// A concrete locus's routing identity (`instance_key`), which the
+/// failure route matches a supervising parent's child by: a locus by
+/// its declaration's site, a monomorph by its template's site and its
+/// specialization, and an unminted declaration by its name.
+#[test]
+fn a_concrete_locus_is_keyed_by_its_declaration_and_specialization() {
+    use hale_syntax::ast::{flat_decls, LocusMember, NodeId, TopDecl};
+    use hale_types::handler_routing::InstanceKey;
+    let src = "
+locus Alpha { }
+locus Beta { }
+locus Cell<T> {
+    on_failure(c: T, err: ClosureViolation) { bubble(err); }
+}
+locus Holder {
+    on_failure(c: Alpha, err: ClosureViolation) { bubble(err); }
+}
+";
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let snapshot = hale_types::snapshot::mint([("main.hl", &mut program)], &[]);
+    let loci = flat_decls(&program.items).filter_map(|d| match d {
+        TopDecl::Locus(l) => Some((l.name.name.as_str(), l)),
+        _ => None,
+    }).collect::<std::collections::BTreeMap<_, _>>();
+    let alpha_ty = loci["Holder"].members.iter().find_map(|m| match m {
+        LocusMember::Failure(f) => Some(f.params[0].ty.clone()),
+        _ => None,
+    }).unwrap();
+    let mut routing = handler_rows(&[&program], &[], &snapshot);
+    routing.specialize(loci["Cell"], "Cell_Alpha", |_| alpha_ty.clone());
+    let (alpha, beta, cell) = (loci["Alpha"].id, loci["Beta"].id, loci["Cell"].id);
+    assert_eq!(routing.instance_key(alpha, "Alpha"), InstanceKey::Decl(alpha.0, None));
+    assert_ne!(routing.instance_key(alpha, "Alpha"), routing.instance_key(beta, "Beta"));
+    assert_eq!(
+        routing.instance_key(cell, "Cell_Alpha"),
+        InstanceKey::Decl(cell.0, Some("Cell_Alpha".to_string()))
+    );
+    assert_ne!(routing.instance_key(cell, "Cell_Alpha"), routing.instance_key(cell, "Cell_Beta"));
+    assert_eq!(routing.instance_key(NodeId::NONE, "Alpha"), InstanceKey::Unminted("Alpha".to_string()));
+}

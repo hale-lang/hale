@@ -191,25 +191,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Anything else (an argument, a binding, a temporary) resolves
         // as before: the method body or params-init loop it sits in.
         let holder = self.field_holder.take();
+        let child = self.routing_key(locus_name);
         self.supervising_parent = match (&site_owner, holder) {
             (
                 crate::ownership::Owner::Field { owner, .. },
                 Some((Some(lit), cx)),
-            ) if *owner == lit => Some((locus_name.to_string(), cx)),
+            ) if *owner == lit => Some((child, cx)),
             (crate::ownership::Owner::Placement(_), Some((_, cx))) => {
-                Some((locus_name.to_string(), cx))
+                Some((child, cx))
             }
             (crate::ownership::Owner::Field { owner, .. }, None)
                 if *owner == crate::ownership::ExprId::DECLARED =>
             {
-                self.params_init_self
-                    .clone()
-                    .map(|cx| (locus_name.to_string(), cx))
+                self.params_init_self.clone().map(|cx| (child, cx))
             }
-            (crate::ownership::Owner::Placement(_), None) => self
-                .params_init_self
-                .clone()
-                .map(|cx| (locus_name.to_string(), cx)),
+            (crate::ownership::Owner::Placement(_), None) => {
+                self.params_init_self.clone().map(|cx| (child, cx))
+            }
             _ => None,
         };
         // The locus whose FIELD this instance is, when it is one (the
