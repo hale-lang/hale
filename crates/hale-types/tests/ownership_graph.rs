@@ -1040,4 +1040,9 @@ fn lowerings_graph_is_the_snapshots_rows_through_the_correspondence() {
     for g in [snap, low] {
         assert!(g.rows.accepts_ancestor("A", "I") && !g.rows.accepts_ancestor("B", "I"));
     }
+
+    // The view's scope is the snapshot's, the stdlib's declarations in it.
+    let scope = s.demand_scope().unwrap_or_else(|_| panic!("the scope is blocked"));
+    assert_eq!(format!("{:?}", view.top), format!("{scope:?}"));
+    assert!(view.top.symbols.keys().any(|k| k.starts_with("__Std")));
 }

@@ -160,8 +160,11 @@ pub struct LoweringView {
     pub import_renames: Vec<(Vec<String>, String)>,
     pub api: Option<String>,
     pub api_roles: Option<String>,
-    /// The top-level scope over `merged`, the one the ownership and bus
-    /// graphs were built with.
+    /// The top-level scope: the snapshot's (F.40 phase 3, C5), which
+    /// holds the stdlib's declarations beside the checked programs'. The
+    /// stdlib's bus rows and typed-body pairs answer over it, and
+    /// lowering reads its topic rows; the rewrites change no declaration
+    /// those readers ask about.
     pub top: TopScope,
     /// Where lowering routes an allocation, over `merged`: which free
     /// fns are scratch-local (`crate::alloc_routing`).
@@ -346,13 +349,12 @@ pub fn resolve_program(
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     let mut minted = program.clone();
     let checked = crate::snapshot::mint([("program", &mut minted)], sources);
-    let (bus, ownership) = {
+    let (top, bus, ownership) = {
         let bundle = merged_bundle(&minted, import_renames, &checked);
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        (
-            crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement),
-            crate::ownership_graph::build_ownership_graph(&bundle, &top, placement),
-        )
+        let bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement);
+        let ownership = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement);
+        (top, bus, ownership)
     };
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
@@ -365,6 +367,7 @@ pub fn resolve_program(
         bindings,
         placement,
         typed,
+        &top,
         &bus,
         &ownership,
         host,
@@ -404,7 +407,12 @@ pub fn resolve_program(
 /// gets its written discipline. `typed` is the snapshot's typed-body
 /// table (`Snapshot::demand_typed_bodies`); a caller with none passes
 /// `&TypedBodies::default()`, and lowering refuses every site that reads
-/// a row. `bus` is the snapshot's bus graph (`Snapshot::demand_bus_graph`),
+/// a row. `top` is the snapshot's scope (`Snapshot::demand_scope`), which
+/// holds the stdlib's declarations beside the checked programs': the
+/// view's scope, which the stdlib's bus rows and typed-body pairs answer
+/// over and lowering reads the topic rows of (F.40 phase 3, C5; the
+/// rewrites change no declaration a reader of it asks about).
+/// `bus` is the snapshot's bus graph (`Snapshot::demand_bus_graph`),
 /// over the checked programs: lowering's graph is its rows, read through
 /// the correspondence (`bus_graph::lowering_bus_graph`); `ownership` the
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
@@ -425,6 +433,7 @@ pub fn resolve_rewritten(
     bindings: &crate::binding_rows::BindingRows,
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
+    top: &TopScope,
     bus: &BusGraph,
     ownership: &OwnershipGraph,
     class: crate::capability::TargetClass,
@@ -558,23 +567,19 @@ pub fn resolve_rewritten(
     // the stdlib's after them (F.40 phase 3, C5,
     // `ownership_graph::lowering_ownership_graph`), assembled as the snapshot's
     // graph is. The bundle's one program keeps the name codegen gave
-    // it, so nothing keyed by program name moves; the scope's
-    // diagnostics are the checker's to report, not this step's.
+    // it, so nothing keyed by program name moves.
     //
     // F.40 phase 1.5: and the bus graph and lowering's dispatch plan.
     // The graph is the snapshot's rows read through the correspondence
     // (F.40 phase 3, C5, `bus_graph::lowering_bus_graph`): each user site
     // keyed by the wire literal the topic rewrite gave it — the string
     // the register and publish sites see — and after them the stdlib's,
-    // the one part derived here, over the merged program's tail and
-    // scope, so the gates are sound against its wildcard subscribers
-    // (`log.**`). A program with no entry point is open world: every
-    // subject is ineligible, and the plan is all dynamic.
-    let (ownership, bubble, bus, plan, top) = {
+    // the one part derived here, over the merged program's tail and the
+    // snapshot's scope, so the gates are sound against its wildcard
+    // subscribers (`log.**`). A program with no entry point is open
+    // world: every subject is ineligible, and the plan is all dynamic.
+    let (ownership, bubble, bus, plan) = {
         let bundle = merged_bundle(&merged, import_renames, &snapshot);
-        // The scope's diagnostics are dropped: the checker reported
-        // them already, over the program the verb checked.
-        let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let stdlib_items = &merged.items[user_items..];
         let graph = crate::ownership_graph::lowering_ownership_graph(
             ownership,
@@ -584,7 +589,7 @@ pub fn resolve_rewritten(
             placement,
         )?;
         let bubble = graph.bubble_plans();
-        let stdlib = crate::bus_graph::stdlib_bus_rows(&bundle, &top, stdlib_items);
+        let stdlib = crate::bus_graph::stdlib_bus_rows(&bundle, top, stdlib_items);
         let mut bus = crate::bus_graph::lowering_bus_graph(bus, stdlib, &topic_rewrites, &correspondence, placement)?;
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
@@ -623,7 +628,7 @@ pub fn resolve_rewritten(
             &bus.dispatch_gates(),
             &BTreeMap::new(),
         );
-        (graph, bubble, bus, plan, top)
+        (graph, bubble, bus, plan)
     };
 
     // F.40 phase 1.4: the handler rows, over the same merged program,
@@ -641,7 +646,7 @@ pub fn resolve_rewritten(
     let forms = forms.clone().extended(crate::form_rows::FormRows::configured(&merged.items));
     // The snapshot's typed-body table, found by the identities the merge
     // kept, and the conformance of every pair the merged stdlib adds.
-    let typed = typed.extended(&merged.items, &top);
+    let typed = typed.extended(&merged.items, top);
     // The pinned anchors whose nested subscribers route to their mailbox
     // (U-6), by the names the merged program declares.
     let route_anchors = route_anchors(placement, &merged);
@@ -669,7 +674,7 @@ pub fn resolve_rewritten(
         import_renames: import_renames.to_vec(),
         api: api.map(str::to_string),
         api_roles: api_roles.map(str::to_string),
-        top,
+        top: top.clone(),
         alloc_routing,
         route_anchors,
         cells: crate::capability::LoweringCells::of(class),

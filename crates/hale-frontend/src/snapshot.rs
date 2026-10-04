@@ -1725,8 +1725,9 @@ impl Snapshot {
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
-                // Lowering's bus and ownership graphs are these ones'
-                // rows (C5).
+                // Lowering's scope is this one, and its bus and ownership
+                // graphs are these ones' rows (C5).
+                let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
@@ -1751,6 +1752,7 @@ impl Snapshot {
                     bindings,
                     placement,
                     typed,
+                    &scope.top,
                     bus,
                     ownership,
                     class,
