@@ -851,6 +851,19 @@ touches imported seeds. Group and topic references inside a
 traveling block canonicalize to mangled decls exactly as group
 decls do (#334); claim names are never mangled.
 
+**The world is every `main locus` the bundle declares.** World law
+is read from a column of the entry row (`EntryRow::world`): the
+entry's `claims { }` block, a module-nested main's, and an imported
+application's, each in declaration order. The column is wider than
+the entry on purpose. Which declaration a seed runs is the entry's
+question (`spec/semantics.md` § Bundle-wide rules: an imported `main
+locus` is never the entry); whose law binds the world it closes is
+this one, and an application's inline law keeps binding when another
+seed imports it, whether or not the importer has a `main locus` of
+its own. A bundle with any `main locus` closes a world, so a
+top-level `claims { }` block of the closing seed's own is refused
+there.
+
 **An imported main's inline claims keep their own seed's groups**
 (GH #733). A `main locus`'s `claims { }` block is world law, and an
 application that another seed imports still carries that block

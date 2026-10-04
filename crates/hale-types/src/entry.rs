@@ -136,6 +136,26 @@ impl EntryRow {
     pub fn own(&self) -> impl Iterator<Item = &MainLocus> {
         self.mains.iter().filter(|m| !m.imported)
     }
+
+    /// The world tier: the `main locus` declarations whose inline
+    /// `claims { }` are the bundle's world law. Every one the bundle
+    /// declares, in the witness's order: the entry's, a module-nested
+    /// one's, and an imported application's, whose inline claims travel
+    /// with it and are re-evaluated in the closing world (GH #733), with
+    /// the importer's own `main locus` beside it or without one. The
+    /// world is wider than the entry on purpose: decisions 1 and 2 say
+    /// which declaration the seed RUNS, and an application's law does
+    /// not stop binding because another seed runs it.
+    pub fn world(&self) -> impl Iterator<Item = &MainLocus> {
+        self.mains.iter()
+    }
+
+    /// Whether the bundle closes a world: some `main locus` states world
+    /// law in it, so a top-level `claims { }` block of the closing seed's
+    /// own is refused (the library tier is for a seed that closes none).
+    pub fn closes_a_world(&self) -> bool {
+        !self.mains.is_empty()
+    }
 }
 
 /// The row of programs no snapshot has minted yet, each program named by
