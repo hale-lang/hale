@@ -540,6 +540,90 @@ fn two_constructions_are_two_templates() {
     assert!(rows(t, "side").iter().all(|(_, r)| !r.guarded));
 }
 
+/// A literal's type annotation fixes its monomorph and the substitutions
+/// used below it. Two instances retain one template declaration identity.
+#[test]
+fn generic_constructions_keep_arguments_and_specialize_their_children() {
+    for (name, integer, integer_child) in [
+        ("generic_constructions.hl", "Supervisor_Int", "Cell_Int"),
+        ("generic_root.hl", "Supervisor_Int", "Cell_Int"),
+        ("generic_aliases.hl", "Supervisor_Scalar", "Cell_Scalar"),
+    ] {
+        let s = clean(name);
+        let t = table(&s);
+        let tops = rows(t, "");
+        assert_eq!(tops.len(), 2, "{name}: {tops:?}");
+        let names: BTreeSet<_> = tops.iter().map(|(_, r)| lowered(r)).collect();
+        assert_eq!(names, [integer, "Supervisor_String"].into_iter().collect(), "{name}");
+        let sites: BTreeSet<_> = tops.iter().map(|(_, r)| r.realizes.as_ref().unwrap().site).collect();
+        assert_eq!(sites.len(), 1, "both monomorphs name the same authored declaration");
+        for (key, row) in tops {
+            let (arg, child) = match lowered(row) {
+                name if name == integer => ("Int", integer_child),
+                "Supervisor_String" => ("String", "Cell_String"),
+                other => panic!("unexpected monomorph {other}"),
+            };
+            assert_eq!(row.realizes.as_ref().unwrap().args.iter().map(|a| a.display()).collect::<Vec<_>>(), [arg]);
+            let children: Vec<_> = rows(t, "child").into_iter().filter(|(k, _)| k.origin == key.origin).collect();
+            assert_eq!(children.len(), 1, "{name}: {children:?}");
+            let (_, child_row) = children[0];
+            assert_eq!(lowered(child_row), child);
+            assert_eq!(child_row.realizes.as_ref().unwrap().args.iter().map(|a| a.display()).collect::<Vec<_>>(), [arg]);
+        }
+        let dynamic: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
+        assert_eq!(dynamic.len(), 1, "{name}: {dynamic:?}");
+        let spare = dynamic[0].realizes.as_ref().unwrap();
+        assert_eq!(spare.lowered, "Cell_Int");
+        assert_eq!(spare.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+        assert!(t.holes.iter().all(|h| !matches!(h.kind, HoleKind::UnresolvedArguments)), "{name}: {:?}", t.holes);
+    }
+}
+
+#[test]
+fn generic_constructions_keep_qualified_template_identity() {
+    let s = clean("generic_imported");
+    let t = table(&s);
+    let tops = rows(t, "");
+    assert_eq!(tops.len(), 2);
+    let a = tops.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Supervisor_Int"))).expect("Int supervisor");
+    let b = tops.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Supervisor_String"))).expect("String supervisor");
+    assert_eq!(a.site, b.site, "two import aliases name one template declaration");
+    assert!(b.lowered.ends_with("Supervisor_String"));
+    assert_eq!(b.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["String"]);
+    assert!(a.lowered.ends_with("Supervisor_Int"));
+    assert_ne!(a.lowered, "Supervisor_Int", "the local decoy is not the imported template");
+    assert_eq!(a.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+    let children = rows(t, "child");
+    assert_eq!(children.len(), 2);
+    let child = children.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Cell_Int"))).expect("Int child");
+    let other = children.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Cell_String"))).expect("String child");
+    assert_eq!(child.site, other.site);
+    assert_eq!(other.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["String"]);
+    assert!(child.lowered.ends_with("Cell_Int"));
+    assert_eq!(child.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+    assert!(t.holes.is_empty(), "{:?}", t.holes);
+}
+
+#[test]
+fn generic_constructions_do_not_resolve_parameters_as_global_names() {
+    let s = clean("generic_parameter.hl");
+    let t = table(&s);
+    let dynamic: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
+    assert_eq!(dynamic.len(), 2);
+    let dependent = dynamic.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Box"))
+        .expect("the template's type parameter is unresolved, even beside a global locus T");
+    assert!(dependent.realizes.as_ref().unwrap().args.is_empty());
+    assert!(t.holes.iter().any(|h| h.at == HoleAt::Dynamic(dependent.literal)
+        && matches!(h.kind, HoleKind::UnresolvedArguments)));
+    let concrete = dynamic.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Box_Int"))
+        .expect("a concrete annotation in that same generic body remains concrete");
+    assert_eq!(concrete.realizes.as_ref().unwrap().args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+}
+
 /// The choices the checker refuses: a conditional for a placed field
 /// (rule 18), and `if` arms of two declarations.
 #[test]

@@ -773,6 +773,13 @@ declared type at the site. The sites that declare one are:
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 
+At a `let` ascription, a transparent alias of the whole instantiation
+supplies the same arguments: `type IntBox = Box<Int>;` permits
+`let b: IntBox = Box { value: 1 };`. Imported template paths resolve
+through their import aliases before specialization. Different aliases
+for one imported template retain the same declaration identity; each
+construction carries its own concrete arguments and child layouts.
+
 Anywhere else — an un-annotated `let`, a literal in statement
 position — the arguments cannot be recovered, and the literal is a
 type error naming the template and the annotation to write. There

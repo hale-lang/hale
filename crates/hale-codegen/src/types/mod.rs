@@ -240,7 +240,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // somewhere the discovery pass missed (m61b territory)
             // — error clearly.
             TypeExpr::Named { path, generic_args, .. }
-                if !generic_args.is_empty() && path.segments.len() == 1 =>
+                if !generic_args.is_empty() =>
             {
                 // shm_ring batch consumer: `Drain<T>` is a built-in
                 // 1-arg type constructor (NOT a user generic). It
@@ -249,14 +249,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // valid as a batch bus-handler param + a `for`-iterable;
                 // its element type T (the topic payload struct) is
                 // carried so the loop knows the record layout.
-                if path.segments[0].name == "Drain" && generic_args.len() == 1 {
+                if path.segments.len() == 1 && path.segments[0].name == "Drain" && generic_args.len() == 1 {
                     let elem = self.type_expr_to_codegen_ty(&generic_args[0])?;
                     return Ok(CodegenTy::Drain(Box::new(elem)));
                 }
-                let mangled = Self::mangle_generic_name(
-                    &path.segments[0].name,
-                    generic_args,
-                )?;
+                let template = if path.segments.len() == 1 {
+                    path.segments[0].name.clone()
+                } else {
+                    let segments: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                    self.mangled_for_path(&segments).ok_or_else(|| CodegenError::Unsupported(
+                        format!("unknown generic type `{}`", segments.join("::"))
+                    ))?
+                };
+                let mangled = Self::mangle_generic_name(&template, generic_args)?;
                 if self.user_types.contains_key(&mangled) {
                     Ok(CodegenTy::TypeRef(mangled))
                 } else if self.user_enums.contains_key(&mangled) {
@@ -521,13 +526,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         bare: &QualifiedName,
         target: &CodegenTy,
     ) -> Option<QualifiedName> {
-        if bare.segments.len() != 1 {
-            return None;
-        }
-        let bare_name = &bare.segments[0].name;
+        let bare_name = if bare.segments.len() == 1 {
+            bare.segments[0].name.clone()
+        } else {
+            let segments: Vec<&str> = bare.segments.iter().map(|s| s.name.as_str()).collect();
+            self.mangled_for_path(&segments)?
+        };
         // Already concrete — leave it alone.
-        if self.user_types.contains_key(bare_name)
-            || self.user_loci.contains_key(bare_name)
+        if self.user_types.contains_key(&bare_name)
+            || self.user_loci.contains_key(&bare_name)
         {
             return None;
         }
@@ -537,12 +544,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Enum(n) => n,
             _ => return None,
         };
-        // The target must be a mangled monomorph of the bare name:
-        // it has to start with `<bare>_` and exist in user_types or
-        // user_loci. The underscore separator is what mangle_name
-        // emits between template name and each arg.
+        // A locus monomorph retains its authored template identity.
+        // Record types use the existing mangled-name convention.
         let prefix = format!("{}_", bare_name);
-        if !target_name.starts_with(&prefix) {
+        if let Some(template) = self.generic_locus_templates.get(&bare_name) {
+            let concrete = self.specialized_locus_decls.get(target_name)?;
+            if concrete.id.0 != template.id.0 {
+                return None;
+            }
+        } else if !target_name.starts_with(&prefix) {
             return None;
         }
         if !self.user_types.contains_key(target_name)
@@ -561,44 +571,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         bare: &QualifiedName,
         expected: &TypeExpr,
     ) -> Option<QualifiedName> {
-        if bare.segments.len() != 1 {
-            return None;
-        }
-        let bare_name = &bare.segments[0].name;
-        // Already concrete (mangled or not) — leave it alone.
-        // m63: also accept user_loci as concrete since generic
-        // locus instantiations land there too.
-        if self.user_types.contains_key(bare_name)
-            || self.user_loci.contains_key(bare_name)
-        {
-            return None;
-        }
-        let (ty_name, generic_args) = match expected {
-            TypeExpr::Named { path, generic_args, .. }
-                if path.segments.len() == 1
-                    && !generic_args.is_empty() =>
-            {
-                (&path.segments[0].name, generic_args)
-            }
-            _ => return None,
-        };
-        if bare_name != ty_name {
-            return None;
-        }
-        let mangled =
-            Self::mangle_generic_name(bare_name, generic_args).ok()?;
-        // m63: extend lookup to user_loci so generic locus
-        // instantiations resolve via let-ascription bare-name
-        // construction the same way generic structs do.
-        if !self.user_types.contains_key(&mangled)
-            && !self.user_loci.contains_key(&mangled)
-        {
-            return None;
-        }
-        Some(QualifiedName {
-            segments: vec![Ident::new(mangled, bare.segments[0].span)],
-            span: bare.span,
-        })
+        // The type resolver follows aliases and qualified names before
+        // the literal is matched to its concrete template. A let's
+        // annotation and a field's type therefore use the same route.
+        let target = self.type_expr_to_codegen_ty(expected).ok()?;
+        self.resolve_generic_struct_path_for_codegen_ty(bare, &target)
     }
 
     /// F.30b (5b) (2026-05-20): wrap a String / Bytes literal

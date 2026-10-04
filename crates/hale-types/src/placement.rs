@@ -372,7 +372,8 @@ pub struct InstanceRow {
 pub struct RootRow {
     /// `EntryRow::lowering_root`, never `EntryRow::entry`.
     pub decl: MainLocus,
-    /// The declaration, qualified as the user's.
+    /// The declaration template, qualified as the user's. Each
+    /// construction's instance row carries its own concrete arguments.
     pub realizes: DeclRef,
     /// False when lowering deploys a module-nested `main`.
     pub is_entry: bool,
@@ -1262,20 +1263,53 @@ impl<'d, 'a> Builder<'d, 'a> {
         id
     }
 
-    fn decl_ref(&self, e: &DeclEntry<'a>, declared: Option<&TypeExpr>) -> (DeclRef, bool) {
+    /// The annotation's arguments, following transparent aliases in
+    /// the universe where it was written. An unrelated slot type cannot
+    /// supply arguments merely because it has the same arity.
+    fn type_args(&self, e: &DeclEntry<'a>, declared: Option<&TypeExpr>, from: SiteUniverse) -> Option<Vec<TypeExpr>> {
+        let mut ty = declared?.clone();
+        let mut from = from;
+        for _ in 0..=16 {
+            let TypeExpr::Named { path, generic_args, .. } = &ty else { return None };
+            let segs = segments(path);
+            let Named::Locus(named) = self.decls.resolve(&segs, from) else { return None };
+            if named.site != e.site {
+                return None;
+            }
+            if generic_args.len() == e.decl.generics.len() {
+                return Some(generic_args.clone());
+            }
+            if !generic_args.is_empty() {
+                return None;
+            }
+            let name = if segs.len() == 1 {
+                segs[0].to_string()
+            } else {
+                from = SiteUniverse::User;
+                self.decls.renames.get(&segs.join("::"))?.clone()
+            };
+            let aliases = match from {
+                SiteUniverse::User => &self.decls.user_aliases,
+                SiteUniverse::StdlibAnalysis => &self.decls.stdlib_aliases,
+            };
+            ty = (*aliases.get(name.as_str())?).clone();
+        }
+        None
+    }
+
+    fn decl_ref(&self, e: &DeclEntry<'a>, declared: Option<&TypeExpr>, from: SiteUniverse) -> (DeclRef, bool) {
         let name = e.decl.name.name.clone();
         if e.decl.generics.is_empty() {
             return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, true);
         }
-        let args: Vec<TypeExpr> = match declared {
-            Some(TypeExpr::Named { generic_args, .. }) if generic_args.len() == e.decl.generics.len() => {
-                generic_args.clone()
-            }
-            _ => return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, false),
+        let args = match self.type_args(e, declared, from) {
+            Some(args) => args,
+            None => return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, false),
         };
-        let lowered = crate::mangle::mangle_generic_name(&name, &args).unwrap_or(name);
-        let tys = args.iter().map(|a| crate::resolve::resolve_type_expr(a, &self.top.names)).collect();
-        (DeclRef { site: e.site, args: tys, lowered }, true)
+        let lowered = crate::mangle::mangle_generic_name(&name, &args);
+        let tys: Vec<_> = args.iter().map(|a| crate::resolve::resolve_type_expr(a, &self.top.names)).collect();
+        let known = lowered.is_ok() && tys.iter().all(|t| !matches!(t, crate::ty::Ty::Unknown));
+        (DeclRef { site: e.site, args: tys, lowered: lowered.unwrap_or(name) }, known)
     }
 
     fn hole(&mut self, at: HoleAt, kind: HoleKind) {
@@ -1302,15 +1336,15 @@ impl<'d, 'a> Builder<'d, 'a> {
                 _ => {}
             }
         }
-        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets)> = Vec::new();
+        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets, Option<&'a TypeExpr>)> = Vec::new();
         for s in &scopes.scopes {
             for lit in &s.literals {
                 if lit.decl == Some(site) && s.universe == SiteUniverse::User {
-                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets));
+                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets, lit.declared));
                 }
             }
         }
-        constructions.sort_by_key(|(s, _, _, _)| *s);
+        constructions.sort_by_key(|(s, _, _, _, _)| *s);
         let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
@@ -1318,27 +1352,27 @@ impl<'d, 'a> Builder<'d, 'a> {
             is_entry,
             constructions: constructions
                 .iter()
-                .map(|(literal, _, bound, _)| Construction { literal: *literal, bound: bound.clone() })
+                .map(|(literal, _, bound, _, _)| Construction { literal: *literal, bound: bound.clone() })
                 .collect(),
         });
         // A root no literal builds is the entry's implicit template, from
         // the declaration's defaults; its top's literal is the entry's
         // site, as an adapter's is its binding entry's.
-        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>)> = if constructions.is_empty() {
+        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>, Option<&'a TypeExpr>)> = if constructions.is_empty() {
             let entry_site = scopes.entry_fn().unwrap_or(site);
-            vec![(Origin::Entry(entry_site), entry_site, &[], None)]
+            vec![(Origin::Entry(entry_site), entry_site, &[], None, None)]
         } else {
             constructions
                 .iter()
-                .map(|(literal, inits, _, lets)| (Origin::Construction(*literal), *literal, *inits, Some(*lets)))
+                .map(|(literal, inits, _, lets, declared)| (Origin::Construction(*literal), *literal, *inits, Some(*lets), *declared))
                 .collect()
         };
-        for (origin, literal, inits, lets) in templates {
+        for (origin, literal, inits, lets, declared) in templates {
             if matches!(origin, Origin::Construction(_)) {
                 self.static_literals.insert(literal);
             }
             let key = InstanceKey { origin, path: Vec::new(), replica: None };
-            self.top(&key, decl, realizes.clone(), literal, inits, Some(&entries), lets);
+            self.top(&key, decl, declared, literal, inits, Some(&entries), lets);
             // Invariant 5: every entry decides a field family in this
             // template, or it is a hole.
             for (field, (_, entry_site)) in &entries.entries {
@@ -1375,7 +1409,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 self.table.instances.insert(
                     key.clone(),
                     InstanceRow {
-                        realizes: realized.map(|d| self.decl_ref(d, None).0),
+                        realizes: realized.map(|d| self.decl_ref(d, None, SiteUniverse::User).0),
                         literal: Some(entry_site),
                         owner: None,
                         domain,
@@ -1397,18 +1431,20 @@ impl<'d, 'a> Builder<'d, 'a> {
     /// A template's top row on main, and its tower below it. `root` is set
     /// for the root's templates, whose fields a `placement { }` entry
     /// decides; `lets` are the names bound in the scope the literal is
-    /// written in.
+    /// written in. `declared` supplies the concrete substitution for this
+    /// construction; another literal of the same declaration may differ.
     #[allow(clippy::too_many_arguments)]
     fn top(
         &mut self,
         key: &InstanceKey,
         decl: &'d DeclEntry<'a>,
-        realizes: DeclRef,
+        declared: Option<&TypeExpr>,
         literal: SiteRef,
         inits: &'a [StructInit],
         root: Option<&RootEntries<'a>>,
         lets: Option<&Lets>,
     ) {
+        let (realizes, args_known) = self.decl_ref(decl, declared, literal.universe);
         self.table.instances.insert(
             key.clone(),
             InstanceRow {
@@ -1422,9 +1458,15 @@ impl<'d, 'a> Builder<'d, 'a> {
                 built_by: None,
             },
         );
+        if !args_known {
+            self.hole(HoleAt::Instance(key.clone()), HoleKind::UnresolvedArguments);
+            return;
+        }
         let owner = Owner { key, domain: PlacementTable::MAIN, guarded: false };
         let mut stack = vec![decl.site];
-        self.fields(decl, inits, &BTreeMap::new(), &owner, root, lets, &mut stack);
+        let subst = decl.decl.generics.iter().map(|g| g.name.name.clone())
+            .zip(self.type_args(decl, declared, literal.universe).unwrap_or_default()).collect();
+        self.fields(decl, inits, &subst, &owner, root, lets, &mut stack);
     }
 
     /// The templates the entry builds besides the root: each locus
@@ -1442,11 +1484,7 @@ impl<'d, 'a> Builder<'d, 'a> {
             let Some(d) = lit.decl.and_then(|d| scopes.decl_entry(self.decls, d)) else { continue };
             self.static_literals.insert(lit.site);
             let key = InstanceKey { origin: Origin::Construction(lit.site), path: Vec::new(), replica: None };
-            let (realizes, args_known) = self.decl_ref(d, None);
-            if !args_known {
-                self.hole(HoleAt::Instance(key.clone()), HoleKind::UnresolvedArguments);
-            }
-            self.top(&key, d, realizes, lit.site, lit.inits, None, Some(&main.lets));
+            self.top(&key, d, lit.declared, lit.site, lit.inits, None, Some(&main.lets));
             self.table.entry_literals.push(Construction { literal: lit.site, bound: scopes.bound(main, lit.in_loop) });
         }
     }
@@ -1670,7 +1708,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                         let key = InstanceKey { origin: owner.key.origin, path, replica: replica.or(owner.key.replica) };
                         let (realizes, args_known) = match realized {
                             Some(d) => {
-                                let (r, known) = self.decl_ref(d, declared.as_ref());
+                                let (r, known) = self.decl_ref(d, declared.as_ref(), universe);
                                 (Some(r), known)
                             }
                             None => (None, true),
@@ -1686,7 +1724,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                         // all: the declared type is what is left to read.
                         let realizes = match (realizes, literal.is_none(), &declared_named) {
                             (Some(r), _, _) => Some(r),
-                            (None, true, Named::Locus(d)) => Some(self.decl_ref(d, declared.as_ref()).0),
+                            (None, true, Named::Locus(d)) => Some(self.decl_ref(d, declared.as_ref(), universe).0),
                             (None, _, _) => {
                                 let w = if path_written.is_empty() {
                                     match &declared {
@@ -1727,22 +1765,11 @@ impl<'d, 'a> Builder<'d, 'a> {
                         // unknown literal is enumerated, and below a held
                         // instance only its source's rows, projected).
                         let (Some(d), Some(_)) = (realized, literal) else { continue };
-                        if stack.contains(&d.site) {
+                        if !args_known || stack.contains(&d.site) {
                             continue;
                         }
-                        let below: BTreeMap<String, TypeExpr> = match &realizes {
-                            Some(r) if !r.args.is_empty() => match &declared {
-                                Some(TypeExpr::Named { generic_args, .. }) => d
-                                    .decl
-                                    .generics
-                                    .iter()
-                                    .map(|g| g.name.name.clone())
-                                    .zip(generic_args.iter().cloned())
-                                    .collect(),
-                                _ => BTreeMap::new(),
-                            },
-                            _ => BTreeMap::new(),
-                        };
+                        let below: BTreeMap<String, TypeExpr> = d.decl.generics.iter().map(|g| g.name.name.clone())
+                            .zip(self.type_args(d, declared.as_ref(), universe).unwrap_or_default()).collect();
                         stack.push(d.site);
                         let next = Owner { key: &key, domain, guarded };
                         let lets_below = if written_here.is_some() { lets } else { None };
@@ -1879,7 +1906,12 @@ impl<'d, 'a> Builder<'d, 'a> {
                 if self.table.root.as_ref().is_some_and(|r| r.constructions.iter().any(|c| c.literal == l.site)) {
                     continue;
                 }
-                let realizes = l.decl.and_then(|d| scopes.decl_entry(self.decls, d)).map(|e| self.decl_ref(e, None).0);
+                let resolved = l.decl.and_then(|d| scopes.decl_entry(self.decls, d))
+                    .map(|e| self.decl_ref(e, l.declared, s.universe));
+                if resolved.as_ref().is_some_and(|(_, known)| !known) {
+                    self.hole(HoleAt::Dynamic(l.site), HoleKind::UnresolvedArguments);
+                }
+                let realizes = resolved.map(|(r, _)| r);
                 if realizes.is_none() {
                     self.hole(HoleAt::Dynamic(l.site), HoleKind::UnresolvedDeclaration { written: l.written.clone() });
                 }
@@ -1889,7 +1921,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 let enclosing = match &s.kind {
                     ScopeKind::Fn { site, .. } => Enclosing::Fn(*site),
                     ScopeKind::Locus { decl } => match scopes.decl_entry(self.decls, *decl) {
-                        Some(e) => Enclosing::Locus(self.decl_ref(e, None).0),
+                        Some(e) => Enclosing::Locus(self.decl_ref(e, None, s.universe).0),
                         None => continue,
                     },
                 };
@@ -1917,6 +1949,8 @@ struct Literal<'a> {
     /// type): a hole, not a skipped struct literal.
     unknown: bool,
     inits: &'a [StructInit],
+    /// The type of this whole literal, never an enclosing record's type.
+    declared: Option<&'a TypeExpr>,
     in_loop: bool,
     written: String,
 }
@@ -1988,10 +2022,11 @@ impl<'a> Scopes<'a> {
                     let Some(id) = ids.site_id(fd.id) else { continue };
                     let site = SiteRef { universe, id };
                     let mut w = BodyWalk::new(ids, universe, decls);
+                    w.type_parameters.extend(fd.generics.iter().map(|g| g.name.name.clone()));
                     for p in &fd.params {
                         w.bind(&p.name.name, None);
                         if let Some(d) = &p.default {
-                            w.expr(d);
+                            w.typed_expr(d, Some(&p.ty));
                         }
                     }
                     w.block(&fd.body);
@@ -2003,16 +2038,20 @@ impl<'a> Scopes<'a> {
                     let Some(id) = ids.site_id(l.id) else { continue };
                     let decl = SiteRef { universe, id };
                     let mut w = BodyWalk::new(ids, universe, decls);
+                    w.type_parameters.extend(l.generics.iter().map(|g| g.name.name.clone()));
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(fd) => {
+                                let enclosing_parameters = w.type_parameters.clone();
+                                w.type_parameters.extend(fd.generics.iter().map(|g| g.name.name.clone()));
                                 for p in &fd.params {
                                     w.bind(&p.name.name, None);
                                     if let Some(d) = &p.default {
-                                        w.expr(d);
+                                        w.typed_expr(d, Some(&p.ty));
                                     }
                                 }
                                 w.block(&fd.body);
+                                w.type_parameters = enclosing_parameters;
                             }
                             LocusMember::Lifecycle(ld) => w.block(&ld.body),
                             LocusMember::Mode(md) => w.block(&md.body),
@@ -2133,6 +2172,7 @@ struct BodyWalk<'a, 'd> {
     ids: &'d Snapshot,
     universe: SiteUniverse,
     decls: &'d Decls<'a>,
+    type_parameters: BTreeSet<String>,
     loop_depth: u32,
     literals: Vec<Literal<'a>>,
     calls: Vec<(String, bool)>,
@@ -2146,6 +2186,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             ids,
             universe,
             decls,
+            type_parameters: BTreeSet::new(),
             loop_depth: 0,
             literals: Vec::new(),
             calls: Vec::new(),
@@ -2227,10 +2268,10 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 
     fn stmt(&mut self, s: &'a Stmt) {
         match s {
-            Stmt::Let { is_mut, name, value, .. } => {
+            Stmt::Let { is_mut, name, ty, value, .. } => {
                 let to = if *is_mut { None } else { self.locus_literal(value) };
                 self.bind(&name.name, to);
-                self.expr(value);
+                self.typed_expr(value, ty.as_ref());
             }
             Stmt::LetTuple { names, value, .. } => {
                 for n in names {
@@ -2297,6 +2338,37 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         }
     }
 
+    fn typed_expr(&mut self, e: &'a Expr, declared: Option<&'a TypeExpr>) {
+        fn depends_on(ty: &TypeExpr, parameters: &BTreeSet<String>) -> bool {
+            match ty {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    path.segments.len() == 1 && parameters.contains(&path.segments[0].name)
+                        || generic_args.iter().any(|t| depends_on(t, parameters))
+                }
+                TypeExpr::Projection { inner, .. } => depends_on(inner, parameters),
+                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => depends_on(elem, parameters),
+                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| depends_on(t, parameters)),
+                TypeExpr::Function { params, ret, .. } => params.iter().any(|t| depends_on(t, parameters))
+                    || ret.as_ref().is_some_and(|t| depends_on(t, parameters)),
+                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+            }
+        }
+        let start = self.literals.len();
+        self.expr(e);
+        if let (Some(ty), Expr::Struct { id, .. }) = (declared, e) {
+            // This walk is over authored templates, not their runtime
+            // monomorphs. A parameter shadows a same-named global type.
+            if depends_on(ty, &self.type_parameters) {
+                return;
+            }
+            if let Some(site) = self.ids.site_id(*id) {
+                if let Some(literal) = self.literals[start..].iter_mut().find(|l| l.site.id == site) {
+                    literal.declared = Some(ty);
+                }
+            }
+        }
+    }
+
     fn expr(&mut self, e: &'a Expr) {
         match e {
             Expr::Ident(i) => {
@@ -2349,6 +2421,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                             decl,
                             unknown,
                             inits,
+                            declared: None,
                             in_loop: self.loop_depth > 0,
                             written: written(&segs),
                         });

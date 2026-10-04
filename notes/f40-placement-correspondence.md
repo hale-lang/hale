@@ -167,6 +167,8 @@ Until the producer resolves a qualified field through the analysis copy, a stdli
 6. **Unknown is a hole, not a default** (registry, `placement` § Missing data). A field whose realized declaration cannot be resolved still gets its domain from its owner or its entry. Only `realizes` holds the hole.
 7. **F.38** (dec:3219). No column of the table changes who receives a message. Domains decide threads and routes, never delivery sets.
 
+**Generic constructions.** A whole literal's binding annotation supplies its concrete arguments, including through transparent aliases and qualified imports. Root constructions and other entry literals retain that substitution while enumerating their children; typed dynamic literals retain it in their own rows. Each `InstanceRow::realizes` names its monomorph and arguments while its site continues to identify the authored declaration. `RootRow::realizes` identifies that declaration template, since different constructions can specialize it differently. Missing arguments are `UnresolvedArguments` holes and stop enumeration below the unresolved instance. An annotation depending on a surrounding type parameter remains unresolved until specialization, even when a global declaration has the same spelling; a concrete annotation in that same body stays concrete.
+
 ### Templates, occurrences, incarnations
 
 Three identities are easy to run together, and the table holds only the first.

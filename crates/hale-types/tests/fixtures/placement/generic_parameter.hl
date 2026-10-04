@@ -1,0 +1,15 @@
+locus T { }
+
+locus Box<U> { }
+
+locus Host<T> {
+    fn spawn() {
+        let dependent: Box<T> = Box { };
+        let concrete: Box<Int> = Box { };
+    }
+}
+
+fn main() {
+    let host: Host<Int> = Host { };
+    host.spawn();
+}

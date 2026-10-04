@@ -3331,7 +3331,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Substituted source declarations used to declare the concrete
     /// locus methods. Signature lookup must read these same declarations
     /// instead of searching the unspecialized program for a mangled name.
-    specialized_locus_decls: BTreeMap<String, LocusDecl>,
+    pub(crate) specialized_locus_decls: BTreeMap<String, LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -8256,11 +8256,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .filter(|l| !l.generics.is_empty())
             .map(|l| (l.name.name.clone(), l.clone()))
             .collect();
-        let generic_names: BTreeSet<String> = generic_type_decls
+        let mut generic_names: BTreeMap<String, String> = generic_type_decls
             .keys()
             .chain(generic_locus_decls.keys())
-            .cloned()
+            .map(|name| (name.clone(), name.clone()))
             .collect();
+        // Body annotations keep their authored qualified paths. Resolve
+        // those paths to the same template as signatures and aliases.
+        for (path, target) in &self.import_renames {
+            if generic_names.contains_key(target) {
+                generic_names.insert(path.join("::"), target.clone());
+            }
+        }
         let mut seen_mangles: BTreeSet<String> = BTreeSet::new();
         let mut requests: Vec<(String, Vec<TypeExpr>)> = Vec::new();
         Self::collect_generic_uses_in_program(
@@ -12302,7 +12309,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// resolved.
     fn collect_generic_uses_in_program(
         program: &Program,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12479,7 +12486,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_fn_decl(
         f: &FnDecl,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12495,7 +12502,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_locus_member(
         member: &LocusMember,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12642,7 +12649,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_block(
         block: &Block,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12654,7 +12661,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_stmt(
         stmt: &Stmt,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12680,51 +12687,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// — the typechecker has already validated names.
     fn collect_generic_uses(
         t: &TypeExpr,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
         match t {
-            TypeExpr::Named { path, generic_args, .. }
-                if path.segments.len() == 1
-                    && !generic_args.is_empty()
-                    && generic_names
-                        .contains(&path.segments[0].name) =>
-            {
-                // Recurse into args first so nested instantiations
-                // are discovered (and end up in requests order
-                // before the outer one — which is what
-                // declare_user_type needs to resolve them).
-                for a in generic_args {
-                    Self::collect_generic_uses(
-                        a,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
+            TypeExpr::Named { path, generic_args, .. } => {
+                for arg in generic_args {
+                    Self::collect_generic_uses(arg, generic_names, seen, requests)?;
                 }
-                let mangled = Self::mangle_generic_name(
-                    &path.segments[0].name,
-                    generic_args,
-                )?;
-                if seen.insert(mangled) {
-                    requests.push((
-                        path.segments[0].name.clone(),
-                        generic_args.clone(),
-                    ));
-                }
-            }
-            TypeExpr::Named { generic_args, .. } => {
-                /* non-generic Named ref (or unknown): still
-                 * recurse into any args in case they themselves
-                 * use a known generic template. */
-                for a in generic_args {
-                    Self::collect_generic_uses(
-                        a,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
+                if !generic_args.is_empty() {
+                    let written = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                    if let Some(template) = generic_names.get(&written) {
+                        let mangled = Self::mangle_generic_name(template, generic_args)?;
+                        if seen.insert(mangled) {
+                            requests.push((template.clone(), generic_args.clone()));
+                        }
+                    }
                 }
             }
             TypeExpr::Bounded { elem, .. } => Self::collect_generic_uses(

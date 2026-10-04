@@ -1,0 +1,11 @@
+locus Cell<T> {
+    params {
+        value: T;
+    }
+}
+
+locus Supervisor<T> {
+    params {
+        child: Cell<T>;
+    }
+}
