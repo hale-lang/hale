@@ -1737,6 +1737,7 @@ impl Snapshot {
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
+                    &self.identities,
                     &self.source_map,
                     &self.import_renames,
                     self.config.api.as_deref(),

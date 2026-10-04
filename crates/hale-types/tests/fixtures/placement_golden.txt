@@ -4697,6 +4697,15 @@ row	Holder@main1	Holder	main	default
 == crates/hale-types/tests/locus_member_type.rs#3ec7811a
 row	Holder@main1	Holder	main	default
 
+== crates/hale-types/tests/lowering_correspondence.rs#a55d8a6a
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+row	Sink@main1	Sink	main	default
+
+== crates/hale-types/tests/lowering_correspondence.rs#0685e192
+row	Solo@main1	Solo	main	default
+
 == crates/hale-types/tests/model_arrangement.rs#77a41871
 root	App	the entry
 domain	pool:io

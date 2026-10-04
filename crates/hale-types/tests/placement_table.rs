@@ -216,7 +216,7 @@ fn two_universes_one_numeric_id_stay_two_identities() {
         .map(|f| SiteRef::user(user.site_id(default_literal(app, f)).unwrap()))
         .collect();
     refs.extend(root_literals.iter().map(|s| LoweringRef::Site(*s)));
-    let joined = join_lowering(&refs, user, &lowering.merged, &lowering.snapshot).unwrap_or_else(|e| panic!("{e}"));
+    let joined = join_lowering(&refs, user, lowering).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(joined.len(), refs.len(), "every ref resolves");
     let targets: BTreeSet<_> = joined.values().collect();
     assert_eq!(targets.len(), refs.len(), "no two refs resolve to one merged site");
@@ -1023,7 +1023,7 @@ fn the_table_names_each_universe_and_joins_lowering_once() {
         refs.extend(r.literal.map(LoweringRef::Site));
         refs.extend(k.path.iter().filter_map(|s| s.alternative).map(LoweringRef::Site));
     }
-    let joined = join_lowering(&refs, snap.identities(), &lowering.merged, &lowering.snapshot)
+    let joined = join_lowering(&refs, snap.identities(), lowering)
         .unwrap_or_else(|e| panic!("{e}"));
     let distinct: BTreeSet<SiteRef> = refs
         .iter()

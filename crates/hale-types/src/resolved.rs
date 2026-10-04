@@ -79,6 +79,12 @@ pub struct LoweringView {
     /// kept; the counter continues). The stdlib's sites are seeded
     /// under [`crate::snapshot::STDLIB_SEED`].
     pub snapshot: Snapshot,
+    /// Which checked or stdlib site each of `merged`'s sites is (F.40
+    /// phase 3, C5): the join through which the snapshot's families,
+    /// derived over the checked programs and the stdlib's analysis copy,
+    /// answer for the program lowering walks
+    /// ([`crate::correspondence`]).
+    pub correspondence: crate::correspondence::Correspondence,
     pub owner_table: OwnerTable,
     /// Fresh factories, extended by the carrier-return fold.
     pub fresh_locus_factories: BTreeMap<String, (String, Option<String>)>,
@@ -311,6 +317,8 @@ pub fn rewrite_intra_locus(
 /// `lowering_view` families; this is the bare program's entry, and a
 /// bare program is the host's.
 /// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
+/// The program is minted first, as an entry point's load mints it, and
+/// those identities are the checked ones the view corresponds to.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -324,8 +332,11 @@ pub fn resolve_program(
 ) -> Result<LoweringView, String> {
     let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
+    let mut minted = program.clone();
+    let checked = crate::snapshot::mint([("program", &mut minted)], sources);
     resolve_rewritten(
-        &rewrite_intra_locus(program, placement),
+        &rewrite_intra_locus(&minted, placement),
+        &checked,
         sources,
         import_renames,
         api,
@@ -344,7 +355,10 @@ pub fn resolve_program(
 ///
 /// The stage's program is the one the verb checked, rewritten: it has
 /// been through [`crate::desugar_sequence::desugar_before_check`], and
-/// nothing here runs that sequence's passes again.
+/// nothing here runs that sequence's passes again. `checked` is the
+/// identities the verb's snapshot minted over it: the view's
+/// correspondence ([`crate::correspondence`]) joins the merged mint to
+/// them, and a merged site it cannot place refuses the view.
 ///
 /// `sources` is the bundle's source map, the one its snapshot was
 /// minted with: the resolved snapshot seeds each user site by the file
@@ -374,6 +388,7 @@ pub fn resolve_program(
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
     stage: &IntraLocusStage,
+    checked: &Snapshot,
     sources: &[SourceFile],
     import_renames: &[(Vec<String>, String)],
     api: Option<&str>,
@@ -458,6 +473,10 @@ pub fn resolve_rewritten(
         sources,
     );
     merged.items.append(&mut stdlib.items);
+    // Every merged site is a checked site or the stdlib's (F.40 phase 3,
+    // C5): the join the snapshot's families answer through.
+    let correspondence =
+        crate::correspondence::correspond(checked, &merged, &snapshot, &intra_locus, &topic_rewrites)?;
 
     // GH #921 A2: the ownership pre-pass, over the merged and
     // desugared program. It derives an owner for every locus-producing
@@ -588,6 +607,7 @@ pub fn resolve_rewritten(
     Ok(LoweringView {
         merged,
         snapshot,
+        correspondence,
         owner_table,
         fresh_locus_factories,
         ownership,

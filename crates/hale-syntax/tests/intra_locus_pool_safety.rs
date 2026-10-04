@@ -109,6 +109,8 @@ fn the_rewrite_returns_what_it_rewrote_once() {
             locus: "App".to_string(),
             subject: "PingT".to_string(),
             handler: "on_ping".to_string(),
+            erased: NodeId::NONE,
+            context: false,
         }]
     );
     let call_id = run_body(&program, "App").stmts.iter().find_map(|s| match s {
