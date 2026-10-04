@@ -28,7 +28,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 1 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 1 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
-| `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
+| `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 1 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
 | `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
 | `sealability` | Layer 3 | Migrating | law | `check_sealed_access` | 1 | Which loci confine their state (`@sealed`), and which could. |
@@ -741,26 +741,27 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/restart.rs` · `locus_declares_failures` — which loci a failure can come from (and so get restart points) is a walk over closure and birth-check members in codegen. *Removed when:* a column of the restart rows.
 - `crates/hale-codegen/src/codegen.rs` · `RecoveryModifier::For` — the `for N` bound is lowered from the statement's own expression: lowering reads the bound from the statement; the row's `retry_bound` is the model's. *Removed when:* lowering reads the row.
 
 **Also owned.** `crates/hale-types/src/handler_routing.rs` · `recovery_ops`
 
-**Consumers.** codegen (__restart_<L>, __resume_<L>); model
+**Consumers.** codegen (which loci get restart points: __restart_<L>, __resume_<L>) (`crates/hale-codegen/src/locus/restart.rs` · `can_fail`); codegen (__restart_<L>, __resume_<L>); model
 
 **Invariants.**
 
 - a recovery op is a row with a witness, per (parent, child)
+- which loci a failure can originate in (a closure of any epoch, `inline` ones and so every `violate` included, or a `birth_check`) is a column of the rows per locus declaration (`HandlerRouting::can_fail`), over the merged program lowering walks; lowering emits restart points exactly where it answers yes. A monomorph is no declaration and is not in the column, so a generic locus that declares a closure gets no restart points (known open)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/restart_in_place_params.rs; crates/hale-codegen/tests/restart_bound.rs
+**Focused tests.** crates/hale-codegen/tests/restart_in_place_params.rs; crates/hale-codegen/tests/restart_bound.rs; crates/hale-types/tests/handler_routing_probes.rs (the failure column)
 
 **Spec.** spec/semantics.md § supervision
 
 **Guarded seams.**
 
 - `recovery_ops(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2
+- `can_fail(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-codegen/src/locus/restart.rs` ×1
 
 ### `closures` — Migrating · law
 

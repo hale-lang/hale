@@ -951,16 +951,21 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["closure and birth-check declarations", "handler_routing (the rows' recovery ops)"],
         producer: Some(site(HANDLER_ROUTING, "handler_rows")),
         legacy: &[
-            legacy(CG_RESTART, "locus_declares_failures", "which loci a failure can come from (and so get restart points) is a walk over closure and birth-check members in codegen", "a column of the restart rows"),
             legacy(CG, "RecoveryModifier::For", "the `for N` bound is lowered from the statement's own expression: lowering reads the bound from the statement; the row's `retry_bound` is the model's", "lowering reads the row"),
         ],
-        consumers: &[consumer("codegen (__restart_<L>, __resume_<L>)"), consumer("model")],
-        invariants: &["a recovery op is a row with a witness, per (parent, child)"],
+        consumers: &[consumer_at("codegen (which loci get restart points: __restart_<L>, __resume_<L>)", CG_RESTART, "can_fail"), consumer("codegen (__restart_<L>, __resume_<L>)"), consumer("model")],
+        invariants: &[
+            "a recovery op is a row with a witness, per (parent, child)",
+            "which loci a failure can originate in (a closure of any epoch, `inline` ones and so every `violate` included, or a `birth_check`) is a column of the rows per locus declaration (`HandlerRouting::can_fail`), over the merged program lowering walks; lowering emits restart points exactly where it answers yes. A monomorph is no declaration and is not in the column, so a generic locus that declares a closure gets no restart points (known open)",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/restart_in_place_params.rs", "crates/hale-codegen/tests/restart_bound.rs"],
+        tests: &["crates/hale-codegen/tests/restart_in_place_params.rs", "crates/hale-codegen/tests/restart_bound.rs", "crates/hale-types/tests/handler_routing_probes.rs (the failure column)"],
         spec: &["spec/semantics.md § supervision"],
         owned: &[site(HANDLER_ROUTING, "recovery_ops")],
-        seams: &[Seam { symbol: "recovery_ops(", allowed: &[(HANDLER_ROUTING, 2)] }],
+        seams: &[
+            Seam { symbol: "recovery_ops(", allowed: &[(HANDLER_ROUTING, 2)] },
+            Seam { symbol: "can_fail(", allowed: &[(HANDLER_ROUTING, 1), (CG_RESTART, 1)] },
+        ],
     },
     Family {
         name: "closures",

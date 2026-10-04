@@ -44,26 +44,9 @@ pub(crate) struct RestartFns<'ctx> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
-    /// Can a failure be routed from this locus — does it declare a
-    /// closure (any epoch, `inline` ones included: they carry no
-    /// assertion, so `LocusInfo::closures` leaves them out) or a
-    /// `birth_check`? Only those pay for restart points.
-    fn locus_declares_failures(&self, locus_name: &str) -> bool {
-        hale_syntax::ast::flat_decls(&self.program.items).any(|item| {
-            matches!(item, hale_syntax::ast::TopDecl::Locus(l)
-                if l.name.name == locus_name
-                    && l.members.iter().any(|m| {
-                        matches!(
-                            m,
-                            hale_syntax::ast::LocusMember::Closure(_)
-                                | hale_syntax::ast::LocusMember::BirthCheck(_)
-                        )
-                    }))
-        })
-    }
-
     /// Declare `__restart_<L>` / `__resume_<L>` for every locus a
-    /// failure can come from. Bodies follow in
+    /// failure can come from: the restart rows' column
+    /// (`HandlerRouting::can_fail`). Bodies follow in
     /// [`Cx::define_restart_fns`], after user fns are declared (a
     /// param default may call one).
     pub(crate) fn declare_restart_fns(&mut self) {
@@ -72,7 +55,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let names: Vec<String> = self.user_loci.keys().cloned().collect();
         for name in names {
-            if !self.locus_declares_failures(&name) {
+            if !self.handlers.can_fail(&name) {
                 continue;
             }
             let restart = self.module.add_function(

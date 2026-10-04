@@ -372,3 +372,27 @@ locus Second {
     assert_eq!(routing.handlers_of_decl(parent.id).next().unwrap().child, original[0].child);
     assert_eq!(routing.rows().len(), 7, "specialization does not change snapshot rows");
 }
+
+/// The restart rows' failure column: a locus declaring a closure of
+/// any epoch (an `inline` one, which every `violate` names, included)
+/// or a `birth_check` can fail, and pays for restart points; one with
+/// neither cannot. The column is per declaration, by its declared name:
+/// a monomorph's name is none, so a generic template's specializations
+/// answer no (known open), as lowering's walk over the declarations did.
+#[test]
+fn the_failure_column_names_each_declaration_a_failure_can_originate_in() {
+    let src = "
+locus Ticks { params { n: Int = 0; } closure small { self.n ~~ 0 within 9; epoch tick; } }
+locus Inline { params { n: Int = 0; } closure boom { captures: n; epoch inline; } run() { violate boom; } }
+locus Checked { params { n: Int = 0; } birth_check { self.n >= 0 } -> violate negative; }
+locus Plain { params { n: Int = 0; } run() { } }
+locus Cell<T> { params { value: T; n: Int = 0; } closure boom { captures: n; epoch inline; } }
+";
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let routing = handler_rows(&[&program], &[], &Default::default());
+    for (locus, fails) in
+        [("Ticks", true), ("Inline", true), ("Checked", true), ("Plain", false), ("Cell", true), ("Cell_Int", false)]
+    {
+        assert_eq!(routing.can_fail(locus), fails, "{locus}");
+    }
+}

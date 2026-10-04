@@ -14,7 +14,10 @@
 //! A row also carries the handler's recovery ops, from one walk over
 //! the whole body ([`recovery_ops`]): which restart ops it can invoke
 //! and the retry bound a `restart(c) for N` states. Restart-in-place
-//! attribution is a question over those ops.
+//! attribution is a question over those ops. Beside the rows, the
+//! routing states per locus declaration whether a failure can originate
+//! there ([`HandlerRouting::can_fail`]), which is where lowering emits
+//! restart points.
 //!
 //! The row carries the handler's snapshot identity (a `SiteId`, looked
 //! up in the snapshot the caller hands in) as a column, not as its key:
@@ -139,6 +142,9 @@ pub struct HandlerRouting {
     declared: DeclaredNames,
     renames: Vec<(Vec<String>, String)>,
     declaration_sites: BTreeMap<String, SiteRef>,
+    /// The restart rows' failure column: the loci, by declared name, a
+    /// failure can originate in ([`HandlerRouting::can_fail`]).
+    failing: BTreeSet<String>,
 }
 
 impl HandlerRouting {
@@ -232,6 +238,20 @@ impl HandlerRouting {
     /// The first concrete handler for `child` in this specialization.
     pub fn route_instance(&self, decl: NodeId, name: &str, child: &str) -> Option<&HandlerRow> {
         self.handlers_of_instance(decl, name).find(|r| r.child.name() == child)
+    }
+
+    /// Whether a failure can originate in the locus declared as `locus`,
+    /// so that it pays for restart points (`__restart_<L>`,
+    /// `__resume_<L>`): it declares a closure, of any epoch (`inline`
+    /// ones included, and every `violate` names one), or a
+    /// `birth_check`. A column of the declaration, read by its declared
+    /// name: a monomorph's name is no declaration's, so a generic
+    /// template's specializations are not in it and get no restart
+    /// points, as lowering's walk over the declarations gave them none
+    /// (known open: `Cell<T>` declaring a closure fails, and its
+    /// monomorphs cannot be restarted).
+    pub fn can_fail(&self, locus: &str) -> bool {
+        self.failing.contains(locus)
     }
 
     /// Whether some handler, in any parent, restarts a child of locus
@@ -457,6 +477,13 @@ pub fn handler_rows(
     let items = programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items));
     for item in items {
         let TopDecl::Locus(l) = item else { continue };
+        let fails = l
+            .members
+            .iter()
+            .any(|m| matches!(m, LocusMember::Closure(_) | LocusMember::BirthCheck(_)));
+        if fails {
+            routing.failing.insert(l.name.name.clone());
+        }
         let mut ordinal: u32 = 0;
         for member in &l.members {
             let LocusMember::Failure(fd) = member else { continue };
