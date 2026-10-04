@@ -94,7 +94,10 @@ pub fn derive_lifecycle(inputs: &LifecycleInputs<'_>) -> LifecyclePlan {
     let mut b = Builder {
         inputs,
         subjects: &subjects,
-        facts: subjects.iter().map(|s| Facts::of(s.decl, s.universe, &index, inputs.bus)).collect(),
+        facts: subjects
+            .iter()
+            .map(|s| Facts::of(s.decl, s.universe, &index, inputs.bus, is_flow(inputs.flows, &s.site.decl.lowered)))
+            .collect(),
         plan: LifecyclePlan {
             obligations: Vec::new(),
             instances: subjects
@@ -792,8 +795,10 @@ fn accept_types(decl: &LocusDecl) -> impl Iterator<Item = &TypeExpr> {
 
 /// What a declaration's members make an instance owe.
 struct Facts {
-    /// A `run()` the author wrote (the empty one the desugar gives a
-    /// locus that declares none runs nothing the trace sees).
+    /// A `run()` lowering calls ([`super::run_is_called`]): one with a
+    /// body, or a flow's. An empty one, the author's or the one the
+    /// desugar gives a locus that declares none, is not called and owes
+    /// no `Run` (a pinned locus's thread still takes the step).
     run: bool,
     /// The epochs of its closures, each once.
     closure_epochs: BTreeSet<Epoch>,
@@ -809,7 +814,10 @@ struct Facts {
 }
 
 impl Facts {
-    fn of(decl: &LocusDecl, universe: SiteUniverse, index: &LocusIndex<'_>, bus: &BusGraph) -> Facts {
+    /// `flow`: the declaration, as lowering names it, is a flow, whose run
+    /// wrapper reclaims it when its run() returns, so lowering calls even
+    /// an empty one.
+    fn of(decl: &LocusDecl, universe: SiteUniverse, index: &LocusIndex<'_>, bus: &BusGraph, flow: bool) -> Facts {
         let mut f = Facts {
             run: false,
             closure_epochs: BTreeSet::new(),
@@ -850,7 +858,7 @@ impl Facts {
                 LocusMember::Lifecycle(d) => {
                     let source = match d.kind {
                         LifecycleKind::Run => {
-                            f.run |= !d.synthesized;
+                            f.run |= super::run_is_called(super::body_is_empty(&d.body), flow);
                             FailureSource::Run
                         }
                         LifecycleKind::Drain => FailureSource::Drain,

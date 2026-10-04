@@ -151,6 +151,25 @@ pub mod project;
 pub mod spine;
 pub mod trace;
 
+// ----------------------------------------------------- what is called
+
+/// Whether a lifecycle method's body is empty. Lowering calls no empty
+/// `birth()`, `run()`, `drain()`, `dissolve()`, `accept()` or
+/// `release()`, and reads the test here.
+pub fn body_is_empty(body: &hale_syntax::ast::Block) -> bool {
+    body.stmts.is_empty() && body.tail.is_none()
+}
+
+/// Whether lowering calls a (non-pinned) instance's `run()`: one with a
+/// body, or a flow's even when empty, since its run wrapper reclaims it
+/// when it returns. A `Run` is owed exactly where lowering emits a run
+/// call (L4's ruling on the empty run), so the producer reads this test
+/// and lowering emits by it. A pinned locus's thread takes its `Run`
+/// step whatever the body.
+pub fn run_is_called(body_empty: bool, flow: bool) -> bool {
+    !body_empty || flow
+}
+
 // ------------------------------------------------------------ identity
 
 /// P1's identities, shared: a row is keyed by the placement table's
@@ -552,7 +571,7 @@ impl ObligationKind {
             ObligationKind::Readiness => &["C8", "C10", "C49", "C50", "C51", "R51"],
             ObligationKind::Birth => &["C1", "C9", "C10", "C38", "C49", "C50", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
-            ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "R24", "R25"],
+            ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "C53", "R24", "R25"],
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
@@ -563,7 +582,7 @@ impl ObligationKind {
             ObligationKind::PreDrain => &["C16", "R29"],
             ObligationKind::IngressQuiesce => &["R35"],
             ObligationKind::WaitAbort => &["C17", "R34"],
-            ObligationKind::PinnedJoin => &["C13", "C16", "C18", "R26", "R27"],
+            ObligationKind::PinnedJoin => &["C13", "C16", "C18", "C52", "R26", "R27"],
             ObligationKind::PoolJoin => &["C13", "C19", "C21", "C22", "C23", "R20"],
             ObligationKind::JoinProgress => &["C18", "R20"],
             ObligationKind::Cancellation => &["R19", "R19a", "R20a", "R21"],

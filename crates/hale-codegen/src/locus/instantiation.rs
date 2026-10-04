@@ -4622,14 +4622,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // run block / skip posting even when run() is empty: the
             // wrapper still has to fire to run the reclaim.
             let is_flow = self.is_flow(locus_name);
-            // Whole-block elide when run() body is empty AND no
-            // tick/duration closures need to fire after run AND it's
-            // not a flow. The quarantine guard would otherwise stand
-            // around a single unconditional jump.
-            let skip_run_block = info.empty_lifecycle.contains("run")
+            // Whether run() is called: the one test the lifecycle plan
+            // owes its `Run` by (`hale_types::lifecycle::run_is_called`).
+            let run_called = hale_types::lifecycle::run_is_called(info.empty_lifecycle.contains("run"), is_flow);
+            // Whole-block elide when run() is not called AND no
+            // tick/duration closures need to fire after run. The
+            // quarantine guard would otherwise stand around a single
+            // unconditional jump.
+            let skip_run_block = !run_called
                 && info.tick_closures_fn.is_none()
-                && info.duration_closures_fn.is_none()
-                && !is_flow;
+                && info.duration_closures_fn.is_none();
             if skip_run_block {
                 // No-op block elided.
             } else {
@@ -4682,7 +4684,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_call(start_fn, &[], "replay.start_ingress")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            if !info.empty_lifecycle.contains("run") || is_flow {
+            if run_called {
                 // F.31 Phase 4b + pool-inheritance fix (2026-05-29):
                 // a non-empty run() either runs synchronously here
                 // (main thread / non-pool context) or is posted to

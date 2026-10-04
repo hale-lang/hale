@@ -255,6 +255,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l10_dissolve_closures_first.hl", line: "10", adopted: Some("closures-before-dissolve"), run: RunMode::Plain, judge: closures_before_dissolve },
     Fixture { file: "l11_let_bound_drain.hl", line: "11", adopted: Some("drain-at-scope-exit"), run: RunMode::Plain, judge: drain_at_scope_exit },
     Fixture { file: "l12_pinned_fields_drain.hl", line: "12", adopted: Some("fields-drained-first"), run: RunMode::Plain, judge: fields_drained_first },
+    Fixture { file: "l12_returned_root_pinned_anchor.hl", line: "12", adopted: Some("delivered"), run: RunMode::Plain, judge: returned_anchor_delivery },
     Fixture { file: "l13_resume_pool_child.hl", line: "13", adopted: Some("resumed-posted"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l14_reclaim_exactly_once.hl", line: "14", adopted: Some("torn-down-once"), run: RunMode::Plain, judge: torn_down_once },
     Fixture { file: "l15_sigint_flag.hl", line: "15", adopted: Some("cooperative-drain"), run: RunMode::SigintAfter("ev ready"), judge: cooperative_drain },
@@ -288,6 +289,11 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
+    // A pinned anchor is joined when the fn that built it returns, not in
+    // its owner's teardown. Decision needed: where a returned root's
+    // anchor thread is joined, and where its thread id lives once the
+    // building fn's frame is gone.
+    ("l12_returned_root_pinned_anchor.hl", "C52", "dropped"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -457,6 +463,7 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l11_let_bound_drain.hl" => &["11"],
         "l12_pinned_fields_drain.hl" => &["12"],
+        "l12_returned_root_pinned_anchor.hl" => &["12"],
         "l13_resume_pool_child.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
             &["13"]
@@ -1170,6 +1177,19 @@ fn final_publish(r: &Ran) -> String {
     }
 }
 
+/// C52: whether a publish after the root is returned reaches its pinned
+/// field, before fn main's exit.
+fn returned_anchor_delivery(r: &Ran) -> String {
+    if r.timed_out || r.code != Some(0) {
+        return exit_word(r);
+    }
+    match (pos(r, "ev sink-heard"), pos(r, "ev main-done")) {
+        (Some(h), Some(d)) if h < d => "delivered".to_string(),
+        (Some(_), _) => "delivered-at-exit".to_string(),
+        (None, _) => "dropped".to_string(),
+    }
+}
+
 fn delivered_before_teardown(r: &Ran) -> String {
     match (pos(r, "ev sub-heard"), pos(r, "ev sub-dissolve")) {
         (Some(h), Some(d)) if h < d => "delivered-before-teardown".to_string(),
@@ -1850,6 +1870,7 @@ fixture_tests! {
     l10_dissolve_closures_first => "l10_dissolve_closures_first.hl",
     l11_let_bound_drain => "l11_let_bound_drain.hl",
     l12_pinned_fields_drain => "l12_pinned_fields_drain.hl",
+    l12_returned_root_pinned_anchor => "l12_returned_root_pinned_anchor.hl",
     l13_resume_pool_child => "l13_resume_pool_child.hl",
     l14_reclaim_exactly_once => "l14_reclaim_exactly_once.hl",
     l15_sigint_flag => "l15_sigint_flag.hl",

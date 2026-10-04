@@ -2051,6 +2051,14 @@ its `KNOWN_OPEN` table.
   perspective-slot cells). Before, a pinned locus's fields were
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
+  An owned field's lifetime is its owner's, so a pinned field's
+  thread is joined in its owner's teardown. Not yet true for a root
+  returned from the fn that built it (inventory row C52,
+  `l12_returned_root_pinned_anchor.hl`): its pinned field is joined
+  when that fn returns, while the caller still holds the root, so a
+  publish to the field afterwards is dropped. Where such an anchor is
+  joined, and where its thread id lives once the building fn's frame
+  is gone, is undecided.
 
   Lines 12 and 19 are an instance's own teardown, the dissolve
   cascade and the reclaim, and the compiler emits both from the
@@ -2082,7 +2090,12 @@ its `KNOWN_OPEN` table.
   shipped (inventory row C43): the resume calls `run()` inline on
   the settling thread (`l13_resume_pool_child.hl`). A locus that
   declares no `run()` owes none on any incarnation, and the trace
-  shows none. Not yet shipped (inventory row C48): its resumed
+  shows none. A `Run` is owed exactly where the compiler calls
+  `run()`, by one test both read (inventory row C53): a `run()` with
+  a body, a flow's even when empty (its run wrapper reclaims it when
+  it returns), and a pinned locus's on its thread whatever the body;
+  an empty `run() { }`, written or not, is not called and owes none.
+  Shipped. Not yet shipped (inventory row C48): its resumed
   incarnation enters a `Run`, the empty one the desugar gives it,
   where its first never does (`l01_neg_same_pool_held.hl`).
 - **Line 14, order.** Order follows the steps the compiler emits;

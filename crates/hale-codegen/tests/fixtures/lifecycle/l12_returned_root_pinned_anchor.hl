@@ -1,0 +1,44 @@
+// Decision line 12, an owned field's lifetime is its owner's
+// (PinnedJoin, Drain): a pinned anchor returned with its root. Known
+// open at C52.
+//
+// `make` builds App, whose field `sink` is placed pinned and subscribes,
+// and returns it; fn main holds the root, then a driver publishes to the
+// sink's topic. The anchor's lifetime is its owner's, so its thread is
+// joined in its owner's teardown, at fn main's exit, and the publish
+// reaches it. Today the pinned field is an entry of the frame of the fn
+// that built it, joined when `make` returns, while the caller still
+// holds the root: the publish finds no subscriber.
+//
+// Adopted terminal outcome: `delivered`. Today: `dropped`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l12.returned"; }
+
+locus Sink {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) { println("ev sink-heard"); }
+}
+
+main locus App {
+    params { sink: Sink = Sink { }; }
+    placement { sink: pinned; }
+}
+
+locus Driver {
+    bus { publish Pings; }
+    run() {
+        Pings <- Ping { n: 1 };
+        std::time::sleep(50ms);
+        println("ev main-done");
+    }
+}
+
+fn make() -> App {
+    return App { };
+}
+
+fn main() {
+    let app = make();
+    Driver { };
+}

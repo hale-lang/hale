@@ -388,7 +388,7 @@ fn a_contract_typed_field_owes_its_drain_before_its_owners() {
 #[test]
 fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
     let s = snapshot(
-        "locus Kid { run() { } }\nlocus Mid { params { k: Kid = Kid { }; } }\nmain locus App {\n    params { m: Mid = Mid { }; }\n    placement { m: cooperative(pool = side); }\n}\nfn main() { App { }; }\n",
+        "locus Kid { run() { let n = 1; } }\nlocus Mid { params { k: Kid = Kid { }; } }\nmain locus App {\n    params { m: Mid = Mid { }; }\n    placement { m: cooperative(pool = side); }\n}\nfn main() { App { }; }\n",
     );
     let p = plan(&s);
     let on = one(p, "Kid", K::Run).runs_on.clone().expect("the table gives it a pool");
@@ -458,7 +458,7 @@ fn two_parents(leaf: &str, extra: &str, worker_placed: bool) -> String {
 /// both parents.
 #[test]
 fn a_field_reached_under_parents_on_two_domains_claims_both() {
-    let s = snapshot(&two_parents("locus Leaf { run() { } }", "", true));
+    let s = snapshot(&two_parents("locus Leaf { run() { let n = 1; } }", "", true));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     let leaf: Vec<_> = p.instances.iter().filter(|i| i.site.decl.lowered == "Leaf").collect();
@@ -490,7 +490,7 @@ fn a_field_reached_under_parents_on_two_domains_claims_both() {
 /// alone before: `Once` for two Parents built once each).
 #[test]
 fn a_field_two_levels_under_parents_on_two_domains_claims_both() {
-    let s = snapshot(&two_parents("locus Leaf { params { twig: Twig = Twig { }; } }", "locus Twig { run() { } }\n", true));
+    let s = snapshot(&two_parents("locus Leaf { params { twig: Twig = Twig { }; } }", "locus Twig { run() { let n = 1; } }\n", true));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     assert_eq!(p.instances.iter().filter(|i| i.site.decl.lowered == "Twig").count(), 1);
@@ -512,7 +512,7 @@ fn a_field_two_levels_under_parents_on_two_domains_claims_both() {
 /// the claim is the one domain.
 #[test]
 fn a_field_reached_under_parents_on_one_domain_claims_it() {
-    let s = snapshot(&two_parents("locus Leaf { run() { } }", "", false));
+    let s = snapshot(&two_parents("locus Leaf { run() { let n = 1; } }", "", false));
     let p = plan(&s);
     for kind in [K::Birth, K::Run] {
         let o = one(p, "Leaf", kind);
@@ -567,7 +567,7 @@ fn two_enclosing(leaf: &str, mid_extra: &str, worker_placed: bool) -> String {
 /// neither. It is a child of both, and its bound is the table's.
 #[test]
 fn a_body_literal_under_enclosing_templates_on_two_domains_claims_both() {
-    let s = snapshot(&two_enclosing("locus Leaf { run() { } }", "", true));
+    let s = snapshot(&two_enclosing("locus Leaf { run() { let n = 1; } }", "", true));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     let leaf: Vec<_> = p.instances.iter().filter(|i| i.site.decl.lowered == "Leaf").collect();
@@ -631,7 +631,7 @@ fn an_accepted_literal_under_acceptors_on_two_domains_claims_both() {
 /// claim is the one domain.
 #[test]
 fn a_body_literal_under_enclosing_templates_on_one_domain_claims_it() {
-    let s = snapshot(&two_enclosing("locus Leaf { run() { } }", "", false));
+    let s = snapshot(&two_enclosing("locus Leaf { run() { let n = 1; } }", "", false));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     for kind in [K::Birth, K::Run] {
@@ -681,7 +681,7 @@ fn the_pool_join_holds_a_run_only_where_every_occurrence_is_on_a_pool() {
             .collect();
         (waits.contains(&run), rows(p, "Leaf", K::Cancellation).is_empty())
     };
-    let both = two_enclosing("locus Leaf { run() { } }", "", true);
+    let both = two_enclosing("locus Leaf { run() { let n = 1; } }", "", true);
     assert_eq!(joined(&both), (false, true), "main and side: the run not joined");
     let side_only = both.replace("    run() { let m = Mid { }; m.make(); }\n}", "}");
     assert_eq!(joined(&side_only), (true, true), "side alone: the run joined");
@@ -894,4 +894,45 @@ fn deferred_main_and_cross_pool_cancellation_name_their_spines() {
     // Its reclaim happens on main, so the child's worker must not be
     // asserted as the cancellation's execution domain.
     assert!(canceled.iter().filter(|o| o.holder.spine == Spine::Cascade).all(|o| o.runs_on.is_none()));
+}
+
+/// L4's ruling on the empty run: a `Run` is owed exactly where lowering
+/// calls `run()` (`hale_types::lifecycle::run_is_called`, which both
+/// read). An author-written empty `run() { }` is not called and owes
+/// none; a run with a body is; a flow's is called even with no run of its
+/// own, since its run wrapper reclaims it; a pinned locus's thread takes
+/// the step whatever the body.
+#[test]
+fn a_run_is_owed_exactly_where_lowering_calls_it() {
+    let s = snapshot(
+        "locus Quiet { run() { } }\n\
+         locus Busy { run() { println(\"busy\"); } }\n\
+         locus Kid { params { n: Int = 0; } }\n\
+         locus Spin { run() { } }\n\
+         locus Holder {\n\
+             accept(k: Kid) { }\n\
+             release(k: Kid) { }\n\
+             fn spawn() { Kid { }; }\n\
+             run() { self.spawn(); }\n\
+         }\n\
+         main locus App {\n\
+             params { holder: Holder = Holder { }; spin: Spin = Spin { }; }\n\
+             placement { spin: pinned; }\n\
+             run() { Quiet { }; Busy { }; }\n\
+         }\n\
+         fn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    let normal = |decl: &str| -> Vec<&Obligation> {
+        rows(p, decl, K::Run).into_iter().filter(|o| o.guard == PathGuard::Normal).collect()
+    };
+    assert!(normal("Quiet").is_empty(), "an empty run() is not called and owes no Run");
+    assert_eq!(normal("Busy").len(), 1, "a run() with a body is called");
+    assert_eq!(normal("Kid").len(), 1, "a flow's run wrapper calls its run(), the desugar's empty one included");
+    let spin = normal("Spin");
+    assert_eq!(spin.len(), 1, "a pinned thread takes its Run step");
+    assert_eq!(spin[0].holder.spine, Spine::PinnedMain);
+    assert!(hale_types::lifecycle::run_is_called(false, false));
+    assert!(!hale_types::lifecycle::run_is_called(true, false));
+    assert!(hale_types::lifecycle::run_is_called(true, true));
 }
