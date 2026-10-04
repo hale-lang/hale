@@ -360,7 +360,7 @@ fn check_numbered_bundle(
             alloc_summary: &alloc_summary,
             forms: &forms,
             bus: &bus,
-            intra_locus: &bundle_intra_locus(bundle),
+            intra_locus: &bundle_intra_locus(bundle, &placement),
             placement: &placement,
             target: &target,
             uses: &uses,
@@ -387,6 +387,8 @@ fn check_numbered_bundle(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
+        // The bundle is minted ([`with_identities`]), so the table the
+        // model's arrangement reads has its rows.
         let model = model_over_scope(
             bundle,
             &top,
@@ -396,6 +398,7 @@ fn check_numbered_bundle(
             &bus,
             &bindings,
             &ownership,
+            &placement,
         );
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
@@ -433,7 +436,17 @@ pub(crate) fn bundle_ownership_graph(
 /// handler rows, the effect rows — once each, and derives over them
 /// ([`model_builder::derive_application_model_over`]). Every verb reads
 /// its snapshot's model instead (`Snapshot::demand_model`).
+///
+/// The arrangement is the placement table's rows, and the table names
+/// minted sites, so a bundle nothing minted (an in-test `Bundle::new`)
+/// is minted first, over clones of its programs, as every verb's load
+/// mints its own; the model is derived over the clones.
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
+    with_identities(bundle, model_of_minted)
+}
+
+/// [`derive_application_model`] over a bundle whose identities are minted.
+fn model_of_minted(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
@@ -442,7 +455,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
     let ownership = bundle_ownership_graph(bundle, &top, &placement);
-    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership)
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership, &placement)
 }
 
 /// The bus graph of a bundle no snapshot holds, over its scope and its
@@ -464,21 +477,25 @@ pub(crate) fn bundle_bus_graph(
 /// what the snapshot's `intra_locus` family holds for a verb. The
 /// bundle is one [`with_identities`] numbered, so the rewrite's
 /// numbering of the merge keeps every send's id and the relation names
-/// the sends the bundle's bus graph holds.
-pub(crate) fn bundle_intra_locus(bundle: &Bundle<'_>) -> Vec<hale_syntax::desugar::IntraLocusRewrite> {
+/// the sends the bundle's bus graph holds. `placement` is the bundle's
+/// table, whose off-owner fields the rewrite keeps on the bus.
+pub(crate) fn bundle_intra_locus(
+    bundle: &Bundle<'_>,
+    placement: &placement::PlacementTable,
+) -> Vec<hale_syntax::desugar::IntraLocusRewrite> {
     let mut programs = bundle.programs.values();
     let Some(first) = programs.next() else { return Vec::new() };
     let mut merged = (*first).clone();
     for p in programs {
         merged.items.extend(p.items.iter().cloned());
     }
-    resolved::rewrite_intra_locus(&merged).intra_locus
+    resolved::rewrite_intra_locus(&merged, placement).intra_locus
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary, the form rows, the bus graph, the binding rows
-/// and the ownership graph its caller already built: the effect rows
-/// the model reads beside them are built here.
+/// allocation summary, the form rows, the bus graph, the binding rows,
+/// the ownership graph and the placement table its caller already built:
+/// the effect rows the model reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -488,6 +505,7 @@ fn model_over_scope(
     bus_graph: &bus_graph::BusGraph,
     bindings: &binding_rows::BindingRows,
     ownership: &ownership_graph::OwnershipGraph,
+    placement: &placement::PlacementTable,
 ) -> hale_model::ApplicationModel {
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
@@ -500,6 +518,7 @@ fn model_over_scope(
             effects: &effects,
             forms,
             bindings,
+            placement,
         },
     )
 }

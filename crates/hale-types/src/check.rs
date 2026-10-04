@@ -565,7 +565,7 @@ fn check_numbered_bundle(
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
     let bus = crate::bundle_bus_graph(bundle, top, &bindings, &placement);
-    let intra_locus = crate::bundle_intra_locus(bundle);
+    let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let inputs = CheckInputs {

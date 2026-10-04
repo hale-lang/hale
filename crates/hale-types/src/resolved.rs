@@ -248,8 +248,14 @@ pub struct IntraLocusStage {
 }
 
 /// Run the intra-locus rewrite over `program`, the one the verb
-/// checked.
-pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
+/// checked. `placement` is the snapshot's placement table
+/// (`Snapshot::demand_placement`), which the rewrite reads for the
+/// fields off their owner's thread; a caller with none passes
+/// `&PlacementTable::default()`, which runs no field off its owner.
+pub fn rewrite_intra_locus(
+    program: &Program,
+    placement: &crate::placement::PlacementTable,
+) -> IntraLocusStage {
     // A7 (G16): `BusSubject::QualifiedTopic(alias::Foo)` — cross-seed
     // topic refs the parser admits — are already the plain
     // single-segment `BusSubject::Topic(Ident(mangled_name))` the
@@ -270,7 +276,12 @@ pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
     // continues. A numbering, not a mint: nothing reads rows of the user
     // program on its own, so no snapshot is made of it.
     crate::snapshot::number([&mut program_owned]);
-    let intra_locus = hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
+    // A publish into a field the table runs off its owner's thread stays
+    // on the bus (F.31 pool safety).
+    let intra_locus = hale_syntax::desugar::desugar_intra_locus_topics(
+        &mut program_owned,
+        &placement.off_owner_fields(),
+    );
     IntraLocusStage { program: program_owned, intra_locus, rewritten_in: t_start.elapsed() }
 }
 
@@ -279,6 +290,7 @@ pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
 /// snapshot runs the two halves as its `intra_locus` and
 /// `lowering_view` families; this is the bare program's entry, and a
 /// bare program is the host's.
+/// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -293,7 +305,7 @@ pub fn resolve_program(
     let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     resolve_rewritten(
-        &rewrite_intra_locus(program),
+        &rewrite_intra_locus(program, placement),
         sources,
         import_renames,
         api,

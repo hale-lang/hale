@@ -226,7 +226,7 @@ fn desugared_corpus_walk_reaches_every_identity_field() {
         hale_syntax::chains::desugar_chains(&mut p);
         hale_syntax::desugar::desugar_topics(&mut p);
         hale_syntax::desugar::desugar_repr_accessors(&mut [&mut p]);
-        hale_syntax::desugar::desugar_intra_locus_topics(&mut p);
+        hale_syntax::desugar::desugar_intra_locus_topics(&mut p, &Default::default());
         hale_syntax::desugar::desugar_omitted_run(&mut p);
         total += number_and_check(&prog.origin, &mut p);
     }

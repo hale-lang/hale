@@ -1,0 +1,19 @@
+// M-1: a library whose `main locus` places a field and nests a locus
+// under it. Imported, it is never the root the seed deploys.
+locus Leaf { }
+
+locus Worker {
+    params {
+        leaf: Leaf = Leaf { };
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        side: Leaf = Leaf { };
+    }
+    placement {
+        w: pinned;
+    }
+}

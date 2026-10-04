@@ -506,7 +506,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let forms = hale_types::form_rows::form_rows(&bundle, &top, &placement, true);
     let bindings = hale_types::binding_rows::derive_binding_rows(&bundle, &top);
     let bus = build_bus_graph(&bundle, &top, &bindings, &placement);
-    let intra_locus = hale_types::resolved::rewrite_intra_locus(&prog).intra_locus;
+    let intra_locus = hale_types::resolved::rewrite_intra_locus(&prog, &placement).intra_locus;
     assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
     let target = hale_types::capability::target_row(&bundle);
     let uses = hale_types::capability::uses::derive_capability_uses(&bundle, &alloc_summary);
