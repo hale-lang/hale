@@ -29,11 +29,9 @@ fn summarize(src: &str) -> AllocSummary {
     summarize_identified(&[(&program, &ids)], &[])
 }
 
-/// Each row's key names the declaration it was walked from: a free fn,
-/// a method, an authored hook and a mode, by their own sites.
-#[test]
-fn every_row_is_keyed_by_its_declarations_site() {
-    let src = r#"
+/// A free fn, a method, an authored hook and a mode, each calling one
+/// helper.
+const MEMBERS: &str = r#"
         fn helper(n: Int) -> Int { return n + 1; }
         locus W {
             params { n: Int = 0; }
@@ -43,7 +41,12 @@ fn every_row_is_keyed_by_its_declarations_site() {
         }
         fn main() { W { }; }
     "#;
-    let (program, ids) = minted(src);
+
+/// Each row's key names the declaration it was walked from: a free fn,
+/// a method, an authored hook and a mode, by their own sites.
+#[test]
+fn every_row_is_keyed_by_its_declarations_site() {
+    let (program, ids) = minted(MEMBERS);
     let summary = summarize_identified(&[(&program, &ids)], &[]);
     let mut expected: Vec<(String, DeclId)> = Vec::new();
     for item in &program.items {
@@ -76,6 +79,58 @@ fn every_row_is_keyed_by_its_declarations_site() {
     let step = &summary.fns[summary.resolve(Some("W"), "step").expect("step resolves")];
     assert!(step.calls.iter().any(|c| c.callee == hale_types::alloc_summary::Callee::Resolved(helper.clone())));
     assert_eq!(helper.decl, expected.iter().find(|(n, _)| n == "helper").map(|(_, d)| *d));
+}
+
+/// The model's function rows carry their declaration's site
+/// (`Function::decl`), and FunctionId stays the rank of the name (law 2):
+/// the builder joins a summary row to its function by that site, so a
+/// call relation names the function the callee's row is.
+#[test]
+fn the_models_functions_carry_their_declarations_site() {
+    let (program, _) = minted(MEMBERS);
+    let mut sites: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for item in &program.items {
+        match item {
+            hale_syntax::ast::TopDecl::Fn(f) => {
+                sites.insert(f.name.name.clone(), f.id.0);
+            }
+            hale_syntax::ast::TopDecl::Locus(l) => {
+                for m in &l.members {
+                    match m {
+                        hale_syntax::ast::LocusMember::Fn(f) => {
+                            sites.insert(format!("W::{}", f.name.name), f.id.0);
+                        }
+                        hale_syntax::ast::LocusMember::Lifecycle(lc) if !lc.synthesized => {
+                            sites.insert("W::birth".to_string(), lc.id.0);
+                        }
+                        hale_syntax::ast::LocusMember::Mode(md) => {
+                            sites.insert("W::bulk".to_string(), md.id.0);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
+    let model = hale_types::model_builder::derive_application_model(&bundle);
+    model.validate().expect("a model");
+    let functions = &model.entities.functions;
+    let names: Vec<&str> = functions.iter().map(|f| f.name.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "FunctionId is the rank of the name");
+    let by_site: Vec<(String, u32)> =
+        functions.iter().map(|f| (f.name.clone(), f.decl.expect("a minted declaration").index)).collect();
+    assert_eq!(by_site, sites.into_iter().collect::<Vec<_>>());
+    let id = |n: &str| functions.iter().position(|f| f.name == n).expect(n) as u32;
+    for caller in ["W::birth", "W::step"] {
+        assert!(
+            model.relations.calls.iter().any(|c| c.from.0 == id(caller) && c.to.0 == id("helper")),
+            "{caller} calls helper"
+        );
+    }
 }
 
 /// The stdlib's analysis copy is a universe of its own: its rows never

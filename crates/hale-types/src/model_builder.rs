@@ -567,7 +567,17 @@ pub fn derive_application_model_over(
         /// The behavior analysis did not walk this body (an
         /// on_failure handler) — emits an UnanalyzedBody hole.
         unanalyzed: bool,
+        /// The declaration's site (`Function::decl`).
+        decl: Option<hale_graph::ids::SiteId>,
     }
+    let site_of = |node: hale_syntax::ast::NodeId| bundle.snapshot.site_id(node);
+    // A summary row's declaration site: a row of the program's own
+    // universe, as the snapshot minted it.
+    let user_site = |k: &FnKey| {
+        k.decl
+            .filter(|d| d.universe == crate::placement::SiteUniverse::User)
+            .and_then(|d| site_of(hale_syntax::ast::NodeId(d.index)))
+    };
     fn hook_name(k: &hale_syntax::ast::LifecycleKind) -> &'static str {
         use hale_syntax::ast::LifecycleKind as LK;
         match k {
@@ -603,13 +613,13 @@ pub fn derive_application_model_over(
         for pr in &programs {
             for item in hale_syntax::ast::flat_decls(&pr.items) {
                 match item {
-                    TopDecl::Fn(f) => frees.push((f.name.name.as_str(), f.name.span)),
+                    TopDecl::Fn(f) => frees.push((f.name.name.as_str(), f.name.span, f.id)),
                     TopDecl::Locus(l) => mod_loci.push(l),
                     _ => {}
                 }
             }
         }
-        for (n, sp) in frees {
+        for (n, sp, id) in frees {
             fn_rows.insert(
                 n.to_string(),
                 FnInfo {
@@ -618,6 +628,7 @@ pub fn derive_application_model_over(
                     display: name(n),
                     span: Some(sp),
                     unanalyzed: false,
+                    decl: site_of(id),
                 },
             );
         }
@@ -625,11 +636,12 @@ pub fn derive_application_model_over(
             let ld = l.name.name.clone();
             let ld_display = name(&ld);
             for m in &l.members {
-                let (fname, kind, sp) = match m {
+                let (fname, kind, sp, id) = match m {
                     LocusMember::Fn(f) => (
                         f.name.name.clone(),
                         FunctionKind::Method,
                         f.name.span,
+                        f.id,
                     ),
                     // The model lists the hooks the author wrote, not
                     // the omitted `run` (`LifecycleDecl::synthesized`).
@@ -637,11 +649,13 @@ pub fn derive_application_model_over(
                         hook_name(&lc.kind).to_string(),
                         FunctionKind::Hook,
                         lc.span,
+                        lc.id,
                     ),
                     LocusMember::Mode(md) => (
                         mode_name(&md.kind).to_string(),
                         FunctionKind::Mode,
                         md.span,
+                        md.id,
                     ),
                     LocusMember::Failure(fd) => {
                         // on_failure handlers ARE executable hooks;
@@ -671,6 +685,7 @@ pub fn derive_application_model_over(
                             ),
                             span: Some(fd.span),
                             unanalyzed: true,
+                            decl: site_of(fd.id),
                         };
                         if fd.id.is_none() {
                             fn_rows.insert(handler_name, row);
@@ -689,6 +704,7 @@ pub fn derive_application_model_over(
                         display: format!("{}::{}", ld_display, fname),
                         span: Some(sp),
                         unanalyzed: false,
+                        decl: site_of(id),
                     },
                 );
             }
@@ -709,17 +725,10 @@ pub fn derive_application_model_over(
                 display: fn_display(k),
                 span: None,
                 unanalyzed: false,
+                decl: user_site(k),
             });
         }
     }
-    // Round 11: the summarized set — behavior-summary keys, which
-    // IS the legacy fn sort's universe.
-    let summarized_names: BTreeSet<String> = summary
-        .fns
-        .keys()
-        .filter(|k| user_key(k))
-        .map(fn_name)
-        .collect();
     // The function universe in id order: every row ranked by its name
     // (the handler rows' names among the others'; a name two handler
     // rows share ranks them by site). `fn_id` answers a name for the
@@ -740,16 +749,34 @@ pub fn derive_application_model_over(
         .filter(|(_, n, _)| fn_rows.contains_key(*n))
         .map(|(id, n, _)| (*n, *id))
         .collect();
+    // Each function by its declaration's site (`Function::decl`): a
+    // summary row joins its function here. A row no mint numbered joins
+    // by its name, and so does one whose name another declaration's row
+    // took (two declarations sharing a name: a program the check
+    // refuses).
+    let fn_of_site: BTreeMap<hale_graph::ids::SiteId, FunctionId> = fn_universe
+        .iter()
+        .filter_map(|(id, _, info)| info.decl.map(|s| (s, *id)))
+        .collect();
+    let fid_of = |k: &FnKey| -> Option<FunctionId> {
+        user_site(k).and_then(|s| fn_of_site.get(&s).copied()).or_else(|| fn_id.get(&fn_name(k)).copied())
+    };
+    let fid = |k: &FnKey| -> FunctionId { fid_of(k).expect("a program row is a function") };
+    // Round 11: the summarized set — behavior-summary keys, which
+    // IS the legacy fn sort's universe.
+    let summarized: BTreeSet<FunctionId> =
+        summary.fns.keys().filter(|k| user_key(k)).filter_map(|k| fid_of(k)).collect();
 
     // Phases (distinct names) + phase_of.
     let mut phase_names: BTreeSet<String> = BTreeSet::new();
-    let mut phase_of_pairs: BTreeMap<String, (String, bool)> =
+    let mut phase_of_pairs: BTreeMap<FunctionId, (String, bool)> =
         BTreeMap::new();
     for (k, p) in &vmodel.phases {
         if user_key(k) {
             phase_names.insert(p.phase.clone());
-            phase_of_pairs
-                .insert(fn_name(k), (p.phase.clone(), p.hook));
+            if let Some(f) = fid_of(k) {
+                phase_of_pairs.insert(f, (p.phase.clone(), p.hook));
+            }
         }
     }
     let phase_id: BTreeMap<&String, PhaseId> = phase_names
@@ -1121,7 +1148,7 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let from = fn_id[&fn_name(k)];
+        let from = fid(k);
         // Authored-site ordinals: every conformer alternative of ONE
         // interface dispatch shares one dispatch_group and therefore
         // ONE site ordinal (one source expression = one site; a new
@@ -1150,7 +1177,7 @@ pub fn derive_application_model_over(
                     if !user_key(next) {
                         continue;
                     }
-                    let to = fn_id[&fn_name(next)];
+                    let to = fid(next);
                     let dispatch = match &edge.via_interface {
                         Some(i) => DispatchKind::Interface {
                             interface: i.clone(),
@@ -1320,7 +1347,7 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let from = fn_id[&fn_name(k)];
+        let from = fid(k);
         let mut stack: Vec<(FnKey, PathFlags)> = Vec::new();
         let mut seen: BTreeMap<FnKey, PathFlags> = BTreeMap::new();
         let edge_flags = |edge: &crate::alloc_summary::CallEdge| {
@@ -1356,7 +1383,7 @@ pub fn derive_application_model_over(
                 };
                 let f2 = lp.join(edge_flags(edge));
                 if user_key(next) {
-                    let to = fn_id[&fn_name(next)];
+                    let to = fid(next);
                     let e = via_stdlib
                         .entry((from, to))
                         .or_insert_with(PathFlags::default);
@@ -1543,7 +1570,7 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let from = fn_id[&fn_name(k)];
+        let from = fid(k);
         // EVERY publish effect site consumes one source-order
         // ordinal — known-subject rows and computed-subject holes
         // share the space, so a consumer interleaving them by site
@@ -1662,9 +1689,15 @@ pub fn derive_application_model_over(
                     continue;
                 };
                 let display = subject.canonical().to_string();
+                // The handler is the locus's method the subscription
+                // names: its function, by the method's site.
                 let handler_full =
                     format!("{}::{}", locus_raw, handler.name);
-                let Some(hid) = fn_id.get(&handler_full) else {
+                let method = l.members.iter().find_map(|m| match m {
+                    LocusMember::Fn(f) if f.name.name == handler.name => site_of(f.id),
+                    _ => None,
+                });
+                let Some(hid) = method.and_then(|s| fn_of_site.get(&s)).or_else(|| fn_id.get(&handler_full)) else {
                     continue;
                 };
                 // The BusSubject VARIANT decides declaredness — a
@@ -2028,13 +2061,13 @@ pub fn derive_application_model_over(
     // judgment's `effects(C)` destination test reads (GH #476 Change
     // 5a) — each fn's `direct` column of the same rows, over the
     // stdlib-merged summary the rows' walk read.
-    let mut derived_effects: BTreeMap<String, Vec<String>> =
+    let mut derived_effects: BTreeMap<FunctionId, Vec<String>> =
         BTreeMap::new();
-    let mut direct_effects: BTreeMap<String, Vec<String>> =
+    let mut direct_effects: BTreeMap<FunctionId, Vec<String>> =
         BTreeMap::new();
-    let mut effect_lower_bounds: BTreeMap<String, Vec<String>> =
+    let mut effect_lower_bounds: BTreeMap<FunctionId, Vec<String>> =
         BTreeMap::new();
-    let mut effects_unknown: BTreeSet<String> = BTreeSet::new();
+    let mut effects_unknown: BTreeSet<FunctionId> = BTreeSet::new();
     for k in merged.fns.keys() {
         if !user_key(k) {
             continue;
@@ -2043,7 +2076,7 @@ pub fn derive_application_model_over(
         let classes =
             crate::frontier::render_effects_named(row.effects, effect_names);
         if !classes.is_empty() {
-            derived_effects.insert(fn_name(k), classes);
+            derived_effects.insert(fid(k), classes);
         }
         // …and the LOWER BOUND, kept apart from the rendering.
         // `UNCLASSIFIED` is saturation, not a bit, so the known
@@ -2054,20 +2087,20 @@ pub fn derive_application_model_over(
         let known_classes =
             crate::frontier::render_effects_named(known, effect_names);
         if !known_classes.is_empty() {
-            effect_lower_bounds.insert(fn_name(k), known_classes);
+            effect_lower_bounds.insert(fid(k), known_classes);
         }
         if unknown {
-            effects_unknown.insert(fn_name(k));
+            effects_unknown.insert(fid(k));
         }
     }
-    let authored_user_class: BTreeSet<String> =
+    let authored_user_class: BTreeSet<FunctionId> =
         crate::effects::fns_carrying_a_user_class(&programs)
             .into_iter()
-            .map(|k| fn_name(&k))
+            .filter_map(|k| fid_of(&k))
             .collect();
-    let mut attribution: BTreeMap<String, Vec<String>> =
+    let mut attribution: BTreeMap<FunctionId, Vec<String>> =
         BTreeMap::new();
-    let mut opaque_calls: BTreeSet<String> = BTreeSet::new();
+    let mut opaque_calls: BTreeSet<FunctionId> = BTreeSet::new();
     for (k, fs) in &merged.fns {
         if !user_key(k) || !vmodel.is_bundle_fn(k) {
             continue;
@@ -2093,10 +2126,10 @@ pub fn derive_application_model_over(
         }
         classes.sort();
         if !classes.is_empty() {
-            attribution.insert(fn_name(k), classes);
+            attribution.insert(fid(k), classes);
         }
         if crate::claims::has_opaque_unresolved(fs) {
-            opaque_calls.insert(fn_name(k));
+            opaque_calls.insert(fid(k));
         }
     }
     for k in summary.fns.keys() {
@@ -2111,7 +2144,7 @@ pub fn derive_application_model_over(
             );
             classes.sort();
             classes.dedup();
-            direct_effects.insert(fn_name(k), classes);
+            direct_effects.insert(fid(k), classes);
         }
     }
     for &(fid, n, info) in &fn_universe {
@@ -2124,28 +2157,29 @@ pub fn derive_application_model_over(
             name: n.clone(),
             display: info.display.clone(),
             kind: info.kind,
-            effects: derived_effects.get(n).cloned().unwrap_or_default(),
+            effects: derived_effects.get(&fid).cloned().unwrap_or_default(),
             effect_lower_bound: effect_lower_bounds
-                .get(n)
+                .get(&fid)
                 .cloned()
                 .unwrap_or_default(),
-            effects_unknown: effects_unknown.contains(n),
+            effects_unknown: effects_unknown.contains(&fid),
             direct_effects: direct_effects
-                .get(n)
+                .get(&fid)
                 .cloned()
                 .unwrap_or_default(),
             attribution: attribution
-                .get(n)
+                .get(&fid)
                 .cloned()
                 .unwrap_or_default(),
-            opaque_call: opaque_calls.contains(n),
-            carries_user_class: authored_user_class.contains(n),
+            opaque_call: opaque_calls.contains(&fid),
+            carries_user_class: authored_user_class.contains(&fid),
             analyzed: !info.unanalyzed,
-            summarized: summarized_names.contains(n),
+            summarized: summarized.contains(&fid),
             owner: info
                 .locus
                 .as_ref()
                 .and_then(|ld| locus_id.get(ld).copied()),
+            decl: info.decl,
             provenance: pid,
         });
     }
@@ -2246,7 +2280,7 @@ pub fn derive_application_model_over(
 
     let mut r = Relations::default();
     // member_of + phase_of from the fn rows.
-    for &(fid, n, info) in &fn_universe {
+    for &(fid, _, info) in &fn_universe {
         if let Some(ld) = &info.locus {
             if let Some(lid) = locus_id.get(ld) {
                 let pid =
@@ -2258,7 +2292,7 @@ pub fn derive_application_model_over(
                 });
             }
         }
-        if let Some((phase, _)) = phase_of_pairs.get(n) {
+        if let Some((phase, _)) = phase_of_pairs.get(&fid) {
             let pid = intern_synth(&mut records, "phase relation");
             r.phase_of.push(PhaseOf {
                 function: fid,
@@ -2369,7 +2403,7 @@ pub fn derive_application_model_over(
                 &effect_names,
             );
             if !classes.is_empty() {
-                per_fn.insert(fn_id[&fn_name(k)], classes);
+                per_fn.insert(fid(k), classes);
             }
         }
         for (f, classes) in per_fn {
@@ -2663,7 +2697,7 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let from = fn_id[&fn_name(k)];
+        let from = fid(k);
         let mut next_ordinal: u32 = 0;
         let mut group_site: BTreeMap<u32, u32> = BTreeMap::new();
         let mut site_of = |group: Option<u32>| -> u32 {
@@ -2798,7 +2832,7 @@ pub fn derive_application_model_over(
                                     });
                                 let target = if user_key(nn) {
                                     hale_model::AbsorbedTarget::User(
-                                        fn_id[&fn_name(nn)],
+                                        fid(nn),
                                     )
                                 } else {
                                     let idx = *index
@@ -3565,11 +3599,11 @@ pub fn derive_application_model_over(
             if !user_key(k) {
                 continue;
             }
-            let Some(f) = fn_id.get(&fn_name(k)) else { continue };
+            let Some(f) = fid_of(k) else { continue };
             for site in &fs.sites {
                 let pid = intern_span(&mut records, site.span);
                 r.costs.push(hale_model::CostSite {
-                    function: *f,
+                    function: f,
                     dimension: hale_model::CostDimension::Alloc,
                     amount: 1,
                     in_loop: site.loop_depth > 0,
@@ -3601,7 +3635,7 @@ pub fn derive_application_model_over(
                 }
                 let pid = intern_span(&mut records, edge.span);
                 r.costs.push(hale_model::CostSite {
-                    function: *f,
+                    function: f,
                     dimension: hale_model::CostDimension::Block,
                     amount: 1,
                     in_loop: edge.loop_depth > 0,
@@ -3611,7 +3645,7 @@ pub fn derive_application_model_over(
             if let Some(bytes) = frames.get(k) {
                 let fn_prov = e.functions[f.index()].provenance;
                 r.costs.push(hale_model::CostSite {
-                    function: *f,
+                    function: f,
                     dimension: hale_model::CostDimension::FrameBytes,
                     amount: *bytes,
                     // A frame is charged once per call, never per
