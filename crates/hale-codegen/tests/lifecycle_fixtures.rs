@@ -616,18 +616,9 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
             "count: Kid.Run has 2 subjects, owes 1",
         ],
     ),
-    // Join progress: the late failure completes only because its
-    // handler runs in place on the child's thread (decision L0-1).
-    (
-        "jp_late_failure_pinned_join.hl",
-        "C36",
-        &["domain: Late.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main"],
-    ),
-    (
-        "jp_late_failure_pool_join.hl",
-        "C36",
-        &["domain: Late.FailureDelivery (inst _ inc 0) ran on pool:side, claimed main"],
-    ),
+    // Join progress (C36) left with L5's fourth part: the late failure
+    // is posted to main, which runs it inside the pinned join and the
+    // pool join (`jp_late_failure_{pinned,pool}_join.hl`).
 ];
 
 /// A negative control: a run in which a step is removed or reordered,

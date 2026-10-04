@@ -1923,7 +1923,23 @@ typedef struct lotus_held_failure {
     int64_t phase, pre;
     int state;
     int waiters;               /* threads blocked in lotus_failure_await */
+    /* A posted delivery (decision L0-1, below): the owner's domain it
+     * waits for, NULL for a failure held while its parent is open; and
+     * the thread running its handler, once claimed. */
+    struct lotus_domain *posted;
+    pthread_t deliverer;
 } lotus_held_failure_t;
+
+/* Decision L0-1's posted delivery, defined with the pools and mailboxes
+ * further down (`lotus_domain_t`). */
+typedef struct lotus_domain lotus_domain_t;
+static void lotus_failure_owner_note_locked(void *owner);
+static void lotus_failure_service_here(void);
+static void lotus_failure_service_at_yield(void);
+static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *node);
+static void lotus_failure_await_service_locked(void);
+static void lotus_failure_domain_enter(void);
+static void lotus_failure_owner_forget(void *owner);
 
 typedef struct {
     void *parent;
@@ -1962,6 +1978,9 @@ void lotus_params_open(void *parent) {
     g_params_open[g_params_open_len++] =
         (lotus_params_open_t){ parent, pthread_self() };
     __atomic_add_fetch(&g_params_open_count, 1, __ATOMIC_RELEASE);
+    /* The thread that opens the parent's params is its domain: it
+     * settles them, delivers what was held, and runs what is posted. */
+    lotus_failure_owner_note_locked(parent);
     pthread_mutex_unlock(&g_params_open_lock);
 }
 
@@ -2001,9 +2020,9 @@ int64_t lotus_failure_hold(void *parent, void *fn, void *child,
     g_held_tail = node;
     __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_params_open_lock);
-#ifdef LOTUS_LIFECYCLE_TRACE
-    lotus_lc_ev("ConstructionDelivery", "Entered", child, "Settle", NULL);
-#endif
+    /* The trace reports the delivery where its handler runs, at the
+     * owner's settle on its domain (decision L0-1), not here on the
+     * raising thread; the compiler reports the in-place call alone. */
     return 1;
 }
 
@@ -2027,13 +2046,22 @@ static void lotus_held_unlink(lotus_held_failure_t *node) {
 /* A child whose failure is held must outlive its handler: the handler
  * reads it. `__reclaim_<L>` asks here first: 1 = a failure of this
  * child is outstanding, and the reclaim now runs right after its
- * handler; 0 = reclaim now. */
+ * handler; 0 = reclaim now.
+ *
+ * A posted delivery (decision L0-1) is waited for instead, as a started
+ * run is (the run hold's twin): the owner's domain may be this thread,
+ * which runs it while it waits, and the reclaim then proceeds here. Only
+ * a reclaim reached from that delivery's own handler is deferred behind
+ * it, since waiting there would wait on itself. */
 int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
     pthread_mutex_lock(&g_params_open_lock);
     lotus_held_failure_t *node = lotus_held_latest_for(child);
-    if (node) node->reclaim = (void (*)(void *))reclaim;
+    int deferred = node != NULL;
+    if (node && node->posted)
+        deferred = lotus_failure_reclaim_wait_locked(node);
+    if (deferred) node->reclaim = (void (*)(void *))reclaim;
     pthread_mutex_unlock(&g_params_open_lock);
-    return node ? 1 : 0;
+    return deferred;
 }
 
 /* Defined with the pool start (C50): a pool-placed root's init the
@@ -2087,6 +2115,10 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
             pthread_mutex_lock(&g_params_open_lock);
             continue;
         }
+        /* So may a delivery posted to this thread's domain (L0-1): run
+         * it, unlocked, and wait on; a post broadcasts. */
+        lotus_failure_await_service_locked();
+        if (node->state == LOTUS_DELIVERED) break;
         pthread_cond_wait(&g_held_delivered, &g_params_open_lock);
     }
     if (--node->waiters == 0) free(node);
@@ -2113,7 +2145,7 @@ void lotus_params_settle(void *parent) {
     for (;;) {
         pthread_mutex_lock(&g_params_open_lock);
         lotus_held_failure_t *node = g_held_head;
-        while (node && !(node->parent == parent && node->state == LOTUS_HELD))
+        while (node && !(node->parent == parent && node->state == LOTUS_HELD && !node->posted))
             node = node->next;
         if (!node) {
             pthread_mutex_unlock(&g_params_open_lock);
@@ -2122,6 +2154,10 @@ void lotus_params_settle(void *parent) {
         node->state = LOTUS_DELIVERING;
         pthread_mutex_unlock(&g_params_open_lock);
 
+#ifdef LOTUS_LIFECYCLE_TRACE
+        lotus_lc_ev("FailureDelivery", "Entered", node->child, "Settle", NULL);
+        lotus_lc_ev("ConstructionDelivery", "Entered", node->child, "Settle", NULL);
+#endif
         node->fn(node->parent, node->child, node->err);
 #ifdef LOTUS_LIFECYCLE_TRACE
         lotus_lc_ev("FailureDelivery", "Completed", node->child, "Settle", NULL);
@@ -7672,6 +7708,9 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
      * the owner's next drain point. */
     if (!pthread_equal(pthread_self(), q->owner)) return;
     if (g_bus_drain_active) return;
+    /* Decision L0-1: failures posted to main's domain run here, on the
+     * owner thread, before the queue's cells. One load when none is. */
+    lotus_failure_service_here();
     /* GH #233 steps 3-4: dispatch pending transport-loss events
      * first — we're on the owner thread here, the only place
      * failure handlers may run. Defined with the transport
@@ -8243,6 +8282,9 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     lotus_bus_cell_t cell;
     int replaying = lotus_replay_note_consume && lotus_replay_active;
     for (;;) {
+        /* Decision L0-1: failures posted to this thread's domain, between
+         * cells (a wake cell reaches a parked consumer). */
+        lotus_failure_service_here();
         /* Ring first (lock-free), then the consumer-local overflow list. */
         if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
             lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
@@ -8382,6 +8424,9 @@ lotus_mailbox_t *lotus_mailbox_get_current(void) {
 static void lotus_pool_init_yield(void);
 
 void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
+    /* Decision L0-1: a yield runs the failures posted to this thread's
+     * domain where it would run its queue's cells. */
+    lotus_failure_service_at_yield();
     if (!mb) {
         lotus_pool_init_yield();
         return;
@@ -8536,8 +8581,11 @@ static void lotus_pinned_start_wait(lotus_pinned_start_t *s, int state) {
     pthread_mutex_unlock(&s->lock);
 }
 
-/* The pinned thread: its params are initialized. */
+/* The pinned thread: its params are initialized. It is a domain from
+ * here on, before its instantiating thread can reach its join, so the
+ * join can wait for its end (decision L0-1's posted delivery). */
 void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
+    lotus_failure_domain_enter();
     lotus_pinned_start_set(s, 1);
 }
 
@@ -9033,7 +9081,12 @@ static void lotus_run_cancel(void *child, int wait) {
 
 /* Logical teardown cancels queued runs even if a handler must postpone
  * waiting for started runs. The later physical release waits again. */
-void lotus_run_cancel_only(void *child) { lotus_run_cancel(child, 0); }
+/* The Reclaim's logical step, on every reclaim path: also the instance's
+ * last moment as an owner, so its recorded domain goes (decision L0-1). */
+void lotus_run_cancel_only(void *child) {
+    lotus_run_cancel(child, 0);
+    lotus_failure_owner_forget(child);
+}
 void lotus_run_cancel_queued(void *child) { lotus_run_cancel(child, 1); }
 
 typedef struct lotus_coop_pool {
@@ -9077,6 +9130,10 @@ typedef struct lotus_coop_pool {
      * for (`lotus_pool_start_job_t *`, C50), NULL when none: what the
      * worker runs if it is itself waiting on that thread. */
     _Atomic(void *)   start_pending;
+    /* The worker's execution domain (decision L0-1's posted delivery,
+     * `lotus_domain_t`), made by start_all before the worker exists, so
+     * a join can wait for its end; NULL until then. */
+    void             *domain;
     /* F.35 Slice 1: async_io state. Dormant when `async_io_enabled`
      * is 0 — pool runs the classic blocking-syscall worker loop.
      * When non-zero, `epoll_fd` is open and the worker uses the
@@ -9248,6 +9305,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->overflow_tail = NULL;
     p->worker_started = 0;
     atomic_store_explicit(&p->start_pending, NULL, memory_order_relaxed);
+    p->domain = NULL;
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->not_empty, NULL);
     pthread_cond_init(&p->not_full, NULL);
@@ -9330,6 +9388,9 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     lotus_run_ticket_t *outer = t_run_running;
     t_run_running = hold;
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    /* The run's hold, or the one a failure posted from the cell took
+     * (`lotus_failure_hold_cell`). */
+    hold = t_run_running;
     t_run_running = outer;
     p->running_label = NULL;
     lotus_run_hold_release(hold);
@@ -9952,6 +10013,10 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
         g_run_hold_waiters--;
         pthread_mutex_unlock(&g_run_tickets_lock);
 #endif
+        /* A hold may be a posted failure's, whose cell waits for this
+         * thread to run its delivery (decision L0-1): run it, inside a
+         * bus handler too, where the queue drain below does nothing. */
+        lotus_failure_service_here();
         lotus_bus_queue_drain(g_bus_queue_for_remote);
         lotus_mailbox_drain_pending(lotus_mailbox_get_current());
     }
@@ -9964,6 +10029,555 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
         }
     }
 }
+
+/* ---- Decision L0-1: a failure is delivered on its owner's domain ------
+ *
+ * (F.40 phase 3, L5 4 of 4; spec/runtime.md § Failure handling.) A
+ * child's failure runs its owner's `on_failure` on the owner's execution
+ * domain, never on the failing child's thread. Every thread that runs
+ * locus code is a domain (`lotus_domain_t`, one per thread): main, a
+ * cooperative pool's worker (made by start_all before the worker
+ * exists), a pinned locus's own thread (from its readiness report on).
+ * An owner's domain is the thread that opens its params, which settles
+ * them and delivers what was held there (decision line 1);
+ * `lotus_params_open` records it, once the program has a second thread
+ * (`g_bus_has_pinned`), so a single-threaded program records nothing and
+ * pays nothing.
+ *
+ * On the owner's domain the delivery stays the compiler's in-place call
+ * (`lotus_failure_post` answers 0). Off it, the failing thread posts the
+ * delivery, a held-failure node carrying the copied violation and the
+ * child, retained until the handler returns (line 19's rule for a held
+ * failure); wakes the domain; and waits for the handler's decision,
+ * servicing its own queue as a yield on its thread would, so an owner
+ * that is itself waiting on the child (a join, a run hold, a readiness
+ * wait) is served and neither side waits on the other. The domain runs
+ * a posted delivery wherever it services its queue: main's queue drain,
+ * a pinned thread's mailbox drains and a pool worker between cells (a
+ * wake cell on the queue reaches a parked consumer), a yield (sleep's
+ * slices, `yield`), every wait that services its queue, and the two
+ * joins, which run posted deliveries and nothing else (join progress).
+ * A handler is never started inside another on the same thread.
+ *
+ * A domain that has ended consumes nothing more: its thread exited (the
+ * key's destructor), or its pool's worker left its loop. A delivery
+ * still posted to it then runs where it was raised, as a failure whose
+ * owner no longer holds it does (`lotus_failure_hold` answering 0), and
+ * shutdown never drops one. The owner's reclaim of a child waits for
+ * the child's posted delivery (`lotus_failure_defer_reclaim`), the run
+ * hold's twin.
+ *
+ * Every field below is under `g_params_open_lock`. wasm32 has one thread
+ * and no domain: the in-place call is the only delivery there, and none
+ * of this is compiled (no timed wait, no thread key in its shim). */
+#ifndef __wasm__
+
+enum { LOTUS_DOMAIN_MAIN = 0, LOTUS_DOMAIN_POOL = 1, LOTUS_DOMAIN_THREAD = 2 };
+
+struct lotus_domain {
+    struct lotus_domain *next;          /* g_domains */
+    pthread_t            thread;
+    int                  kind;
+    lotus_coop_pool_t   *pool;          /* a pool's worker: its queue */
+    lotus_mailbox_t     *mailbox;       /* a locus's thread: its mailbox, if any */
+    int                  alive;         /* the thread still consumes */
+    int                  pending;       /* posted deliveries not yet claimed */
+    int                  refs;          /* posters still naming it */
+};
+
+static lotus_domain_t *g_domains = NULL;
+static __thread lotus_domain_t *t_domain = NULL;
+static __thread int t_failure_servicing = 0;
+static int64_t g_failure_posted_count = 0;      /* every domain's pending */
+static pthread_t g_main_thread;
+static pthread_key_t g_domain_key;
+static pthread_once_t g_domain_key_once = PTHREAD_ONCE_INIT;
+
+/* The process's first thread, the program's main. */
+__attribute__((constructor))
+static void lotus_domain_note_main(void) {
+    g_main_thread = pthread_self();
+}
+
+static void lotus_domain_end_locked(lotus_domain_t *d) {
+    d->alive = 0;
+    pthread_cond_broadcast(&g_held_delivered);
+}
+
+/* The key's destructor: a locus's thread is ending. */
+static void lotus_domain_thread_exit(void *arg) {
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_end_locked((lotus_domain_t *)arg);
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+static void lotus_domain_key_create(void) {
+    if (pthread_key_create(&g_domain_key, lotus_domain_thread_exit) != 0) {
+        fprintf(stderr, "lotus: creating the domain key failed\n");
+        abort();
+    }
+}
+
+static lotus_domain_t *lotus_domain_new_locked(int kind, pthread_t thread) {
+    lotus_domain_t *d = calloc(1, sizeof *d);
+    if (!d) lotus_held_oom("recording a domain");
+    d->thread = thread;
+    d->kind = kind;
+    d->alive = 1;
+    d->next = g_domains;
+    g_domains = d;
+    return d;
+}
+
+/* This thread's domain, made on first use. */
+static lotus_domain_t *lotus_domain_here_locked(void) {
+    if (t_domain) return t_domain;
+    if (g_current_pool_tls && g_current_pool_tls->domain) {
+        t_domain = (lotus_domain_t *)g_current_pool_tls->domain;
+        return t_domain;
+    }
+    pthread_t self = pthread_self();
+    int is_main = pthread_equal(self, g_main_thread);
+    lotus_domain_t *d = lotus_domain_new_locked(
+        is_main ? LOTUS_DOMAIN_MAIN : LOTUS_DOMAIN_THREAD, self);
+    if (!is_main) {
+        d->mailbox = g_current_pinned_mailbox;
+        pthread_once(&g_domain_key_once, lotus_domain_key_create);
+        pthread_setspecific(g_domain_key, d);
+    }
+    t_domain = d;
+    return d;
+}
+
+static void lotus_failure_domain_enter(void) {
+    pthread_mutex_lock(&g_params_open_lock);
+    (void)lotus_domain_here_locked();
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* ---- owner → domain ----------------------------------------------- */
+
+typedef struct lotus_owner_domain {
+    void                      *owner;
+    lotus_domain_t            *domain;
+    struct lotus_owner_domain *next;
+} lotus_owner_domain_t;
+
+#define LOTUS_OWNER_BUCKETS 256
+static lotus_owner_domain_t *g_owner_domains[LOTUS_OWNER_BUCKETS];
+static int64_t g_owner_domain_count = 0;
+
+static lotus_owner_domain_t **lotus_owner_slot_locked(const void *owner) {
+    uint64_t h = ((uint64_t)(uintptr_t)owner >> 4) * 0x9E3779B97F4A7C15ull;
+    lotus_owner_domain_t **pp = &g_owner_domains[(h >> 56) & (LOTUS_OWNER_BUCKETS - 1)];
+    while (*pp && (*pp)->owner != owner) pp = &(*pp)->next;
+    return pp;
+}
+
+static void lotus_failure_owner_note_locked(void *owner) {
+    if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)) return;
+    lotus_domain_t *d = lotus_domain_here_locked();
+    lotus_owner_domain_t **pp = lotus_owner_slot_locked(owner);
+    if (*pp) {
+        (*pp)->domain = d;            /* storage reused by a new owner */
+        return;
+    }
+    lotus_owner_domain_t *e = malloc(sizeof *e);
+    if (!e) lotus_held_oom("recording an owner's domain");
+    *e = (lotus_owner_domain_t){ owner, d, NULL };
+    *pp = e;
+    __atomic_add_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+}
+
+/* An owner's reclaim: it receives no failure after this. */
+static void lotus_failure_owner_forget(void *owner) {
+    if (__atomic_load_n(&g_owner_domain_count, __ATOMIC_ACQUIRE) == 0) return;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_owner_domain_t **pp = lotus_owner_slot_locked(owner);
+    if (*pp) {
+        lotus_owner_domain_t *e = *pp;
+        *pp = e->next;
+        free(e);
+        __atomic_sub_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* A domain about to be freed: no owner names it any more. */
+static void lotus_owner_purge_locked(const lotus_domain_t *d) {
+    for (size_t b = 0; b < LOTUS_OWNER_BUCKETS; b++) {
+        lotus_owner_domain_t **pp = &g_owner_domains[b];
+        while (*pp) {
+            if ((*pp)->domain != d) {
+                pp = &(*pp)->next;
+                continue;
+            }
+            lotus_owner_domain_t *e = *pp;
+            *pp = e->next;
+            free(e);
+            __atomic_sub_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+        }
+    }
+}
+
+/* ---- delivery ------------------------------------------------------- */
+
+/* One slice of a wait on `g_held_delivered`, the lock held: up to 1 ms,
+ * or until a post, a delivery or a domain's end broadcasts. */
+static void lotus_held_wait_slice_locked(void) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += 1000000;
+    if (until.tv_nsec >= 1000000000L) {
+        until.tv_sec++;
+        until.tv_nsec -= 1000000000L;
+    }
+    pthread_cond_timedwait(&g_held_delivered, &g_params_open_lock, &until);
+}
+
+/* Claim a posted delivery for this thread, the lock held. */
+static void lotus_failure_claim_locked(lotus_held_failure_t *n) {
+    n->state = LOTUS_DELIVERING;
+    n->deliverer = pthread_self();
+    n->posted->pending--;
+    __atomic_sub_fetch(&g_failure_posted_count, 1, __ATOMIC_RELEASE);
+}
+
+/* Run a claimed delivery's handler here, unlocked; then it is delivered
+ * and its poster resumes. A reclaim its own handler asked for runs after
+ * the handler, once every other waiter has resumed (they read the node,
+ * the poster the child). `self_waiting`: this thread is one of the
+ * waiters (it ran a delivery whose domain had ended), and keeps its
+ * reference. */
+static void lotus_failure_deliver_posted(lotus_held_failure_t *n, int self_waiting) {
+#ifdef LOTUS_LIFECYCLE_TRACE
+    lotus_lc_ev("FailureDelivery", "Entered", n->child, "-", NULL);
+#endif
+    n->fn(n->parent, n->child, n->err);
+#ifdef LOTUS_LIFECYCLE_TRACE
+    lotus_lc_ev("FailureDelivery", "Completed", n->child, "-", NULL);
+#endif
+    pthread_mutex_lock(&g_params_open_lock);
+    void *err = n->err;
+    void *child = n->child;
+    void (*reclaim)(void *) = n->reclaim;
+    n->err = NULL;
+    n->state = LOTUS_DELIVERED;
+    lotus_held_unlink(n);
+    __atomic_sub_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&g_held_delivered);
+    if (reclaim) {
+        if (!self_waiting) n->waiters++;
+        while (n->waiters > 1) lotus_held_wait_slice_locked();
+        if (!self_waiting) free(n);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+    free(err);
+    if (reclaim) reclaim(child);
+}
+
+static void lotus_failure_service_here(void) {
+    if (__atomic_load_n(&g_failure_posted_count, __ATOMIC_ACQUIRE) == 0) return;
+    lotus_domain_t *d = t_domain;
+    if (!d || t_failure_servicing) return;
+    t_failure_servicing = 1;
+    for (;;) {
+        pthread_mutex_lock(&g_params_open_lock);
+        lotus_held_failure_t *n = g_held_head;
+        while (n && !(n->posted == d && n->state == LOTUS_HELD)) n = n->next;
+        if (!n) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            break;
+        }
+        lotus_failure_claim_locked(n);
+        pthread_mutex_unlock(&g_params_open_lock);
+        lotus_failure_deliver_posted(n, 0);
+    }
+    t_failure_servicing = 0;
+}
+
+/* A yield: where it runs its queue's cells. Not on a pool's worker
+ * outside a root's init (its cells are atomic, and a yield there drains
+ * nothing), nor inside a handler of main's queue (whose drain is not
+ * re-entered). */
+static void lotus_failure_service_at_yield(void) {
+    if (g_current_pool_tls && !g_pool_init_on) return;
+    if (g_bus_drain_active) return;
+    lotus_failure_service_here();
+}
+
+/* A wait elsewhere in the failure protocol, the lock held: a delivery
+ * posted to this thread's domain runs, unlocked. */
+static void lotus_failure_await_service_locked(void) {
+    lotus_domain_t *d = t_domain;
+    if (!d || d->pending == 0 || t_failure_servicing) return;
+    pthread_mutex_unlock(&g_params_open_lock);
+    lotus_failure_service_here();
+    pthread_mutex_lock(&g_params_open_lock);
+}
+
+/* A wake cell's handler: run what is posted to this domain. */
+static void lotus_failure_service_cell(void *self_ptr, void *payload) {
+    (void)self_ptr;
+    (void)payload;
+    lotus_failure_service_here();
+}
+
+/* Wake a domain that may be parked on its queue, without blocking: a
+ * full queue means a consumer that is not parked, which services between
+ * cells. Main is never parked on its queue; it, and every join and wait,
+ * is woken by the post's broadcast. */
+static void lotus_domain_wake(lotus_domain_t *d) {
+    lotus_bus_cell_t cell;
+    memset(&cell, 0, offsetof(lotus_bus_cell_t, payload_inline));
+    cell.handler = (void *)lotus_failure_service_cell;
+    if (d->kind == LOTUS_DOMAIN_POOL && d->pool) {
+        if (lotus_mpsc_ring_try_enqueue(&d->pool->ring, &cell))
+            lotus_coop_pool_wake_consumer(d->pool);
+    } else if (d->kind == LOTUS_DOMAIN_THREAD && d->mailbox) {
+        lotus_mailbox_t *mb = d->mailbox;
+        if (lotus_mpsc_ring_try_enqueue(&mb->ring, &cell)) {
+            atomic_thread_fence(memory_order_seq_cst);
+            if (atomic_load_explicit(&mb->parked, memory_order_seq_cst)) {
+                pthread_mutex_lock(&mb->lock);
+                pthread_cond_signal(&mb->not_empty);
+                pthread_mutex_unlock(&mb->lock);
+            }
+        }
+    }
+}
+
+/* Wait, the lock held, until the posted delivery `n` has been
+ * delivered, servicing this thread as a yield on it would: an async
+ * pool's coroutine parks, so its worker runs its other cells; elsewhere
+ * 1 ms slices, between which main's queue and this thread's mailbox
+ * drain (no-ops off their threads). A delivery whose domain has ended is
+ * run here. */
+static void lotus_failure_wait_locked(lotus_held_failure_t *n) {
+    while (n->state != LOTUS_DELIVERED) {
+        if (n->state == LOTUS_HELD && !n->posted->alive) {
+            lotus_failure_claim_locked(n);
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_failure_deliver_posted(n, 1);
+            pthread_mutex_lock(&g_params_open_lock);
+            continue;
+        }
+        if (lotus_pool_start_pending_here()) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_pool_start_run_pending();
+            pthread_mutex_lock(&g_params_open_lock);
+            continue;
+        }
+        lotus_domain_t *here = t_domain;
+        if (here && here->pending > 0 && !t_failure_servicing) {
+            lotus_failure_await_service_locked();
+            continue;
+        }
+        pthread_mutex_unlock(&g_params_open_lock);
+        if (!lotus_time_sleep_park_try(1000000)) {
+            pthread_mutex_lock(&g_params_open_lock);
+            if (n->state != LOTUS_DELIVERED) lotus_held_wait_slice_locked();
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_bus_queue_drain(g_bus_queue_for_remote);
+            lotus_mailbox_drain_pending(lotus_mailbox_get_current());
+        }
+        pthread_mutex_lock(&g_params_open_lock);
+    }
+}
+
+/* `lotus_failure_defer_reclaim`'s wait, the lock held: 0 once the
+ * posted delivery has been delivered and its poster has resumed; 1 when
+ * the caller is that delivery's own handler, whose reclaim is deferred
+ * behind it. */
+static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
+    if (n->state == LOTUS_DELIVERING && pthread_equal(n->deliverer, pthread_self()))
+        return 1;
+    n->waiters++;
+    lotus_failure_wait_locked(n);
+    while (n->waiters > 1) lotus_held_wait_slice_locked();
+    if (--n->waiters == 0) free(n);
+    return 0;
+}
+
+/* The delivery's hold on its child, the run hold's twin (decision line
+ * 19): a failure posted from a pool worker's cell holds the child until
+ * that cell returns, so the owner's reclaim, which waits for the child's
+ * holds (`lotus_run_hold_wait`), never releases the child under the rest
+ * of the cell: what follows the handler's decision, the tick closures
+ * after a handler (C40), the cell's scratch region. A run's cell holds
+ * its child already. Taken linked and held under one lock, so no cancel
+ * sees it unheld; released where the cell's run hold would be (the
+ * dispatch, or the coroutine's release). A pinned thread needs none:
+ * its owner reclaims it after joining the thread. */
+static void lotus_failure_hold_cell(void *child) {
+    if (!g_current_pool_tls || lotus_run_hold_own()) return;
+    lotus_run_ticket_t *t = (lotus_run_ticket_t *)malloc(sizeof *t);
+    if (!t) lotus_held_oom("holding a posted failure's child");
+    *t = (lotus_run_ticket_t){ child, 0, 1, (void *)g_current_pool_tls, NULL, NULL };
+    pthread_mutex_lock(&g_run_tickets_lock);
+    size_t b = lotus_run_ticket_bucket(child);
+    t->next = g_run_tickets[b];
+    if (t->next) t->next->prev = t;
+    g_run_tickets[b] = t;
+    __atomic_add_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+#if LOTUS_HAVE_ASYNC_IO
+    if (g_current_coro_tls) {
+        g_current_coro_tls->run_ticket = t;
+        return;
+    }
+#endif
+    t_run_running = t;
+}
+
+/* The compiled delivery's question, after `lotus_failure_hold` answered
+ * 0 (or for a failure that is never held): 0 = call the handler in
+ * place, this thread being the owner's domain (or the owner having none:
+ * a single-threaded program, a domain that has ended); 1 = the delivery
+ * was posted to the owner's domain and its handler has returned. */
+int64_t lotus_failure_post(void *parent, void *fn, void *child,
+                           const void *err, int64_t err_size) {
+    if (!parent || __atomic_load_n(&g_owner_domain_count, __ATOMIC_ACQUIRE) == 0)
+        return 0;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_owner_domain_t *e = *lotus_owner_slot_locked(parent);
+    lotus_domain_t *d = e ? e->domain : NULL;
+    if (!d || !d->alive || d == lotus_domain_here_locked()) {
+        pthread_mutex_unlock(&g_params_open_lock);
+        return 0;
+    }
+    /* Lock order: `g_params_open_lock`, then `g_run_tickets_lock`. */
+    lotus_failure_hold_cell(child);
+    lotus_held_failure_t *n = calloc(1, sizeof *n);
+    void *copy = malloc(err_size > 0 ? (size_t)err_size : 1);
+    if (!n || !copy) lotus_held_oom("posting a failure");
+    if (err_size > 0) memcpy(copy, err, (size_t)err_size);
+    n->parent = parent;
+    n->opener = d->thread;
+    n->fn = (lotus_failure_fn)fn;
+    n->child = child;
+    n->err = copy;
+    n->state = LOTUS_HELD;
+    n->posted = d;
+    n->waiters = 1;                     /* this thread, until it resumes */
+    if (g_held_tail) g_held_tail->next = n; else g_held_head = n;
+    g_held_tail = n;
+    __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
+    d->pending++;
+    d->refs++;
+    __atomic_add_fetch(&g_failure_posted_count, 1, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&g_held_delivered);
+    pthread_mutex_unlock(&g_params_open_lock);
+    lotus_domain_wake(d);
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_failure_wait_locked(n);
+    d->refs--;
+    pthread_cond_broadcast(&g_held_delivered);
+    if (--n->waiters == 0) free(n);
+    pthread_mutex_unlock(&g_params_open_lock);
+    return 1;
+}
+
+/* A join's wait for a domain's end (join progress): the deliveries
+ * posted to this thread run, nothing else; then no poster names it. */
+static void lotus_domain_join_wait(lotus_domain_t *d) {
+    pthread_mutex_lock(&g_params_open_lock);
+    while (d->alive || d->refs > 0) {
+        lotus_domain_t *here = t_domain;
+        if (here && here->pending > 0 && !t_failure_servicing) {
+            lotus_failure_await_service_locked();
+            continue;
+        }
+        lotus_held_wait_slice_locked();
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* A pool's worker: its domain, made before the worker starts and ended
+ * when it leaves its loop (or never started). Never freed: a pool's
+ * worker is joined once per start, and the count is bounded by them. */
+static void lotus_domain_pool_begin(lotus_coop_pool_t *p) {
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = lotus_domain_new_locked(LOTUS_DOMAIN_POOL, pthread_self());
+    d->pool = p;
+    p->domain = d;
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+static void lotus_domain_pool_started(lotus_coop_pool_t *p) {
+    pthread_mutex_lock(&g_params_open_lock);
+    ((lotus_domain_t *)p->domain)->thread = p->worker;
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+static void lotus_domain_pool_enter(lotus_coop_pool_t *p) {
+    t_domain = (lotus_domain_t *)p->domain;
+}
+
+static void lotus_domain_pool_end(lotus_coop_pool_t *p) {
+    if (!p->domain) return;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_end_locked((lotus_domain_t *)p->domain);
+    pthread_mutex_unlock(&g_params_open_lock);
+    if (t_domain == p->domain) t_domain = NULL;
+}
+
+static void lotus_domain_pool_join_wait(lotus_coop_pool_t *p) {
+    if (p->domain) lotus_domain_join_wait((lotus_domain_t *)p->domain);
+}
+
+/* A pinned entry's join (C18): its thread's end, servicing the failures
+ * it (or anything else) posts to this thread meanwhile, then
+ * `pthread_join`, then its domain is freed. */
+void lotus_pinned_join(int64_t tid) {
+    pthread_t t = (pthread_t)(uintptr_t)tid;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = g_domains;
+    while (d && !(d->kind == LOTUS_DOMAIN_THREAD && pthread_equal(d->thread, t)))
+        d = d->next;
+    pthread_mutex_unlock(&g_params_open_lock);
+    if (d) lotus_domain_join_wait(d);
+    pthread_join(t, NULL);
+    if (!d) return;
+    pthread_mutex_lock(&g_params_open_lock);
+    for (lotus_domain_t **pp = &g_domains; *pp; pp = &(*pp)->next) {
+        if (*pp == d) {
+            *pp = d->next;
+            break;
+        }
+    }
+    lotus_owner_purge_locked(d);
+    pthread_mutex_unlock(&g_params_open_lock);
+    free(d);
+}
+
+#else /* __wasm__ */
+static void lotus_domain_pool_begin(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_started(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_enter(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_end(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_join_wait(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_failure_owner_note_locked(void *owner) { (void)owner; }
+static void lotus_failure_owner_forget(void *owner) { (void)owner; }
+static void lotus_failure_service_here(void) {}
+static void lotus_failure_service_at_yield(void) {}
+static void lotus_failure_await_service_locked(void) {}
+static void lotus_failure_domain_enter(void) {}
+static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
+    (void)n;
+    return 1;
+}
+int64_t lotus_failure_post(void *parent, void *fn, void *child,
+                           const void *err, int64_t err_size) {
+    (void)parent; (void)fn; (void)child; (void)err; (void)err_size;
+    return 0;
+}
+void lotus_pinned_join(int64_t tid) {
+    (void)tid;
+    fprintf(stderr, "lotus: a pinned locus cannot be joined on wasm32 (no threads)\n");
+    abort();
+}
+#endif /* __wasm__ */
 
 /* Enable async_io mode for a pool: opens an epoll fd. Idempotent;
  * safe to call before or after the worker thread starts (the worker
@@ -10572,6 +11186,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         t_run_running = hold;
         ((lotus_handler_fn)cell_copy->handler)(
             cell_copy->self_ptr, payload_ptr);
+        hold = t_run_running;   /* or a posted failure's (L0-1) */
         t_run_running = outer;
         p->running_label = NULL;
         lotus_run_hold_release(hold);
@@ -11349,6 +11964,7 @@ void lotus_drain_observer_add(int64_t delta, const char *label) {
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;
     g_current_pool_tls = p;
+    lotus_domain_pool_enter(p);
     /* GH #296: stable consumer identity — 16 + registration index
      * (registration order is program structure, so it survives a
      * re-run; the pthread id does not). */
@@ -11367,6 +11983,9 @@ static void *lotus_coop_pool_worker(void *arg) {
     while (1) {
         int async = __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE);
         int progressed;
+        /* Decision L0-1: failures posted to this worker's domain run
+         * between cells (a wake cell reaches a parked worker). */
+        lotus_failure_service_here();
 #if LOTUS_HAVE_ASYNC_IO
         if (async) {
             progressed = lotus_coop_pool_drain_one_async(p);
@@ -11381,6 +12000,10 @@ static void *lotus_coop_pool_worker(void *arg) {
 #endif
         if (!progressed) break;
     }
+    /* The worker's domain ends: what was posted to it runs here, and a
+     * later post runs where it is raised. */
+    lotus_failure_service_here();
+    lotus_domain_pool_end(p);
     g_current_pool_tls = NULL;
     return NULL;
 }
@@ -11405,8 +12028,14 @@ void lotus_coop_pool_start_all(void) {
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (p->worker_started) continue;
+        /* The worker's domain exists before the worker, so the pool
+         * join can wait for its end (decision L0-1). */
+        lotus_domain_pool_begin(p);
         if (pthread_create(&p->worker, NULL,
-                           lotus_coop_pool_worker, p) == 0) {
+                           lotus_coop_pool_worker, p) != 0) {
+            lotus_domain_pool_end(p);
+        } else {
+            lotus_domain_pool_started(p);
             p->worker_started = 1;
             /* Pool affinity (2026-08-12): bind the worker thread to
              * the stashed core set, best-effort. */
@@ -11483,9 +12112,13 @@ void lotus_coop_pool_shutdown_all(void) {
 #endif
         }
     }
+    /* Join progress (decision L0-1): a worker's child may post a failure
+     * to this thread while it is joined; each wait runs those, and only
+     * those, until the worker's domain has ended. */
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (!p->worker_started) continue;
+        lotus_domain_pool_join_wait(p);
         pthread_join(p->worker, NULL);
         p->worker_started = 0;
     }

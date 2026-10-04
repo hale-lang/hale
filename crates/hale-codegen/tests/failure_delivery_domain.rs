@@ -49,16 +49,13 @@ const ADOPTED: &[(&str, &str)] = &[
 ];
 
 /// What each fixture gives today, where it differs: (fixture, inventory
-/// row, today's word).
-const KNOWN_OPEN: &[(&str, &str, &str)] = &[
-    // The handler runs in place on the pinned thread, beside the owner's
-    // own code in its window.
-    ("fd_pinned_owner_state.hl", "C36", "changed-in-window off-owner heard-1"),
-    // The handler runs in place on the pool's worker, and the owner's
-    // replacement reclaims the old child under it: the old child
-    // dissolves first, and the handler then reads its freed name.
-    ("fd_reclaim_under_delivery.hl", "C36", "off-owner read-after-dissolve dissolved-once-each"),
-];
+/// row, today's word). Empty since the protocol landed: before it, the
+/// handler ran in place on the pinned thread, beside the owner's own code
+/// in its window (`changed-in-window off-owner heard-1`), and on the
+/// pool's worker while the owner's replacement reclaimed the old child
+/// under it (`off-owner read-after-dissolve dissolved-once-each`, a
+/// heap-use-after-free under ASan).
+const KNOWN_OPEN: &[(&str, &str, &str)] = &[];
 
 struct Ran {
     stdout: String,
@@ -298,16 +295,20 @@ fn an_owner_never_reclaims_a_child_under_its_failure_delivery() {
     assert_traced("fd_reclaim_under_delivery.hl");
 }
 
-/// Today's reclaim frees the old child's arena under the running
-/// handler: AddressSanitizer, with chunk pooling off (GH #816), names
-/// the heap-use-after-free.
+/// Both fixtures under AddressSanitizer, with chunk pooling off (GH
+/// #816), in both dispatch modes: the adopted word and nothing reported.
+/// Before the protocol, the reclaim fixture's handler read the old
+/// child's freed arena (a heap-use-after-free).
 #[test]
-fn the_reclaim_under_a_delivery_is_a_use_after_free_today() {
-    let file = "fd_reclaim_under_delivery.hl";
-    let bin = build(file, true, false);
-    let ran = run_bin(&bin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
-    let _ = std::fs::remove_file(&bin);
-    let hits = sanitizer_hits(&ran);
-    eprintln!("{file} under ASan: {hits:?}\n{}", report(&ran));
-    assert!(hits.contains(&"heap-use-after-free"), "{file} under ASan no longer reports today's use-after-free\n{}", report(&ran));
+fn both_fixtures_hold_under_asan_in_both_dispatch_modes() {
+    for (file, _) in ADOPTED {
+        for no_bus_devirt in [false, true] {
+            let bin = build(file, true, no_bus_devirt);
+            let ran = run_bin(&bin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let _ = std::fs::remove_file(&bin);
+            let hits = sanitizer_hits(&ran);
+            assert!(hits.is_empty(), "{file}, no_bus_devirt={no_bus_devirt}: {hits:?}\n{}", report(&ran));
+            assert_eq!(judge(file, &ran), adopted(file), "{file} under ASan, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
+        }
+    }
 }

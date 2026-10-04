@@ -6405,17 +6405,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_load(i64_t, tid_slot, "pinned.tid")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let null_retval = ptr_t.const_null();
-        let join_fn = self
-            .module
-            .get_function("pthread_join")
-            .expect("pthread_join declared");
+        // Join progress (decision L0-1): the joining thread runs the
+        // failures posted to it while it waits for the thread's end, then
+        // `pthread_join`s it (`lotus_pinned_join`). Declared here, at its
+        // one use.
+        let join_fn = self.module.get_function("lotus_pinned_join").unwrap_or_else(|| {
+            self.module.add_function("lotus_pinned_join", self.context.void_type().fn_type(&[i64_t.into()], false), None)
+        });
         self.builder
-            .build_call(
-                join_fn,
-                &[tid.into(), null_retval.into()],
-                &format!("{}.pthread_join", locus_name),
-            )
+            .build_call(join_fn, &[tid.into()], &format!("{}.pinned_join", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         // After join, destroy the mailbox.
         if let Some(mb_idx) = info.mailbox_field_idx {
@@ -25507,8 +25505,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn emit_pinned_mailbox_drain_pending(&mut self) -> Result<(), CodegenError> {
         // Static drain elision: a pinned mailbox only ever holds
         // subscriber-dispatch or accept-handoff cells; an inert
-        // bundle has neither. See `Cx::bus_inert`.
-        if self.bus_inert {
+        // bundle has neither. See `Cx::bus_inert`. A bundle with a
+        // thread besides main keeps the call even so: the yield is
+        // also where this thread runs a failure posted to it (decision
+        // L0-1, `lotus_mailbox_drain_pending`).
+        if self.bus_inert && !self.program_has_offthread {
             return Ok(());
         }
         let get_current_fn = self
