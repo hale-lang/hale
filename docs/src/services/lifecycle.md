@@ -497,6 +497,9 @@ so nothing tears it down twice. The rules that order gives you:
   own sends included, waits and is delivered afterwards, in order.
 - **A pinned locus checks its birth on its own thread.** Its
   `birth_check` runs there, after `birth()` and before `run()`.
+- **A field inherits its owner's pool.** A locus field inside a
+  field placed on a cooperative pool runs its `run()` on that pool,
+  as its owner does.
 - **A failure is a `ClosureViolation`, delivered when it happens.**
   A failing birth closure, `birth_check`, `violate` or closure
   reaches the parent's `on_failure` at that moment, not at the
@@ -504,6 +507,11 @@ so nothing tears it down twice. The rules that order gives you:
   params the failure is held and delivered once they are all set,
   before the parent's `birth()`. The failed child stays readable in
   the handler, and `restart` reuses it.
+- **Fields drain first, in declaration order.** A locus's own locus
+  fields drain before it does, one after another in the order they
+  are declared, each after its own fields; a pinned locus's on its
+  thread, and a field typed by an interface or a perspective like
+  any other. Each is dissolved after its owner's `dissolve()`.
 - **Dissolve-epoch closures run before `dissolve()`.** A violation
   there reaches the parent before your cleanup runs.
 - **Replacing a field dissolves the old child before creating the new
@@ -525,19 +533,18 @@ A few rules are decided and not yet true of every program;
 the compiler's test suite carries a program that shows today's
 behaviour until it changes:
 
-- a pinned locus's own locus fields are not drained, only
-  dissolved;
-- a field typed by an interface or a perspective is drained after
-  its owner's `dissolve()`, not before its owner's `drain()`;
-- a locus field inside a field placed on a pool runs its `run()` on
-  the thread that built it, not on that pool;
 - a restart asked for while `main`'s exit is already joining the
   pools still runs;
 - a pool-placed publisher waiting in `or wait` on a queue only
   `main` drains holds the exit forever;
 - a dissolve-epoch violation of a flow child, or of a field torn
   down from `fn main`, ends the process instead of reaching the
-  parent's handler.
+  parent's handler;
+- a subscribing locus that only stdlib or imported code builds hears
+  what is published to it during its `birth()` at once, not after;
+- a `birth()` that publishes to its own topic without bound keeps
+  every message waiting until memory runs out (whether such a birth
+  meets a bound or a refusal is not decided).
 
 The lifecycle is the skeleton of every long-running Hale program.
 Next, the thing those programs use to talk to each other: [The

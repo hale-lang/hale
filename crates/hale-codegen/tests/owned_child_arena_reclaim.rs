@@ -303,7 +303,7 @@ fn a_designated_perspective_impl_is_reclaimed_with_its_holder() {
 /// process.
 ///
 /// The impl's name is what closes it: the factory DECLARES it, so
-/// the instantiation can write `__reclaim_<Impl>` into the slot
+/// the instantiation can write the impl's teardown pair into the slot
 /// exactly as a literal init does.
 const FACTORY_TREE: &str = r#"
     type Row { v: Int = 0; }
@@ -372,15 +372,15 @@ fn a_factory_built_interface_child_is_reclaimed_with_its_owner() {
     );
     // Exact, because a missing teardown is silence and a double one
     // is the same line twice. Reverse-order flush over the two
-    // bindings; within each, the owner's own `dissolve()` body runs
-    // before its cascade, and a contract child's whole spine — drain
-    // included — runs at that one point (it is not split the way a
-    // `LocusRef` field's is, whose type IS known at the first).
+    // bindings; within each, the contract child drains before its
+    // owner's drain, like a `LocusRef` field (line 12, C32), then the
+    // owner's own `dissolve()` body runs before its cascade dissolves
+    // the child.
     assert_eq!(
         out,
         "t=1\nu=1\ndone\n\
-         queries dissolved\nchurner drained\nchurner dissolved\n\
-         queries dissolved\nchurner drained\nchurner dissolved\n",
+         churner drained\nqueries dissolved\nchurner dissolved\n\
+         churner drained\nqueries dissolved\nchurner dissolved\n",
         "a factory-built interface child must be reclaimed by the \
          owner it was built into, once, in either spelling"
     );
@@ -389,8 +389,8 @@ fn a_factory_built_interface_child_is_reclaimed_with_its_owner() {
 /// The ctor-override shape (`65-perspective-ctor-override`'s twin
 /// for an interface slot): the factory returns an impl that is NOT
 /// the one the param's default literal names. The reclaim is chosen
-/// per instantiation, so the slot has to carry `__reclaim_Tally` and
-/// not the declared default's `__reclaim_Churner` — the wrong one
+/// per instantiation, so the slot has to carry `Tally`'s teardown pair
+/// and not the declared default's `Churner`'s — the wrong one
 /// would run a teardown spine for a `Rows` child that was never
 /// built.
 #[test]
@@ -435,8 +435,8 @@ fn a_factory_interface_param_default_dissolves_with_its_owner() {
     );
     assert_eq!(
         out,
-        "t=1\ndone\ndefaulted dissolved\n\
-         churner drained\nchurner dissolved\n",
+        "t=1\ndone\nchurner drained\n\
+         defaulted dissolved\nchurner dissolved\n",
         "a contract param whose DEFAULT is a factory call must be \
          reclaimed by the owner it defaulted into"
     );

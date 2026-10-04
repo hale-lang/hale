@@ -47,3 +47,5 @@ mod pool_affinity;
 mod typed_body_rows;
 #[path = "reclaim_cancel_ir.rs"]
 mod reclaim_cancel_ir;
+#[path = "reclaim_spine_ir.rs"]
+mod reclaim_spine_ir;

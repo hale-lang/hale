@@ -16,7 +16,7 @@ use hale_types::lifecycle::{
     DomainRole, FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
     Spine, Status, Template, Terminal, DECISION_LINES,
 };
-use hale_types::lifecycle::spine::BIRTH_KINDS;
+use hale_types::lifecycle::spine::{BIRTH_KINDS, CASCADE_STEPS, RECLAIM_STEPS};
 use hale_types::placement::{Bound, DomainKind, SiteUniverse};
 
 fn snapshot(src: &str) -> Snapshot {
@@ -161,7 +161,8 @@ fn the_plans_laws_hold_over_the_corpus() {
 /// The emitters' reader (L4) over every corpus program: each template's
 /// birth spine follows its entry edges, and a declaration's templates
 /// agree on the order of the birth kinds they share, so an emitter
-/// lowering one literal of the declaration reads one order.
+/// lowering one literal of the declaration reads one order; and every
+/// declaration reads one order of its reclaim's steps.
 #[test]
 fn every_declaration_reads_one_birth_order_over_the_corpus() {
     let mut decls = 0;
@@ -200,6 +201,23 @@ fn every_declaration_reads_one_birth_order_over_the_corpus() {
             if let Err(e) = plan.birth_order(name, &kinds) {
                 broken.push(format!("{}: {e}", p.origin));
             }
+            // The reclaim's steps: one order per declaration, the
+            // producer's (the emitter refuses any other it cannot emit).
+            match plan.reclaim_order(name) {
+                Ok(order) if order != RECLAIM_STEPS => {
+                    broken.push(format!("{}: {name}: the reclaim order {order:?} departs from RECLAIM_STEPS", p.origin))
+                }
+                Ok(_) => {}
+                Err(e) => broken.push(format!("{}: {e}", p.origin)),
+            }
+            // And the cascade's, the one the dissolve cascade emits.
+            match plan.cascade_order(name) {
+                Ok(order) if order != CASCADE_STEPS => {
+                    broken.push(format!("{}: {name}: the cascade order {order:?} departs from CASCADE_STEPS", p.origin))
+                }
+                Ok(_) => {}
+                Err(e) => broken.push(format!("{}: {e}", p.origin)),
+            }
         }
     }
     assert!(decls > 100, "the corpus shrank to {decls} declarations");
@@ -230,6 +248,62 @@ fn the_reader_orders_each_spine_by_the_plans_edges() {
     assert_eq!(p.birth_order("NoSuchLocus", &[K::Run, K::Birth]).expect("ordered by every template"), [K::Birth, K::Run]);
     // No template of this plan subscribes: the producer's order.
     assert_eq!(p.birth_order("NoSuchLocus", &[K::Readiness, K::Birth]).expect("ordered"), [K::Birth, K::Readiness]);
+    // A run queued on the worker that tears its owner down: the path no
+    // failure takes owes no cancellation; the one a shutdown takes owes it
+    // inside the child's reclaim, after the reclaim's entry.
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_queued_run_canceled.hl"));
+    let p = plan(&s);
+    let site = p
+        .templates("Kid")
+        .find(|site| p.shutdown_spine(site, Spine::Cascade).iter().any(|s| s.kind == K::Cancellation))
+        .expect("a Kid template whose reclaim cancels its queued run");
+    let normal: Vec<&str> = p.spine(site, Spine::Cascade).iter().map(|s| s.kind.name()).collect();
+    let shutdown: Vec<&str> = p.shutdown_spine(site, Spine::Cascade).iter().map(|s| s.kind.name()).collect();
+    assert_eq!(normal, ["Drain", "Dissolve", "Reclaim"]);
+    assert_eq!(shutdown, ["Drain", "Dissolve", "Reclaim", "Cancellation"]);
+}
+
+/// Lines 14 and 19, inside one reclaim: the rows order the latch before
+/// the releases (the arena retained until the reclaim completes), the
+/// cancellation after the latch (its entry edge) and before the releases
+/// (the run holds the instance until it ends, and the reclaim completes
+/// only after both), and an owned child's reclaim before its owner's
+/// storage release (the line-14 completion edge). The order the emitters read is those pairs,
+/// whatever template states them.
+#[test]
+fn the_reclaim_order_is_read_from_the_rows() {
+    use hale_types::lifecycle::spine::ReclaimStep as R;
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_queued_run_canceled.hl"));
+    let p = plan(&s);
+    let canceled = p
+        .templates("Kid")
+        .find(|site| p.reclaim_pairs(site).contains(&(R::Latch, R::CancelQueuedRuns)))
+        .expect("a Kid template whose reclaim cancels its queued run");
+    let pairs = p.reclaim_pairs(canceled);
+    for pair in [
+        (R::Latch, R::CancelQueuedRuns),
+        (R::CancelQueuedRuns, R::WaitForRuns),
+        (R::WaitForRuns, R::ReleaseArena),
+        (R::WaitForRuns, R::ReleaseStruct),
+        (R::CancelQueuedRuns, R::ReleaseArena),
+        (R::CancelQueuedRuns, R::ReleaseStruct),
+        (R::Latch, R::ReleaseArena),
+        (R::Latch, R::ReleaseStruct),
+    ] {
+        assert!(pairs.contains(&pair), "{pair:?} not stated by Kid's rows: {pairs:?}");
+    }
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_pinned_fields_drain.hl"));
+    let p = plan(&s);
+    let outer = p.templates("Outer").next().expect("Outer");
+    assert!(p.reclaim_pairs(outer).contains(&(R::Children, R::ReleaseArena)), "a field's reclaim before its owner's release");
+    // Inner has no queued run: its cancellation's place comes from the
+    // other templates, or the producer's order.
+    let inner = p.templates("Inner").next().expect("Inner");
+    assert!(!p.reclaim_pairs(inner).contains(&(R::Latch, R::CancelQueuedRuns)));
+    assert_eq!(
+        p.reclaim_order("Inner").expect("ordered"),
+        [R::Children, R::Latch, R::CancelQueuedRuns, R::WaitForRuns, R::ReleaseArena, R::ReleaseStruct]
+    );
 }
 
 /// Line 1: a child failing while its owner's params are open has its
@@ -260,7 +334,8 @@ fn a_held_failure_is_delivered_at_settle_before_the_owners_birth() {
 }
 
 /// Lines 12 and 17: a pinned locus runs on its own thread, owes its
-/// join, and its own fields are owed a drain the code never runs (C9).
+/// join, and its own fields drain on that thread before it does (C9,
+/// shipped by L4's cascade).
 #[test]
 fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_pinned_fields_drain.hl"));
@@ -271,13 +346,27 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert_eq!(one(p, "Inner", K::Birth).holder.spine, Spine::Instantiation, "the field's instantiation runs inside the pinned init");
     assert_eq!(claimed(p, one(p, "Inner", K::Birth)), labels(&["pinned"]));
     let drain = one(p, "Inner", K::Drain);
-    assert_eq!((drain.line, drain.status), (Some("12"), Status::KnownOpen { inventory_row: "C9" }));
+    assert_eq!((drain.line, drain.status), (Some("12"), Status::Shipped));
+    let on = drain.runs_on.as_ref().expect("its owner's thread").one().expect("one pinned domain");
+    assert!(matches!(p.domains[on.0 as usize].kind, DomainKind::Pinned { .. }), "drained on the pinned thread");
     let outer_drain = one(p, "Outer", K::Drain);
-    assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule.status == Status::KnownOpen { inventory_row: "C9" }));
+    assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule == hale_types::lifecycle::Rule::line("12", Status::Shipped)));
+}
+
+/// Line 12 over the instance tree: an owner's fields drain in their
+/// declaration order, and each is torn down before the next is dissolved.
+#[test]
+fn an_owners_fields_are_torn_down_in_declaration_order() {
+    let s = snapshot(
+        "locus Kid { run() { } }\nmain locus App { params { z: Kid = Kid { }; a: Kid = Kid { }; m: Kid = Kid { }; } }\nfn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    assert_eq!(p.cascade_fields("App"), ["z", "a", "m"]);
+    assert_eq!(p.cascade_order("App").expect("ordered"), CASCADE_STEPS);
 }
 
 /// Line 12 for a field typed by an interface: it drains before its
-/// owner, a rule its recorded reclaim does not keep today (C32).
+/// owner, like every owned field (C32, shipped by L4's cascade).
 #[test]
 fn a_contract_typed_field_owes_its_drain_before_its_owners() {
     let s = snapshot(
@@ -291,7 +380,7 @@ fn a_contract_typed_field_owes_its_drain_before_its_owners() {
         .iter()
         .find(|pr| Some(pr.event.obligation.0 as usize) == kid_drain)
         .expect("the owner's drain waits for its field's");
-    assert_eq!((order.rule.line, order.rule.status), (Some("12"), Status::KnownOpen { inventory_row: "C32" }));
+    assert_eq!((order.rule.line, order.rule.status), (Some("12"), Status::Shipped));
 }
 
 /// Line 3: a field nested under a pool-placed field owes its run() to
@@ -653,7 +742,7 @@ fn a_started_run_is_retained_until_reclaim_completes() {
         assert_eq!(rows(p, "Kid", K::Run).len(), 2);
         let subscriber = !rows(p, "App", K::Subscribe).is_empty();
         assert_eq!(one(p, "App", K::Drain).holder.spine,
-                   if subscriber { Spine::DeferredEntry } else { Spine::EagerTeardown });
+                   if subscriber { Spine::DeferredMainEntry } else { Spine::EagerTeardown });
         assert_eq!(p.obligations.iter().any(|o| o.kind == K::PoolJoin && o.holder.spine == Spine::EagerTeardown), !subscriber,
                    "a statement-position subscriber joins at frame exit");
         for reclaim in rows(p, "Kid", K::Reclaim) {
@@ -747,4 +836,18 @@ fn the_main_fall_through_spine_owes_the_wait_abort_before_the_join() {
                 && predecessor.holder.spine == Spine::MainFallThrough
         }), "{decl}'s drain waits for the frame pre-drain");
     }
+}
+
+/// A subscribing main instance uses its deferred main-entry spine;
+/// static posted fields also owe cancellation if reclaimed while queued.
+#[test]
+fn deferred_main_and_cross_pool_cancellation_name_their_spines() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_handler_replaces_started_run.hl"));
+    let p = plan(&s);
+    assert_eq!(one(p, "App", K::Reclaim).holder.spine, Spine::DeferredMainEntry);
+    let canceled = rows(p, "Kid", K::Cancellation);
+    assert!(canceled.iter().any(|o| o.holder.spine == Spine::Cascade && o.guard == PathGuard::DrainInFlight));
+    // Its reclaim happens on main, so the child's worker must not be
+    // asserted as the cancellation's execution domain.
+    assert!(canceled.iter().filter(|o| o.holder.spine == Spine::Cascade).all(|o| o.runs_on.is_none()));
 }

@@ -26092,6 +26092,7 @@ typedef struct {
     uint64_t inst;
     _Atomic uint32_t inc;
     _Atomic int running; /* Run entered and not ended: the parked coro's name */
+    _Atomic(const char *) reclaim_spine; /* survives deferred/coroutine completion */
 } lotus_lc_slot_t;
 
 static lotus_lc_slot_t g_lc_slots[LOTUS_LC_SLOTS];
@@ -26151,6 +26152,7 @@ static lotus_lc_slot_t *lotus_lc_subject(void *self, const char *type) {
                 atomic_store_explicit(&s->type, type, memory_order_relaxed);
                 atomic_store_explicit(&s->inc, 0, memory_order_relaxed);
                 atomic_store_explicit(&s->running, 0, memory_order_relaxed);
+                atomic_store_explicit(&s->reclaim_spine, NULL, memory_order_relaxed);
                 s->inst = __atomic_add_fetch(&g_lc_next_inst, 1,
                                              __ATOMIC_RELAXED);
                 atomic_store_explicit(&s->ready, 1, memory_order_release);
@@ -26230,6 +26232,8 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
     if (s && strcmp(kind, "Run") == 0)
         atomic_store_explicit(&s->running, entered, memory_order_relaxed);
     lotus_lc_emit(kind, point, s, spine);
+    if (s && entered && strcmp(kind, "Reclaim") == 0)
+        atomic_store_explicit(&s->reclaim_spine, spine, memory_order_relaxed);
     if (s && strcmp(kind, "Reclaim") == 0 && strcmp(point, "Completed") == 0)
         __atomic_store_n(&s->key, LOTUS_LC_TOMB, __ATOMIC_RELAXED);
 }
@@ -26251,12 +26255,16 @@ void lotus_lc_parked_abandoned(void *self) {
 /* Decision line 19: a run admitted to a pool's queue whose child is
  * reclaimed before the worker starts it is canceled by that reclaim
  * (`lotus_run_cancel_queued`) and ends NotStarted(Acknowledged), named
- * here while the child is still live. */
+ * here while the child is still live. The cancellation is a step of
+ * that reclaim and carries its spine; the run's end is the posted
+ * run's. */
 void lotus_lc_run_canceled(void *self) {
     lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
-    lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
+    const char *spine = s ? atomic_load_explicit(&s->reclaim_spine, memory_order_relaxed) : NULL;
+    if (!spine) spine = "PoolRun";
+    lotus_lc_emit("Cancellation", "Entered", s, spine);
     lotus_lc_emit("Run", "Terminal(NotStarted(Acknowledged))", s, "PoolRun");
-    lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
+    lotus_lc_emit("Cancellation", "Completed", s, spine);
 }
 
 /* Decision line 19: a run that never starts because its pool is shutting

@@ -286,7 +286,6 @@ const FIXTURES: &[Fixture] = &[
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
 ];
@@ -595,12 +594,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
     ),
     // Late declares no run(), and its resumed incarnation enters one.
     ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
-    // Inner is never drained, so Outer's drain starts without it.
-    (
-        "l12_pinned_fields_drain.hl",
-        "C9",
-        &["missing: Inner.Drain", "edge: Outer.Drain.Entered (inst _ inc 0) with Inner.Drain.Completed not reached"],
-    ),
     ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.
@@ -1682,32 +1675,42 @@ fn assert_fixture(file: &str) {
 
 // ------------------------------------------------------------ spines
 
-/// The spines the law below reads (L4): the five an instance's own steps
-/// are emitted on and the trace names as the plan's holder does.
-const SPINES: &[Spine] = &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown];
+/// The spines the law below reads whole (L4): the six an instance's own
+/// steps are emitted on and the trace names as the plan's holder does.
+const SPINES: &[Spine] =
+    &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown, Spine::Reclaim];
 
-/// Kinds the law leaves to their own spine's reading. The reclaim's
-/// events carry the spine of the frame whose chokepoint runs it (a field's
-/// under its owner's entry, `lc_in_spine_event`), not the reclaim's
-/// holder: the reclaim spine reads the plan in its own L4 commit. A
-/// cancellation exists only on the path a shutdown takes (line 19), not
-/// the one the law reads.
-const NOT_READ: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
+/// Kinds the law reads on every spine: the reclaim, whose events carry
+/// the spine that holds it in the plan (a field's the cascade's, a frame
+/// entry's the frame's, an accepted child's the reclaim spine's), and the
+/// cancellation of a run still queued when its child is reclaimed, which
+/// carries its reclaim's. A cancellation exists only on the path a
+/// shutdown takes (line 19), so a run is held to the plan's sequence on
+/// either path ([`LifecyclePlan::shutdown_spine`]).
+const EVERY_SPINE: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
+
+fn read(spine: Spine, kind: ObligationKind) -> bool {
+    SPINES.contains(&spine) || EVERY_SPINE.contains(&kind)
+}
 
 /// Spines whose emitted steps depart from the plan today, each classified
 /// with the spine whose L4 commit reads it: (file, the departure, why).
 /// Asserted to show, so the entry goes when that spine reads the plan.
 const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
-    (
-        "l19_started_run_publishes_back_async.hl",
-        "Rows@Cascade: emitted [], the plan owes [Drain Dissolve] or [Drain Dissolve]",
-        "C32: the interface-typed field's recorded reclaim emits its drain and dissolve on Reclaim, after its owner's dissolve; the cascade spine remains to be migrated",
-    ),
-    (
-        "l19_handler_replaces_started_run_async.hl",
-        "Rows@Cascade: emitted [], the plan owes [Drain Dissolve] or [Drain Dissolve]",
-        "C32: the interface-typed field's recorded reclaim emits its drain and dissolve on Reclaim, after its owner's dissolve; the cascade spine remains to be migrated",
-    ),
+    ("l19_cross_pool_queued_run_canceled.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim Cancellation], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_started_run_retained.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_started_run_retained_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_started_run_publishes_back.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_started_run_publishes_back_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_handler_replaces_started_run.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_handler_replaces_started_run_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
 ];
 
 /// The emitted step sequence of every instance a run of `file` built, per
@@ -1726,33 +1729,41 @@ fn spine_departures(file: &str) -> Vec<String> {
     let mut emitted: BTreeMap<(String, u64, Spine), Vec<ObligationKind>> = BTreeMap::new();
     for e in &ran.trace.events {
         let (Some(decl), Some(subject), Some(spine)) = (&e.decl, e.subject, e.spine) else { continue };
-        // Every instance the run shows owes each of the five spines a
-        // sequence, empty where the plan owes nothing on it.
-        for s in SPINES {
+        // Every instance the run shows owes each spine a sequence, empty
+        // where the plan owes nothing on it.
+        for s in Spine::ALL {
             emitted.entry((decl.clone(), subject.instance.raw(), *s)).or_default();
         }
         let step = e.point == Point::Entered || matches!(e.point, Point::Terminal(Terminal::NotStarted(_)));
         // A step owed per incarnation is read in the first; one owed per
         // instance in whichever incarnation reaches it.
         let first = subject.incarnation.raw() == 0 || project::trace_multiplicity(e.kind) != Multiplicity::OncePerIncarnation;
-        if !step || !first || !SPINES.contains(&spine) || NOT_READ.contains(&e.kind) {
+        if !step || !first || !read(spine, e.kind) {
             continue;
         }
         emitted.entry((decl.clone(), subject.instance.raw(), spine)).or_default().push(e.kind);
     }
     // The plan's: per template of the declaration, its rows on the spine
-    // the trace records, the known-open ones left to their fixtures.
+    // the trace records, on the path no failure takes and on the one a
+    // shutdown takes, the known-open ones left to their fixtures.
     let owed = |decl: &str, spine: Spine| -> Vec<Vec<ObligationKind>> {
-        plan.templates(decl)
-            .map(|site| {
-                plan.spine(site, spine)
-                    .into_iter()
-                    .filter(|s| project::TRACED.contains(&s.kind) && !NOT_READ.contains(&s.kind))
-                    .filter(|s| !matches!(plan.obligations[s.obligation.0 as usize].status, Status::KnownOpen { .. }))
-                    .map(|s| s.kind)
-                    .collect()
-            })
-            .collect()
+        let kinds = |steps: Vec<hale_types::lifecycle::spine::SpineStep>| -> Vec<ObligationKind> {
+            steps
+                .into_iter()
+                .filter(|s| project::TRACED.contains(&s.kind) && read(spine, s.kind))
+                .filter(|s| !matches!(plan.obligations[s.obligation.0 as usize].status, Status::KnownOpen { .. }))
+                .map(|s| s.kind)
+                .collect()
+        };
+        let mut out: Vec<Vec<ObligationKind>> = Vec::new();
+        for site in plan.templates(decl) {
+            for seq in [kinds(plan.spine(site, spine)), kinds(plan.shutdown_spine(site, spine))] {
+                if !out.contains(&seq) {
+                    out.push(seq);
+                }
+            }
+        }
+        out
     };
     let names = |ks: &[ObligationKind]| ks.iter().map(|k| k.name()).collect::<Vec<_>>().join(" ");
     let mut out = Vec::new();
@@ -2026,6 +2037,66 @@ fn retired_run_self_reclaim_has_one_owner_under_asan() {
                 assert_eq!(answered_after_handler(&ran), "answered-after-handler", "{file}, {end}, no_bus_devirt={no_bus_devirt}: {report}");
                 assert_eq!(ran.code, Some(0), "{report}");
             }
+        }
+    }
+}
+
+/// A started run reads owned interface and concrete sibling fields after
+/// its replacing handler returns. Split teardown must retain both strings
+/// through that run, and each field must drain and dissolve exactly once.
+#[test]
+fn retained_contract_siblings_survive_handler_replacement_under_asan() {
+    for file in ["l19_handler_replaces_started_run.hl", "l19_handler_replaces_started_run_async.hl"] {
+        let original = source(file);
+        for second_type in ["Name", "Label"] {
+        let src = original.replace("locus Kid {", r#"
+interface Name { fn value() -> String; }
+locus Label {
+    params { tag: Int = 0; text: String = ""; }
+    birth() { self.text = "label-" + to_string(self.tag); }
+    fn value() -> String { return self.text; }
+    drain() { println("ev label-drain " + to_string(self.tag)); }
+    dissolve() { println("ev label-dissolve " + to_string(self.tag)); }
+}
+locus Kid {"#)
+            .replace("= Rows { };", "= Rows { }; first: Name = Label { tag: 1 }; second: Name = Label { tag: 2 };")
+            .replace("println(\"ev rows \"", "println(\"ev labels \" + to_string(self.tag) + \" \" + self.first.value() + \" \" + self.second.value()); println(\"ev rows \"");
+        let src = src.replace("second: Name", &format!("second: {second_type}"));
+        assert_ne!(src, original);
+        let program = hale_syntax::parse_source(&src).expect("parse contract sibling variant");
+        let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::check(false, false))
+            .unwrap_or_else(|_| panic!("{file}: load"));
+        let checked = snap.demand_check().expect("check");
+        assert!(!checked.diags.iter().any(|d| d.is_error()), "{file}: {:?}", checked.diags);
+        for no_bus_devirt in [false, true] {
+            let bin = harness::unique_bin("hale_contract_siblings_asan");
+            let options = hale_codegen::BuildOptions {
+                asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+            };
+            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            let image = std::fs::read(&bin).expect("ASan binary");
+            assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let _ = std::fs::remove_file(&bin);
+            let report = format!("{}\n{}", ran.stdout, ran.stderr);
+            for marker in SANITIZER_MARKERS {
+                assert!(!report.contains(marker), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            }
+            assert_eq!(answered_after_handler(&ran), "answered-after-handler", "{report}");
+            assert_eq!(ran.code, Some(0), "{report}");
+            for tag in [0, 1] {
+                assert_eq!(count(&ran, &format!("ev labels {tag} label-1 label-2")), 1, "{report}");
+            }
+            for tag in [1, 2] {
+                for step in ["drain", "dissolve"] {
+                    assert_eq!(count(&ran, &format!("ev label-{step} {tag}")), 2, "{report}");
+                }
+            }
+            let dissolves: Vec<_> = ran.stdout.lines().filter(|l| l.starts_with("ev label-dissolve ")).collect();
+            assert_eq!(dissolves, ["ev label-dissolve 1", "ev label-dissolve 2", "ev label-dissolve 1", "ev label-dissolve 2"],
+                       "{file}, second_type={second_type}: declaration order must survive retained release: {report}");
+            assert!(trace::laws(&ran.trace, true).is_empty(), "{report}");
+        }
         }
     }
 }
