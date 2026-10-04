@@ -1,5 +1,5 @@
 flowchart LR
-  %% topology · claim view — schema 1.19 · shape e7e11084cc75bf03 · verdict clean
+  %% topology · claim view — schema 1.19 · shape 8ae65dc1d9345936 · verdict clean
   subgraph g_App["App"]
     n_App_3a_3arun["run  [hook]  {publish,alloc}"]
   end
@@ -7,10 +7,11 @@ flowchart LR
     n_Store_3a_3aon_5fc["on_c"]
   end
   subgraph g_Worker["Worker"]
-    n_Worker_3a_3aon_5fr["on_r  {unclassified}"]
+    n_Worker_3a_3aon_5fr["on_r  {publish,alloc}"]
   end
   subgraph g__28free_20functions_29["(free functions)"]
-    n_call_5fit["call_it  {unclassified}"]
+    n_call_5fany["call_any  {unclassified}"]
+    n_call_5fit["call_it"]
     n_double["double"]
     n_main["main  {alloc}"]
   end
@@ -22,7 +23,8 @@ flowchart LR
   t_Readings -.->|subscribe| n_Worker_3a_3aon_5fr
   n_Store_3a_3aon_5fc -->|calls| n_double
   n_Worker_3a_3aon_5fr -->|calls| n_call_5fit
+  n_call_5fit -->|calls| n_double
   classDef hl stroke:#d69e2e,stroke-width:3px
   class n_Store_3a_3aon_5fc,n_Worker_3a_3aon_5fr hl
   %% card: claim apart — holds | forbid reaches(stores, workers) via { calls }
-  %% card: 1 unresolved | call_it: indirect_call
+  %% card: 1 unresolved | call_any: indirect_call

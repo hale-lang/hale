@@ -44,6 +44,16 @@ fn far_block() -> Int {
     return 1;
 }
 
+// F.40 E5: the syscall is behind a function value the summary cannot
+// resolve to one fn. Before, the call through `f` was a call to
+// nothing, and the app's `@no_syscall` certified over it.
+fn far_pid() -> Int { return std::process::pid(); }
+fn far_pure() -> Int { return 1; }
+fn far_value() -> Int {
+    let f = if len("ab") == 2 { far_pid } else { far_pure };
+    return f();
+}
+
 // Deliberately frame-heavy: `stack_bytes` must see it.
 fn far_wide() -> Int {
     let a = 1; let b = 2; let c = 3; let d = 4;

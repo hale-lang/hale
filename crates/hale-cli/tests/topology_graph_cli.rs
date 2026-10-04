@@ -748,16 +748,17 @@ module billing {
     @effects(causes: { money })
     fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
 }
-fn id(v: Int) -> Int { return v; }
 main locus App {
     params { n: Int = 0; }
-    run() { println(poke(id, 1)); }
+    run() { println(1); }
 }
 fn main() { App { }; }
 "#,
     )
     .unwrap();
-    // Round 3: `poke` calls through a fn-typed parameter (#353), a
+    // Round 3: `poke` calls through a fn-typed parameter (#353) that
+    // no function value of the program can be (`run` passed it `id`,
+    // which the call resolves to since F.40 E5), a
     // call the walk cannot follow, so `causes:` over it is
     // UNCERTIFIED and says so — check is not silent about a law it
     // could not certify. The artifact is still emitted and must
@@ -1074,8 +1075,8 @@ fn malformed_rows_are_refused_not_dropped() {
     // Same for a malformed unknowns row: residue must never be
     // silently droppable either.
     let body = strip_trailer(&raw).replace(
-        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}",
-        "{\"fn\": \"call_it\", \"reasons\": \"indirect_call\"}",
+        "{\"fn\": \"call_any\", \"reasons\": [\"indirect_call\"]}",
+        "{\"fn\": \"call_any\", \"reasons\": \"indirect_call\"}",
     );
     let bad2 = dir.join("badunknown.topology");
     std::fs::write(&bad2, restamp_digest(&body)).unwrap();
@@ -1145,8 +1146,8 @@ fn dead_dispatches_are_not_rendered_as_unresolved() {
 
     // Add a dead-dispatch row alongside the genuine indirect_call.
     let body = strip_trailer(&raw).replace(
-        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}",
-        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}, \
+        "{\"fn\": \"call_any\", \"reasons\": [\"indirect_call\"]}",
+        "{\"fn\": \"call_any\", \"reasons\": [\"indirect_call\"]}, \
          {\"fn\": \"double\", \"reasons\": [\"uninhabited_interface_call:Notifier.notify\"]}",
     );
     let mixed = dir.join("dead.topology");
@@ -1186,8 +1187,8 @@ fn dead_dispatches_are_not_rendered_as_unresolved() {
     // A DEAD-ONLY artifact renders as exact: no unresolved card at
     // all, and the residue view says so.
     let body = strip_trailer(&raw).replace(
-        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}",
-        "{\"fn\": \"call_it\", \"reasons\": [\"uninhabited_interface_call:Notifier.notify\"]}",
+        "{\"fn\": \"call_any\", \"reasons\": [\"indirect_call\"]}",
+        "{\"fn\": \"call_any\", \"reasons\": [\"uninhabited_interface_call:Notifier.notify\"]}",
     );
     let deadonly = dir.join("deadonly.topology");
     std::fs::write(&deadonly, restamp_digest(&body)).unwrap();

@@ -1228,18 +1228,21 @@ fn stale_shape_hash_is_refused() {
 /// shared traversal, flipping a violated fleet prohibition to
 /// holds; a non-string unknown reason would erase residue the
 /// graph must certify over. The oms component is rebuilt to carry
-/// BOTH shapes, and each premise is asserted — no silent skip.
+/// BOTH shapes, and each premise is asserted — no silent skip. (The
+/// unknown is `call_any`'s call through a parameter no function value
+/// of the program can be: since F.40 E5 a call through a function
+/// value the program does take resolves to it.)
 #[test]
 fn malformed_semantic_rows_are_refused_not_dropped() {
     const OMS_WITH_SHAPES: &str = r#"
 import "../lib" as t;
-fn helper(v: Int) -> Int { return v + 1; }
-fn call_it(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+fn call_it(v: Int) -> Int { return v + 1; }
+fn call_any(f: fn(Bool) -> Int) -> Int { return f(true); }
 locus Oms {
     params { n: Int = 0; }
     bus { subscribe t::OrderIntent as on_intent; publish t::OrderRequest; }
     fn on_intent(i: t::Intent) {
-        self.n = call_it(helper, i.id);
+        self.n = call_it(i.id);
         let o = t::Order { id: i.id };
         t::OrderRequest <- o;
     }

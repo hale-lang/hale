@@ -284,7 +284,15 @@ Call and publish rows are **site-grained**: they carry an authored
 callee executes twice, and alternatives of one interface dispatch
 share that ordinal because one dispatch runs one conformer. A
 consumer that collapses either into a set is computing reachability
-where the language means executions.
+where the language means executions. A call through a function value
+resolves to the program's function values of its type (F.40 E5;
+spec/verification.md), and the model has no function-value dispatch
+kind: each alternative is a `Direct` row at a site of its own, so a
+count over them is a sum where one execution runs one of them (the
+`@budget` engines, which read the analysis's dispatch group, take the
+max), and the site ordinals after such a call move when the set of
+function values does. The same holds for alternatives inside a
+`stdlib_absorption` interior.
 
 `costs` is **mixed-grain** and carries no `site` ordinal at all;
 its rows are distinguished by `(function, dimension, provenance)`.

@@ -487,10 +487,13 @@ fn main() { App { }; }
 // `judgment_causes::may_deliver_respects_exact_key_domains`. With an
 // unknown key domain the walk widens, which is the sound direction.
 
-/// Review pin (round 3): caller discovery that CANNOT be completed
-/// downgrades the verdict rather than passing unnoticed.
+/// The relay's publish behind a function value: F.40 E5 resolves the
+/// call through `f` to the program's one function value of its type,
+/// `emit_clean`, so caller discovery completes and the undeclared
+/// dependency is found (it was uncertified while the call reached
+/// nothing the walk could name).
 #[test]
-fn an_unfollowable_caller_makes_the_law_uncertified() {
+fn a_caller_behind_a_function_value_is_discovered() {
     let src = r#"
 type Msg { n: Int = 0; }
 topic Secret { payload: Msg; subject: "secret"; }
@@ -503,6 +506,57 @@ locus Relay {
     bus { subscribe Secret as on_secret; publish Clean; }
     params { n: Int = 0; }
     fn on_secret(m: Msg) { apply(emit_clean); }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(v, Verdict::Violated, "{:?}", ds);
+    assert!(
+        ds.iter().any(|m| m.contains("subject `Secret` -> `Relay` -> subject `Clean` -> `Target`")),
+        "{:?}",
+        ds
+    );
+}
+
+/// Review pin (round 3): caller discovery that CANNOT be completed
+/// downgrades the verdict rather than passing unnoticed. The function
+/// value is a method read as a value, which the summary does not follow
+/// (and codegen does not lower), so no indirect call of the program
+/// resolves.
+#[test]
+fn an_unfollowable_caller_makes_the_law_uncertified() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+topic Clean  { payload: Msg; subject: "clean"; }
+
+fn apply(f: fn() -> Unit) { f(); }
+
+locus Emitter {
+    bus { publish Clean; }
+    params { n: Int = 0; }
+    fn emit_clean() { Clean <- Msg { n: 1 }; }
+}
+locus Relay {
+    bus { subscribe Secret as on_secret; }
+    params { e: Emitter = Emitter { }; }
+    fn on_secret(m: Msg) { apply(self.e.emit_clean); }
 }
 @effects(depends: {Clean})
 locus Target {

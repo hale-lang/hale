@@ -192,8 +192,13 @@ impl FactVisitor for BudgetVisitor {
                          allocation count, is not knowable here",
                         name,
                         if edge.indirect {
-                            "an indirect call through a \
-                             function-typed parameter"
+                            if edge.through_param {
+                                "an indirect call through a \
+                                 function-typed parameter"
+                            } else {
+                                "an indirect call through a \
+                                 function value"
+                            }
                         } else {
                             "a method call on a receiver the \
                              compiler cannot type"

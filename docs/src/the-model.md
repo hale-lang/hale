@@ -150,7 +150,11 @@ The left-hand forms pick one key for the immediate count and then
 follow *every* key's downstream branch, or let two conformers both
 contribute when one dispatch runs one. So a whole **scenario** —
 one key, one conformer — is costed end to end, and only then
-compared.
+compared. A call through a function value is the exception for
+now: it can reach each function of its type the program passes
+around as a value, and the model records each as a call site of its
+own, so a count over them adds where only one runs — an
+over-count, never an under-count.
 
 Neither point is exotic. Both are the kind of thing that reads as
 obviously correct in one form and is quietly wrong in another,

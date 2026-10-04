@@ -171,7 +171,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 28 targets below are the only ones the correction changes.
+/// The 30 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -182,9 +182,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 19] = [
-    ("crates/hale-codegen/tests/fixtures/examples/docs-server", 1),
-    ("crates/hale-codegen/tests/fixtures/examples/http-hello", 1),
+const CALL_LINES_ONLY: [(&str, usize); 17] = [
     ("dna/core", 1248),
     ("dna/oidc", 34),
     ("dna/organism", 1315),
@@ -197,8 +195,11 @@ const CALL_LINES_ONLY: [(&str, usize); 19] = [
     ("tests/hale/api_roles_xseed_test.hl", 2),
     ("tests/hale/api_serve_test.hl", 2),
     // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
-    // f()` to the fn the local names, which only the renames reach.
-    ("tests/hale/imported_fn_value_test.hl", 2),
+    // f()` to the fn the local names, which only the renames reach; 3
+    // more: E5 resolves the calls through a function value to the
+    // program's function values, one of them an imported seed's, which
+    // only the renames name.
+    ("tests/hale/imported_fn_value_test.hl", 5),
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
@@ -207,9 +208,11 @@ const CALL_LINES_ONLY: [(&str, usize); 19] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 9] = [
+const VERDICT_TARGETS: [&str; 11] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
+    "crates/hale-codegen/tests/fixtures/examples/docs-server",
+    "crates/hale-codegen/tests/fixtures/examples/http-hello",
     "dna/api",
     "dna/host",
     "dna/operations",
@@ -257,6 +260,41 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> per-iteration-reclaim", 5),
+        ],
+        &[
+        ],
+    );
+    // F.40 E5: the stdlib listener's connection loop calls its
+    // `on_conn` parameter, which resolves to the program's handler (the
+    // one function value of its type), so the handler and what it calls
+    // are invoked unboundedly; the old summary saw neither the loop nor
+    // the call.
+    pinned(
+        "crates/hale-codegen/tests/fixtures/examples/docs-server",
+        1,
+        &[
+            "__docs_dir",
+            "__render_doc",
+            "__render_index",
+            "__safe_path",
+            "__strip_leading_slash",
+            "__wrap_html_page",
+            "handle_request",
+        ],
+        &[
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 1),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 5),
+        ],
+        &[
+        ],
+    );
+    pinned(
+        "crates/hale-codegen/tests/fixtures/examples/http-hello",
+        1,
+        &[
+            "handle_request",
+        ],
+        &[
         ],
         &[
         ],
