@@ -675,22 +675,40 @@ pub enum TypeSpelling<'a> {
     Literal(&'a QualifiedName),
 }
 
-type Visit<'v, 'a> = dyn FnMut(TypeSpelling<'a>) + 'v;
+struct Visit<'v, 'a> {
+    f: &'v mut dyn FnMut(TypeSpelling<'a>, &[String]),
+    parameters: Vec<String>,
+}
+
+impl<'v, 'a> Visit<'v, 'a> {
+    fn emit(&mut self, spelling: TypeSpelling<'a>) {
+        (self.f)(spelling, &self.parameters);
+    }
+
+    fn with_parameters(&mut self, parameters: &[hale_syntax::ast::GenericParam], walk: impl FnOnce(&mut Self)) {
+        let previous = self.parameters.len();
+        self.parameters.extend(parameters.iter().map(|p| p.name.name.clone()));
+        walk(self);
+        self.parameters.truncate(previous);
+    }
+}
 
 /// Every place `items` spells a type: every declaration's signature,
 /// field, parameter, payload, slot and alias, every `let` ascription,
 /// and every struct or locus literal's path, at any depth of every body
-/// and default.
-pub fn for_each_type_spelling<'a>(items: &'a [TopDecl], f: &mut Visit<'_, 'a>) {
+/// and default. Each visit carries the lexical type parameters in scope.
+pub fn for_each_type_spelling<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(TypeSpelling<'a>, &[String])) {
+    let mut visitor = Visit { f, parameters: Vec::new() };
+    let f = &mut visitor;
     for item in hale_syntax::ast::flat_decls(items) {
         match item {
-            TopDecl::Type(t) => type_body(&t.body, f),
+            TopDecl::Type(t) => f.with_parameters(&t.generics, |f| type_body(&t.body, f)),
             TopDecl::Fn(fd) => fn_decl(fd, f),
-            TopDecl::Locus(l) => {
+            TopDecl::Locus(l) => f.with_parameters(&l.generics, |f| {
                 for m in &l.members {
                     locus_member(m, f);
                 }
-            }
+            }),
             TopDecl::Const(c) => {
                 ann(&c.ty, f);
                 expr(&c.value, f);
@@ -726,7 +744,7 @@ pub fn for_each_type_spelling<'a>(items: &'a [TopDecl], f: &mut Visit<'_, 'a>) {
 }
 
 fn ann<'a>(t: &'a TypeExpr, f: &mut Visit<'_, 'a>) {
-    f(TypeSpelling::Annotation(t));
+    f.emit(TypeSpelling::Annotation(t));
 }
 
 fn type_body<'a>(body: &'a TypeDeclBody, f: &mut Visit<'_, 'a>) {
@@ -771,19 +789,21 @@ fn fn_params<'a>(ps: &'a [hale_syntax::ast::Param], f: &mut Visit<'_, 'a>) {
 }
 
 fn fn_decl<'a>(fd: &'a hale_syntax::ast::FnDecl, f: &mut Visit<'_, 'a>) {
-    for g in &fd.generics {
-        if let Some(b) = &g.bound {
-            ann(b, f);
+    f.with_parameters(&fd.generics, |f| {
+        for g in &fd.generics {
+            if let Some(b) = &g.bound {
+                ann(b, f);
+            }
         }
-    }
-    fn_params(&fd.params, f);
-    if let Some(r) = &fd.ret {
-        ann(r, f);
-    }
-    if let Some(e) = &fd.fallible {
-        ann(e, f);
-    }
-    block(&fd.body, f);
+        fn_params(&fd.params, f);
+        if let Some(r) = &fd.ret {
+            ann(r, f);
+        }
+        if let Some(e) = &fd.fallible {
+            ann(e, f);
+        }
+        block(&fd.body, f);
+    });
 }
 
 fn bus<'a>(bb: &'a hale_syntax::ast::BusBlock, f: &mut Visit<'_, 'a>) {
@@ -829,7 +849,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
             ann(&c.ty, f);
             expr(&c.value, f);
         }
-        LocusMember::Type(t) => type_body(&t.body, f),
+        LocusMember::Type(t) => f.with_parameters(&t.generics, |f| type_body(&t.body, f)),
         LocusMember::Capacity(cb) => {
             for s in &cb.slots {
                 ann(&s.elem_ty, f);
@@ -935,7 +955,7 @@ fn stmt<'a>(s: &'a Stmt, f: &mut Visit<'_, 'a>) {
 fn expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
     match e {
         Expr::Struct { path, inits, .. } => {
-            f(TypeSpelling::Literal(path));
+            f.emit(TypeSpelling::Literal(path));
             for i in inits {
                 expr(&i.value, f);
             }

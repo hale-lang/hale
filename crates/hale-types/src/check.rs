@@ -465,7 +465,13 @@ fn substitute_generic_ty(
             Box::new(substitute_generic_ty(elem, bindings, known)),
             *cap,
         ),
-        _ => resolve_type_expr(te, known),
+        _ => {
+            // Nested applications retain the template's unbound view until
+            // the monomorph table records that specialization. Even there,
+            // an unbound parameter must never resolve as a global name.
+            let unbound = bindings.keys().map(|name| (name.clone(), Ty::Unknown)).collect();
+            crate::resolve::resolve_type_expr_with(te, known, &unbound)
+        },
     }
 }
 
@@ -843,18 +849,21 @@ pub fn check_bundle_by_declaration(
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
     check_placement_single_thread(bundle, inputs.placement, inputs.forms, &mut diags);
-    // GH #826: a `pinned` placement entry gives its field an OS
-    // thread whose join record is one alloca per instantiation SITE,
-    // so instantiating the placing locus inside a loop orphans every
-    // thread but the last and leaks its arena. Placement describes a
-    // static topology; the loop is rejected.
-    check_pinned_locus_in_loop(bundle, inputs.placement, &mut diags);
-    // GH #890: a placement entry is carried by the locus LITERAL
-    // lowered for its field and by nothing else, so a field built any
-    // other way (a factory call the commonest) leaves the entry
-    // untaken and it is silently dropped. Every entry must be
-    // consumed by exactly one instantiation.
-    check_placement_entry_consumed(bundle, &mut diags);
+    // F.40 phase 3, C7: the laws that replaced lowering's backstops,
+    // the one entry the harness's lowering view demands too: rule 6
+    // (a pinned instance's features), rule 17 (GH #826, a root that
+    // pins a field is not built in a loop), rule 18 (GH #890, every
+    // placement entry is consumed by a locus literal), the cross-pool
+    // spawn, which is fire-and-forget, and GH #813 (a locus that builds
+    // itself through its own param defaults).
+    diags.extend(crate::lowering_laws::lowering_laws(
+        bundle,
+        &crate::lowering_laws::LoweringLawInputs {
+            placement: inputs.placement,
+            bindings: inputs.bindings,
+            ownership: &|| Some(inputs.ownership),
+        },
+    ));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.
@@ -877,12 +886,6 @@ pub fn check_bundle_by_declaration(
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let flows = crate::flows::survey(&programs, &bundle.import_renames);
     check_nested_long_running_child(bundle, &flows, &mut diags);
-    // GH #813: a locus reachable from its own param defaults. The
-    // by-value containment graph must be acyclic — a locus that
-    // contains itself can never be built, and the compiler used to
-    // discover that by overflowing its own stack in
-    // `lower_locus_instantiation`. See `check_self_containing_locus`.
-    check_self_containing_locus(bundle, &mut diags);
     // F.40 phase 3, E2: the three rules that ask where a root field runs
     // read the placement table's rows for the root lowering deploys (a
     // `main locus` lowering does not deploy places nothing, so it starves
@@ -1133,34 +1136,34 @@ fn monomorph_table(
     if templates.by_key.is_empty() {
         return;
     }
-    fn spelled(te: &TypeExpr, known: &KnownNames, names: &mut std::collections::BTreeSet<String>) {
+    fn spelled(te: &TypeExpr, known: &KnownNames, bindings: &BTreeMap<String, Ty>, names: &mut std::collections::BTreeSet<String>) {
         match te {
             TypeExpr::Named { path, generic_args, .. } => {
                 for a in generic_args {
-                    spelled(a, known, names);
+                    spelled(a, known, bindings, names);
                 }
-                if path.segments.len() != 1 {
+                if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
                     return;
                 }
                 if generic_args.is_empty() {
                     names.insert(path.segments[0].name.clone());
-                } else if let Ty::Named(n) = resolve_type_expr(te, known) {
+                } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
                     names.insert(n);
                 }
             }
-            TypeExpr::Projection { inner, .. } => spelled(inner, known, names),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, names),
+            TypeExpr::Projection { inner, .. } => spelled(inner, known, bindings, names),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, bindings, names),
             TypeExpr::Tuple(parts, _) => {
                 for p in parts {
-                    spelled(p, known, names);
+                    spelled(p, known, bindings, names);
                 }
             }
             TypeExpr::Function { params, ret, .. } => {
                 for p in params {
-                    spelled(p, known, names);
+                    spelled(p, known, bindings, names);
                 }
                 if let Some(r) = ret {
-                    spelled(r, known, names);
+                    spelled(r, known, bindings, names);
                 }
             }
             TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
@@ -1168,11 +1171,14 @@ fn monomorph_table(
     }
     let mut names = std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
-        crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s| match s {
-            TypeSpelling::Annotation(te) => spelled(te, known, &mut names),
-            TypeSpelling::Literal(path) => {
-                if path.segments.len() == 1 {
-                    names.insert(path.segments[0].name.clone());
+        crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s, parameters| {
+            let bindings = parameters.iter().map(|p| (p.clone(), Ty::Unknown)).collect();
+            match s {
+                TypeSpelling::Annotation(te) => spelled(te, known, &bindings, &mut names),
+                TypeSpelling::Literal(path) => {
+                    if path.segments.len() == 1 && !parameters.contains(&path.segments[0].name) {
+                        names.insert(path.segments[0].name.clone());
+                    }
                 }
             }
         });
@@ -2907,360 +2913,6 @@ fn check_nested_long_running_child(
     }
 }
 
-/// One node of the param-default containment graph (GH #813): a
-/// locus name plus the field names a literal SUPPLIES. The defaults a
-/// literal expands are exactly the ones it does not supply, so the
-/// pair — not the locus alone — is what the construction re-enters.
-type ContainmentState = (String, Vec<String>);
-
-/// One edge out of a param default (GH #870): the state the default
-/// constructs, and the factory fn it went through — `None` when the
-/// default spells the literal itself. The graph is the same either
-/// way; the name is what the diagnostic shows the author, who is
-/// looking at a call, not at a literal.
-type ContainmentEdge = (ContainmentState, Option<String>);
-
-/// GH #813: a locus whose construction requires constructing one of
-/// its own kind.
-///
-/// `locus Node { params { next: Node = Node { n: 1 }; } }` is not a
-/// linked list — it is a locus that cannot exist. The `Node` the
-/// default builds leaves ITS `next` to the same default, which builds
-/// another, and the nesting has no floor. It cannot be broken from a
-/// call site either: writing `Node { next: … }` needs a `Node` to
-/// hand over, and building one asks the same question again. So the
-/// declaration is the error, independently of whether anything
-/// instantiates it.
-///
-/// Before this the program passed `hale check` and
-/// `lower_locus_instantiation` recursed through the default until the
-/// compiler's own stack ran out ("thread 'main' has overflowed its
-/// stack"). Codegen now keeps the same guard for itself — it must,
-/// since `build_executable` never runs this checker — but a stack
-/// trace is not a diagnostic, and the author's mistake is at a param.
-///
-/// The graph is over BY-VALUE containment: an edge `L → M` where a
-/// param default of `L` *constructs* an `M` — an `M { … }` locus
-/// literal anywhere in the default's expression, or (GH #870) a call
-/// to a fn that freshly constructs one.
-///
-/// The second half is the residue #813 left behind. `next: Node =
-/// make()` with `fn make() -> Node { return Node { }; }` compiled —
-/// lowering a call emits a call rather than inlining the callee, so
-/// nothing recursed at COMPILE time and there was no crash to
-/// prevent — and then overflowed the program's own stack at RUN time,
-/// because every `Node` `make` builds leaves ITS `next` to the same
-/// default, which calls `make` again. The ring is the same ring; only
-/// the spelling of one edge changed.
-///
-/// Telling that apart from an accessor handing back a `Node` somebody
-/// else already owns is a whole-program question, and the ownership
-/// family's fresh-factory rows are the answer
-/// ([`crate::ownership::fresh_factories`], the one producer the
-/// ownership pre-pass reads too, F.40 phase 1.2c): the rule reads each
-/// row's `products`, the (locus, supplied fields) a call constructs.
-/// The rows are computed over the bundle's files together, with the
-/// bundle's import renames, as lowering computes them (lowering then
-/// widens its set with the carrier fold, which this rule does not
-/// read). The products do not depend on the escape walk: a factory
-/// whose returned binding escapes into a call still constructs it, and
-/// still takes its edge. A call it cannot see as constructing — an
-/// accessor, a method, a `std::` path — takes no edge and stays
-/// accepted, exactly as before; a program like that recurses at RUN
-/// time only if the callee really does build one, which is what
-/// `@no_recursion` is the contract for.
-///
-/// A node is (locus, supplied field names) rather than the locus
-/// alone: `A { n: 1, m: 2 }` written inside `A`'s own default for `m`
-/// expands no default and terminates, and keying on the type would
-/// report it as a cycle.
-///
-/// Nothing is reported for a locus this bundle cannot see. A single
-/// file of a multi-file seed holds no `TopDecl::Locus` for its
-/// sibling's types, so a cycle that crosses files simply has no edge
-/// here and stays permissive until the whole seed is checked
-/// together — the gating every other cross-file rule uses, arrived at
-/// by having nothing to say rather than by a flag. The literal walk
-/// is likewise deliberately partial (it does not descend into a
-/// block, `if` or `match` body): an unvisited form costs a report,
-/// never a false one, and codegen's guard is underneath it.
-fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
-    fn collect<'a>(
-        items: &'a [TopDecl],
-        out: &mut BTreeMap<&'a str, &'a LocusDecl>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    out.entry(l.name.name.as_str()).or_insert(l);
-                }
-                TopDecl::Module(m) => collect(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        collect(&program.items, &mut loci);
-    }
-    if loci.is_empty() {
-        return;
-    }
-    // GH #870: which fns hand back a locus they freshly built, and
-    // what each call constructs: the fresh-factory rows over the
-    // bundle's files together (a factory in one file may hand back
-    // what a sibling file's factory built), with the bundle's import
-    // renames, for the loci this bundle declares.
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let factories: BTreeMap<String, Vec<ContainmentState>> =
-        crate::ownership::fresh_factories(&programs, &bundle.snapshot, &bundle.import_renames)
-            .into_iter()
-            .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
-            .map(|(name, row)| (name, row.products))
-            .collect();
-    // Classic gray/black DFS. `finished` is the black set: every
-    // cycle reachable from a state was found while that state was
-    // being explored, so re-entering it later has nothing to add —
-    // which is also what keeps one cycle from being reported once per
-    // locus on it.
-    let mut finished: BTreeSet<ContainmentState> = BTreeSet::new();
-    let mut reported: BTreeSet<(u32, String)> = BTreeSet::new();
-    for name in loci.keys().copied() {
-        let mut path: Vec<ContainmentState> = Vec::new();
-        walk_param_default_containment(
-            name,
-            &[],
-            &loci,
-            &factories,
-            &mut path,
-            &mut finished,
-            &mut reported,
-            diags,
-        );
-    }
-}
-
-/// One DFS step of the GH #813 containment walk. `supplied` is the
-/// set of field names the literal that got us here wrote out; every
-/// OTHER param of `locus` expands its default, and each locus literal
-/// inside that default — plus (GH #870) each fresh-factory call — is
-/// an edge.
-fn walk_param_default_containment(
-    locus: &str,
-    supplied: &[String],
-    loci: &BTreeMap<&str, &LocusDecl>,
-    factories: &BTreeMap<String, Vec<ContainmentState>>,
-    path: &mut Vec<ContainmentState>,
-    finished: &mut BTreeSet<ContainmentState>,
-    reported: &mut BTreeSet<(u32, String)>,
-    diags: &mut Vec<Diag>,
-) {
-    let state: ContainmentState = (locus.to_string(), supplied.to_vec());
-    if finished.contains(&state) {
-        return;
-    }
-    let Some(decl) = loci.get(locus) else {
-        // A sibling file's locus, or a stdlib one reached by a
-        // multi-segment path: no body here, no edge, no report.
-        return;
-    };
-    path.push(state.clone());
-    for member in &decl.members {
-        let LocusMember::Params(pb) = member else {
-            continue;
-        };
-        for pd in &pb.params {
-            if supplied.iter().any(|s| s == &pd.name.name) {
-                continue;
-            }
-            let ParamInit::Value(e) = &pd.init else {
-                continue;
-            };
-            let mut built: Vec<ContainmentEdge> = Vec::new();
-            collect_constructed_loci(e, loci, factories, &mut built);
-            for (child, via) in built {
-                let Some(at) = path.iter().position(|s| *s == child) else {
-                    walk_param_default_containment(
-                        &child.0, &child.1, loci, factories, path,
-                        finished, reported, diags,
-                    );
-                    continue;
-                };
-                // The cycle, as a ring of type names, rotated so the
-                // locus the author is reading about comes first.
-                let mut ring: Vec<&str> =
-                    path[at..].iter().map(|s| s.0.as_str()).collect();
-                if let Some(k) = ring.iter().position(|n| *n == locus) {
-                    ring.rotate_left(k);
-                }
-                let chain = if ring.len() > 1 {
-                    format!(" (`{}` → `{}`)", ring.join("` → `"), ring[0])
-                } else {
-                    String::new()
-                };
-                // The two spellings of one edge: a literal in the
-                // default, or a call to a fn that builds one (GH
-                // #870). Same rule, same ring — what differs is what
-                // the author is looking at on that line.
-                let (how, why) = match &via {
-                    None => (
-                        format!("defaults to a `{}`", child.0),
-                        "every one the default builds needs another, \
-                         and no locus literal can end the chain"
-                            .to_string(),
-                    ),
-                    Some(f) => (
-                        format!(
-                            "defaults to `{}()`, which builds a fresh \
-                             `{}`",
-                            f, child.0,
-                        ),
-                        "every one the factory builds asks the same \
-                         default again, so the program compiles and \
-                         then recurses until its stack overflows"
-                            .to_string(),
-                    ),
-                };
-                let message = format!(
-                    "param `{}` of `{}` {}; a locus cannot contain \
-                     itself by value{} — {}. Drop the default and \
-                     take the child from the caller (`{}: {};`), or \
-                     hold a value rather than a locus.",
-                    pd.name.name,
-                    locus,
-                    how,
-                    chain,
-                    why,
-                    pd.name.name,
-                    child.0,
-                );
-                if reported.insert((pd.span.start.0, message.clone())) {
-                    diags.push(Diag::ty(pd.span, message));
-                }
-            }
-        }
-    }
-    path.pop();
-    finished.insert(state);
-}
-
-/// Every locus `M` constructed while `e` is evaluated, as (locus
-/// name, the field names it supplies) plus the factory fn the default
-/// reached it through, if any.
-///
-/// Two spellings construct one:
-///
-///   * a locus literal `M { … }`. Nested literals count too — a
-///     literal inside a literal's field is constructed just as surely
-///     as the outer one. Only single-segment paths that name a locus
-///     in this bundle are edges; a `type` literal, a stdlib path and
-///     a sibling file's name are all skipped;
-///   * GH #870: a call to a fn the fresh-factory rows classify as
-///     freshly building one. The states it contributes are the row's
-///     products, the literals that fn hands back, so `fn make() ->
-///     Node { return Node { n: 5 }; }` contributes `(Node, [n])` — the
-///     same node the literal `Node { n: 5 }` would.
-fn collect_constructed_loci(
-    e: &Expr,
-    loci: &BTreeMap<&str, &LocusDecl>,
-    factories: &BTreeMap<String, Vec<ContainmentState>>,
-    out: &mut Vec<ContainmentEdge>,
-) {
-    match e {
-        Expr::Struct { path, inits, .. } => {
-            if path.segments.len() == 1 {
-                let name = path.segments[0].name.as_str();
-                if loci.contains_key(name) {
-                    let mut supplied: Vec<String> = inits
-                        .iter()
-                        .map(|i| i.name.name.clone())
-                        .collect();
-                    supplied.sort();
-                    supplied.dedup();
-                    out.push(((name.to_string(), supplied), None));
-                }
-            }
-            for i in inits {
-                collect_constructed_loci(&i.value, loci, factories, out);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_constructed_loci(left, loci, factories, out);
-            collect_constructed_loci(right, loci, factories, out);
-        }
-        Expr::Unary { operand, .. } => {
-            collect_constructed_loci(operand, loci, factories, out)
-        }
-        Expr::Call { callee, args, .. } => {
-            if let Some(f) = plain_callee_name(callee) {
-                if let Some(states) = factories.get(f) {
-                    for s in states {
-                        out.push((s.clone(), Some(f.to_string())));
-                    }
-                }
-            }
-            collect_constructed_loci(callee, loci, factories, out);
-            for a in args {
-                collect_constructed_loci(a, loci, factories, out);
-            }
-        }
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            collect_constructed_loci(receiver, loci, factories, out)
-        }
-        Expr::Index { receiver, index, .. } => {
-            collect_constructed_loci(receiver, loci, factories, out);
-            collect_constructed_loci(index, loci, factories, out);
-        }
-        Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
-            for p in parts {
-                collect_constructed_loci(p, loci, factories, out);
-            }
-        }
-        Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
-            collect_constructed_loci(inner, loci, factories, out)
-        }
-        Expr::ArrayRepeat { val, .. } => {
-            collect_constructed_loci(val, loci, factories, out)
-        }
-        Expr::Range { lo, hi, .. } => {
-            collect_constructed_loci(lo, loci, factories, out);
-            collect_constructed_loci(hi, loci, factories, out);
-        }
-        Expr::Approx { left, right, tolerance, .. } => {
-            collect_constructed_loci(left, loci, factories, out);
-            collect_constructed_loci(right, loci, factories, out);
-            collect_constructed_loci(tolerance, loci, factories, out);
-        }
-        Expr::Or { inner, disposition, .. } => {
-            collect_constructed_loci(inner, loci, factories, out);
-            match disposition {
-                OrDisposition::Substitute(s) => {
-                    collect_constructed_loci(s, loci, factories, out)
-                }
-                OrDisposition::Fail(p, _) => {
-                    collect_constructed_loci(p, loci, factories, out)
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The single-segment name a callee spells, or `None` for a method,
-/// a path, or anything computed. A qualified callee resolves through
-/// codegen's import-rename table, which the checker has no
-/// equivalent of, so it is not followed here.
-fn plain_callee_name(callee: &Expr) -> Option<&str> {
-    match callee {
-        Expr::Ident(i) => Some(i.name.as_str()),
-        Expr::Path(q) if q.segments.len() == 1 => {
-            Some(q.segments[0].name.as_str())
-        }
-        _ => None,
-    }
-}
-
 /// F.31 Phase 5: pool identity. Each main-locus params field
 /// gets one of these via the placement block (or default to
 /// `Cooperative("main")`). Nested loci inherit the parent
@@ -3513,449 +3165,6 @@ fn check_placement_single_thread(
                 }
             }
         });
-    }
-}
-
-/// GH #826: a locus whose `placement { }` block pins a field cannot
-/// be instantiated inside a loop.
-///
-/// `pinned` is the placement class that gives a field its OWN OS
-/// thread, spawned in the enclosing locus's params-init and joined
-/// at the instantiating scope's exit. Both halves of that bookkeeping
-/// — the deferred-dissolve slot and the `pthread_t` it joins — are
-/// ONE alloca per instantiation SITE, so a site reached a second time
-/// overwrites the record of the first: at scope exit only the LAST
-/// instance is joined and arena-destroyed, and every earlier pinned
-/// thread is orphaned with its arena still live (GH #815's per-
-/// iteration slot reclaim deliberately stepped over the pinned entry,
-/// because reclaiming it means joining the previous thread).
-///
-/// `placement { }` is `main locus`-only (rule 1), so the reachable
-/// shape is the main locus itself instantiated inside a loop —
-/// the deployment root booted once per iteration. That is a category
-/// error against the model placement describes: entries name static
-/// resources (a core, a NUMA node, `replicas = K`), one thread per
-/// entry for the program's life. Rejecting it is rule 17 rather than
-/// a per-iteration join because a per-iteration OS thread is never
-/// the intent, and because today's behaviour turns on an invisible
-/// internal path — a main locus with a bus subscription takes the
-/// deferred teardown and leaks, one without takes the eager path and
-/// happens to be clean. A rule that fires on only one of those is
-/// worse than one that rejects the shape.
-///
-/// Scope: the check is positional — it flags the locus LITERAL where
-/// it stands, in any fn, locus method, or lifecycle hook, at any loop
-/// nesting depth. A factory called in a loop (`fn boot() { App { }; }`)
-/// is not flagged and does not leak: the literal is not in a loop, so
-/// the pinned entry is flushed at the factory's own fn exit and every
-/// call joins its own thread. Hoisting the literal out of the loop —
-/// or behind a fn the loop calls — is the fix in both directions.
-///
-/// Read from the placement table (F.40 phase 3, P1): the root is the
-/// one lowering deploys, its pinned fields are the root rows a
-/// `placement { }` entry pins, and the literals are the root's
-/// construction templates, each flagged when its bound says it is
-/// built in a loop (`Bound::built_in_a_loop`). A template whose scope
-/// runs without bound for another reason (a factory called in a loop,
-/// a locus body) is not this rule's: each run builds and joins its own.
-fn check_pinned_locus_in_loop(
-    bundle: &Bundle<'_>,
-    placement: &crate::placement::PlacementTable,
-    diags: &mut Vec<Diag>,
-) {
-    use crate::placement::{Decision, DomainKind, InstanceKey, Origin};
-    let Some(root) = placement.root.as_ref() else { return };
-    // The first field the root pins, in the block's order: the entry
-    // that decided a pinned root row, by its minted site. An imported
-    // seed's main locus is NOT the deployment root, so its entries
-    // never reach the plan and never spawn a thread.
-    let root_template = |k: &InstanceKey| match k.origin {
-        Origin::Entry(_) => true,
-        Origin::Construction(c) => root.constructions.iter().any(|x| x.literal == c),
-        Origin::Binding(_) => false,
-    };
-    let pinned = placement
-        .instances
-        .iter()
-        .filter(|(k, r)| {
-            k.path.len() == 1
-                && root_template(k)
-                && matches!(placement.domain(r.domain).kind, DomainKind::Pinned { .. })
-        })
-        .filter_map(|(k, r)| match r.decided_by {
-            Decision::Entry { entry, .. } => Some((entry, k.path[0].field.as_str())),
-            _ => None,
-        })
-        .min_by_key(|(entry, _)| *entry);
-    let Some((entry, field)) = pinned else { return };
-    let site_span = |s: crate::placement::SiteRef| bundle.snapshot.site(s.id).map(|s| s.span);
-    let Some(entry_span) = site_span(entry) else { return };
-    let name = &root.decl.name;
-    for c in &root.constructions {
-        if !c.bound.built_in_a_loop() {
-            continue;
-        }
-        let Some(span) = site_span(c.literal) else { continue };
-        diags.push(
-            Diag::ty(
-                span,
-                format!(
-                    "locus `{}` is instantiated inside a loop, but its \
-                     `placement {{ }}` block pins field `{}` to its own \
-                     OS thread. Every iteration spawns a fresh pinned \
-                     thread while only the last one is joined, so the \
-                     earlier threads are orphaned and their arenas leak. \
-                     Placement names static resources (a core, a NUMA \
-                     node, `replicas = K`) — one thread per entry for \
-                     the program's life — so instantiate `{}` once, \
-                     outside the loop. (A loop that calls a fn holding \
-                     the literal is fine: each call joins its own \
-                     thread.)",
-                    name, field, name
-                ),
-            )
-            .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
-        );
-    }
-}
-
-/// GH #890: a `placement { }` entry no instantiation consumes.
-///
-/// A placement entry is carried to codegen as an override on the
-/// NEXT locus instantiation lowered for that field
-/// (`placement_for_next_locus_instantiation`, plus the parallel pool
-/// and NUMA-node overrides). A locus LITERAL takes it; nothing else
-/// does. So a field whose value arrives any other way — a factory
-/// call, a fallible call, a conditional, a reference to an instance
-/// somebody else built — leaves the override untaken, and the next
-/// field's turn through the params-init loop resets it. No thread is
-/// spawned, no pool is joined, and nothing is said: the entry the
-/// author wrote is silently dropped.
-///
-/// Applying the entry after the fact is not available. The pinned
-/// path is not "mark this instance pinned" but "spawn a pthread that
-/// runs the whole lifecycle — birth, run, the mailbox loop, drain,
-/// dissolve — on it", and a factory's literal has already run birth
-/// and run() (and registered its subscriptions against the global
-/// queue) before the value returns. There is nothing left to place.
-/// So the entry is refused at its source instead, pointing at the
-/// literal form that does carry it.
-///
-/// The rule is the backstop the issue asks for rather than a
-/// factory-shaped special case: EVERY entry must be consumed by
-/// exactly one instantiation. The value the entry places is the
-/// instantiation-site init when the literal supplies one and the
-/// params default otherwise, so both spellings are checked — and a
-/// default every site overrides is dead text, not a dropped
-/// placement.
-///
-/// Scope mirrors `collect_main_placement` (and rule 17's check): an
-/// imported seed's main locus is renamed `__lib_*` and is not the
-/// deployment root, so its entries never reach the plan and flagging
-/// them would be a false positive.
-fn check_placement_entry_consumed(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
-    let mut main: Option<&LocusDecl> = None;
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                if l.is_main && !l.name.name.starts_with("__lib_") {
-                    main = Some(l);
-                }
-            }
-        });
-    }
-    let Some(main) = main else { return };
-    let Some(pb) = main.members.iter().find_map(|m| match m {
-        LocusMember::Placement(pb) => Some(pb),
-        _ => None,
-    }) else {
-        return;
-    };
-    let Some(params) = main.members.iter().find_map(|m| match m {
-        LocusMember::Params(p) => Some(p),
-        _ => None,
-    }) else {
-        return;
-    };
-
-    // Every instantiation of the main locus in the bundle, as the
-    // field inits it writes. `fn main() { App { }; }` is the usual
-    // one and supplies nothing, but a params field declared without a
-    // default is supplied here, and that init is what carries the
-    // placement.
-    let mut cx = PlacementSiteCx {
-        main: main.name.name.as_str(),
-        sites: Vec::new(),
-    };
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| match item {
-            TopDecl::Fn(fd) => placement_site_walk_block(&fd.body, &mut cx),
-            TopDecl::Locus(l) => {
-                for member in &l.members {
-                    if let Some(body) = locus_member_body(member) {
-                        placement_site_walk_block(body, &mut cx);
-                    }
-                }
-            }
-            _ => {}
-        });
-    }
-    let sites = cx.sites;
-
-    for entry in &pb.entries {
-        let field = entry.field.name.as_str();
-        // Unknown / non-locus fields are `check_placement_block`'s to
-        // report; saying it twice helps nobody.
-        let Some(param) = params.params.iter().find(|p| p.name.name == field)
-        else {
-            continue;
-        };
-        // The literal form to suggest: the declared type as written
-        // (a stdlib locus is a qualified path, and its literal is
-        // spelled the same way), or `T` when the type is inferred
-        // from the default and there is nothing to quote.
-        let ty_name = match &param.ty {
-            Some(TypeExpr::Named { path, .. })
-                if !path.segments.is_empty() =>
-            {
-                path.segments
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("::")
-            }
-            _ => "T".to_string(),
-        };
-
-        // The site inits for this field, and whether any site leaves
-        // the field to its default.
-        let mut overrides: Vec<&Expr> = Vec::new();
-        let mut any_site_takes_default = false;
-        for inits in &sites {
-            match inits.iter().find(|i| i.name.name == field) {
-                Some(init) => overrides.push(&init.value),
-                None => any_site_takes_default = true,
-            }
-        }
-        for init in overrides {
-            if matches!(init, Expr::Struct { .. }) {
-                continue;
-            }
-            diags.push(placement_unconsumed_diag(
-                field,
-                &ty_name,
-                init,
-                entry.span,
-                true,
-            ));
-        }
-        // The default is live when some site omits the field — and
-        // when the bundle instantiates the main locus nowhere at all
-        // (a library seed checked on its own: the default is the only
-        // initialiser there is).
-        if !(any_site_takes_default || sites.is_empty()) {
-            continue;
-        }
-        let ParamInit::Value(default) = &param.init else {
-            // No default and no site init: the missing-required-param
-            // rule owns that program, not this one.
-            continue;
-        };
-        if matches!(default, Expr::Struct { .. }) {
-            continue;
-        }
-        diags.push(placement_unconsumed_diag(
-            field,
-            &ty_name,
-            default,
-            entry.span,
-            false,
-        ));
-    }
-}
-
-/// The GH #890 diagnostic, for an initialiser written at an
-/// instantiation site (`at_site`) or in the params default.
-fn placement_unconsumed_diag(
-    field: &str,
-    ty_name: &str,
-    init: &Expr,
-    entry_span: Span,
-    at_site: bool,
-) -> Diag {
-    let shape = match init {
-        Expr::Call { .. } => "a call",
-        Expr::Or { .. } => "a fallible call",
-        Expr::If(_) | Expr::Match(_) => "a conditional",
-        Expr::Ident(_) | Expr::Path(_) | Expr::Field { .. }
-        | Expr::Path2 { .. } | Expr::Index { .. } | Expr::KwSelf(_) => {
-            "a reference to an instance built elsewhere"
-        }
-        _ => "an expression that is not a locus literal",
-    };
-    Diag::ty(
-        init.span(),
-        format!(
-            "placement entry `{}` names a field no locus literal \
-             initialises: {} is {}. A placement is carried by the locus \
-             LITERAL lowered for the field — a factory's literal is \
-             lowered inside the factory, out of this entry's reach — so \
-             the entry would be silently dropped and `{}` would run \
-             wherever an unplaced field runs. Write the literal {} \
-             (`{}`), and move the factory's other work into the locus's \
-             own params or `birth()`.",
-            field,
-            if at_site {
-                format!("the value supplied for `{}` here", field)
-            } else {
-                format!("`{}`'s default", field)
-            },
-            shape,
-            field,
-            if at_site { "at this site" } else { "in the field" },
-            if at_site {
-                format!("{}: {} {{ }}", field, ty_name)
-            } else {
-                format!("{}: {} = {} {{ }};", field, ty_name, ty_name)
-            },
-        ),
-    )
-    .with_related(entry_span, format!("`{}` is placed here", field))
-}
-
-/// Collects the field inits of every literal of the main locus, over
-/// the statements and expressions a body holds — a placement site is
-/// positional, not counted by any loop.
-struct PlacementSiteCx<'a> {
-    /// The bundle's main locus name. `placement { }` is main-only
-    /// (rule 1) and an imported main is renamed `__lib_*`, so a
-    /// single-segment name is the whole surface — the same reasoning
-    /// rule 17's walk uses.
-    main: &'a str,
-    sites: Vec<&'a [StructInit]>,
-}
-
-fn placement_site_walk_block<'a>(
-    b: &'a Block,
-    cx: &mut PlacementSiteCx<'a>,
-) {
-    for s in &b.stmts {
-        placement_site_walk_stmt(s, cx);
-    }
-    if let Some(t) = &b.tail {
-        placement_site_walk_expr(t, cx);
-    }
-}
-
-fn placement_site_walk_if<'a>(i: &'a IfStmt, cx: &mut PlacementSiteCx<'a>) {
-    placement_site_walk_expr(&i.cond, cx);
-    placement_site_walk_block(&i.then_block, cx);
-    if let Some(eb) = &i.else_block {
-        match eb.as_ref() {
-            ElseBranch::Else(b) => placement_site_walk_block(b, cx),
-            ElseBranch::ElseIf(i2) => placement_site_walk_if(i2, cx),
-        }
-    }
-}
-
-fn placement_site_walk_match<'a>(
-    m: &'a MatchStmt,
-    cx: &mut PlacementSiteCx<'a>,
-) {
-    placement_site_walk_expr(&m.scrutinee, cx);
-    for arm in &m.arms {
-        if let Some(g) = &arm.guard {
-            placement_site_walk_expr(g, cx);
-        }
-        match &arm.body {
-            MatchArmBody::Expr(e) => placement_site_walk_expr(e, cx),
-            MatchArmBody::Block(b) => placement_site_walk_block(b, cx),
-        }
-    }
-}
-
-fn placement_site_walk_stmt<'a>(s: &'a Stmt, cx: &mut PlacementSiteCx<'a>) {
-    match s {
-        Stmt::While { cond, body, .. } => {
-            placement_site_walk_expr(cond, cx);
-            placement_site_walk_block(body, cx);
-        }
-        Stmt::For { iter, body, .. } => {
-            placement_site_walk_expr(iter, cx);
-            placement_site_walk_block(body, cx);
-        }
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
-            placement_site_walk_expr(value, cx)
-        }
-        Stmt::Assign { value, .. } => placement_site_walk_expr(value, cx),
-        Stmt::If(i) => placement_site_walk_if(i, cx),
-        Stmt::Match(m) => placement_site_walk_match(m, cx),
-        Stmt::Return(Some(e), _) => placement_site_walk_expr(e, cx),
-        Stmt::Fail { value, .. } => placement_site_walk_expr(value, cx),
-        Stmt::Expr(e) => placement_site_walk_expr(e, cx),
-        _ => {}
-    }
-}
-
-fn placement_site_walk_expr<'a>(e: &'a Expr, cx: &mut PlacementSiteCx<'a>) {
-    match e {
-        Expr::Struct { path, inits, .. } => {
-            let segs: Vec<&str> =
-                path.segments.iter().map(|s| s.name.as_str()).collect();
-            if segs.len() == 1 && segs[0] == cx.main {
-                cx.sites.push(inits.as_slice());
-            }
-            for init in inits {
-                placement_site_walk_expr(&init.value, cx);
-            }
-        }
-        Expr::Call { callee, args, .. } => {
-            placement_site_walk_expr(callee, cx);
-            for a in args {
-                placement_site_walk_expr(a, cx);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            placement_site_walk_expr(left, cx);
-            placement_site_walk_expr(right, cx);
-        }
-        Expr::Unary { operand, .. } => placement_site_walk_expr(operand, cx),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            placement_site_walk_expr(receiver, cx)
-        }
-        Expr::Index { receiver, index, .. } => {
-            placement_site_walk_expr(receiver, cx);
-            placement_site_walk_expr(index, cx);
-        }
-        Expr::Tuple(es, _) | Expr::Array(es, _) => {
-            for e in es {
-                placement_site_walk_expr(e, cx);
-            }
-        }
-        Expr::Sum(e, _) | Expr::Prod(e, _) => placement_site_walk_expr(e, cx),
-        Expr::Approx { left, right, tolerance, .. } => {
-            placement_site_walk_expr(left, cx);
-            placement_site_walk_expr(right, cx);
-            placement_site_walk_expr(tolerance, cx);
-        }
-        Expr::Range { lo, hi, .. } => {
-            placement_site_walk_expr(lo, cx);
-            placement_site_walk_expr(hi, cx);
-        }
-        Expr::ArrayRepeat { val, .. } => placement_site_walk_expr(val, cx),
-        Expr::Block(b) => placement_site_walk_block(b, cx),
-        Expr::If(i) => placement_site_walk_if(i, cx),
-        Expr::Match(m) => placement_site_walk_match(m, cx),
-        Expr::Or { inner, disposition, .. } => {
-            placement_site_walk_expr(inner, cx);
-            match disposition {
-                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    placement_site_walk_expr(e, cx)
-                }
-                _ => {}
-            }
-        }
-        _ => {}
     }
 }
 
@@ -5108,24 +4317,6 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-/// Rule 6 applies to every locus with its own pinned thread, whether
-/// selected by a placement entry or by an adapter binding.
-fn pinned_lifecycle_conflict(info: &LocusInfo) -> Option<&'static str> {
-    if info.accept_param.is_some() {
-        Some("declares `accept()`: a pinned locus owns its own \
-              thread and cannot accept children")
-    } else if info.closures.iter().any(|c| {
-        matches!(c.epoch, EpochSpec::Birth | EpochSpec::Dissolve)
-    }) {
-        Some("declares a closure whose epoch is `birth` or \
-              `dissolve` (dissolve is the default): the \
-              lifecycle cascade cannot route it across a pinned \
-              locus's thread")
-    } else {
-        None
-    }
-}
-
 fn check_main_and_bindings<'e>(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -5234,18 +4425,7 @@ fn check_main_and_bindings<'e>(
             &entry.transport
         {
             match top.lookup(&locus.name) {
-                Some(TopSymbol::Locus(info)) => {
-                    if let Some(why) = pinned_lifecycle_conflict(info) {
-                        diags.push(Diag::ty(
-                            locus.span,
-                            format!(
-                                "adapter binding for topic `{}`: `{}` runs on its own \
-                                 pinned thread but {}; drop the feature from the \
-                                 adapter locus (rule 6)",
-                                entry.topic.name, locus.name, why
-                            ),
-                        ));
-                    }
+                Some(TopSymbol::Locus(_)) => {
                     // Wave B: the bus's adapter contract, by the one
                     // conformance function (its error channel unjudged).
                     const ADAPTER: &str = "__StdBusAdapter";
@@ -8782,11 +7962,9 @@ impl<'a> Checker<'a> {
     ///      primitives or structs.
     ///   3. No duplicate field keys.
     ///
-    ///   4. Rule 6: a locus placed `pinned` declares neither
-    ///      `accept()` nor a closure with `epoch birth` or `epoch
-    ///      dissolve` (judged at the entry, with its span; codegen
-    ///      keeps a spanless backstop for harness builds that skip
-    ///      the checker).
+    /// Rule 6 reads what each pinned instance realizes, so it is
+    /// judged over the placement table (`crate::lowering_laws`), not
+    /// here by the field's written type.
     fn check_placement_block(
         &mut self,
         info: &crate::symbol::LocusInfo,
@@ -8849,39 +8027,10 @@ impl<'a> Checker<'a> {
                             ),
                         ));
                     }
-                    // Rule 6 (F.31): a locus placed `pinned` owns its
-                    // own OS thread, so it cannot accept children
-                    // (their cascade would cross threads) and cannot
-                    // declare a closure that fires inside the cascade
-                    // (epoch birth or dissolve, dissolve being the
-                    // default when no clause is written, routed by the
-                    // owner's thread). A tick, duration, explicit or
-                    // inline closure fires on the pinned thread itself
-                    // and ships (example 40's pinned heartbeat, the
-                    // pinned restart tests, DNA's nerves connection).
-                    // The restriction belongs to the placement entry,
-                    // not the declaration: the same locus placed
-                    // cooperative is fine. Judged here, with the
-                    // entry's span, since F.40 phase 0; until then the
-                    // only evaluator was a spanless refusal at
-                    // lowering, so `hale check` and the LSP accepted a
-                    // program `hale build` refused.
-                    if is_locus && matches!(entry.spec, PlacementSpec::Pinned { .. }) {
-                        let conflict = match self.top.lookup(name) {
-                            Some(TopSymbol::Locus(li)) => pinned_lifecycle_conflict(li),
-                            _ => None,
-                        };
-                        if let Some(why) = conflict {
-                            self.diags.push(Diag::ty(
-                                entry.span,
-                                format!(
-                                    "placement entry `{}`: `{}` is placed `pinned` but {}; \
-                                     place it `cooperative`, or drop the feature (rule 6)",
-                                    entry.field.name, name, why
-                                ),
-                            ));
-                        }
-                    }
+                    // Rule 6 (a pinned locus accepts no children and
+                    // declares no cascade closure) is judged over the
+                    // placement table's rows, by what each pinned
+                    // instance realizes: `crate::lowering_laws`.
                 }
                 Ty::Unknown => {
                     // Cross-seed / stdlib locus — be permissive,
@@ -12737,22 +11886,10 @@ impl<'a> Checker<'a> {
     /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
-        if self.generic_bindings.is_empty() {
-            resolve_type_expr(te, self.known)
-        } else {
-            // Substituted annotations can discover Holder<T> in a
-            // specialized body. This leaves ordinary literal-field
-            // checking's established nested-template tolerance intact.
-            if let TypeExpr::Named { path, generic_args, .. } = te {
-                if !generic_args.is_empty() && path.segments.len() == 1 {
-                    let tokens: Option<Vec<String>> = generic_args.iter()
-                        .map(|arg| crate::typed_bodies::mangle_token(&self.resolve_te(arg)))
-                        .collect();
-                    return tokens.map_or(Ty::Unknown, |tokens| Ty::Named(format!("{}_{}", path.segments[0].name, tokens.join("_"))));
-                }
-            }
-            substitute_generic_ty(te, &self.generic_bindings, self.known)
-        }
+        let mut bindings: BTreeMap<String, Ty> = self.generic_params.iter()
+            .map(|name| (name.clone(), Ty::Unknown)).collect();
+        bindings.extend(self.generic_bindings.iter().map(|(name, ty)| (name.clone(), ty.clone())));
+        crate::resolve::resolve_type_expr_with(te, self.known, &bindings)
     }
 
     /// The generic bodies' monomorphs, typed (F.40 phase 3, E4): a
@@ -14688,6 +13825,12 @@ impl<'a> Checker<'a> {
                                 None => self.typed.generic_call(self.body, *call_id, row),
                             }
                         }
+                        // Preserve holes in the template's lexical scope. A
+                        // global declaration with the same name cannot fill an
+                        // argument that this call did not infer.
+                        for name in &generic_names {
+                            bindings.entry(name.clone()).or_insert(Ty::Unknown);
+                        }
                         // Args vs substituted params.
                         for ((p, at), a) in template
                             .params
@@ -16373,11 +15516,10 @@ impl<'a> Checker<'a> {
     /// `allow_loci` is a per-SITE answer, not a property of the
     /// question. Codegen does the rewrite for a generic locus as
     /// well as a generic type at a `let` ascription and a return
-    /// slot; at a locus param DEFAULT and at a locus literal's field
-    /// init only a generic TYPE resolves (a generic locus there dies
-    /// with "not synthesized — discovery missed the use site"), so
-    /// those two sites pass `false` and keep check agreeing with the
-    /// build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
+    /// slot, and at a locus literal's field override. A locus param
+    /// DEFAULT and a data-record field still admit only generic TYPE
+    /// literals at this seam, so those sites pass `false` and keep
+    /// check agreeing with the build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
     /// holds the site-by-site evidence.
     fn two_spellings_of_one_monomorph(
         &self,
@@ -16902,25 +16044,13 @@ impl<'a> Checker<'a> {
                     } else {
                         false
                     };
-                    // GH #911 B5: `Outer { inner: Box { value: 9 } }`
-                    // where `inner: Box<Int>` — the field's declared
-                    // type resolved to the mangled monomorph, the
-                    // literal typed as the template.
-                    // `populate_user_type_fields` rewrites the bare
-                    // name against the declared field type, so a
-                    // TYPE literal's field init builds and runs.
-                    //
-                    // TYPE literals only, and generic types only.
-                    // Codegen's locus-literal path has no such
-                    // rewrite (it rewrites a param DEFAULT, not a
-                    // field init at the literal), and
-                    // `L { b: Box { value: 8 } }` dies at build — so
-                    // a locus literal keeps the plain mismatch below,
-                    // the same call PR #531's review made for
-                    // perspective designation.
-                    let monomorph_field = kind_label == "type"
+                    // A declared field type supplies a bare generic
+                    // literal's arguments. Locus overrides now perform
+                    // the same rewrite as typed defaults; data-record
+                    // fields still admit only generic data types.
+                    let monomorph_field = matches!(kind_label, "type" | "locus")
                         && self.two_spellings_of_one_monomorph(
-                            want, &got, false,
+                            want, &got, kind_label == "locus",
                         );
                     if !interface_satisfied
                         && !perspective_designated

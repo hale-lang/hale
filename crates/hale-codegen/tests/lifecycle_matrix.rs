@@ -96,14 +96,10 @@
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
 //! it has been seen to show, and a run shows exactly one of them. The
-//! remaining cells are in three families:
-//! a handler run in place off the owner's domain (C36, L5's), a pinned
-//! locus's fields undrained (C9), a contract-typed field drained after its owner's
-//! dissolve (C32). `handler/grandchild/pinned` shows C9 after its subtree
-//! initializes on the pinned thread; the pool subtree initializes on its
-//! worker (C50), closing C12's off-pool nested run.
-//! A pinned birth_check now runs before run() (C38); its two cells
-//! still expose in-place failure delivery on that thread (C36).
+//! remaining cells concern in-place failure delivery off the owner's
+//! domain (C36). Pinned field drains (C9) and contract-field ordering
+//! (C32) follow the plan since L4's cascade. Nested pinned and pool
+//! initialization retains its anchor's domain (C49/C50).
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -337,6 +333,12 @@ const UNWRITABLE: &[(&str, &str)] = &[
     ("*/replica/main", "placement rule 15"),
     ("*/replica/pool", "placement rule 15"),
     ("*/replica/cross_pool", "placement rule 15"),
+    // Rule 6 judges the locus a pinned row realizes, so the birth
+    // closure behind an interface or a perspective slot is refused too
+    // (beside rule 3), and rule 6 is the one this table names first
+    // (F.40 phase 3, C7).
+    ("params_settle/iface_field/pinned", "placement rule 6"),
+    ("params_settle/persp_slot/pinned", "placement rule 6"),
     // A placement entry names a locus-typed field; an interface or a
     // perspective is not one.
     ("*/iface_field/pinned", "placement rule 3"),
@@ -408,53 +410,9 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     // was built on main.
     ("drain/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("drain/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
-    (
-        "drain/grandchild/cross_pool",
-        &[("C36", IN_PLACE)],
-        &[&[RAN_ON_MAIN_FOR_SIDE]],
-    ),
-    // A pinned locus's own fields.
-    ("params_settle/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
-    ("birth/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
-    ("run/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
-    // `Subj`'s handler delivers the failure in place on `Mid`'s thread,
-    // its owner's domain: `Mid`'s subtree initializes there, `Subj`'s
-    // inline `run()` and the handler its publication reaches included
-    // (the review of PR #1319). It showed C36 as well while that tree
-    // was built on main.
-    ("handler/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
-    // The drain that would raise the failure never runs.
-    (
-        "drain/grandchild/pinned",
-        &[("C9", UNDRAINED)],
-        &[&[UNHEARD, NO_DRAIN, MID_DRAIN_ORDER, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]],
-    ),
-    ("none/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
-    // A contract-typed field drains after its owner's dissolve.
-    ("params_settle/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("params_settle/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("birth/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("birth/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("run/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("run/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("handler/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("handler/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("drain/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("drain/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("none/iface_field/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("none/persp_slot/main", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("params_settle/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("params_settle/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("birth/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("birth/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("run/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("run/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("handler/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("handler/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("drain/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("drain/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("none/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("none/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
+    // `Subj`, a field of the pool-placed `Mid`, drains on the teardown
+    // thread, `main`, where its owner's handler hears it in place.
+    ("drain/grandchild/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
     // C38 closed (L4's birth spine): the pinned thread runs the
     // birth_check, and the owner hears it, in place on that thread.
     ("birth/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
@@ -470,6 +428,8 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
 const REGRESSIONS: &[&str] = &[
     "birth/accepted_child/pool", "handler/root_child/pool",
     "run/grandchild/cross_pool", "none/grandchild/cross_pool",
+    "handler/grandchild/cross_pool", "handler/grandchild/pinned",
+    "params_settle/grandchild/pinned", "params_settle/iface_field/main",
 ];
 
 const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
@@ -477,23 +437,6 @@ const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0
 const RAN_ON_PINNED_2: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:2, claimed main";
 const RAN_ON_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pool:side, claimed main";
 const RAN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pool:side";
-
-const UNDRAINED: &str = "a pinned locus's own fields are never drained, so `Mid`'s field `Subj` is dissolved without its drain";
-const NO_DRAIN: &str = "trace: missing: Subj.Drain";
-// Line 12's second half, as `l12_pinned_fields_drain.hl` pins it: the
-// owner's drain starts with its field's never reached.
-const MID_DRAIN_ORDER: &str = "trace: edge: Mid.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
-
-const CONTRACT_LATE: &str = "an interface- or perspective-typed field is torn down through its recorded reclaim, its whole spine after its owner's dissolve, so `Own`'s drain starts before `Subj`'s (decision line 12)";
-const OWN_DRAIN_ORDER: &str = "trace: edge: Own.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
-
-
-// The owner hears nothing: no handler runs, the failure is never
-// delivered, and each subject is reclaimed without its delivery.
-const UNHEARD: &str = "outcome: handler 0/1, dissolve 1/1, adopted delivered-once";
-const NO_DELIVERY: &str = "trace: missing: Subj.FailureDelivery";
-const RECLAIMED_UNHEARD: &str = "trace: edge: Subj.Reclaim.Entered (inst _ inc 0) with Subj.FailureDelivery.Completed not reached";
-const ASAN_UNHEARD: &str = "asan: the instrumented build gives handler 0/1, dissolve 1/1";
 
 // ===================================================================
 // Rendering

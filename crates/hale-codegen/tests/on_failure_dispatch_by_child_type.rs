@@ -212,3 +212,80 @@ fn main() {
     assert!(ok, "non-zero exit; stdout={stdout:?} stderr={stderr:?}");
     assert_eq!(stdout, "a=1 b=2 c=3\n", "stderr={stderr:?}");
 }
+
+/// Each monomorph keeps its template handler's identity, but the
+/// child layout and dispatch route must use its concrete argument.
+#[test]
+fn generic_supervisors_route_their_specialized_children() {
+    let src = r#"
+locus Cell<T> {
+    params { value: T; n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = 1; violate boom; }
+}
+locus Supervisor<T> {
+    params { child: Cell<T>; }
+    on_failure(c: Cell<T>, err: ClosureViolation) {
+        let value: T = c.value;
+        println(value);
+    }
+    fn go() { self.child.go(); }
+}
+fn main() {
+    let a: Supervisor<Int> = Supervisor { child: Cell { value: 17 } };
+    let b: Supervisor<String> = Supervisor { child: Cell { value: "second" } };
+    b.go();
+    a.go();
+    b.go();
+}
+"#;
+    assert_generic_handler_output(src, "second\n17\nsecond\n");
+}
+
+#[test]
+fn generic_supervisors_route_aliased_type_parameters() {
+    let src = r#"
+locus Alpha {
+    params { why: String = "alpha"; n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = 1; violate boom; }
+}
+locus Beta {
+    params { pad: Int = 9; n: Int = 0; why: String = "beta"; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = 1; violate boom; }
+}
+type First = Alpha;
+locus Supervisor<T> {
+    params { child: T; }
+    on_failure(c: T, err: ClosureViolation) { println(c.why); }
+    fn go() { self.child.go(); }
+}
+fn main() {
+    let a: Supervisor<First> = Supervisor { child: Alpha { } };
+    let b: Supervisor<Beta> = Supervisor { child: Beta { } };
+    b.go();
+    a.go();
+    b.go();
+}
+"#;
+    assert_generic_handler_output(src, "beta\nalpha\nbeta\n");
+}
+
+fn assert_generic_handler_output(src: &str, expected: &str) {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let diagnostics = hale_types::check_program(&program);
+    assert!(diagnostics.is_empty(), "check: {diagnostics:?}");
+    for asan in [false, true] {
+        let bin = harness::unique_bin("hale_generic_failure_children");
+        let mut options = build_opts::options();
+        options.asan = asan;
+        build_executable_with_options(&program, &bin, &[], &options).expect("build");
+        let output = Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "asan={asan}: {stdout:?} {stderr:?}");
+        assert_eq!(stdout, expected, "asan={asan}: {stderr}");
+    }
+}

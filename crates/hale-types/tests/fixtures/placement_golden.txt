@@ -1825,7 +1825,7 @@ dynamic	Odd	on main
 == crates/hale-codegen/tests/conformance_routing_correction.rs#d57574af
 -- dynamic	sites in the seed
 dynamic	Hi	on main
-dynamic	Holder	on main
+dynamic	Holder_Int	on main
 
 == crates/hale-codegen/tests/coop_pool_basic.rs#a28f7a4f
 root	App	the entry
@@ -2468,17 +2468,18 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#d8e77125
-hole	Cache@main1	unresolved arguments
-row	Cache@main1	Cache	main	default
+row	Cache_Int_String@main1	Cache_Int_String	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#e024d02b
-hole	Holder@main1	unresolved arguments
-row	Holder@main1	Holder	main	default
+row	Holder_Int@main1	Holder_Int	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#6c3d677f
-dynamic	Cache	on main	in the seed
+dynamic	Cache	on main|unresolved arguments	in the seed
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#44e97b16
+row	L@main1	L	main	default
+
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#6f45e6cb
 row	L@main1	L	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#003aba50
@@ -2488,22 +2489,18 @@ dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#2250368e
-hole	Holder@main1	unresolved arguments
-hole	Holder@main2	unresolved arguments
-row	Holder@main1	Holder	main	default
-row	Holder@main2	Holder	main	default
+row	Holder_Int@main1	Holder_Int	main	default
+row	Holder_String@main2	Holder_String	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#06768d69
-dynamic	Holder	on main	in the seed
+dynamic	Holder	on main|unresolved arguments	in the seed
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#17a6d7cc
 dynamic	Display	on main	in the seed
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#2ed79cb2
-hole	Holder@main1	unresolved arguments
-hole	Holder@main2	unresolved arguments
-row	Holder@main1	Holder	main	default
-row	Holder@main2	Holder	main	default
+row	Holder_Int@main1	Holder_Int	main	default
+row	Holder_String@main2	Holder_String	main	default
 
 == crates/hale-codegen/tests/generics.rs#d523f812
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
@@ -2524,16 +2521,13 @@ row	Container@main1	Container	main	default
 dynamic	<hole>	on main|unresolved declaration `Box_String`	in the seed
 
 == crates/hale-codegen/tests/generics.rs#a4dc9233
-hole	Compute@main1	unresolved arguments
-row	Compute@main1	Compute	main	default
+row	Compute_Int@main1	Compute_Int	main	default
 
 == crates/hale-codegen/tests/generics.rs#8c7edbcf
-hole	Holder@main1	unresolved arguments
-row	Holder@main1	Holder	main	default
+row	Holder_Int@main1	Holder_Int	main	default
 
 == crates/hale-codegen/tests/generics.rs#9b7809bb
-hole	Holder@main1	unresolved arguments
-row	Holder@main1	Holder	main	default
+row	Holder_Int@main1	Holder_Int	main	default
 
 == crates/hale-codegen/tests/generics.rs#b3b6eaa5
 row	Demo@main1	Demo	main	default
@@ -3135,6 +3129,18 @@ row	~.a	A	main	inherited
 row	~.b	B	main	inherited
 row	~.c	C	main	inherited
 
+== crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#f05cd629
+shared	Supervisor_Int@main1	Supervisor_Int #0cce2c26
+shared	Supervisor_String@main2	Supervisor_String #31a47877
+
+== crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#213cefca
+-- Supervisor_Beta@main2	Supervisor_Beta
+row	~	Supervisor_Beta	main	default
+row	~.child	Beta	main	inherited
+-- Supervisor_First@main1	Supervisor_First
+row	~	Supervisor_First	main	default
+row	~.child	Alpha	main	inherited
+
 == crates/hale-codegen/tests/or_fallible_handler.rs#fbcec405
 row	Q@main1	Q	main	default
 
@@ -3183,13 +3189,6 @@ domain	pinned:World@literal1.o
 row	World@literal1	World	main	default
 dynamic	Ship	on pinned:World@literal1.o	in the seed
 shared	World@literal1.o	Owner #415028ff
-
-== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#545f5bef
-root	World	the entry
-domain	pool:workers
-row	World@literal1	World	main	default
-row	World@literal1.driver	Driver	pool:workers	entry	off owner
-dynamic	Ship	on pool:workers	in the seed
 
 == crates/hale-codegen/tests/ownership_bubble_mixed.rs#8b9e625f
 root	App	the entry
@@ -3357,10 +3356,8 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/release_generic_owner.rs#e7383174
-hole	Pool@main1	unresolved arguments
-hole	Pool@main2	unresolved arguments
-row	Pool@main1	Pool	main	default
-row	Pool@main2	Pool	main	default
+row	Pool_Alpha@main1	Pool_Alpha	main	default
+row	Pool_Beta@main2	Pool_Beta	main	default
 -- dynamic	sites in the seed
 dynamic	Alpha	on main
 dynamic	Beta	on main
@@ -3488,9 +3485,7 @@ row	~	Worker	main	default
 row	~.t	Tries	main	inherited
 
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
--- Holder@main1	Holder
-row	~	Holder	main	default
-row	~.leaf	Leaf	main	inherited
+shared	Holder@main1	Holder #5d65043f
 
 == crates/hale-codegen/tests/self_containing_locus.rs#928d62e3
 row	Dot@main2	Dot	main	default
@@ -4742,6 +4737,56 @@ row	~.roles.router	RouterV1	main	inherited
 row	~	Roles	main	default
 row	~.router	RouterV2	main	inherited
 
+== crates/hale-types/tests/model_arrangement.rs#67df74cb
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.k	Kid	main	default
+dynamic	Kid	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#a75cca3a
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.own	Stream	main	default
+dynamic	__StdIoTcpStream	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#61954067
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	<hole>	on main|unresolved declaration `lib::Kid`	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#f143a939
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.k	Kid	main	default
+row	Kid@main1	Kid	main	default
+dynamic	Kid	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#084fd02c
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	Holder	on main	in the seed
+shared	App@literal1.held	Holder #5d65043f
+
+== crates/hale-types/tests/model_arrangement.rs#615caf8e
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.leaf	Leaf	main	default
+dynamic	Holder	on main	in the seed
+
+== crates/hale-types/tests/model_arrangement.rs#e4c7e3ba
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.leaf	Leaf	main	default
+
+== crates/hale-types/tests/model_arrangement.rs#1b270a16
+root	App	the entry
+domain	pinned:Adapter@binding1
+row	App@literal1	App	main	default
+row	App@literal1.leaf	Leaf	main	default
+-- Adapter@binding1	Adapter
+row	~	Adapter	pinned:~	binding
+row	~.leaf	Leaf	pinned:~	inherited
+
 == crates/hale-types/tests/model_builder.rs#0bc750a5
 root	App	the entry
 row	App@literal1	App	main	default
@@ -5050,6 +5095,16 @@ shared	dynamic	sites in the seed #a43e7c60
 == crates/hale-types/tests/ownership_graph.rs#da6bfa63
 row	Parent@main1	Parent	main	default
 dynamic	<hole>	on main|unresolved declaration `lib::Child`	in the seed
+
+== crates/hale-types/tests/ownership_graph.rs#dca2b001
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	Kid	on main	in the seed
+
+== crates/hale-types/tests/ownership_graph.rs#360aa0af
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	<hole>	on main|unresolved declaration `lib::Kid`|unresolved declaration `unknown::Kid`	in the seed
 
 == crates/hale-types/tests/perspective_serves.rs#a0f42efe
 root	App	the entry
@@ -5501,7 +5556,7 @@ row	Holder@main1	Holder	main	default
 dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
 
 == crates/hale-types/tests/typed_bodies.rs#199bd6c8
-dynamic	Holder	on main	in the seed
+dynamic	Holder	on main|unresolved arguments	in the seed
 
 == crates/hale-types/tests/violate.rs#8acd0731
 row	L@main1	L	main	default
@@ -5519,14 +5574,12 @@ shared	Parent@main1	Parent #6fbf107e
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == tests/hale/accept_spelled_or_monomorphised_test.hl
-hole	Holder@main3	unresolved arguments
-hole	ByParam@main4	unresolved arguments
 row	ByAlias@main1	ByAlias	main	default
 row	ByGenericChild@main2	ByGenericChild	main	default
-row	ByParam@main4	ByParam	main	default
-row	Holder@main3	Holder	main	default
+row	ByParam_Child@main4	ByParam_Child	main	default
+row	Holder_Int@main3	Holder_Int	main	default
 -- dynamic	sites in the seed
-dynamic	Cell	on main
+dynamic	Cell_Int	on main
 dynamic	Child	on main
 
 == tests/hale/accepted_child_reassign_test.hl
@@ -5691,11 +5744,9 @@ row	~	Keeper	main	default
 row	~.rows	Rows	main	inherited
 
 == tests/hale/generic_monomorph_test.hl
-hole	Cache@main1	unresolved arguments
-hole	Holder@main2	unresolved arguments
-row	Cache@main1	Cache	main	default
-row	Holder@main2	Holder	main	default
-dynamic	Cache	on main	in the seed
+row	Cache_Int_String@main1	Cache_Int_String	main	default
+row	Holder_Int@main2	Holder_Int	main	default
+dynamic	Cache	on main|unresolved arguments	in the seed
 
 == tests/hale/interface_fallible_test.hl
 row	Lenient@main2	Lenient	main	default
@@ -5802,8 +5853,7 @@ dynamic	Job	on main
 dynamic	__StdProcessChild	on main
 
 == tests/hale/release_generic_owner_test.hl
-hole	Manager@main1	unresolved arguments
-row	Manager@main1	Manager	main	default
+row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
 
 == tests/hale/restart_resumes_run_test.hl
@@ -12586,6 +12636,32 @@ row	App@literal1.h	Hub	main	default
 dynamic	Child	on main
 dynamic	Job	on main
 
+== crates/hale-types/tests/fixtures/placement/generic_aliases.hl
+dynamic	Cell_Int	on main	in the seed
+-- Supervisor_Scalar@main1	Supervisor_Scalar
+row	~	Supervisor_Scalar	main	default
+row	~.child	Cell_Scalar	main	inherited
+shared	Supervisor_String@main2	Supervisor_String #31a47877
+
+== crates/hale-types/tests/fixtures/placement/generic_constructions.hl
+dynamic	Cell_Int	on main	in the seed
+shared	Supervisor_Int@main1	Supervisor_Int #0cce2c26
+shared	Supervisor_String@main2	Supervisor_String #31a47877
+
+== crates/hale-types/tests/fixtures/placement/generic_parameter.hl
+row	Host_Int@main1	Host_Int	main	default
+-- dynamic	sites in the seed
+dynamic	Box	on main|unresolved arguments
+dynamic	Box_Int	on main
+
+== crates/hale-types/tests/fixtures/placement/generic_root.hl
+root	Supervisor	the entry
+row	Supervisor_Int@literal1	Supervisor_Int	main	default
+row	Supervisor_String@literal2	Supervisor_String	main	default
+row	Supervisor_Int@literal1.child	Cell_Int	main	default
+row	Supervisor_String@literal2.child	Cell_String	main	default
+dynamic	Cell_Int	on main	in the seed
+
 == crates/hale-types/tests/fixtures/placement/held_override.hl
 root	App	the entry
 domain	pinned:App@literal1.h
@@ -12668,6 +12744,12 @@ row	App@literal1.j	Churner	main	default
 row	~	Gateway	pool:io	entry	off owner
 row	~.router	RouterV2	pool:io	inherited
 
+== crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
+root	App	the entry
+domain	pinned:App@literal1.s
+row	App@literal1	App	main	default
+row	App@literal1.s	__StdLogStdoutSink	pinned:App@literal1.s	entry	off owner
+
 == crates/hale-types/tests/fixtures/placement/qualified.hl
 root	App	the entry
 domain	pool:io
@@ -12684,6 +12766,23 @@ row	Roles@main1	Roles	main	default
 -- App@literal1.h	Holder
 row	~	Holder	main	default
 row	~.roles	Roles	main	inherited	built by Roles@main1
+
+== crates/hale-types/tests/fixtures/placement/root_in_defaults.hl
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+-- Outer@main1	Outer
+row	~	Outer	main	default
+row	~.s	Shell	main	inherited
+row	~.s.inner	Holder	main	inherited
+row	~.s.inner.app	App	main	inherited
+row	~.s.inner.app.w	Worker	main	inherited
+-- Shell@main2	Shell
+row	~	Shell	main	default
+row	~.inner	Holder	main	inherited
+row	~.inner.app	App	main	inherited
+row	~.inner.app.w	Worker	main	inherited
 
 == crates/hale-types/tests/fixtures/placement/static_field_default.hl
 root	App	the entry
@@ -12753,6 +12852,14 @@ row	Sender@main2	Sender	main	default
 -- Listener@main1	Listener
 row	~	Listener	main	default
 row	~.leaf	Leaf	main	inherited
+
+== crates/hale-types/tests/fixtures/placement/generic_imported
+-- __lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_Int@main1	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_Int
+row	~	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_Int	main	default
+row	~.child	__lib_tests__fixtures__placement__generic_imported__lib___lib__Cell_Int	main	inherited
+-- __lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_String@main2	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_String
+row	~	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_String	main	default
+row	~.child	__lib_tests__fixtures__placement__generic_imported__lib___lib__Cell_String	main	inherited
 
 == crates/hale-types/tests/fixtures/placement/imported/no_own_main
 row	__lib_tests__fixtures__placement__imported__lib___lib__Worker@main1	__lib_tests__fixtures__placement__imported__lib___lib__Worker	main	default
@@ -13047,6 +13154,10 @@ row	~.router	RouterV2	main	inherited
 row	~	Holder	pool:side	entry	off owner
 row	~.i	Inner	pool:side	inherited
 
+== shared Holder #5d65043f
+row	~	Holder	main	default
+row	~.leaf	Leaf	main	inherited
+
 == shared Holder #8b4b183a
 row	~	Holder	main	default
 row	~.seen	Rows	main	inherited
@@ -13137,6 +13248,14 @@ row	~.s	SessionSigner	main	inherited
 == shared Router #f7d48509
 row	~	Router	main	default
 row	~.quick	Quick	main	inherited
+
+== shared Supervisor_Int #0cce2c26
+row	~	Supervisor_Int	main	default
+row	~.child	Cell_Int	main	inherited
+
+== shared Supervisor_String #31a47877
+row	~	Supervisor_String	main	default
+row	~.child	Cell_String	main	inherited
 
 == shared Support #2066d0f8
 row	~	Support	main	default

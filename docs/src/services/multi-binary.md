@@ -124,6 +124,13 @@ locus BrokerAdapter {
 }
 ```
 
+Being pinned, an adapter is held to the same restrictions as a
+locus placed `pinned` (placement rule 6): it declares no
+`accept(...)` and no closure whose epoch is `birth` or `dissolve`
+(dissolve is the default), because the lifecycle cascade that runs
+those cannot cross onto its thread. `hale check` refuses either one
+at the binding entry.
+
 ## What each binding promises
 
 A send succeeding means the broker accepted the message — and

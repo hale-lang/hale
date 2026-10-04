@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_frontend::source::Disk;
-use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, TopDecl};
+use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, Stmt, TopDecl};
 use hale_syntax::sites::SiteKind;
 use hale_types::placement::{
-    join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
+    join_lowering, provenance, Bound, Construction, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
     InstanceKey, InstanceRow, LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
 };
 use hale_types::check::PoolId;
@@ -240,6 +240,23 @@ fn the_table_is_demanded_once_per_snapshot() {
     let again: *const PlacementTable = table(&s);
     assert_eq!(first, again);
     assert_eq!(s.builds()["placement"], 1);
+}
+
+/// Rule 6's reach (C7): a field the checker types `Unknown` is a
+/// `std::` locus, and the pinned row realizes the stdlib's own
+/// declaration, by its stdlib-universe site, which is where the law
+/// reads the locus's members. No stdlib locus declares `accept` or a
+/// cascade closure today, so the program checks clean.
+#[test]
+fn a_pinned_stdlib_locus_realizes_its_stdlib_declaration() {
+    let s = clean("pinned_stdlib.hl");
+    let t = table(&s);
+    let (_, row) = one(t, "s");
+    assert!(matches!(row.decided_by, Decision::Entry { .. }));
+    assert!(matches!(t.domain(row.domain).kind, DomainKind::Pinned { .. }));
+    let realizes = row.realizes.as_ref().expect("the pinned row realizes a declaration");
+    assert_eq!(realizes.site.universe, SiteUniverse::StdlibAnalysis);
+    assert_eq!(realizes.lowered, "__StdLogStdoutSink");
 }
 
 /// Case 1: one type, three instances, three domains; each nested `K`
@@ -523,6 +540,93 @@ fn two_constructions_are_two_templates() {
     assert!(rows(t, "side").iter().all(|(_, r)| !r.guarded));
 }
 
+/// A literal's type annotation fixes its monomorph and the substitutions
+/// used below it. Two instances retain one template declaration identity.
+#[test]
+fn generic_constructions_keep_arguments_and_specialize_their_children() {
+    for (name, integer, integer_child) in [
+        ("generic_constructions.hl", "Supervisor_Int", "Cell_Int"),
+        ("generic_root.hl", "Supervisor_Int", "Cell_Int"),
+        ("generic_aliases.hl", "Supervisor_Scalar", "Cell_Scalar"),
+    ] {
+        let s = clean(name);
+        let t = table(&s);
+        let tops = rows(t, "");
+        assert_eq!(tops.len(), 2, "{name}: {tops:?}");
+        let names: BTreeSet<_> = tops.iter().map(|(_, r)| lowered(r)).collect();
+        assert_eq!(names, [integer, "Supervisor_String"].into_iter().collect(), "{name}");
+        let sites: BTreeSet<_> = tops.iter().map(|(_, r)| r.realizes.as_ref().unwrap().site).collect();
+        assert_eq!(sites.len(), 1, "both monomorphs name the same authored declaration");
+        for (key, row) in tops {
+            let (arg, child) = match lowered(row) {
+                name if name == integer => ("Int", integer_child),
+                "Supervisor_String" => ("String", "Cell_String"),
+                other => panic!("unexpected monomorph {other}"),
+            };
+            assert_eq!(row.realizes.as_ref().unwrap().args.iter().map(|a| a.display()).collect::<Vec<_>>(), [arg]);
+            let children: Vec<_> = rows(t, "child").into_iter().filter(|(k, _)| k.origin == key.origin).collect();
+            assert_eq!(children.len(), 1, "{name}: {children:?}");
+            let (_, child_row) = children[0];
+            assert_eq!(lowered(child_row), child);
+            assert_eq!(child_row.realizes.as_ref().unwrap().args.iter().map(|a| a.display()).collect::<Vec<_>>(), [arg]);
+        }
+        let dynamic: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
+        assert_eq!(dynamic.len(), 1, "{name}: {dynamic:?}");
+        let spare = dynamic[0].realizes.as_ref().unwrap();
+        assert_eq!(spare.lowered, "Cell_Int");
+        assert_eq!(spare.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+        assert!(t.holes.iter().all(|h| !matches!(h.kind, HoleKind::UnresolvedArguments)), "{name}: {:?}", t.holes);
+    }
+}
+
+#[test]
+fn generic_constructions_keep_qualified_template_identity() {
+    let s = clean("generic_imported");
+    let t = table(&s);
+    let tops = rows(t, "");
+    assert_eq!(tops.len(), 2);
+    let a = tops.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Supervisor_Int"))).expect("Int supervisor");
+    let b = tops.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Supervisor_String"))).expect("String supervisor");
+    assert_eq!(a.site, b.site, "two import aliases name one template declaration");
+    assert!(b.lowered.ends_with("Supervisor_String"));
+    assert_eq!(b.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["String"]);
+    assert!(a.lowered.ends_with("Supervisor_Int"));
+    assert_ne!(a.lowered, "Supervisor_Int", "the local decoy is not the imported template");
+    assert_eq!(a.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+    let children = rows(t, "child");
+    assert_eq!(children.len(), 2);
+    let child = children.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Cell_Int"))).expect("Int child");
+    let other = children.iter().find_map(|(_, row)| row.realizes.as_ref()
+        .filter(|r| r.lowered.ends_with("Cell_String"))).expect("String child");
+    assert_eq!(child.site, other.site);
+    assert_eq!(other.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["String"]);
+    assert!(child.lowered.ends_with("Cell_Int"));
+    assert_eq!(child.args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+    assert!(t.holes.is_empty(), "{:?}", t.holes);
+}
+
+#[test]
+fn generic_constructions_do_not_resolve_parameters_as_global_names() {
+    let s = clean("generic_parameter.hl");
+    let typed = s.demand_typed_bodies().expect("typed template and specializations");
+    assert!(typed.monomorphs().named("Box_T").is_none(), "a parameter is not the global locus T");
+    assert!(typed.monomorphs().named("Box_Int").is_some());
+    let t = table(&s);
+    let dynamic: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
+    assert_eq!(dynamic.len(), 2);
+    let dependent = dynamic.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Box"))
+        .expect("the template's type parameter is unresolved, even beside a global locus T");
+    assert!(dependent.realizes.as_ref().unwrap().args.is_empty());
+    assert!(t.holes.iter().any(|h| h.at == HoleAt::Dynamic(dependent.literal)
+        && matches!(h.kind, HoleKind::UnresolvedArguments)));
+    let concrete = dynamic.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Box_Int"))
+        .expect("a concrete annotation in that same generic body remains concrete");
+    assert_eq!(concrete.realizes.as_ref().unwrap().args.iter().map(|a| a.display()).collect::<Vec<_>>(), ["Int"]);
+}
+
 /// The choices the checker refuses: a conditional for a placed field
 /// (rule 18), and `if` arms of two declarations.
 #[test]
@@ -570,6 +674,85 @@ fn a_claims_only_main_is_the_entrys_construction() {
         assert_eq!(k.origin, entry, "`{p}` is under the entry");
         assert_eq!(r.domain, PlacementTable::MAIN);
     }
+}
+
+/// A root literal written where no scope's bodies reach (C7, the review
+/// of PR #1338): `Holder`'s params default spells `App`, and `Outer`'s
+/// spells it inside two other literals' inits. Each builds the root
+/// wherever its holder is built, so the root records both as `expanded`;
+/// neither is a template (the constructions, and the rows, are what they
+/// were: `make_app`'s literal alone). Each records the outermost literals
+/// that build it, with their bounds: `Holder`'s, through `Shell`'s default
+/// `Holder { }`, `main`'s `Shell { }` (`Outer`'s default overrides
+/// `inner`, so it builds none); `Outer`'s, `main`'s `Outer { }`.
+#[test]
+fn a_root_built_in_a_params_default_is_recorded_as_expanded() {
+    let s = clean("root_in_defaults.hl");
+    let t = table(&s);
+    let ids = s.identities();
+    let site = |id| SiteRef::user(ids.site_id(id).expect("minted"));
+    let programs: Vec<&Program> = s.programs().values().collect();
+    let decl = |name: &str| programs.iter().find_map(|p| flat_decls(&p.items).find_map(|i| match i {
+        TopDecl::Locus(l) if l.name.name == name => Some(l),
+        _ => None,
+    }));
+    let holder = site(default_literal(decl("Holder").expect("Holder"), "app"));
+    // `Shell { inner: Holder { app: App { } } }`: the innermost literal.
+    let Expr::Struct { inits, .. } = default_expr(decl("Outer").expect("Outer"), "s") else { panic!("a literal") };
+    let Expr::Struct { inits, .. } = &inits[0].value else { panic!("`Holder {{ … }}`") };
+    let Expr::Struct { id, .. } = &inits[0].value else { panic!("`App {{ }}`") };
+    let nested = site(*id);
+    // `main`'s `Outer { }` and `Shell { }`.
+    let main_literal = |name: &str| {
+        programs
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .find_map(|i| match i {
+                TopDecl::Fn(f) if f.name.name == "main" => f.body.stmts.iter().find_map(|s| match s {
+                    Stmt::Expr(Expr::Struct { path, id, .. }) if path.segments[0].name == name => Some(site(*id)),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("`{name} {{ }}` in `main`"))
+    };
+    let root = t.root.as_ref().unwrap();
+    let mut want = vec![
+        (holder, vec![Construction { literal: main_literal("Shell"), bound: Bound::Once }]),
+        (nested, vec![Construction { literal: main_literal("Outer"), bound: Bound::Once }]),
+    ];
+    want.sort_by_key(|(l, _)| *l);
+    let got: Vec<(SiteRef, Vec<Construction>)> =
+        root.expanded.iter().map(|e| (e.literal, e.built_by.clone())).collect();
+    assert_eq!(got, want);
+    assert!(
+        root.expanded.iter().all(|e| e.per_use.is_empty()),
+        "a params default's chain has builders, and passes no position emitted at every use"
+    );
+    assert_eq!(root.constructions.len(), 1, "`make_app`'s literal is the one construction");
+    let expanded: Vec<SiteRef> = root.expanded.iter().map(|e| e.literal).collect();
+    assert!(!expanded.contains(&root.constructions[0].literal));
+    for k in t.instances.keys() {
+        assert!(
+            !matches!(k.origin, Origin::Construction(l) if expanded.contains(&l)),
+            "an expanded literal is no template: {k:?}"
+        );
+    }
+}
+
+/// A params field's default expression.
+fn default_expr<'l>(l: &'l LocusDecl, field: &str) -> &'l Expr {
+    l.members
+        .iter()
+        .find_map(|m| match m {
+            LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field),
+            _ => None,
+        })
+        .and_then(|p| match &p.init {
+            ParamInit::Value(e) => Some(e),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{}.{field}` has no default", l.name.name))
 }
 
 /// Case 14: a library seed checked alone roots at its lowering root; with

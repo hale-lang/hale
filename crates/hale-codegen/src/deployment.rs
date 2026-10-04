@@ -51,12 +51,6 @@ pub struct DeploymentPlan {
     /// init emits the other `K - 1` instances. `K <= 1` is an ordinary
     /// single instance and has no entry.
     pub main_placement_replicas: BTreeMap<String, Vec<Option<i64>>>,
-    /// The root fields a `placement { }` entry names that decide no
-    /// field family (a hole of the table's: a field held from an
-    /// existing instance). Such a field initialised by anything but a
-    /// locus literal is refused as a decided one is (GH #890's
-    /// backstop), never deployed silently.
-    pub undecided_fields: BTreeSet<String>,
     /// Locus TYPE names of the pinned anchors (a root field placed
     /// `pinned`, an adapter of the root's `bindings { }`), as realized —
     /// consumed by struct-shape decisions (pinned loci get a

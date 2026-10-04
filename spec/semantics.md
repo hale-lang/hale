@@ -331,8 +331,12 @@ owner may live in a different tower or on a different pool: a
 cross-pool owner is served by an async handoff over the bus, so a
 cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
-compile time. See `runtime.md` "Interest-based ownership (accept
-bubbling)."
+compile time. The typechecker rejects it at the literal when the
+literal sits in a member body of the locus that spawns it; a
+literal in another locus's `params` default, which the build
+expands under whichever locus instantiates that one, is rejected
+by the build, without a location. See `runtime.md`
+"Interest-based ownership (accept bubbling)."
 
 Whether the owner is on another pool is a fact of each *instance*
 of the enclosing locus, not of its type: a locus nested under a
@@ -3309,13 +3313,21 @@ main locus App {
    permitted (a pinned heartbeat with `epoch duration`, a pinned
    connection with an inline closure). These restrictions belong
    to the placement site, not the declaration: the typechecker
-   walks each placement entry and applies them to the named
-   locus type, at the entry's span, and a locus that uses
-   neither feature can be placed either cooperative or pinned at
-   the deployment's discretion. (F.40 phase 0: until then the
-   rule was stated as "no closure declarations" while lowering
-   refused only birth and dissolve closures; the rule now says
-   what ships, and the typechecker judges it.)
+   applies them to every instance that runs pinned — a `pinned`
+   entry's field (each of its replicas) and an adapter inline in
+   `bindings { }`, which has a thread of its own with no entry —
+   and judges the locus the instance realizes (a construction
+   site's override literal, a `std::` locus), at the entry's
+   span. A locus that uses neither feature can be placed either
+   cooperative or pinned at the deployment's discretion. (F.40
+   phase 0: until then the rule was stated as "no closure
+   declarations" while lowering refused only birth and dissolve
+   closures; the rule now says what ships, and the typechecker
+   judges it. Phase 3, C7: it is judged over the placement
+   table's rows, so the adapter, an `accept()` with no parameter
+   and a field whose written type the entry walk could not
+   resolve are judged too, and lowering keeps no refusal of its
+   own.)
 7. **Dead bus receiver (error).** A locus that declares
    `bus { subscribe ... }`, is placed `cooperative(pool = X)` with
    `X != main` (and not `where async_io`), **and** whose `run()`
@@ -3556,8 +3568,32 @@ main locus App {
     a loop that *calls a fn* holding the literal is unaffected and
     correct (each call joins its own thread at that fn's exit), and
     the rule is positional on that literal, so it is not a rule
-    about the whole call graph. Codegen keeps a matching refusal for
-    embedders that bypass the checker. (GH #826, 2026-09-20.)
+    about the whole call graph. The typechecker judges it over the
+    placement table's constructions of the root (every literal of
+    the root declaration, as resolved, in a fn or locus body), and
+    over the root literals written in another locus's `params`
+    default: such a literal is built wherever a literal of that
+    locus takes the default, so it inherits that literal's loop,
+    through any depth of defaults, and is rejected at the outermost
+    literal written in a loop (`for i in 0..3 { Holder { }; }`,
+    where `Holder`'s default is `App { }`, at `Holder { }`). A root
+    literal written in a position lowering emits again at every use
+    — a `const`'s value (at each read of the const), a type's field
+    default (at each literal of the type that takes it), a closure's
+    assertion (at each evaluation of the closure) — or reached
+    through `params` defaults from a literal written in one, has no
+    construction the table records, so the position does not let
+    the compiler show the root is built once: when the root pins a
+    field it is rejected outright at that position's literal, loop
+    or no loop, and the fix is to build it in a locus's `params` or
+    a fn body. A root literal in an adapter's inits is built once,
+    by the bindings prelude, and one in a perspective's members is
+    never lowered (a contract fn's body is not the `serves`-ing
+    locus's method); neither is judged. A `const` or `type` written
+    in a locus body is refused on its own rule. The test harness's
+    build, which skips the rest of the check, judges it too, so
+    lowering keeps no refusal of its own. (GH #826, 2026-09-20;
+    F.40 phase 3, C7.)
 18. **Every entry is consumed by exactly one instantiation
     (error).** A placement entry is carried by the locus LITERAL
     lowered for its field, and by nothing else: the thread class,
@@ -3580,9 +3616,25 @@ main locus App {
     registered its subscriptions against the global queue) before
     the value returns. Scope matches rule 17's: an imported seed's
     main locus is renamed `__lib_*`, is not the deployment root, and
-    its entries never reach the plan. Codegen keeps a matching
-    refusal for embedders that bypass the checker. (GH #890,
-    2026-09-20.)
+    its entries never reach the plan; the instantiation sites judged
+    are every literal of the root declaration as resolved, wherever it
+    is written: the placement table's constructions of the root (a
+    literal in a fn or locus body), and the literals the table records
+    where no body reaches — another locus's `params` default, at any
+    depth of defaults, a perspective's `params`, a const, a type's
+    field default — which lowering expands wherever their holder is
+    built (`locus Holder { params { app: App = App { w:
+    make_worker() }; } }` is rejected at `make_worker()`). The root's
+    own default is live when one of those literals leaves the field to
+    it, or when no literal lowering emits builds the root (no
+    construction, and no such literal whose holder something builds):
+    lowering then builds no root at all, but a library seed checked on
+    its own takes the default, and so does the rule. So `App { w:
+    Worker { } }` in `Holder`'s default, with `Holder { }` built,
+    leaves a `make_worker()` default dead. The test harness's
+    build, which skips the rest of the check, judges it too, so
+    lowering keeps no refusal of its own. (GH #890, 2026-09-20;
+    F.40 phase 3, C7.)
 
 19. **Uncarriable bus payload (error).** An `of type T` clause on a
     `publish` / `subscribe` must name a type the bus can carry — a

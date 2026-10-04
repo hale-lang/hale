@@ -740,6 +740,11 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+A declared type parameter shadows a same-named top-level declaration or
+alias throughout its template's signatures, fields and body annotations.
+Before specialization it remains unbound; a global name cannot supply
+its type or create an apparent concrete monomorph.
+
 **Generic loci monomorphize the same way.** `locus Cache<K, V>` is
 a template; `Cache<Int, String>` names the monomorph
 `Cache_Int_String`, whose `params` are the template's with the
@@ -772,6 +777,13 @@ declared type at the site. The sites that declare one are:
 - a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
+
+At a `let` ascription, a transparent alias of the whole instantiation
+supplies the same arguments: `type IntBox = Box<Int>;` permits
+`let b: IntBox = Box { value: 1 };`. Imported template paths resolve
+through their import aliases before specialization. Different aliases
+for one imported template retain the same declaration identity; each
+construction carries its own concrete arguments and child layouts.
 
 Anywhere else — an un-annotated `let`, a literal in statement
 position — the arguments cannot be recovered, and the literal is a
@@ -905,10 +917,11 @@ around a cycle through other loci — is an error at the param
 contain itself by value"). Every instance the default builds needs
 another, and no call site can end the chain: `Node { next: ... }`
 needs a `Node` to hand over, and building one asks the same
-question again. The rule is over locus LITERALS in a default, and a
-literal's own supplied fields count — a default that spells out
-every param of the locus it builds expands no default of its own
-and is not a cycle.
+question again. The rule is over locus LITERALS in a default,
+anywhere in it — inside an `if` or `match` arm or a block's
+statements too, since every branch is lowered — and a literal's own
+supplied fields count: a default that spells out every param of the
+locus it builds expands no default of its own and is not a cycle.
 
 **A call that builds one counts (GH #870).** `next: Node = make()`
 with `fn make() -> Node { return Node { }; }` is the same ring
@@ -932,10 +945,9 @@ rule only reports the rings it can prove.
 
 A cycle whose loci live in different files of one seed
 is reported when the seed is checked together, since a single file
-holds no declaration for its sibling's types. Codegen enforces the
-literal half of the rule for itself, as an `Unsupported` error, so a
-path that bypasses the checker terminates too — the call half needs
-no backstop, since lowering a call was never what recursed.
+holds no declaration for its sibling's types. The test harness's
+build, which skips the rest of the check, judges this rule too, so
+lowering keeps no guard of its own (F.40 phase 3, C7).
 
 ## `inferred` params
 

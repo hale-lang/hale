@@ -190,6 +190,79 @@ fn three_hop_uses_path_based_mangled_prefix() {
     let _ = std::fs::remove_file(&built_bin);
 }
 
+/// F.40 phase 3, X3: the per-build rename table holds one row per alias
+/// and declaration, however many import sites reach the declaration,
+/// and lists them in one order on every load. Three hops where each lib
+/// is reached more than once: both of the app's files import `mid`, the
+/// app and both of mid's files import util as `u`. Five import sites name
+/// six declarations (mid's three, util's three), so the table is six
+/// rows; it was fifteen (each lib's rows pushed once per site that
+/// reached it, mid's twice and util's three times), in an order its
+/// hash maps chose afresh per load.
+#[test]
+fn the_rename_table_is_one_row_per_imported_declaration_in_a_stable_order() {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_frontend::source::Disk;
+    let root = std::env::temp_dir().join(format!("hale_three_hop_renames_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let files = [
+        (
+            "app/main.hl",
+            "import \"../mid\" as mid;\nimport \"../util\" as u;\n\
+             fn main() {\n    println(mid::describe(mid::make_wrapped(\"a\", 1)));\n    println(u::unbox(u::make_box(\"b\", 2)));\n}\n",
+        ),
+        (
+            "app/more.hl",
+            "import \"../mid\" as mid;\n\
+             fn extra() -> String {\n    return mid::describe(mid::make_wrapped(\"c\", 3));\n}\n",
+        ),
+        (
+            "mid/wrap.hl",
+            "import \"../util\" as u;\n\
+             type Wrapped {\n    inner: u::Box;\n}\n\
+             fn make_wrapped(label: String, value: Int) -> Wrapped {\n    return Wrapped { inner: u::make_box(label, value) };\n}\n",
+        ),
+        (
+            "mid/show.hl",
+            "import \"../util\" as u;\n\
+             fn describe(w: Wrapped) -> String {\n    return u::unbox(w.inner);\n}\n",
+        ),
+        (
+            "util/box.hl",
+            "type Box {\n    label: String;\n    value: Int;\n}\n\
+             fn make_box(label: String, value: Int) -> Box {\n    return Box { label: label, value: value };\n}\n\
+             fn unbox(b: Box) -> String {\n    return b.label + \"=\" + b.value;\n}\n",
+        ),
+    ];
+    for (path, text) in files {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, text).expect("write");
+    }
+    let app = root.join("app").canonicalize().expect("the app");
+    let renames = || {
+        let Ok(snap) = Snapshot::load(&app, LoadMode::WholeSeed, &Disk, Config::check(true, false)) else {
+            panic!("the three-hop app loads")
+        };
+        snap.import_renames().clone()
+    };
+    let table = renames();
+    let mut keys: Vec<String> = table.iter().map(|(segs, _)| segs.join("::")).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["mid::Wrapped", "mid::describe", "mid::make_wrapped", "u::Box", "u::make_box", "u::unbox"],
+        "one row per alias and declaration: {table:?}"
+    );
+    let mangled: std::collections::BTreeSet<&String> = table.iter().map(|(_, m)| m).collect();
+    assert_eq!(mangled.len(), table.len(), "six distinct declarations: {table:?}");
+    for n in 0..4 {
+        assert_eq!(renames(), table, "load {n} lists the table in the first load's order");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[allow(dead_code)]
 fn read_dir_names(d: &Path) -> Vec<String> {
     std::fs::read_dir(d)

@@ -84,6 +84,37 @@ fn main() { App { }; }
             retry_bound: None,
         },
         Probe {
+            what: "a generic child named by a qualified import",
+            src: "
+locus Cell<T> { params { n: Int = 0; } }
+locus ImportedCell<T> { params { n: Int = 0; } }
+main locus App {
+    on_failure(c: lib::Cell<Int>, err: ClosureViolation) { restart_in_place(c); }
+}
+fn main() { App { }; }
+",
+            renames: &[(&["lib", "Cell"], "ImportedCell")],
+            child: ChildRef::Locus("ImportedCell_Int".to_string()),
+            ops: &[RecoveryOp::RestartInPlace],
+            retry_bound: None,
+        },
+        Probe {
+            what: "a qualified generic child behind an alias",
+            src: "
+locus Cell<T> { params { n: Int = 0; } }
+locus ImportedCell<T> { params { n: Int = 0; } }
+type Job = lib::Cell<Int>;
+main locus App {
+    on_failure(c: Job, err: ClosureViolation) { bubble(err); }
+}
+fn main() { App { }; }
+",
+            renames: &[(&["lib", "Cell"], "ImportedCell")],
+            child: ChildRef::Locus("ImportedCell_Int".to_string()),
+            ops: &[RecoveryOp::Bubble],
+            retry_bound: None,
+        },
+        Probe {
             what: "recovery ops inside `match` arms",
             src: "
 locus Child { params { n: Int = 0; } closure boom { captures: n; epoch inline; } fn go() { violate boom; } }
@@ -170,9 +201,12 @@ fn restart_in_place_inside_a_match_arm_or_an_if_value_is_seen() {
             continue;
         }
         let program = hale_syntax::parse_source(p.src).expect("probe parses");
-        let routing = handler_rows(&[&program], &[], &Default::default());
+        let renames = p.renames.iter().map(|(path, name)| {
+            (path.iter().map(|s| s.to_string()).collect(), name.to_string())
+        }).collect::<Vec<_>>();
+        let routing = handler_rows(&[&program], &renames, &Default::default());
         assert!(
-            routing.restarts_in_place("Child"),
+            routing.restarts_in_place(p.child.name()),
             "{}: the rows do not see the restart in place",
             p.what
         );
@@ -253,4 +287,88 @@ fn an_unminted_handler_joins_its_row_by_span() {
     assert!(decls[0].id.is_none());
     assert!(alpha.is_row_of(decls[0]) && !alpha.is_row_of(decls[1]));
     assert!(beta.is_row_of(decls[1]) && !beta.is_row_of(decls[0]));
+}
+
+#[test]
+fn specialization_preserves_handler_sites_and_resolves_each_child_declaration() {
+    use hale_syntax::ast::{flat_decls, LocusMember, TopDecl, TypeExpr};
+    use hale_types::placement::SiteRef;
+    let src = "
+locus Alpha { }
+locus Beta { }
+locus T { }
+locus Cell<T> { }
+locus ImportedCell<T> { }
+locus Parent<T> {
+    on_failure(c: T, err: ClosureViolation) { bubble(err); }
+    on_failure(c: lib::Cell<T>, err: ClosureViolation) { restart_in_place(c); }
+}
+locus Other<T> {
+    on_failure(c: T, err: ClosureViolation) { quarantine(c); }
+}
+locus First {
+    on_failure(c: Alpha, err: ClosureViolation) { bubble(err); }
+    on_failure(c: lib::Cell<Int>, err: ClosureViolation) { bubble(err); }
+}
+locus Second {
+    on_failure(c: Beta, err: ClosureViolation) { bubble(err); }
+    on_failure(c: lib::Cell<String>, err: ClosureViolation) { bubble(err); }
+}
+";
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    // Distinct declarations can share source spans after synthesis.
+    let parent_span = program.items.iter().find_map(|d| match d {
+        TopDecl::Locus(l) if l.name.name == "Parent" => Some(l.span),
+        _ => None,
+    }).unwrap();
+    for d in &mut program.items {
+        if let TopDecl::Locus(l) = d {
+            if l.name.name == "Other" { l.span = parent_span; }
+        }
+    }
+    let snapshot = hale_types::snapshot::mint([("main.hl", &mut program)], &[]);
+    let loci = flat_decls(&program.items).filter_map(|d| match d {
+        TopDecl::Locus(l) => Some((l.name.name.as_str(), l)),
+        _ => None,
+    }).collect::<std::collections::BTreeMap<_, _>>();
+    let parent = loci["Parent"];
+    let renames = vec![(vec!["lib".into(), "Cell".into()], "ImportedCell".into())];
+    let mut routing = handler_rows(&[&program], &renames, &snapshot);
+    let original = routing.handlers_of_decl(parent.id).cloned().collect::<Vec<_>>();
+    assert_eq!(original.len(), 2);
+    for (name, concrete) in [("Parent_Alpha", "First"), ("Parent_Beta", "Second")] {
+        let types = loci[concrete].members.iter().filter_map(|m| match m {
+            LocusMember::Failure(f) => Some(f.params[0].ty.clone()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        routing.specialize(parent, name, |ty| match ty {
+            TypeExpr::Named { path, .. } if path.segments[0].name == "T" => types[0].clone(),
+            _ => types[1].clone(),
+        });
+    }
+    for (name, child, cell) in [
+        ("Parent_Alpha", "Alpha", "ImportedCell_Int"),
+        ("Parent_Beta", "Beta", "ImportedCell_String"),
+    ] {
+        let rows = routing.handlers_of_instance(parent.id, name).collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        for (row, template) in rows.iter().zip(&original) {
+            assert_eq!(row.id, template.id);
+            assert_eq!(row.parent_id, template.parent_id);
+            assert_eq!(row.ops, template.ops);
+            assert_eq!(row.ordinal, template.ordinal);
+        }
+        assert_eq!(rows[0].child, ChildRef::Locus(child.into()));
+        assert_eq!(rows[1].child, ChildRef::Locus(cell.into()));
+        assert_eq!(rows[0].child_decl, snapshot.site_id(loci[child].id).map(SiteRef::user));
+        assert_eq!(rows[1].child_decl, snapshot.site_id(loci["ImportedCell"].id).map(SiteRef::user));
+        assert_eq!(routing.route_instance(parent.id, name, cell).unwrap().id, original[1].id);
+        assert!(routing.restarts_in_place(cell));
+        assert!(routing.handlers_of_instance(loci["Other"].id, name)
+            .all(|r| r.ops == [RecoveryOp::Quarantine]));
+    }
+    assert!(routing.route_instance(parent.id, "Parent_Alpha", "Beta").is_none());
+    assert!(routing.route_instance(parent.id, "Parent_Beta", "ImportedCell_Int").is_none());
+    assert_eq!(routing.handlers_of_decl(parent.id).next().unwrap().child, original[0].child);
+    assert_eq!(routing.rows().len(), 7, "specialization does not change snapshot rows");
 }

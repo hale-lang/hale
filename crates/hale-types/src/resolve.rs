@@ -99,6 +99,8 @@ pub struct KnownNames {
     /// bundle), which is what keeps the permissive `Unknown` where
     /// the declaration genuinely is not in the bundle.
     imports: BTreeMap<String, String>,
+    /// Lexically bound type parameters shadow declarations and aliases.
+    parameters: BTreeMap<String, Ty>,
 }
 
 impl std::ops::Deref for KnownNames {
@@ -115,6 +117,20 @@ impl std::ops::DerefMut for KnownNames {
 }
 
 impl KnownNames {
+    /// A declaration's parameter scope. The bundle's table is shared when
+    /// there are no parameters; a template keeps its names unbound until
+    /// the checker supplies the arguments of a concrete instantiation.
+    fn with_parameters(&self, parameters: &[GenericParam]) -> std::borrow::Cow<'_, Self> {
+        if parameters.is_empty() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut scoped = self.clone();
+        for parameter in parameters {
+            scoped.parameters.insert(parameter.name.name.clone(), Ty::Unknown);
+        }
+        std::borrow::Cow::Owned(scoped)
+    }
+
     /// The expanded target of `name` when it is a type alias.
     pub fn alias_target(&self, name: &str) -> Option<&Ty> {
         self.aliases.get(name)
@@ -932,6 +948,8 @@ fn register_locus(
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
+    let scoped = known.with_parameters(&decl.generics);
+    let known = scoped.as_ref();
     let mut params: Vec<ParamInfo> = Vec::new();
     let mut bus_publishes: Vec<BusPublishInfo> = Vec::new();
     let mut bus_subscribes: Vec<BusSubscribeInfo> = Vec::new();
@@ -1095,6 +1113,8 @@ fn register_locus(
                 });
             }
             LocusMember::Fn(f) => {
+                let scoped = known.with_parameters(&f.generics);
+                let known = scoped.as_ref();
                 let ret = match &f.ret {
                     Some(te) => resolve_type_expr(te, known),
                     None => Ty::Unit,
@@ -1255,6 +1275,8 @@ fn register_type(
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
+    let scoped = known.with_parameters(&decl.generics);
+    let known = scoped.as_ref();
     let kind = match &decl.body {
         TypeDeclBody::Alias(te) => TypeKind::Alias(resolve_type_expr(te, known)),
         TypeDeclBody::Struct(fields) => {
@@ -1354,6 +1376,8 @@ fn register_perspective(
                 serialize_as = Some(resolve_type_expr(te, known));
             }
             PerspectiveMember::Fn(f) => {
+                let scoped = known.with_parameters(&f.generics);
+                let known = scoped.as_ref();
                 let ret = match &f.ret {
                     Some(te) => resolve_type_expr(te, known),
                     None => Ty::Unit,
@@ -1430,6 +1454,8 @@ fn register_fn(
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
+    let scoped = known.with_parameters(&decl.generics);
+    let known = scoped.as_ref();
     let params = decl
         .params
         .iter()
@@ -1492,6 +1518,7 @@ fn register_symbol(
 fn type_expr_mangle_token(
     t: &TypeExpr,
     known: &KnownNames,
+    bindings: &BTreeMap<String, Ty>,
 ) -> Option<String> {
     match t {
         TypeExpr::Primitive(p, _) => match p {
@@ -1508,6 +1535,13 @@ fn type_expr_mangle_token(
             if path.segments.len() == 1 =>
         {
             let base = &path.segments[0].name;
+            if let Some(ty) = bindings.get(base) {
+                return if generic_args.is_empty() {
+                    crate::typed_bodies::mangle_token(ty)
+                } else {
+                    None
+                };
+            }
             if generic_args.is_empty() {
                 if known.contains_key(base) {
                     Some(base.clone())
@@ -1517,7 +1551,7 @@ fn type_expr_mangle_token(
             } else {
                 let mut toks: Vec<String> = Vec::new();
                 for a in generic_args {
-                    toks.push(type_expr_mangle_token(a, known)?);
+                    toks.push(type_expr_mangle_token(a, known, bindings)?);
                 }
                 Some(format!("{}_{}", base, toks.join("_")))
             }
@@ -1527,6 +1561,17 @@ fn type_expr_mangle_token(
 }
 
 pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
+    resolve_type_expr_with(te, known, &known.parameters)
+}
+
+/// Resolve in a lexical type-parameter scope. An unbound parameter is an
+/// explicit `Unknown` binding, so a same-named global cannot supply its
+/// type. Substitution follows the same recursion as ordinary resolution.
+pub(crate) fn resolve_type_expr_with(
+    te: &TypeExpr,
+    known: &KnownNames,
+    bindings: &BTreeMap<String, Ty>,
+) -> Ty {
     match te {
         TypeExpr::Primitive(p, _) => Ty::Prim(*p),
         // Phase 2a: `perspective(P)` resolves to the contract name
@@ -1554,6 +1599,9 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
         TypeExpr::Named { path, generic_args, .. } => {
             if path.segments.len() == 1 {
                 let name = &path.segments[0].name;
+                if let Some(ty) = bindings.get(name) {
+                    return if generic_args.is_empty() { ty.clone() } else { Ty::Unknown };
+                }
                 // M3 stage 3 tranche 2 (2026-07-02): a generic
                 // instantiation type-expr (`Box<Int>`) resolves to
                 // its MANGLED monomorph name (`Box_Int`) — the same
@@ -1564,7 +1612,7 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
                 if !generic_args.is_empty() {
                     let mut toks: Vec<String> = Vec::new();
                     for a in generic_args {
-                        match type_expr_mangle_token(a, known) {
+                        match type_expr_mangle_token(a, known, bindings) {
                             Some(t) => toks.push(t),
                             None => return Ty::Unknown,
                         }
@@ -1654,17 +1702,17 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
             }
         }
         TypeExpr::Projection { class, inner, .. } => {
-            Ty::Projection(*class, Box::new(resolve_type_expr(inner, known)))
+            Ty::Projection(*class, Box::new(resolve_type_expr_with(inner, known, bindings)))
         }
         TypeExpr::Bounded { elem, cap, .. } => {
-            Ty::Bounded(Box::new(resolve_type_expr(elem, known)), *cap)
+            Ty::Bounded(Box::new(resolve_type_expr_with(elem, known, bindings)), *cap)
         }
         TypeExpr::Array { elem, size, .. } => {
             let n = match size {
                 Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => Some(*n as u64),
                 _ => None,
             };
-            Ty::Array(Box::new(resolve_type_expr(elem, known)), n)
+            Ty::Array(Box::new(resolve_type_expr_with(elem, known, bindings)), n)
         }
         TypeExpr::Tuple(parts, _) => {
             // `()` parses as TypeExpr::Tuple([], _), and is Unit. A
@@ -1677,13 +1725,13 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
             if parts.is_empty() {
                 Ty::Unit
             } else {
-                Ty::Tuple(parts.iter().map(|t| resolve_type_expr(t, known)).collect())
+                Ty::Tuple(parts.iter().map(|t| resolve_type_expr_with(t, known, bindings)).collect())
             }
         }
         TypeExpr::Function { params, ret, .. } => {
-            let p = params.iter().map(|t| resolve_type_expr(t, known)).collect();
+            let p = params.iter().map(|t| resolve_type_expr_with(t, known, bindings)).collect();
             let r = match ret {
-                Some(te) => resolve_type_expr(te, known),
+                Some(te) => resolve_type_expr_with(te, known, bindings),
                 None => Ty::Unit,
             };
             Ty::Function {

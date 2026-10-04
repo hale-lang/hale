@@ -1,0 +1,36 @@
+locus T { }
+
+type U = String;
+
+type Packet<U> {
+    value: U;
+}
+
+locus Box<U> {
+    params {
+        value: U;
+    }
+}
+
+fn echo<T>(value: T) -> T {
+    let copy: T = value;
+    return copy;
+}
+
+locus Host<T> {
+    params {
+        value: T;
+    }
+    fn spawn() {
+        let dependent: Box<T> = Box { value: self.value };
+        let concrete: Box<Int> = Box { value: 1 };
+        println(dependent.value, ":", concrete.value, ":", echo(self.value));
+    }
+}
+
+fn main() {
+    let host: Host<Int> = Host { value: 7 };
+    host.spawn();
+    let packet: Packet<Int> = Packet { value: 7 };
+    println("record=", packet.value);
+}

@@ -300,6 +300,7 @@ fn the_entry_adds_no_arrangement_row_of_its_own() {
     let claims_only = snapshot("locus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\n");
     let m = model(&claims_only);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.l Leaf - main 0"]);
+    assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
     identities_hold(m, "09f0e56b070be72d", "ccc8c3ec47f273ff");
 
     let with_side = snapshot(
@@ -487,4 +488,238 @@ fn main() {
     let s = snapshot(&source.replace("roles: r", "roles: Roles { }"));
     let m = model(&s);
     assert!(arrangement(m).iter().any(|row| row.contains(" App.h.roles.router RouterV1 ")));
+}
+
+/// C3: API binding expressions are copied into generated params with
+/// their source spans intact. Their source location is not their birth
+/// context, and must not erase the adapter's model dispatch domains.
+#[test]
+fn copied_api_binding_expressions_keep_params_birth_provenance() {
+    let src = include_str!("../../../tests/hale/api_binding_run_test.hl");
+    let program = hale_syntax::parse_source(src).expect("parse API fixture");
+    let mut config = Config::check(false, false);
+    // This fixture exercises async_io. Derive its Linux model on every
+    // test host; no native code is emitted or run here.
+    config.target = hale_frontend::snapshot::Target {
+        name: "x86_64-unknown-linux-gnu".into(),
+        spec: hale_types::target::TargetSpec::parse("x86_64-unknown-linux-gnu").unwrap(),
+        explicit: true,
+    };
+    let s = Snapshot::from_program(program, Vec::new(), config).unwrap_or_else(|_| panic!("load"));
+    let m = model(&s);
+    let graph = s.demand_ownership_graph().expect("ownership");
+    for child in ["Table", "Tokens", "__ApiBinding", "__ApiHttp"] {
+        let sites: Vec<_> = graph.sites.iter().filter(|site| site.child_ty == child).collect();
+        assert!(!sites.is_empty(), "binding copy of {child} is a graph row");
+        assert!(sites.iter().all(|site| site.params_default), "{sites:?}");
+        let lid = m.entities.loci.iter().position(|l| l.name == child).unwrap();
+        assert!(!m.holes.iter().any(|h| h.at == hale_model::EntityRef::LocusDecl(hale_model::LocusDeclId(lid as u32))
+            && h.kind == hale_model::HoleKind::RuntimeInheritedPlacement), "{child}: {:?}", locus_holes(m));
+    }
+    let plan = hale_model::dispatch_plan::DispatchPlan::derive(m);
+    let pings = plan.subjects.iter().find(|p| p.subject == "__api.call.Pings").expect("API call dispatch");
+    assert_eq!(pings.publisher_domains, ["pool:__api_io"], "the API adapter's publisher is arranged: {pings:?}");
+    assert_eq!(pings.subscriber_domains, ["pool:work"]);
+    // Each dynamically accepted peer constructs its frames default.
+    assert_eq!(locus_holes(m), [
+        "__ApiFrameQ instance born outside the arrangement: owner and placement resolve at runtime",
+        "__ApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
+        "__ApiPeer instance born outside the arrangement: owner and placement resolve at runtime",
+    ], "connection peers and their default children remain dynamic");
+}
+
+/// C3: even an overlapping span cannot turn a method-body birth into a
+/// params default. The model must keep the child's dynamic-placement
+/// hole beside its arranged instance.
+#[test]
+fn body_birth_with_a_params_span_stays_dynamic() {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    let mut p = hale_syntax::parse_source(r#"
+        locus Kid { }
+        main locus App {
+            params { k: Kid = Kid { }; }
+            run() { let extra = Kid { }; }
+        }
+        fn main() { App { }; }
+    "#).unwrap();
+    for item in &mut p.items {
+        if let TopDecl::Locus(l) = item {
+            for member in &mut l.members {
+                if let LocusMember::Params(pb) = member {
+                    pb.span = l.span;
+                }
+            }
+        }
+    }
+    let s = Snapshot::from_program(p, Vec::new(), Config::check(false, false)).unwrap_or_else(|_| panic!("load"));
+    let m = model(&s);
+    let graph = s.demand_ownership_graph().expect("ownership");
+    let flags: Vec<_> = graph.sites.iter().filter(|s| s.child_ty == "Kid").map(|s| s.params_default).collect();
+    assert_eq!(flags, [true, false]);
+    assert!(locus_holes(m).iter().any(|h| h.starts_with("Kid instance born outside the arrangement")), "{:?}", locus_holes(m));
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.k Kid - main 0"]);
+}
+
+/// C3: a qualified stdlib birth whose leaf matches a user declaration
+/// belongs to the stdlib, so it cannot add a placement hole to that
+/// user's locus. The model intentionally contains user declarations.
+#[test]
+fn qualified_birth_does_not_join_an_unrelated_user_name() {
+    let s = snapshot(r#"
+        locus Stream { }
+        main locus App {
+            params { own: Stream = Stream { }; }
+            run() {
+                let external = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+            }
+        }
+        fn main() { App { }; }
+    "#);
+    let m = model(&s);
+    assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.own Stream - main 0"]);
+}
+
+/// C3: a real import has no bare `Kid` declaration in the seed. Both
+/// params and body births must join the imported declaration identity;
+/// the static instance remains beside its dynamic-placement hole.
+#[test]
+fn imported_births_join_the_declaration_the_loader_resolved() {
+    let dir = std::env::temp_dir().join(format!("hale-c3-imported-births-{}", std::process::id()));
+    let seed = dir.join("seed");
+    let lib = dir.join("lib");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("lib.hl"), "locus Kid { }\n").unwrap();
+    std::fs::write(seed.join("main.hl"), r#"
+        import "../lib" as lib;
+        main locus App {
+            params { k: lib::Kid = lib::Kid { }; }
+            run() { lib::Kid { }; }
+        }
+        fn main() { App { }; lib::Kid { }; }
+    "#).unwrap();
+    let s = Snapshot::load(&seed, LoadMode::WholeSeed, &Disk, Config::check(true, false))
+        .unwrap_or_else(|_| panic!("load imported seed"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    let kid = s.import_renames().iter()
+        .find(|(path, _)| path == &["lib", "Kid"])
+        .map(|(_, name)| name.as_str()).expect("resolved import");
+    let g = s.demand_ownership_graph().expect("ownership");
+    let births: Vec<_> = g.sites.iter().filter(|b| b.child_ty == kid).collect();
+    assert_eq!(births.len(), 2, "qualified births are collected: {:?}", g.sites);
+    assert_eq!(births.iter().map(|b| b.params_default).collect::<Vec<_>>(), [true, false]);
+    let declared = &g.declarations[births[0].child_decl.unwrap()];
+    assert!(declared.id.is_some(), "the loader minted the declaration");
+    assert!(births.iter().all(|b| b.child_decl == births[0].child_decl && b.child_key.as_deref() == Some(kid)));
+    assert!(g.free_fn_sites.iter().any(|b| b.child_key.as_deref() == Some(kid) && b.child_decl == births[0].child_decl));
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -".to_string(), format!("1 App.k {kid} - main 0")]);
+    assert_eq!(locus_holes(m), [format!("{kid} instance born outside the arrangement: owner and placement resolve at runtime")]);
+}
+
+#[test]
+fn aliased_body_and_free_function_births_are_dynamic() {
+    let s = snapshot(r#"
+        locus Kid { }
+        type Held = Kid;
+        main locus App {
+            params { k: Kid = Kid { }; }
+            run() { Held { }; }
+        }
+        fn main() { App { }; Held { }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.k Kid - main 0"]);
+    assert_eq!(locus_holes(m), ["Kid instance born outside the arrangement: owner and placement resolve at runtime"]);
+}
+
+/// A params default is evaluated for each construction of its holder.
+/// A static occurrence does not account for an additional dynamic one.
+#[test]
+fn dynamic_holder_defaults_keep_their_children_dynamic() {
+    let s = snapshot(r#"
+        locus Leaf { }
+        locus Holder { params { leaf: Leaf = Leaf { }; } }
+        main locus App {
+            params { held: Holder = Holder { }; }
+            run() { Holder { }; }
+        }
+        fn main() { App { }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), [
+        "0 App App - main -",
+        "1 App.held Holder - main 0",
+        "2 App.held.leaf Leaf - main 1",
+    ]);
+    assert_eq!(locus_holes(m), [
+        "Holder instance born outside the arrangement: owner and placement resolve at runtime",
+        "Leaf instance born outside the arrangement: owner and placement resolve at runtime",
+    ]);
+}
+
+/// An overridden default does not execute. Merely following all params
+/// edges from a dynamic holder would invent a second Leaf instance.
+#[test]
+fn overriding_a_dynamic_holders_default_creates_no_extra_birth() {
+    let s = snapshot(r#"
+        locus Leaf { }
+        locus Holder { params { leaf: Leaf = Leaf { }; } }
+        main locus App {
+            params { leaf: Leaf = Leaf { }; }
+            run() { Holder { leaf: self.leaf }; }
+        }
+        fn main() { App { }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.leaf Leaf - main 0"]);
+    assert_eq!(locus_holes(m), ["Holder instance born outside the arrangement: owner and placement resolve at runtime"]);
+}
+
+/// An explicitly initialized root field is part of that construction's
+/// arrangement even though its literal is written inside a free fn.
+#[test]
+fn an_explicit_arranged_field_is_not_an_extra_dynamic_birth() {
+    let s = snapshot(r#"
+        locus Leaf { }
+        main locus App { params { leaf: Leaf; } }
+        fn main() { App { leaf: Leaf { } }; }
+    "#);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.leaf Leaf - main 0"]);
+    assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
+}
+
+/// Binding adapters are outside the arrangement, but their construction
+/// still decides which defaults execute. An explicit held field does not
+/// create the default child a second time.
+#[test]
+fn binding_adapter_defaults_follow_the_binding_construction() {
+    let src = r#"
+type Ping { n: Int = 0; }
+topic Beat { payload: Ping; }
+locus Leaf { }
+locus Adapter {
+    params { leaf: Leaf = Leaf { }; }
+    fn send(subject: String, bytes: Bytes) { }
+}
+main locus App {
+    params { leaf: Leaf = Leaf { }; }
+    bindings { Beat: Adapter { }; }
+    bus { publish Beat; }
+}
+fn main() { App { }; }
+"#;
+    let s = snapshot(src);
+    let m = model(&s);
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.leaf Leaf - main 0"]);
+    assert_eq!(locus_holes(m), [
+        "Adapter instance born outside the arrangement: owner and placement resolve at runtime",
+        "Leaf instance born outside the arrangement: owner and placement resolve at runtime",
+    ]);
+    let s = snapshot(&src.replace("Beat: Adapter { }", "Beat: Adapter { leaf: self.leaf }"));
+    assert_eq!(locus_holes(model(&s)), [
+        "Adapter instance born outside the arrangement: owner and placement resolve at runtime",
+    ]);
 }

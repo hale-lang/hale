@@ -180,14 +180,22 @@ the model: runtime is automatic; stdlib is explicit.
   child's locus — an `interface` slot, a `perspective(P)`
   handle — carries an owned child on the same terms, and the
   cascade reaches it: the declared type names no impl, so the
-  instantiation records the child's `__reclaim_<Impl>` in a
-  synthetic per-field slot and the cascade runs that whole
-  spine (drain → dissolve → arena reclaim) through it, under
-  the same ownership-mask gate. The consequence users can
-  check is arena residency: no locus arena, at any depth and
-  behind any field type, survives its owner.
-  Pinned-thread tail still skips the cascade
-  per the v1 trade-off. An `accept`'d child is reclaimed on its
+  instantiation records the child's teardown in a synthetic
+  per-field slot, a pair of its drain and the rest of its spine
+  (dissolve → arena reclaim), and the cascade runs each half
+  through it where a `LocusRef` field's runs, under the same
+  ownership-mask gate: the drain with the other fields' drains,
+  before the outer's drain, the rest after the outer's dissolve.
+  The consequence users can check is arena residency: no locus
+  arena, at any depth and behind any field type, survives its
+  owner. A pinned locus's thread drains its own fields before
+  its `drain()`; their dissolve cascade runs after its join.
+  The cascade walks the fields in the order the lifecycle plan
+  places them (§ "Lifecycle obligations", line 12: declaration
+  order). Each field's dissolve completes before the next starts;
+  physical release may wait for an active run. The owner retains
+  those children until its own storage can be released.
+  An `accept`'d child is reclaimed on its
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the
   parent's cascade.
@@ -1939,7 +1947,11 @@ its `KNOWN_OPEN` table.
   `birth()` with its birth-epoch closures and `birth_check`,
   readiness, the run's start) come in the order the plan's rows and
   edges place them for its declaration, on the instantiating thread
-  or, from the birth on, a pinned locus's own thread.
+  or, from the birth on, a pinned locus's own thread. A cross-pool
+  bubble's child (§ "Lifecycle", interest-based ownership) is the
+  same spine on its owner's thread: the create cell's dispatcher
+  stitches it to its owner (`accept`, the children's tracker), then
+  runs its `birth()`.
 - **Line 6, registration before birth, and readiness.** A new
   instance's subscriptions are registered before its `birth()`, so
   `birth()` may publish to them. Shipped. Delivery to the instance
@@ -1974,6 +1986,14 @@ its `KNOWN_OPEN` table.
   Baked broadcast publishes use runtime dispatch while any window
   is open. A helper cannot bypass readiness or broaden a local send
   into a broadcast.
+  Not yet true in two cases (inventory rows C51
+  and R51). A subscribing locus that only stdlib or imported code
+  builds, so that the lifecycle plan holds no template of it, opens
+  no window, and what is published to it during its `birth()` is
+  delivered then. And a `birth()` that publishes to its own
+  subscription without bound parks every cell, since its own thread
+  cannot wait for the window to drain: whether such a birth meets a
+  bound or a refusal is undecided.
 - **Line 7, waits that only teardown ends.** Every teardown spine
   aborts the `or wait`s it would otherwise wait on before it joins
   the workers they block, and an aborted publish is not a success:
@@ -2015,15 +2035,45 @@ its `KNOWN_OPEN` table.
   a pinned locus's fields drain on its thread before its own
   `drain()`, and nothing is called unconditionally on a parent's
   pinned thread from outside it. A field the locus was handed and
-  does not own acquires no drain obligation. Not yet shipped
-  (inventory rows C9, C18): a pinned locus's thread runs its
-  `drain()` with no field drains, and its fields are dissolved after
-  the join without one (`l12_pinned_fields_drain.hl`, and the
-  lifecycle matrix's pinned grandchild cells); and a field typed by
-  an interface or a perspective is torn down through its recorded
-  reclaim, its drain, dissolve and reclaim together, after its
-  owner's `dissolve()` (inventory row C32; the matrix's
-  interface-field and perspective-slot cells).
+  does not own acquires no drain obligation. An owner's fields drain
+  in their declaration order. Each dissolve completes before the next
+  starts; physical release can be deferred while a run holds the
+  child. Every child's storage is released before its owner's.
+  Shipped, and emitted from the lifecycle plan (F.40 phase 3, L4's
+  dissolve cascade): a pinned locus's thread drains its fields
+  before its `drain()` (inventory rows C9, C18;
+  `l12_pinned_fields_drain.hl` and the lifecycle matrix's pinned
+  grandchild cells), and a field typed by an interface or a
+  perspective drains with the others, before its owner's drain,
+  through the drain half of the teardown its instantiation records
+  (inventory row C32; the matrix's interface-field and
+  perspective-slot cells). Before, a pinned locus's fields were
+  dissolved after the join without a drain, and a contract-typed
+  field's whole spine ran after its owner's `dissolve()`.
+
+  Lines 12 and 19 are an instance's own teardown, the dissolve
+  cascade and the reclaim, and the compiler emits both from the
+  lifecycle plan (F.40 phase 3, L4). The cascade's steps around an
+  owner's fields (the fields' drains, the owner's drain, its
+  dissolve-epoch closures and `dissolve()`, the fields' dissolves,
+  the reclaim) and the order of the fields come from the plan's rows
+  and edges for its declaration; so do the reclaim's (the owned
+  children's reclaims, guarded logical entry, cancellation of the
+  runs still queued for the instance, waiting for admitted runs and
+  deferred descendants, the arena's release, the struct's). Logical
+  reclaim hands physical release to a callback that preserves the
+  runtime's run and owner holds. The
+  emitter refuses an order it cannot emit rather than reorder it.
+  The trace build holds each instance's emitted reclaim, on the spine
+  the plan holds it on, and a queued run's cancellation, on its
+  reclaim's spine, to the plan's order over every fixture, with exact
+  departures listed in `SPINE_KNOWN_OPEN`. C29's field replacement
+  calls the shared reclaim spine; the producer still describes that
+  field's normal cascade and needs an alternate path for replacement.
+  The
+  process-level teardown steps around them (the pool shutdown and
+  join, the wait-abort, the ingress quiesce, the pinned joins) are
+  not this order.
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown

@@ -8,6 +8,7 @@ use hale_syntax::ast::{
     BirthCheckDecl, CapacitySlotKind, ProjectionClass,
     RecognitionSubMode, ScheduleClass,
 };
+use hale_types::lifecycle::spine::{ReclaimStep, CASCADE_STEPS};
 use inkwell::types::StructType;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
@@ -15,6 +16,11 @@ use inkwell::AddressSpace;
 use crate::codegen::{
     CodegenError, CodegenTy, Cx, LocusInfo, Scope, SlotForm,
 };
+
+/// The halves of a contract-typed field's recorded teardown, as indices
+/// into its pair (`Cx::contract_teardown_table`).
+pub(crate) const CONTRACT_DRAIN: u64 = 0;
+pub(crate) const CONTRACT_REST: u64 = 1;
 
 pub(crate) trait LocusDissolve<'ctx> {
     fn lower_locus_kmax(
@@ -58,10 +64,14 @@ pub(crate) trait LocusDissolve<'ctx> {
 
     /// GH #871: the cascade arm for a param field that holds an
     /// owned child WITHOUT naming its type — an `interface` slot or
-    /// a `perspective(P)` handle. Runs the child's whole teardown
-    /// spine through the `__reclaim_<Impl>` pointer the
-    /// instantiation recorded in `__owned_child_reclaim_<f>`.
-    fn emit_owned_contract_child_reclaim(
+    /// a `perspective(P)` handle. Runs one half of the child's
+    /// teardown through the pair the instantiation recorded in
+    /// `__owned_child_reclaim_<f>` (`Cx::contract_teardown_table`):
+    /// its drain ([`CONTRACT_DRAIN`], in the owner's drain cascade) or
+    /// the rest of its spine ([`CONTRACT_REST`], in the owner's
+    /// dissolve cascade).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_owned_contract_child_teardown(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
@@ -69,6 +79,7 @@ pub(crate) trait LocusDissolve<'ctx> {
         fname: &str,
         field_idx: u32,
         via_fat_pointer: bool,
+        half: u64,
     ) -> Result<(), CodegenError>;
 
     /// Phase-2 (3) drain cascade. Per spec/runtime.md: "drain()
@@ -371,14 +382,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
-        // Sort field iteration by index so ordering is deterministic
-        // (BTreeMap iter is sorted by key — name; we want index).
-        let mut field_entries: Vec<(String, u32, CodegenTy)> = info
-            .fields
-            .iter()
-            .map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone()))
-            .collect();
-        field_entries.sort_by_key(|(_, idx, _)| *idx);
+        // The fields in the order the plan places their teardowns (line
+        // 12: declaration order). Physical release can remain deferred.
+        let field_entries = self.cascade_field_entries(info, locus_name)?;
         for (fname, field_idx, field_ty) in field_entries {
             // F.31 Phase 3b: skip cascade for pinned-placed fields.
             if is_main_locus
@@ -410,13 +416,14 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             ) {
                 let via_fat_pointer =
                     matches!(field_ty, CodegenTy::Interface(_));
-                self.emit_owned_contract_child_reclaim(
+                self.emit_owned_contract_child_teardown(
                     info,
                     self_ptr,
                     locus_name,
                     &fname,
                     field_idx,
                     via_fat_pointer,
+                    CONTRACT_REST,
                 )?;
                 continue;
             }
@@ -535,8 +542,12 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             }
             // Inner's arena_destroy. Even when inner allocates
             // nothing in its arena, the slot was created at birth
-            // and must be destroyed for symmetry.
-            self.emit_locus_arena_destroy_owned(&inner_info, inner_ptr, &inner_name, Some(self_ptr))?;
+            // and must be destroyed for symmetry. Its Reclaim is the
+            // cascade's step, as the plan holds it, whatever frame the
+            // cascade runs in. Preserve the owner hold for storage release.
+            self.lc_in_spine("Cascade", |cx| {
+                cx.emit_locus_arena_destroy_owned(&inner_info, inner_ptr, &inner_name, Some(self_ptr))
+            })?;
             self.builder
                 .build_unconditional_branch(skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -646,24 +657,24 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
     /// default). The cascade, though, is emitted once per OWNER
     /// type — inside `__reclaim_<Owner>`, inside the deferred-frame
     /// teardown, inside every eager-dissolve site. So the
-    /// instantiation records the child's `__reclaim_<Impl>` in
-    /// `__owned_child_reclaim_<f>` and this emits the indirect call.
+    /// instantiation records the child's teardown pair
+    /// (`{ __drain_<Impl>, __reclaim_drained_<Impl> }`) in
+    /// `__owned_child_reclaim_<f>` and this emits the indirect call
+    /// to one half.
     ///
     /// Three guards, all runtime: the F.29 owned-bit (a child handed
     /// in from outside belongs to its own owner and is left alone),
-    /// a null reclaim pointer (the field was never initialized from
-    /// a literal on this path) and a null child pointer. The spine
-    /// itself is idempotent — `__reclaim_<L>` latches on a NULL
-    /// `__arena` — so a second pass over the same field is a no-op
-    /// rather than a double free.
+    /// a null pair (the field was never initialized from a literal on
+    /// this path) and a null child pointer. Both halves are idempotent
+    /// — each latches on a NULL `__arena` — so a second pass over the
+    /// same field is a no-op rather than a double free.
     ///
-    /// Ordering note: the `LocusRef` arm splits a child's teardown
-    /// in two, drain via `emit_locus_field_drains` before the
-    /// owner's own drain and the rest after its dissolve body. A
-    /// contract child gets the whole spine here, drain included, at
-    /// the second point: its type is not known at the first one, and
-    /// the reclaim entry point is the one indirection recorded.
-    fn emit_owned_contract_child_reclaim(
+    /// Ordering (line 12, C32): the child's teardown splits in two as
+    /// a `LocusRef` field's does, its drain in the owner's drain
+    /// cascade, before the owner's own drain, and the rest after the
+    /// owner's dissolve body. Its whole spine used to run at the
+    /// second point, drain included.
+    fn emit_owned_contract_child_teardown(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
@@ -671,6 +682,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         fname: &str,
         field_idx: u32,
         via_fat_pointer: bool,
+        half: u64,
     ) -> Result<(), CodegenError> {
         let reclaim_slot_idx =
             match info.owned_child_reclaim_field_idxs.get(fname) {
@@ -710,7 +722,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 &format!("{}.{}.contract.reclaim.ptr", locus_name, fname),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let reclaim_fp = self
+        let pair = self
             .builder
             .build_load(
                 ptr_t,
@@ -740,7 +752,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let fp_null = self
             .builder
             .build_is_null(
-                reclaim_fp,
+                pair,
                 &format!("{}.{}.contract.fp.null", locus_name, fname),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -799,15 +811,39 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         } else {
             held
         };
-        let request = self.module.get_function("lotus_reclaim_request")
-            .expect("reclaim request declared");
+        let i32_t = self.context.i32_type();
+        let half_ptr = unsafe {
+            self.builder.build_in_bounds_gep(
+                ptr_t.array_type(2),
+                pair,
+                &[i32_t.const_zero(), i32_t.const_int(half, false)],
+                &format!("{}.{}.contract.half.ptr", locus_name, fname),
+            )
+        }
+        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let half_fp = self
+            .builder
+            .build_load(ptr_t, half_ptr, &format!("{}.{}.contract.half", locus_name, fname))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let reclaim_ty =
+            self.context.void_type().fn_type(&[ptr_t.into()], false);
+        let call = if half == CONTRACT_DRAIN { "drain" } else { "reclaim" };
+        if half == CONTRACT_REST {
+            let request = self.module.get_function("lotus_reclaim_request").expect("reclaim request declared");
+            self.builder.build_call(request, &[child.into(), self_ptr.into(), half_fp.into()],
+                &format!("{}.{}.contract.reclaim.call", locus_name, fname))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        } else {
         self.builder
-            .build_call(
-                request,
-                &[child.into(), self_ptr.into(), reclaim_fp.into()],
-                &format!("{}.{}.contract.reclaim.call", locus_name, fname),
+            .build_indirect_call(
+                reclaim_ty,
+                half_fp,
+                &[child.into()],
+                &format!("{}.{}.contract.{}.call", locus_name, fname, call),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         self.builder
             .build_unconditional_branch(done_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -929,13 +965,28 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
-        let mut field_entries: Vec<(String, u32, CodegenTy)> = info
-            .fields
-            .iter()
-            .map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone()))
-            .collect();
-        field_entries.sort_by_key(|(_, idx, _)| *idx);
+        // The fields in the order the plan chains their drains (line 12:
+        // declaration order), each drained after its own fields.
+        let field_entries = self.cascade_field_entries(info, locus_name)?;
         for (fname, field_idx, field_ty) in field_entries {
+            // C32 (line 12): an owned child behind a contract-typed
+            // field drains here, before its owner's drain, like every
+            // owned field, through the drain half its instantiation
+            // recorded; the rest of its spine runs in the dissolve
+            // cascade.
+            if matches!(field_ty, CodegenTy::Interface(_) | CodegenTy::Perspective(_)) {
+                let via_fat_pointer = matches!(field_ty, CodegenTy::Interface(_));
+                self.emit_owned_contract_child_teardown(
+                    info,
+                    self_ptr,
+                    locus_name,
+                    &fname,
+                    field_idx,
+                    via_fat_pointer,
+                    CONTRACT_DRAIN,
+                )?;
+                continue;
+            }
             let inner_name = match field_ty {
                 CodegenTy::LocusRef(n) => n,
                 _ => continue,
@@ -1297,6 +1348,90 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The fields the dissolve cascade walks for `locus_name`, in the
+    /// order the plan places them (`LifecyclePlan::cascade_fields`: line
+    /// 12's declaration order), the fields the plan names no order for in
+    /// their declaration order between them. Refused where the plan
+    /// places the owner's cascade steps (`LifecyclePlan::cascade_order`)
+    /// in an order the walk cannot emit: the fields' drains before the
+    /// owner's drain, its dissolve after, the fields' dissolves after it,
+    /// its reclaim last.
+    pub(crate) fn cascade_field_entries(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_name: &str,
+    ) -> Result<Vec<(String, u32, CodegenTy)>, CodegenError> {
+        let mut entries: Vec<(String, u32, CodegenTy)> =
+            info.fields.iter().map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone())).collect();
+        entries.sort_by_key(|(_, idx, _)| *idx);
+        if !self.cascade_orders.contains_key(locus_name) {
+            let plan = self.lifecycle.ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "`{locus_name}`: the lowering view carries no lifecycle plan, and the dissolve cascade is read from it"
+                ))
+            })?;
+            let steps = plan.cascade_order(locus_name).map_err(CodegenError::Unsupported)?;
+            if steps != CASCADE_STEPS {
+                return Err(CodegenError::Unsupported(format!(
+                    "`{locus_name}`: the lifecycle plan orders its cascade {steps:?}, which the dissolve cascade cannot emit"
+                )));
+            }
+            let fields = plan.cascade_fields(locus_name);
+            self.cascade_orders.insert(locus_name.to_string(), fields);
+        }
+        let order = &self.cascade_orders[locus_name];
+        // The plan's fields keep the positions they hold among the
+        // entries, in the plan's order.
+        let at: Vec<usize> = (0..entries.len()).filter(|&i| order.contains(&entries[i].0)).collect();
+        let mut placed: Vec<(String, u32, CodegenTy)> = at.iter().map(|&i| entries[i].clone()).collect();
+        placed.sort_by_key(|(n, _, _)| order.iter().position(|o| o == n));
+        for (slot, e) in at.into_iter().zip(placed) {
+            entries[slot] = e;
+        }
+        Ok(entries)
+    }
+
+    /// The order the plan places a reclaim's steps in for the
+    /// declaration `locus` (`LifecyclePlan::reclaim_order`), refused
+    /// where it could not be emitted: a release or the cancellation
+    /// before the latch would run on every teardown of the struct, the
+    /// children after the arena's release would be torn down out of a
+    /// freed arena, and the struct released before its arena would lose
+    /// the arena's handle.
+    pub(crate) fn reclaim_spine_order(&mut self, locus: &str) -> Result<Vec<ReclaimStep>, CodegenError> {
+        if let Some(order) = self.reclaim_orders.get(locus) {
+            return Ok(order.clone());
+        }
+        let plan = self.lifecycle.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "`{locus}`: the lowering view carries no lifecycle plan, and the reclaim spine is read from it"
+            ))
+        })?;
+        let order = plan.reclaim_order(locus).map_err(CodegenError::Unsupported)?;
+        let at = |s: ReclaimStep| order.iter().position(|&x| x == s).expect("every step is ordered");
+        let refuse = |a: ReclaimStep, b: ReclaimStep| -> Result<(), CodegenError> {
+            if at(a) > at(b) {
+                return Err(CodegenError::Unsupported(format!(
+                    "`{locus}`: the lifecycle plan places the reclaim's {} before its {}, which the reclaim cannot emit",
+                    b.name(),
+                    a.name()
+                )));
+            }
+            Ok(())
+        };
+        refuse(ReclaimStep::Latch, ReclaimStep::CancelQueuedRuns)?;
+        refuse(ReclaimStep::Latch, ReclaimStep::ReleaseArena)?;
+        refuse(ReclaimStep::Latch, ReclaimStep::ReleaseStruct)?;
+        refuse(ReclaimStep::Children, ReclaimStep::ReleaseArena)?;
+        refuse(ReclaimStep::Children, ReclaimStep::WaitForRuns)?;
+        refuse(ReclaimStep::CancelQueuedRuns, ReclaimStep::WaitForRuns)?;
+        refuse(ReclaimStep::WaitForRuns, ReclaimStep::ReleaseArena)?;
+        refuse(ReclaimStep::WaitForRuns, ReclaimStep::ReleaseStruct)?;
+        refuse(ReclaimStep::ReleaseArena, ReclaimStep::ReleaseStruct)?;
+        self.reclaim_orders.insert(locus.to_string(), order.clone());
+        Ok(order)
+    }
+
     pub(crate) fn emit_reclaim_scope_enter(
         &mut self,
         owner: PointerValue<'ctx>,
@@ -1343,7 +1478,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // function may bypass its claim. Recursive field releases still
         // check the child's claim independently.
         let owns_claim = self.current_fn.is_some()
-            && self.current_fn == self.reclaim_fns.get(locus_name).copied()
+            && (self.current_fn == self.reclaim_fns.get(locus_name).copied()
+                || self.current_fn == self.module.get_function(&format!("__reclaim_drained_{locus_name}")))
             && self.current_self.as_ref().is_some_and(|s| s.self_ptr == self_ptr);
         let skip = self.emit_reclaimed_child_skip(
             info, self_ptr, locus_name, "storage", "release", owns_claim,
@@ -1392,75 +1528,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(obs_cont_bb);
         }
-        if !info.arena_elidable {
-            // 2026-06-01: reclaim this locus's accept'd children BEFORE
-            // tearing down its arena (their subregions live inside it).
-            // This is the single teardown chokepoint every dissolve path
-            // funnels through — graceful-shutdown frame, parent
-            // field-dissolve, a reclaimed flow/terminated child, and the
-            // ephemeral scope-exit — so the cascade is uniform and
-            // recursive (a reclaimed child reclaims its own grandchildren)
-            // without duplicating the walk at each site. No-op unless this
-            // locus both `accept`s and tracks a children buffer; idempotent
-            // (each child's __reclaim is latched), and flow children that
-            // self-reclaimed mid-life already removed themselves from the
-            // tracker, so they aren't re-touched here.
-            self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
-            // Deregister from the bus router BEFORE freeing the arena.
-            // Without this step, a stale entry in the C-runtime entries
-            // vec would point self_ptr at memory whose arena is about
-            // to be freed; a subsequent `<-` to one of this locus's
-            // subscriptions would have dispatch read `*(arena_t **)
-            // self_ptr` after free, then memcpy a payload into freed
-            // chunks. Today's programs don't publish post-dissolve,
-            // but the invariant is fragile — close it here using the
-            // same null-subject-sentinel mechanism `quarantine(c)`
-            // already uses (m41b / m45-followup-2). No-op when the
-            // program has no subscribes.
-            if self.bus_state.is_some() {
-                let unsub_fn = self
-                    .module
-                    .get_function("lotus_bus_quarantine_self")
-                    .expect("lotus_bus_quarantine_self declared");
-                self.builder
-                    .build_call(
-                        unsub_fn,
-                        &[self_ptr.into()],
-                        &format!("{}.bus.deregister.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Logical retirement is emitted here; physical release follows
+        // the remaining plan steps in a callback after the runtime's holds.
+        for step in self.reclaim_spine_order(locus_name)? {
+            match step {
+                ReclaimStep::Children if !info.arena_elidable => {
+                    self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
+                }
+                ReclaimStep::Latch => {
+                    self.emit_drain_observer_count(locus_name, -1)?;
+                    self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
+                }
+                ReclaimStep::CancelQueuedRuns => {
+                    let cancel = self.module.get_function("lotus_run_cancel_only").expect("cancel declared");
+                    self.builder.build_call(cancel, &[self_ptr.into()], "")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    if !info.arena_elidable && self.bus_state.is_some() {
+                        let unsub = self.module.get_function("lotus_bus_quarantine_self").expect("quarantine declared");
+                        self.builder.build_call(unsub, &[self_ptr.into()], &format!("{locus_name}.bus.deregister.call"))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                }
+                ReclaimStep::WaitForRuns => {
+                    let release = self.locus_storage_release_fn(info, locus_name)?;
+                    if let Some(owner) = owner {
+                        let request = self.module.get_function("lotus_reclaim_request").expect("request declared");
+                        self.builder.build_call(request, &[
+                            self_ptr.into(), owner.into(), release.as_global_value().as_pointer_value().into(),
+                        ], "").map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    } else {
+                        self.builder.build_call(release, &[self_ptr.into()], "")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                }
+                ReclaimStep::Children | ReclaimStep::ReleaseArena | ReclaimStep::ReleaseStruct => {}
             }
-        }
-        self.emit_drain_observer_count(locus_name, -1)?;
-        self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
-        let cancel = self
-            .module
-            .get_function("lotus_run_cancel_only")
-            .expect("cancel declared");
-        self.builder
-            .build_call(cancel, &[self_ptr.into()], "")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let release = self.locus_storage_release_fn(info, locus_name)?;
-        if let Some(owner) = owner {
-            let request = self
-                .module
-                .get_function("lotus_reclaim_request")
-                .expect("request declared");
-            self.builder
-                .build_call(
-                    request,
-                    &[
-                        self_ptr.into(),
-                        owner.into(),
-                        release.as_global_value().as_pointer_value().into(),
-                    ],
-                    "",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        } else {
-            self.builder
-                .build_call(release, &[self_ptr.into()], "")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         self.builder
             .build_unconditional_branch(skip)
@@ -1570,16 +1672,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("ptr");
-        // The wait precedes tracker, form, recognition-pool and arena
-        // destruction. A replaced child also keeps its owner's storage.
-        self.emit_run_cancel_queued(child, locus_name)?;
-        let flush = self
-            .module
-            .get_function("lotus_reclaim_flush_owned")
-            .expect("flush declared");
-        self.builder
-            .build_call(flush, &[child.into()], "")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.emit_locus_storage_release_now(info, child, locus_name)?;
         let leave = self
             .module
@@ -1614,115 +1706,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        // Arena-elision counterpart: when `__arena` was pointed
-        // at the caller's arena at instantiation (see
-        // the locus's arena elision row + the matching branch in
-        // `lower_locus_instantiation`'s Fresh-strategy path),
-        // there's nothing to tear down — no bus subscriptions
-        // (predicate rejects them), no capacity slots (rejected),
-        // and the arena belongs to someone else. Calling
-        // `lotus_arena_destroy` here would free a live arena
-        // that the surrounding fn still owns. Bail — but recycle
-        // the STRUCT first (2026-07-01): an accept'd elidable
-        // child (empty-lifecycle churn worker) still had its locus
-        // struct allocated in the owner's arena, and skipping the
-        // release here leaked sizeof(struct) per child. Latch on
-        // `__arena` (aliases the parent's arena; unused at
-        // teardown for elidable loci): NULL it before the release
-        // so a second teardown of the same struct no-ops instead
-        // of double-pushing the free-list node. `__owner_self` is
-        // deliberately NOT nulled — the run-wrapper reads it
-        // AFTER `__reclaim` to remove self from the owner's
-        // children tracker.
-        if info.arena_elidable {
-            let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let func = self
-                .builder
-                .get_insert_block()
-                .and_then(|b| b.get_parent())
-                .expect("builder positioned inside a function");
-            let arena_field_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    info.arena_field_idx,
-                    &format!("{}.__arena.elide.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let arena = self
-                .builder
-                .build_load(
-                    ptr_t,
-                    arena_field_ptr,
-                    &format!("{}.__arena.elide", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let already = self
-                .builder
-                .build_is_null(
-                    arena.into_pointer_value(),
-                    &format!("{}.elide.already_reclaimed", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let do_bb = self.context.append_basic_block(
-                func,
-                &format!("{}.elide.release_struct", locus_name),
-            );
-            let after_bb = self.context.append_basic_block(
-                func,
-                &format!("{}.elide.after", locus_name),
-            );
-            self.builder
-                .build_conditional_branch(already, after_bb, do_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(do_bb);
-            self.builder
-                .build_store(arena_field_ptr, ptr_t.const_null())
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let owner_self_slot = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    info.owner_self_field_idx,
-                    &format!("{}.__owner_self.elide.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let owner_self_val = self
-                .builder
-                .build_load(
-                    ptr_t,
-                    owner_self_slot,
-                    &format!("{}.__owner_self.elide", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let release_fn = self
-                .module
-                .get_function("lotus_child_struct_release")
-                .expect("lotus_child_struct_release declared");
-            let struct_size = info
-                .struct_ty
-                .size_of()
-                .expect("locus struct ty has known size");
-            self.builder
-                .build_call(
-                    release_fn,
-                    &[
-                        owner_self_val.into(),
-                        self_ptr.into(),
-                        struct_size.into(),
-                    ],
-                    &format!("{}.child_struct.release.elide", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.lc_in_spine_event("Reclaim", "Completed", self_ptr, locus_name)?;
-            self.builder
-                .build_unconditional_branch(after_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(after_bb);
-            return Ok(());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_slot = self.builder.build_struct_gep(
+            info.struct_ty, self_ptr, info.arena_field_idx, &format!("{locus_name}.__arena.ptr"),
+        ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        for step in self.reclaim_spine_order(locus_name)? {
+            match step {
+                ReclaimStep::WaitForRuns => {
+                    // The callback is entered only after runtime retention
+                    // permits release. Wait for admitted runs and complete
+                    // deferred descendants before freeing any owned storage.
+                    self.emit_run_cancel_queued(self_ptr, locus_name)?;
+                    let flush = self.module.get_function("lotus_reclaim_flush_owned").expect("flush declared");
+                    self.builder.build_call(flush, &[self_ptr.into()], "")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                ReclaimStep::ReleaseArena if !info.arena_elidable => {
+                    let arena = self.builder.build_load(ptr_t, arena_slot, &format!("{locus_name}.__arena"))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.into_pointer_value();
+                    self.emit_reclaim_release_arena(info, self_ptr, locus_name, arena)?;
+                }
+                ReclaimStep::ReleaseStruct => {
+                    let tag = if info.arena_elidable { "elide" } else { "release" };
+                    self.emit_reclaim_release_struct(info, self_ptr, locus_name, arena_slot, tag)?;
+                }
+                ReclaimStep::Children | ReclaimStep::Latch | ReclaimStep::CancelQueuedRuns | ReclaimStep::ReleaseArena => {}
+            }
         }
+        self.lc_in_spine_event("Reclaim", "Completed", self_ptr, locus_name)?;
+        Ok(())
+    }
+
+    fn emit_reclaim_release_arena(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        arena: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // 2026-05-29: free the growable accept'd-children tracker
         // buffer (heap-allocated by lotus_children_push, separate
@@ -2001,19 +2023,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //       clears the bitmap bit so the slot is reusable).
         //   2 → `lotus_recpool_slab_release(parent_pool, arena)`
         //       (no-op — slab is freed wholesale at parent dissolve).
-        let arena_field_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.arena_field_idx,
-                &format!("{}.__arena.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let arena = self
-            .builder
-            .build_load(ptr_t, arena_field_ptr, &format!("{}.__arena", locus_name))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let release_kind_ptr = self
             .builder
             .build_struct_gep(
@@ -2025,11 +2034,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let release_kind = self
             .builder
-            .build_load(
-                i64_t_local,
-                release_kind_ptr,
-                &format!("{}.__recpool_release_kind.dissolve", locus_name),
-            )
+            .build_load(i64_t, release_kind_ptr, &format!("{}.__recpool_release_kind.dissolve", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_int_value();
         let release_pool_ptr_field = self
@@ -2043,99 +2048,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let release_pool = self
             .builder
-            .build_load(
-                ptr_t,
-                release_pool_ptr_field,
-                &format!("{}.__recpool_release_pool.dissolve", locus_name),
-            )
+            .build_load(ptr_t, release_pool_ptr_field, &format!("{}.__recpool_release_pool.dissolve", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        let regular_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.regular", locus_name),
-        );
-        let fixed_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.fixed", locus_name),
-        );
-        let slab_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.slab", locus_name),
-        );
-        let after_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.after", locus_name),
-        );
-        // 2026-07-01: post-destroy struct recycling. Reached ONLY
-        // from the three arena-release paths (never the skip path),
-        // so the existing NULL-latch guarantees it runs at most once
-        // per locus. If `__owner_self` is set — the struct was
-        // allocated in the owner's arena by the accept'd/bubbled
-        // instantiation path — push the now-dead struct onto the
-        // owner's child-struct free-list so the next accept of the
-        // same child type reuses it instead of growing the owner's
-        // arena. Restores F.3's O(peak-alive) contract for churn
-        // daemons (one child per connection/message).
-        let release_struct_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.release_struct", locus_name),
-        );
-
-        // 2026-05-30 idempotent-teardown latch. `__arena` is NULL'd
-        // in `after_bb` once this locus is reclaimed, so a SECOND
-        // arena-destroy — e.g. a child's run-completion reclaim
-        // racing the parent's dissolve cascade for the same locus —
-        // loads NULL here and branches straight to `after_bb`,
-        // skipping the release (which would double-free). Whichever
-        // teardown reaches the locus first wins; the rest no-op.
-        // (Single-threaded by construction at the call sites that
-        // currently collide: the pool workers are joined before the
-        // parent's dissolve runs, so no atomic is needed yet.)
-        let arena_is_null = self
-            .builder
-            .build_is_null(
-                arena.into_pointer_value(),
-                &format!("{}.arena.already_freed", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let do_destroy_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.do", locus_name),
-        );
-        self.builder
-            .build_conditional_branch(arena_is_null, after_bb, do_destroy_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.position_at_end(do_destroy_bb);
+        let func = self.current_fn.ok_or_else(|| {
+            CodegenError::Unsupported("arena release emit requires a current fn context".into())
+        })?;
+        let regular_bb = self.context.append_basic_block(func, &format!("{}.arena.destroy.regular", locus_name));
+        let recpool_dispatch_bb = self.context.append_basic_block(func, &format!("{}.arena.destroy.recpool", locus_name));
+        let fixed_bb = self.context.append_basic_block(func, &format!("{}.arena.destroy.fixed", locus_name));
+        let slab_bb = self.context.append_basic_block(func, &format!("{}.arena.destroy.slab", locus_name));
+        let released_bb = self.context.append_basic_block(func, &format!("{}.arena.destroy.release_struct", locus_name));
         let is_zero = self
             .builder
             .build_int_compare(
                 inkwell::IntPredicate::EQ,
                 release_kind,
-                i64_t_local.const_int(0, false),
+                i64_t.const_int(0, false),
                 &format!("{}.release_kind.is_zero", locus_name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let recpool_dispatch_bb = self.context.append_basic_block(
-            destroy_func,
-            &format!("{}.arena.destroy.recpool", locus_name),
-        );
         self.builder
             .build_conditional_branch(is_zero, regular_bb, recpool_dispatch_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         // Regular arena destroy.
         self.builder.position_at_end(regular_bb);
-        let destroy = self
-            .module
-            .get_function("lotus_arena_destroy")
-            .expect("lotus_arena_destroy declared");
+        let destroy = self.module.get_function("lotus_arena_destroy").expect("lotus_arena_destroy declared");
         self.builder
             .build_call(destroy, &[arena.into()], &format!("{}.arena.destroy", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_unconditional_branch(release_struct_bb)
+            .build_unconditional_branch(released_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         // Recpool dispatch: kind 1 → fixed, else (kind 2) → slab.
         self.builder.position_at_end(recpool_dispatch_bb);
         let is_fixed = self
@@ -2143,14 +2086,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_int_compare(
                 inkwell::IntPredicate::EQ,
                 release_kind,
-                i64_t_local.const_int(1, false),
+                i64_t.const_int(1, false),
                 &format!("{}.release_kind.is_fixed", locus_name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_conditional_branch(is_fixed, fixed_bb, slab_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         self.builder.position_at_end(fixed_bb);
         let fixed_release_fn = self
             .module
@@ -2164,9 +2106,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_unconditional_branch(release_struct_bb)
+            .build_unconditional_branch(released_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         self.builder.position_at_end(slab_bb);
         let slab_release_fn = self
             .module
@@ -2180,73 +2121,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_unconditional_branch(release_struct_bb)
+            .build_unconditional_branch(released_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(released_bb);
+        Ok(())
+    }
 
-        // Post-destroy struct recycling (see release_struct_bb decl
-        // comment). Latch FIRST — store NULL into `__arena` (struct
-        // slot 0) before the release call, because the free-list
-        // node header lives at struct offsets 8/16 and offset 0 must
-        // stay NULL so any stale teardown of this struct no-ops at
-        // the skip branch. The runtime helper itself never touches
-        // offset 0.
-        self.builder.position_at_end(release_struct_bb);
-        let null_arena_early = ptr_t.const_null();
+    fn emit_reclaim_release_struct(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        arena_field_ptr: PointerValue<'ctx>,
+        tag: &str,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
         self.builder
-            .build_store(arena_field_ptr, null_arena_early)
+            .build_store(arena_field_ptr, ptr_t.const_null())
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let owner_self_ptr_slot = self
+        let owner_self_slot = self
             .builder
             .build_struct_gep(
                 info.struct_ty,
                 self_ptr,
                 info.owner_self_field_idx,
-                &format!("{}.__owner_self.release.ptr", locus_name),
+                &format!("{}.__owner_self.{}.ptr", locus_name, tag),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let owner_self_val = self
             .builder
-            .build_load(
-                ptr_t,
-                owner_self_ptr_slot,
-                &format!("{}.__owner_self.release", locus_name),
-            )
+            .build_load(ptr_t, owner_self_slot, &format!("{}.__owner_self.{}", locus_name, tag))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let release_fn = self
             .module
             .get_function("lotus_child_struct_release")
             .expect("lotus_child_struct_release declared");
-        let struct_size = info
-            .struct_ty
-            .size_of()
-            .expect("locus struct ty has known size");
-        // The helper is NULL-safe on owner_self (non-accept'd loci
-        // keep the field NULL), so no branch is needed here.
+        let struct_size = info.struct_ty.size_of().expect("locus struct ty has known size");
+        let name = if tag == "release" {
+            format!("{}.child_struct.release", locus_name)
+        } else {
+            format!("{}.child_struct.release.{}", locus_name, tag)
+        };
         self.builder
-            .build_call(
-                release_fn,
-                &[
-                    owner_self_val.into(),
-                    self_ptr.into(),
-                    struct_size.into(),
-                ],
-                &format!("{}.child_struct.release", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.lc_in_spine_event("Reclaim", "Completed", self_ptr, locus_name)?;
-        self.builder
-            .build_unconditional_branch(after_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        self.builder.position_at_end(after_bb);
-        // Set the latch: mark this locus reclaimed so any later
-        // teardown of the same locus (the skip branch above) no-ops.
-        // Reached from both the post-release path (arena was live →
-        // now freed) and the skip branch (arena already NULL → store
-        // is a harmless no-op).
-        let null_arena = ptr_t.const_null();
-        self.builder
-            .build_store(arena_field_ptr, null_arena)
+            .build_call(release_fn, &[owner_self_val.into(), self_ptr.into(), struct_size.into()], &name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }

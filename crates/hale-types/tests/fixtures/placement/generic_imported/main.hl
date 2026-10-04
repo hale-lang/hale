@@ -1,0 +1,16 @@
+import "lib" as first;
+import "lib" as second;
+
+type First = first::Supervisor<Int>;
+
+locus Supervisor<T> {
+    params {
+        unrelated: T;
+    }
+}
+
+fn main() {
+    let a: First = first::Supervisor { child: first::Cell { value: 17 } };
+    let b: second::Supervisor<String> = second::Supervisor { child: second::Cell { value: "second" } };
+    println(a.child.value, ":", b.child.value);
+}

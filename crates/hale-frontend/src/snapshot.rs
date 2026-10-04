@@ -240,8 +240,10 @@ impl Config {
     /// lowering is not gated on a check. The harness runs no checker —
     /// a test that wants the check calls it itself, and the agreement
     /// sweep (`corpus_check_build_agreement`) compares the two — so its
-    /// snapshot lowers what it is handed. The check is still a family
-    /// of it, computed only when demanded.
+    /// snapshot lowers what it is handed, once the laws that replaced
+    /// lowering's own refusals and target admission pass
+    /// ([`hale_types::lowering_laws`], [`hale_types::capability::uses`]). The
+    /// check is still a family of it, computed only when demanded.
     pub fn harness(target: Target) -> Self {
         Config { check_gates_lowering: false, ..Config::build(target) }
     }
@@ -423,6 +425,8 @@ pub struct Snapshot {
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     import_renames: ImportRenames,
+    /// [`Snapshot::demangler`].
+    demangler: OnceCell<hale_types::stdlib_bodies::Demangler>,
     /// The target's own `import`s, as written.
     entry_imports: Vec<Import>,
     source_map: Vec<SourceFile>,
@@ -632,6 +636,7 @@ impl Snapshot {
             sources: loaded.sources,
             file_bases: loaded.file_bases,
             import_renames: loaded.import_renames,
+            demangler: OnceCell::new(),
             entry_imports: loaded.entry_imports,
             source_map: Vec::new(),
             identities: hale_types::snapshot::Snapshot::default(),
@@ -819,6 +824,13 @@ impl Snapshot {
 
     pub fn import_renames(&self) -> &ImportRenames {
         &self.import_renames
+    }
+
+    /// The demangling of [`Snapshot::import_renames`], indexed once per
+    /// snapshot (F.40 phase 3, X3): what puts a diagnostic in the
+    /// author's spelling, for every publication made from this load.
+    pub fn demangler(&self) -> &hale_types::stdlib_bodies::Demangler {
+        self.demangler.get_or_init(|| hale_types::stdlib_bodies::Demangler::new(&self.import_renames))
     }
 
     /// The target's own `import`s, as written: what a build reads each
@@ -1225,12 +1237,11 @@ impl Snapshot {
             target: self.key.target.clone(),
             config_digest: self.key.config_digest,
             import_renames: {
-                // A set: two loads of one seed list it in different orders.
-                let mut renames: Vec<&(Vec<String>, String)> = self.import_renames.iter().collect();
-                renames.sort_unstable();
+                // In the table's order, which the load makes stable
+                // (`ImportRenames`).
                 let mut d = Digest::new();
-                d.count(renames.len());
-                for (path, mangled) in renames {
+                d.count(self.import_renames.len());
+                for (path, mangled) in &self.import_renames {
                     d.count(path.len());
                     for seg in path {
                         d.field(seg.as_bytes());
@@ -1405,6 +1416,7 @@ impl Snapshot {
     /// total over a program that does not typecheck. The check's F.31
     /// rule and sync inference read it (F.40 phase 3, P1), and type-check
     /// rule 20 climbs the construction paths it records (C4).
+    /// The lowering laws read it too, including on the harness path (C7).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {
@@ -1655,6 +1667,23 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The laws that replaced lowering's backstops
+    /// ([`hale_types::lowering_laws`], the `law_backstops` family) over
+    /// the rows they read, for a view the check does not gate: the
+    /// check runs the same laws among its rules, so a gated view has
+    /// them already. Blocked with the rows.
+    fn demand_lowering_laws(&self) -> Result<Vec<Diag>, Blocked> {
+        let ownership = || self.demand_ownership_graph().ok();
+        let inputs = hale_types::lowering_laws::LoweringLawInputs {
+            placement: self.demand_placement().map_err(Clone::clone)?,
+            bindings: self.demand_bindings().map_err(Clone::clone)?,
+            ownership: &ownership,
+        };
+        let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
+        hale_types::finish_check_diags(&mut diags);
+        Ok(diags)
+    }
+
     /// The view codegen lowers: the check first, then
     /// [`hale_types::resolved::resolve_rewritten`] over the intra-locus
     /// rewrite ([`Snapshot::demand_intra_locus`], which reads the
@@ -1663,27 +1692,32 @@ impl Snapshot {
     /// stdlib merge, the mint over the merged program, and the tables.
     /// A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
-    /// The harness's snapshot ([`Config::harness`]) is not gated.
+    /// The harness's snapshot ([`Config::harness`]) is not gated on the
+    /// check; target admission and the laws that replaced lowering's
+    /// backstops still gate it.
     pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {
         self.lowering
             .get_or_init(|| {
-                if self.config.check_gates_lowering {
+                let errors: Vec<Diag> = if self.config.check_gates_lowering {
                     let checked = self.demand_check().map_err(Clone::clone)?;
-                    let errors: Vec<Diag> =
-                        checked.diags.iter().filter(|d| d.is_error()).cloned().collect();
-                    if !errors.is_empty() {
-                        return Err(Blocked { family: "lowering_view", because: errors, refused: None });
-                    }
+                    checked.diags.iter().filter(|d| d.is_error()).cloned().collect()
                 } else {
-                    // A lowering the check does not gate (the harness's)
-                    // still lowers no use the target refuses: the
-                    // admission law, read here as the check reads it.
+                    // Every lowering also obeys target admission (P3-3).
                     let row = self.demand_target().map_err(Clone::clone)?;
                     let uses = self.demand_capability_uses().map_err(Clone::clone)?;
                     let refused = hale_types::capability::uses::admission_diags(uses, row, &self.import_renames);
                     if !refused.is_empty() {
                         return Err(Blocked { family: "target_capability", because: refused, refused: None });
                     }
+                    // The harness lowers without the check, but never
+                    // without the laws that replaced lowering's own
+                    // refusals (F.40 phase 3, C7): lowering judges none
+                    // of them, so an ungated view would lower what they
+                    // refuse.
+                    self.demand_lowering_laws()?.into_iter().filter(|d| d.is_error()).collect()
+                };
+                if !errors.is_empty() {
+                    return Err(Blocked { family: "lowering_view", because: errors, refused: None });
                 }
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;

@@ -27,15 +27,16 @@
 //! The parent's identity is a column too (`parent_id`), and the rows
 //! are indexed by it: a reader holding a locus declaration asks for its
 //! rows by the declaration's id ([`HandlerRouting::handlers_of_decl`]).
-//! A monomorph keeps its template's id, so it finds its template's rows
-//! by that id, never by a scan of the templates for one whose id
-//! matches.
+//! A monomorph keeps its template's id. At synthesis, `specialize`
+//! substitutes its child types through the same resolver and preserves
+//! the handler sites. `handlers_of_instance` selects those concrete rows
+//! by template identity and specialization name.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
-    Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusMember, LValueSeg,
+    Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusDecl, LocusMember, LValueSeg,
     MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -75,6 +76,8 @@ pub struct HandlerRow {
     /// unminted).
     pub parent_id: Option<SiteId>,
     pub child: ChildRef,
+    /// Source type retained for the producer's specialization query.
+    child_ty: TypeExpr,
     /// The declaration of the locus `child` resolves to (a monomorph's
     /// template's), qualified by the store that minted it: a program's
     /// in the snapshot the rows were built against, a stdlib locus's in
@@ -131,6 +134,11 @@ pub struct HandlerRouting {
     /// (parent, child name) → the first row's index: the handler that
     /// runs.
     first: BTreeMap<(String, String), usize>,
+    /// Concrete rows, separate from the declaration-level snapshot rows.
+    specialized: BTreeMap<(u32, String), Vec<HandlerRow>>,
+    declared: DeclaredNames,
+    renames: Vec<(Vec<String>, String)>,
+    declaration_sites: BTreeMap<String, SiteRef>,
 }
 
 impl HandlerRouting {
@@ -180,11 +188,57 @@ impl HandlerRouting {
         self.handlers_of_decl(decl).find(|r| r.child.name() == child)
     }
 
+    /// Resolve a monomorph's child types using the same substitution
+    /// as locus synthesis. Handler and parent sites remain the template's;
+    /// the specialization name distinguishes instances sharing those sites.
+    pub fn specialize(
+        &mut self,
+        template: &LocusDecl,
+        name: &str,
+        substitute: impl Fn(&TypeExpr) -> TypeExpr,
+    ) {
+        let rows = self.rows.iter().filter(|row| match row.parent_id {
+            Some(site) if !template.id.is_none() => site.index == template.id.0,
+            _ => row.parent == template.name.name
+                && template.span.start <= row.span.start
+                && row.span.end <= template.span.end,
+        }).map(|row| {
+            let mut row = row.clone();
+            row.parent = name.to_string();
+            row.child_ty = substitute(&row.child_ty);
+            let resolved = resolve_locus_type(&row.child_ty, &self.declared, &self.renames);
+            row.child_decl = resolved.as_ref()
+                .and_then(|r| self.declaration_sites.get(&r.declaration).copied());
+            row.child = resolved.map(|r| ChildRef::Locus(r.name))
+                .unwrap_or_else(|| ChildRef::External(written_name(&row.child_ty)));
+            row
+        }).collect();
+        self.specialized.insert((template.id.0, name.to_string()), rows);
+    }
+
+    /// A concrete locus's rows: a specialization's when registered,
+    /// otherwise the declaration's. An empty specialization is authoritative.
+    pub fn handlers_of_instance<'a>(
+        &'a self,
+        decl: NodeId,
+        name: &str,
+    ) -> impl Iterator<Item = &'a HandlerRow> + 'a {
+        let specialized = self.specialized.get(&(decl.0, name.to_string()));
+        specialized.into_iter().flatten().chain(
+            self.handlers_of_decl(decl).filter(move |_| specialized.is_none())
+        )
+    }
+
+    /// The first concrete handler for `child` in this specialization.
+    pub fn route_instance(&self, decl: NodeId, name: &str, child: &str) -> Option<&HandlerRow> {
+        self.handlers_of_instance(decl, name).find(|r| r.child.name() == child)
+    }
+
     /// Whether some handler, in any parent, restarts a child of locus
     /// type `child` in place: such a child keeps a copy of the params
     /// it was built with.
     pub fn restarts_in_place(&self, child: &str) -> bool {
-        self.rows.iter().any(|r| {
+        self.rows.iter().chain(self.specialized.values().flatten()).any(|r| {
             matches!(&r.child, ChildRef::Locus(n) if n == child)
                 && r.ops.contains(&RecoveryOp::RestartInPlace)
         })
@@ -299,13 +353,29 @@ pub fn child_locus(
     declared: &DeclaredNames,
     import_renames: &[(Vec<String>, String)],
 ) -> (ChildRef, Option<DeclAt>) {
-    match resolve(te, declared, import_renames, &mut Vec::new()) {
-        Some((name, decl)) => {
-            let at = declared.decls.get(&decl).copied();
-            (ChildRef::Locus(name), at)
-        }
+    match resolve_locus_type(te, declared, import_renames) {
+        Some(r) => (ChildRef::Locus(r.name), r.at),
         None => (ChildRef::External(written_name(te)), None),
     }
+}
+
+/// One resolution, retaining both the lowered name and its declaring
+/// template. Ownership uses the latter even for an unminted bundle;
+/// neither consumer reconstructs a template from a mangled suffix.
+pub(crate) struct ResolvedLocusType {
+    pub name: String,
+    pub declaration: String,
+    pub at: Option<DeclAt>,
+}
+
+pub(crate) fn resolve_locus_type(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+) -> Option<ResolvedLocusType> {
+    let (name, declaration) = resolve(te, declared, import_renames, &mut Vec::new())?;
+    let at = declared.decls.get(&declaration).copied();
+    Some(ResolvedLocusType { name, declaration, at })
 }
 
 /// The locus name `te` denotes if it denotes one, with the name of the
@@ -321,22 +391,18 @@ fn resolve(
         return None;
     };
     let name = if path.segments.len() == 1 {
-        let name = &path.segments[0].name;
-        if !generic_args.is_empty() {
-            if !declared.loci.contains(name) {
-                return None;
-            }
-            let mangled = crate::mangle::mangle_generic_name(name, generic_args).ok()?;
-            return Some((mangled, name.clone()));
-        }
-        name.clone()
+        path.segments[0].name.clone()
     } else {
-        if !generic_args.is_empty() {
-            return None;
-        }
         let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
         crate::resolved::lookup_qualified_path(&segs, renames)?
     };
+    if !generic_args.is_empty() {
+        if !declared.loci.contains(&name) {
+            return None;
+        }
+        let mangled = crate::mangle::mangle_generic_name(&name, generic_args).ok()?;
+        return Some((mangled, name));
+    }
     match declared.aliases.get(&name) {
         Some(target) if !seen.contains(&name) => {
             seen.push(name);
@@ -379,7 +445,15 @@ pub fn handler_rows(
     snapshot: &Snapshot,
 ) -> HandlerRouting {
     let declared = DeclaredNames::of(programs);
-    let mut routing = HandlerRouting::default();
+    let declaration_sites = declared.decls.iter().filter_map(|(name, at)| {
+        declaration_site(*at, snapshot).map(|site| (name.clone(), site))
+    }).collect();
+    let mut routing = HandlerRouting {
+        declared: declared.clone(),
+        renames: import_renames.to_vec(),
+        declaration_sites,
+        ..HandlerRouting::default()
+    };
     let items = programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items));
     for item in items {
         let TopDecl::Locus(l) = item else { continue };
@@ -391,17 +465,12 @@ pub fn handler_rows(
             }
             let (ops, retry_bound) = recovery_ops(&fd.body);
             let (child, at) = child_locus(&fd.params[0].ty, &declared, import_renames);
-            let child_decl = match at {
-                Some(DeclAt::Program(n)) => snapshot.site_id(n).map(SiteRef::user),
-                Some(DeclAt::Stdlib(n)) => crate::stdlib_bodies::identities()
-                    .and_then(|ids| ids.site_id(n))
-                    .map(SiteRef::stdlib),
-                None => None,
-            };
+            let child_decl = at.and_then(|at| declaration_site(at, snapshot));
             routing.push(HandlerRow {
                 parent: l.name.name.clone(),
                 parent_id: snapshot.site_id(l.id),
                 child,
+                child_ty: fd.params[0].ty.clone(),
                 child_decl,
                 written: written_name(&fd.params[0].ty),
                 error_type: written_name(&fd.params[1].ty),
@@ -415,6 +484,15 @@ pub fn handler_rows(
         }
     }
     routing
+}
+
+fn declaration_site(at: DeclAt, snapshot: &Snapshot) -> Option<SiteRef> {
+    match at {
+        DeclAt::Program(n) => snapshot.site_id(n).map(SiteRef::user),
+        DeclAt::Stdlib(n) => crate::stdlib_bodies::identities()
+            .and_then(|ids| ids.site_id(n))
+            .map(SiteRef::stdlib),
+    }
 }
 
 /// The recovery ops a handler body can invoke, deduplicated in source

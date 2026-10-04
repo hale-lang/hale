@@ -138,6 +138,12 @@ Three small rules:
   not supported*; name a concrete instantiation instead (`type
   IntPair = Pair<Int>;`), which is allowed and stays transparent.
 
+An alias of a generic instantiation can also supply a literal's type
+arguments. With `type IntBox = Box<Int>;`, write
+`let b: IntBox = Box { value: 1 };`. This works for generic loci too,
+including imported templates: a qualified annotation or an alias of
+one selects the concrete instance and its child layouts.
+
 A word on what may stand in those angle brackets. A generic record
 is compiled once per instantiation, under a name built from the
 arguments — `Pair<Int>` becomes `Pair_Int` — so each argument has
@@ -267,6 +273,10 @@ fn main() {
     println(c.cap);
 }
 ```
+
+The parameter belongs to the template. In `Box<T>`, `T` still means
+the supplied type argument even if the seed also declares a type,
+locus or alias named `T`.
 
 Behind the scenes the compiler calls that instance's type
 `Cache_Int_String`, and you will see the name in a diagnostic. For

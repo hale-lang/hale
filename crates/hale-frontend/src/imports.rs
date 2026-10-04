@@ -18,7 +18,28 @@ use super::workspace::top_decl_ident;
 /// (`__lib_<lib_id>__<stem>__Bar`). Passed to
 /// `build_executable_with_imports` so codegen can resolve
 /// `alias::Name` references in user code.
+///
+/// One row per alias and declaration (F.40 phase 3, X3): a lib reached
+/// again under an alias that already names it adds no row, so the table
+/// is as long as the declarations its aliases name, not as the import
+/// sites that reach them. The order is the load's: libs in the order
+/// they are first bound under each alias, a lib's rows by declaration
+/// name, so two loads of one seed list it identically.
 pub type ImportRenames = Vec<(Vec<String>, String)>;
+
+/// A lib's rows under `alias`, by declaration name: `seed_renames` is a
+/// hash map, whose order differs from one map to the next.
+fn push_seed_rows(
+    renames: &mut ImportRenames,
+    alias: &str,
+    seed_renames: &std::collections::HashMap<String, String>,
+) {
+    let mut rows: Vec<(&String, &String)> = seed_renames.iter().collect();
+    rows.sort_unstable();
+    for (name, mangled) in rows {
+        renames.push((vec![alias.to_string(), name.clone()], mangled.clone()));
+    }
+}
 
 /// GH #746: who declared which import alias, so an alias can be
 /// scoped to its declaring seed the way the language scopes it.
@@ -83,6 +104,11 @@ impl AliasScopes {
     pub fn name_library(&self, lib: &Path, directory: bool) -> String {
         let basis = library_basis(lib, self.workspace_root.as_deref(), &self.entry_dir);
         library_id(&basis, directory)
+    }
+
+    /// Whether some seed has already bound `alias` to `lib`.
+    pub fn binds(&self, alias: &str, lib: &Path) -> bool {
+        self.bindings.iter().any(|(_, a, l)| a == alias && l == lib)
     }
 
     pub fn record_binding(&mut self, seed: &Path, alias: &str, lib: &Path) {
@@ -600,6 +626,12 @@ pub fn resolve_imports(
                 f.canonicalize().unwrap_or_else(|_| f.clone())
             }
         };
+        // F.40 phase 3, X3: an alias that already names this lib has its
+        // rows in the table, row for row what another push would add
+        // (`seed_cache` is the lib's rename map, fixed when the lib was
+        // first resolved). dna/host's files import `dna` 57 times, which
+        // pushed its 982 rows 57 times: 55,974 of the table's 58,005.
+        let rows_present = alias_scopes.binds(&alias, &lib_key);
         alias_scopes.record_binding(scope_key, &alias, &lib_key);
         // GH #820: before anything is parsed, check that no file of
         // this target already belongs to another library — the
@@ -737,11 +769,8 @@ pub fn resolve_imports(
             // off the canonical path, so both aliases map to the
             // same single compiled copy.
             if let Some(cached) = seed_cache.get(&lib_key) {
-                for (name, mangled) in cached {
-                    renames.push((
-                        vec![alias.clone(), name.clone()],
-                        mangled.clone(),
-                    ));
+                if !rows_present {
+                    push_seed_rows(renames, &alias, cached);
                 }
             }
             continue;
@@ -796,9 +825,7 @@ pub fn resolve_imports(
             eprintln!("[import]     library {} is named {}", lib_key.display(), lib_id);
         }
         // Populate the per-build path-rename table.
-        for (name, mangled) in &seed_renames {
-            renames.push((vec![alias.clone(), name.clone()], mangled.clone()));
-        }
+        push_seed_rows(renames, &alias, &seed_renames);
         if trace {
             eprintln!(
                 "[import]   resolved '{}' as {}: +{} files, seed_renames={}, \

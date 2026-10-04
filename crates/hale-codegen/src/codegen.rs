@@ -1526,7 +1526,6 @@ pub fn build_resolved(
         instantiating_program_lifetime: false,
         declared_owner: None,
         locus_cascade_path: Vec::new(),
-        locus_instantiation_path: Vec::new(),
         instantiating_into_payload_arena: false,
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
@@ -1536,6 +1535,9 @@ pub fn build_resolved(
         in_params_default: false,
         params_init_initialized: None,
         cooperative_pool_for_next_locus_instantiation: None,
+        contract_teardowns: Vec::new(),
+        cascade_orders: BTreeMap::new(),
+        reclaim_orders: BTreeMap::new(),
         current_cooperative_pool: None,
         anchor_route: None,
         pool_init: false,
@@ -3329,7 +3331,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Substituted source declarations used to declare the concrete
     /// locus methods. Signature lookup must read these same declarations
     /// instead of searching the unspecialized program for a mangled name.
-    specialized_locus_decls: BTreeMap<String, LocusDecl>,
+    pub(crate) specialized_locus_decls: BTreeMap<String, LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -3816,17 +3818,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type is already on the path is left to the teardown of the
     /// ancestor that owns it. Empty outside a cascade.
     pub(crate) locus_cascade_path: Vec<String>,
-    /// GH #813: the instantiations `lower_locus_instantiation` is
-    /// currently inside, keyed on (locus, the field names the literal
-    /// supplies). A locus reachable from its own param defaults —
-    /// `params { next: Node = Node { n: 1 }; }` — re-entered the
-    /// lowering through the default until the compiler's stack ran
-    /// out; re-entering a state already on this path is an
-    /// `Unsupported` error instead. The supplied names are part of
-    /// the key because the defaults a literal expands are exactly the
-    /// ones it does not supply. The instantiation twin of
-    /// `locus_cascade_path`. Empty outside an instantiation.
-    pub(crate) locus_instantiation_path: Vec<(String, Vec<String>)>,
     /// 2026-05-24 — when an outer locus is being m90-routed
     /// to the payload arena (because the enclosing fn declares
     /// it as the return type, fallible or not), every nested
@@ -3973,6 +3964,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// loop, as it does everywhere else a params loop runs, instead of
     /// being posted to the pool the worker is on.
     pub(crate) pool_init: bool,
+    /// The contract impls whose teardown pair
+    /// (`Cx::contract_teardown_table`) is declared and not yet given
+    /// its bodies.
+    pub(crate) contract_teardowns: Vec<String>,
+    /// Per declaration, the order the lifecycle plan places its owned
+    /// fields' teardowns in (`Cx::cascade_field_entries`), read once.
+    pub(crate) cascade_orders: BTreeMap<String, Vec<String>>,
+    /// Per declaration, the order the lifecycle plan places its reclaim's
+    /// steps in (`Cx::reclaim_spine_order`), read once.
+    pub(crate) reclaim_orders: BTreeMap<String, Vec<hale_types::lifecycle::spine::ReclaimStep>>,
     /// F.31 Phase 4b: synthesized `__coop_pool_run_<L>` fn ptrs.
     /// Each wrapper takes `(self_ptr, _payload_ptr)` matching
     /// the pool-handler signature and calls the locus's run()
@@ -6507,7 +6508,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_block = self.builder.get_insert_block();
         let void_t = self.context.void_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let i64_t = self.context.i64_type();
         let types: Vec<String> = self.user_loci.keys().cloned().collect();
         // Declare every `__reclaim_<L>` BEFORE emitting any body. A
         // body's teardown spine cascades to the locus's accept'd
@@ -6548,6 +6548,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(locus_name)
                 .copied()
                 .expect("every locus's __reclaim was declared above");
+            self.emit_reclaim_fn_body(locus_name, &info, reclaim, true, "Reclaim")?;
+        }
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(())
+    }
+
+    /// The body of a reclaim spine function for `locus_name`:
+    /// `__reclaim_<L>` (`with_drain`, on the Reclaim spine), or a
+    /// contract field's `__reclaim_drained_<L>`, the spine without its
+    /// drain half, which the field's owner ran before its own drain (line
+    /// 12, C32, on the Cascade spine).
+    fn emit_reclaim_fn_body(
+        &mut self,
+        locus_name: &String,
+        info: &LocusInfo<'ctx>,
+        reclaim: FunctionValue<'ctx>,
+        with_drain: bool,
+        spine: &'static str,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        {
             let entry = self.context.append_basic_block(reclaim, "entry");
             let do_bb = self.context.append_basic_block(reclaim, "reclaim.do");
             let ret_bb = self.context.append_basic_block(reclaim, "reclaim.ret");
@@ -6688,19 +6712,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // A locus is a flow iff the flow row names it: some declared
             // locus has a `release(c: T)` whose T denotes this locus.
             let is_flow = self.is_flow(locus_name);
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "Reclaim");
+            let lc_outer = std::mem::replace(&mut self.lc_spine, spine);
             // drain (children first, then self).
-            self.emit_locus_field_drains(&info, self_arg, locus_name)?;
-            let drain_call =
-                info.methods.get("drain").copied().filter(|_| !info.empty_lifecycle.contains("drain"));
-            self.lc_step("Drain", Some(self_arg), Some(locus_name), |cx| {
-                if let Some(drain_fn) = drain_call {
-                    cx.builder
-                        .build_call(drain_fn, &[self_arg.into()], &format!("{}.reclaim.drain", locus_name))
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Ok(())
-            })?;
+            if with_drain {
+                self.emit_locus_field_drains(&info, self_arg, locus_name)?;
+                let drain_call =
+                    info.methods.get("drain").copied().filter(|_| !info.empty_lifecycle.contains("drain"));
+                self.lc_step("Drain", Some(self_arg), Some(locus_name), |cx| {
+                    if let Some(drain_fn) = drain_call {
+                        cx.builder
+                            .build_call(drain_fn, &[self_arg.into()], &format!("{}.reclaim.drain", locus_name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    Ok(())
+                })?;
+            }
             // `release(c)` parent bookend — after drain, before
             // dissolve — for a flow with a non-null owner.
             //
@@ -6827,6 +6853,129 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_return(None)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let _ = i64_t;
+        }
+        Ok(())
+    }
+
+    /// C32 (line 12): the recorded teardown of an owned child behind a
+    /// contract-typed field (an `interface` slot, a `perspective(P)`
+    /// handle), for its impl `L`: a constant pair `{ __drain_<L>,
+    /// __reclaim_drained_<L> }` the instantiation stores in the field's
+    /// slot, so the owner's drain cascade drains the child before the
+    /// owner's own drain, as every owned field is, and its dissolve
+    /// cascade runs the rest of the child's spine after the owner's
+    /// dissolve. Declared on first use; the bodies are emitted by
+    /// [`Cx::synthesize_contract_teardowns`] once every body has lowered.
+    pub(crate) fn contract_teardown_table(&mut self, impl_name: &str) -> Option<PointerValue<'ctx>> {
+        if !self.reclaim_fns.contains_key(impl_name) {
+            return None;
+        }
+        let name = format!("__contract_teardown_{impl_name}");
+        if let Some(g) = self.module.get_global(&name) {
+            return Some(g.as_pointer_value());
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fn_ty = self.context.void_type().fn_type(&[ptr_t.into()], false);
+        let drain = self.module.add_function(&format!("__drain_{impl_name}"), fn_ty, None);
+        let rest = self.module.add_function(&format!("__reclaim_drained_{impl_name}"), fn_ty, None);
+        let table_ty = ptr_t.array_type(2);
+        let g = self.module.add_global(table_ty, None, &name);
+        g.set_initializer(&ptr_t.const_array(&[
+            drain.as_global_value().as_pointer_value(),
+            rest.as_global_value().as_pointer_value(),
+        ]));
+        g.set_constant(true);
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        self.contract_teardowns.push(impl_name.to_string());
+        Some(g.as_pointer_value())
+    }
+
+    /// The bodies of the contract teardowns [`Cx::contract_teardown_table`]
+    /// declared: `__drain_<L>` (latched on `__arena`: the child's own
+    /// fields' drains, then its `drain()`) and `__reclaim_drained_<L>` (the
+    /// reclaim spine without its drain half). Both are the cascade's
+    /// steps (the plan holds a field's teardown on the Cascade spine).
+    fn synthesize_contract_teardowns(&mut self) -> Result<(), CodegenError> {
+        let saved_block = self.builder.get_insert_block();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut names: Vec<String> = Vec::new();
+        while let Some(name) = self.contract_teardowns.pop() {
+            names.push(name);
+        }
+        for name in &names {
+            let Some(info) = self.user_loci.get(name).cloned() else { continue };
+            let drain = self.module.get_function(&format!("__drain_{name}")).expect("declared with its table");
+            let rest = self.module.get_function(&format!("__reclaim_drained_{name}")).expect("declared with its table");
+            // __drain_<L>: the drain half of the spine, once.
+            let entry = self.context.append_basic_block(drain, "entry");
+            let do_bb = self.context.append_basic_block(drain, "drain.do");
+            let ret_bb = self.context.append_basic_block(drain, "drain.ret");
+            self.builder.position_at_end(entry);
+            self.di_begin_function();
+            let self_arg = drain.get_nth_param(0).expect("self_ptr param").into_pointer_value();
+            // A competing shared reclaim may own this instance already.
+            // Check its claim before reading its arena or touching fields.
+            let claim_ptr = self.builder.build_struct_gep(
+                info.struct_ty, self_arg, info.reclaim_claimed_field_idx, "drain.claim.ptr",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "drain.pending")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value().left().expect("i64").into_int_value();
+            let pending = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "drain.retired",
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let ready_bb = self.context.append_basic_block(drain, "drain.ready");
+            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(ready_bb);
+            let arena_ptr = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_arg, info.arena_field_idx, &format!("{name}.drain.arena.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena = self
+                .builder
+                .build_load(ptr_t, arena_ptr, &format!("{name}.drain.arena"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let done = self
+                .builder
+                .build_is_null(arena, &format!("{name}.drain.done"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(done, ret_bb, do_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(do_bb);
+            let prev_fn = self.current_fn.replace(drain);
+            let prev_self = self.current_self.replace(SelfCx {
+                locus_name: name.clone(),
+                struct_ty: info.struct_ty,
+                self_ptr: self_arg,
+                fields: info.fields.clone(),
+            });
+            let drain_call =
+                info.methods.get("drain").copied().filter(|_| !info.empty_lifecycle.contains("drain"));
+            let r = self.lc_in_spine("Cascade", |cx| {
+                cx.emit_locus_field_drains(&info, self_arg, name)?;
+                cx.lc_step("Drain", Some(self_arg), Some(name), |cx| {
+                    if let Some(drain_fn) = drain_call {
+                        cx.builder
+                            .build_call(drain_fn, &[self_arg.into()], &format!("{name}.cascade.drain"))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    Ok(())
+                })
+            });
+            self.current_fn = prev_fn;
+            self.current_self = prev_self;
+            r?;
+            self.builder
+                .build_unconditional_branch(ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(ret_bb);
+            self.builder.build_return(None).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // __reclaim_drained_<L>: the rest.
+            self.emit_reclaim_fn_body(name, &info, rest, false, "Cascade")?;
         }
         if let Some(bb) = saved_block {
             self.builder.position_at_end(bb);
@@ -8107,11 +8256,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .filter(|l| !l.generics.is_empty())
             .map(|l| (l.name.name.clone(), l.clone()))
             .collect();
-        let generic_names: BTreeSet<String> = generic_type_decls
+        let mut generic_names: BTreeMap<String, String> = generic_type_decls
             .keys()
             .chain(generic_locus_decls.keys())
-            .cloned()
+            .map(|name| (name.clone(), name.clone()))
             .collect();
+        // Body annotations keep their authored qualified paths. Resolve
+        // those paths to the same template as signatures and aliases.
+        for (path, target) in &self.import_renames {
+            if generic_names.contains_key(target) {
+                generic_names.insert(path.join("::"), target.clone());
+            }
+        }
         let mut seen_mangles: BTreeSet<String> = BTreeSet::new();
         let mut requests: Vec<(String, Vec<TypeExpr>)> = Vec::new();
         Self::collect_generic_uses_in_program(
@@ -8231,6 +8387,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .ownership_accept_rows
                     .specialize(template, |t| Self::substitute_type_expr(t, &subst));
                 self.specialized_accepts.insert(mangled.clone(), accepts);
+                // Handler sites stay the template's, while their child
+                // types use this monomorph's substitution and route.
+                self.handlers.specialize(template, &mangled, |t| {
+                    Self::substitute_type_expr(t, &subst)
+                });
                 // The elision rows answer for it too: the same producer
                 // over the synthesized declaration.
                 let elision = self.alloc_routing.specialize(&synthesized);
@@ -9248,6 +9409,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
+        // C32: the contract teardowns the bodies recorded, before the
+        // drain observers are counted (their drains are some).
+        self.synthesize_contract_teardowns()?;
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
         // GH #1077: the loci that can answer a drain, now every body
@@ -9415,7 +9579,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// rows answer for a field. Fields no entry decides keep the
     /// locus's own default class (Cooperative under F.31).
     fn collect_main_placement(&mut self) {
-        use hale_types::placement::{Decision, DomainKind, HoleKind, InstanceKey, InstanceRow, Origin};
+        use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
         let Some(root) = table.root.as_ref() else { return };
         self.deployment.main_locus_name = Some(root.realizes.lowered.clone());
@@ -9510,11 +9674,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (k, r) in &table.instances {
             if matches!(k.origin, Origin::Binding(_)) && k.path.is_empty() {
                 self.deployment.pinned_locus_types.extend(r.realizes.as_ref().map(|d| d.lowered.clone()));
-            }
-        }
-        for h in &table.holes {
-            if let HoleKind::EntryDecidesNothing { field } = &h.kind {
-                self.deployment.undecided_fields.insert(field.clone());
             }
         }
     }
@@ -11871,7 +12030,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 span: c.span.clone(),
                 id: c.id,
             }),
-            // Mode, Failure, Closure, Contract, Type pass through
+            LocusMember::Failure(fd) => {
+                let mut specialized = fd.clone();
+                for param in &mut specialized.params {
+                    param.ty = Self::substitute_type_expr(&param.ty, subst);
+                }
+                specialized.body = Self::substitute_block_type_ascriptions(&fd.body, subst);
+                LocusMember::Failure(specialized)
+            }
+            // Mode, Closure, Contract, Type pass through
             // unchanged at v0.1; m63b can extend them when a
             // workload exercises generic loci that use those
             // surfaces.
@@ -12142,7 +12309,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// resolved.
     fn collect_generic_uses_in_program(
         program: &Program,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12319,7 +12486,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_fn_decl(
         f: &FnDecl,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12335,7 +12502,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_locus_member(
         member: &LocusMember,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12455,8 +12622,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
             }
+            LocusMember::Failure(fd) => {
+                for param in &fd.params {
+                    Self::collect_generic_uses(&param.ty, generic_names, seen, requests)?;
+                }
+                Self::collect_in_block(&fd.body, generic_names, seen, requests)?;
+            }
             LocusMember::Contract(_)
-            | LocusMember::Failure(_)
             | LocusMember::Closure(_)
             | LocusMember::Type(_)
             | LocusMember::Bindings(_)
@@ -12477,7 +12649,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_block(
         block: &Block,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12489,7 +12661,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_stmt(
         stmt: &Stmt,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -12515,51 +12687,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// — the typechecker has already validated names.
     fn collect_generic_uses(
         t: &TypeExpr,
-        generic_names: &BTreeSet<String>,
+        generic_names: &BTreeMap<String, String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
         match t {
-            TypeExpr::Named { path, generic_args, .. }
-                if path.segments.len() == 1
-                    && !generic_args.is_empty()
-                    && generic_names
-                        .contains(&path.segments[0].name) =>
-            {
-                // Recurse into args first so nested instantiations
-                // are discovered (and end up in requests order
-                // before the outer one — which is what
-                // declare_user_type needs to resolve them).
-                for a in generic_args {
-                    Self::collect_generic_uses(
-                        a,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
+            TypeExpr::Named { path, generic_args, .. } => {
+                for arg in generic_args {
+                    Self::collect_generic_uses(arg, generic_names, seen, requests)?;
                 }
-                let mangled = Self::mangle_generic_name(
-                    &path.segments[0].name,
-                    generic_args,
-                )?;
-                if seen.insert(mangled) {
-                    requests.push((
-                        path.segments[0].name.clone(),
-                        generic_args.clone(),
-                    ));
-                }
-            }
-            TypeExpr::Named { generic_args, .. } => {
-                /* non-generic Named ref (or unknown): still
-                 * recurse into any args in case they themselves
-                 * use a known generic template. */
-                for a in generic_args {
-                    Self::collect_generic_uses(
-                        a,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
+                if !generic_args.is_empty() {
+                    let written = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                    if let Some(template) = generic_names.get(&written) {
+                        let mangled = Self::mangle_generic_name(template, generic_args)?;
+                        if seen.insert(mangled) {
+                            requests.push((template.clone(), generic_args.clone()));
+                        }
+                    }
                 }
             }
             TypeExpr::Bounded { elem, .. } => Self::collect_generic_uses(
@@ -32512,14 +32656,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ))
             })?;
         let via_fat_pointer = matches!(field_ty, CodegenTy::Interface(_));
-        self.emit_owned_contract_child_reclaim(
-            &info,
-            cs.self_ptr,
-            &cs.locus_name,
-            fname,
-            field_idx,
-            via_fat_pointer,
-        )?;
+        // The old child's whole spine: its drain, then the rest.
+        for half in [crate::locus::dissolve::CONTRACT_DRAIN, crate::locus::dissolve::CONTRACT_REST] {
+            self.emit_owned_contract_child_teardown(
+                &info,
+                cs.self_ptr,
+                &cs.locus_name,
+                fname,
+                field_idx,
+                via_fat_pointer,
+                half,
+            )?;
+        }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         if let Some(&bit_pos) = info.locus_ref_bit_per_field.get(fname) {
             let i64_t = self.context.i64_type();

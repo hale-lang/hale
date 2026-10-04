@@ -1,0 +1,21 @@
+locus Cell<T> {
+    params {
+        value: T;
+    }
+}
+
+locus Supervisor<T> {
+    params {
+        child: Cell<T>;
+    }
+}
+
+fn spare() {
+    let extra: Cell<Int> = Cell { value: 9 };
+}
+
+fn main() {
+    let a: Supervisor<Int> = Supervisor { child: Cell { value: 17 } };
+    let b: Supervisor<String> = Supervisor { child: Cell { value: "second" } };
+    spare();
+}

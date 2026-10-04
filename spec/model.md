@@ -318,6 +318,17 @@ its own for them.
   hole on its declaration. Every placement question the checker and
   lowering ask is answered by the table, never by the arrangement.
 
+Dynamic-birth provenance comes from the ownership graph (F.40 phase 3,
+C3). Its walk records whether a locus-body literal belongs to a params
+initializer and records free-function births alongside the owning-locus
+sites. The model does not classify births by comparing source spans or
+walk free functions again. In particular, expressions copied from API
+bindings into generated params retain their source spans and their
+params-default provenance. They do not add dynamic-placement holes;
+connection peers created in bodies still do. A birth's resolved child
+joins the model's declaration table by site, so a qualified stdlib name
+cannot create a hole on a user locus with the same final name segment.
+
 Three identity contracts hold the projection, each separately:
 
 1. **Shape identity.** The arrangement is outside the shape half:

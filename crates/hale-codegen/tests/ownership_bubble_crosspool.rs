@@ -18,8 +18,10 @@
 //!   * the disable flag — `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties the plan
 //!     so the Ships stay transient (the differential control arm).
 //!
-//! Run under `LOTUS_ASAN=1 --include-ignored` to prove the Ship is
-//! reclaimed exactly once by World (no leak / UAF / double-free).
+//! `crosspool_bubble_is_clean_under_asan` builds the program with
+//! AddressSanitizer (chunk pooling off) to prove the Ship is reclaimed
+//! exactly once by World (no leak / UAF / double-free), with the create
+//! cell's birth spine in the plan's order (accept, then birth: L4).
 
 use std::process::Command;
 
@@ -223,6 +225,38 @@ fn world_collects_crosspool_bubbled_ships() {
          total=42) within 4 runs; last stdout: {:?}",
         last
     );
+}
+
+/// The bubbled Ships under AddressSanitizer, chunk pooling off (GH
+/// #816): delivered, accepted before their birth on World's thread, and
+/// reclaimed once by World's cascade, with nothing reported. Retried
+/// like the plain run, for a starved delivery thread.
+#[test]
+fn crosspool_bubble_is_clean_under_asan() {
+    let _lock = bubble_lock();
+    let program = hale_syntax::parse_source(XPOOL_SRC).expect("parse");
+    let bin = harness::unique_bin("hale_test_xpool_bubble_asan");
+    harness::build_asan(&program, &bin);
+    let mut last = String::new();
+    for _ in 0..6 {
+        let out = Command::new(&bin)
+            .env("ASAN_OPTIONS", "detect_leaks=1")
+            .env("LOTUS_NO_CHUNK_POOL", "1")
+            .output()
+            .expect("run the asan build");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        for marker in ["ERROR: AddressSanitizer", "ERROR: LeakSanitizer", "heap-use-after-free", "double-free"] {
+            assert!(!stderr.contains(marker), "the sanitizer reported `{marker}`:\n{stderr}");
+        }
+        assert!(out.status.success(), "non-zero exit: {:?}\nstderr: {stderr}", out.status);
+        last = String::from_utf8_lossy(&out.stdout).into_owned();
+        if last.contains("count=3") && last.contains("total=42") {
+            let _ = std::fs::remove_file(&bin);
+            return;
+        }
+    }
+    let _ = std::fs::remove_file(&bin);
+    panic!("expected count=3 total=42 under ASan within 6 runs; last stdout: {last:?}");
 }
 
 #[test]

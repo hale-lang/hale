@@ -97,8 +97,7 @@ A few switches worth knowing from day one:
   Server — point any LSP-speaking editor (or agent harness) at it
   and you get live diagnostics: type errors as errors, the
   advisory analyses (unbounded-alloc survey, hot-path lint,
-  placement warnings) as warnings, re-checked whole-program on
-  every keystroke because the check runs in ~10 ms. The server loads
+  placement warnings) as warnings, refreshed as you edit. The server loads
   the seed exactly as `hale check <dir>` does — every file of the
   open file's directory, every `import` followed, your unsaved
   buffers in place of the files on disk — so the two never disagree;
@@ -111,7 +110,10 @@ A few switches worth knowing from day one:
   ones that read them, and keeps the rest from the last check. An edit
   to a signature, a field, or which declarations exist checks the
   whole seed. Either way the findings are the ones a full check
-  gives. Hover shows
+  gives. Diagnostics use your import aliases when naming library
+  declarations, with a stable spelling across checks. Repeated imports
+  of the same library share their rename entries, and each check reuses
+  its name index across diagnostic publications. Hover shows
   signatures with their contracts (fallibility, `@hot`/`@budget`
   status, a topic's routing key), completion covers `self.`
   members, the `std::` surface, and your seed's symbols,

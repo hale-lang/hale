@@ -112,6 +112,7 @@ pub fn derive_lifecycle(inputs: &LifecycleInputs<'_>) -> LifecyclePlan {
     for i in 0..subjects.len() {
         b.tree_edges(i);
     }
+    b.sibling_edges();
     b.process();
     b.plan
 }
@@ -338,11 +339,9 @@ struct Subject<'a> {
     /// Built in an `on_failure` body under every contribution: it exists
     /// only on a path where the handler runs.
     in_handler: bool,
-    /// A field whose declared type is a contract (an interface, a
-    /// perspective) the literal implements: the cascade tears it down
-    /// through its recorded reclaim (inventory C32), after its owner's
-    /// dissolve.
-    contract: bool,
+    /// A field's name in its owner's params: where it falls in the
+    /// owner's declaration order, the order the cascade walks fields in.
+    field: Option<String>,
     /// Its domain was decided for it (a root entry, a binding), not
     /// inherited from its owner.
     placed: bool,
@@ -487,19 +486,12 @@ fn combine(claims: impl IntoIterator<Item = Option<RunsOn>>) -> Option<RunsOn> {
     out
 }
 
-/// Whether `owner`'s field `field` is declared with a type that names no
-/// locus (a contract the literal implements).
-fn contract_field(owner: &LocusDecl, field: &str, universe: SiteUniverse, index: &LocusIndex<'_>) -> bool {
-    owner
-        .members
+/// How many field templates of `owner` the field `name` has.
+fn fields_named(subjects: &[Subject<'_>], owner: usize, name: &str) -> usize {
+    subjects
         .iter()
-        .filter_map(|m| match m {
-            LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field),
-            _ => None,
-        })
-        .next()
-        .and_then(|p| p.ty.as_ref())
-        .is_some_and(|ty| index.names(ty, universe).is_none())
+        .filter(|s| s.how == How::Field && s.contributions.iter().any(|c| c.owner == Some(owner)) && s.field.as_deref() == Some(name))
+        .count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -571,10 +563,6 @@ fn subjects<'a>(
         let it = owner.map_or(Some(PlacementTable::MAIN), |o| {
             initialization_domain(t, out[o].placed, &out[o].contributions[0])
         });
-        let contract = match (owner, key.path.last()) {
-            (Some(o), Some(step)) => contract_field(out[o].decl, &step.field, out[o].universe, index),
-            _ => false,
-        };
         by_key.insert(key, out.len());
         let bound = bound_of(&key.origin);
         out.push(Subject {
@@ -591,7 +579,7 @@ fn subjects<'a>(
             }],
             bound,
             in_handler: false,
-            contract,
+            field: (how == How::Field).then(|| key.path.last().map(|s| s.field.clone())).flatten(),
             placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
         });
     }
@@ -633,7 +621,7 @@ fn subjects<'a>(
             contributions: vec![Contribution { owner: None, under: None, it: domain, own: domain, in_handler }],
             bound: d.bound.clone(),
             in_handler,
-            contract: false,
+            field: None,
             placed: false,
         });
         dynamic_fields(&mut out, &mut sources, i, index, &inputs.bundle.snapshot);
@@ -739,7 +727,7 @@ fn dynamic_fields<'a>(
             let Some(field_decl) = index.decl(site) else { continue };
             let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
             let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone() };
-            let contract = p.ty.as_ref().is_some_and(|ty| index.names(ty, universe).is_none());
+            let field = p.name.name.clone();
             // Every instance of a literal shares its rows: a field literal
             // reached under several of its declaration's templates is one
             // template, with each as a parent.
@@ -754,7 +742,7 @@ fn dynamic_fields<'a>(
                 }
                 None => {
                     out.push(Subject {
-                        contract,
+                        field: Some(field),
                         placed: false,
                         site: SourceSite { decl: realizes, template },
                         decl: field_decl,
@@ -1170,6 +1158,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 if !self.facts[i].subscribes => {
                 (Spine::EagerTeardown, DomainRole::Instantiating)
             }
+            How::Top { .. } | How::Body { .. } if s.decl.is_main => (Spine::DeferredMainEntry, DomainRole::Teardown),
             How::Top { .. } | How::Body { .. } => (Spine::DeferredEntry, DomainRole::Teardown),
             How::Adapter => (Spine::Process, DomainRole::Main),
         }
@@ -1207,7 +1196,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         let on_async_pool = self.any(i, |c| self.is_async_pool(c.own));
         let in_pool_init = matches!(s.site.template, Template::Static(_)) && !s.placed
             && self.all(i, |c| self.is_pool(c.own) && c.own == c.it);
-        let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(i, c));
         // A posted run can still be executing when a field replacement
         // enters teardown on another pool. Retention orders its end
         // before physical reclaim, not before drain or dissolve.
@@ -1413,9 +1401,10 @@ impl<'b, 'a> Builder<'b, 'a> {
         if let_bound {
             o.line = Some("11");
         }
-        if s.how == How::Field && self.owners(i).into_iter().any(|p| self.is_pinned(p)) && !pinned {
+        // A nested field drains on its pinned anchor's thread (C9).
+        if s.how == How::Field && !pinned && self.any(i, |c| c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { .. }))) {
             o.line = Some("12");
-            o.status = Status::KnownOpen { inventory_row: "C9" };
+            o.runs_on = self.claim(i, |c| Self::on(c.own, shipped("12")));
         }
         let drain = self.push(o);
         r.drain = Some(drain);
@@ -1492,25 +1481,24 @@ impl<'b, 'a> Builder<'b, 'a> {
         if let Some(run) = r.run {
             self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
         }
-        // A run still queued behind its owner's teardown on the worker is
-        // canceled inside the reclaim and named, NotStarted(Acknowledged),
-        // before the child is released (line 19, the retention L5
-        // shipped).
-        // Claimed on the pools of the contributions that post it there.
-        if r.run.is_some() && posted_to_teardown {
+        // Any posted run still queued at reclaim is canceled there,
+        // including a static field reclaimed on main after its pool stops.
+        // Cancellation follows the reclaiming domain; claim the worker
+        // only when every occurrence's owner tears down on that worker.
+        if r.run.is_some() && posted_run {
             let mut o = self.row(i, K::Cancellation, reclaim_holder);
             o.line = Some("19");
             o.guard = PathGuard::DrainInFlight;
-            o.runs_on = combine(
-                self.contributions(i)
-                    .iter()
-                    .filter(|c| self.posted_to_its_owners_teardown(i, c))
-                    .map(|c| Self::on(c.own, shipped("19"))),
-            );
+            o.runs_on = combine(self.contributions(i).iter().filter(|c| self.is_pool(c.own)).map(|c| {
+                self.posted_to_its_owners_teardown(i, c).then(|| Self::on(c.own, shipped("19"))).flatten()
+            }));
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
-            // Only an occurrence posted there has a cancellation to wait for.
-            if self.all(i, |c| self.posted_to_its_owners_teardown(i, c)) {
+            // A shared dynamic template can also run inline on main;
+            // that occurrence owes no cancellation to wait for.
+            if matches!(s.site.template, Template::Static(_))
+                || self.all(i, |c| self.posted_to_its_owners_teardown(i, c))
+            {
                 self.get(id).edges.completion.push(after(cancel, Point::Completed, shipped("19")));
             }
         }
@@ -1825,7 +1813,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         let child = self.rows[i].clone();
         let parent = self.rows[o].clone();
         let pinned = self.is_pinned(i);
-        let parent_pinned = self.is_pinned(o);
         let field = self.subjects[i].how == How::Field;
         let restartable = self.restarts_from(o, i).unwrap_or(false);
         if field && !pinned {
@@ -1842,18 +1829,11 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         if field {
             // Owned fields drain before their owner, in their own domain
-            // (line 12). A pinned locus's are never drained (C9), and a
-            // contract-typed field is torn down through its recorded
-            // reclaim, its whole spine after the owner's dissolve (C32).
+            // (line 12): a pinned locus's on its thread (C9), and a
+            // contract-typed field through the drain its instantiation
+            // records (C32), both shipped by L4's cascade.
             if let (Some(cd), Some(pd)) = (child.drain, parent.drain) {
-                let rule = if parent_pinned {
-                    open("12", "C9")
-                } else if self.subjects[i].contract {
-                    open("12", "C32")
-                } else {
-                    shipped("12")
-                };
-                self.get(pd).edges.entry.push(after(cd, Point::Completed, rule));
+                self.get(pd).edges.entry.push(after(cd, Point::Completed, shipped("12")));
             }
         }
         if matches!(self.subjects[i].how, How::Accepted { .. }) {
@@ -1889,6 +1869,50 @@ impl<'b, 'a> Builder<'b, 'a> {
             for d in held {
                 let rule = Rule::line("1", self.plan.obligations[d.0 as usize].status);
                 self.get(pb).edges.entry.push(after(d, Point::Completed, rule));
+            }
+        }
+    }
+
+    /// Line 12 over the instance tree: an owner's fields are drained in
+    /// their declaration order, and each dissolve completes before the
+    /// next begins. Reclaim may retain storage through an active run,
+    /// so sibling entry does not wait for physical release. The owner
+    /// still retains all children until its own release (line 14).
+    /// Left out of the chain: a pinned field, which its own thread and
+    /// its join tear down, and a field with several templates, only one
+    /// of which a run builds.
+    fn sibling_edges(&mut self) {
+        let mut by_owner: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (i, s) in self.subjects.iter().enumerate() {
+            if s.how == How::Field && s.field.is_some() && !self.is_pinned(i) {
+                for o in self.owners(i) {
+                    by_owner.entry(o).or_default().push(i);
+                }
+            }
+        }
+        for (o, mut fields) in by_owner {
+            let decl = self.subjects[o].decl;
+            let declared: Vec<&str> = decl
+                .members
+                .iter()
+                .filter_map(|m| match m {
+                    LocusMember::Params(pb) => Some(pb.params.iter().map(|p| p.name.name.as_str())),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            let name = |i: usize| self.subjects[i].field.as_deref().unwrap_or("");
+            let at = |i: usize| declared.iter().position(|f| *f == name(i));
+            fields.retain(|&i| at(i).is_some() && fields_named(self.subjects, o, name(i)) == 1);
+            fields.sort_by_key(|&i| at(i));
+            for w in fields.windows(2) {
+                let (a, b) = (self.rows[w[0]].clone(), self.rows[w[1]].clone());
+                if let (Some(ad), Some(bd)) = (a.drain, b.drain) {
+                    self.get(bd).edges.entry.push(after(ad, Point::Completed, shipped("12")));
+                }
+                if let (Some(ad), Some(bd)) = (a.dissolve, b.dissolve) {
+                    self.get(bd).edges.entry.push(after(ad, Point::Completed, Rule::SHIPPED));
+                }
             }
         }
     }
@@ -2084,9 +2108,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.get(join).edges.completion.push(after(d, Point::Completed, shipped("JP")));
             }
         }
-        // Every run on a pool ends before that pool's join completes, and
-        // a canceled one names its cancellation first (line 19: a parked
-        // run abandoned, R20a, or a queued one its teardown cancels). A
+        // Every run on a pool ends before that pool's join completes. A
+        // cancellation performed by that worker also completes first
+        // (R20a or its own teardown). Main can cancel queued work after
+        // the join, so those cancellations impose no join prerequisite. A
         // run is held to the join where every occurrence is on a pool; a
         // cancellation exists only on one.
         if let Some(join) = first_join {
@@ -2100,7 +2125,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 let cancels: Vec<ObligationId> = self
                     .plan
                     .iter()
-                    .filter(|(_, o)| o.kind == K::Cancellation && o.site == self.site(i))
+                    .filter(|(_, o)| o.kind == K::Cancellation && o.site == self.site(i)
+                        && (o.holder.spine == Spine::PoolRun
+                            || self.contributions(i).iter().filter(|c| self.is_pool(c.own))
+                                .all(|c| self.posted_to_its_owners_teardown(i, c))))
                     .map(|(id, _)| id)
                     .collect();
                 for c in cancels {

@@ -236,7 +236,7 @@ pub fn derive_application_model_over(
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // GH #1159: the rename table once per derivation, not per string.
-    let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
+    let rename_table = crate::stdlib_bodies::Demangler::new(&bundle.import_renames);
     let graph = inputs.bus_graph;
     // The summary the effect rows' walk read: the checked programs with
     // the stdlib's analysis copy beside them, cross-seed calls resolved.
@@ -2725,7 +2725,7 @@ pub fn derive_application_model_over(
                     let shown = if ast.interfaces.iter().any(|(n, _)| *n == i.as_str()) {
                         i.clone()
                     } else {
-                        crate::stdlib_bodies::demangle_with(i, &rename_table)
+                        rename_table.demangle(i)
                     };
                     (shown, next.fn_name.clone())
                 });
@@ -2734,7 +2734,7 @@ pub fn derive_application_model_over(
             let entry_provenance =
                 intern_span(&mut records, edge.span);
             let disp = |kk: &FnKey| -> String {
-                crate::stdlib_bodies::demangle_with(&kk.display(), &rename_table)
+                rename_table.demangle(&kk.display())
             };
             let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
             let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
@@ -2792,7 +2792,7 @@ pub fn derive_application_model_over(
                                     .as_ref()
                                     .map(|i| {
                                         (
-                                            crate::stdlib_bodies::demangle_with(i, &rename_table),
+                                            rename_table.demangle(i),
                                             nn.fn_name.clone(),
                                         )
                                     });
@@ -2967,35 +2967,6 @@ pub fn derive_application_model_over(
         use hale_syntax::ast::{
             LocusMember, TopDecl,
         };
-        // Locus decls by RAW name, with their members, across the
-        // whole bundle (modules included — a module locus can be
-        // arranged like any other).
-        let mut decls_by_name: BTreeMap<
-            &str,
-            &hale_syntax::ast::LocusDecl,
-        > = BTreeMap::new();
-        fn walk_loci<'a>(
-            items: &'a [TopDecl],
-            out: &mut BTreeMap<
-                &'a str,
-                &'a hale_syntax::ast::LocusDecl,
-            >,
-        ) {
-            for item in items {
-                match item {
-                    TopDecl::Locus(l) => {
-                        out.entry(l.name.name.as_str()).or_insert(l);
-                    }
-                    TopDecl::Module(m) => {
-                        walk_loci(&m.items, out)
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for pr in &programs {
-            walk_loci(&pr.items, &mut decls_by_name);
-        }
         // The arrangement is the placement table's rows, projected
         // (F.40 phase 3, P1; `notes/f40-placement-correspondence.md`
         // § 2.4): the instances of the root lowering deploys (one
@@ -3434,84 +3405,29 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
-        // Dynamic births: a method-body instantiation site's
-        // instance is not in the arrangement — its ownership and
-        // placement are runtime facts. Typed holes keep the
-        // capability account honest (RuntimeInheritedPlacement is
-        // exactly this shape).
+        // C3: the ownership graph evaluates defaults per construction,
+        // including explicit overrides and additional dynamic holders.
+        // Tell it which source literals this arrangement represents;
+        // a held row represents the literal of its construction source.
+        // Disagreeing template paths already have their own holes above.
+        let represented: BTreeSet<_> = table.instances.iter()
+            .filter(|(key, _)| root_template(key.origin))
+            .filter_map(|(_, row)| row.literal.or_else(|| row.built_by.as_ref()
+                .and_then(|key| table.instances.get(key)).and_then(|source| source.literal)))
+            .filter(|site| site.universe == crate::placement::SiteUniverse::User)
+            .map(|site| site.id).collect();
         let og = inputs.ownership;
-        let free_fn_births =
-            crate::ownership_graph::free_fn_birth_sites(bundle);
-        // Params-default births ARE the arrangement — only sites
-        // outside every params block of their enclosing locus are
-        // dynamic.
-        let params_spans: BTreeMap<
-            &str,
-            Vec<hale_syntax::Span>,
-        > = decls_by_name
-            .iter()
-            .map(|(n, d)| {
-                (
-                    *n,
-                    d.members
-                        .iter()
-                        .filter_map(|m| match m {
-                            LocusMember::Params(pb) => {
-                                Some(pb.span)
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        // Method-body births (the ownership graph's sites) PLUS
-        // free-function births — `fn main() { EchoL { }; }` is the
-        // most common arrangement-free program shape in the corpus,
-        // and it must not read as "no instances, exact placement".
-        let dyn_sites: Vec<(&str, &str, hale_syntax::Span)> = og
-            .sites
-            .iter()
-            .map(|s| {
-                (
-                    s.child_ty.as_str(),
-                    s.enclosing_locus.as_str(),
-                    s.span,
-                )
-            })
-            .chain(
-                free_fn_births
-                    .iter()
-                    .map(|(ty, sp)| (ty.as_str(), "", *sp)),
-            )
-            .collect();
-        for (child_ty, enclosing, span) in dyn_sites {
-            // `fn main() { App { }; }` — the birth of the
-            // arrangement ROOT — is not a dynamic birth: it is how
-            // the arrangement is entered, and the root instance is
-            // already modeled (path `App`, domain `main`). Every
-            // OTHER free-standing birth is outside the arrangement.
-            if root_name == Some(child_ty) {
-                continue;
-            }
-            let in_arrangement = params_spans
-                .get(enclosing)
-                .is_some_and(|spans| {
-                    spans.iter().any(|ps| {
-                        span.start >= ps.start && span.end <= ps.end
-                    })
-                });
-            if in_arrangement {
-                continue;
-            }
-            let pid = intern_span(&mut records, span);
-            // Anchored at the BORN locus, not the birthplace: the
-            // fact hidden is "instances of this locus exist that
-            // the arrangement does not name", which is true of the
-            // child whether it was born in a method or a free fn.
-            let Some(lid) = locus_id.get(&child_ty.to_string()) else {
-                continue;
+        for birth in og.unarranged_births(table, &represented) {
+            let Some(decl) = birth.child_decl.map(|i| &og.declarations[i]) else { continue };
+            let span = birth.span;
+            // Minted declarations join by site; the legacy unminted
+            // bundle keeps its name fallback.
+            let lid = match decl.id {
+                Some(id) => locus_by_site.get(&id.index),
+                None => locus_id.get(&decl.name),
             };
+            let Some(lid) = lid else { continue };
+            let pid = intern_span(&mut records, span);
             let at = EntityRef::LocusDecl(*lid);
             holes
                 .entry((

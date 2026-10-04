@@ -18,7 +18,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C50, R1–R50, R19a and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C51, R1–R51, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -113,7 +113,7 @@
 //! 9     FailureDelivery Closures                 Shipped
 //! 10    Closures Dissolve                        Shipped
 //! 11    Drain                                    Shipped
-//! 12    Drain                                    KnownOpen C9; KnownOpen C32
+//! 12    Drain                                    Shipped (C9, L4); Shipped (C32, L4)
 //! 13    Resume RunAdmission Run                  KnownOpen C43; KnownOpen C48
 //! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
@@ -539,7 +539,7 @@ impl ObligationKind {
             ObligationKind::ConstructionDelivery => &["C11", "R2", "R3", "R4", "R5"],
             ObligationKind::Accept => &["C2", "C7", "R6"],
             ObligationKind::Subscribe => &["C8", "C49", "C50", "R50"],
-            ObligationKind::Readiness => &["C8", "C10", "C49", "C50"],
+            ObligationKind::Readiness => &["C8", "C10", "C49", "C50", "C51", "R51"],
             ObligationKind::Birth => &["C1", "C9", "C10", "C38", "C49", "C50", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
             ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "R24", "R25"],
@@ -1070,10 +1070,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "owned fields drain before their parent, in the child's domain",
         kinds: &[K::Drain],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "C9" }, "a pinned locus's owned fields are never drained"),
+            (Status::Shipped, "a pinned locus's owned fields drain on its thread before its drain() (C9, L4)"),
             (
-                Status::KnownOpen { inventory_row: "C32" },
-                "an interface- or perspective-typed field is drained after its owner's dissolve",
+                Status::Shipped,
+                "an interface- or perspective-typed field drains before its owner's drain, like every owned field (C32, L4)",
             ),
         ],
     },

@@ -437,3 +437,26 @@ fn a_single_file_of_a_multi_file_seed_stays_permissive() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Placement rows and native lowering read the same typed literal,
+/// through an alias and through two aliases for one imported template.
+#[test]
+fn generic_placement_annotations_check_build_and_run() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../hale-types/tests/fixtures/placement");
+    for (tag, source, expected) in [
+        ("generic_alias", fixtures.join("generic_aliases.hl"), "17:second"),
+        ("generic_import", fixtures.join("generic_imported/main.hl"), "17:second"),
+        ("generic_parameter", fixtures.join("generic_parameter.hl"), "7:1:7\nrecord=7"),
+    ] {
+        let d = app_seed(tag, &std::fs::read_to_string(source).expect("read placement fixture"));
+        std::fs::copy(fixtures.join("generic_imported/lib/lib.hl"), d.join("lib/types.hl"))
+            .expect("copy generic library");
+        let (out, code) = run("check", &d, &[]);
+        assert_eq!(code, 0, "{tag}: check: {out}");
+        let (out, code) = run("run", &d, &[]);
+        assert_eq!(code, 0, "{tag}: build/run: {out}");
+        assert!(out.contains(expected), "{tag}: wrong layouts: {out}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

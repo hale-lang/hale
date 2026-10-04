@@ -221,14 +221,18 @@ pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program)
 const MERGED_NAME: &str = "__codegen_merged";
 
 /// The bundle view of a merged program: one program under
-/// [`MERGED_NAME`] with the build's import renames, no source map, no
-/// snapshot. The renames are what let a graph built over it resolve a
+/// [`MERGED_NAME`] with the build's import renames and minted identities. The renames are what let a graph built over it resolve a
 /// qualified imported type (`accept(c: lib::Child)`) to the mangled
 /// locus the merge declared; without them the graph's `accepts` row
 /// for that locus is empty, and lowering reads it as authoritative.
-fn merged_bundle<'a>(merged: &'a Program, import_renames: &[(Vec<String>, String)]) -> Bundle<'a> {
+fn merged_bundle<'a>(
+    merged: &'a Program,
+    import_renames: &[(Vec<String>, String)],
+    snapshot: &Snapshot,
+) -> Bundle<'a> {
     let mut bundle = Bundle::new(std::iter::once((MERGED_NAME.to_string(), merged)).collect());
     bundle.import_renames = import_renames.to_vec();
+    bundle.snapshot = snapshot.clone();
     bundle
 }
 
@@ -237,7 +241,7 @@ impl LoweringView {
     /// with the view's import renames: lowering reads program-wide
     /// facts through it instead of building its own.
     pub fn bundle(&self) -> Bundle<'_> {
-        merged_bundle(&self.merged, &self.import_renames)
+        merged_bundle(&self.merged, &self.import_renames, &self.snapshot)
     }
 
     /// The lifecycle plan the emitters read: each spine's obligations for
@@ -514,7 +518,7 @@ pub fn resolve_rewritten(
     // (`log.**`). A bundle with no entry point is open world: every
     // subject is ineligible, and the plan is all dynamic.
     let (ownership, bubble, bus, plan, top) = {
-        let bundle = merged_bundle(&merged, import_renames);
+        let bundle = merged_bundle(&merged, import_renames, &snapshot);
         // The scope's diagnostics are dropped: the checker reported
         // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
