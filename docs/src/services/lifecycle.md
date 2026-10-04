@@ -495,6 +495,9 @@ so nothing tears it down twice. The rules that order gives you:
   once `birth()` has returned: nothing published to a new locus is
   delivered while its `birth()` runs. What arrives meanwhile, its
   own sends included, waits and is delivered afterwards, in order.
+  Once a queue's worth is waiting, a publisher elsewhere waits for
+  the birth to finish; a handler on the new locus's own pool, or on
+  its pinned thread, never does.
 - **A pinned locus checks its birth on its own thread.** Its
   `birth_check` runs there, after `birth()` and before `run()`.
 - **A field inherits its owner's pool.** A locus field inside a
