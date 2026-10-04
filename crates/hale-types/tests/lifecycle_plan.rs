@@ -16,6 +16,7 @@ use hale_types::lifecycle::{
     DomainRole, FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
     Spine, Status, Template, Terminal, DECISION_LINES,
 };
+use hale_types::lifecycle::spine::BIRTH_KINDS;
 use hale_types::placement::{Bound, DomainKind, SiteUniverse};
 
 fn snapshot(src: &str) -> Snapshot {
@@ -155,6 +156,80 @@ fn the_plans_laws_hold_over_the_corpus() {
     eprintln!("{programs} programs, {instances} instance templates, {rows} rows: {by_kind:?}");
     assert!(programs > 100, "the corpus shrank to {programs} programs");
     assert!(broken.is_empty(), "{} law(s) broken:\n{}", broken.len(), broken.join("\n"));
+}
+
+/// The emitters' reader (L4) over every corpus program: each template's
+/// birth spine follows its entry edges, and a declaration's templates
+/// agree on the order of the birth kinds they share, so an emitter
+/// lowering one literal of the declaration reads one order.
+#[test]
+fn every_declaration_reads_one_birth_order_over_the_corpus() {
+    let mut decls = 0;
+    let mut broken: Vec<String> = Vec::new();
+    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
+        let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
+        let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(false, false)) else { continue };
+        let Ok(plan) = s.demand_lifecycle() else { continue };
+        let names: BTreeSet<&str> = plan.instances.iter().map(|i| i.site.decl.lowered.as_str()).collect();
+        for name in names {
+            decls += 1;
+            let mut kinds: Vec<K> = Vec::new();
+            for site in plan.templates(name) {
+                let steps = plan.birth_spine(site);
+                for (i, step) in steps.iter().enumerate() {
+                    let o = plan.get(step.obligation).expect("a row");
+                    // No row of the spine waits for one placed after it.
+                    for later in &steps[i + 1..] {
+                        if o.edges.entry.iter().any(|pr| pr.event.obligation == later.obligation) {
+                            broken.push(format!("{}: {name}: {} placed before {}", p.origin, o.kind.name(), later.kind.name()));
+                        }
+                    }
+                    if !kinds.contains(&step.kind) {
+                        kinds.push(step.kind);
+                    }
+                }
+                // The producer's order, which the reader falls back on.
+                let at: Vec<usize> = steps
+                    .iter()
+                    .map(|s| BIRTH_KINDS.iter().position(|k| *k == s.kind).expect("a birth kind"))
+                    .collect();
+                if at.windows(2).any(|w| w[0] >= w[1]) {
+                    broken.push(format!("{}: {name}: the birth spine departs from BIRTH_KINDS", p.origin));
+                }
+            }
+            if let Err(e) = plan.birth_order(name, &kinds) {
+                broken.push(format!("{}: {e}", p.origin));
+            }
+        }
+    }
+    assert!(decls > 100, "the corpus shrank to {decls} declarations");
+    assert!(broken.is_empty(), "{} broken:\n{}", broken.len(), broken.join("\n"));
+}
+
+/// The reader's order on the shapes the birth spine has: registration,
+/// then the birth, then readiness (line 6); a pinned locus's thread
+/// births, runs, drains and dissolves it; an accepted child is accepted
+/// before its birth (line 5); a declaration the plan has no template of
+/// reads the order every template states.
+#[test]
+fn the_reader_orders_each_spine_by_the_plans_edges() {
+    let kinds = |p: &LifecyclePlan, decl: &str, spine: Spine| -> Vec<&'static str> {
+        let site = p.templates(decl).next().unwrap_or_else(|| panic!("{decl} has a template"));
+        p.spine(site, spine).iter().map(|s| s.kind.name()).collect()
+    };
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l06_readiness_main.hl"));
+    let p = plan(&s);
+    assert_eq!(kinds(p, "Sub", Spine::Instantiation), ["Subscribe", "Birth", "Readiness"]);
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_pinned_fields_drain.hl"));
+    let p = plan(&s);
+    assert_eq!(kinds(p, "Outer", Spine::PinnedMain), ["Birth", "Run", "Drain", "Dissolve"]);
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l05_accept_position.hl"));
+    let p = plan(&s);
+    assert_eq!(kinds(p, "Kid", Spine::Instantiation), ["Accept", "Birth"]);
+    assert_eq!(p.birth_order("Kid", &[K::Birth, K::Accept]).expect("ordered"), [K::Accept, K::Birth]);
+    assert_eq!(p.birth_order("NoSuchLocus", &[K::Run, K::Birth]).expect("ordered by every template"), [K::Birth, K::Run]);
+    // No template of this plan subscribes: the producer's order.
+    assert_eq!(p.birth_order("NoSuchLocus", &[K::Readiness, K::Birth]).expect("ordered"), [K::Birth, K::Readiness]);
 }
 
 /// Line 1: a child failing while its owner's params are open has its

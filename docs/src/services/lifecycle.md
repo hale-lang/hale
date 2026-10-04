@@ -490,8 +490,13 @@ so nothing tears it down twice. The rules that order gives you:
 - **`accept` sees the params, not the birth.** A parent's
   `accept(c)` runs once the child's params are built and before the
   child's `birth()`. It admits the child; it cannot turn it away.
-- **Subscriptions come before `birth()`.** A locus can publish to
-  its own topics from `birth()` and hear it.
+- **Subscriptions come before `birth()`; delivery after it.** A
+  locus can publish to its own topics from `birth()` and hear it,
+  once `birth()` has returned: nothing published to a new locus is
+  delivered while its `birth()` runs. What arrives meanwhile, its
+  own sends included, waits and is delivered afterwards, in order.
+- **A pinned locus checks its birth on its own thread.** Its
+  `birth_check` runs there, after `birth()` and before `run()`.
 - **A failure is a `ClosureViolation`, delivered when it happens.**
   A failing birth closure, `birth_check`, `violate` or closure
   reaches the parent's `on_failure` at that moment, not at the
@@ -520,8 +525,6 @@ A few rules are decided and not yet true of every program;
 the compiler's test suite carries a program that shows today's
 behaviour until it changes:
 
-- a handler that runs because a locus published to itself from
-  `birth()` can run before that `birth()` has returned;
 - a pinned locus's own locus fields are not drained, only
   dissolved;
 - a field typed by an interface or a perspective is drained after

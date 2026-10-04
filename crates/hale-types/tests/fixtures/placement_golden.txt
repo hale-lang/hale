@@ -3811,7 +3811,7 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	Pub@main1	Pub	main	default
 
-== crates/hale-codegen/tests/topic_phase2.rs#13b960ba
+== crates/hale-codegen/tests/topic_phase2.rs#b9a99959
 row	Loop@main1	Loop	main	default
 
 == crates/hale-codegen/tests/topic_phase2.rs#81649938
@@ -3840,8 +3840,26 @@ row	~.mid.leaf	Leaf	main	inherited
 row	~	Driver	main	default
 row	~.counter	Counter	main	inherited
 
-== crates/hale-codegen/tests/topic_phase2.rs#f82f0920
+== crates/hale-codegen/tests/topic_phase2.rs#b75f0c1f
 row	Counter@main1	Counter	main	default
+
+== crates/hale-codegen/tests/topic_phase2.rs#4a6807db
+root	App	the entry
+domain	pinned:App@literal1.c
+row	App@literal1	App	main	default
+-- App@literal1.c	Counter
+row	~	Counter	pinned:~	entry	off owner
+row	~.leaf	Leaf	pinned:~	inherited
+
+== crates/hale-codegen/tests/topic_phase2.rs#057e62e7
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	Counter	main	default
+row	App@literal1.b	Counter	main	default
+
+== crates/hale-codegen/tests/topic_phase2.rs#61bcce04
+row	Counter@main1	Counter	main	default
+row	Counter@main2	Counter	main	default
 
 == crates/hale-codegen/tests/topic_phase2_adapter_binding.rs#eccda86d
 root	App	the entry

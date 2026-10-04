@@ -59,7 +59,7 @@ use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_types::lifecycle::project::{self, Focus, Inside, PathFailure, RunPath};
 use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
-use hale_types::lifecycle::{FailureSource, NotStarted, ObligationKind, Point, ShutdownCause, Spine, Terminal};
+use hale_types::lifecycle::{FailureSource, Multiplicity, NotStarted, ObligationKind, Point, ShutdownCause, Spine, Status, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -286,8 +286,6 @@ const FIXTURES: &[Fixture] = &[
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    ("l06_readiness_main.hl", "C8", "delivered-during-birth"),
-    ("l06_readiness_pool.hl", "C8", "delivered-during-birth"),
     ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
@@ -862,6 +860,28 @@ const CONTROLS: &[Control] = &[
         skip: "PinnedJoin",
         plan: None,
         fails_with: "missing: Loop.PinnedJoin",
+        baseline_passes: false,
+    },
+    // Line 6 (L4): without the readiness step the window never closes,
+    // so what birth() published stays parked and is never heard.
+    Control {
+        name: "readiness_removed",
+        covers: ObligationKind::Readiness,
+        fixture: "l06_readiness_main.hl",
+        skip: "Readiness",
+        plan: None,
+        fails_with: "missing: Sub.Readiness",
+        baseline_passes: false,
+    },
+    // The registration is ordered before the birth: the same run, held
+    // to a plan that claims it after.
+    Control {
+        name: "subscribe_after_birth_in_the_plan",
+        covers: ObligationKind::Subscribe,
+        fixture: "l06_readiness_main.hl",
+        skip: "",
+        plan: Some("Sub: Birth Subscribe"),
+        fails_with: "order: Sub.Subscribe before Sub.Birth",
         baseline_passes: false,
     },
     // The oracle reads order within a domain: the same run, held to a
@@ -1660,6 +1680,124 @@ fn assert_fixture(file: &str) {
     }
 }
 
+// ------------------------------------------------------------ spines
+
+/// The spines the law below reads (L4): the five an instance's own steps
+/// are emitted on and the trace names as the plan's holder does.
+const SPINES: &[Spine] = &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown];
+
+/// Kinds the law leaves to their own spine's reading. The reclaim's
+/// events carry the spine of the frame whose chokepoint runs it (a field's
+/// under its owner's entry, `lc_in_spine_event`), not the reclaim's
+/// holder: the reclaim spine reads the plan in its own L4 commit. A
+/// cancellation exists only on the path a shutdown takes (line 19), not
+/// the one the law reads.
+const NOT_READ: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
+
+/// Spines whose emitted steps depart from the plan today, each classified
+/// with the spine whose L4 commit reads it: (file, the departure, why).
+/// Asserted to show, so the entry goes when that spine reads the plan.
+const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
+    (
+        "l19_started_run_publishes_back_async.hl",
+        "Rows@Cascade: emitted [], the plan owes [Drain Dissolve] or [Drain Dissolve]",
+        "C32: the interface-typed field's recorded reclaim emits its drain and dissolve on Reclaim, after its owner's dissolve; the cascade spine remains to be migrated",
+    ),
+    (
+        "l19_handler_replaces_started_run_async.hl",
+        "Rows@Cascade: emitted [], the plan owes [Drain Dissolve] or [Drain Dissolve]",
+        "C32: the interface-typed field's recorded reclaim emits its drain and dissolve on Reclaim, after its owner's dissolve; the cascade spine remains to be migrated",
+    ),
+];
+
+/// The emitted step sequence of every instance a run of `file` built, per
+/// spine, against the plan's ordered obligations for that spine
+/// (`LifecyclePlan::spine`): the departures, one line each.
+fn spine_departures(file: &str) -> Vec<String> {
+    let f = fixture(file);
+    let ran = run_fixture(f, &[]);
+    let path = dir().join(file);
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false))
+        .unwrap_or_else(|_| panic!("{file} does not load"));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{file}: the lifecycle plan is blocked"));
+    // The emitted steps: each subject's first incarnation, per spine, in
+    // the order the trace numbered them. A step is its entry, or the
+    // not-started end of one that never began.
+    let mut emitted: BTreeMap<(String, u64, Spine), Vec<ObligationKind>> = BTreeMap::new();
+    for e in &ran.trace.events {
+        let (Some(decl), Some(subject), Some(spine)) = (&e.decl, e.subject, e.spine) else { continue };
+        // Every instance the run shows owes each of the five spines a
+        // sequence, empty where the plan owes nothing on it.
+        for s in SPINES {
+            emitted.entry((decl.clone(), subject.instance.raw(), *s)).or_default();
+        }
+        let step = e.point == Point::Entered || matches!(e.point, Point::Terminal(Terminal::NotStarted(_)));
+        // A step owed per incarnation is read in the first; one owed per
+        // instance in whichever incarnation reaches it.
+        let first = subject.incarnation.raw() == 0 || project::trace_multiplicity(e.kind) != Multiplicity::OncePerIncarnation;
+        if !step || !first || !SPINES.contains(&spine) || NOT_READ.contains(&e.kind) {
+            continue;
+        }
+        emitted.entry((decl.clone(), subject.instance.raw(), spine)).or_default().push(e.kind);
+    }
+    // The plan's: per template of the declaration, its rows on the spine
+    // the trace records, the known-open ones left to their fixtures.
+    let owed = |decl: &str, spine: Spine| -> Vec<Vec<ObligationKind>> {
+        plan.templates(decl)
+            .map(|site| {
+                plan.spine(site, spine)
+                    .into_iter()
+                    .filter(|s| project::TRACED.contains(&s.kind) && !NOT_READ.contains(&s.kind))
+                    .filter(|s| !matches!(plan.obligations[s.obligation.0 as usize].status, Status::KnownOpen { .. }))
+                    .map(|s| s.kind)
+                    .collect()
+            })
+            .collect()
+    };
+    let names = |ks: &[ObligationKind]| ks.iter().map(|k| k.name()).collect::<Vec<_>>().join(" ");
+    let mut out = Vec::new();
+    for ((decl, _, spine), got) in &emitted {
+        let want = owed(decl, *spine);
+        // A run that ended early emits a prefix of its spine.
+        let holds = want.iter().any(|w| w == got || (!ran.complete() && w.starts_with(got)));
+        if !holds {
+            let want: Vec<String> = want.iter().map(|w| format!("[{}]", names(w))).collect();
+            out.push(format!("{decl}@{}: emitted [{}], the plan owes {}", spine.name(), names(got), want.join(" or ")));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// L4's harness law: the steps the emitters emit for a spine are exactly
+/// the plan's ordered obligations for it, over the spines of every
+/// fixture program that runs.
+#[test]
+fn every_spine_emits_the_plans_obligations_in_order() {
+    let shown: Vec<(&str, String)> = std::thread::scope(|s| {
+        let runs: Vec<_> = FIXTURES
+            .iter()
+            .map(|f| (f.file, s.spawn(move || spine_departures(f.file))))
+            .collect();
+        runs.into_iter()
+            .flat_map(|(file, h)| h.join().expect("a fixture's spines").into_iter().map(move |d| (file, d)))
+            .collect()
+    });
+    for (file, d, why) in SPINE_KNOWN_OPEN {
+        assert!(
+            shown.iter().any(|(f, s)| f == file && s == d),
+            "{file} no longer shows `{d}` ({why}): its spine reads the plan now, so the SPINE_KNOWN_OPEN entry has to go"
+        );
+    }
+    let broken: Vec<String> = shown
+        .iter()
+        .filter(|(f, s)| !SPINE_KNOWN_OPEN.iter().any(|(kf, kd, _)| kf == f && kd == s))
+        .map(|(f, s)| format!("{f}: {s}"))
+        .collect();
+    assert!(broken.is_empty(), "{} spine(s) depart from the plan:\n{}", broken.len(), broken.join("\n"));
+}
+
 macro_rules! fixture_tests {
     ($($name:ident => $file:literal),* $(,)?) => {
         $(
@@ -1955,5 +2093,7 @@ control_tests! {
     dissolve_removed,
     pre_drain_removed,
     pinned_join_removed,
+    readiness_removed,
+    subscribe_after_birth_in_the_plan,
     order_reversed_in_the_plan,
 }

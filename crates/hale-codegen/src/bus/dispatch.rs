@@ -34,6 +34,7 @@ pub(crate) trait BusDispatch<'ctx> {
         value: &Expr,
         or_disposition: Option<&OrDisposition>,
         scope: &Scope<'ctx>,
+        receiver: Option<BasicValueEnum<'ctx>>,
     ) -> Result<(), CodegenError>;
     fn lower_send_shm_ring(
         &mut self,
@@ -319,6 +320,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         value: &Expr,
         or_disposition: Option<&OrDisposition>,
         scope: &Scope<'ctx>,
+        receiver: Option<BasicValueEnum<'ctx>>,
     ) -> Result<(), CodegenError> {
         // Form K4c (2026-05-20): shm_ring short-circuit. If the
         // subject is a compile-time-constant string that matches
@@ -901,6 +903,22 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 "bus.dispatch.queue",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // A fused send retains its exact receiver while birth defers
+        // delivery. Use the ordinary codec and registered route, without
+        // turning the same-instance call into a subject-wide broadcast.
+        if let Some(receiver) = receiver {
+            let dispatch = self.module.get_function("lotus_bus_dispatch_fused").unwrap_or_else(|| {
+                self.module.add_function("lotus_bus_dispatch_fused", self.context.void_type().fn_type(
+                    &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into(),
+                      ptr_t.into(), self.context.i32_type().into()], false), None)
+            });
+            self.builder.build_call(dispatch, &[
+                queue_ptr.into(), subj_val.into(), receiver.into(), payload_val.into(),
+                payload_size_iv.into(), ser_fn.as_global_value().as_pointer_value().into(),
+                self.context.i32_type().const_int(u64::from(payload_is_flat), false).into(),
+            ], "bus.dispatch.fused").map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(());
+        }
         // Phase 3 (2026-05-25): if the subject is keyed_by, route
         // through lotus_bus_dispatch_keyed with the key extracted
         // from the payload's keyed_by field. The subject must be
@@ -1501,6 +1519,32 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                         .get_insert_block()
                         .and_then(|bb| bb.get_parent())
                         .expect("inside a function");
+                    // Decision line 6 (F.40 phase 3, L4): a subscriber
+                    // whose birth has not completed is not delivered to,
+                    // and a baked call cannot park a cell. While any
+                    // subscriber's window is open (one monotonic load of
+                    // `lotus_bus_unready_count`), the publish takes the
+                    // helper, whose gate parks it; a subject whose
+                    // subscribers the plan owes no readiness bakes as
+                    // before.
+                    let guarded = match subject {
+                        Expr::Literal(Literal::String(s), _) => self
+                            .bus_devirt_direct_subs
+                            .get(s)
+                            .is_some_and(|subs| subs.iter().any(|(locus, _)| self.owes_readiness(locus))),
+                        _ => false,
+                    };
+                    let ready_join = if guarded {
+                        Some(self.emit_direct_publish_readiness_guard(
+                            current_fn,
+                            id_iv,
+                            subj_val,
+                            payload_val,
+                            payload_size_iv,
+                        )?)
+                    } else {
+                        None
+                    };
                     // iris handoff-5 P17: the fully-devirtualized
                     // direct dispatch was the ONE probe-less flavor —
                     // no BUS_PUBLISH/BUS_DELIVER records, no topic
@@ -1783,6 +1827,12 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                         .build_unconditional_branch(cond_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(end_bb);
+                    if let Some(join) = ready_join {
+                        self.builder
+                            .build_unconditional_branch(join)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(join);
+                    }
                     return Ok(());
                 }
                 // Multi-handler (or unresolved) direct subject: keep the

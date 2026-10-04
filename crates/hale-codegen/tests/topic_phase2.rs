@@ -315,6 +315,10 @@ fn more_than_one_main_locus_errors() {
 
 // ---- intra-locus optimization -----------------------------------------
 
+/// A send to the locus's own subscription keeps its receiver as
+/// `self.on_beat(...)`. Lowering guards that receiver's readiness so
+/// sends in birth or its helpers wait until birth has completed
+/// (decision line 6, F.40 phase 3 L4).
 #[test]
 fn intra_locus_send_rewrites_to_self_call() {
     let mut p = parse(r#"
@@ -327,38 +331,33 @@ fn intra_locus_send_rewrites_to_self_call() {
             }
             fn on_beat(t: Tick) { }
             birth() { Beat <- Tick { n: 1 }; }
+            run() { Beat <- Tick { n: 2 }; }
         }
         fn main() { Loop { }; }
     "#);
     desugar_intra_locus_topics(&mut p, &Default::default());
-    // Locate Loop.birth's first stmt — should be Stmt::Expr(Call(...self.on_beat...))
-    let mut found = false;
-    for it in &p.items {
-        if let TopDecl::Locus(l) = it {
-            if l.name.name != "Loop" {
-                continue;
-            }
-            for m in &l.members {
-                if let LocusMember::Lifecycle(lc) = m {
-                    if !matches!(lc.kind, LifecycleKind::Birth) {
-                        continue;
-                    }
-                    if let Some(stmt) = lc.body.stmts.first() {
-                        if let Stmt::Expr(Expr::Call { callee, .. }) = stmt {
-                            if let Expr::Field { receiver, name, .. } = callee.as_ref() {
-                                if matches!(receiver.as_ref(), Expr::KwSelf(_))
-                                    && name.name == "on_beat"
-                                {
-                                    found = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    assert!(found, "expected birth to be rewritten to self.on_beat(...)");
+    // The first stmt of Loop's `kind` lifecycle method.
+    let first = |kind: LifecycleKind| -> Stmt {
+        p.items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.name.name == "Loop" => l.members.iter().find_map(|m| match m {
+                    LocusMember::Lifecycle(lc) if lc.kind == kind => lc.body.stmts.first().cloned(),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("the method has a statement")
+    };
+    let is_self_call = |stmt: &Stmt| match stmt {
+        Stmt::Expr(Expr::Call { callee, .. }) => matches!(
+            callee.as_ref(),
+            Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) && name.name == "on_beat"
+        ),
+        _ => false,
+    };
+    assert!(is_self_call(&first(LifecycleKind::Run)), "expected run to be rewritten to self.on_beat(...)");
+    assert!(is_self_call(&first(LifecycleKind::Birth)), "birth keeps the receiver identity; lowering guards readiness");
 }
 
 #[test]
@@ -608,11 +607,10 @@ fn tower_parent_publishes_child_subscribes_round_trip_end_to_end() {
 #[test]
 fn intra_locus_round_trip_end_to_end() {
     // The optimized direct-call path should be observable as
-    // synchronous: birth() runs, the handler increments sum, and
-    // by the time fn main reads c.sum the value reflects the
-    // synchronous mutation. (Bus dispatch is deferred-cooperative
-    // — without the optimization, c.sum would still be 0 right
-    // after construction.)
+    // synchronous: fire() runs, the handler increments sum, and by
+    // the time fn main reads c.sum the value reflects the synchronous
+    // mutation. (Bus dispatch is deferred-cooperative — without the
+    // optimization, c.sum would still be 0 right after the call.)
     let src = r#"
         type Tick { n: Int; }
         topic Beat { payload: Tick; }
@@ -623,7 +621,7 @@ fn intra_locus_round_trip_end_to_end() {
                 subscribe Beat as on_beat;
             }
             fn on_beat(t: Tick) { self.sum = self.sum + t.n; }
-            birth() {
+            fn fire() {
                 Beat <- Tick { n: 1 };
                 Beat <- Tick { n: 2 };
                 Beat <- Tick { n: 3 };
@@ -631,6 +629,7 @@ fn intra_locus_round_trip_end_to_end() {
         }
         fn main() {
             let c = Counter { };
+            c.fire();
             print("sum=");
             println(c.sum);
         }
@@ -641,4 +640,206 @@ fn intra_locus_round_trip_end_to_end() {
     assert!(out.status.success(), "non-zero: {:?}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("sum=6"), "got: {:?}", stdout);
+}
+
+/// Decision line 6 (F.40 phase 3, L4): what birth() publishes to its own
+/// subscription is delivered once the birth has completed, in order,
+/// never during it and never dropped.
+#[test]
+fn a_births_own_publishes_are_delivered_after_it_in_order() {
+    // An ordinary string, not a raw one: the corpus harvests raw string
+    // programs out of test files, and this one belongs to this test.
+    let src = "type Tick { n: Int; }
+topic Beat { payload: Tick; }
+locus Counter {
+    params { sum: Int = 0; born: Int = 0; early: Int = 0; order: Int = 0; }
+    bus {
+        publish Beat;
+        subscribe Beat as on_beat;
+    }
+    fn on_beat(t: Tick) {
+        if self.born == 0 { self.early = self.early + 1; }
+        self.order = self.order * 10 + t.n;
+        self.sum = self.sum + t.n;
+    }
+    birth() {
+        Beat <- Tick { n: 1 };
+        Beat <- Tick { n: 2 };
+        std::time::sleep(5ms);
+        Beat <- Tick { n: 3 };
+        self.born = 1;
+    }
+}
+fn main() {
+    let c = Counter { };
+    std::time::sleep(5ms);
+    println(\"sum=\", c.sum, \" early=\", c.early, \" order=\", c.order);
+}
+";
+    for (name, program) in [
+        ("direct", src.to_string()),
+        ("helper_literal", src.replace(
+            "    birth() {",
+            "    fn fire(n: Int) { Beat <- Tick { n: n }; }\n    birth() {",
+        ).replace("Beat <- Tick { n: 1 };", "self.fire(1);")
+            .replace("Beat <- Tick { n: 2 };", "self.fire(2);")
+            .replace("Beat <- Tick { n: 3 };", "self.fire(3);")),
+        ("helper_variable", src.replace(
+            "    birth() {",
+            "    fn fire(n: Int) { let t = Tick { n: n }; Beat <- t; }\n    birth() {",
+        ).replace("Beat <- Tick { n: 1 };", "self.fire(1);")
+            .replace("Beat <- Tick { n: 2 };", "self.fire(2);")
+            .replace("Beat <- Tick { n: 3 };", "self.fire(3);")),
+    ] {
+        let bin = build(&format!("births_own_publishes_after_it_{name}"), &program);
+        let out = Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{name}: non-zero: {:?}", out.status);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("sum=6 early=0 order=123"), "{name}: got {stdout:?}");
+    }
+}
+
+/// The pinned thread remains its mailbox's consumer during birth, so
+/// already-born children progress, while its own sends wait for readiness.
+/// More sends than ring slots must not make that thread wait on itself.
+#[test]
+fn a_pinned_birth_keeps_nested_delivery_live_and_can_publish_past_capacity() {
+    let src = r#"
+type Tick { n: Int; }
+topic Beat { payload: Tick; }
+topic NestedBeat { payload: Tick; }
+locus Leaf {
+    params { heard: Int = 0; }
+    bus { subscribe NestedBeat as on_tick; }
+    fn on_tick(t: Tick) { self.heard = self.heard + 1; }
+}
+locus Counter {
+    params { leaf: Leaf = Leaf { }; born: Int = 0; early: Int = 0; heard: Int = 0; }
+    bus { publish Beat; publish NestedBeat; subscribe Beat as on_tick; }
+    fn on_tick(t: Tick) {
+        self.heard = self.heard + 1;
+        if self.born == 0 { self.early = self.early + 1; }
+    }
+    birth() {
+        NestedBeat <- Tick { n: 0 };
+        std::time::sleep(5ms);
+        println("nested=", self.leaf.heard);
+        for i in 0..256 { Beat <- Tick { n: i }; }
+        self.born = 1;
+    }
+    run() {
+        std::time::sleep(5ms);
+        println("heard=", self.heard, " early=", self.early);
+    }
+}
+main locus App {
+    params { c: Counter = Counter { }; }
+    placement { c: pinned; }
+    run() { std::time::sleep(100ms); }
+}
+fn main() { App { }; }
+"#;
+    let program = parse(src);
+    let bin = harness::unique_bin("hale_birth_pinned_full");
+    let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    let mut child = Command::new(&bin)
+        .env("LOTUS_BUS_QUEUE_CAP", "64")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn().expect("run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut timed_out = false;
+    while child.try_wait().expect("status").is_none() {
+        if std::time::Instant::now() >= deadline {
+            timed_out = true;
+            child.kill().expect("stop the stalled child");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let out = child.wait_with_output().expect("output");
+    let _ = std::fs::remove_file(&bin);
+    assert!(!timed_out, "pinned birth blocked on its own delivery");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero: {:?}: {stderr}", out.status);
+    assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("nested=1"), "ready nested subscriber stalled: {stdout}");
+    assert!(stdout.contains("heard=256 early=0"), "birth deliveries lost or early: {stdout}");
+}
+
+/// Another instance's birth window cannot turn a ready receiver's
+/// same-instance call into a broadcast to every instance of its type.
+#[test]
+fn a_ready_fused_receiver_stays_local_during_another_birth() {
+    let src = r#"
+type Tick { n: Int; }
+topic Beat { payload: Tick; }
+topic Other { payload: Tick; }
+locus Counter {
+    params { heard: Int = 0; }
+    bus { publish Beat; subscribe Beat as on_tick; }
+    fn on_tick(t: Tick) { self.heard = self.heard + 1; }
+    fn fire() { Beat <- Tick { n: 1 }; }
+}
+main locus App {
+    params { a: Counter = Counter { }; b: Counter = Counter { }; }
+    bus { subscribe Other as on_other; }
+    fn on_other(t: Tick) { }
+    birth() {
+        self.a.fire();
+        std::time::sleep(1ms);
+        println("a=", self.a.heard, " b=", self.b.heard);
+    }
+}
+fn main() { App { }; }
+"#;
+    let bin = build("ready_fused_receiver", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("a=1 b=0"), "ready receiver was broadcast: {stdout}");
+}
+
+/// Deferring a same-instance birth send must keep its receiver, and a
+/// payload allocated in the helper must survive the helper's return.
+#[test]
+fn a_deferred_fused_birth_keeps_its_receiver_and_managed_payload() {
+    let src = r#"
+type Tick { text: String; }
+topic Beat { payload: Tick; }
+locus Counter {
+    params { heard: Int = 0; born: Int = 0; early: Int = 0; text: String = ""; }
+    bus { publish Beat; subscribe Beat as on_tick; }
+    fn on_tick(t: Tick) {
+        self.heard = self.heard + 1;
+        self.text = t.text;
+        if self.born == 0 { self.early = self.early + 1; }
+    }
+    fn fire() { let t = Tick { text: "payload-" + to_string(123) }; Beat <- t; }
+    birth() { self.fire(); std::time::sleep(1ms); self.born = 1; }
+}
+fn main() {
+    let a = Counter { };
+    let b = Counter { };
+    std::time::sleep(5ms);
+    println("a=", a.heard, " b=", b.heard, " early=", a.early + b.early);
+    println(a.text, " ", b.text);
+}
+"#;
+    let program = parse(src);
+    let bin = harness::unique_bin("hale_birth_fused_managed");
+    let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero: {:?}: {stderr}", out.status);
+    assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("a=1 b=1 early=0"), "wrong receiver or readiness: {stdout}");
+    assert!(stdout.contains("payload-123 payload-123"), "payload did not survive: {stdout}");
 }

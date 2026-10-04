@@ -96,13 +96,14 @@
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
 //! it has been seen to show, and a run shows exactly one of them. The
-//! remaining cells are in four families:
+//! remaining cells are in three families:
 //! a handler run in place off the owner's domain (C36, L5's), a pinned
-//! locus's fields undrained (C9), a pinned locus's `birth_check` never
-//! evaluated (C38), a contract-typed field drained after its owner's
+//! locus's fields undrained (C9), a contract-typed field drained after its owner's
 //! dissolve (C32). `handler/grandchild/pinned` shows C9 after its subtree
 //! initializes on the pinned thread; the pool subtree initializes on its
 //! worker (C50), closing C12's off-pool nested run.
+//! A pinned birth_check now runs before run() (C38); its two cells
+//! still expose in-place failure delivery on that thread (C36).
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -454,8 +455,10 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     ("drain/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
     ("none/iface_field/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
     ("none/persp_slot/pool", &[("C32", CONTRACT_LATE)], &[&[OWN_DRAIN_ORDER]]),
-    ("birth/root_child/pinned", &[("C38", NO_BIRTH_CHECK)], &[&[UNHEARD, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
-    ("birth/replica/pinned", &[("C38", NO_BIRTH_CHECK)], &[&[UNHEARD_2, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD_2]]),
+    // C38 closed (L4's birth spine): the pinned thread runs the
+    // birth_check, and the owner hears it, in place on that thread.
+    ("birth/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
+    ("birth/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
 ];
 
 /// Cells a fixed defect is held to, sampled with ASan on every PR: a
@@ -484,19 +487,13 @@ const MID_DRAIN_ORDER: &str = "trace: edge: Mid.Drain.Entered (inst _ inc 0) wit
 const CONTRACT_LATE: &str = "an interface- or perspective-typed field is torn down through its recorded reclaim, its whole spine after its owner's dissolve, so `Own`'s drain starts before `Subj`'s (decision line 12)";
 const OWN_DRAIN_ORDER: &str = "trace: edge: Own.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
 
-// Inventory C38 said the check agrees; it is never evaluated on a pinned
-// locus. The checker does not refuse it: L4's birth spine runs the check
-// on the pinned thread before run().
-const NO_BIRTH_CHECK: &str = "the pinned thread function runs birth() without the locus's birth_check, so the check never fires and the owner hears nothing";
 
 // The owner hears nothing: no handler runs, the failure is never
 // delivered, and each subject is reclaimed without its delivery.
 const UNHEARD: &str = "outcome: handler 0/1, dissolve 1/1, adopted delivered-once";
-const UNHEARD_2: &str = "outcome: handler 0/2, dissolve 2/2, adopted delivered-once";
 const NO_DELIVERY: &str = "trace: missing: Subj.FailureDelivery";
 const RECLAIMED_UNHEARD: &str = "trace: edge: Subj.Reclaim.Entered (inst _ inc 0) with Subj.FailureDelivery.Completed not reached";
 const ASAN_UNHEARD: &str = "asan: the instrumented build gives handler 0/1, dissolve 1/1";
-const ASAN_UNHEARD_2: &str = "asan: the instrumented build gives handler 0/2, dissolve 2/2";
 
 // ===================================================================
 // Rendering

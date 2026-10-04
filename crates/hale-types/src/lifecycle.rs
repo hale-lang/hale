@@ -8,6 +8,8 @@
 //! whose identities this schema shares, the handler rows, the flow rows
 //! and the bus graph. [`project::expected`] renders a plan as what one
 //! run owes, the form the trace oracle ([`trace::Expected`]) checks.
+//! [`spine`] is the emitters' reader: one spine's obligations for one
+//! instance template, in the order the plan places them.
 //!
 //! An obligation is something the compiler emits or the runtime
 //! performs that some domain owes some instance: params settle, a held
@@ -105,7 +107,7 @@
 //! 3     Accept Birth Run Dissolve                Pending (no option chosen)
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
-//! 6     Subscribe Readiness                      Shipped; KnownOpen C8
+//! 6     Subscribe Readiness                      Shipped; Shipped (L4)
 //! 7     WaitAbort PoolJoin                       Shipped
 //! 8     FailureDelivery Birth                    Shipped
 //! 9     FailureDelivery Closures                 Shipped
@@ -142,6 +144,7 @@
 
 pub mod derive;
 pub mod project;
+pub mod spine;
 pub mod trace;
 
 // ------------------------------------------------------------ identity
@@ -1026,7 +1029,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::Subscribe, K::Readiness],
         statuses: &[
             (Status::Shipped, "registration before birth()"),
-            (Status::KnownOpen { inventory_row: "C8" }, "delivery eligible only once birth() completes"),
+            (
+                Status::Shipped,
+                "delivery eligible only once birth() completes; what is published before is parked, never dropped (L4)",
+            ),
         ],
     },
     DecisionLine {

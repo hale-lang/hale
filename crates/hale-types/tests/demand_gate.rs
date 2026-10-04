@@ -397,6 +397,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
     // pre-pass used to build a scope of its own outside the counts.
     // And the typed-body table, the typing's record: the typing and the
     // families the checker reads run once for it.
+    // The lifecycle plan is carried to the emitters as well.
     for family in [
         "seed_loading",
         "desugar_sequence",
@@ -414,6 +415,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "expression_typing",
         "typed_bodies",
         "lowering_view",
+        "lifecycle_order",
     ] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }

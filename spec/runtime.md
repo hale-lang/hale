@@ -1932,16 +1932,39 @@ its `KNOWN_OPEN` table.
   subscriptions and its `birth()`. Its result is not read: it
   admits, and cannot reject. An admission interface is separate
   work. Shipped (`l05_accept_position.hl`).
+
+  Lines 5, 6 and 8 are the birth spine, and the compiler emits it
+  from the lifecycle plan (F.40 phase 3, L4): an instantiation's
+  steps from params settle to the run's start (accept, registration,
+  `birth()` with its birth-epoch closures and `birth_check`,
+  readiness, the run's start) come in the order the plan's rows and
+  edges place them for its declaration, on the instantiating thread
+  or, from the birth on, a pinned locus's own thread.
 - **Line 6, registration before birth, and readiness.** A new
   instance's subscriptions are registered before its `birth()`, so
   `birth()` may publish to them. Shipped. Delivery to the instance
-  becomes eligible once its `birth()` has completed; a cell that
-  arrives earlier is retained in its queue until then, never
-  dropped. Not yet shipped (inventory row C8): a subscriber on the
-  main pool whose `birth()` yields runs its own handler inside its
-  `birth()` (`l06_readiness_main.hl`), and a pool-placed
-  subscriber's worker delivers while its `birth()` is still
-  running on the instantiating thread (`l06_readiness_pool.hl`).
+  becomes eligible once its `birth()` (and its `birth_check`) has
+  completed: what is published to it before then, its own
+  `birth()`'s sends included, waits in the order it was published,
+  is never dropped, and is delivered afterwards. Shipped
+  (`l06_readiness_main.hl`, `l06_readiness_pool.hl`, and the pinned
+  capacity regression in `topic_phase2.rs`). For each subscriber,
+  the runtime opens a window
+  before the first registration (`lotus_bus_hold_delivery`) and
+  parks each cell posted to it there; its readiness step
+  (`lotus_bus_ready`, right after the birth) posts them, ahead of
+  any published after. A publisher on another thread waits once
+  the window holds a queue's worth. The thread running birth does
+  not wait on its own window. A pinned subscriber transfers that
+  exemption to its thread before birth; its mailbox stays current
+  so already-born nested subscribers can continue receiving. The closed-world optimization that turns a send
+  into a direct call (`spec/semantics.md` § "Topic declarations →
+  Phase 2") preserves the intended receiver while deferring delivery:
+  rewritten sends, including those in helpers reached from birth,
+  use that receiver's registered route while its window is open.
+  Baked broadcast publishes use runtime dispatch while any window
+  is open. A helper cannot bypass readiness or broaden a local send
+  into a broadcast.
 - **Line 7, waits that only teardown ends.** Every teardown spine
   aborts the `or wait`s it would otherwise wait on before it joins
   the workers they block, and an aborted publish is not a success:
@@ -1960,10 +1983,13 @@ its `KNOWN_OPEN` table.
   closure) is a `ClosureViolation`, and the failing child is kept
   for its owner's supervision: its region stays, the handler reads
   it, and a restart reuses it. There is no `StructuralFailure`.
-  Shipped (`l08_birth_failure_kept.hl`), except for a pinned locus's
-  `birth_check`, which is never evaluated: the pinned thread runs only
-  `birth()`. The check is owed on the pinned thread before `run()`
-  (inventory row C38; the lifecycle matrix's pinned birth cells).
+  Shipped (`l08_birth_failure_kept.hl`). A pinned locus's
+  `birth_check` runs on its own thread, after `birth()` and before
+  `run()`; a check's failure its owner is still holding is decided
+  before `run()` starts, as for every other locus (inventory row
+  C38, shipped by L4's birth spine; the lifecycle matrix's pinned
+  birth cells, whose delivery is decision L0-1's in-place one until
+  L5).
 - **Line 9, when a violation reaches the owner.** At the failing
   epoch, not at dissolve; held while the owner's params are open
   (line 1). Shipped (`l09_delivery_at_epoch.hl`).
