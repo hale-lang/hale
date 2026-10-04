@@ -90,7 +90,9 @@ pub struct LoweringView {
     /// Fresh factories, extended by the carrier-return fold.
     pub fresh_locus_factories: BTreeMap<String, (String, Option<String>)>,
     /// Which accepting ancestor owns each method-body birth, and which
-    /// locus accepts which child type, over `merged`.
+    /// locus accepts which child type, of `merged`: the snapshot's rows
+    /// through the correspondence, then the stdlib's
+    /// (`ownership_graph::lowering_ownership_graph`; F.40 phase 3, C5).
     pub ownership: OwnershipGraph,
     /// The bubble plans lowering acts on, projected from `ownership`.
     pub bubble: BubblePlans,
@@ -131,7 +133,7 @@ pub struct LoweringView {
     /// phase 1.5), and on each subject the sends `intra_locus` rewrote
     /// and the topic references `topic_rewrites` turned into it: the
     /// snapshot's rows through the correspondence, then the stdlib's
-    /// (`bus_graph::lowering_graph`; F.40 phase 3, C5). Its subjects and
+    /// (`bus_graph::lowering_bus_graph`; F.40 phase 3, C5). Its subjects and
     /// rows only: the checker's wire rows, holes, declarations and edges
     /// are the snapshot's graph's.
     pub bus: BusGraph,
@@ -324,9 +326,11 @@ pub fn rewrite_intra_locus(
 /// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
 /// The program is minted first, as an entry point's load mints it, and
 /// those identities are the checked ones the view corresponds to. A bare
-/// program has no snapshot to hand the view its bus graph, so the graph
-/// is built here over the minted program, by the snapshot's own producer
-/// (`bus_graph::build_bus_graph`), with `bindings` and `placement`.
+/// program has no snapshot to hand the view its bus and ownership graphs,
+/// so they are built here over the minted program, by the snapshot's own
+/// producers (`bus_graph::build_bus_graph`,
+/// `ownership_graph::build_ownership_graph`), with `bindings` and
+/// `placement`.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -342,10 +346,13 @@ pub fn resolve_program(
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     let mut minted = program.clone();
     let checked = crate::snapshot::mint([("program", &mut minted)], sources);
-    let bus = {
+    let (bus, ownership) = {
         let bundle = merged_bundle(&minted, import_renames, &checked);
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement)
+        (
+            crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement),
+            crate::ownership_graph::build_ownership_graph(&bundle, &top, placement),
+        )
     };
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
@@ -359,6 +366,7 @@ pub fn resolve_program(
         placement,
         typed,
         &bus,
+        &ownership,
         host,
     )
 }
@@ -398,7 +406,9 @@ pub fn resolve_program(
 /// `&TypedBodies::default()`, and lowering refuses every site that reads
 /// a row. `bus` is the snapshot's bus graph (`Snapshot::demand_bus_graph`),
 /// over the checked programs: lowering's graph is its rows, read through
-/// the correspondence (`bus_graph::lowering_graph`). `class` is the
+/// the correspondence (`bus_graph::lowering_bus_graph`); `ownership` the
+/// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
+/// the same way (`ownership_graph::lowering_ownership_graph`). `class` is the
 /// effective target's column of the capability matrix, the cells the
 /// view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
@@ -416,6 +426,7 @@ pub fn resolve_rewritten(
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
     bus: &BusGraph,
+    ownership: &OwnershipGraph,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
@@ -542,15 +553,17 @@ pub fn resolve_rewritten(
             .or_insert_with(|| (locus.clone(), None));
     }
 
-    // F.40 phase 1.3: the ownership graph and the bubble plans, over
-    // the same merged and desugared program the bus graph is built
-    // from. The bundle's one program keeps the name codegen gave it,
-    // so nothing keyed by program name moves; the scope's diagnostics
-    // are the checker's to report, not this step's.
+    // F.40 phase 1.3: the ownership graph and the bubble plans. The
+    // graph is the snapshot's rows read through the correspondence and
+    // the stdlib's after them (F.40 phase 3, C5,
+    // `ownership_graph::lowering_ownership_graph`), assembled as the snapshot's
+    // graph is. The bundle's one program keeps the name codegen gave
+    // it, so nothing keyed by program name moves; the scope's
+    // diagnostics are the checker's to report, not this step's.
     //
     // F.40 phase 1.5: and the bus graph and lowering's dispatch plan.
     // The graph is the snapshot's rows read through the correspondence
-    // (F.40 phase 3, C5, `bus_graph::lowering_graph`): each user site
+    // (F.40 phase 3, C5, `bus_graph::lowering_bus_graph`): each user site
     // keyed by the wire literal the topic rewrite gave it — the string
     // the register and publish sites see — and after them the stdlib's,
     // the one part derived here, over the merged program's tail and
@@ -562,10 +575,17 @@ pub fn resolve_rewritten(
         // The scope's diagnostics are dropped: the checker reported
         // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement);
+        let stdlib_items = &merged.items[user_items..];
+        let graph = crate::ownership_graph::lowering_ownership_graph(
+            ownership,
+            crate::ownership_graph::stdlib_ownership_rows(&bundle, stdlib_items),
+            &snapshot,
+            &correspondence,
+            placement,
+        )?;
         let bubble = graph.bubble_plans();
-        let stdlib = crate::bus_graph::stdlib_rows(&bundle, &top, &merged.items[user_items..]);
-        let mut bus = crate::bus_graph::lowering_graph(bus, stdlib, &topic_rewrites, &correspondence, placement)?;
+        let stdlib = crate::bus_graph::stdlib_bus_rows(&bundle, &top, stdlib_items);
+        let mut bus = crate::bus_graph::lowering_bus_graph(bus, stdlib, &topic_rewrites, &correspondence, placement)?;
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
         // on its subject, which the rewrite named by topic and the

@@ -263,7 +263,9 @@ pub fn check_bundle_for_build(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let mut diags = check_bundle_opts_whole_program(bundle, allow_unowned_subscriber);
-    diags.extend(build_rule_diags(bundle));
+    // No snapshot holds the bundle: the accept relation the borrow rule
+    // reads is the bundle's own ownership rows.
+    diags.extend(build_rule_diags(bundle, &ownership_graph::OwnershipRows::of(bundle)));
     diags
 }
 
@@ -272,12 +274,16 @@ pub fn check_bundle_for_build(
 /// `hale check`. The snapshot's check appends them for a build's config
 /// (`Config::build_rules`). A bare fallible call (GH #738) is the
 /// check's own: the `bare_fallible` law runs with the typing.
-pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
+/// `ownership` is the rows of the bundle's ownership graph
+/// (`Snapshot::demand_ownership_graph`): the rule reads which locus
+/// accepts which child there (`OwnershipRows::accepts_ancestor`).
+pub fn build_rule_diags(bundle: &Bundle<'_>, ownership: &ownership_graph::OwnershipRows) -> Vec<Diag> {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(
         &programs,
         &bundle.snapshot,
         &bundle.import_renames,
+        ownership,
     );
     stdlib_bodies::demangle_imports(&mut diags, &[]);
     diags
@@ -348,7 +354,7 @@ fn check_numbered_bundle(
     };
     let entry = entry::entry_row(bundle);
     let placement = placement::derive_placement(bundle, &top, &entry);
-    let ownership = bundle_ownership_graph(bundle, &top, &placement);
+    let ownership = ownership_graph::build_ownership_graph(bundle, &top, &placement);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bus_graph::build_bus_graph(bundle, &top, &bindings, &placement);
@@ -422,18 +428,6 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
     handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot)
 }
 
-/// The ownership graph of a bundle no snapshot holds: what the test
-/// entries' check and model read ([`check_bundle_opts_scoped`],
-/// [`check::check_bundle`], [`derive_application_model`]). Every verb
-/// reads its snapshot's (`Snapshot::demand_ownership_graph`).
-pub(crate) fn bundle_ownership_graph(
-    bundle: &Bundle<'_>,
-    top: &resolve::TopScope,
-    placement: &placement::PlacementTable,
-) -> ownership_graph::OwnershipGraph {
-    ownership_graph::build_ownership_graph(bundle, top, placement)
-}
-
 /// The application model of a bundle no snapshot holds: the test
 /// entry's ([`judgment::claim_law_diags`], the hale-types tests, the
 /// artifact's bundle entry `topology::dump_topology`). It builds the
@@ -460,7 +454,7 @@ fn model_of_minted(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bus_graph::build_bus_graph(bundle, &top, &bindings, &placement);
-    let ownership = bundle_ownership_graph(bundle, &top, &placement);
+    let ownership = ownership_graph::build_ownership_graph(bundle, &top, &placement);
     model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership, &placement)
 }
 

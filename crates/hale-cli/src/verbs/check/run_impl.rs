@@ -730,13 +730,24 @@ pub(crate) fn run_check_impl_labelled(
     // holder. Errors, with the witness call site where a parameter carries
     // the handle in. Beside it the GH #737 notice. `build`, `run` and
     // `test` refuse the same through `check_bundle_for_build`.
+    // Which locus accepts which child is the snapshot's ownership graph's
+    // (its rows; the bundle's own walk where the graph is blocked).
     {
         let progs: Vec<&hale_syntax::ast::Program> =
             bundle.programs.values().copied().collect();
+        let own;
+        let ownership = match snap.demand_ownership_graph() {
+            Ok(graph) => &graph.rows,
+            Err(_) => {
+                own = hale_types::ownership_graph::OwnershipRows::of(&bundle);
+                &own
+            }
+        };
         diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags_with_renames(
             &progs,
             &bundle.snapshot,
             &bundle.import_renames,
+            ownership,
         ));
     }
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits

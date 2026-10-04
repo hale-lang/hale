@@ -539,7 +539,7 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
-/// the bus graph, [`crate::bundle_ownership_graph`]; the effect rows when
+/// the bus and ownership graphs, by the snapshot's producers; the effect rows when
 /// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
 /// is read beside the numbered copy: a scope names declarations, not
 /// sites, so the one built over `bundle` is the copy's.
@@ -567,7 +567,7 @@ fn check_numbered_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
-    let ownership = crate::bundle_ownership_graph(bundle, top, &placement);
+    let ownership = crate::ownership_graph::build_ownership_graph(bundle, top, &placement);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
     let bus = crate::bus_graph::build_bus_graph(bundle, top, &bindings, &placement);

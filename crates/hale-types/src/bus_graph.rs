@@ -85,7 +85,7 @@ pub(crate) struct BusWalk {
 /// collecting the publisher/subscriber ends AND the per-site detail,
 /// each site's subject resolved through the topic rows, over each
 /// program's items. The one walk [`build_bus_graph`] and
-/// [`stdlib_rows`] read — do not duplicate it.
+/// [`stdlib_bus_rows`] read — do not duplicate it.
 pub(crate) fn collect_bus_walk<'p>(
     programs: impl IntoIterator<Item = (&'p str, &'p [TopDecl])>,
     topics: &TopicRows,
@@ -719,7 +719,7 @@ pub struct SubscribeRow {
 /// locus when the subjects are assembled ([`BusRows::subjects`]). Rows
 /// over two programs concatenate into rows over both (F.40 phase 3,
 /// C5): lowering's graph is the snapshot's rows, rekeyed by the topic
-/// rewrite, followed by the stdlib's ([`lowering_graph`]).
+/// rewrite, followed by the stdlib's ([`lowering_bus_graph`]).
 #[derive(Debug, Clone, Default)]
 pub struct BusRows {
     /// The program has an entry point (a top-level `main locus` or
@@ -1073,17 +1073,17 @@ impl BusRows {
 /// scope over it. The snapshot's families are derived over the checked
 /// programs, which hold no stdlib, so the stdlib's rows are the one part
 /// of lowering's graph the merged program answers itself
-/// ([`lowering_graph`]); each site answers over the whole merged program,
+/// ([`lowering_bus_graph`]); each site answers over the whole merged program,
 /// as it did when the graph was built over it. The stdlib has no entry
 /// point and binds nothing.
-pub fn stdlib_rows(bundle: &Bundle<'_>, top: &TopScope, stdlib: &[TopDecl]) -> BusRows {
+pub fn stdlib_bus_rows(bundle: &Bundle<'_>, top: &TopScope, stdlib: &[TopDecl]) -> BusRows {
     let walk = collect_bus_walk([(crate::snapshot::STDLIB_SEED, stdlib)], &top.topics, &BindingRows::default());
     BusRows { closed_world: false, ..bus_rows(bundle, top, &walk) }
 }
 
 /// Lowering's bus graph (F.40 phase 3, C5): the snapshot's rows, read
 /// for the program lowering walks through the view's correspondence,
-/// followed by the stdlib's ([`stdlib_rows`]), assembled into subjects
+/// followed by the stdlib's ([`stdlib_bus_rows`]), assembled into subjects
 /// with the placement table's labels.
 ///
 /// A user site keeps its identity in the merged program
@@ -1099,7 +1099,7 @@ pub fn stdlib_rows(bundle: &Bundle<'_>, top: &TopScope, stdlib: &[TopDecl]) -> B
 /// The graph is its subjects and its rows: the checker's rows (the wire
 /// rows, the holes, the declarations and the edges) are the snapshot's,
 /// over the checked programs, and lowering reads none of them.
-pub fn lowering_graph(
+pub fn lowering_bus_graph(
     snapshot: &BusGraph,
     stdlib: BusRows,
     topic_rewrites: &[hale_syntax::desugar::TopicRewrite],
