@@ -168,6 +168,21 @@ dispatches to is invoked once per request when your program starts
 that loop, and not otherwise. Run-to-exit programs (a `main` with no
 `run` loop and no bus handler of their own) warn nothing — a script
 owes no bound proof.
+Whether an allocation accumulates depends on where it is reclaimed,
+judged against the loop in question. A small helper that takes and
+returns only Strings and numbers, builds no struct and calls no
+method — a *scratch-local* function — frees its temporaries when it
+returns. For a nonrecursive helper, those temporaries do not accumulate
+across iterations of its caller's loop. Values returned to the caller
+keep the caller's lifetime, and a loop inside the helper retains its
+temporaries until the call returns. Recursive helpers keep the survey's
+conservative locus-lifetime boundary. Any other free function allocates
+into its caller's memory: called once per
+iteration of an unbounded loop in `main` or `run`, even a temporary it
+never returns piles up there until the locus dissolves, and the survey
+says it "lands in its caller's arena". Make such a helper
+scratch-local, or move the work into a method, whose per-call scratch
+reclaims it. `--dump-alloc-summary` tags each scratch-local function.
 `@unbounded fn` is the in-source carve-out for an acknowledged
 site; `--no-warn-unbounded-alloc` opts a run out. A site in code
 the compiler generated (the api binding, a `json:` parser) has no

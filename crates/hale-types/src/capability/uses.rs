@@ -465,30 +465,8 @@ fn merged(name: &str) -> bool {
 /// The use rows of the programs a bundle holds, over the bundle's
 /// allocation summary (`target_capability`'s producer for uses).
 pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
-    // The summary keys top-level declarations; a declaration inside a
-    // `module { }` is lowered at any depth (GH #884), so a program that
-    // nests one is walked flattened, with the stdlib's copy beside it.
-    let flattened;
-    let summary = if bundle.programs.values().any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Module(_)))) {
-        let flat: Vec<Program> = bundle
-            .programs
-            .values()
-            .map(|p| {
-                let mut q = (*p).clone();
-                q.items = flat_decls(&p.items).filter(|i| !matches!(i, TopDecl::Module(_))).cloned().collect();
-                q
-            })
-            .collect();
-        let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
-            flat.iter().map(|p| (p, &bundle.snapshot)).collect();
-        if let (Some(program), Some(ids)) = (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
-            identified.push((program, ids));
-        }
-        flattened = crate::alloc_summary::summarize_identified(&identified, &bundle.import_renames);
-        &flattened
-    } else {
-        summary
-    };
+    // The bundle's authoritative summary already includes module-nested
+    // bodies and resolved function-value alternatives. Read those rows.
     let m = super::derive_capability_matrix();
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let g = Graph::new(summary, &m, &bundle.import_renames, &programs);

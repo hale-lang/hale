@@ -26,9 +26,10 @@
 //! same producer over the synthesized declaration.
 //!
 //! The rows are the classifications codegen computed while it lowered,
-//! moved as they were: the checker's reclaim model
-//! (`crate::alloc_summary::ReclaimScope`) does not read them yet, and
-//! the disagreement the registry records for it stands until it does.
+//! moved as they were. The checker's reclaim model
+//! (`crate::alloc_summary::ReclaimScope`) reads the scratch-local one:
+//! the summary runs [`scratch_local_free_fns`] over the declarations it
+//! holds, the same producer over the same declarations.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -508,7 +509,7 @@ pub fn derive_alloc_routing(
         structs: struct_numeric_field_map(&program.items),
     };
     let mut rows = AllocRouting {
-        scratch_local: scratch_local_free_fns(&program.items, &imports),
+        scratch_local: scratch_local_free_fns(hale_syntax::ast::flat_decls(&program.items), &imports),
         nonalloc,
         nonalloc_numeric_ret,
         elidable_methods: elidable,
@@ -624,12 +625,17 @@ impl ScratchPaths<'_> {
     }
 }
 
-fn scratch_local_free_fns(
-    items: &[TopDecl],
+/// The checker's reclaim model reads the same classification
+/// ([`crate::alloc_summary::ReclaimScope::FnReturn`]): the summary runs
+/// this over the declarations it holds, as lowering runs it over
+/// `merged`, so the two never disagree about which fn frees its own
+/// allocations at return.
+pub(crate) fn scratch_local_free_fns<'a>(
+    items: impl Iterator<Item = &'a TopDecl>,
     imports: &BTreeMap<Vec<String>, String>,
 ) -> BTreeSet<String> {
     let paths = ScratchPaths { imports };
-    let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
+    let fns: Vec<&FnDecl> = items
         .filter_map(|it| match it {
             TopDecl::Fn(f)
                 if f.fallible.is_none()

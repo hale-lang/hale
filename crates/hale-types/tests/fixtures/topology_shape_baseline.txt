@@ -186,6 +186,8 @@ crates/hale-cli/tests/workspace_check.rs#0 f428caff9d863411
 crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#0 878ce3ead1cfc606
 crates/hale-codegen/tests/alloc_model_rss.rs#0 24127672b40393ac
 crates/hale-codegen/tests/alloc_model_rss.rs#1 277078abb218a919
+crates/hale-codegen/tests/alloc_model_rss.rs#10 2b7c22bdd98aff3e
+crates/hale-codegen/tests/alloc_model_rss.rs#11 3a4f2e10926837b1
 crates/hale-codegen/tests/alloc_model_rss.rs#2 42b42d73e707bf3e
 crates/hale-codegen/tests/alloc_model_rss.rs#3 ba013104ff10bf8f
 crates/hale-codegen/tests/alloc_model_rss.rs#4 550b6ae565ee792f
@@ -1402,6 +1404,15 @@ crates/hale-syntax/tests/intra_locus_pool_safety.rs#0 136877c05cbac3b6
 crates/hale-syntax/tests/wrap_main.rs#0 865d341109268295
 crates/hale-syntax/tests/wrap_main.rs#1 80e8e4543ac850e6
 crates/hale-types/tests/alloc_summary_construction_correction.rs#1 8b8b4884fce28645
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#0 07485b203c148070
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2 f7961b180a777bce
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#3 d37ebff210892572
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#4 5db5d696396d3f99
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#5 2e2829d7a3a9014a
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#6 89393f7d92a99b0f
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#7 9863725ef3765ff8
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#8 b33e2322084d23f0
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#9 8db892c998d3e354
 crates/hale-types/tests/api_binding_check.rs#11 4bd9004a38d8c44a
 crates/hale-types/tests/api_binding_check.rs#12 8209347d14c8722f
 crates/hale-types/tests/api_binding_check.rs#13 9dbcce1e7ab99412
