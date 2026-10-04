@@ -406,8 +406,10 @@ manager = ["uid:1000"]
 owner   = []
 ```
 
-A member is `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>` or
-`*`, for any peer the socket authenticates. `owner` is built in, and
+A member names a socket peer by its account (`uid:<n>`, `gid:<n>`,
+`user:<name>`, `group:<name>`), a bearer caller by the name its
+source gives it (`bearer:<name>`, step 6), or is `*`: any caller the
+binding authenticates, on either transport. `owner` is built in, and
 `[]` says that nobody holds it here. `hale check --matrix` holds the
 table to the program: every role is declared, and every declared role
 is mapped:
@@ -554,9 +556,10 @@ main locus App {
 }
 ```
 
-Each HTTP request is one `POST` whose body is one line of the socket's
-wire format (`{"call": …}`, `{"read": …}` or `{"describe": …}`),
-under `Authorization: Bearer <token>`:
+Rebuild with the table from step 5 (`hale build --env dev shop.hl`)
+and restart. Each HTTP request is one `POST` whose body is one line of
+the socket's wire format (`{"call": …}`, `{"read": …}` or
+`{"describe": …}`), under `Authorization: Bearer <token>`:
 
 ```sh
 curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
@@ -590,10 +593,10 @@ A token `Tokens` does not know gets a 401:
 401
 ```
 
-The stdlib's role table can only grant a role to a principal with
-credentials the kernel vouches for. A bearer principal has none
-(uid -1), so under that table it holds no role, even through
-`clerk = ["*"]`. The gated read is outside its slice:
+The gates are the same gates, and the table from step 5 grants roles
+to bearer callers too. `clerk = ["*"]` covers every caller the binding
+authenticates, so front-desk, named by `Tokens`, holds `clerk` and may
+read the stock. The receipt names the role:
 
 ```sh
 curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
@@ -601,18 +604,72 @@ curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
 ```
 
 ```text
-{"request_id":2,"ok":false,"refusal":{"kind":"unknown","reason":"shop.stock"},"caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"}}
+{"request_id":2,"ok":true,"value":{"on_hand":7,"orders":2},"as_of":"sha256:c0975c1f95dde12247d8944610c4a1d0573e9aed0aac69c059c25014c0de269c","caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"},"role":"clerk"}
+200
+```
+
+Restocking needs `manager`, which only uid 1000 holds, so it is
+outside front-desk's slice:
+
+```sh
+curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
+    --data '{"call":"Restocks","payload":{"qty":5}}' http://127.0.0.1:8794/
+```
+
+```text
+{"request_id":3,"ok":false,"refusal":{"kind":"unknown","reason":"Restocks"},"caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"}}
 404
 ```
 
-To grant roles to bearer callers, name your own membership source on
-the entry. A source is any locus satisfying `std::api::RoleSource`.
-It replaces the table for every caller, socket peers included:
+To name one bearer caller in the table, write `bearer:` and the name
+your source answers for the token. Make front-desk a manager beside
+uid 1000:
+
+```toml
+[environments.dev.roles]
+clerk   = ["*"]
+manager = ["uid:1000", "bearer:front-desk"]
+owner   = []
+```
+
+`hale check --matrix .` accepts it, and a misspelled prefix is still
+refused, with the spellings listed:
+
+```text
+./hale.toml: environment `dev` role `manager`: `barer:front-desk` is not a role member: write `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>`, `bearer:<name>` or `*` (any authenticated caller)
+```
+
+Rebuild with `--env dev`, restart, and restock over HTTP:
+
+```sh
+curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
+    --data '{"call":"Restocks","payload":{"qty":5}}' http://127.0.0.1:8794/
+```
+
+```text
+{"request_id":1,"ok":true,"value":{"on_hand":14,"by":"front-desk","role":"manager"},"caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"},"role":"manager"}
+200
+```
+
+A `bearer:` member is never a socket peer, and `uid:`, `gid:`,
+`user:` and `group:` never match a bearer caller, even one whose name
+is the same string: a Unix account and a token's subject are
+different identities. A bearer `name` is the source's, so the table
+does not look it up in the host's account database. A caller the
+binding cannot authenticate, such as a token your source names
+nobody, holds no role whatever the table says.
+
+The table is the deployment's. When membership depends on the
+program's own state instead, name your own source on the entry. A
+source is any locus satisfying `std::api::RoleSource`, the program
+keeps a handle to it, and it replaces the table for every caller,
+socket peers included:
 
 ```hale,fragment
 locus DeskRoles {
+    params { on_shift: String = "front-desk"; }
     fn holds(p: std::api::Principal, r: String) -> Bool {
-        return p.mode == "bearer" && p.name == "front-desk" && r == "clerk";
+        return r == "clerk" && p.mode == "bearer" && p.name == self.on_shift;
     }
 }
 
@@ -626,8 +683,8 @@ main locus App {
 }
 ```
 
-With `DeskRoles` in place, the same `curl` read returns 200 with
-`"role":"clerk"`. A watch is only on the socket, because the HTTP
+The program changes `self.roles.on_shift` as shifts change, and the
+gate follows. A watch is only on the socket, because the HTTP
 transport answers calls, reads and describes.
 
 ## 7. Tools

@@ -366,12 +366,27 @@ owner          = ["user:alice"]
 ```
 
 `hale build --env prod` (or `hale run --env prod`) bakes that table
-into the binding, held by the stdlib's `std::api::StaticRoles` source; the members are matched against the peer's
-credentials (`uid:`; `gid:` against the primary group and the
-supplementary groups the kernel reports for the connection; `user:`
-and `group:` resolved once at start per the account database; `*`
-for any authenticated peer). `LOTUS_API_ROLES="refund_support=uid:1000;owner=user:alice"`
-overrides it at run time, which is how a test drives it. A table
+into the binding, held by the stdlib's `std::api::StaticRoles` source.
+A member takes one of six spellings:
+
+| member | matches |
+|---|---|
+| `uid:<n>` | a socket peer with that uid |
+| `gid:<n>` | a socket peer whose primary group, or one of the supplementary groups the kernel reports for the connection, is `<n>` |
+| `user:<name>` | a socket peer with that account, resolved once at start per the account database |
+| `group:<name>` | a socket peer in that group, resolved the same way |
+| `bearer:<name>` | a caller on the [HTTP transport](#over-http) whose bearer source answered exactly `<name>` |
+| `*` | any caller the binding authenticates, on either transport |
+
+The two transports' spellings never cross. A `bearer:` member is
+never a socket peer, and the four account spellings never match a
+bearer caller, even one whose name reads the same: a Unix account and
+a token's subject are different identities. A bearer name is the
+source's, so it is not looked up in the account database, and it is
+written as the source answers it: an OIDC subject such as
+`bearer:oidc:auth0|123` included (printable ASCII without blanks or the
+table's own `,`, `;` and `=`, at most 255). `LOTUS_API_ROLES="refund_support=uid:1000,bearer:desk;owner=user:alice"`
+overrides the table at run time, which is how a test drives it. A table
 naming a role the program does not declare, or a member outside
 those spellings, is refused at start with the reason, the same rule
 `hale check --matrix` holds `hale.toml` to; with no table at all
@@ -421,9 +436,9 @@ handlers unless its `publish` states its own. `on_unauthorized: drop`
 on the entry turns a refusal into silence, for a socket that should
 not even answer.
 
-A peer the kernel cannot vouch for (`uid` -1) is refused everything,
-gated or not: the binding's whole claim is that it knows who is
-calling.
+A peer the kernel cannot vouch for (`uid` -1), or a bearer token your
+source names nobody, is refused everything, gated or not: the
+binding's whole claim is that it knows who is calling.
 
 The description follows the same rule. `{"describe": true}` returns
 the caller's slice: the commands, reads and streams it may use, and
@@ -450,6 +465,10 @@ page shows the rest greyed out with the role each item needs.
 - A watch over HTTP (a stream to a browser) waits: the HTTP
   transport answers calls, reads and describes, and a watch is the
   socket's.
+- Bearer groups wait: the table grants a bearer caller a role by its
+  own name (`bearer:<name>`) or through `*`, not by a group its
+  source reports (an OIDC `groups` claim). A program that needs that
+  today names its own `RoleSource`.
 - Transitive privilege inference (flagging `api -> OrderPlaced ->
   on_order -> refund` as an escalation) is not part of `@gated`,
   which is a boundary check and says so.
