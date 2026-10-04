@@ -1721,10 +1721,11 @@ zero_copy binding produces.
     "on_failure(c, err)"). One subcase is open: an owner placed
     on a cooperative pool. This decision names the pool's worker
     as that owner's domain. `spec/semantics.md` names "the thread
-    settling the parent", which today is the instantiating
-    thread. The subcase awaits the construction-time decision
-    (inventory Decisions line 1), and this bullet and
-    `spec/semantics.md` are brought into agreement when it lands.
+    settling the parent", which for a pool root is now its worker
+    too (C50), the domain a later failure is posted to (L5's fourth
+    part). The subcase's status stays with the construction-time
+    decision (§ "Lifecycle obligations", line 1) until a fixture
+    holds the delivery's thread.
   - Transport loss already follows this rule. Its dispatcher runs
     from the top of `lotus_bus_queue_drain`, "owner thread, the
     only place failure handlers may run" (§ "Bus message
@@ -1889,7 +1890,14 @@ its `KNOWN_OPEN` table.
   arrived, before the owner's `birth()`, and each child waits for
   its decision. The child and the copied violation are retained
   until the handler completes. Shipped for an owner whose params
-  settle on its own domain (`l01_held_failure_settle.hl`). No
+  settle on its own domain (`l01_held_failure_settle.hl`). Once the
+  params have settled, a failure is delivered on the owner's domain
+  (§ "Failure handling", decision L0-1, shipped by L5's fourth part):
+  the runtime records that domain where the owner's params open, and
+  a failure raised elsewhere is posted there and awaited, so the held
+  delivery at the settle and a later posted one run on the same
+  thread. The trace reports a held delivery where its handler runs,
+  at the settle. No
   mechanism carrying this protocol may wait on itself: a held
   failure whose child and owner share a pool's worker
   (`l01_neg_same_pool_held.hl`), and an instantiating thread that
@@ -1903,8 +1911,11 @@ its `KNOWN_OPEN` table.
   names the pool's worker as that owner's domain, and
   `spec/semantics.md` § "on_failure(c, err)" names the thread
   settling the parent; for a root field placed on a pool both are
-  now the worker, where its params open and settle
-  (`l01_pool_owner_settle.hl` pins the delivery, not its thread).
+  now the worker, where its params open and settle, and since L5's
+  fourth part a failure posted to that owner after the settle runs
+  there too. `l01_pool_owner_settle.hl` pins the delivery, not its
+  thread, and the lifecycle plan keeps the line's status until a
+  fixture holds the thread.
 - **Line 2, the tick closures after a posted `run()`.** **Pending:**
   the decisions choose no option. Today the tick and duration
   closures of a locus whose `run()` is posted to a pool run on the
