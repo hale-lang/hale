@@ -113,7 +113,7 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
 ///
 /// The value an entry places is the init a root literal supplies for the
 /// field, or the params default when a literal leaves it (or when no
-/// literal builds the root, and the entry builds it from its defaults);
+/// literal builds the root, and the entry's template takes its defaults);
 /// both spellings are judged, and a default every literal overrides is
 /// dead text, not a dropped placement. Read off the placement table: the
 /// root is the lowering root, and its literals are every literal of the
@@ -123,8 +123,12 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
 /// the literals it records where no body reaches, which lowering expands
 /// wherever their holder is built (`locus Holder { params { app: App =
 /// App { w: make_worker() }; } }` places nothing, as a construction
-/// would not). Only the constructions decide whether the entry builds
-/// the root from its defaults.
+/// would not). The default is live exactly when some of those literals
+/// leaves the field to it, or when no literal lowering emits builds the
+/// root ([`crate::placement::RootRow::built_by_a_literal`]): an expanded
+/// literal some lowered literal expands builds it as a construction
+/// does, so `App { w: Worker { } }` in `Holder`'s default, with `Holder {
+/// }` built, leaves `App`'s own default dead.
 fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     let Some(root) = &inputs.placement.root else { return };
     let decls = declarations(bundle);
@@ -190,11 +194,13 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
                 diags.push(placement_unconsumed_diag(field, &ty_name, init, entry.span, true));
             }
         }
-        // The default is live when some site omits the field, and when
-        // no construction builds the root (the entry's implicit
-        // template, or a library seed checked on its own: the default is
-        // the only initialiser there is).
-        if !(any_site_takes_default || root.constructions.is_empty()) {
+        // The default is live when some literal of the root omits the
+        // field, and when no literal lowering emits builds the root
+        // (`RootRow::built_by_a_literal`). Lowering then builds no root at
+        // all, but the table's entry template, or a library seed checked
+        // on its own, takes the default, and the law sides with them: the
+        // default is the only initialiser there is.
+        if !(any_site_takes_default || !root.built_by_a_literal()) {
             continue;
         }
         // No default and no site init: the missing-required-param rule

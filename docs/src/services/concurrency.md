@@ -511,9 +511,10 @@ placement and the locus's shape are known at compile time:
   The same holds at the instantiation site for a field declared
   without a default: `App { a: Worker { } }` carries the entry,
   `App { a: make_worker() }` does not — wherever that `App { }` is
-  written, another locus's `params` default included. If the factory
-  did setup work, move it into the locus's own `params` defaults or
-  its `birth()`.
+  written, another locus's `params` default included. A default that
+  every `App { … }` overrides with a literal never runs, so it is not
+  judged. If the factory did setup work, move it into the locus's own
+  `params` defaults or its `birth()`.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

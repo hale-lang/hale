@@ -3611,8 +3611,14 @@ main locus App {
     depth of defaults, a perspective's `params`, a const, a type's
     field default — which lowering expands wherever their holder is
     built (`locus Holder { params { app: App = App { w:
-    make_worker() }; } }` is rejected at `make_worker()`). Only a
-    construction stops the root's own default being live. The test harness's
+    make_worker() }; } }` is rejected at `make_worker()`). The root's
+    own default is live when one of those literals leaves the field to
+    it, or when no literal lowering emits builds the root (no
+    construction, and no such literal whose holder something builds):
+    lowering then builds no root at all, but a library seed checked on
+    its own takes the default, and so does the rule. So `App { w:
+    Worker { } }` in `Holder`'s default, with `Holder { }` built,
+    leaves a `make_worker()` default dead. The test harness's
     build, which skips the rest of the check, judges it too, so
     lowering keeps no refusal of its own. (GH #890, 2026-09-20;
     F.40 phase 3, C7.)

@@ -406,3 +406,105 @@ fn a_root_with_no_pinned_entry_in_a_position_emitted_at_every_use_builds() {
         assert_eq!(stdout.matches("app").count(), 3, "{tag}: `App` built per iteration: {stdout:?}");
     }
 }
+
+/// `Worker`, a factory for it that says when it runs, and `App` pinning
+/// its `w`, whose default is the factory, then `rest`.
+fn factory_root_then(rest: &[&str]) -> String {
+    let mut src = vec![
+        "locus Worker { run() { print(\"worker\"); } }\n",
+        "fn make_worker() -> Worker { print(\"factory\"); Worker { } }\n",
+        "main locus App {\n",
+        "    params { w: Worker = make_worker(); }\n",
+        "    placement { w: pinned; }\n",
+        "    run() { print(\"app\"); }\n",
+        "}\n",
+    ];
+    src.extend_from_slice(rest);
+    src.concat()
+}
+
+const RULE_18_AT_DEFAULT: &str =
+    "placement entry `w` names a field no locus literal initialises: `w`'s default is a call";
+
+/// The third review of PR #1338: the only literal of the root is
+/// expanded from `Holder`'s default and spells `w` as a literal, so
+/// `App`'s factory default is dead. The law judged it live whenever the
+/// root had no construction, and refused a program that builds and
+/// pins. A literal lowering emits now builds the root whether it is a
+/// construction or expanded: the program builds, `w` gets one pinned
+/// thread, and the factory never runs.
+#[test]
+fn a_factory_default_every_expanded_root_literal_overrides_is_dead() {
+    let stdout = builds_with_one_pinned_thread(
+        "hale_placement_dead_default_expanded_1338",
+        &factory_root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "fn main() { Holder { }; }\n",
+        ]),
+    );
+    assert!(!stdout.contains("factory"), "the dead default never runs: {stdout:?}");
+    assert_eq!(
+        (stdout.matches("worker").count(), stdout.matches("app").count(), stdout.len()),
+        (1, 1, "workerapp".len()),
+        "one worker, one app, nothing else: {stdout:?}"
+    );
+}
+
+/// The inverse: the expanded literal leaves `w` to the default, so the
+/// factory default is what `w` gets, and the entry is refused there.
+#[test]
+fn a_factory_default_an_expanded_root_literal_takes_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_live_default_expanded_1338",
+        &factory_root_then(&[
+            "locus Holder { params { app: App = App { }; } }\n",
+            "fn main() { Holder { }; }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_18_AT_DEFAULT), "expected the rule 18 law's refusal at the default, got: {msg}");
+}
+
+/// One literal overriding `w` does not kill the default another takes:
+/// `App { }` in `main`'s body leaves `w` to it, beside the expanded
+/// literal that spells it.
+#[test]
+fn a_factory_default_a_construction_takes_beside_an_overriding_expanded_literal_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_live_default_mixed_1338",
+        &factory_root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "fn main() { Holder { }; App { }; }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_18_AT_DEFAULT), "expected the rule 18 law's refusal at the default, got: {msg}");
+}
+
+/// No literal of the root anywhere: the table's entry template takes the
+/// default, and the law judges it, as before. Lowering builds no root
+/// here (`main` runs alone), so this is the conservative side of a
+/// disagreement, kept on purpose.
+#[test]
+fn a_factory_default_no_literal_overrides_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_live_default_entry_1338",
+        &factory_root_then(&["fn main() { print(\"main\"); }\n"]),
+    );
+    assert!(msg.contains(RULE_18_AT_DEFAULT), "expected the rule 18 law's refusal at the default, got: {msg}");
+}
+
+/// The overriding literal sits in the default of a `Holder` nothing
+/// builds, so no literal lowering emits builds the root. Lowering runs
+/// neither the root nor its factory, yet the law judges the default
+/// live, as it does when no literal builds the root: the conservative
+/// side again.
+#[test]
+fn a_factory_default_overridden_only_in_an_unbuilt_holder_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_live_default_unbuilt_1338",
+        &factory_root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "fn main() { print(\"main\"); }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_18_AT_DEFAULT), "expected the rule 18 law's refusal at the default, got: {msg}");
+}

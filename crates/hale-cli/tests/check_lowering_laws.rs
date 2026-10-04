@@ -321,3 +321,81 @@ fn check_admits_a_root_with_no_pinned_entry_in_a_position_emitted_at_every_use()
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Rule 18, the third review of PR #1338: `App`'s `w` defaults to a
+/// factory that says when it runs, then `rest`. The default's call is
+/// line 4, column 26.
+fn factory_default_then(rest: &str) -> String {
+    format!(
+        "locus Worker {{ run() {{ print(\"worker\"); }} }}\n\
+         fn make_worker() -> Worker {{ print(\"factory\"); Worker {{ }} }}\n\
+         main locus App {{\n\
+         \x20   params {{ w: Worker = make_worker(); }}\n\
+         \x20   placement {{ w: pinned; }}\n\
+         \x20   run() {{ print(\"app\"); }}\n\
+         }}\n\
+         {rest}"
+    )
+}
+
+const RULE_18_AT_DEFAULT: &str =
+    "placement entry `w` names a field no locus literal initialises: `w`'s default is a call";
+
+/// The review's program: the root's only literal is expanded from
+/// `Holder`'s default and spells `w` as a literal, so the factory
+/// default is dead. Both verbs admit it, and the binary never calls the
+/// factory.
+#[test]
+fn check_and_build_admit_a_factory_default_every_expanded_root_literal_overrides() {
+    let src = factory_default_then(
+        "locus Holder { params { app: App = App { w: Worker { } }; } }\nfn main() { Holder { }; }\n",
+    );
+    let d = seed("rule18_dead_default", &src);
+    let (ok, out) = hale(&["check", &d.to_string_lossy()]);
+    assert!(ok, "check must pass:\n{out}");
+    let bin = d.join("out");
+    let (ok, out) = hale(&["build", &d.to_string_lossy(), "-o", &bin.to_string_lossy()]);
+    assert!(ok, "build must pass:\n{out}");
+    let run = Command::new(&bin).output().expect("run");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "clean exit: {stdout:?}");
+    assert!(!stdout.contains("factory"), "the dead default never runs: {stdout:?}");
+    assert!(stdout.contains("worker") && stdout.contains("app"), "both halves run: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The inverse: the expanded literal leaves `w` to the factory default.
+#[test]
+fn check_and_build_refuse_a_factory_default_an_expanded_root_literal_takes() {
+    let src = factory_default_then("locus Holder { params { app: App = App { }; } }\nfn main() { Holder { }; }\n");
+    both_verbs_refuse("rule18_live_expanded", &src, RULE_18_AT_DEFAULT, ":4:26:");
+}
+
+/// A construction in `main`'s body takes the default beside the
+/// expanded literal that overrides it.
+#[test]
+fn check_and_build_refuse_a_factory_default_a_construction_takes_beside_an_overriding_expanded_literal() {
+    let src = factory_default_then(
+        "locus Holder { params { app: App = App { w: Worker { } }; } }\nfn main() { Holder { }; App { }; }\n",
+    );
+    both_verbs_refuse("rule18_live_mixed", &src, RULE_18_AT_DEFAULT, ":4:26:");
+}
+
+/// No literal of the root anywhere: the entry's template takes the
+/// default.
+#[test]
+fn check_and_build_refuse_a_factory_default_no_literal_overrides() {
+    let src = factory_default_then("fn main() { print(\"main\"); }\n");
+    both_verbs_refuse("rule18_live_entry", &src, RULE_18_AT_DEFAULT, ":4:26:");
+}
+
+/// The only overriding literal is in the default of a `Holder` nothing
+/// builds: no literal lowering emits builds the root, and the default is
+/// judged as when none does.
+#[test]
+fn check_and_build_refuse_a_factory_default_overridden_only_in_an_unbuilt_holder() {
+    let src = factory_default_then(
+        "locus Holder { params { app: App = App { w: Worker { } }; } }\nfn main() { print(\"main\"); }\n",
+    );
+    both_verbs_refuse("rule18_live_unbuilt", &src, RULE_18_AT_DEFAULT, ":4:26:");
+}

@@ -453,6 +453,21 @@ impl PerUsePosition {
     }
 }
 
+impl RootRow {
+    /// Some literal lowering emits builds the root: one of its
+    /// constructions, or an expanded literal that a literal lowering
+    /// emits expands (a non-empty `built_by`). Lowering builds the root
+    /// at such a literal and nowhere else: it never constructs a root no
+    /// literal builds, so where this is false nothing lowered runs the
+    /// root's defaults, though the table still gives it the entry's
+    /// implicit template ([`Origin::Entry`], kept while the constructions
+    /// are empty: it is where an expanded literal's placement is read).
+    /// An expanded literal whose holder nothing builds is not one.
+    pub fn built_by_a_literal(&self) -> bool {
+        !self.constructions.is_empty() || self.expanded.iter().any(|e| !e.built_by.is_empty())
+    }
+}
+
 /// The scope that encloses a dynamic literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Enclosing {
