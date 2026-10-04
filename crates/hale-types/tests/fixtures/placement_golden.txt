@@ -1164,6 +1164,12 @@ row	Rec@main1	Rec	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#04f73a4e
 row	Rec@main1	Rec	main	default
 
+== crates/hale-codegen/tests/alloc_model_rss.rs#c7a08831
+row	App@main1	App	main	default
+
+== crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
+row	App@main1	App	main	default
+
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
 
@@ -3973,6 +3979,36 @@ row	App@literal1.w	Worker	main	default
 == crates/hale-types/tests/alloc_summary_construction_correction.rs#8735a49c
 root	App	the entry
 row	App@literal1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2b149b94
+-- App@main1	App
+row	~	App	main	default
+row	~.rows	Rows	main	inherited
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#211d457e
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#1f1dfacc
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#138f243f
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#aa08ad56
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#1fcca20b
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#962f29e6
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#6090e111
+row	App@main1	App	main	default
+dynamic	Conn	on main	in the seed
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#d1fcd1cc
+row	App@main1	App	main	default
 
 == crates/hale-types/tests/api_binding_check.rs#08b74fed
 row	Billing@main1	Billing	main	default

@@ -15,7 +15,8 @@
 //! calls do NOT reclaim per call (a struct allocated inside a non-inlinable
 //! per-iteration free fn still accumulates), so the model attributes
 //! reclaim to the enclosing *locus*, not the fn return — contrary to
-//! `spec/memory.md` §"Free fn functions".
+//! `spec/memory.md` §"Free fn functions" — except in a scratch-local fn,
+//! whose own subregion is freed at its return (GH #1148; E3b).
 
 use std::process::Command;
 
@@ -468,6 +469,89 @@ fn self_field_struct_replace_churn_recycles_stays_flat() {
          (lotus_str_field_replace_fixup / the Gap A flush gate).",
         churn_rss,
         ctrl_rss
+    );
+}
+
+// === F.40 phase 3, E3b: the reclaim boundary is relative to the loop ===
+//
+// The same temporary String built once per call, the call made once per
+// iteration of `run`'s loop. In a scratch-local fn (String and scalar
+// params and return) it lands in the fn's own subregion, freed at its
+// return — inside the iteration. In a fn taking a `type` value it lands
+// in its caller's arena, `run`'s, whose boundary is outside the loop:
+// `Local` is not scratch. The model says each, and RSS agrees.
+
+/// The model's leak sites for `src`, as `owner reason`.
+fn model_leaks(src: &str) -> Vec<String> {
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    summarize_identified(&[(&program, &ids)], &[])
+        .leak_sites()
+        .iter()
+        .map(|l| format!("{} {:?}", l.owner.display(), l.reason))
+        .collect()
+}
+
+const CALLERS_ARENA: &str = r#"
+    type Row { text: String; }
+    fn tag_row(r: Row) -> Int { let t = r.text + "-" + to_string(len(r.text)); return len(t); }
+    locus App {
+        params { n: Int = 1000000; sink: Int = 0; }
+        run() {
+            let r = Row { text: "abcdefghijklmnopqrstuvwxyz" };
+            let mut i = 0;
+            while i < self.n { self.sink = self.sink + tag_row(r); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+const OWN_SUBREGION: &str = r#"
+    type Row { text: String; }
+    fn tag(s: String) -> Int { let t = s + "-" + to_string(len(s)); return len(t); }
+    locus App {
+        params { n: Int = 1000000; sink: Int = 0; }
+        run() {
+            let r = Row { text: "abcdefghijklmnopqrstuvwxyz" };
+            let mut i = 0;
+            while i < self.n { self.sink = self.sink + tag(r.text); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_temporary_reclaims_at_a_scratch_local_return_and_not_in_the_callers_arena() {
+    let callers = model_leaks(CALLERS_ARENA);
+    assert!(
+        callers.iter().any(|l| l == "tag_row InCallersArena"),
+        "the model should say tag_row's temporary accumulates in run's arena: {callers:?}"
+    );
+    let own = model_leaks(OWN_SUBREGION);
+    assert!(
+        !own.iter().any(|l| l.starts_with("tag ")),
+        "the model must not say a scratch-local fn's temporary accumulates: {own:?}"
+    );
+
+    let callers_rss = build_and_rss("callers_arena", CALLERS_ARENA);
+    // Measured self-RSS 2026-10-02: 90 MB in run's arena against 4 MB
+    // freed at each scratch-local return.
+    let own_rss = build_and_rss("own_subregion", OWN_SUBREGION);
+    assert!(
+        own_rss < 200,
+        "the scratch-local loop's RSS is implausibly high ({own_rss}MB)"
+    );
+    assert!(
+        callers_rss >= own_rss + 40,
+        "1M temporaries in run's arena should add >40MB over the same \
+         temporaries freed at a scratch-local fn's return: callers={callers_rss}MB, \
+         own={own_rss}MB. If the gap collapsed, a free fn's allocations no \
+         longer land in its caller's arena, and the reclaim model's \
+         caller-arena rule must be revisited."
     );
 }
 

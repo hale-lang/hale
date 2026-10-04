@@ -191,6 +191,10 @@ impl Escape {
     /// This is only about *cross-invocation* multiplicity. A `Local` in an
     /// unbounded loop *within a single call* still accumulates until that
     /// call returns — that case is caught by the in-loop verdict, not here.
+    /// Nor is a `Local` reclaimed by every frame: a free fn that is not
+    /// scratch-local opens no scratch, its body allocates into its
+    /// caller's arena, and the boundary there is the caller's
+    /// (`ReclaimScope`, E3b).
     fn persists_across_calls(&self) -> bool {
         matches!(self, Escape::StoredToSelf | Escape::Returned)
     }
@@ -200,25 +204,60 @@ impl Escape {
 /// validated* reclamation model (step 2), which differs from
 /// `spec/memory.md`. Measured: a struct allocated inside a non-inlinable
 /// free fn called 3M× in a loop accumulates to ~99 MB (vs ~5 MB for an
-/// alloc-free loop) — i.e. **free-fn returns do NOT reclaim per call**
-/// (the spec's §"Free fn functions" region-free-at-return is not what
-/// runs). So a value allocation lives until its enclosing **locus**
-/// dissolves; only bus sends get a per-dispatch arena.
+/// alloc-free loop) — i.e. **a free fn's return does not reclaim per
+/// call**: its body allocates into its caller's arena (codegen's
+/// `current_arena_ptr`), so a value allocation lives until its enclosing
+/// **locus** dissolves. Two boundaries come sooner: a bus send's
+/// per-dispatch arena, and a scratch-local free fn's own subregion
+/// (GH #1148), freed when the fn returns.
 ///
-/// The conservative consequence (and the whole point — "no false
-/// bounded"): any value allocation inside a loop accumulates per
-/// iteration, bounded only by the loop's trip count.
+/// The boundary is judged relative to the loop analyzed
+/// ([`ReclaimScope::accumulates_in_loop`]): a fn's return falls inside
+/// each iteration of a loop that calls the fn, and outside every
+/// iteration of a loop in the fn's own body, so a function return is not
+/// an iteration's reclamation. The conservative consequence (and the
+/// whole point — "no false bounded"): an allocation accumulates across
+/// the iterations of every loop its boundary lies outside, bounded only
+/// by that loop's trip count.
+///
+/// `Local` is not scratch: an allocation's [`Escape`] says whether its
+/// value leaves the fn, and the fn's frame says whether anything frees
+/// it when the fn returns. A `Local` in a free fn that is not
+/// scratch-local lands in its caller's arena and lives as long as the
+/// caller's frame does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReclaimScope {
     /// Freed wholesale only when the enclosing locus dissolves — so it
     /// accumulates across every loop iteration in between. Covers
-    /// `Local`, `Returned`, and `StoredToSelf` value allocations.
+    /// `Returned` and `StoredToSelf` value allocations, and a `Local`
+    /// in any frame but a scratch-local free fn's (a method's or a
+    /// handler's per-call scratch is the activation boundary
+    /// `AllocSummary::final_verdict` applies to it).
     EnclosingLocus,
     /// Routed to the bus payload arena, reclaimed after the message is
     /// dispatched — a genuine per-iteration boundary. (Modeled from the
     /// spec + bus codegen; RSS-validation of this path is pending, noted
     /// in the step-2 validation test.)
     AfterBusDispatch,
+    /// A `Local` allocation in a scratch-local free fn
+    /// ([`FnSummary::frees_at_return`]): the fn's body allocates into
+    /// its own subregion, destroyed at return after the epilogue
+    /// deep-copies the return value into the caller's arena. A value
+    /// that escapes the fn (its return value) is not reclaimed here,
+    /// and a recursive fn keeps [`ReclaimScope::EnclosingLocus`]: its
+    /// activations' subregions are alive at once, to an unbounded
+    /// depth.
+    FnReturn,
+}
+
+/// Where the loop a reclaim boundary is judged against sits, relative to
+/// the allocation ([`ReclaimScope::accumulates_in_loop`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopAt {
+    /// In the allocation's own body, enclosing it.
+    OwnBody,
+    /// In a caller, enclosing a call that reaches the allocation's fn.
+    Caller,
 }
 
 impl ReclaimScope {
@@ -228,15 +267,22 @@ impl ReclaimScope {
             _ => ReclaimScope::EnclosingLocus,
         }
     }
-    /// Does this allocation persist across loop iterations (vs being
-    /// reclaimed each iteration)?
-    fn accumulates_in_loop(&self) -> bool {
-        matches!(self, ReclaimScope::EnclosingLocus)
+    /// Does this allocation persist across the iterations of a loop at
+    /// `at` (vs being reclaimed within each iteration)? A fn's return
+    /// ends each iteration of a caller's loop, never an iteration of the
+    /// fn's own.
+    pub fn accumulates_in_loop(&self, at: LoopAt) -> bool {
+        match self {
+            ReclaimScope::EnclosingLocus => true,
+            ReclaimScope::AfterBusDispatch => false,
+            ReclaimScope::FnReturn => at == LoopAt::OwnBody,
+        }
     }
     fn label(&self) -> &'static str {
         match self {
             ReclaimScope::EnclosingLocus => "reclaim@locus-dissolve",
             ReclaimScope::AfterBusDispatch => "reclaim@bus-dispatch",
+            ReclaimScope::FnReturn => "reclaim@fn-return",
         }
     }
 }
@@ -319,7 +365,7 @@ impl AllocSite {
     pub fn verdict(&self) -> SiteVerdict {
         if self.loop_depth == 0 {
             SiteVerdict::OncePerInvocation
-        } else if !self.reclaim.accumulates_in_loop() {
+        } else if !self.reclaim.accumulates_in_loop(LoopAt::OwnBody) {
             SiteVerdict::PerIterationReclaim
         } else if self.in_unbounded_loop {
             SiteVerdict::AccumulatesUnbounded
@@ -665,6 +711,39 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
+    /// What a free fn's body allocates into, as lowering routes it
+    /// ([`Frame`]); `None` for a method, a lifecycle hook, a mode and
+    /// `main` (lowered as the program's entry), and for a row the summary
+    /// did not classify.
+    pub frame: Option<Frame>,
+}
+
+/// What a free fn's body allocates into (E3b): the scratch-local
+/// classification lowering reads (`crate::alloc_routing`'s
+/// `scratch_local` row, the same producer over the declarations the
+/// summary holds). An allocation's [`Escape`] says whether its value
+/// leaves the fn; the frame says whether anything frees it when the fn
+/// returns: `Local` is not scratch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Frame {
+    /// Scratch-local: the body allocates into the fn's own subregion,
+    /// freed at its return after the return value is copied out.
+    /// `recursive` when the fn is in a cycle of resolved calls (it can
+    /// call itself).
+    ScratchLocal { recursive: bool },
+    /// Any other free fn: the body allocates into its caller's arena,
+    /// and nothing is freed at its return.
+    CallersArena,
+}
+
+impl FnSummary {
+    /// The fn frees the allocations its body keeps at its return: a
+    /// scratch-local free fn that is not recursive. Its `Local` sites
+    /// reclaim at [`ReclaimScope::FnReturn`], and it is a frame with a
+    /// boundary of its own, like a method's per-call scratch.
+    pub fn frees_at_return(&self) -> bool {
+        self.frame == Some(Frame::ScratchLocal { recursive: false })
+    }
 }
 
 /// GH #265: an effect a fn performs directly in its own body,
@@ -838,6 +917,18 @@ impl AllocSummary {
             .is_some_and(|l| self.bounded_loci.contains(l))
     }
 
+    /// Whether a struct literal's path as written (an
+    /// [`AllocKind::StructLit`]'s name) names a locus of the summary:
+    /// by its name, or a stdlib locus by its full path.
+    pub fn names_locus(&self, written: &str) -> bool {
+        let segs: Vec<&str> = written.split("::").collect();
+        let name = match segs.as_slice() {
+            [one] => Some(*one),
+            _ => crate::stdlib_bodies::mangled_locus_name(&segs),
+        };
+        name.is_some_and(|n| self.locus_shapes.contains_key(n))
+    }
+
     /// Whether the fn `key` is the program's own, not the stdlib's
     /// analysis copy's.
     pub fn is_own(&self, key: &FnKey) -> bool {
@@ -1009,6 +1100,10 @@ pub enum LeakReason {
     /// reached through a call inside an unbounded loop), so even a
     /// once-per-call alloc accumulates.
     InvokedUnboundedly,
+    /// A `Local` allocation of a fn with no scratch of its own, run once
+    /// per iteration of an unbounded loop in a long-lived frame: it lands
+    /// in that caller's arena, whose boundary is outside the loop (E3b).
+    InCallersArena,
 }
 
 /// A confirmed unbounded-accumulation site (step 3 output → diagnostic).
@@ -1067,8 +1162,9 @@ impl AllocSummary {
     /// empirical reclaim model says free-fn returns do NOT reclaim,
     /// so a free fn called from `run` allocates straight into run's
     /// lifetime arena. Member fns and bus handlers open a per-call
-    /// method scratch, so they STOP the propagation — a value
-    /// consumed there dies at method exit.
+    /// method scratch, and a scratch-local free fn its own subregion
+    /// ([`FnSummary::frees_at_return`]), so they STOP the propagation
+    /// — a value consumed there dies at its exit.
     fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
         let mut set: BTreeSet<FnKey> = self
             .fns
@@ -1087,7 +1183,43 @@ impl AllocSummary {
                 for c in &f.calls {
                     if let Callee::Resolved(callee) = &c.callee {
                         if callee.locus.is_none()
-                            && self.fns.contains_key(callee)
+                            && self.fns.get(callee).is_some_and(|g| !g.frees_at_return())
+                            && set.insert(callee.clone())
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        set
+    }
+
+    /// The free fns of `scratchless` whose frame is their caller's arena
+    /// ([`Frame::CallersArena`]) that run once per iteration of an
+    /// unbounded loop in a long-lived frame: called inside such a loop
+    /// of a `scratchless` frame, or (fixpoint) by one of them. Their
+    /// allocations land in that frame's arena, whose boundary is outside
+    /// the loop, so even a `Local` one accumulates across its
+    /// iterations: `Local` is not scratch. A fn the summary did not
+    /// classify is in none.
+    fn repeated_in_longlived(&self, scratchless: &BTreeSet<FnKey>) -> BTreeSet<FnKey> {
+        let lands_in_caller = |k: &FnKey| {
+            scratchless.contains(k) && self.fns.get(k).is_some_and(|f| f.frame == Some(Frame::CallersArena))
+        };
+        let runs = |f: &&FnSummary| self.reached.as_ref().is_none_or(|r| r.contains(&f.key));
+        let mut set: BTreeSet<FnKey> = BTreeSet::new();
+        loop {
+            let mut changed = false;
+            for f in self.fns.values().filter(runs).filter(|f| scratchless.contains(&f.key)) {
+                let repeated = set.contains(&f.key);
+                for c in &f.calls {
+                    if let Callee::Resolved(callee) = &c.callee {
+                        if (repeated || c.in_unbounded_loop)
+                            && lands_in_caller(callee)
                             && set.insert(callee.clone())
                         {
                             changed = true;
@@ -1125,13 +1257,21 @@ impl AllocSummary {
     /// into true accumulation. KNOWN HOLE: a `while true` loop that
     /// never exits inside a handler defeats the "dies at exit"
     /// argument; rare, and the old behavior flagged 155 bounded
-    /// per-activation loops to catch it.
+    /// per-activation loops to catch it. A scratch-local free fn's
+    /// subregion is such a scratch (F.40 phase 3, E3b).
+    ///
+    /// E3b — the boundary is judged relative to the loop: a `Local`
+    /// in a frame with no boundary of its own (`repeated`, see
+    /// [`AllocSummary::repeated_in_longlived`]) accumulates across a
+    /// long-lived caller's unbounded loop, since its caller's arena
+    /// holds it; one reclaimed at its fn's return does not.
     fn final_verdict(
         &self,
         owner: &FnKey,
         site: &AllocSite,
         unbounded: &BTreeSet<FnKey>,
         scratchless: &BTreeSet<FnKey>,
+        repeated: &BTreeSet<FnKey>,
         callers: &BTreeMap<FnKey, BTreeSet<FnKey>>,
     ) -> SiteVerdict {
         let intra = site.verdict();
@@ -1185,8 +1325,22 @@ impl AllocSummary {
                 }
             }
             SiteVerdict::PerIterationReclaim => intra,
+            // `Local` is not scratch: in a frame with no boundary of its
+            // own, run once per iteration of a long-lived frame's
+            // unbounded loop, the allocation lands in that frame's arena,
+            // whose boundary is outside the loop.
+            // A locus instantiation is not a value in the caller's
+            // arena: the instance has an arena of its own, which the
+            // fn's dissolve frame destroys at its return.
+            _ if site.escape == Escape::Local
+                && repeated.contains(owner)
+                && site.reclaim.accumulates_in_loop(LoopAt::Caller)
+                && !matches!(&site.kind, AllocKind::StructLit(n) if self.names_locus(n)) =>
+            {
+                SiteVerdict::AccumulatesUnbounded
+            }
             _ if unbounded.contains(owner)
-                && site.reclaim.accumulates_in_loop()
+                && site.reclaim.accumulates_in_loop(LoopAt::Caller)
                 && site.escape.persists_across_calls() =>
             {
                 match site.escape {
@@ -1264,6 +1418,7 @@ impl AllocSummary {
         }
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
+        let repeated = self.repeated_in_longlived(&scratchless);
         let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
         for f in self.fns.values() {
             for c in &f.calls {
@@ -1284,9 +1439,11 @@ impl AllocSummary {
                 continue;
             }
             for s in &f.sites {
-                if self.final_verdict(&f.key, s, &unbounded, &scratchless, &callers) == SiteVerdict::AccumulatesUnbounded {
+                if self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers) == SiteVerdict::AccumulatesUnbounded {
                     let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
                         LeakReason::InUnboundedLoop
+                    } else if s.escape == Escape::Local {
+                        LeakReason::InCallersArena
                     } else {
                         LeakReason::InvokedUnboundedly
                     };
@@ -1309,6 +1466,7 @@ impl AllocSummary {
     pub fn render(&self) -> String {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
+        let repeated = self.repeated_in_longlived(&scratchless);
         let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
         for f in self.fns.values() {
             for c in &f.calls {
@@ -1373,6 +1531,11 @@ impl AllocSummary {
             if unbounded.contains(&f.key) {
                 tags.push("invoked-unboundedly".to_string());
             }
+            // The frame, beside each site's escape: a scratch-local fn
+            // frees its `Local` allocations at return, unless recursive.
+            if let Some(Frame::ScratchLocal { recursive }) = f.frame {
+                tags.push(if recursive { "scratch-local, recursive" } else { "scratch-local" }.to_string());
+            }
             let tag = if tags.is_empty() { String::new() } else { format!("   [{}]", tags.join(", ")) };
             out.push_str(&format!("fn {}{}\n", f.key.display(), tag));
             if f.sites.is_empty() && f.calls.is_empty() && f.loops.is_empty() {
@@ -1389,7 +1552,7 @@ impl AllocSummary {
             }
             for s in &f.sites {
                 let v = self.final_verdict(
-                    &f.key, s, &unbounded, &scratchless, &callers,
+                    &f.key, s, &unbounded, &scratchless, &repeated, &callers,
                 );
                 let flag = if matches!(v, SiteVerdict::AccumulatesUnbounded) {
                     "  <-- LEAK"
@@ -2287,6 +2450,7 @@ pub fn summarize_identified(
                 mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
+                frame: None,
             },
             starts,
             w.skipped,
@@ -2483,6 +2647,49 @@ pub fn summarize_identified(
         })
         .collect();
     resolve_function_values(&mut summary, &value_scopes, &known, next_group);
+    // The reclaim boundary of a scratch-local fn (GH #1208). The
+    // classification is lowering's (`alloc_routing`), run over the
+    // declarations lowering runs it over (`merged`: the program, its
+    // imported seeds under their mangled names, and the stdlib) with the
+    // same renames: the stdlib's declarations are beside the program's
+    // whether or not the summary holds the analysis copy's rows, so a
+    // program summarized alone has its own rows' frames. A recursive fn
+    // keeps the locus boundary: the hole's conservative answer.
+    {
+        let imports: BTreeMap<Vec<String>, String> = import_renames.iter().cloned().collect();
+        let copy_beside = identified.iter().any(|(_, ids)| is_stdlib_copy(ids));
+        let stdlib_items = crate::stdlib_bodies::program()
+            .filter(|_| !copy_beside)
+            .into_iter()
+            .flat_map(|p| flat_decls(&p.items))
+            .filter(|item| match item {
+                TopDecl::Fn(f) => !declared_by_program.contains(&f.name.name),
+                _ => false,
+            });
+        let scratch_local = crate::alloc_routing::scratch_local_free_fns(
+            identified
+                .iter()
+                .flat_map(|(program, ids)| flat_decls(&program.items).filter(move |item| !shadowed(ids, item)))
+                .chain(stdlib_items),
+            &imports,
+        );
+        let recursive = recursive_fns(&summary.fns);
+        for fs in summary.fns.values_mut() {
+            if fs.key.locus.is_some() || fs.entry.is_some() {
+                continue;
+            }
+            fs.frame = Some(if scratch_local.contains(&fs.key.fn_name) {
+                Frame::ScratchLocal { recursive: recursive.contains(&fs.key) }
+            } else {
+                Frame::CallersArena
+            });
+            if fs.frees_at_return() {
+                for s in fs.sites.iter_mut().filter(|s| s.escape == Escape::Local) {
+                    s.reclaim = ReclaimScope::FnReturn;
+                }
+            }
+        }
+    }
     // What the program reaches, when the stdlib's analysis copy is
     // beside it: its own fns, what their calls reach (the interface
     // fan-out included), and what they start. Starting a locus runs its
@@ -2546,6 +2753,79 @@ pub fn summarize_identified(
         summary.reached = Some(reached);
     }
     summary
+}
+
+/// The fns in a cycle of resolved calls: a strongly connected component
+/// of more than one fn, or a fn that calls itself (Tarjan's, iterative,
+/// in key order).
+fn recursive_fns(fns: &BTreeMap<FnKey, FnSummary>) -> BTreeSet<FnKey> {
+    let keys: Vec<&FnKey> = fns.keys().collect();
+    let index_of: BTreeMap<&FnKey, usize> = keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+    let succ: Vec<Vec<usize>> = keys
+        .iter()
+        .map(|k| {
+            fns[*k]
+                .calls
+                .iter()
+                .filter_map(|c| match &c.callee {
+                    Callee::Resolved(t) => index_of.get(t).copied(),
+                    Callee::Unresolved(_) => None,
+                })
+                .collect()
+        })
+        .collect();
+    let n = keys.len();
+    let (mut index, mut low) = (vec![usize::MAX; n], vec![0usize; n]);
+    let mut on_stack = vec![false; n];
+    let (mut stack, mut next) = (Vec::new(), 0usize);
+    let mut out = BTreeSet::new();
+    for root in 0..n {
+        if index[root] != usize::MAX {
+            continue;
+        }
+        // (node, the next successor to visit)
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&mut (v, ref mut i)) = work.last_mut() {
+            if let Some(&w) = succ[v].get(*i) {
+                *i += 1;
+                if index[w] == usize::MAX {
+                    index[w] = next;
+                    low[w] = next;
+                    next += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            work.pop();
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] == index[v] {
+                let mut component = Vec::new();
+                loop {
+                    let w = stack.pop().expect("the component's root is on the stack");
+                    on_stack[w] = false;
+                    component.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                if component.len() > 1 || succ[v].contains(&v) {
+                    out.extend(component.into_iter().map(|w| keys[w].clone()));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// D2: a fn's params as (name, declared-type-name) pairs — the seed for
@@ -2852,6 +3132,25 @@ pub fn unbounded_alloc_diags(
                 LeakReason::InvokedUnboundedly => {
                     "in a fn invoked unboundedly (a per-message bus handler, \
                      or reached through a call inside an unbounded loop)"
+                }
+                LeakReason::InCallersArena => {
+                    let (what, owner) = (ls.kind.label(), ls.owner.display());
+                    return Diag::warn(
+                        ls.span,
+                        format!(
+                            "unbounded allocation: this {what} in `{owner}` lands in its \
+                             caller's arena — `{owner}` has no scratch of its own, so its \
+                             return does not reclaim it — and `{owner}` runs once per \
+                             iteration of an unbounded loop in a long-lived frame (`main`, \
+                             `run`, or a free fn they call), so it accumulates until the locus \
+                             dissolves (or acknowledge an intentionally-/domain-bounded shape \
+                             with `@unbounded` on the enclosing fn). Bound the loop; make \
+                             `{owner}` scratch-local (String and scalar params and return, no \
+                             struct literal, no method call: its own subregion is freed at \
+                             return); or move the work into a method, whose per-call scratch \
+                             reclaims it."
+                        ),
+                    );
                 }
             };
             Diag::warn(

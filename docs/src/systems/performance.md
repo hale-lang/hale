@@ -93,7 +93,9 @@ fn top_bucket(samples: [Int; 64]) -> Int {
 
 `counts` lives in this function's stack frame and is gone when it
 returns. That matters because a free `fn` has no arena of its own
-— its values bump into the *caller's* region, so before this rule
+unless it is scratch-local (Strings and numbers in and out, no
+struct, no array, no method call; see Verification) — its values
+bump into the *caller's* region, so before this rule
 a fixed table inside a helper was per-call growth that nothing
 reclaimed until the calling loop finished. 200,000 calls to a
 helper holding a `[0; 1024]` table cost 1.69 GB.

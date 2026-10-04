@@ -132,8 +132,8 @@ fn a_wrapper_is_refused_once_inside_it() {
     );
 }
 
-/// A use inside a module-nested fn and inside an `on_failure` handler,
-/// which the allocation summary keys no body for.
+/// A use inside a module-nested fn is read from the bundle's summary,
+/// which includes nested declarations without a second producer.
 #[test]
 fn nested_and_failure_bodies_are_walked() {
     refused_on_wasm32(
