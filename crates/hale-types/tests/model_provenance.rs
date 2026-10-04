@@ -260,7 +260,7 @@ fn the_model_classifies_phases_and_seed_origin() {
         hale_types::model::Model::derive(&[&program], &renames);
     let birth = model
         .phases
-        .get(&hale_types::alloc_summary::FnKey::method(
+        .get(&hale_types::alloc_summary::FnKey::method(None,
             "W".to_string(),
             "birth".to_string(),
         ))
@@ -268,7 +268,7 @@ fn the_model_classifies_phases_and_seed_origin() {
     assert!(birth.hook && birth.phase == "birth");
     let step = model
         .phases
-        .get(&hale_types::alloc_summary::FnKey::method(
+        .get(&hale_types::alloc_summary::FnKey::method(None,
             "W".to_string(),
             "step".to_string(),
         ))

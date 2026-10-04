@@ -1662,7 +1662,10 @@ assume the others in a build:
     `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
     spelling).
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
-  own fns and loci, judged the same way. A per-method allocation summary + call-graph
+  own fns and loci, judged the same way: one row per declaration (a fn,
+  a method, an authored hook, a mode), keyed by its site and printed
+  under its name, so two declarations sharing a name (a program the
+  check refuses as a duplicate top-level name) are two rows. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
   a per-message handler is reclaimed at the per-delivery method-scratch
   destroy, so it isn't flagged), call-result escape tagging, and

@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
-use crate::alloc_summary::{self, AllocSummary, Callee, FnKey};
+use crate::alloc_summary::{self, AllocSummary, Callee, DeclId, FnKey};
 use crate::bus_graph::BusGraph;
 use crate::callgraph;
 use crate::stdlib_surface::{self, EffectSet};
@@ -283,7 +283,13 @@ pub fn causal_effects(
     for subj in &subjects {
         let Some(info) = graph.subjects.get(subj) else { continue };
         for sub in &info.subscribers {
-            let skey = FnKey::method(sub.locus.clone(), sub.handler.clone());
+            // The handler's row, as a call spelling it resolves (a
+            // handler the summary keys no row for is a key that names
+            // none, as it was).
+            let skey = summary
+                .resolve(Some(&sub.locus), &sub.handler)
+                .cloned()
+                .unwrap_or_else(|| FnKey::method(None, sub.locus.clone(), sub.handler.clone()));
             let sub_eff = infer_effects(summary, &skey, ffi);
             if !sub_eff.is_unclassified() && sub_eff.0 != 0 {
                 via.push(format!(
@@ -396,13 +402,14 @@ fn causes_inner(
             };
             match item {
                 TopDecl::Fn(fd) => {
-                    push(FnKey::free_fn(fd.name.name.clone()), fd)
+                    push(FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()), fd)
                 }
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         if let LocusMember::Fn(fd) = m {
                             push(
                                 FnKey::method(
+                                    DeclId::user(fd.id),
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 ),

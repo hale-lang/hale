@@ -3782,11 +3782,11 @@ fn check_binding_codec<'e>(
     // consumer pools) concurrently with no coordination in scope
     // to serialize mutations to self. They MUST be pure.
     for method_name in &["encode", "decode"] {
-        let key = crate::purity::PurityKey::method(
-            codec.locus.name.clone(),
-            (*method_name).to_string(),
-        );
-        match effects().and_then(|rows| rows.purity(&key)) {
+        // The method's row, as a call `codec.encode(..)` resolves.
+        let purity = effects().and_then(|rows| {
+            rows.purity(rows.summary.resolve(Some(&codec.locus.name), method_name)?)
+        });
+        match purity {
             Some(crate::purity::Purity::Pure) => {}
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);

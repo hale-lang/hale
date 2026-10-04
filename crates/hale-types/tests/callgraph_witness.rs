@@ -7,7 +7,7 @@
 //! [alloc]`). This pins: a two-hop chain through a helper, the
 //! renderer, and the negative (nothing reachable matches).
 
-use hale_types::alloc_summary::{self, FnKey};
+use hale_types::alloc_summary;
 use hale_types::callgraph::{self, Probe};
 
 const SRC: &str = r#"
@@ -42,7 +42,7 @@ fn witness_path_carries_the_call_chain() {
     let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
     let summary = alloc_summary::summarize_identified(&[(&program, &ids)], &[]);
 
-    let root = FnKey::free_fn("root");
+    let root = summary.resolve(None, "root").unwrap().clone();
     let path = callgraph::witness_path(
         &summary,
         &root,
@@ -57,9 +57,9 @@ fn witness_path_carries_the_call_chain() {
     let rendered = callgraph::render_witness(&root, &path);
     assert_eq!(rendered, "root -> mid -> leaf_alloc [alloc]");
     // Every interior step names the fn whose body holds the hop.
-    assert_eq!(path[0].in_fn, FnKey::free_fn("root"));
-    assert_eq!(path[1].in_fn, FnKey::free_fn("mid"));
-    assert_eq!(path[2].in_fn, FnKey::free_fn("leaf_alloc"));
+    assert_eq!(path[0].in_fn, summary.resolve(None, "root").unwrap().clone());
+    assert_eq!(path[1].in_fn, summary.resolve(None, "mid").unwrap().clone());
+    assert_eq!(path[2].in_fn, summary.resolve(None, "leaf_alloc").unwrap().clone());
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn witness_path_negative_when_nothing_matches() {
     let mut program = hale_syntax::parse_source(SRC).expect("parse");
     let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
     let summary = alloc_summary::summarize_identified(&[(&program, &ids)], &[]);
-    let root = FnKey::free_fn("clean");
+    let root = summary.resolve(None, "clean").unwrap().clone();
     let path = callgraph::witness_path(
         &summary,
         &root,

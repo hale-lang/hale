@@ -188,7 +188,7 @@ fn shared_scope(now: &AllocSummary, stdlib: &BTreeSet<FnKey>) -> (AllocSummary, 
         }
         for c in &mut f.calls {
             let Callee::Unresolved(name) = &c.callee else { continue };
-            let callee = FnKey::free_fn(name.clone());
+            let Some(callee) = now.resolve(None, name).cloned() else { continue };
             if c.recv_ty.is_none()
                 && !c.receiver_present
                 && !name.contains("::")
@@ -898,7 +898,7 @@ fn main() { App { }; }
     let (old, rows, calls) = without_module_bodies(&now, &module_nested([&program]));
     assert_eq!((rows, calls), (vec!["danger".to_string()], vec!["App::run -> danger".to_string()]));
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let run = FnKey::method("App", "run");
+    let run = FnKey::method(None, "App", "run");
     let row = |s: AllocSummary| {
         let r = &derive_effect_rows(&bundle, &top, Arc::new(s)).rows[&run];
         (r.effects, r.unknown)

@@ -182,7 +182,9 @@ iteration of an unbounded loop in `main` or `run`, even a temporary it
 never returns piles up there until the locus dissolves, and the survey
 says it "lands in its caller's arena". Make such a helper
 scratch-local, or move the work into a method, whose per-call scratch
-reclaims it. `--dump-alloc-summary` tags each scratch-local function.
+reclaims it. `--dump-alloc-summary` tags each scratch-local function,
+and lists one row per declaration: two declarations sharing a name are
+two rows, even in a program the check refuses for it.
 `@unbounded fn` is the in-source carve-out for an acknowledged
 site; `--no-warn-unbounded-alloc` opts a run out. A site in code
 the compiler generated (the api binding, a `json:` parser) has no

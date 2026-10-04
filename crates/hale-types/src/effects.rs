@@ -37,7 +37,7 @@ use hale_syntax::{Diag, Span};
 
 use crate::effect_classes::EffectClassTable;
 use crate::verdict::Verdict;
-use crate::alloc_summary::{self, AllocSummary, FnKey};
+use crate::alloc_summary::{self, AllocSummary, DeclId, FnKey};
 use crate::callgraph::{self, Probe};
 
 
@@ -66,7 +66,6 @@ pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
 pub(crate) fn fns_carrying_a_user_class(
     programs: &[&Program],
 ) -> BTreeSet<crate::alloc_summary::FnKey> {
-    use crate::alloc_summary::FnKey;
     let mut out = BTreeSet::new();
     let carries_user = |fd: &hale_syntax::ast::FnDecl| {
         fd.effects.iter().any(|a| {
@@ -87,7 +86,7 @@ pub(crate) fn fns_carrying_a_user_class(
         for item in items {
             match item {
                 TopDecl::Fn(fd) if carries_user(fd) => {
-                    out.insert(FnKey::free_fn(fd.name.name.clone()));
+                    out.insert(FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()));
                 }
                 TopDecl::Locus(l) => {
                     // `@effects(is: …)` is fn-only (spec/tokens.md),
@@ -96,6 +95,7 @@ pub(crate) fn fns_carrying_a_user_class(
                         if let hale_syntax::ast::LocusMember::Fn(fd) = m {
                             if carries_user(fd) {
                                 out.insert(FnKey::method(
+                                    DeclId::user(fd.id),
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 ));
@@ -261,47 +261,11 @@ impl DiagSink {
 
 /// Is this fn declared by the Hale-source stdlib (and therefore in
 /// the stdlib parse space)? The stdlib program is the ONLY non-user
-/// program the summary merges, so membership here is exactly
-/// "span space is foreign". `__`-prefixed names are unspeakable in
-/// user source, so no user fn can collide into this set.
+/// program the summary merges, and its declarations are the analysis
+/// copy's universe, so the row's identity is exactly "span space is
+/// foreign".
 fn is_stdlib_fn(key: &FnKey) -> bool {
-    use std::sync::OnceLock;
-    static KEYS: OnceLock<BTreeSet<FnKey>> = OnceLock::new();
-    KEYS.get_or_init(|| {
-        let mut set = BTreeSet::new();
-        let Some(p) = crate::stdlib_bodies::program() else {
-            return set;
-        };
-        for item in &p.items {
-            match item {
-                TopDecl::Fn(fd) => {
-                    set.insert(FnKey::free_fn(fd.name.name.clone()));
-                }
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Fn(fd) => {
-                                set.insert(FnKey::method(
-                                    l.name.name.clone(),
-                                    fd.name.name.clone(),
-                                ));
-                            }
-                            LocusMember::Lifecycle(lc) => {
-                                set.insert(FnKey::method(
-                                    l.name.name.clone(),
-                                    lifecycle_name(lc.kind),
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        set
-    })
-    .contains(key)
+    key.decl.is_some_and(|d| d.universe == crate::placement::SiteUniverse::StdlibAnalysis)
 }
 
 fn phase_effects_diags(
@@ -325,23 +289,23 @@ fn phase_effects_diags(
                 // `run`, `drain`, `dissolve`, `accept`, `release` —
                 // stored as LocusMember::Lifecycle and keyed by name
                 // in the summary) or a member fn / handler.
-                let span = l
+                let member = l
                     .members
                     .iter()
                     .find_map(|m| match m {
                         LocusMember::Fn(fd) if fd.name.name == *phase => {
-                            Some(fd.name.span)
+                            Some((fd.name.span, fd.id))
                         }
                         // An omitted `run` is the implicit hook below,
                         // not a declared one (`LifecycleDecl::synthesized`).
                         LocusMember::Lifecycle(lc)
                             if lifecycle_name(lc.kind) == *phase && !lc.synthesized =>
                         {
-                            Some(lc.span)
+                            Some((lc.span, lc.id))
                         }
                         _ => None,
                     });
-                let Some(span) = span else {
+                let Some((span, member)) = member else {
                     // A phase naming nothing on this locus used to be
                     // skipped in silence — so `@phase_effects(disolve:
                     // {})` declared a contract that was never checked,
@@ -403,7 +367,7 @@ fn phase_effects_diags(
                     ));
                     continue;
                 };
-                let key = FnKey::method(l.name.name.clone(), phase.clone());
+                let key = FnKey::method(DeclId::user(member), l.name.name.clone(), phase.clone());
                 // The frontier/graph classes: anything NOT allowed.
                 // #392 §8: DECLARED user classes join the closed set
                 // — a phase contract is closed over the live class
@@ -610,8 +574,7 @@ fn placement_implied_diags(
                 if !fd.effects.is_empty() {
                     continue;
                 }
-                let key =
-                    FnKey::method(l.name.name.clone(), fd.name.name.clone());
+                let key = FnKey::method(DeclId::user(fd.id), l.name.name.clone(), fd.name.name.clone());
                 let mut pred = |probe: &Probe<'_>| match probe {
                     Probe::Unresolved(name, _) => {
                         let segs: Vec<&str> = name.split("::").collect();
@@ -759,7 +722,7 @@ fn effect_report_three_way_over(
             match item {
                 TopDecl::Fn(fd) if !fd.effects.is_empty() => {
                     roots.push((
-                        FnKey::free_fn(fd.name.name.clone()),
+                        FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()),
                         fd.effects.clone(),
                         fd.name.span,
                     ));
@@ -770,6 +733,7 @@ fn effect_report_three_way_over(
                             if !fd.effects.is_empty() {
                                 roots.push((
                                     FnKey::method(
+                                        DeclId::user(fd.id),
                                         l.name.name.clone(),
                                         fd.name.name.clone(),
                                     ),
@@ -1826,31 +1790,28 @@ pub fn effect_manifest_with_inference(
     programs: &[&Program],
     effects: &crate::effect_rows::EffectRows,
 ) -> Vec<EffectManifestRow> {
-    let summary: &crate::alloc_summary::AllocSummary = &effects.summary;
     let names = effects.classes.names();
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
         .into_iter()
         .map(|r| (r.func.clone(), r))
         .collect();
     let mut rows: Vec<EffectManifestRow> = Vec::new();
-    let mut add = |name: String, key: FnKey, in_module: bool| {
+    // `row` is the declaration's row, `None` inside a module.
+    let mut add = |name: String, row: Option<FnKey>| {
         // Round 3 (GH #296): a missing summary key infers PURE,
         // which turned a module-contained subprocess call
-        // invisible. Inside a module, an unresolvable key is
-        // rendered `unclassified` ("may do anything"): fail closed,
-        // and scoped so non-module rows are untouched. The summary
-        // holds module-nested bodies now (F.40 phase 3), under the
-        // bare name the resolver keys them by; this manifest still
-        // looks them up by the qualified name, so they stay
-        // `unclassified` until it reads those rows.
-        let inferred = if in_module && !summary.fns.contains_key(&key)
-        {
-            vec!["unclassified".to_string()]
-        } else {
-            crate::frontier::render_effects_named(
-                effects.row(&key).map_or(crate::stdlib_surface::EffectSet::PURE, |r| r.effects),
+        // invisible. Inside a module, a body is rendered
+        // `unclassified` ("may do anything"): fail closed, and
+        // scoped so non-module rows are untouched. The summary
+        // holds module-nested bodies now (F.40 phase 3), each by
+        // its declaration's identity; this manifest does not read
+        // those rows yet, so they stay `unclassified`.
+        let inferred = match &row {
+            None => vec!["unclassified".to_string()],
+            Some(key) => crate::frontier::render_effects_named(
+                effects.row(key).map_or(crate::stdlib_surface::EffectSet::PURE, |r| r.effects),
                 names,
-            )
+            ),
         };
         let mut row = declared.get(&name).cloned().unwrap_or(
             EffectManifestRow {
@@ -1877,19 +1838,20 @@ pub fn effect_manifest_with_inference(
     // Round 3 (GH #296): recurse through modules — a
     // module-contained fn or lifecycle body absent from these rows
     // was invisible to both the baseline diff and replay's safety
-    // admission. A module fn whose summary key misses resolves to
-    // `unclassified`, which is the fail-closed answer.
+    // admission. A module fn is `unclassified`, which is the
+    // fail-closed answer.
     fn walk_infer(
         items: &[TopDecl],
         prefix: &str,
-        add: &mut dyn FnMut(String, FnKey, bool),
+        add: &mut dyn FnMut(String, Option<FnKey>),
     ) {
         let in_module = !prefix.is_empty();
         for item in items {
             match item {
                 TopDecl::Fn(fd) => {
                     let n = format!("{}{}", prefix, fd.name.name);
-                    add(n.clone(), FnKey::free_fn(n), in_module);
+                    let row = (!in_module).then(|| FnKey::free_fn(DeclId::user(fd.id), n.clone()));
+                    add(n, row);
                 }
                 TopDecl::Module(md) => {
                     let inner =
@@ -1897,14 +1859,14 @@ pub fn effect_manifest_with_inference(
                     walk_infer(&md.items, &inner, add);
                 }
                 TopDecl::Locus(l) => {
-                    // Round 4, finding 2: the summary KEY must be
-                    // qualified like the display name — an
-                    // unqualified key let `inner::Worker::run` find
-                    // an unrelated top-level `Worker::run`'s summary
-                    // and inherit its (possibly pure) effects. The
-                    // qualified key misses the summary's bare one,
-                    // which fails closed as `unclassified`.
-                    let locus_key = format!("{}{}", prefix, l.name.name);
+                    // Round 4, finding 2: a module-nested
+                    // `inner::Worker::run` must not read an unrelated
+                    // top-level `Worker::run`'s summary and inherit its
+                    // (possibly pure) effects; it fails closed as
+                    // `unclassified`.
+                    let row = |id, name: &str| {
+                        (!in_module).then(|| FnKey::method(DeclId::user(id), l.name.name.clone(), name))
+                    };
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(fd) => add(
@@ -1912,11 +1874,7 @@ pub fn effect_manifest_with_inference(
                                     "{}{}::{}",
                                     prefix, l.name.name, fd.name.name
                                 ),
-                                FnKey::method(
-                                    locus_key.clone(),
-                                    fd.name.name.clone(),
-                                ),
-                            in_module,
+                                row(fd.id, &fd.name.name),
                             ),
                             // Lifecycle hooks belong in the
                             // fingerprint too. Leaving them out made
@@ -1938,11 +1896,7 @@ pub fn effect_manifest_with_inference(
                                         "{}{}::{}",
                                         prefix, l.name.name, phase
                                     ),
-                                    FnKey::method(
-                                        locus_key.clone(),
-                                        phase.to_string(),
-                                    ),
-                                    in_module,
+                                    row(lc.id, phase),
                                 )
                             }
                             _ => {}
@@ -2079,13 +2033,14 @@ fn check_no_panic(
         for item in &p.items {
             match item {
                 TopDecl::Fn(fd) => {
-                    bodies.insert(FnKey::free_fn(fd.name.name.clone()), &fd.body);
+                    bodies.insert(FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()), &fd.body);
                 }
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         if let LocusMember::Fn(fd) = m {
                             bodies.insert(
                                 FnKey::method(
+                                    DeclId::user(fd.id),
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 ),

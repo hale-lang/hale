@@ -49,9 +49,8 @@ pub struct EffectRows {
 /// One fn's effects.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectRow {
-    /// The fn by name: (locus, fn). The row's identity goes with the
-    /// `snapshot_identity` family's declaration rows; until then the
-    /// name is the key.
+    /// The fn: its declaration's identity, the (locus, fn) pair its
+    /// display name.
     pub key: FnKey,
     /// Whether the summary holds a body for it. A row without one is
     /// known only to the purity walk: it has no targets and no effects.

@@ -4431,6 +4431,9 @@ dynamic	Pure	on main	in the seed
 row	~	Manifest	main	default
 row	~.sink	QuietEmitter	main	inherited
 
+== crates/hale-types/tests/fn_key_identity.rs#57279317
+row	W@main1	W	main	default
+
 == crates/hale-types/tests/frontier_items.rs#3f2630e2
 row	Api@main2	Api	main	default
 row	Audit@main1	Audit	main	default
