@@ -23,7 +23,11 @@
 //!   thread holding its parent open and so could not wait. Phase 0: its
 //!   `run()` had returned — restart and run it again, or end as it
 //!   would have. Phase 1: it had not started `run()` — restart, or
-//!   start it.
+//!   start it. A locus that declares no `run()` starts none.
+//!
+//! The steps — the decision, the restart's entry, the next
+//! incarnation's birth, its run — are the lifecycle plan's, in its
+//! order (`LifecyclePlan::recovery_order`, F.40 phase 3, L4).
 //!
 //! The decision is the one the birth-epoch protocol already made: the
 //! handler bumped the count since `pre`, the count is within the
@@ -33,6 +37,8 @@
 use inkwell::types::StructType;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
+
+use hale_types::lifecycle::spine::RecoveryStep;
 
 use crate::codegen::{CodegenError, Cx, LocusInfo, SelfCx};
 
@@ -475,6 +481,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .into_pointer_value())
     }
 
+    /// The steps of a restart of `locus`, in the order the plan places
+    /// them (`LifecyclePlan::recovery_order`): the decision, the restart's
+    /// entry, the next incarnation's birth, and its run where the locus
+    /// owes one.
+    pub(crate) fn recovery_order(&self, locus: &str) -> Result<Vec<RecoveryStep>, CodegenError> {
+        let plan = self.lifecycle.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "`{locus}`: the lowering view carries no lifecycle plan, and the restart is read from it"
+            ))
+        })?;
+        plan.recovery_order(locus).map_err(CodegenError::Unsupported)
+    }
+
     /// Emit the bodies of every declared `__restart_<L>` /
     /// `__resume_<L>`.
     pub(crate) fn define_restart_fns(&mut self) -> Result<(), CodegenError> {
@@ -523,73 +542,86 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // incarnation's and names no spine.
         let lc_outer = std::mem::replace(&mut self.lc_spine, "-");
 
-        // restart_in_place: back to the params as built first.
-        let rip_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_arg,
-                info.restart_in_place_pending_field_idx,
-                "restart.in_place.ptr",
-            )
-            .map_err(e)?;
-        let rip = self
-            .builder
-            .build_load(i64_t, rip_ptr, "restart.in_place")
-            .map_err(e)?
-            .into_int_value();
-        let in_place = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::NE, rip, i64_t.const_zero(), "restart.is_in_place")
-            .map_err(e)?;
-        let reset_bb = self.context.append_basic_block(f, "restart.reset");
-        let rerun_bb = self.context.append_basic_block(f, "restart.rerun");
-        self.builder.build_conditional_branch(in_place, reset_bb, rerun_bb).map_err(e)?;
-        self.builder.position_at_end(reset_bb);
-        self.emit_restore_built_params(info, info.struct_ty, self_arg)?;
-        self.builder.build_store(rip_ptr, i64_t.const_zero()).map_err(e)?;
-        self.builder.build_unconditional_branch(rerun_bb).map_err(e)?;
+        // The restart's own steps, in the plan's order; the decision
+        // before it and the next incarnation's run after it are the
+        // caller's. Nothing is torn down: the instance is the same one.
+        for step in self.recovery_order(name)? {
+            match step {
+                RecoveryStep::Restart => {
+                    // restart_in_place: back to the params as built first.
+                    let rip_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            self_arg,
+                            info.restart_in_place_pending_field_idx,
+                            "restart.in_place.ptr",
+                        )
+                        .map_err(e)?;
+                    let rip = self
+                        .builder
+                        .build_load(i64_t, rip_ptr, "restart.in_place")
+                        .map_err(e)?
+                        .into_int_value();
+                    let in_place = self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::NE, rip, i64_t.const_zero(), "restart.is_in_place")
+                        .map_err(e)?;
+                    let reset_bb = self.context.append_basic_block(f, "restart.reset");
+                    let rerun_bb = self.context.append_basic_block(f, "restart.rerun");
+                    self.builder.build_conditional_branch(in_place, reset_bb, rerun_bb).map_err(e)?;
+                    self.builder.position_at_end(reset_bb);
+                    self.emit_restore_built_params(info, info.struct_ty, self_arg)?;
+                    self.builder.build_store(rip_ptr, i64_t.const_zero()).map_err(e)?;
+                    self.builder.build_unconditional_branch(rerun_bb).map_err(e)?;
 
-        // The failure raised the drain latch (`violate` sets it so the
-        // child stops); the restarted child is live again.
-        self.builder.position_at_end(rerun_bb);
-        let dr_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_arg,
-                info.drain_requested_field_idx,
-                "restart.drain_requested.ptr",
-            )
-            .map_err(e)?;
-        self.builder.build_store(dr_ptr, i64_t.const_zero()).map_err(e)?;
-        let birth_call =
-            info.methods.get("birth").copied().filter(|_| !info.empty_lifecycle.contains("birth"));
-        self.lc_step("Birth", Some(self_arg), Some(name), |cx| {
-            if let Some(birth) = birth_call {
-                cx.builder.build_call(birth, &[self_arg.into()], "restart.birth").map_err(e)?;
+                    // The failure raised the drain latch (`violate` sets
+                    // it so the child stops); the restarted child is live
+                    // again.
+                    self.builder.position_at_end(rerun_bb);
+                    let dr_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            self_arg,
+                            info.drain_requested_field_idx,
+                            "restart.drain_requested.ptr",
+                        )
+                        .map_err(e)?;
+                    self.builder.build_store(dr_ptr, i64_t.const_zero()).map_err(e)?;
+                }
+                RecoveryStep::Birth => {
+                    let birth_call =
+                        info.methods.get("birth").copied().filter(|_| !info.empty_lifecycle.contains("birth"));
+                    self.lc_step("Birth", Some(self_arg), Some(name), |cx| {
+                        if let Some(birth) = birth_call {
+                            cx.builder.build_call(birth, &[self_arg.into()], "restart.birth").map_err(e)?;
+                        }
+                        Ok(())
+                    })?;
+                    if let Some(bc) = info.birth_closures_fn {
+                        let ps_ptr = self
+                            .builder
+                            .build_struct_gep(info.struct_ty, self_arg, info.parent_self_field_idx, "restart.parent_self.ptr")
+                            .map_err(e)?;
+                        let ps = self.builder.build_load(ptr_t, ps_ptr, "restart.parent_self").map_err(e)?;
+                        let h_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                info.struct_ty,
+                                self_arg,
+                                info.parent_on_failure_field_idx,
+                                "restart.parent_on_failure.ptr",
+                            )
+                            .map_err(e)?;
+                        let h = self.builder.build_load(ptr_t, h_ptr, "restart.parent_on_failure").map_err(e)?;
+                        self.builder
+                            .build_call(bc, &[self_arg.into(), ps.into(), h.into()], "restart.birth_closures")
+                            .map_err(e)?;
+                    }
+                }
+                RecoveryStep::Decision | RecoveryStep::Run => {}
             }
-            Ok(())
-        })?;
-        if let Some(bc) = info.birth_closures_fn {
-            let ps_ptr = self
-                .builder
-                .build_struct_gep(info.struct_ty, self_arg, info.parent_self_field_idx, "restart.parent_self.ptr")
-                .map_err(e)?;
-            let ps = self.builder.build_load(ptr_t, ps_ptr, "restart.parent_self").map_err(e)?;
-            let h_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_arg,
-                    info.parent_on_failure_field_idx,
-                    "restart.parent_on_failure.ptr",
-                )
-                .map_err(e)?;
-            let h = self.builder.build_load(ptr_t, h_ptr, "restart.parent_on_failure").map_err(e)?;
-            self.builder
-                .build_call(bc, &[self_arg.into(), ps.into(), h.into()], "restart.birth_closures")
-                .map_err(e)?;
         }
         self.lc_spine = lc_outer;
         self.builder.build_return(None).map_err(e)?;
@@ -672,7 +704,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?;
         self.builder.build_conditional_branch(active, do_run_bb, ret_bb).map_err(e)?;
         self.builder.position_at_end(do_run_bb);
-        if let Some(wrapper) = self.coop_pool_run_wrappers.get(name).copied() {
+        // The resumed incarnation runs where the plan owes it a run: a
+        // locus that declares no `run()` enters none (line 13, C48), as
+        // its first incarnation enters none. A flow's run end is its
+        // reclaim, which its first incarnation enters through the same
+        // wrapper, so a flow's is kept.
+        let run_owed = self.recovery_order(name)?.contains(&RecoveryStep::Run) || self.is_flow(name);
+        if let Some(wrapper) = self.coop_pool_run_wrappers.get(name).copied().filter(|_| run_owed) {
             self.builder
                 .build_call(wrapper, &[self_arg.into(), ptr_t.const_null().into()], "resume.run")
                 .map_err(e)?;

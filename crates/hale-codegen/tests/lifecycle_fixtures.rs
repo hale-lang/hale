@@ -379,7 +379,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         "l01_neg_same_pool_held.hl" => {
             p.failures.push(fails("Late", FailureSource::BirthClosure, true, false, 1));
             p.occurrences = count(&[("Owner", 1), ("Late", 1)]);
-            // Line 13: the resumed Late declares no run() (C48).
+            // Line 13: the resumed Late declares no run() and enters
+            // none (C48, L4).
             &["1", "13"]
         }
         "l01_neg_it_waits_worker_queue.hl" => {
@@ -593,8 +594,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         "C31",
         &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
     ),
-    // Late declares no run(), and its resumed incarnation enters one.
-    ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
     ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.
@@ -656,13 +655,13 @@ struct Control {
 const LINE_7_PLAN: &str = "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
      edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered";
 
-/// The held failure's restart, without line 13's resumed run (C48,
-/// which the fixture's own plan pins).
+/// The held failure's restart; Late declares no run(), so its resumed
+/// incarnation owes none (line 13, C48).
 const RESTART_PLAN: &str = "Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Drain Dissolve Reclaim
      edge Late.FailureDelivery.Completed -> Late.Restart.Entered";
 
 /// The held failure's resume at settle, before the restart it decides,
-/// without line 13's resumed run (C48).
+/// with no resumed run (line 13, C48).
 const RESUME_PLAN: &str = "Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Resume Restart Drain Dissolve Reclaim
      edge Late.FailureDelivery.Completed -> Late.Resume.Entered
      edge Late.Resume.Completed -> Late.Restart.Entered";

@@ -2081,9 +2081,12 @@ its `KNOWN_OPEN` table.
   shipped (inventory row C43): the resume calls `run()` inline on
   the settling thread (`l13_resume_pool_child.hl`). A locus that
   declares no `run()` owes none on any incarnation, and the trace
-  shows none. Not yet shipped (inventory row C48): its resumed
-  incarnation enters a `Run`, the empty one the desugar gives it,
-  where its first never does (`l01_neg_same_pool_held.hl`).
+  shows none. Shipped (inventory row C48, L4): the resume starts the
+  resumed incarnation's `run()` only where the plan owes it one, so a
+  locus that declares none enters no `Run` when resumed, as its first
+  incarnation enters none (`l01_neg_same_pool_held.hl`); a flow's run
+  end, which is its reclaim, is entered as its first incarnation
+  enters it.
 - **Line 14, order.** Order follows the steps the compiler emits;
   latches and pending-release records keep teardown from running
   twice (§ "Lifecycle", "Order by construction"). Shipped

@@ -27,6 +27,9 @@
 //! [`LifecyclePlan::recovery_spine`] reads a failure's recovery rows (the
 //! resume and the restart, [`RECOVERY_KINDS`]) on the path one failure
 //! takes, held or not, its restart performed or not.
+//! [`LifecyclePlan::recovery_order`] is what an emitter of a restart
+//! reads: the decision, the restart, and the incarnation it begins
+//! ([`RecoveryStep`]).
 //!
 //! **The law.** The steps an emitter emits for a spine are exactly the
 //! plan's ordered obligations for it: the trace build (L2) records each
@@ -479,7 +482,117 @@ fn order_by<T: Copy + Ord + std::fmt::Debug>(
     Ok(out)
 }
 
+/// A step of a restart, as the emitters carry it out wherever the
+/// decision is read (the posted run's loop, a pinned locus's thread, the
+/// run gate of an instantiation, the resume at settle). The plan states
+/// the recovery decision and the restart as rows (line RD) and the
+/// incarnation the restart begins as the template's rows owed once per
+/// incarnation; [`LifecyclePlan::recovery_order`] reads their order. A
+/// restart tears nothing down: it re-runs the same instance (C42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RecoveryStep {
+    /// The decision, read once the handler has returned: a restart asked
+    /// for, within its bound, the child not quarantined, the process not
+    /// draining; or the resume's at settle (line 13).
+    Decision,
+    /// The restart's entry: the params as built put back for a
+    /// `restart_in_place`, the latch the failure raised lowered. It
+    /// begins the next incarnation.
+    Restart,
+    /// The next incarnation's `birth()`, with its birth-epoch closures.
+    Birth,
+    /// The next incarnation's `run()`, owed only by a template that
+    /// declares one (line 13, C48).
+    Run,
+}
+
+/// The producer's order of a restart's steps, for a pair no row orders.
+pub const RECOVERY_STEPS: &[RecoveryStep] =
+    &[RecoveryStep::Decision, RecoveryStep::Restart, RecoveryStep::Birth, RecoveryStep::Run];
+
+impl RecoveryStep {
+    pub fn name(self) -> &'static str {
+        match self {
+            RecoveryStep::Decision => "Decision",
+            RecoveryStep::Restart => "Restart",
+            RecoveryStep::Birth => "Birth",
+            RecoveryStep::Run => "Run",
+        }
+    }
+}
+
 impl LifecyclePlan {
+    /// The steps of a restart of the declaration lowered as `lowered`,
+    /// in the order the plan places them ([`RecoveryStep`]): read from its
+    /// templates' rows; for two none of them orders, from every template
+    /// of the plan; and for two no template orders, in the producer's
+    /// order ([`RECOVERY_STEPS`]). `Run` is a step where a template owes
+    /// its incarnations a `run()`, or where the plan has no template of
+    /// the declaration (one nothing builds, whose restart never runs).
+    pub fn recovery_order(&self, lowered: &str) -> Result<Vec<RecoveryStep>, String> {
+        let pairs = |sites: &mut dyn Iterator<Item = &SourceSite>| -> BTreeSet<(RecoveryStep, RecoveryStep)> {
+            let mut out = BTreeSet::new();
+            for site in sites {
+                out.extend(self.recovery_pairs(site));
+            }
+            out
+        };
+        let own = pairs(&mut self.templates(lowered));
+        let every = pairs(&mut self.instances.iter().map(|i| &i.site));
+        let mut steps = vec![RecoveryStep::Decision, RecoveryStep::Restart, RecoveryStep::Birth];
+        let mut templates = self.templates(lowered).peekable();
+        if templates.peek().is_none() || templates.any(|s| self.incarnation_row(s, ObligationKind::Run).is_some()) {
+            steps.push(RecoveryStep::Run);
+        }
+        order_by(lowered, &steps, &own, &every, RECOVERY_STEPS, |s| s.name())
+    }
+
+    /// The pairs of restart steps one template's rows order: the restart
+    /// after the decision completes (line RD); the restart's next
+    /// incarnation after it, its birth first; its run after its birth.
+    pub fn recovery_pairs(&self, site: &SourceSite) -> BTreeSet<(RecoveryStep, RecoveryStep)> {
+        use RecoveryStep as R;
+        let mut out = BTreeSet::new();
+        let restarts: Vec<&super::Obligation> = self
+            .iter()
+            .filter(|(_, o)| o.kind == ObligationKind::Restart && o.guard == PathGuard::Restart && o.site.as_ref() == Some(site))
+            .map(|(_, o)| o)
+            .collect();
+        let decided = |o: &super::Obligation| {
+            o.edges.entry.iter().any(|p| {
+                p.event.point.satisfies(Point::Completed)
+                    && self.get(p.event.obligation).is_some_and(|d| d.kind == ObligationKind::RecoveryDecision)
+            })
+        };
+        if restarts.iter().any(|o| decided(o)) {
+            out.insert((R::Decision, R::Restart));
+        }
+        let Some((birth, _)) = self.incarnation_row(site, ObligationKind::Birth) else { return out };
+        // A restart begins the next incarnation, which owes again every
+        // row owed once per incarnation.
+        if !restarts.is_empty() {
+            out.insert((R::Restart, R::Birth));
+        }
+        if let Some((_, run)) = self.incarnation_row(site, ObligationKind::Run) {
+            if run.edges.entry.iter().any(|p| p.event == Event { obligation: birth, point: Point::Completed }) {
+                out.insert((R::Birth, R::Run));
+            }
+        }
+        out
+    }
+
+    /// `site`'s row of `kind` owed once per incarnation, on the path no
+    /// failure takes.
+    fn incarnation_row(&self, site: &SourceSite, kind: ObligationKind) -> Option<(ObligationId, &super::Obligation)> {
+        self.iter().find(|(_, o)| {
+            o.kind == kind
+                && o.site.as_ref() == Some(site)
+                && o.guard == PathGuard::Normal
+                && o.source.is_none()
+                && o.multiplicity == super::Multiplicity::OncePerIncarnation
+        })
+    }
+
     /// The recovery steps ([`RECOVERY_KINDS`]) `site` owes on `spine`
     /// after one failure of `source`: on the path where the failure was
     /// held at its owner's settle (`held`) or delivered in place, and its
