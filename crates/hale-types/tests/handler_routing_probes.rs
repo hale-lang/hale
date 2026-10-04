@@ -396,3 +396,54 @@ locus Cell<T> { params { value: T; n: Int = 0; } closure boom { captures: n; epo
         assert_eq!(routing.can_fail(locus), fails, "{locus}");
     }
 }
+
+/// The restart rows' bounds: every `for` a recovery statement writes,
+/// keyed by the statement's span, which is how lowering reads its
+/// bound (`retry_bound_at`). A literal is its value; any other
+/// expression is the site of the expression the statement writes,
+/// lowered once where the statement runs. The model's `retry_bound`
+/// is the last literal of the same entries, so the two are one fact.
+#[test]
+fn every_for_bound_is_an_entry_lowering_reads_by_the_statements_span() {
+    use hale_syntax::ast::{flat_decls, LocusMember, Stmt, TopDecl};
+    use hale_types::handler_routing::RetryBound;
+    let src = "
+locus Worker { params { n: Int = 0; } closure boom { captures: n; epoch inline; } }
+locus App {
+    params { max: Int = 2; }
+    on_failure(c: Worker, err: ClosureViolation) {
+        if self.max > 1 { restart(c) for 3; } else { restart_in_place(c) for self.max + 1; }
+        restart(c);
+    }
+}
+";
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let routing = handler_rows(&[&program], &[], &Default::default());
+    let row = routing.route("App", "Worker").expect("App routes Worker");
+    assert_eq!(row.retry_bound, Some(3), "the model's bound is the last literal");
+    assert_eq!(row.bounds.len(), 2, "the unbounded restart states none: {:?}", row.bounds);
+
+    let handler = flat_decls(&program.items)
+        .find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "App" => l.members.iter().find_map(|m| match m {
+                LocusMember::Failure(fd) => Some(fd),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("App's handler");
+    let Stmt::If(branch) = &handler.body.stmts[0] else { panic!("an if first") };
+    let recovery = |b: &hale_syntax::ast::Block| match &b.stmts[0] {
+        Stmt::Recovery { span, modifier: Some(hale_syntax::ast::RecoveryModifier::For(e)), .. } => (*span, e.span()),
+        other => panic!("a bounded recovery: {other:?}"),
+    };
+    let (literal, _) = recovery(&branch.then_block);
+    let Some(hale_syntax::ast::ElseBranch::Else(otherwise)) = branch.else_block.as_deref() else {
+        panic!("an else block")
+    };
+    let (runtime, written) = recovery(otherwise);
+    assert_eq!(routing.retry_bound_at(literal), Some(RetryBound::Const(3)));
+    assert_eq!(routing.retry_bound_at(runtime), Some(RetryBound::Expr(written)));
+    let Stmt::Recovery { span: unbounded, .. } = &handler.body.stmts[1] else { panic!("a recovery second") };
+    assert_eq!(routing.retry_bound_at(*unbounded), None);
+}

@@ -13,7 +13,12 @@
 //!
 //! A row also carries the handler's recovery ops, from one walk over
 //! the whole body ([`recovery_ops`]): which restart ops it can invoke
-//! and the retry bound a `restart(c) for N` states. Restart-in-place
+//! and the bound each `restart(c) for N` states ([`StatedBound`]: a
+//! literal, or the site of the expression that computes it), of which
+//! the model's `retry_bound` is the last literal. Lowering reads the
+//! same entries by the statement's span
+//! ([`HandlerRouting::retry_bound_at`]), so the model's bound and the
+//! one lowered are one fact. Restart-in-place
 //! attribution is a question over those ops. Beside the rows, the
 //! routing states per locus declaration whether a failure can originate
 //! there ([`HandlerRouting::can_fail`]), which is where lowering emits
@@ -40,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusDecl, LocusMember, LValueSeg,
-    MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
+    MatchArmBody, NodeId, OrDisposition, PerspectiveMember, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
@@ -100,8 +105,33 @@ pub struct HandlerRow {
     /// The recovery ops the body can invoke, deduplicated, in source
     /// order.
     pub ops: Vec<RecoveryOp>,
-    /// `restart(c) for N`'s literal `N`, the last one written.
+    /// Every `for` bound the body writes, in source order.
+    pub bounds: Vec<StatedBound>,
+    /// `restart(c) for N`'s literal `N`, the last one written: the
+    /// model's summary of [`HandlerRow::bounds`], derived from them.
     pub retry_bound: Option<i64>,
+}
+
+/// The bound a `for` modifier states on a recovery statement
+/// (`restart(c) for N`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryBound {
+    /// An integer literal: the bound is known before the program runs.
+    Const(i64),
+    /// Any other expression: the bound is its value where the
+    /// statement runs. The site is the expression's span; lowering
+    /// lowers the expression written there, once, as the statement
+    /// executes.
+    Expr(Span),
+}
+
+/// One recovery statement's `for` bound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StatedBound {
+    /// The recovery statement's span: the key lowering reads it by.
+    pub statement: Span,
+    pub op: RecoveryOp,
+    pub bound: RetryBound,
 }
 
 impl HandlerRow {
@@ -145,6 +175,10 @@ pub struct HandlerRouting {
     /// The restart rows' failure column: the loci, by declared name, a
     /// failure can originate in ([`HandlerRouting::can_fail`]).
     failing: BTreeSet<String>,
+    /// Every recovery statement's `for` bound, by the statement's span
+    /// ([`HandlerRouting::retry_bound_at`]): the handlers' rows' and
+    /// those written in any other body.
+    bounds: BTreeMap<(u32, u32), StatedBound>,
 }
 
 impl HandlerRouting {
@@ -252,6 +286,14 @@ impl HandlerRouting {
     /// monomorphs cannot be restarted).
     pub fn can_fail(&self, locus: &str) -> bool {
         self.failing.contains(locus)
+    }
+
+    /// The `for` bound the recovery statement at `statement` states, if
+    /// it writes one: lowering's bound, from the same entries the rows'
+    /// `retry_bound` is derived from. A monomorph's body keeps its
+    /// template's spans, so it reads its template's entries.
+    pub fn retry_bound_at(&self, statement: Span) -> Option<RetryBound> {
+        self.bounds.get(&(statement.start.0, statement.end.0)).map(|b| b.bound)
     }
 
     /// Whether some handler, in any parent, restarts a child of locus
@@ -490,7 +532,7 @@ pub fn handler_rows(
             if fd.params.len() != 2 {
                 continue;
             }
-            let (ops, retry_bound) = recovery_ops(&fd.body);
+            let (ops, bounds) = recovery_ops(&fd.body);
             let (child, at) = child_locus(&fd.params[0].ty, &declared, import_renames);
             let child_decl = at.and_then(|at| declaration_site(at, snapshot));
             routing.push(HandlerRow {
@@ -505,12 +547,31 @@ pub fn handler_rows(
                 id: snapshot.site_id(fd.id),
                 span: fd.span,
                 ops,
-                retry_bound,
+                retry_bound: last_literal(&bounds),
+                bounds,
             });
             ordinal += 1;
         }
     }
+    // Lowering reads every recovery statement's bound by its span: the
+    // handlers' (the rows' own, by the same walk), and one written in
+    // any other body (a method that restarts a child it holds).
+    let mut w = OpWalk::default();
+    for item in programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)) {
+        w.top_decl(item);
+    }
+    for b in w.bounds {
+        routing.bounds.insert((b.statement.start.0, b.statement.end.0), b);
+    }
     routing
+}
+
+/// The last literal bound in `bounds`: the rows' `retry_bound`.
+fn last_literal(bounds: &[StatedBound]) -> Option<i64> {
+    bounds.iter().rev().find_map(|b| match b.bound {
+        RetryBound::Const(n) => Some(n),
+        RetryBound::Expr(_) => None,
+    })
 }
 
 fn declaration_site(at: DeclAt, snapshot: &Snapshot) -> Option<SiteRef> {
@@ -523,14 +584,15 @@ fn declaration_site(at: DeclAt, snapshot: &Snapshot) -> Option<SiteRef> {
 }
 
 /// The recovery ops a handler body can invoke, deduplicated in source
-/// order, and the last literal retry bound (`restart(c) for N`). The
-/// walk reaches every statement, a block inside an expression (`if` /
-/// `match` used as a value) included: a recovery op missed here is a
-/// restart that re-evaluates nothing and restores nothing.
-pub fn recovery_ops(body: &Block) -> (Vec<RecoveryOp>, Option<i64>) {
+/// order, and every `for` bound it writes (`restart(c) for N`), in
+/// source order. The walk reaches every statement, a block inside an
+/// expression (`if` / `match` used as a value) included: a recovery op
+/// missed here is a restart that re-evaluates nothing and restores
+/// nothing.
+pub fn recovery_ops(body: &Block) -> (Vec<RecoveryOp>, Vec<StatedBound>) {
     let mut w = OpWalk::default();
     w.block(body);
-    (w.ops, w.retry)
+    (w.ops, w.bounds)
 }
 
 /// The name a recovery op is written with.
@@ -547,10 +609,88 @@ pub fn op_name(op: RecoveryOp) -> &'static str {
 #[derive(Default)]
 struct OpWalk {
     ops: Vec<RecoveryOp>,
-    retry: Option<i64>,
+    bounds: Vec<StatedBound>,
 }
 
 impl OpWalk {
+    /// Every body and expression of a declaration a recovery statement
+    /// can be lowered from.
+    fn top_decl(&mut self, d: &TopDecl) {
+        match d {
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    self.locus_member(m);
+                }
+            }
+            TopDecl::Perspective(p) => {
+                for m in &p.members {
+                    match m {
+                        PerspectiveMember::Params(pb) => self.params_block(pb),
+                        PerspectiveMember::StableWhen(b) => self.block(b),
+                        PerspectiveMember::Fn(f) => self.fn_decl(f),
+                        PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
+                    }
+                }
+            }
+            TopDecl::Fn(f) => self.fn_decl(f),
+            TopDecl::Const(c) => self.expr(&c.value),
+            _ => {}
+        }
+    }
+
+    fn locus_member(&mut self, m: &LocusMember) {
+        match m {
+            LocusMember::Params(pb) => self.params_block(pb),
+            LocusMember::Lifecycle(ld) => {
+                self.params(&ld.params);
+                self.block(&ld.body);
+            }
+            LocusMember::Mode(md) => {
+                self.params(&md.params);
+                self.block(&md.body);
+            }
+            LocusMember::Failure(fd) => {
+                self.params(&fd.params);
+                self.block(&fd.body);
+            }
+            LocusMember::Fn(f) => self.fn_decl(f),
+            LocusMember::Const(c) => self.expr(&c.value),
+            LocusMember::Closure(cd) => {
+                if let Some(a) = &cd.assertion {
+                    self.expr(&a.left);
+                    self.expr(&a.right);
+                    self.expr(&a.tolerance);
+                }
+            }
+            LocusMember::BirthCheck(bc) => {
+                self.expr(&bc.cond);
+                if let Some(p) = &bc.payload {
+                    self.expr(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn fn_decl(&mut self, f: &hale_syntax::ast::FnDecl) {
+        self.params(&f.params);
+        self.block(&f.body);
+    }
+
+    fn params(&mut self, ps: &[hale_syntax::ast::Param]) {
+        for p in ps.iter().filter_map(|p| p.default.as_ref()) {
+            self.expr(p);
+        }
+    }
+
+    fn params_block(&mut self, pb: &hale_syntax::ast::ParamsBlock) {
+        for p in &pb.params {
+            if let hale_syntax::ast::ParamInit::Value(e) = &p.init {
+                self.expr(e);
+            }
+        }
+    }
+
     fn block(&mut self, b: &Block) {
         for s in &b.stmts {
             self.stmt(s);
@@ -592,20 +732,23 @@ impl OpWalk {
 
     fn stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Recovery { op, args, modifier, .. } => {
+            Stmt::Recovery { op, args, modifier, span } => {
                 if !self.ops.contains(op) {
                     self.ops.push(*op);
                 }
                 for a in args {
                     self.expr(a);
                 }
+                let stated = |bound| StatedBound { statement: *span, op: *op, bound };
                 match modifier {
                     Some(RecoveryModifier::For(Expr::Literal(Literal::Int(n), _))) => {
-                        self.retry = Some(*n);
+                        self.bounds.push(stated(RetryBound::Const(*n)));
                     }
-                    Some(RecoveryModifier::For(e)) | Some(RecoveryModifier::Until(e)) => {
+                    Some(RecoveryModifier::For(e)) => {
+                        self.bounds.push(stated(RetryBound::Expr(e.span())));
                         self.expr(e)
                     }
+                    Some(RecoveryModifier::Until(e)) => self.expr(e),
                     None => {}
                 }
             }
