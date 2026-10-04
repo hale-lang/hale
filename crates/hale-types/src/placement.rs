@@ -274,7 +274,8 @@ impl Bound {
     }
 }
 
-/// One literal of the root declaration: a construction template.
+/// One literal of the root declaration: a construction template. In an
+/// [`Expanded`]'s `built_by`, a literal that builds one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Construction {
     /// The root literal; `Origin::Construction` of every key under it.
@@ -388,7 +389,25 @@ pub struct RootRow {
     /// but it builds the root as surely as a construction does, and a law
     /// that judges every literal of the root reads it beside
     /// `constructions`.
-    pub expanded: Vec<SiteRef>,
+    pub expanded: Vec<Expanded>,
+}
+
+/// A root literal written where no scope's bodies reach, and the
+/// literals whose building expands it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expanded {
+    pub literal: SiteRef,
+    /// The outermost literals that build it, each with its bound: a
+    /// literal of the locus whose params default holds it, one that takes
+    /// that default, written in a scope's body; through nested defaults,
+    /// the outermost such literal of each chain (`for i in 0..3 { Shell {
+    /// }; }`, where `Shell`'s default builds a `Holder` whose default
+    /// builds the root, records `Shell { }` built in a loop). A literal
+    /// on the way written in a loop inside its default is the end of its
+    /// chain, built in a loop. Empty for a position no locus literal
+    /// expands (a const, a type's field default, a perspective's
+    /// members) and for a default only the entry's own template takes.
+    pub built_by: Vec<Construction>,
 }
 
 /// The scope that encloses a dynamic literal.
@@ -1320,13 +1339,19 @@ impl<'d, 'a> Builder<'d, 'a> {
             }
         }
         constructions.sort_by_key(|(s, _, _, _)| *s);
-        let mut expanded: Vec<SiteRef> = scopes
+        let mut expanded: Vec<Expanded> = scopes
             .elsewhere
             .iter()
-            .filter(|lit| lit.decl == Some(site) && lit.site.universe == SiteUniverse::User)
-            .map(|lit| lit.site)
+            .filter(|e| e.literal.decl == Some(site) && e.literal.site.universe == SiteUniverse::User)
+            .map(|e| {
+                let mut built_by = Vec::new();
+                scopes.built_by(e, &mut built_by, &mut BTreeSet::new());
+                built_by.sort_by_key(|c: &Construction| c.literal);
+                built_by.dedup();
+                Expanded { literal: e.literal.site, built_by }
+            })
             .collect();
-        expanded.sort();
+        expanded.sort_by_key(|e| e.literal);
         let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
@@ -1938,6 +1963,14 @@ struct Literal<'a> {
     written: String,
 }
 
+/// A locus literal written where no scope's bodies reach.
+struct Elsewhere<'a> {
+    literal: Literal<'a>,
+    /// The locus and the params field whose default it is written in:
+    /// a literal of that locus that takes the default builds it.
+    default_of: Option<(SiteRef, &'a str)>,
+}
+
 enum ScopeKind {
     /// A free fn: its name, its site, whether it is a top-level `fn main`.
     Fn { name: String, site: SiteRef, is_main: bool },
@@ -1971,7 +2004,7 @@ struct Scopes<'a> {
     /// adapter's inits, a perspective's members. Each is lowered wherever
     /// the declaration holding it is built, in a scope no row relates it
     /// to, so it joins no scope.
-    elsewhere: Vec<Literal<'a>>,
+    elsewhere: Vec<Elsewhere<'a>>,
     fns: BTreeMap<(SiteUniverse, String), usize>,
     loci: BTreeMap<SiteRef, usize>,
     counts: Vec<Count>,
@@ -2014,15 +2047,23 @@ impl<'a> Scopes<'a> {
         // The positions no scope's bodies reach, walked for their
         // literals alone.
         let mut rest = BodyWalk::new(ids, universe, decls);
+        // Each locus params default's literals, by index into `rest`'s,
+        // with the locus and the field.
+        let mut defaults: Vec<(std::ops::Range<usize>, (SiteRef, &'a str))> = Vec::new();
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
+                    let decl = ids.site_id(l.id).map(|id| SiteRef { universe, id });
                     for m in &l.members {
                         match m {
                             LocusMember::Params(pb) => {
                                 for p in &pb.params {
                                     if let ParamInit::Value(e) = &p.init {
+                                        let start = rest.literals.len();
                                         rest.expr(e);
+                                        if let Some(d) = decl {
+                                            defaults.push((start..rest.literals.len(), (d, p.name.name.as_str())));
+                                        }
                                     }
                                 }
                             }
@@ -2076,7 +2117,10 @@ impl<'a> Scopes<'a> {
                 _ => {}
             }
         }
-        self.elsewhere.extend(rest.literals);
+        self.elsewhere.extend(rest.literals.into_iter().enumerate().map(|(i, literal)| Elsewhere {
+            literal,
+            default_of: defaults.iter().find(|(r, _)| r.contains(&i)).map(|(_, d)| *d),
+        }));
         for item in items {
             match item {
                 TopDecl::Fn(fd) => {
@@ -2219,6 +2263,31 @@ impl<'a> Scopes<'a> {
             Count::Finite(1) => Bound::Once,
             Count::Finite(n) => Bound::AtMost(*n),
             Count::Unbounded(why) => Bound::Unbounded(why.clone()),
+        }
+    }
+
+    /// The outermost literals whose building expands `e` ([`Expanded`]'s
+    /// `built_by`): the literals of the locus whose params default holds
+    /// it that take the default, each a scope's construction with its
+    /// bound, or written in another default and followed outward. `seen`
+    /// ends a cycle of defaults (a self-containing locus, refused on its
+    /// own rule).
+    fn built_by(&self, e: &Elsewhere<'a>, out: &mut Vec<Construction>, seen: &mut BTreeSet<SiteRef>) {
+        if e.literal.in_loop {
+            out.push(Construction { literal: e.literal.site, bound: Bound::Unbounded(BUILT_IN_A_LOOP.to_string()) });
+            return;
+        }
+        let Some((decl, field)) = e.default_of else { return };
+        let takes_default = |lit: &Literal<'_>| lit.decl == Some(decl) && !lit.inits.iter().any(|i| i.name.name == field);
+        for s in &self.scopes {
+            for lit in s.literals.iter().filter(|l| takes_default(l)) {
+                out.push(Construction { literal: lit.site, bound: self.bound(s, lit.in_loop) });
+            }
+        }
+        for outer in self.elsewhere.iter().filter(|o| takes_default(&o.literal)) {
+            if seen.insert(outer.literal.site) {
+                self.built_by(outer, out, seen);
+            }
         }
     }
 }

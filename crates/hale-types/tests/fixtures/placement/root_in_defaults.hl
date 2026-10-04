@@ -2,7 +2,9 @@
 // default spells `App`, and `Outer`'s default spells it inside another
 // literal's init. Lowering expands each wherever its holder is built;
 // the table records both as the root's `expanded` literals, beside the
-// one construction `make_app`'s body writes.
+// one construction `make_app`'s body writes, each with the literals in
+// `main` that build it: `Shell { }` through `Shell`'s default
+// `Holder { }`, and `Outer { }`.
 locus Worker {
     run() { print("worker"); }
 }
@@ -31,5 +33,6 @@ fn make_app() -> App {
 
 fn main() {
     Outer { };
+    Shell { };
     make_app();
 }

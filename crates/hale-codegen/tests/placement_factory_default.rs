@@ -251,12 +251,22 @@ fn a_root_built_in_a_fn_a_params_default_calls_is_refused() {
 /// readiness is awaited), and both run.
 #[test]
 fn a_root_literal_in_a_params_default_consuming_the_entry_is_pinned() {
-    let src = root_then(&[
-        "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
-        "fn main() { Holder { }; }\n",
-    ]);
-    let program = hale_syntax::parse_source(&src).expect("parse");
-    let bin = harness::unique_bin("hale_placement_root_in_default_pinned_1338");
+    let stdout = builds_with_one_pinned_thread(
+        "hale_placement_root_in_default_pinned_1338",
+        &root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "fn main() { Holder { }; }\n",
+        ]),
+    );
+    assert!(stdout.contains("app") && stdout.contains("worker"), "both halves should run: {stdout:?}");
+}
+
+/// `src` builds, its `w` gets its own thread (one `pthread_create` of
+/// `Worker`'s pinned start, whose readiness is awaited), and it runs to a
+/// clean exit; its stdout.
+fn builds_with_one_pinned_thread(tag: &str, src: &str) -> String {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(tag);
     let ll = bin.with_extension("ll");
     let opts = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
     build_executable_with_options(&program, &bin, &[], &opts).expect("build");
@@ -271,6 +281,57 @@ fn a_root_literal_in_a_params_default_consuming_the_entry_is_pinned() {
     assert_eq!(spawns.len(), 1, "one pinned thread for `w`: {spawns:?}");
     assert!(ir.contains("call void @lotus_pinned_start_await_ready("), "the pinned start is awaited");
     assert!(out.status.success(), "non-zero exit");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+const RULE_17: &str = "locus `App` is instantiated inside a loop, but its `placement { }` block pins field `w`";
+
+/// The review of PR #1338, rule 17: a root literal in another locus's
+/// params default is built wherever that locus is, so `Holder { }` in a
+/// loop builds `App` per iteration and spawns `w`'s pinned thread each
+/// time, joining only the last. Before C7 lowering refused it (the
+/// GH #826 backstop: a pinned instantiation with a loop open); the law
+/// judged only the root's constructions' loops, so with the backstop
+/// deleted it built. The expanded literal inherits the loop of the
+/// literal that builds it.
+#[test]
+fn a_root_literal_in_a_params_default_built_in_a_loop_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_root_default_in_loop_1338",
+        &root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "fn main() { for i in 0..3 { Holder { }; } }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_17), "expected the rule 17 law's refusal, got: {msg}");
+}
+
+/// Two params defaults deep: `Shell`'s default builds a `Holder`, whose
+/// default builds the root, and `Shell { }` is built in a loop.
+#[test]
+fn a_root_literal_two_params_defaults_deep_built_in_a_loop_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_root_two_deep_in_loop_1338",
+        &root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "locus Shell { params { inner: Holder = Holder { }; } }\n",
+            "fn main() { for i in 0..3 { Shell { }; } }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_17), "expected the rule 17 law's refusal, got: {msg}");
+}
+
+/// The control: the same program with `Holder { }` built outside the
+/// loop builds, with one pinned thread, and runs.
+#[test]
+fn a_root_literal_in_a_params_default_built_outside_a_loop_is_pinned() {
+    let stdout = builds_with_one_pinned_thread(
+        "hale_placement_root_default_out_of_loop_1338",
+        &root_then(&[
+            "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+            "fn main() { Holder { }; for i in 0..3 { print(\"tick\"); } }\n",
+        ]),
+    );
     assert!(stdout.contains("app") && stdout.contains("worker"), "both halves should run: {stdout:?}");
+    assert_eq!(stdout.matches("tick").count(), 3, "the loop ran: {stdout:?}");
 }

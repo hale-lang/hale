@@ -158,7 +158,7 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
     };
     // Each literal's field inits.
     let wanted: BTreeSet<SiteRef> =
-        root.constructions.iter().map(|c| c.literal).chain(root.expanded.iter().copied()).collect();
+        root.constructions.iter().map(|c| c.literal).chain(root.expanded.iter().map(|e| e.literal)).collect();
     let mut sites: Vec<&[StructInit]> = Vec::new();
     {
         let mut found = literals(|e, _bare| {
@@ -556,6 +556,13 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
 /// in a loop is not one (its literal is not in a loop, and each call
 /// joins its own thread at the factory's exit), nor is an adapter, which
 /// the bindings prelude builds once however often the root is built.
+///
+/// A root literal written in a params default (the root's `expanded`)
+/// is built wherever a literal taking that default is, and inherits its
+/// loop: it is judged at each of the outermost literals that build it
+/// (its `built_by`) that is built in a loop, as if that literal were the
+/// root's construction, and it pins what the declaration's entries pin
+/// (lowering pins every literal of the root).
 fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     let placement = inputs.placement;
     let Some(root) = &placement.root else { return };
@@ -563,23 +570,44 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
         SiteUniverse::User => bundle.snapshot.site(site.id).map(|s| s.span),
         SiteUniverse::StdlibAnalysis => None,
     };
-    for construction in root.constructions.iter().filter(|c| c.bound.built_in_a_loop()) {
-        let origin = Origin::Construction(construction.literal);
-        // The first entry in source order that pins a field of this
-        // template.
-        let pinned = placement
+    // The first entry in source order that pins a field of the templates
+    // `origin` admits.
+    let first_pinned = |origin: &dyn Fn(&Origin) -> bool| {
+        placement
             .instances
             .iter()
             .filter(|(key, row)| {
-                key.origin == origin && matches!(placement.domain(row.domain).kind, DomainKind::Pinned { .. })
+                origin(&key.origin) && matches!(placement.domain(row.domain).kind, DomainKind::Pinned { .. })
             })
             .filter_map(|(key, row)| match &row.decided_by {
                 Decision::Entry { entry, .. } => Some((span_of(*entry)?, key.path.first()?.field.as_str())),
                 _ => None,
             })
-            .min_by_key(|(span, _)| span.start.0);
-        let Some((entry_span, field)) = pinned else { continue };
-        let Some(span) = span_of(construction.literal) else { continue };
+            .min_by_key(|(span, _)| span.start.0)
+    };
+    let mut sites: Vec<(SiteRef, (Span, &str))> = Vec::new();
+    for construction in root.constructions.iter().filter(|c| c.bound.built_in_a_loop()) {
+        let origin = Origin::Construction(construction.literal);
+        if let Some(pinned) = first_pinned(&|o| *o == origin) {
+            sites.push((construction.literal, pinned));
+        }
+    }
+    let in_a_loop: BTreeSet<SiteRef> = root
+        .expanded
+        .iter()
+        .flat_map(|e| e.built_by.iter().filter(|c| c.bound.built_in_a_loop()).map(|c| c.literal))
+        .collect();
+    if !in_a_loop.is_empty() {
+        if let Some(pinned) = first_pinned(&|_| true) {
+            for literal in in_a_loop {
+                if !sites.iter().any(|(s, _)| *s == literal) {
+                    sites.push((literal, pinned));
+                }
+            }
+        }
+    }
+    for (literal, (entry_span, field)) in sites {
+        let Some(span) = span_of(literal) else { continue };
         let locus = root.realizes.lowered.as_str();
         diags.push(
             Diag::ty(

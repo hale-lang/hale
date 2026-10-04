@@ -76,6 +76,34 @@ const ROOT_TWO_DEFAULTS_DEEP: &str = "locus Worker { run() { print(\"worker\"); 
 const RULE_18: &str =
     "placement entry `w` names a field no locus literal initialises: the value supplied for `w` here is a call";
 
+/// Rule 17, the review of PR #1338: a root literal in another locus's
+/// params default inherits the loop of the literal that builds it. The
+/// loop's `Holder { }` is line 9, column 21.
+const ROOT_DEFAULT_IN_A_LOOP: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: Worker { } }; } }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { Holder { }; }\n\
+     }\n";
+
+/// Two params defaults deep: the loop builds `Shell`, whose default builds
+/// `Holder`. The loop's `Shell { }` is line 10, column 21.
+const ROOT_DEFAULT_TWO_DEEP_IN_A_LOOP: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: Worker { } }; } }\n\
+     locus Shell { params { inner: Holder = Holder { }; } }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { Shell { }; }\n\
+     }\n";
+
 fn seed(tag: &str, src: &str) -> PathBuf {
     let d: PathBuf = std::env::temp_dir().join(format!(
         "hale_check_lowering_laws_{}_{}",
@@ -163,4 +191,25 @@ fn check_and_build_refuse_a_root_literal_in_a_params_default_at_the_override() {
 #[test]
 fn check_and_build_refuse_a_root_literal_two_params_defaults_deep_at_the_override() {
     both_verbs_refuse("rule18_two_deep", ROOT_TWO_DEFAULTS_DEEP, RULE_18, ":8:45:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_in_a_params_default_built_in_a_loop_at_the_loops_literal() {
+    both_verbs_refuse("rule17_default", ROOT_DEFAULT_IN_A_LOOP, RULE_17, ":9:21:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_two_params_defaults_deep_built_in_a_loop_at_the_loops_literal() {
+    both_verbs_refuse("rule17_two_deep", ROOT_DEFAULT_TWO_DEEP_IN_A_LOOP, RULE_17, ":10:21:");
+}
+
+/// The control: `Holder { }` hoisted out of the loop is admitted.
+#[test]
+fn check_admits_a_root_literal_in_a_params_default_built_outside_a_loop() {
+    let src = ROOT_DEFAULT_IN_A_LOOP.replace("    for i in 0..3 { Holder { }; }\n", "    Holder { };\n    for i in 0..3 { }\n");
+    assert_ne!(src, ROOT_DEFAULT_IN_A_LOOP, "the loop's literal was hoisted");
+    let d = seed("rule17_default_control", &src);
+    let (ok, out) = hale(&["check", &d.to_string_lossy()]);
+    assert!(ok, "check must pass:\n{out}");
+    let _ = std::fs::remove_dir_all(&d);
 }

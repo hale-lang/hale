@@ -458,9 +458,12 @@ placement and the locus's shape are known at compile time:
   ever joined and the earlier ones are orphaned with their memory
   still live. Placement describes a *static* topology (a core, a NUMA
   node, `replicas = K`): one thread per entry, for the program's
-  life. Instantiate it once, outside the loop. A loop that calls a
-  *function* holding the literal is fine — each call joins its own
-  thread before it returns:
+  life. Instantiate it once, outside the loop. The same goes for a
+  locus whose `params` default builds `main`: `Holder { }` in a loop,
+  where `Holder`'s default is `App { }`, builds an `App` per iteration
+  and is refused at `Holder { }`. A loop that calls a *function*
+  holding the literal is fine — each call joins its own thread before
+  it returns:
 
   ```hale,refused
   locus Worker { }

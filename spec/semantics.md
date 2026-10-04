@@ -3557,10 +3557,16 @@ main locus App {
     the rule is positional on that literal, so it is not a rule
     about the whole call graph. The typechecker judges it over the
     placement table's constructions of the root (every literal of
-    the root declaration, as resolved), and the test harness's
-    build, which skips the rest of the check, judges it too, so
-    lowering keeps no refusal of its own. (GH #826, 2026-09-20;
-    F.40 phase 3, C7.)
+    the root declaration, as resolved, in a fn or locus body), and
+    over the root literals written in another locus's `params`
+    default: such a literal is built wherever a literal of that
+    locus takes the default, so it inherits that literal's loop,
+    through any depth of defaults, and is rejected at the outermost
+    literal written in a loop (`for i in 0..3 { Holder { }; }`,
+    where `Holder`'s default is `App { }`, at `Holder { }`). The test
+    harness's build, which skips the rest of the check, judges it
+    too, so lowering keeps no refusal of its own. (GH #826,
+    2026-09-20; F.40 phase 3, C7.)
 18. **Every entry is consumed by exactly one instantiation
     (error).** A placement entry is carried by the locus LITERAL
     lowered for its field, and by nothing else: the thread class,

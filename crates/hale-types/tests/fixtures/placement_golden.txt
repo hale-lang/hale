@@ -12682,6 +12682,11 @@ row	~.s	Shell	main	inherited
 row	~.s.inner	Holder	main	inherited
 row	~.s.inner.app	App	main	inherited
 row	~.s.inner.app.w	Worker	main	inherited
+-- Shell@main2	Shell
+row	~	Shell	main	default
+row	~.inner	Holder	main	inherited
+row	~.inner.app	App	main	inherited
+row	~.inner.app.w	Worker	main	inherited
 
 == crates/hale-types/tests/fixtures/placement/static_field_default.hl
 root	App	the entry

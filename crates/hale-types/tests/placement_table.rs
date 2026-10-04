@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_frontend::source::Disk;
-use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, TopDecl};
+use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, Stmt, TopDecl};
 use hale_syntax::sites::SiteKind;
 use hale_types::placement::{
-    join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
+    join_lowering, provenance, Bound, Construction, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
     InstanceKey, InstanceRow, LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
 };
 use hale_types::check::PoolId;
@@ -594,7 +594,10 @@ fn a_claims_only_main_is_the_entrys_construction() {
 /// spells it inside two other literals' inits. Each builds the root
 /// wherever its holder is built, so the root records both as `expanded`;
 /// neither is a template (the constructions, and the rows, are what they
-/// were: `make_app`'s literal alone).
+/// were: `make_app`'s literal alone). Each records the outermost literals
+/// that build it, with their bounds: `Holder`'s, through `Shell`'s default
+/// `Holder { }`, `main`'s `Shell { }` (`Outer`'s default overrides
+/// `inner`, so it builds none); `Outer`'s, `main`'s `Outer { }`.
 #[test]
 fn a_root_built_in_a_params_default_is_recorded_as_expanded() {
     let s = clean("root_in_defaults.hl");
@@ -612,15 +615,35 @@ fn a_root_built_in_a_params_default_is_recorded_as_expanded() {
     let Expr::Struct { inits, .. } = &inits[0].value else { panic!("`Holder {{ … }}`") };
     let Expr::Struct { id, .. } = &inits[0].value else { panic!("`App {{ }}`") };
     let nested = site(*id);
+    // `main`'s `Outer { }` and `Shell { }`.
+    let main_literal = |name: &str| {
+        programs
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .find_map(|i| match i {
+                TopDecl::Fn(f) if f.name.name == "main" => f.body.stmts.iter().find_map(|s| match s {
+                    Stmt::Expr(Expr::Struct { path, id, .. }) if path.segments[0].name == name => Some(site(*id)),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("`{name} {{ }}` in `main`"))
+    };
     let root = t.root.as_ref().unwrap();
-    let mut want = vec![holder, nested];
-    want.sort();
-    assert_eq!(root.expanded, want);
+    let mut want = vec![
+        (holder, vec![Construction { literal: main_literal("Shell"), bound: Bound::Once }]),
+        (nested, vec![Construction { literal: main_literal("Outer"), bound: Bound::Once }]),
+    ];
+    want.sort_by_key(|(l, _)| *l);
+    let got: Vec<(SiteRef, Vec<Construction>)> =
+        root.expanded.iter().map(|e| (e.literal, e.built_by.clone())).collect();
+    assert_eq!(got, want);
     assert_eq!(root.constructions.len(), 1, "`make_app`'s literal is the one construction");
-    assert!(!root.expanded.contains(&root.constructions[0].literal));
+    let expanded: Vec<SiteRef> = root.expanded.iter().map(|e| e.literal).collect();
+    assert!(!expanded.contains(&root.constructions[0].literal));
     for k in t.instances.keys() {
         assert!(
-            !matches!(k.origin, Origin::Construction(l) if root.expanded.contains(&l)),
+            !matches!(k.origin, Origin::Construction(l) if expanded.contains(&l)),
             "an expanded literal is no template: {k:?}"
         );
     }
