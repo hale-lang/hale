@@ -8381,12 +8381,14 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
         return;
     }
     lotus_bus_cell_t cell;
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
     /* Non-blocking: drain the ring, then the consumer-local overflow list,
      * until both are empty. Cells posted DURING a handler land in the ring
      * (or overflow, on self-publish) and are seen by a later iteration. */
     for (;;) {
         if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
             lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             continue;
         }
@@ -8396,10 +8398,20 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
             if (!mb->overflow_head) mb->overflow_tail = NULL;
             cell = node->cell;
             free(node);
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             continue;
         }
-        return;                                 /* both empty */
+        /* Readiness, yield and sleep use this drain before the blocking
+         * mailbox loop. A held delivery can become next after the last
+         * queued cell ran, so release it here too. If nothing matches yet,
+         * return to the caller; a later drain retries without blocking the
+         * pinned lifecycle on a delivery it may still need to publish. */
+        if (replaying && t_rp_pending_len > 0 && lotus_replay_gate_idle(&cell)) {
+            lotus_mailbox_dispatch_cell(&cell);
+            continue;
+        }
+        return;                                 /* no eligible cell */
     }
 }
 

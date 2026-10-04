@@ -3407,6 +3407,12 @@ row	App@literal1	App	main	default
 row	App@literal1.feeder	Feeder	main	default
 row	App@literal1.sink	Sink	pinned:App@literal1.sink	entry	off owner
 
+== crates/hale-codegen/tests/replay_canceled_run.rs#4d181792
+root	App	the entry
+domain	pinned:App@literal1.sink
+row	App@literal1	App	main	default
+row	App@literal1.sink	Sink	pinned:App@literal1.sink	entry	off owner
+
 == crates/hale-codegen/tests/replay_determinism.rs#3cf6e3b0
 root	App	the entry
 row	App@literal1	App	main	default

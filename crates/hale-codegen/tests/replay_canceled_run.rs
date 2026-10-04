@@ -452,3 +452,53 @@ fn main() { App { }; }
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&rec);
 }
+
+/// Birth publishes are parked until readiness, which drains the pinned
+/// mailbox before its blocking loop. Run publishes followed by yield use
+/// that same non-blocking drain. Both must enforce the edited tape,
+/// including releasing the first delivery from the hold when the ring
+/// becomes empty. Self-publishing makes both paths independent of races
+/// between an external publisher and the pinned thread's startup.
+#[test]
+fn pinned_readiness_and_yield_drains_follow_recorded_order() {
+    let src = r#"
+type Note { n: Int = 0; }
+locus Sink {
+    bus {
+        subscribe "sink.note" as on_note of type Note;
+        publish "sink.note" of type Note;
+    }
+    fn on_note(x: Note) { println("note " + to_string(x.n)); }
+    birth() {
+        "sink.note" <- Note { n: 1 };
+        "sink.note" <- Note { n: 2 };
+        println("queued");
+        yield;
+        println("yielded");
+    }
+}
+main locus App {
+    params { sink: Sink = Sink { }; }
+    placement { sink: pinned; }
+}
+fn main() { App { }; }
+"#;
+    for phase in ["birth", "run"] {
+        let src = src.replace("birth()", &format!("{phase}()"));
+        let (recorded, replayed) = if phase == "birth" {
+            ("queued\nyielded\nnote 1\nnote 2\n", "queued\nyielded\nnote 2\nnote 1\n")
+        } else {
+            ("queued\nnote 1\nnote 2\nyielded\n", "queued\nnote 2\nnote 1\nyielded\n")
+        };
+        let (bin, mut buf, consumes) = record_edited(
+            &format!("hold_pinned_{phase}"), &src, recorded, 2,
+        );
+        assert_eq!(consumes.len(), 2, "the sink's two deliveries: {consumes:?}");
+        swap_frames(&mut buf, consumes[0].0, consumes[1].0);
+        let rec = bin.with_extension("halerec");
+        std::fs::write(&rec, &buf).unwrap();
+        replay_clean(&bin, &rec, replayed, "2");
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&rec);
+    }
+}
