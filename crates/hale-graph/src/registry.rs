@@ -467,6 +467,33 @@ pub const FAMILIES: &[Family] = &[
     },
     // ---------------------------------------------------- Declarations
     Family {
+        name: "unit_catalogue",
+        layer: Layer::Declarations,
+        state: State::Canonical,
+        kind: Kind::Derivation,
+        answers: "Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. This is a compiler API; source declarations and expression typing do not demand it yet.",
+        inputs: &["unit declaration SiteIds", "equations with declaration SiteIds and positive exact rational factors"],
+        producer: Some(site("crates/hale-types/src/unit_graph.rs", "close")),
+        legacy: &[],
+        consumers: &[
+            consumer_at("conversion queries (reduced factor, exactness and equation witness)", "crates/hale-types/src/unit_graph.rs", "conversion"),
+            consumer_at("unpinned denomination queries (rational gcd and necessary input witnesses)", "crates/hale-types/src/unit_graph.rs", "meet"),
+        ],
+        invariants: &[
+            "unit identity is the snapshot's SiteId, never a display spelling, span or NodeId equality",
+            "factors are positive arbitrary-precision rationals; no machine overflow, rounding, runtime base unit or default loss policy",
+            "every cycle has product one; an inconsistent catalogue returns only errors with witnessed cycles, never a partially usable closure",
+            "a conversion between disconnected components or through an unknown unit has no answer",
+            "denomination is the rational gcd of the input units, potentially unnamed, with an irredundant set of input witnesses; 6, 10 and 15 require three witnesses",
+            "a denominator of one proves denomination conversion exactness only, not that a runtime range or representation width can hold the result",
+        ],
+        missing: Missing::Error,
+        tests: &["crates/hale-types/src/unit_graph.rs"],
+        spec: &["spec/units.md"],
+        owned: &[],
+        seams: &[],
+    },
+    Family {
         name: "top_scope",
         layer: Layer::Declarations,
         state: State::Migrating,

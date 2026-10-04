@@ -17,6 +17,11 @@ hale-syntax = { path = "../hale-syntax" }
 # BTreeMap Value (alphabetical keys, compact separators) so an
 # external consumer can recompute it from the parsed document.
 serde_json = "1"
+# Declaration-layer unit conversions are exact, including catalogues
+# whose intermediate products exceed any runtime integer width.
+num-bigint = "0.4"
+num-integer = "0.1"
+num-rational = "0.4"
 
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
