@@ -166,3 +166,111 @@ fn a_placement_entry_on_a_scalar_field_is_refused_before_lowering() {
         "expected the rule 18 law's refusal, got: {msg}"
     );
 }
+
+/// `Worker`, a factory for it, and `App` pinning its `w`, then `rest`.
+/// Assembled without a raw string literal so the corpus does not harvest
+/// the refused programs.
+fn root_then(rest: &[&str]) -> String {
+    let mut src = vec![
+        "locus Worker { run() { print(\"worker\"); } }\n",
+        "fn make_worker() -> Worker { Worker { } }\n",
+        "main locus App {\n",
+        "    params { w: Worker = Worker { }; }\n",
+        "    placement { w: pinned; }\n",
+        "    run() { print(\"app\"); }\n",
+        "}\n",
+    ];
+    src.extend_from_slice(rest);
+    src.concat()
+}
+
+const RULE_18_AT_SITE: &str =
+    "placement entry `w` names a field no locus literal initialises: the value supplied for `w` here is a call";
+
+fn harness_refusal(tag: &str, src: &str) -> String {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(tag);
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+        .expect_err("a dropped placement must not build");
+    let _ = std::fs::remove_file(&bin);
+    err.to_string()
+}
+
+/// The review of PR #1338: a root literal in another locus's params
+/// default. Lowering expands it wherever `Holder` is built, and its
+/// factory call takes no entry, so `w` would run unplaced: before C7
+/// lowering refused it (the GH #890 backstop), and once that backstop
+/// was deleted it built with no thread. The placement table records the
+/// literal as the root's (`expanded`), and the law refuses it before
+/// lowering.
+#[test]
+fn a_root_literal_in_a_params_default_overriding_a_placed_field_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_root_in_default_1338",
+        &root_then(&[
+            "locus Holder { params { app: App = App { w: make_worker() }; } }\n",
+            "fn main() { Holder { }; }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_18_AT_SITE), "expected the rule 18 law's refusal, got: {msg}");
+}
+
+/// The same literal two params defaults deep: `Outer`'s default builds a
+/// `Holder`, whose default builds the root.
+#[test]
+fn a_root_literal_two_params_defaults_deep_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_root_two_deep_1338",
+        &root_then(&[
+            "locus Holder { params { app: App = App { w: make_worker() }; } }\n",
+            "locus Outer { params { h: Holder = Holder { }; } }\n",
+            "fn main() { Outer { }; }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_18_AT_SITE), "expected the rule 18 law's refusal, got: {msg}");
+}
+
+/// A default that calls a free fn which builds the root: the fn's body is
+/// a scope, so its literal is a construction of the root already.
+#[test]
+fn a_root_built_in_a_fn_a_params_default_calls_is_refused() {
+    let msg = harness_refusal(
+        "hale_placement_root_via_fn_1338",
+        &root_then(&[
+            "fn make_app() -> App { App { w: make_worker() } }\n",
+            "locus Holder { params { app: App = make_app(); } }\n",
+            "fn main() { Holder { }; }\n",
+        ]),
+    );
+    assert!(msg.contains(RULE_18_AT_SITE), "expected the rule 18 law's refusal, got: {msg}");
+}
+
+/// The control: a root literal in a params default that spells the
+/// placed field as a literal consumes the entry. It builds, its `w` gets
+/// its own thread (one `pthread_create` of `Worker`'s pinned start, whose
+/// readiness is awaited), and both run.
+#[test]
+fn a_root_literal_in_a_params_default_consuming_the_entry_is_pinned() {
+    let src = root_then(&[
+        "locus Holder { params { app: App = App { w: Worker { } }; } }\n",
+        "fn main() { Holder { }; }\n",
+    ]);
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let bin = harness::unique_bin("hale_placement_root_in_default_pinned_1338");
+    let ll = bin.with_extension("ll");
+    let opts = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    let ir = std::fs::read_to_string(&ll).expect("read IR");
+    let out = std::process::Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&ll);
+    let spawns: Vec<&str> = ir
+        .lines()
+        .filter(|l| l.contains("call i32 @pthread_create(") && l.contains("@__pinned_main_Worker"))
+        .collect();
+    assert_eq!(spawns.len(), 1, "one pinned thread for `w`: {spawns:?}");
+    assert!(ir.contains("call void @lotus_pinned_start_await_ready("), "the pinned start is awaited");
+    assert!(out.status.success(), "non-zero exit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("app") && stdout.contains("worker"), "both halves should run: {stdout:?}");
+}

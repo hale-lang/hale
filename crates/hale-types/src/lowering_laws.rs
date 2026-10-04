@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     Block, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember,
-    MatchArmBody, MatchStmt, OrDisposition, ParamInit, Program, RecoveryModifier, Stmt, StructInit, TopDecl,
-    TypeExpr,
+    MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program, RecoveryModifier, Stmt,
+    StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
@@ -131,10 +131,15 @@ fn cross_pool_spawn_used_as_a_value(bundle: &Bundle<'_>, inputs: &LoweringLawInp
 /// literal builds the root, and the entry builds it from its defaults);
 /// both spellings are judged, and a default every literal overrides is
 /// dead text, not a dropped placement. Read off the placement table: the
-/// root is the lowering root, and its literals are the table's
-/// constructions of it, every literal of the root declaration as
-/// resolved (an imported seed's `main` is not the root, and a literal of
-/// another locus that shares its name is not one of them).
+/// root is the lowering root, and its literals are every literal of the
+/// root declaration as resolved (an imported seed's `main` is not the
+/// root, and a literal of another locus that shares its name is not one
+/// of them): the table's constructions, written in a scope's bodies, and
+/// the literals it records where no body reaches, which lowering expands
+/// wherever their holder is built (`locus Holder { params { app: App =
+/// App { w: make_worker() }; } }` places nothing, as a construction
+/// would not). Only the constructions decide whether the entry builds
+/// the root from its defaults.
 fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     let Some(root) = &inputs.placement.root else { return };
     let decls = declarations(bundle);
@@ -151,8 +156,9 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
     }) else {
         return;
     };
-    // Each construction's field inits.
-    let wanted: BTreeSet<SiteRef> = root.constructions.iter().map(|c| c.literal).collect();
+    // Each literal's field inits.
+    let wanted: BTreeSet<SiteRef> =
+        root.constructions.iter().map(|c| c.literal).chain(root.expanded.iter().copied()).collect();
     let mut sites: Vec<&[StructInit]> = Vec::new();
     {
         let mut found = literals(|e, _bare| {
@@ -200,10 +206,10 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
             }
         }
         // The default is live when some site omits the field, and when
-        // no literal builds the root at all (the entry's implicit
+        // no construction builds the root (the entry's implicit
         // template, or a library seed checked on its own: the default is
         // the only initialiser there is).
-        if !(any_site_takes_default || sites.is_empty()) {
+        if !(any_site_takes_default || root.constructions.is_empty()) {
             continue;
         }
         // No default and no site init: the missing-required-param rule
@@ -259,7 +265,9 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
 /// every other expression). The bodies are where the placement table's
 /// scopes find literals: every fn body (its parameters' defaults
 /// included) and every locus member body, at any nesting, through every
-/// statement and expression form; `expr` walks one expression alone.
+/// statement and expression form; `items` walks the positions the table
+/// records apart from them too (`PlacementTable`'s root `expanded`), and
+/// `expr` walks one expression alone.
 struct Literals<F> {
     f: F,
 }
@@ -269,13 +277,73 @@ fn literals<'a, F: FnMut(&'a Expr, bool)>(f: F) -> Literals<F> {
 }
 
 impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
+    /// Every expression written in `items`: the bodies, and the positions
+    /// no body reaches (a params default of a locus or a perspective, a
+    /// const, a type's field default, a closure's assertion, an adapter's
+    /// inits, a perspective's members).
     fn items(&mut self, items: &'a [TopDecl]) {
         for item in items {
             match item {
                 TopDecl::Fn(fd) => self.fn_decl(fd),
-                TopDecl::Locus(l) => self.locus_bodies(l),
+                TopDecl::Locus(l) => {
+                    self.locus_bodies(l);
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Params(pb) => self.params(pb),
+                            LocusMember::Const(c) => self.expr(&c.value),
+                            LocusMember::Type(td) => self.type_defaults(td),
+                            LocusMember::Closure(c) => {
+                                if let Some(a) = &c.assertion {
+                                    self.expr(&a.left);
+                                    self.expr(&a.right);
+                                    self.expr(&a.tolerance);
+                                }
+                            }
+                            LocusMember::Bindings(bb) => {
+                                for e in &bb.entries {
+                                    if let TransportSpec::Adapter { inits, .. } = &e.transport {
+                                        for i in inits {
+                                            self.expr(&i.value);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(p) => {
+                    for m in &p.members {
+                        match m {
+                            PerspectiveMember::Params(pb) => self.params(pb),
+                            PerspectiveMember::StableWhen(b) => self.block(b),
+                            PerspectiveMember::Fn(fd) => self.fn_decl(fd),
+                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
+                        }
+                    }
+                }
+                TopDecl::Const(c) => self.expr(&c.value),
+                TopDecl::Type(td) => self.type_defaults(td),
                 TopDecl::Module(m) => self.items(&m.items),
                 _ => {}
+            }
+        }
+    }
+
+    fn params(&mut self, pb: &'a ParamsBlock) {
+        for p in &pb.params {
+            if let ParamInit::Value(e) = &p.init {
+                self.expr(e);
+            }
+        }
+    }
+
+    fn type_defaults(&mut self, td: &'a TypeDecl) {
+        if let TypeDeclBody::Struct(fields) = &td.body {
+            for f in fields {
+                if let Some(d) = &f.default {
+                    self.expr(d);
+                }
             }
         }
     }

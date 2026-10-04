@@ -48,6 +48,34 @@ const XPOOL_VALUE: &str = "locus Ship { params { hull: Int = 0; } }\n\
 
 const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget";
 
+/// Rule 18 (GH #890), the review of PR #1338: a root literal written in
+/// another locus's params default overrides the placed field with a
+/// factory call. The override is line 8, column 45.
+const ROOT_IN_A_DEFAULT: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     fn make_worker() -> Worker { Worker { } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: make_worker() }; } }\n\
+     fn main() { Holder { }; }\n";
+
+/// The same literal two params defaults deep (`Outer` builds `Holder`).
+const ROOT_TWO_DEFAULTS_DEEP: &str = "locus Worker { run() { print(\"worker\"); } }\n\
+     fn make_worker() -> Worker { Worker { } }\n\
+     main locus App {\n\
+     \x20   params { w: Worker = Worker { }; }\n\
+     \x20   placement { w: pinned; }\n\
+     \x20   run() { print(\"app\"); }\n\
+     }\n\
+     locus Holder { params { app: App = App { w: make_worker() }; } }\n\
+     locus Outer { params { h: Holder = Holder { }; } }\n\
+     fn main() { Outer { }; }\n";
+
+const RULE_18: &str =
+    "placement entry `w` names a field no locus literal initialises: the value supplied for `w` here is a call";
+
 fn seed(tag: &str, src: &str) -> PathBuf {
     let d: PathBuf = std::env::temp_dir().join(format!(
         "hale_check_lowering_laws_{}_{}",
@@ -125,4 +153,14 @@ fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
 #[test]
 fn check_and_build_refuse_a_cross_pool_spawn_used_as_a_value_at_the_literal() {
     both_verbs_refuse("xpool", XPOOL_VALUE, FIRE_AND_FORGET, ":2:32:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_in_a_params_default_at_the_override() {
+    both_verbs_refuse("rule18_default", ROOT_IN_A_DEFAULT, RULE_18, ":8:45:");
+}
+
+#[test]
+fn check_and_build_refuse_a_root_literal_two_params_defaults_deep_at_the_override() {
+    both_verbs_refuse("rule18_two_deep", ROOT_TWO_DEFAULTS_DEEP, RULE_18, ":8:45:");
 }

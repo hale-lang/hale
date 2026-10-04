@@ -95,8 +95,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
-    OrDisposition, ParamInit, Pattern, PinAffinity, PlacementConstraint, PlacementSpec, Program, RecoveryModifier, Stmt,
-    StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDeclBody, TypeExpr,
+    OrDisposition, ParamInit, Pattern, PerspectiveMember, PinAffinity, PlacementConstraint, PlacementSpec, Program,
+    RecoveryModifier, Stmt, StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::sites::{for_each_site_in_item, SiteKind};
 
@@ -376,10 +376,19 @@ pub struct RootRow {
     pub realizes: DeclRef,
     /// False when lowering deploys a module-nested `main`.
     pub is_entry: bool,
-    /// Every literal of the root declaration, each a template. Empty when
-    /// no literal builds the root: its one template is then the entry's
-    /// ([`Origin::Entry`]).
+    /// Every literal of the root declaration in a scope's bodies, each a
+    /// template. Empty when no such literal builds the root: its one
+    /// template is then the entry's ([`Origin::Entry`]).
     pub constructions: Vec<Construction>,
+    /// Every other literal of the root declaration: one written where no
+    /// scope's bodies reach (a params default of a locus or a
+    /// perspective, a const, a type's field default, a closure's
+    /// assertion, an adapter's inits). Lowering expands it wherever the
+    /// declaration holding it is built, so it is no template of its own,
+    /// but it builds the root as surely as a construction does, and a law
+    /// that judges every literal of the root reads it beside
+    /// `constructions`.
+    pub expanded: Vec<SiteRef>,
 }
 
 /// The scope that encloses a dynamic literal.
@@ -1311,6 +1320,13 @@ impl<'d, 'a> Builder<'d, 'a> {
             }
         }
         constructions.sort_by_key(|(s, _, _, _)| *s);
+        let mut expanded: Vec<SiteRef> = scopes
+            .elsewhere
+            .iter()
+            .filter(|lit| lit.decl == Some(site) && lit.site.universe == SiteUniverse::User)
+            .map(|lit| lit.site)
+            .collect();
+        expanded.sort();
         let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
@@ -1320,6 +1336,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 .iter()
                 .map(|(literal, _, bound, _)| Construction { literal: *literal, bound: bound.clone() })
                 .collect(),
+            expanded,
         });
         // A root no literal builds is the entry's implicit template, from
         // the declaration's defaults; its top's literal is the entry's
@@ -1949,6 +1966,12 @@ enum Count {
 
 struct Scopes<'a> {
     scopes: Vec<Scope<'a>>,
+    /// The locus literals written where no scope's bodies reach: a params
+    /// default, a const, a type's field default, a closure's assertion, an
+    /// adapter's inits, a perspective's members. Each is lowered wherever
+    /// the declaration holding it is built, in a scope no row relates it
+    /// to, so it joins no scope.
+    elsewhere: Vec<Literal<'a>>,
     fns: BTreeMap<(SiteUniverse, String), usize>,
     loci: BTreeMap<SiteRef, usize>,
     counts: Vec<Count>,
@@ -1960,7 +1983,13 @@ impl<'a> Scopes<'a> {
         stdlib: Option<(&'a Program, &'a Snapshot)>,
         decls: &Decls<'a>,
     ) -> Scopes<'a> {
-        let mut s = Scopes { scopes: Vec::new(), fns: BTreeMap::new(), loci: BTreeMap::new(), counts: Vec::new() };
+        let mut s = Scopes {
+            scopes: Vec::new(),
+            elsewhere: Vec::new(),
+            fns: BTreeMap::new(),
+            loci: BTreeMap::new(),
+            counts: Vec::new(),
+        };
         for program in bundle.programs.values() {
             s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls, true);
         }
@@ -1982,6 +2011,72 @@ impl<'a> Scopes<'a> {
     }
 
     fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, decls: &Decls<'a>, top: bool) {
+        // The positions no scope's bodies reach, walked for their
+        // literals alone.
+        let mut rest = BodyWalk::new(ids, universe, decls);
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        rest.expr(e);
+                                    }
+                                }
+                            }
+                            LocusMember::Const(c) => rest.expr(&c.value),
+                            LocusMember::Type(td) => rest.type_defaults(td),
+                            LocusMember::Closure(c) => {
+                                if let Some(a) = &c.assertion {
+                                    rest.expr(&a.left);
+                                    rest.expr(&a.right);
+                                    rest.expr(&a.tolerance);
+                                }
+                            }
+                            LocusMember::Bindings(bb) => {
+                                for e in &bb.entries {
+                                    if let TransportSpec::Adapter { inits, .. } = &e.transport {
+                                        for i in inits {
+                                            rest.expr(&i.value);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(p) => {
+                    for m in &p.members {
+                        match m {
+                            PerspectiveMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        rest.expr(e);
+                                    }
+                                }
+                            }
+                            PerspectiveMember::StableWhen(b) => rest.block(b),
+                            PerspectiveMember::Fn(fd) => {
+                                for p in &fd.params {
+                                    if let Some(d) = &p.default {
+                                        rest.expr(d);
+                                    }
+                                }
+                                rest.block(&fd.body);
+                            }
+                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
+                        }
+                    }
+                }
+                TopDecl::Const(c) => rest.expr(&c.value),
+                TopDecl::Type(td) => rest.type_defaults(td),
+                _ => {}
+            }
+        }
+        self.elsewhere.extend(rest.literals);
         for item in items {
             match item {
                 TopDecl::Fn(fd) => {
@@ -2199,6 +2294,17 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         }
         if let Some(t) = &b.tail {
             self.expr(t);
+        }
+    }
+
+    /// A struct type's field defaults.
+    fn type_defaults(&mut self, td: &'a TypeDecl) {
+        if let TypeDeclBody::Struct(fields) = &td.body {
+            for f in fields {
+                if let Some(d) = &f.default {
+                    self.expr(d);
+                }
+            }
         }
     }
 

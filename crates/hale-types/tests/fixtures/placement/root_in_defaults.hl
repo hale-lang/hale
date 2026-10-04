@@ -1,0 +1,35 @@
+// The root built where no scope's bodies reach: `Holder`'s params
+// default spells `App`, and `Outer`'s default spells it inside another
+// literal's init. Lowering expands each wherever its holder is built;
+// the table records both as the root's `expanded` literals, beside the
+// one construction `make_app`'s body writes.
+locus Worker {
+    run() { print("worker"); }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: pinned; }
+    run() { print("app"); }
+}
+
+locus Holder {
+    params { app: App = App { w: Worker { } }; }
+}
+
+locus Shell {
+    params { inner: Holder = Holder { }; }
+}
+
+locus Outer {
+    params { s: Shell = Shell { inner: Holder { app: App { } } }; }
+}
+
+fn make_app() -> App {
+    App { }
+}
+
+fn main() {
+    Outer { };
+    make_app();
+}
