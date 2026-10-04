@@ -740,6 +740,14 @@ pub fn check_bundle_by_declaration(
     let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
     let mut generic_types: BTreeMap<String, &TypeDecl> = BTreeMap::new();
     let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
+    // The effective target's column, for the FFI type cells. A target
+    // with no column (Windows) is refused before any check runs; the
+    // host's answers stand in, and every target's FFI cells agree.
+    let target_class = inputs
+        .target
+        .class
+        .or_else(|| crate::capability::TargetClass::of(&crate::target::TargetSpec::host()))
+        .unwrap_or(crate::capability::TargetClass::PosixAsync);
     for program in bundle.programs.values() {
         collect_generic_fns(&program.items, &mut generic_fns);
         collect_generic_types(&program.items, &mut generic_types);
@@ -760,6 +768,7 @@ pub fn check_bundle_by_declaration(
     }
     let mut cx = Checker {
         top,
+        target_class,
         known,
         diags: &mut diags,
         locals: ScopeStack::new(),
@@ -7040,97 +7049,6 @@ fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-/// Stage-1 FFI (2026-05-22): predicate returning the rejection
-/// reason if `ty` is not portable across the C-ABI boundary.
-/// Returns `None` when the type is permitted in `@ffi` parameter
-/// and return positions. See `spec/ffi.md` for the contract.
-///
-/// Stage 1 allows: scalar primitives (Int / Float / Bool /
-/// Duration / Time), reference primitives with stable C
-/// representation (String → `const char *`, Bytes → Hale
-/// `[int64 len][payload]` ptr, BytesView / StringView → 16-byte
-/// struct by value), and named user-type structs (layout-
-/// compatible C struct by value — the library author is
-/// responsible for keeping the Hale side and C side in sync;
-/// future spec iteration may add a layout-assertion mechanism).
-///
-/// Stage 1 rejects: `Decimal` (i128 ABI is platform-variable),
-/// `Uint` (Hale-internal type, no portable C mapping at v0),
-/// projections / arrays / tuples / fallibles / functions / unit-
-/// in-param-position. Unit (`Ty::Unit`) is allowed only as a
-/// return type — the parser models `fn ...;` (no `-> T`) as
-/// `ret: None`, which downstream represents as Unit; the caller
-/// of this predicate already handles that path.
-fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
-    match ty {
-        Ty::Bounded(_, _) => Some(
-            "bounded[T; N] has no portable C mapping — pass the \
-             element pointer + count separately",
-        ),
-        Ty::Prim(p) => match p {
-            PrimType::Int
-            | PrimType::Float
-            | PrimType::Bool
-            | PrimType::String
-            | PrimType::Bytes
-            | PrimType::BytesView
-            | PrimType::StringView
-            | PrimType::BytesMut
-            | PrimType::Time
-            | PrimType::Duration => None,
-            PrimType::Decimal => Some(
-                "Decimal (i128) has platform-variable ABI; marshal as \
-                 Int/Float at the Hale side instead",
-            ),
-            PrimType::Uint => Some(
-                "Uint is Hale-internal; declare as Int in the @ffi \
-                 signature",
-            ),
-        },
-        // Unit allowed in return position; check_fn handles `ret:
-        // None`. A `Ty::Unit` reaching this predicate from a param
-        // came from an empty `()` type expr, which is invalid.
-        Ty::Unit => Some(
-            "() (unit) is not a meaningful FFI parameter type",
-        ),
-        // Named user-type structs are permitted at Stage 1. The
-        // library author is responsible for keeping the Hale
-        // struct's field order + types layout-compatible with the
-        // C struct on the other side. Future spec iteration may
-        // add a `@ffi_layout("c")` attribute for compile-time
-        // layout assertions.
-        Ty::Named(_) => None,
-        Ty::Projection(_, _) => Some(
-            "projection-typed values (Rich / Chunked / Recognition) \
-             carry per-locus metadata and don't cross the C-ABI \
-             boundary",
-        ),
-        Ty::Array(_, _) => Some(
-            "fixed-size arrays don't cross the C-ABI boundary at \
-             Stage 1; pass Bytes / a wrapper struct instead",
-        ),
-        Ty::Tuple(_) => Some(
-            "tuples have no portable C struct layout; declare a named \
-             type instead",
-        ),
-        Ty::Function { .. } => Some(
-            "function-pointer types are not yet FFI-portable; declare \
-             the wrapper at the C side and pass a struct/handle",
-        ),
-        Ty::Fallible { .. } => Some(
-            "fallible(E) is an Hale internal channel; C functions \
-             must return an error sentinel and the Hale wrapper \
-             above translates",
-        ),
-        // Unknown comes from unresolved type names. Be permissive
-        // — the named-type resolution may not have completed yet,
-        // or the type may live behind an import this check can't
-        // see. Codegen will catch genuinely-broken signatures at
-        // LLVM-declaration emit time.
-        Ty::Unknown => None,
-    }
-}
-
 /// A callee as the program spells it, for a fallible call's row: `f`,
 /// `alias::f`, `self.read`, `self.store.get`, `T::from_json` (which
 /// the desugar sequence rewrote to `__json_parse_T`).
@@ -7153,6 +7071,9 @@ fn callee_display(callee: &Expr) -> String {
 struct Checker<'a> {
     top: &'a TopScope,
     known: &'a KnownNames,
+    /// The effective target's column of the capability matrix: the FFI
+    /// type cells an `@ffi` or `@export` signature is held to.
+    target_class: crate::capability::TargetClass,
     diags: &'a mut Vec<Diag>,
     locals: ScopeStack,
     current_locus: Option<&'a LocusInfo>,
@@ -11191,9 +11112,13 @@ impl<'a> Checker<'a> {
         // fallible (no C error channel) or take defaults (fixed
         // C arity).
         if decl.export && locus.is_none() {
+            // An `@export fn` is a C-ABI symbol: the FFI type cells for
+            // the `c` ABI, on the effective target.
+            let class = self.target_class;
+            let cell = move |ty: &Ty| crate::capability::ffi_type_refusal(class, ty, crate::capability::Abi::C);
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = ffi_type_unportable(&ty) {
+                if let Some(reason) = cell(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -11220,7 +11145,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = ffi_type_unportable(&ret_ty) {
+                if let Some(reason) = cell(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -11252,9 +11177,14 @@ impl<'a> Checker<'a> {
                      not on locus methods",
                 ));
             }
+            // The FFI type cells for the declaration's ABI (an unknown
+            // ABI name is refused elsewhere; it is judged as `c`).
+            let abi = crate::capability::Abi::of(&ffi.abi).unwrap_or(crate::capability::Abi::C);
+            let class = self.target_class;
+            let cell = move |ty: &Ty| crate::capability::ffi_type_refusal(class, ty, abi);
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = ffi_type_unportable(&ty) {
+                if let Some(reason) = cell(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -11269,7 +11199,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = ffi_type_unportable(&ret_ty) {
+                if let Some(reason) = cell(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(

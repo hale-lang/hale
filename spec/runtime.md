@@ -447,7 +447,11 @@ declared anywhere in the program. `DispatchPlan::derive(
 &ApplicationModel)` owns that derivation: the bus graph's
 per-subject eligibility gates decide the flavor (a single ladder,
 `DispatchFlavor::of`, which the backend calls rather than
-re-deciding), and the Change-8 arrangement supplies each row's
+re-deciding; `static_direct` takes three legs: every publisher and
+subscriber same-thread, every handler quiet, and the gate's
+`payload_flat` column, a payload struct whose every field is an
+inline scalar — a direct-eligible subject with a managed payload is
+`static_bucket`), and the Change-8 arrangement supplies each row's
 publisher/subscriber **thread domains** and `same_domain` — "every
 publish site and every subscriber of this subject sit in one
 domain", the precondition the future placement-driven flavors
@@ -1941,10 +1945,16 @@ its `KNOWN_OPEN` table.
 - **Line 7, waits that only teardown ends.** Every teardown spine
   aborts the `or wait`s it would otherwise wait on before it joins
   the workers they block, and an aborted publish is not a success:
-  it raises `BusWaitAborted`. Not yet shipped (inventory row R34):
-  every spine raises the wait-abort after the pool join, so a
-  pool-placed publisher waiting for space on a queue only `main`
-  drains holds the join forever (`l07_pool_or_wait_teardown.hl`).
+  it raises `BusWaitAborted`. Shipped in all five spines: each runs
+  the ingress quiesce, then the wait-abort, then the pool join (the
+  plan's edges, `lifecycle::TEARDOWN_EDGES`), so a pool-placed
+  publisher waiting for space on a queue only `main` drains takes the
+  raise path and the join returns (`l07_pool_or_wait_teardown.hl`,
+  and one fixture per other spine: `l07_or_wait_deferred_main_entry`,
+  `_main_fall_through`, `_main_return`, `_main_test_failure`). Where
+  a spine owes no pool join (no pool, or a target that rejects every
+  pool), `fn main`'s exits keep the wait-abort after their frame's
+  pre-drain, so a handler that drain runs may still wait.
 - **Line 8, a birth failure's shape.** A failure in `birth()` (a
   birth-epoch closure, `birth_check`) or in `run()` (`violate`, a
   closure) is a `ClosureViolation`, and the failing child is kept
@@ -2003,13 +2013,18 @@ its `KNOWN_OPEN` table.
   calls a lifecycle method. The `run()`s that read `self.draining`
   return, and the ordinary teardown follows, `drain()` and
   `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
-- **Line 16, a target without threads.** **Pending:** P3's
-  capability matrix is the authority for which lifecycle
-  obligations a target owes; gating the eager spine is an interim
-  correction, not the rule. Today the eager spine emits the pool
-  join and the wait-abort on wasm, where the other four spines emit
-  neither; it does no harm only because no pool is registered on
-  wasm (`l16_eager_spine_pool_join.hl` pins the native half).
+- **Line 16, a target without threads.** The capability matrix
+  selects which of the three process-wide obligations a target owes
+  (its `PoolJoin`, `WaitAbort` and `IngressQuiesce` cells), and the
+  plan orders the ones selected, the same in every spine. Shipped:
+  wasm32 owes no pool join (its premise is that wasm32 rejects every
+  pool other than `main`) and no ingress quiesce (it rejects the
+  listen transports), and owes the wait-abort in all five spines,
+  since the local capacity wait is admitted there and no proof yet
+  shows no waiter is live at teardown; the host owes all three
+  (`l16_eager_spine_pool_join.hl` for the native half,
+  `crates/hale-codegen/tests/target_lifecycle_cells.rs` per spine on
+  both targets).
 - **Line 17, the pinned join set and order.** **Pending,
   conditionally:** the deferred spine's rule (subscription-less
   pinned children first, pinned subscribers in their slots) is the
@@ -3546,7 +3561,7 @@ build.
 | `LOTUS_NO_OWNERSHIP_BUBBLE` | `no_ownership_bubble` | Force the pre-bubble ownership lowering: no bubble plans, no forwarding sets, no threading fields. | off |
 | `LOTUS_DISABLE_PREFETCH` | `disable_prefetch` | Compile the runtime without its prefetch hints. | off |
 | `LOTUS_DI_TRACE` (*set*) | `di_trace` | Narrate debug-location decisions on stderr. | off |
-| `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject on stderr. | off |
+| `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject, with its gate's `payload_flat` column, and the codec's flatness at each publish to a literal subject, on stderr. | off |
 | `HALE_LIFECYCLE_TRACE` | `lifecycle_trace` | The lifecycle trace: one line per obligation event on stderr (§ "The lifecycle trace"). A debug build; native host targets only. | off |
 | `HALE_TIME` (*set*) | `time_phases` | Print per-phase wall times of the build on stderr. | off |
 | `HALE_CC_WARNINGS` | `cc_warnings` | Let the runtime's C warnings through instead of `-w`. For work on the runtime itself. | off |

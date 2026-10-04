@@ -492,10 +492,10 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         // began? The drain cuts short only a wait IN PROGRESS when it
         // starts; a sleep begun afterwards (a `drain()` or `dissolve()`
         // body pacing a flush) sleeps its full length.
-        let entry_draining = if self.is_wasm {
-            None
-        } else {
+        let entry_draining = if self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
             Some(self.emit_process_draining_load("sleep.draining.entry")?)
+        } else {
+            None
         };
 
         let req_sec_ptr = self

@@ -340,17 +340,18 @@ jobs:
           shared-key: tests-x86_64-linux-llvm18
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install LLVM 18 + clang
+      - name: Install LLVM 18 + clang + wasm-ld
         # llvm-18-dev provides both the static archives and
         # libLLVM-18.so; the builds below link the shared one
         # (`hale-codegen/dynamic-llvm`). clang-18 is also invoked at
-        # test time to link compiled `.hl` fixtures.
+        # test time to link compiled `.hl` fixtures, and lld-18's
+        # wasm-ld to link the wasm32 ones (`hale build --target wasm32`).
         run: |
           set -eux
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev zlib1g-dev
+            clang-18 libclang-18-dev lld-18 zlib1g-dev
 
       - name: Install cargo-nextest
         # Prebuilt binary — installs in seconds.
@@ -564,13 +565,24 @@ jobs:
           shared-key: tests-x86_64-linux-llvm18
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install LLVM 18 + clang
+      - name: Install LLVM 18 + clang + wasm-ld
+        # lld-18 for wasm-ld: the wasm32 builds (the lowering shadow, the
+        # teardown spines per target, the portable subset) link with it,
+        # and skip, naming it, when it is missing.
         run: |
           set -eux
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev zlib1g-dev
+            clang-18 libclang-18-dev lld-18 zlib1g-dev
+
+      # node runs the wasm32 modules (the portable subset compares their
+      # stdout with the native binaries'); stated, not assumed of the
+      # runner image.
+      - name: Install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest

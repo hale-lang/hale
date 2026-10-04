@@ -25,19 +25,18 @@
 //! target is a new field of [`Columns`], which every row then has to
 //! write.
 //!
-//! **Today's verdicts.** This table states what the compiler does
-//! today, spread across `check.rs`'s stdlib table and `async_io` gate,
-//! `link_wasm`, the `is_wasm` sites in codegen and the CLI's
-//! `run`/`replay` refusal; `crates/hale-types/tests/shadow_capability.rs`
+//! **The one authority.** The check, the build and the editor admit a
+//! program by these cells ([`uses::admission_diags`]); lowering emits or
+//! omits every target-dependent behaviour and obligation by reading its
+//! effective target's column off the lowering view ([`LoweringCells`]),
+//! the teardown spines included (the matrix selects their obligations,
+//! `crate::lifecycle::TEARDOWN_EDGES` orders them); the checker holds
+//! `@ffi` and `@export` signatures to the `FfiType` cells
+//! ([`ffi_type_refusal`]). `crates/hale-types/tests/shadow_capability.rs`
 //! and `crates/hale-codegen/tests/shadow_capability_lowering.rs` hold
-//! each of those legacy answers to its cell. Cells the design flips (T2:
-//! pool threads, `async_io` and transport bindings on wasm32; T3: the
-//! known stubs; T5: `@ffi("js")` on a native target) are written as they
-//! are today and named in [`KNOWN_OPEN`], which the laws assert is still
-//! today's answer; so are the two wasm32 refusals that exist today only
-//! as a link failure (a `pinned` placement and an adapter binding, T2
-//! locates them), and the three wasm32 obligations whose `Omit` is
-//! today's but whose premise only holds once T2 lands.
+//! the compiler's observable answers to the cells. A cell a decision
+//! will change is written as it is today and named in [`KNOWN_OPEN`],
+//! which the laws assert is still today's answer; none is open.
 //!
 //! What is not a cell: target-specific emission choices (the triple,
 //! CPU, optimization level, LTO, pass pipeline, DWARF, pointer width),
@@ -697,6 +696,50 @@ impl CapabilityMatrix {
     }
 }
 
+/// The `FfiType` column's answer for a value of type `ty` crossing an
+/// `abi` boundary on a target (an `@ffi` or `@export` parameter or
+/// return): `None` when it crosses, else the reason the checker frames
+/// at the parameter or the return. Every target's cell is the same
+/// (design § 2.6); the checker asks its effective target's.
+pub fn ffi_type_refusal(class: TargetClass, ty: &Ty, abi: Abi) -> Option<&'static str> {
+    let cell = derive_capability_matrix().behaviour(class, Capability::FfiType(FfiTypeClass::of(ty), abi))?;
+    cell.refusal().map(|_| cell.witness.reason)
+}
+
+/// One column of the matrix, as lowering reads it: the lowering view
+/// carries the effective target's, and every target-dependent emission
+/// that is a behaviour or an obligation asks it (design §1.4: codegen
+/// reads the cells and decides nothing). Emission choices (the triple,
+/// CPU, optimization, the link path) stay [`TargetSpec`] queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoweringCells {
+    pub class: TargetClass,
+}
+
+impl LoweringCells {
+    pub fn of(class: TargetClass) -> LoweringCells {
+        LoweringCells { class }
+    }
+
+    /// Whether a spine or prelude emits the obligation's runtime call.
+    pub fn emits(&self, o: Obligation) -> bool {
+        derive_capability_matrix().obligation(self.class, o).expect("every obligation has a row").emits()
+    }
+
+    pub fn behaviour(&self, c: Capability) -> &'static Behaviour {
+        derive_capability_matrix().behaviour(self.class, c).expect("every capability a lowering reads has a row")
+    }
+
+    /// The behaviour's lowering data, or `None` when the target rejects
+    /// it.
+    pub fn lowering(&self, c: Capability) -> Option<Lowering> {
+        match self.behaviour(c).verdict {
+            BehaviourVerdict::Lower(l) => Some(l),
+            BehaviourVerdict::Reject(_) => None,
+        }
+    }
+}
+
 // ----------------------------------------------------- effective target
 
 /// The target the configuration names: `--target`, or the host when
@@ -1183,7 +1226,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
                 origin: Origin::Source,
                 requires: &[],
                 witness: w(
-                    "crates/hale-codegen/src/codegen.rs::a.abi == \"js\"",
+                    "crates/hale-codegen/src/codegen.rs::Lowering::IntAsF64",
                     "an `@ffi(\"js\")` fn is a loader import; an `Int` crosses as an f64",
                     SPEC_JS,
                 ),
@@ -1460,7 +1503,7 @@ const fn ffi_row(class: FfiTypeClass, abi: Abi, cell: Behaviour) -> BehaviourRow
 /// An FFI type's refusal is its reason; the checker frames it at the
 /// declaration's parameter or return.
 const FFI_WORDING: &str = "{reason}";
-const CHECK_FFI: &str = "crates/hale-types/src/check.rs::ffi_type_unportable";
+const CHECK_FFI: &str = "crates/hale-types/src/capability.rs::ffi_type_refusal";
 
 const FFI_PORTABLE: Behaviour = lower(w(CHECK_FFI, "in the FFI-portable set", SPEC_FFI_TYPES));
 const FFI_NAMED: Behaviour = lower(w(

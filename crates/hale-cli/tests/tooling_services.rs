@@ -7,6 +7,8 @@
 
 #[path = "api_description.rs"]
 mod api_description;
+#[path = "dispatch_payload_flat.rs"]
+mod dispatch_payload_flat;
 #[path = "dispatch_plan_cli.rs"]
 mod dispatch_plan_cli;
 #[path = "embedded_dna_provenance.rs"]

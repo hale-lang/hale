@@ -1685,6 +1685,14 @@ impl Snapshot {
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+                // The effective target's column: what lowering reads for
+                // every behaviour and obligation it emits per target. A
+                // target with no column (Windows) never reaches a snapshot.
+                let class = self.demand_target().map_err(Clone::clone)?.class.ok_or_else(|| Blocked {
+                    family: "lowering_view",
+                    because: Vec::new(),
+                    refused: Some("the target has no column in the capability matrix".to_string()),
+                })?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1696,6 +1704,7 @@ impl Snapshot {
                     bindings,
                     placement,
                     typed,
+                    class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })
