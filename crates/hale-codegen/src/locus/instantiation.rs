@@ -4955,6 +4955,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // no-op. Gated to the main locus: a non-main ephemeral
             // locus dissolving mid-program must not join global pools.
             if is_main_locus {
+                // The plan's order (line 7): the head before the pinned
+                // joins below, as on the deferred spine.
+                if !self.head_before_pinned_joins(hale_types::lifecycle::Spine::EagerTeardown)? {
+                    return Err(CodegenError::Unsupported(
+                        "the lifecycle plan joins the main locus's pinned fields before its eager head, which the emitter does not emit".into(),
+                    ));
+                }
                 // GH #468: drain kernel-accepted LISTEN ingress
                 // while the registry, pools, and subscriber loci
                 // are all still alive (the main locus's run() just
@@ -5109,6 +5116,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             frame.push((slot, locus_name.to_string(), None));
+            // The flush places a main locus's head before the first of
+            // these joins (line 7), so it records whose they are.
+            self.pinned_owner.extend(own_pinned.iter().map(|e| (e.0, slot)));
             frame.extend(own_pinned);
         } else {
             // Should be unreachable: every fn body / lifecycle

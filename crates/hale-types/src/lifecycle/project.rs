@@ -78,7 +78,9 @@ pub struct RunPath {
     /// the subject under test, not what it tests.
     pub scope: Option<BTreeSet<String>>,
     /// Which of `fn main`'s exits the run takes (C21–C23): its rows are on
-    /// the path, the other two's are not. `None` for the fall-through.
+    /// the path, the other two's are not. `None` for the fall-through; any
+    /// other spine for a run that ends before `fn main` exits (the process
+    /// ended in a teardown a fn other than `main` emits).
     pub exit: Option<Spine>,
 }
 

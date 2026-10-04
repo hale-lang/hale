@@ -247,6 +247,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l06_readiness_pool.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l07_pool_or_wait_teardown.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_deferred_main_entry.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_deferred_pinned_field.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_fall_through.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_return.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_test_failure.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
@@ -425,6 +426,15 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // completed, but neither the join nor later teardown completes.
         // Each spine's head is the plan's (the deferred main entry in a fn
         // that is not `main`, and `fn main`'s exits, each the run's exit).
+        // The deferred main entry's head, then its own pinned field's
+        // join: the aborted publish ends the process inside Pusher's run,
+        // while main is inside that join, so the run takes none of `fn
+        // main`'s exits.
+        "l07_or_wait_deferred_pinned_field.hl" => {
+            p.ends_inside = Some(Inside { decl: Some("Pusher".into()), kind: ObligationKind::Run, spine: None });
+            p.exit = Some(Spine::DeferredMainEntry);
+            &["7"]
+        }
         "l07_pool_or_wait_teardown.hl"
         | "l07_or_wait_main_fall_through.hl"
         | "l07_or_wait_deferred_main_entry.hl"
@@ -1102,7 +1112,7 @@ fn count(r: &Ran, line: &str) -> usize {
 
 fn wait_abort(r: &Ran) -> String {
     if r.timed_out {
-        return "hang-in-pool-join".to_string();
+        return "hang-in-join".to_string();
     }
     if r.stderr.contains("BusWaitAborted") {
         return "wait-aborted".to_string();
@@ -1862,6 +1872,7 @@ fixture_tests! {
     l06_readiness_pool => "l06_readiness_pool.hl",
     l07_pool_or_wait_teardown => "l07_pool_or_wait_teardown.hl",
     l07_or_wait_deferred_main_entry => "l07_or_wait_deferred_main_entry.hl",
+    l07_or_wait_deferred_pinned_field => "l07_or_wait_deferred_pinned_field.hl",
     l07_or_wait_main_fall_through => "l07_or_wait_main_fall_through.hl",
     l07_or_wait_main_return => "l07_or_wait_main_return.hl",
     l07_or_wait_main_test_failure => "l07_or_wait_main_test_failure.hl",

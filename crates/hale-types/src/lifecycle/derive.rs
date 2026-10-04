@@ -1992,7 +1992,9 @@ impl<'b, 'a> Builder<'b, 'a> {
 
     /// The head of the main locus's own teardown, eager or deferred: the
     /// quiesce, the wait-abort and, where the program has pools, the join,
-    /// all before its fields' teardown (rule (b)). Returns the join.
+    /// all before its fields' teardown (rule (b)), its pinned fields' joins
+    /// included (line 7: a pinned thread parked in a wait is joined only
+    /// once the wait is aborted). Returns the join.
     fn root_head(&mut self, spine: Spine, i: usize, pools: bool, prior: &[Prerequisite]) -> Option<ObligationId> {
         let mut prior = prior.to_vec();
         if let Some(run) = self.rows[i].run {
@@ -2000,10 +2002,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         let q = self.quiesce(spine, &prior);
         let a = self.abort(spine, &prior, q);
-        if !pools {
-            return None;
+        let join = pools.then(|| self.join(spine, &prior, q, a));
+        // Line 7, on every spine: the head before the joins of the pinned
+        // threads the root's teardown joins (its pinned fields, and those
+        // of its fields built on its instantiating thread), and before
+        // their drains, which the join's mailbox shutdown begins.
+        let last = join.unwrap_or(a);
+        for c in self.own_pinned(i) {
+            for row in [self.rows[c].pinned_join, self.rows[c].drain].into_iter().flatten() {
+                self.get(row).edges.entry.push(after(last, Point::Completed, shipped("7")));
+            }
         }
-        let join = self.join(spine, &prior, q, a);
+        let join = join?;
         // Rule (b): the main locus joins the pools before its fields'
         // teardown.
         let fields: Vec<usize> =
@@ -2014,6 +2024,30 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
         }
         Some(join)
+    }
+
+    /// The pinned anchors `i`'s own teardown joins: its pinned fields, and
+    /// those of its fields built on its instantiating thread (neither
+    /// pinned nor on a pool, whose subtrees initialize on their own
+    /// domain, C49/C50).
+    fn own_pinned(&self, i: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![i];
+        let mut seen = BTreeSet::from([i]);
+        while let Some(o) = stack.pop() {
+            for c in 0..self.subjects.len() {
+                if self.subjects[c].how != How::Field || !self.owners(c).contains(&o) || !seen.insert(c) {
+                    continue;
+                }
+                if self.is_pinned(c) {
+                    out.push(c);
+                } else if !self.any(c, |x| self.is_pool(x.own)) {
+                    stack.push(c);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
     }
 
     /// Whether the template builds the root lowering deploys (the

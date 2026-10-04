@@ -524,6 +524,13 @@ so nothing tears it down twice. The rules that order gives you:
   returns, so another queued handler can answer the old run. Cleanup
   in `dissolve()`, including closing handles, still happens before the
   replacement's birth.
+- **A waiting publisher does not hold the exit.** A publisher on a
+  pool or on a pinned thread waiting in `or wait` for room on a
+  queue only `main` drains is woken when the program tears down,
+  before its thread is joined, and its publish fails with
+  `BusWaitAborted`; it is not counted as sent. This holds however
+  `main` is torn down, a `main` built and torn down in a function
+  other than `fn main` included.
 - **Ctrl-C raises a flag.** The signal calls none of your methods;
   the `run()`s that watch `self.draining` return, and the ordinary
   teardown follows.
@@ -538,8 +545,6 @@ behaviour until it changes:
 
 - a restart asked for while `main`'s exit is already joining the
   pools still runs;
-- a pool-placed publisher waiting in `or wait` on a queue only
-  `main` drains holds the exit forever;
 - a dissolve-epoch violation of a flow child, or of a field torn
   down from `fn main`, ends the process instead of reaching the
   parent's handler;

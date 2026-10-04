@@ -12,10 +12,12 @@
 //!
 //! The entries follow, subscription-less pinned ones first in reverse,
 //! then the rest in reverse push order, a locus's own pinned fields pushed
-//! after its own entry (C14), so they are torn down before it. That order
-//! is the code's, not yet the plan's: the plan states rule (b)'s edge from
-//! the main locus's pool join to every field's drain, which a pinned field
-//! torn down before its deferred owner's head does not keep.
+//! after its own entry (C14), so they are joined before its cascade. A
+//! main-locus entry's head (the quiesce, the wait-abort, the pool join)
+//! comes before the first of its own pinned joins, wherever the order puts
+//! it, as the plan places it (`LifecyclePlan::entry_order`; line 7: a
+//! pinned thread parked in a wait is joined only once the wait is
+//! aborted), and the entry's own teardown does not run it again.
 //!
 //! The order is read from the control flow: a step comes before another
 //! when the other's block is reachable from its block and not the reverse
@@ -260,6 +262,40 @@ fn fn_main_test_failure_flushes_as_the_fall_through_does() {
     ];
     let pooled = ir("test_failure_pool", &program(true, main));
     assert_eq!(exits(&function(&pooled, "main"), &want), 2, "with a pool: each exit a block calling {want:?}");
+}
+
+/// The deferred main entry's head, hoisted ahead of its own pinned joins
+/// (L4's fifth part): in `want`'s order in one block, `App.head`, before
+/// the first pinned entry the flush joins and before the other, and not
+/// emitted again by App's own teardown. Before, App's entry ran it after
+/// both joins, so a pinned field parked in an `or wait` hung the join
+/// (`l07_or_wait_deferred_pinned_field.hl`).
+fn assert_head_before_pinned_joins(f: &Func, want: &[&str], what: &str) {
+    let head: Vec<usize> = (0..f.blocks.len()).filter(|&b| f.blocks[b].0 == "App.head").collect();
+    assert_eq!(head.len(), 1, "{what}: one hoisted head block");
+    assert_eq!(f.sequence(head[0], PROCESS), want, "{what}: the head's rows in the plan's order");
+    for pinned in ["Spinner", "Sink"] {
+        let entry = f.block(&format!("{pinned}.dissolve.arena_check"));
+        assert!(f.before((head[0], 0), entry), "{what}: the head comes before {pinned}'s join");
+    }
+    let own = f.block("App.dissolve.process");
+    let rows = ["lotus_bus_ingress_quiesce", "lotus_bus_wait_abort_all", "lotus_coop_pool_shutdown_all"];
+    assert!(f.sequence(own.0, &rows).is_empty(), "{what}: App's own teardown runs no second head");
+}
+
+#[test]
+fn a_deferred_main_entrys_head_comes_before_its_pinned_joins() {
+    let main = "fn start() {\n    let app = App { };\n}\n\nfn main() {\n    start();\n}\n";
+    let bare = ir("hoisted_head", &program(false, main));
+    let f = function(&bare, "start");
+    assert_head_before_pinned_joins(&f, &["lotus_bus_ingress_quiesce", "lotus_bus_wait_abort_all"], "start");
+    let pooled = ir("hoisted_head_pool", &program(true, main));
+    let f = function(&pooled, "start");
+    let want = ["lotus_bus_ingress_quiesce", "lotus_bus_wait_abort_all", "lotus_coop_pool_shutdown_all"];
+    assert_head_before_pinned_joins(&f, &want, "start with a pool");
+    // Held by fn main's frame, after the exit's own head and pre-drain.
+    let in_main = ir("hoisted_head_main", &program(true, "fn main() {\n    App { };\n    let kid = Kid { };\n}\n"));
+    assert_head_before_pinned_joins(&function(&in_main, "main"), &want, "fn main");
 }
 
 #[test]

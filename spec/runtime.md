@@ -279,7 +279,11 @@ the model: runtime is automatic; stdlib is explicit.
   result silently. A deferred parent's own pinned entries are now
   re-ordered after its own frame entry, so the reverse-order flush
   joins + drains them while every subscriber field is alive —
-  identical semantics to the eager path.
+  identical semantics to the eager path. On both paths a main
+  locus's head (the ingress quiesce, the wait-abort, the pool join)
+  comes before the first of those joins (§ "Lifecycle obligations",
+  line 7), so a pinned field parked in an `or wait` is released
+  into the raise path before it is joined, never hanging the join.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual
@@ -2007,7 +2011,15 @@ its `KNOWN_OPEN` table.
   `_main_fall_through`, `_main_return`, `_main_test_failure`). Where
   a spine owes no pool join (no pool, or a target that rejects every
   pool), `fn main`'s exits keep the wait-abort after their frame's
-  pre-drain, so a handler that drain runs may still wait.
+  pre-drain, so a handler that drain runs may still wait. The same
+  holds for the pinned threads a main locus's teardown joins: on
+  every spine its head comes before its own pinned fields' joins and
+  drains, with a pool or without, as the plan places it
+  (`LifecyclePlan::entry_order`). The deferred spine used to join
+  them first, so a pinned field parked in an `or wait` hung the join
+  (`l07_or_wait_deferred_pinned_field.hl`; inventory row C14,
+  corrected by L4's fifth part); its head now runs before the first
+  of them, and the entry's own teardown does not run it again.
 - **Line 8, a birth failure's shape.** A failure in `birth()` (a
   birth-epoch closure, `birth_check`) or in `run()` (`violate`, a
   closure) is a `ClosureViolation`, and the failing child is kept
@@ -2141,15 +2153,11 @@ its `KNOWN_OPEN` table.
   cooperative sibling field's `dissolve()` publishes to it under
   both spines, because a locus's own pinned entries are moved after
   its frame entry (`l17_pinned_join_eager.hl`,
-  `l17_pinned_join_deferred.hl`). The join order is the compiler's,
-  not yet the plan's, and the plan and the two spines disagree on one
-  shape: for a main locus with a pinned field in a program with
-  pools, the plan places the main locus's head (the ingress quiesce,
-  the wait-abort, the pool join) before every field's drain, the
-  eager spine emits it so, and the deferred spine joins the pinned
-  field first (inventory row C14), at the exit of `fn main` or of
-  whichever fn built the main locus. The line's settlement decides
-  which.
+  `l17_pinned_join_deferred.hl`). Which pinned threads are joined
+  before which cooperative entry is the compiler's, not yet the
+  plan's. Where the head goes is settled (line 7): a main locus's
+  head precedes its own pinned fields' joins on every spine, the
+  eager and the deferred alike, and the plan states it.
 - **Line 18, the pre-drain.** Every teardown spine drains the bus
   before its first step. The pre-drain is a delivery point, not a
   witness that anything has quiesced. Not yet emitted by the eager

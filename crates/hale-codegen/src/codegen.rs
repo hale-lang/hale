@@ -1521,6 +1521,8 @@ pub fn build_resolved(
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
+        pinned_owner: Vec::new(),
+        hoisted_heads: Vec::new(),
         in_main: false,
         main_exit: None,
         dispatch_trace: options.dispatch_trace,
@@ -3662,6 +3664,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// long-lived loci have None.
     pub(crate) deferred_dissolves:
         Vec<Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>>,
+    /// A deferred entry's own pinned entries, by their self slots: the
+    /// pinned threads its teardown joins (C14), each `(pinned slot, owner
+    /// slot)`. The frame flush reads it to place a main-locus entry's head
+    /// before the first of them (`emit_frame_teardown`, line 7).
+    pub(crate) pinned_owner: Vec<(PointerValue<'ctx>, PointerValue<'ctx>)>,
+    /// The main-locus entries whose head the flush being emitted has
+    /// already emitted ahead of their pinned joins: their own teardown
+    /// skips it (`emit_deferred_entry_teardown`).
+    hoisted_heads: Vec<PointerValue<'ctx>>,
     /// True while lowering the body of `main`. `return` is treated
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
@@ -6217,18 +6228,87 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .get(name)
                         .map_or(false, |i| i.mailbox_field_idx.is_none())
             });
-        for (self_slot, locus_name, thread_id_alloca) in pinned_workers
-            .into_iter()
-            .rev()
-            .chain(rest.into_iter().rev())
-        {
+        let order: Vec<_> = pinned_workers.into_iter().rev().chain(rest.into_iter().rev()).collect();
+        // A main-locus entry's teardown in the plan's order (line 7, rule
+        // (b)): its head (the quiesce, the wait-abort, the pool join) before
+        // the joins of its own pinned entries, wherever the order above puts
+        // the first of them, so a pinned thread parked in an `or wait` is
+        // released before it is joined. The entry's own teardown then skips
+        // the head.
+        let head_first = self.head_before_pinned_joins(Spine::DeferredMainEntry)?;
+        let hoisted_outer = std::mem::take(&mut self.hoisted_heads);
+        for (self_slot, locus_name, thread_id_alloca) in &order {
+            if head_first && thread_id_alloca.is_some() {
+                let owner = self.pinned_owner.iter().find(|(p, _)| p == self_slot).map(|(_, o)| *o);
+                let main_owner = owner.and_then(|o| {
+                    order.iter().find(|(s, name, tid)| *s == o && tid.is_none() && self.is_lowering_root(name)).cloned()
+                });
+                if let Some((owner_slot, owner_name, _)) = main_owner {
+                    if !self.hoisted_heads.contains(&owner_slot) {
+                        self.emit_hoisted_head(owner_slot, &owner_name)?;
+                        self.hoisted_heads.push(owner_slot);
+                    }
+                }
+            }
             self.emit_deferred_entry_teardown(
-                self_slot,
-                &locus_name,
-                thread_id_alloca,
+                *self_slot,
+                locus_name,
+                *thread_id_alloca,
                 drain_queue,
             )?;
         }
+        self.hoisted_heads = hoisted_outer;
+        Ok(())
+    }
+
+    /// Whether the plan places a main-locus entry's head before the joins
+    /// of the pinned threads its teardown joins on `spine`
+    /// (`LifecyclePlan::entry_order`). The emitter refuses an order it
+    /// cannot emit: a cascade before the head or before the joins.
+    pub(crate) fn head_before_pinned_joins(&self, spine: Spine) -> Result<bool, CodegenError> {
+        use hale_types::lifecycle::spine::EntryStep;
+        let Some(plan) = self.lifecycle else { return Ok(true) };
+        let order = plan.entry_order(spine).map_err(CodegenError::Unsupported)?;
+        let at = |s: EntryStep| order.iter().position(|&x| x == s);
+        if at(EntryStep::Cascade) < at(EntryStep::Head) || at(EntryStep::Cascade) < at(EntryStep::PinnedJoins) {
+            return Err(CodegenError::Unsupported(format!(
+                "the lifecycle plan orders the {} spine's entry teardown {order:?}, and the emitter tears an entry's cascade down after its head and its pinned joins",
+                spine.name()
+            )));
+        }
+        Ok(at(EntryStep::Head) < at(EntryStep::PinnedJoins))
+    }
+
+    /// A main-locus entry's head (`Spine::DeferredMainEntry`'s process
+    /// rows), emitted by the frame flush ahead of the first of its own
+    /// pinned joins: guarded, as the entry's own teardown is, by its slot
+    /// and its arena (an instantiation this path never reached, or one
+    /// already torn down, owes none).
+    fn emit_hoisted_head(&mut self, self_slot: PointerValue<'ctx>, locus_name: &str) -> Result<(), CodegenError> {
+        let info = self.user_loci.get(locus_name).cloned().expect("deferred locus declared");
+        let func = self.current_fn.expect("flush called outside a fn body");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let self_ptr = self.builder.build_load(ptr_t, self_slot, &format!("{locus_name}.head.self")).map_err(e)?.into_pointer_value();
+        let arena_bb = self.context.append_basic_block(func, &format!("{locus_name}.head.arena_check"));
+        let head_bb = self.context.append_basic_block(func, &format!("{locus_name}.head"));
+        let after_bb = self.context.append_basic_block(func, &format!("{locus_name}.head.after"));
+        let self_null = self.builder.build_is_null(self_ptr, &format!("{locus_name}.head.self_null")).map_err(e)?;
+        self.builder.build_conditional_branch(self_null, after_bb, arena_bb).map_err(e)?;
+        self.builder.position_at_end(arena_bb);
+        let arena_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.arena_field_idx, &format!("{locus_name}.head.arena.gep"))
+            .map_err(e)?;
+        let arena = self.builder.build_load(ptr_t, arena_ptr, &format!("{locus_name}.head.arena")).map_err(e)?.into_pointer_value();
+        let arena_null = self.builder.build_is_null(arena, &format!("{locus_name}.head.arena_null")).map_err(e)?;
+        self.builder.build_conditional_branch(arena_null, after_bb, head_bb).map_err(e)?;
+        self.builder.position_at_end(head_bb);
+        let lc_outer = std::mem::replace(&mut self.lc_spine, "DeferredMainEntry");
+        self.emit_teardown_obligations(Spine::DeferredMainEntry)?;
+        self.lc_spine = lc_outer;
+        self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+        self.builder.position_at_end(after_bb);
         Ok(())
     }
 
@@ -6360,7 +6440,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
             );
-            if is_main_entry {
+            if is_main_entry && !self.hoisted_heads.contains(&self_slot) {
                 self.emit_teardown_obligations(Spine::DeferredMainEntry)?;
             }
             // m28a + m28b: pinned loci — pthread_join blocks until

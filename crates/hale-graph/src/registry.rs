@@ -682,7 +682,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("dna"),
             consumer_at("codegen (the deployment plan's root is the placement table's, the row's lowering root)", CG, "collect_main_placement"),
             consumer_at("the lowering view (the snapshot's row, carried to codegen)", SNAPSHOT, "view.entry = Some(entry)"),
-            consumer_at("codegen (every comparison against the main locus reads the row's lowering root, found in lowering's program by its site: instantiation's and the cascade's placement overrides, the deferred entry's pool join, the bindings prelude's loss handler, and `root_bindings`, which the shm-ring subjects and the binding codec thunks read)", CG, "is_lowering_root"),
+            consumer_at("codegen (every comparison against the main locus reads the row's lowering root, found in lowering's program by its site: instantiation's and the cascade's placement overrides, the deferred entry's pool join, the frame flush's main-locus head before its pinned joins, the bindings prelude's loss handler, and `root_bindings`, which the shm-ring subjects and the binding codec thunks read)", CG, "is_lowering_root"),
         ],
         invariants: &[
             "the checker builds no row: the snapshot demands it before the check and hands it in (`CheckInputs::entry`); a bundle no snapshot holds (the test entries) builds it once, the form rows read the snapshot's (`demand_forms`), and the check matrix builds one over each seed's own files (no import holds the entry, and a seed whose import does not resolve is still an entrypoint)",
@@ -701,7 +701,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[],
         seams: &[
             Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1)] },
-            Seam { symbol: "is_lowering_root(", allowed: &[(CG, 2), (CG_INST, 1), (CG_DISSOLVE, 2)] },
+            Seam { symbol: "is_lowering_root(", allowed: &[(CG, 3), (CG_INST, 1), (CG_DISSOLVE, 2)] },
         ],
     },
     Family {

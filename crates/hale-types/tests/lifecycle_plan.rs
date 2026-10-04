@@ -353,6 +353,43 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule == hale_types::lifecycle::Rule::line("12", Status::Shipped)));
 }
 
+/// Line 7 on every spine (L4's fifth part): the main locus's head comes
+/// before the join of its own pinned field and that field's drain, with
+/// no pool as with one, and the emitters' reader places the head first.
+#[test]
+fn the_main_locus_head_precedes_its_pinned_fields_join() {
+    use hale_types::lifecycle::spine::EntryStep as E;
+    for (src, spine, last) in [
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_deferred_pinned_field.hl"), Spine::DeferredMainEntry, K::WaitAbort),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l17_pinned_join_eager.hl"), Spine::EagerTeardown, K::WaitAbort),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        let head: Vec<ObligationId> = p
+            .iter()
+            .filter(|(_, o)| o.site.is_none() && o.holder.spine == spine && o.kind == last)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(head.len(), 1, "{}: one {} row", spine.name(), last.name());
+        let pinned = p
+            .iter()
+            .find(|(_, o)| o.kind == K::PinnedJoin)
+            .map(|(_, o)| o.site.as_ref().expect("a site").decl.lowered.clone())
+            .expect("a pinned join");
+        for kind in [K::PinnedJoin, K::Drain] {
+            let row = one(p, &pinned, kind);
+            assert!(
+                row.edges.entry.iter().any(|pr| pr.event.obligation == head[0] && pr.rule == Rule::line("7", Status::Shipped)),
+                "{}: {pinned}'s {} waits for the head's {}",
+                spine.name(),
+                kind.name(),
+                last.name()
+            );
+        }
+        assert_eq!(p.entry_order(spine).expect("ordered"), [E::Head, E::PinnedJoins, E::Cascade], "{}", spine.name());
+    }
+}
+
 /// Line 12 over the instance tree: an owner's fields drain in their
 /// declaration order, and each is torn down before the next is dissolved.
 #[test]
