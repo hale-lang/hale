@@ -3980,7 +3980,7 @@ row	App@literal1.w	Worker	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 
-== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#a443d8c2
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2b149b94
 -- App@main1	App
 row	~	App	main	default
 row	~.rows	Rows	main	inherited

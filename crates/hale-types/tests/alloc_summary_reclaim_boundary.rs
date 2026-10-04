@@ -115,7 +115,7 @@ fn both_caller_loop_shapes() {
         locus App {
             params { rows: Rows = Rows { }; n: Int = 3; total: Int = 0; }
             run() {
-                for r in self.rows { self.total = self.total + shout(r.text) + shout_row(r); }
+                for r in self.rows.items { self.total = self.total + shout(r.text) + shout_row(r); }
                 let mut i = 0;
                 while i < self.n { self.total = self.total + shout("x") + shout_row(Row { text: "y" }); i = i + 1; }
             }
@@ -146,7 +146,7 @@ fn both_caller_loop_shapes() {
     assert!(was.iter().all(|s| is.contains(s)), "nothing goes: {was:?} -> {is:?}");
     // Each shape alone repeats the call.
     for (shape, body) in [
-        ("for", "for r in self.rows { self.total = self.total + shout_row(r); }"),
+        ("for", "for r in self.rows.items { self.total = self.total + shout_row(r); }"),
         ("while", "let mut i = 0; while i < self.n { self.total = self.total + shout_row(Row { text: \"y\" }); i = i + 1; }"),
     ] {
         let src = format!(
