@@ -1670,10 +1670,20 @@ fn assert_fixture(file: &str) {
 
 // ------------------------------------------------------------ spines
 
-/// The spines the law below reads whole (L4): the six an instance's own
-/// steps are emitted on and the trace names as the plan's holder does.
-const SPINES: &[Spine] =
-    &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown, Spine::Reclaim];
+/// The spines the law below reads whole (L4): the eight an instance's own
+/// steps are emitted on and the trace names as the plan's holder does,
+/// the deferred entry's and the deferred main entry's among them (a
+/// let-bound literal's and a subscribing statement literal's, C14).
+const SPINES: &[Spine] = &[
+    Spine::Instantiation,
+    Spine::PinnedMain,
+    Spine::PoolRun,
+    Spine::Cascade,
+    Spine::EagerTeardown,
+    Spine::DeferredEntry,
+    Spine::DeferredMainEntry,
+    Spine::Reclaim,
+];
 
 /// Kinds the law reads on every spine: the reclaim, whose events carry
 /// the spine that holds it in the plan (a field's the cascade's, a frame
