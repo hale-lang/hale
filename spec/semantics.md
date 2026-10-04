@@ -2799,8 +2799,12 @@ the first `main locus` of the seed's own, in declaration order, a
 module-nested one included, and spawns that one's placement. The
 placement-safety rules guard what the build deploys, so they read that
 root, not the entry: the pool map behind the cross-pool method call
-error (`spec/types.md` § "Single-threaded-method invariant (F.31)")
-and the pinned-in-a-loop rule (placement rule 17). A seed whose only `main locus` is module-nested therefore has no
+error (`spec/types.md` § "Single-threaded-method invariant (F.31)"),
+the pinned-in-a-loop rule (placement rule 17), the instance-aliasing
+warning (one locus shared by two of the root's fields placed apart,
+#334), which reads where each field runs from the placement table, and
+the async_io advisory (`spec/verification.md` § "Placement-implied
+contracts"). A seed whose only `main locus` is module-nested therefore has no
 entry, so its world is not closed and `--env` refuses it, and its
 placement is still checked as the top-level one's is, because the
 build still runs it.
@@ -3397,7 +3401,13 @@ main locus App {
    implies a cross-process peer), a **wildcard** subscriber/publisher
    covering the subject (`log.**` covers `log.app`), a **cross-seed**
    reference (`alias::Foo` — the other seed owns the other half), or
-   the same locus being both publisher and subscriber. The closed-
+   the same locus being both publisher and subscriber. The rule does
+   not fire at all when the entry carries an `api:` binding (GH
+   #1106: every subscribed topic is a command a caller may publish,
+   every published one a stream a caller may subscribe); the binding
+   is the entry's, so an imported `main locus`'s `api:` entry, which
+   is inert (GH #1104 piece 5), lifts nothing (F.40 phase 3, the
+   entry's consumers). The closed-
    world gate is why this is skipped for library seeds (no `main`):
    their consumers are downstream, out of the bundle. (GH #18 #4.)
    Rules 9 and 10 and the dead-receiver rule (7) are judged over

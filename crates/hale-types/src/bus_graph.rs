@@ -810,31 +810,38 @@ impl BusGraph {
 /// Reads the one walk, [`collect_bus_walk`]: joins per-site detail
 /// (locus, handler, payload, placement), applies the eligibility gate,
 /// and builds the canonical subjects the checker's bus rules read. The
-/// bound-topic set is the binding rows' projection.
-pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRows, placement: &crate::placement::PlacementTable) -> BusGraph {
+/// bound-topic set is the binding rows' projection; the closed world
+/// reads the entry row.
+pub fn build_bus_graph(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    bindings: &BindingRows,
+    placement: &crate::placement::PlacementTable,
+    entry: &crate::entry::EntryRow,
+) -> BusGraph {
     let walk = collect_bus_walk(bundle, &top.topics, bindings);
     let (wires, holes) = wire_rows(&walk, &top.topics);
 
     // Closed-world gate input (DEVIRT-ONLY notion): a complete,
     // closed-world program is one with an ENTRY POINT — a bare
-    // top-level `fn main` free function OR a `main locus`. Either
+    // top-level `fn main` free function OR an entry (the entry row's:
+    // the seed's own top-level `main locus`, F.40 phase 3, E0). Either
     // produces an executable whose every subscriber is statically
     // declared in-bundle (an executable cannot gain subscribers at
     // runtime — there is no dynamic `subscribe`), so the bus graph
     // is complete.
     //
     // This is deliberately BROADER than `check::check_bus_graph`'s
-    // diagnostics gate, which stays `main locus`-only to keep its
+    // diagnostics gate, which stays entry-only to keep its
     // orphan/dead-receiver warnings over-fire-conscious. The two
     // notions are separate by design — do not unify them. The
     // canonical `fn main` entry shape mirrors codegen's
     // `TopDecl::Fn(f) if f.name.name == "main"` lookup.
-    let has_entry_point = bundle.programs.values().any(|p| {
-        p.items.iter().any(|i| {
-            matches!(i, TopDecl::Locus(l) if l.is_main)
-                || matches!(i, TopDecl::Fn(f) if f.name.name == "main")
-        })
-    });
+    let has_entry_point = entry.entry().is_some()
+        || bundle
+            .programs
+            .values()
+            .any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main")));
 
     let placements = type_placements(placement);
 

@@ -1321,8 +1321,9 @@ impl Snapshot {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("bus_graph");
-                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings, placement))
+                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings, placement, entry))
             })
             .as_ref()
     }
@@ -1335,8 +1336,9 @@ impl Snapshot {
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("ownership");
-                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top, placement))
+                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top, placement, entry))
             })
             .as_ref()
     }
