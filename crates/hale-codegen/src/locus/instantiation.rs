@@ -58,9 +58,11 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // that called us once it returns, on every exit path.
         let saved_holder = self.field_holder.clone();
         let saved_supervisor = self.supervising_parent.clone();
+        let saved_handed_back = self.anchor_owner_handed_back;
         let out = self.lower_locus_instantiation_inner(locus_name, inits, scope);
         self.field_holder = saved_holder;
         self.supervising_parent = saved_supervisor;
+        self.anchor_owner_handed_back = saved_handed_back;
         out
     }
 }
@@ -570,6 +572,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
         let returns_this_locus =
             matches!(site_owner, crate::ownership::Owner::Caller);
+        // C52: whether the literal this one is a field of hands its root
+        // back (read before this literal sets its own, for its fields).
+        let hands_back_the_root = returns_this_locus && self.is_lowering_root(locus_name);
+        let owner_handed_back = std::mem::replace(&mut self.anchor_owner_handed_back, hands_back_the_root);
         // A literal codegen builds for a program-lifetime slot — a
         // `bindings { }` transport, adapter or codec — needs the same
         // STORAGE and none of the ownership. It used to get both by
@@ -4470,6 +4476,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_call(self.pinned_start_fn("lotus_pinned_start_go"), &[start.gate.into()], "")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let tid_alloca = start.tid_alloca;
+
+            // C52 (line 12): an owned field's lifetime is its owner's. When
+            // the root this anchor is a field of is handed back to the
+            // caller, the frame building it does not own it at its exit:
+            // the join record goes in the instance and the owner's cascade
+            // joins the thread, wherever the owner is torn down
+            // (`emit_instance_pinned_join`). Otherwise the frame keeps the
+            // join, and the instance's record says so with a zero.
+            if let Some(thread_idx) = info.thread_field_idx {
+                let i64_t = self.context.i64_type();
+                let record = if owner_handed_back {
+                    self.builder
+                        .build_load(i64_t, tid_alloca, &format!("{}.tid.record", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value()
+                } else {
+                    i64_t.const_zero()
+                };
+                let slot = self
+                    .builder
+                    .build_struct_gep(info.struct_ty, self_ptr, thread_idx, &format!("{}.__thread", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.build_store(slot, record).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if owner_handed_back && info.thread_field_idx.is_some() {
+                self.current_cooperative_pool = prev_current_coop_pool;
+                self.current_instantiation_replica_index = prev_replica_index;
+                return Ok(self_ptr);
+            }
 
             // Defer pthread_join + arena destroy to scope exit.
             // flush_dissolve_frame skips drain/dissolve for pinned

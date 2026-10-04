@@ -53,6 +53,12 @@ pub struct DeploymentPlan {
     /// consumed by struct-shape decisions (pinned loci get a
     /// thread-id slot).
     pub pinned_locus_types: BTreeSet<String>,
+    /// Locus TYPE names of the root's pinned fields when some literal of
+    /// the root hands it back to its caller (the ownership table's
+    /// `Owner::Caller`): their structs carry the thread's join record
+    /// (`__thread`), since the frame that built the root does not tear
+    /// it down, and its owner's cascade joins the thread (C52, line 12).
+    pub instance_joined_anchor_types: BTreeSet<String>,
     /// Field name → named cooperative pool, for
     /// `cooperative(pool = X)` entries. Drives pool registration in
     /// the prelude and the per-field pool override at instantiation.

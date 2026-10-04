@@ -1848,6 +1848,12 @@ impl<'b, 'a> Builder<'b, 'a> {
             if let (Some(cd), Some(pd)) = (child.drain, parent.drain) {
                 self.get(pd).edges.entry.push(after(cd, Point::Completed, shipped("12")));
             }
+            // A pinned field's lifetime is its owner's (C52): its thread is
+            // joined in its owner's teardown, before the owner drains,
+            // whichever frame or caller tears the owner down.
+            if let (Some(cj), Some(pd)) = (child.pinned_join, parent.drain) {
+                self.get(pd).edges.entry.push(after(cj, Point::Completed, shipped("12")));
+            }
         }
         if matches!(self.subjects[i].how, How::Accepted { .. }) {
             // A resident accepted child is reclaimed by its owner's

@@ -1,16 +1,16 @@
 // Decision line 12, an owned field's lifetime is its owner's
-// (PinnedJoin, Drain): a pinned anchor returned with its root. Known
-// open at C52.
+// (PinnedJoin, Drain): a pinned anchor returned with its root (C52).
 //
 // `make` builds App, whose field `sink` is placed pinned and subscribes,
 // and returns it; fn main holds the root, then a driver publishes to the
 // sink's topic. The anchor's lifetime is its owner's, so its thread is
 // joined in its owner's teardown, at fn main's exit, and the publish
-// reaches it. Today the pinned field is an entry of the frame of the fn
-// that built it, joined when `make` returns, while the caller still
-// holds the root: the publish finds no subscriber.
+// reaches it. Before L4's fifth part the pinned field was an entry of
+// the frame of the fn that built it, joined when `make` returned, while
+// the caller still held the root, and the publish found no subscriber
+// (`dropped`).
 //
-// Adopted terminal outcome: `delivered`. Today: `dropped`.
+// Adopted terminal outcome: `delivered`.
 
 type Ping { n: Int; }
 topic Pings { payload: Ping; subject: "lifecycle.l12.returned"; }

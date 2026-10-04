@@ -390,6 +390,23 @@ fn the_main_locus_head_precedes_its_pinned_fields_join() {
     }
 }
 
+/// Line 12, C52: a pinned field's lifetime is its owner's, so its join is
+/// part of its owner's teardown, before the owner drains, a root handed
+/// back to its caller included.
+#[test]
+fn a_pinned_fields_join_precedes_its_owners_drain() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_root_pinned_anchor.hl"));
+    let p = plan(&s);
+    let join = id_of(p, one(p, "Sink", K::PinnedJoin));
+    let drain = one(p, "App", K::Drain);
+    assert!(
+        drain.edges.entry.iter().any(|pr| pr.event.obligation == join
+            && pr.event.point == Point::Completed
+            && pr.rule == Rule::line("12", Status::Shipped)),
+        "App's drain waits for Sink's join"
+    );
+}
+
 /// Line 12 over the instance tree: an owner's fields drain in their
 /// declaration order, and each is torn down before the next is dissolved.
 #[test]

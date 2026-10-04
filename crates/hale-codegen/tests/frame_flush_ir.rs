@@ -298,6 +298,47 @@ fn a_deferred_main_entrys_head_comes_before_its_pinned_joins() {
     assert_head_before_pinned_joins(&function(&in_main, "main"), &want, "fn main");
 }
 
+/// A root with a pinned subscriber field, built by `make`: `{returns}`
+/// says whether `make` hands it back, or tears it down at its own exit.
+fn anchor_program(returns: bool) -> String {
+    let (sig, body, main) = if returns {
+        (" -> App", "    return App { };\n", "fn main() {\n    let app = make();\n}\n")
+    } else {
+        ("", "    let app = App { };\n", "fn main() {\n    make();\n}\n")
+    };
+    format!(
+        "type Ping {{ n: Int; }}\ntopic Pings {{ payload: Ping; subject: \"frame.flush.ir.anchor\"; }}\n\n\
+         locus Sink {{\n    bus {{ subscribe Pings as on_ping; }}\n    fn on_ping(p: Ping) {{ }}\n}}\n\n\
+         main locus App {{\n    params {{ sink: Sink = Sink {{ }}; }}\n    placement {{ sink: pinned; }}\n}}\n\n\
+         fn make(){sig} {{\n{body}}}\n\n{main}"
+    )
+}
+
+/// C52 (line 12): a root handed back to its caller keeps its pinned
+/// field's join record in the instance, and its owner's cascade joins it,
+/// where the caller tears the owner down; the frame that built it pushes
+/// no entry. Before, `make`'s flush joined the field at `make`'s exit
+/// (`l12_returned_root_pinned_anchor.hl`). The control, a root `make`
+/// keeps, is the frame flush's as before: no record, no cascade join.
+#[test]
+fn a_returned_roots_pinned_field_is_joined_by_its_owners_teardown() {
+    let returned = ir("anchor_returned", &anchor_program(true));
+    let make = function(&returned, "make");
+    assert!(make.calls("pthread_join").is_empty(), "make joins no thread");
+    assert!(!make.blocks.iter().any(|b| b.0 == "Sink.dissolve.arena_check"), "make's flush has no entry for Sink");
+    assert!(returned.contains("%Sink.__thread = getelementptr"), "the instance keeps the join record");
+    let main = function(&returned, "main");
+    let join = main.block("Sink.instance_join");
+    let app = main.block("App.dissolve.process");
+    assert!(main.before(app, join), "Sink is joined inside App's teardown, in fn main");
+    assert!(main.calls("pthread_join").iter().any(|&j| main.before(join, j) || j.0 == join.0), "the join is a pthread_join");
+
+    let kept = ir("anchor_kept", &anchor_program(false));
+    assert!(!kept.contains("__thread") && !kept.contains("instance_join"), "a root the frame keeps carries no record");
+    let make = function(&kept, "make");
+    assert_eq!(make.calls("pthread_join").len(), 1, "make's flush joins Sink");
+}
+
 #[test]
 fn another_fns_flush_drains_and_aborts_no_wait() {
     let main = "fn helper() {\n    let kid = Kid { };\n}\n\nfn main() {\n    helper();\n    App { };\n}\n";

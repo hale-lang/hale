@@ -290,11 +290,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
-    // A pinned anchor is joined when the fn that built it returns, not in
-    // its owner's teardown. Decision needed: where a returned root's
-    // anchor thread is joined, and where its thread id lives once the
-    // building fn's frame is gone.
-    ("l12_returned_root_pinned_anchor.hl", "C52", "dropped"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -1980,6 +1975,14 @@ fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
     assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
     assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+/// C52: the returned root's pinned field is joined and reclaimed by its
+/// owner's cascade in fn main, past the frame that built it, and nothing
+/// of it is touched after its reclaim or leaked.
+#[test]
+fn l12_returned_root_pinned_anchor_under_asan() {
+    assert_clean_under_asan("l12_returned_root_pinned_anchor.hl", "l12_returned", |r| returned_anchor_delivery(r) == "delivered");
 }
 
 #[test]

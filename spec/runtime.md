@@ -2064,13 +2064,18 @@ its `KNOWN_OPEN` table.
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
   An owned field's lifetime is its owner's, so a pinned field's
-  thread is joined in its owner's teardown. Not yet true for a root
-  returned from the fn that built it (inventory row C52,
-  `l12_returned_root_pinned_anchor.hl`): its pinned field is joined
-  when that fn returns, while the caller still holds the root, so a
-  publish to the field afterwards is dropped. Where such an anchor is
-  joined, and where its thread id lives once the building fn's frame
-  is gone, is undecided.
+  thread is joined in its owner's teardown, before the owner drains
+  (the plan's edge from the field's join to the owner's drain).
+  Shipped for a root returned from the fn that built it too
+  (inventory row C52, `l12_returned_root_pinned_anchor.hl`, also under
+  AddressSanitizer): the join record lives in the anchor's instance,
+  not in the building fn's frame, and the field's join is part of its
+  drain in its owner's cascade, wherever the caller's binding ends the
+  owner. The building frame's flush owns the join only when that frame
+  still owns the root at its exit (the ownership table's handed-back
+  column); it used to join the field when the building fn returned,
+  while the caller still held the root, so a publish to the field
+  afterwards was dropped.
 
   Lines 12 and 19 are an instance's own teardown, the dissolve
   cascade and the reclaim, and the compiler emits both from the
