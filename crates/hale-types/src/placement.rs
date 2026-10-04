@@ -684,6 +684,65 @@ impl<'t> Running<'t> {
 }
 
 impl PlacementTable {
+    /// Every template the table builds, by its top's key, with how many
+    /// of its occurrences can be live at once: each construction of the
+    /// root (or the entry's implicit one, `Once`, when no literal builds
+    /// it), each template `fn main` builds, and each adapter of the root's
+    /// `bindings { }` (`Once`: the bindings prelude builds it once however
+    /// often the root is constructed).
+    pub fn templates(&self) -> Vec<(InstanceKey, Bound)> {
+        let top = |origin| InstanceKey { origin, path: Vec::new(), replica: None };
+        let mut out: Vec<(InstanceKey, Bound)> = Vec::new();
+        for c in self.root.iter().flat_map(|r| &r.constructions).chain(&self.entry_literals) {
+            out.push((top(Origin::Construction(c.literal)), c.bound.clone()));
+        }
+        for k in self.instances.keys().filter(|k| k.path.is_empty()) {
+            if matches!(k.origin, Origin::Entry(_) | Origin::Binding(_)) {
+                out.push((k.clone(), Bound::Once));
+            }
+        }
+        out
+    }
+
+    /// Whether the row at `key` anchors its domain: a pinned domain's
+    /// anchor (a root field placed `pinned`, one per replica, or an
+    /// adapter), the one row of the domain that spawns its thread.
+    pub fn is_anchor(&self, key: &InstanceKey, row: &InstanceRow) -> bool {
+        matches!(&self.domain(row.domain).kind, DomainKind::Pinned { anchor, .. } if anchor == key)
+    }
+
+    /// How many rows `counted` admits in one occurrence of the template
+    /// whose top is `top` (§ 1 of the correspondence, how live bounds
+    /// combine): the fields of a row sum, the alternatives of one step
+    /// take their maximum (one occurrence takes exactly one), and the
+    /// replicas of a field are rows already, each counted once and never
+    /// multiplied again. A count over the program multiplies this by the
+    /// template's bound ([`Self::templates`]).
+    pub fn per_occurrence(&self, top: &InstanceKey, counted: &dyn Fn(&InstanceKey, &InstanceRow) -> bool) -> u64 {
+        let mut children: BTreeMap<&InstanceKey, Vec<(&InstanceKey, &InstanceRow)>> = BTreeMap::new();
+        for (k, r) in &self.instances {
+            if let Some(o) = &r.owner {
+                children.entry(o).or_default().push((k, r));
+            }
+        }
+        fn count(
+            k: &InstanceKey,
+            r: &InstanceRow,
+            children: &BTreeMap<&InstanceKey, Vec<(&InstanceKey, &InstanceRow)>>,
+            counted: &dyn Fn(&InstanceKey, &InstanceRow) -> bool,
+        ) -> u64 {
+            // Per field, per alternative taken there: the rows' sum.
+            let mut fields: BTreeMap<&str, BTreeMap<Option<SiteRef>, u64>> = BTreeMap::new();
+            for (ck, cr) in children.get(k).into_iter().flatten() {
+                let Some(step) = ck.path.last() else { continue };
+                *fields.entry(step.field.as_str()).or_default().entry(step.alternative).or_default() +=
+                    count(ck, cr, children, counted);
+            }
+            u64::from(counted(k, r)) + fields.values().map(|alts| alts.values().copied().max().unwrap_or(0)).sum::<u64>()
+        }
+        self.instances.get(top).map_or(0, |r| count(top, r, &children, counted))
+    }
+
     /// A key as a diagnostic names it: its origin's top declaration, then
     /// its fields, then its replica (`App.w`, `App.workers.leaf[1]`).
     pub fn path_of(&self, key: &InstanceKey) -> String {

@@ -12,24 +12,26 @@
 //! place holding the whole plan, `Debug`-renderable today,
 //! serializable when #262 needs it.
 //!
-//! Field semantics are unchanged from the Cx originals (the doc
-//! comments moved with them); `Cx::collect_main_placement` still
-//! populates it (path resolution needs `Cx`), and every consumer
-//! reads `self.deployment.<field>`.
+//! It is the lowering view of the placement table (F.40 phase 3, P1 5
+//! of 6): `Cx::collect_main_placement` reads the snapshot's table
+//! (`LoweringView::placement`) — the root rows a `placement { }` entry
+//! decides, their domains (schedule class, pool, affinity, NUMA node,
+//! `async_io`), the replica rows, and the adapters of the root's
+//! `bindings { }` — and every consumer reads `self.deployment.<field>`.
+//! The type sets are the rows' realized declarations, by the name
+//! lowering keys on. Field semantics are unchanged from the Cx
+//! originals (the doc comments moved with them).
 //!
 //! Not yet folded in (next #262 increments): the `bindings { }`
-//! block (emitted straight from the AST in the prelude), the
-//! `topology { }` domains (resolved inside collect), and replica
-//! counts (expanded inline at instantiation).
+//! block's transports (emitted straight from the AST in the prelude).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::ScheduleClass;
 
-/// The whole-program deployment arrangement, collected from the main
-/// locus's `placement { }` / `topology { }` declarations before any
-/// lowering runs.
-#[derive(Debug, Default, Clone)]
+/// The whole-program deployment arrangement, read from the placement
+/// table before any lowering runs.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct DeploymentPlan {
     /// The main locus's type name (None when the program has no main
     /// locus — plain `fn main` programs).
@@ -42,7 +44,21 @@ pub struct DeploymentPlan {
     /// `pinned(node = ...)` / `pinned(l3 = ...)` entries; absent for
     /// every other placement (arena stays unbound).
     pub main_placement_node: BTreeMap<String, i64>,
-    /// Locus TYPE names that appear in any pinned placement entry —
+    /// Topology Phase 1c (replicas): field name → the core each replica
+    /// of a `pinned(..., replicas = K)` field binds to, for `K > 1`: one
+    /// per replica row, in replica order (`None` = OS-scheduled). Replica
+    /// 0 takes the field's own class in `main_placement_map`; the params
+    /// init emits the other `K - 1` instances. `K <= 1` is an ordinary
+    /// single instance and has no entry.
+    pub main_placement_replicas: BTreeMap<String, Vec<Option<i64>>>,
+    /// The root fields a `placement { }` entry names that decide no
+    /// field family (a hole of the table's: a field held from an
+    /// existing instance). Such a field initialised by anything but a
+    /// locus literal is refused as a decided one is (GH #890's
+    /// backstop), never deployed silently.
+    pub undecided_fields: BTreeSet<String>,
+    /// Locus TYPE names of the pinned anchors (a root field placed
+    /// `pinned`, an adapter of the root's `bindings { }`), as realized —
     /// consumed by struct-shape decisions (pinned loci get a
     /// thread-id slot).
     pub pinned_locus_types: BTreeSet<String>,
@@ -58,8 +74,9 @@ pub struct DeploymentPlan {
     pub coop_pool_affinity: BTreeMap<String, Vec<i64>>,
     /// Pool names declared `where async_io` (green-I/O scheduling).
     pub async_io_pools: BTreeSet<String>,
-    /// Locus TYPE names placed on a named cooperative pool —
-    /// consumed by the `__coop_pool_run_<L>` wrapper synthesis.
+    /// Locus TYPE names placed on a named cooperative pool, as realized.
+    /// The `__coop_pool_run_<L>` wrapper synthesis covers every
+    /// run-bearing locus, so nothing reads it to decide a wrapper.
     pub coop_pool_locus_types: BTreeSet<String>,
     /// Locus TYPE names of the pinned anchors whose nested tree holds a
     /// subscriber (`LoweringView::route_anchors`, from the placement

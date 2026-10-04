@@ -1,0 +1,28 @@
+// The resource budget's pools (R-2, R-3, R-7): three instances on pool
+// `io` are one worker, one of them with an affinity, which adds no
+// thread; `ws` carries an affinity of its own; `pool = main` is the
+// main thread, never a worker pool.
+locus Worker {
+    run() { }
+}
+
+main locus App {
+    params {
+        a: Worker = Worker { };
+        b: Worker = Worker { };
+        c: Worker = Worker { };
+        d: Worker = Worker { };
+        m: Worker = Worker { };
+    }
+    placement {
+        a: cooperative(pool = io, cores = 0..=1);
+        b: cooperative(pool = io);
+        c: cooperative(pool = io);
+        d: cooperative(pool = ws, cores = 2..=3);
+        m: cooperative(pool = main);
+    }
+}
+
+fn main() {
+    App { };
+}

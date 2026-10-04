@@ -107,7 +107,8 @@ pub struct LoweringView {
     pub bindings: crate::binding_rows::BindingRows,
     /// The placement table (F.40 phase 3, P1): the snapshot's, where each
     /// instance the deployed program builds runs. Lowering asks it
-    /// whether any thread crosses the bus boundary (E2).
+    /// for its deployment plan and whether any thread crosses the bus
+    /// boundary (E2). A user site names the same node index in `merged`.
     pub placement: crate::placement::PlacementTable,
     /// The typed-body table (F.40 phase 3, E4): the snapshot's, what the
     /// checker typed over the program this view lowers, keyed by the
@@ -340,8 +341,9 @@ pub fn resolve_program(
 /// with a `bindings { }` entry then has no row for lowering to read.
 /// `placement` is the snapshot's placement table
 /// (`Snapshot::demand_placement`); a caller with none passes
-/// `&PlacementTable::default()`, and lowering then sees no thread off
-/// main, so such a view is fit only for a program that places nothing.
+/// `&PlacementTable::default()`, and lowering then deploys no main locus
+/// or anchor route and sees no thread off main, so such a view is fit
+/// only for a program that places nothing.
 /// `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
 /// gets its written discipline. `typed` is the snapshot's typed-body

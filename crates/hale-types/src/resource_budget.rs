@@ -2,20 +2,34 @@
 //!
 //! A static tally of the language-visible resources a program acquires —
 //! a "linter" signal + the basis for a CI ceiling gate ("this PR raised
-//! the fd/thread/subject count — intentional?"). This slice covers the
-//! cheap, structural, top-level-walk resources with **zero false
-//! positives** (it's a count):
+//! the fd/thread/subject count — intentional?"). It counts the resource,
+//! never the declaration that asks for it:
 //!
-//! - **OS threads** = pinned loci (`PlacementSpec::Pinned` placement
-//!   entries — one `pthread` each).
-//! - **Cooperative pools** = distinct `cooperative(pool = X)` names (one
-//!   shared OS thread each; `None` → the program's `main` thread).
+//! - **OS threads** are read from the placement table (F.40 phase 3, P1;
+//!   the correspondence's § 2.8), partitioned by the scope that creates
+//!   each thread. A pinned anchor of the root (a root field placed
+//!   `pinned`, one per replica) is one thread per live occurrence of the
+//!   construction that builds it: its count in one occurrence times that
+//!   construction's bound, summed over the constructions, with an
+//!   unbounded construction making the count an uncertainty that carries
+//!   its reason. An adapter of the root's `bindings { }` is one thread,
+//!   counted once whatever the root's bound. A nested row inherits its
+//!   owner's thread and adds none.
+//! - **Cooperative pools** are the table's worker pools, one per name
+//!   however many instances run on it, and an affinity adds no thread.
+//!   The main thread is the program's own: never a pool, and shown on a
+//!   line of its own.
 //! - **Bus subjects** = distinct registered subject strings
 //!   (subscribe/publish `canonical()` + `topic` decls — router entries).
+//! - **fd acquisition sites**, from `alloc_summary`'s own rows.
 //!
-//! Held-fd counts + leak detection (which reuses `alloc_summary`'s
-//! unbounded-context dataflow) are the next stages — see
-//! `notes/resource-budgets.md`.
+//! Threads the runtime spawns outside placement are not placement facts
+//! and are not counted: a transport binding's reader thread, and the
+//! serve thread a stdlib transport's birth spawns. The dump says so on a
+//! line of its own, with the root's transport bindings counted.
+//!
+//! Leak detection reuses `alloc_summary`'s unbounded-context dataflow;
+//! see `notes/resource-budgets.md`.
 
 use std::collections::BTreeSet;
 
@@ -23,6 +37,8 @@ use hale_syntax::ast::*;
 use hale_syntax::Diag;
 
 use crate::alloc_summary::{AllocKind, AllocSummary, Callee, Escape};
+use crate::placement::{Bound, DomainKind, Origin, PlacementTable};
+use crate::symbol::Bundle;
 
 /// Held-fd loci instantiated directly (vs via a call) — `tcp::Listener { }`
 /// holds a listening fd from birth. Matched on the *qualified* struct path
@@ -100,12 +116,19 @@ pub fn resource_leak_diags(summary: &AllocSummary) -> Vec<Diag> {
 }
 
 /// Per-program resource tally.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResourceBudget {
-    /// Pinned placement entries — one OS thread (`pthread`) each.
-    pub pinned_threads: usize,
-    /// Distinct cooperative pool names (one shared OS thread each).
-    /// `main` is the program's own thread (a `cooperative` with no pool).
+    /// The threads of the root's pinned anchors: a root field placed
+    /// `pinned`, one per replica, times the live occurrences of the
+    /// construction that builds it, summed over the constructions. `Err`
+    /// is the uncertainty, with its reason: a construction with anchors
+    /// and no static bound.
+    pub anchored_threads: Result<usize, String>,
+    /// The adapters of the root's `bindings { }`: one thread each, built
+    /// once by the bindings prelude.
+    pub adapter_threads: usize,
+    /// The worker pools, by name: one worker each, however many instances
+    /// run on it. `main` is never one.
     pub cooperative_pools: BTreeSet<String>,
     /// Distinct bus subject strings (router table entries).
     pub bus_subjects: BTreeSet<String>,
@@ -115,6 +138,21 @@ pub struct ResourceBudget {
     /// (`tcp::Listener { }` / `tcp::Stream { }`). A static site count, not
     /// a runtime fd count.
     pub fd_open_sites: usize,
+    /// The root's `bindings { }` entries that are no adapter: each runs a
+    /// reader thread (and a stdlib transport's birth its serve thread)
+    /// the runtime spawns outside placement, which the budget does not
+    /// count.
+    pub transport_bindings: usize,
+}
+
+impl ResourceBudget {
+    /// The OS threads placement spawns: the pinned anchors' and the
+    /// adapters'. Never a bound on all of the process's threads (the
+    /// main thread, binding readers and transport serve threads are not
+    /// in it).
+    pub fn threads(&self) -> Result<usize, String> {
+        self.anchored_threads.clone().map(|n| n + self.adapter_threads)
+    }
 }
 
 /// Declared per-resource ceilings (from a project's resource-budget file).
@@ -131,9 +169,17 @@ pub struct ResourceCeiling {
 
 /// Compare a tallied budget against declared ceilings. Returns one
 /// violation message per resource over its ceiling (empty = within
-/// budget). Resources without a declared ceiling are unconstrained.
+/// budget). Resources without a declared ceiling are unconstrained; an
+/// uncertain thread count fails a declared thread ceiling, with its
+/// reason.
 pub fn check_ceiling(b: &ResourceBudget, c: &ResourceCeiling) -> Vec<String> {
     let mut v = Vec::new();
+    if let (Err(why), Some(max)) = (b.threads(), c.pinned_threads) {
+        v.push(format!(
+            "pinned_threads (OS threads): uncertain ({why}), so no count is within the declared \
+             ceiling of {max}"
+        ));
+    }
     let mut chk = |name: &str, actual: usize, ceil: Option<usize>| {
         if let Some(max) = ceil {
             if actual > max {
@@ -144,18 +190,75 @@ pub fn check_ceiling(b: &ResourceBudget, c: &ResourceCeiling) -> Vec<String> {
             }
         }
     };
-    chk("pinned_threads (OS threads)", b.pinned_threads, c.pinned_threads);
+    if let Ok(n) = b.threads() {
+        chk("pinned_threads (OS threads)", n, c.pinned_threads);
+    }
     chk("cooperative_pools", b.cooperative_pools.len(), c.cooperative_pools);
     chk("bus_subjects", b.bus_subjects.len(), c.bus_subjects);
     chk("fd_open_sites", b.fd_open_sites, c.fd_open_sites);
     v
 }
 
-/// Walk the bundle and tally the structural resources; the fd sites
-/// from `summary`'s own rows (the `alloc_summary` family's summary).
-pub fn budget_for_programs(programs: &[&Program], summary: &AllocSummary) -> ResourceBudget {
-    let mut b = ResourceBudget::default();
-    for program in programs {
+/// Tally the program's resources: the threads and pools from `table`
+/// (the snapshot's placement table, `Snapshot::demand_placement`), the
+/// bus subjects from `bundle`'s declarations, the fd sites from
+/// `summary`'s own rows (the `alloc_summary` family's summary).
+pub fn budget_for_programs(bundle: &Bundle<'_>, table: &PlacementTable, summary: &AllocSummary) -> ResourceBudget {
+    // The threads, partitioned by the scope that creates each: a root
+    // construction's anchors under its bound, an adapter once.
+    let mut anchored_threads: Result<usize, String> = Ok(0);
+    let mut adapter_threads = 0usize;
+    for (top, bound) in table.templates() {
+        let anchors = table.per_occurrence(&top, &|k, r| table.is_anchor(k, r)) as usize;
+        if anchors == 0 {
+            continue;
+        }
+        if matches!(top.origin, Origin::Binding(_)) {
+            adapter_threads += anchors;
+            continue;
+        }
+        let live = match bound {
+            Bound::Once => Ok(anchors),
+            Bound::AtMost(n) => Ok(anchors * n as usize),
+            Bound::Unbounded(why) => Err(why),
+        };
+        anchored_threads = match (anchored_threads, live) {
+            (Ok(a), Ok(b)) => Ok(a + b),
+            (Err(why), _) | (_, Err(why)) => Err(why),
+        };
+    }
+    let cooperative_pools = table
+        .domains
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DomainKind::Pool { name, .. } => Some(name.clone()),
+            DomainKind::Main | DomainKind::Pinned { .. } => None,
+        })
+        .collect();
+    let transport_bindings = table
+        .root
+        .as_ref()
+        .and_then(|r| r.decl.decl(bundle))
+        .map_or(0, |l| {
+            l.members
+                .iter()
+                .filter_map(|m| match m {
+                    LocusMember::Bindings(bb) => Some(&bb.entries),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|e| !matches!(e.transport, TransportSpec::Adapter { .. }))
+                .count()
+        });
+    let mut b = ResourceBudget {
+        anchored_threads,
+        adapter_threads,
+        cooperative_pools,
+        bus_subjects: BTreeSet::new(),
+        fd_open_sites: 0,
+        transport_bindings,
+    };
+    for program in bundle.programs.values() {
         for item in &program.items {
             match item {
                 TopDecl::Topic(t) => {
@@ -164,11 +267,11 @@ pub fn budget_for_programs(programs: &[&Program], summary: &AllocSummary) -> Res
                     // references it dedupes via the same canonical string).
                     b.bus_subjects.insert(t.name.name.clone());
                 }
-                TopDecl::Locus(l) => collect_locus(l, &mut b),
+                TopDecl::Locus(l) => collect_subjects(l, &mut b),
                 TopDecl::Module(m) => {
                     for it in &m.items {
                         if let TopDecl::Locus(l) = it {
-                            collect_locus(l, &mut b);
+                            collect_subjects(l, &mut b);
                         } else if let TopDecl::Topic(t) = it {
                             b.bus_subjects.insert(t.name.name.clone());
                         }
@@ -200,33 +303,16 @@ pub fn budget_for_programs(programs: &[&Program], summary: &AllocSummary) -> Res
     b
 }
 
-fn collect_locus(l: &LocusDecl, b: &mut ResourceBudget) {
+fn collect_subjects(l: &LocusDecl, b: &mut ResourceBudget) {
     for member in &l.members {
-        match member {
-            LocusMember::Placement(pb) => {
-                for entry in &pb.entries {
-                    match &entry.spec {
-                        PlacementSpec::Pinned { .. } => b.pinned_threads += 1,
-                        PlacementSpec::Cooperative { pool, .. } => {
-                            let name = pool
-                                .as_ref()
-                                .map(|p| p.name.clone())
-                                .unwrap_or_else(|| "main".to_string());
-                            b.cooperative_pools.insert(name);
-                        }
-                    }
-                }
+        if let LocusMember::Bus(bus) = member {
+            for bm in &bus.members {
+                let subject = match bm {
+                    BusMember::Subscribe { subject, .. } => subject,
+                    BusMember::Publish { subject, .. } => subject,
+                };
+                b.bus_subjects.insert(subject.canonical().to_string());
             }
-            LocusMember::Bus(bus) => {
-                for bm in &bus.members {
-                    let subject = match bm {
-                        BusMember::Subscribe { subject, .. } => subject,
-                        BusMember::Publish { subject, .. } => subject,
-                    };
-                    b.bus_subjects.insert(subject.canonical().to_string());
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -235,8 +321,26 @@ impl ResourceBudget {
     /// Human-readable dump for `--dump-resource-budget`.
     pub fn render(&self) -> String {
         let mut out = String::new();
-        out.push_str("# resource budget (GH #18 item 5, count slice)\n\n");
-        out.push_str(&format!("OS threads (pinned loci):  {}\n", self.pinned_threads));
+        out.push_str("# resource budget (GH #18 item 5, count slice)\n");
+        out.push_str("#\n");
+        out.push_str("# OS threads are the placement table's: one per pinned anchor (a root field\n");
+        out.push_str("# placed `pinned`, one per replica) for each live occurrence of the construction\n");
+        out.push_str("# that builds it, and one per adapter in the root's `bindings { }`, built once.\n");
+        out.push_str("# A cooperative pool is one worker however many instances run on it; the main\n");
+        out.push_str("# thread is the program's own, never a pool. Not counted: a transport\n");
+        out.push_str("# binding's reader thread, and the serve thread a stdlib transport's birth spawns.\n\n");
+        let threads = match self.threads() {
+            Ok(n) => n.to_string(),
+            Err(why) => format!("uncertain ({why})"),
+        };
+        out.push_str(&format!("OS threads (placement):   {}\n", threads));
+        let anchored = match &self.anchored_threads {
+            Ok(n) => n.to_string(),
+            Err(why) => format!("uncertain ({why})"),
+        };
+        out.push_str(&format!("    pinned anchors:        {}\n", anchored));
+        out.push_str(&format!("    adapters:              {}\n", self.adapter_threads));
+        out.push_str("main thread:               1 (the program's own; not a pool)\n");
         out.push_str(&format!(
             "cooperative pools:         {}{}\n",
             self.cooperative_pools.len(),
@@ -254,6 +358,11 @@ impl ResourceBudget {
             out.push_str(&format!("    - {}\n", s));
         }
         out.push_str(&format!("fd acquisition sites:      {}\n", self.fd_open_sites));
+        out.push_str(&format!(
+            "not counted:               the reader threads of {} transport binding(s), and \
+             any serve thread a stdlib transport's birth spawns\n",
+            self.transport_bindings
+        ));
         out
     }
 }
@@ -263,18 +372,22 @@ mod tests {
     use super::*;
     use hale_syntax::parse_source;
 
-    /// `f` over a parsed program and its allocation summary, the one a
-    /// bundle of it holds.
-    fn summarized<T>(src: &str, f: impl FnOnce(&Program, &AllocSummary) -> T) -> T {
+    /// `f` over the bundle of a parsed program and its allocation summary,
+    /// the one the bundle holds.
+    fn summarized<T>(src: &str, f: impl FnOnce(&Bundle<'_>, &AllocSummary) -> T) -> T {
         let program = parse_source(src).expect("parse");
         let mut programs = std::collections::BTreeMap::new();
         programs.insert("app.hl".to_string(), &program);
-        let summary = crate::alloc_summary::derive_alloc_summary(&crate::symbol::Bundle::new(programs));
-        f(&program, &summary)
+        let bundle = Bundle::new(programs);
+        let summary = crate::alloc_summary::derive_alloc_summary(&bundle);
+        f(&bundle, &summary)
     }
 
+    /// The subjects and fd sites, which read no placement: the table is
+    /// empty. The placement accounting (threads, pools) is pinned through
+    /// the frontend's load, in `tests/resource_budget.rs`.
     fn budget(src: &str) -> ResourceBudget {
-        summarized(src, |program, summary| budget_for_programs(&[program], summary))
+        summarized(src, |bundle, summary| budget_for_programs(bundle, &PlacementTable::default(), summary))
     }
 
     #[test]
@@ -391,7 +504,7 @@ mod tests {
     #[test]
     fn no_resources_in_a_plain_program() {
         let b = budget("fn main() { println(\"hi\"); }");
-        assert_eq!(b.pinned_threads, 0);
+        assert_eq!(b.threads(), Ok(0));
         assert!(b.cooperative_pools.is_empty());
         assert!(b.bus_subjects.is_empty());
     }

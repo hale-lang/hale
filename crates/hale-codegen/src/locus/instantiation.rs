@@ -2678,11 +2678,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // checker reaches this. `build_executable` does NOT
                 // run the checker, and neither does a direct codegen
                 // embedder — refuse there rather than drop the
-                // placement the author wrote.
+                // placement the author wrote. An entry that decides no
+                // field family (the table's hole) is refused the same.
                 if self
                     .deployment
                     .main_placement_map
                     .contains_key(fname.as_str())
+                    || self.deployment.undecided_fields.contains(fname.as_str())
                 {
                     let init =
                         overrides.get(fname.as_str()).copied().or(
@@ -2712,15 +2714,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // `pinned(..., replicas = K)` field (K > 1) we emit K-1
             // extra single-threaded instances HERE; replica 0 goes
             // through the normal single-instance path below. Each
-            // replica is pinned to one core of the affinity set
-            // (round-robin) and arena-bound to the node; every one is
+            // replica is pinned to its own row's one core (the table
+            // deals the affinity set round-robin) and arena-bound to
+            // the node; every one is
             // tracked for teardown via the deferred-dissolve frame
             // (each pinned instantiation pushes onto it), so all K
             // join + dissolve at parent teardown. Parallelism = K
             // single-threaded units — no multi-worker pool, so the
             // single-consumer invariant holds per replica.
             if is_main_locus {
-                if let Some((count, cores)) = self
+                if let Some(cores) = self
+                    .deployment
                     .main_placement_replicas
                     .get(fname.as_str())
                     .cloned()
@@ -2736,12 +2740,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )));
                     };
                     let rep_expr = rep_expr.clone();
-                    for i in 1..count {
-                        let core = if cores.is_empty() {
-                            None
-                        } else {
-                            Some(cores[(i as usize) % cores.len()])
-                        };
+                    for (i, core) in cores.iter().copied().enumerate().skip(1) {
                         self.placement_for_field = Some((
                             fname.clone(),
                             ScheduleClass::Pinned(core.map(CoreSpec::Single)),
