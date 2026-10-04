@@ -2087,6 +2087,25 @@ its `KNOWN_OPEN` table.
   incarnation enters none (`l01_neg_same_pool_held.hl`); a flow's run
   end, which is its reclaim, is entered as its first incarnation
   enters it.
+
+  Line 13 and restart during drain (below) are a failure's recovery,
+  and the compiler emits it from the lifecycle plan (F.40 phase 3,
+  L4): a restart's steps come in the order the plan's rows and edges
+  give its declaration. The recovery decision is read once the
+  handler has returned; the restart follows it, putting back the
+  params as built for a `restart_in_place` and lowering the latch
+  the failure raised, and begins the next incarnation, which owes
+  again what is owed once per incarnation: `birth()` with its
+  birth-epoch closures, then `run()` where the locus declares one.
+  Nothing is torn down between them; the instance is the same one.
+  The decision is carried out on the spine that reads it: the run
+  gate of the instantiation, the posted run's loop, a pinned locus's
+  thread, or the resume at settle. The trace build holds the resume
+  and the restart to the plan over every fixture, with three
+  departures named: a held `run()` failure's resume, which the plan
+  does not yet state (C43); a held failure's restart performed by
+  the resume at settle where the plan places it on the posted run
+  (C42); and the restart under an owner's teardown (below).
 - **Line 14, order.** Order follows the steps the compiler emits;
   latches and pending-release records keep teardown from running
   twice (§ "Lifecycle", "Order by construction"). Shipped

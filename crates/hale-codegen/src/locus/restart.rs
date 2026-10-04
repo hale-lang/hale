@@ -481,21 +481,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .into_pointer_value())
     }
 
-    /// The steps of a restart of `locus`, in the order the plan places
-    /// them (`LifecyclePlan::recovery_order`): the decision, the restart's
-    /// entry, the next incarnation's birth, and its run where the locus
-    /// owes one.
-    pub(crate) fn recovery_order(&self, locus: &str) -> Result<Vec<RecoveryStep>, CodegenError> {
-        let plan = self.lifecycle.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "`{locus}`: the lowering view carries no lifecycle plan, and the restart is read from it"
-            ))
-        })?;
-        plan.recovery_order(locus).map_err(CodegenError::Unsupported)
-    }
-
     /// Emit the bodies of every declared `__restart_<L>` /
-    /// `__resume_<L>`.
+    /// `__resume_<L>`, each locus's in the order the plan places a
+    /// restart's steps (`LifecyclePlan::recovery_order`): the decision,
+    /// the restart's entry, the next incarnation's birth, and its run
+    /// where the locus owes one.
     pub(crate) fn define_restart_fns(&mut self) -> Result<(), CodegenError> {
         let saved_block = self.builder.get_insert_block();
         let entries: Vec<(String, RestartFns<'ctx>)> =
@@ -506,8 +496,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(&name)
                 .cloned()
                 .expect("restart fns are declared for user loci");
-            self.define_restart_fn(&name, &info, fns.restart)?;
-            self.define_resume_fn(&name, &info, fns)?;
+            let plan = self.lifecycle.ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "`{name}`: the lowering view carries no lifecycle plan, and the restart is read from it"
+                ))
+            })?;
+            let order = plan.recovery_order(&name).map_err(CodegenError::Unsupported)?;
+            self.define_restart_fn(&name, &info, fns.restart, &order)?;
+            self.define_resume_fn(&name, &info, fns, &order)?;
         }
         if let Some(bb) = saved_block {
             self.builder.position_at_end(bb);
@@ -520,6 +516,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         info: &LocusInfo<'ctx>,
         f: FunctionValue<'ctx>,
+        order: &[RecoveryStep],
     ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -545,7 +542,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The restart's own steps, in the plan's order; the decision
         // before it and the next incarnation's run after it are the
         // caller's. Nothing is torn down: the instance is the same one.
-        for step in self.recovery_order(name)? {
+        for &step in order {
             match step {
                 RecoveryStep::Restart => {
                     // restart_in_place: back to the params as built first.
@@ -637,6 +634,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         info: &LocusInfo<'ctx>,
         fns: RestartFns<'ctx>,
+        order: &[RecoveryStep],
     ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -709,7 +707,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // its first incarnation enters none. A flow's run end is its
         // reclaim, which its first incarnation enters through the same
         // wrapper, so a flow's is kept.
-        let run_owed = self.recovery_order(name)?.contains(&RecoveryStep::Run) || self.is_flow(name);
+        let run_owed = order.contains(&RecoveryStep::Run) || self.is_flow(name);
         if let Some(wrapper) = self.coop_pool_run_wrappers.get(name).copied().filter(|_| run_owed) {
             self.builder
                 .build_call(wrapper, &[self_arg.into(), ptr_t.const_null().into()], "resume.run")
