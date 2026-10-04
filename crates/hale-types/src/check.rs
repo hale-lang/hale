@@ -15513,11 +15513,10 @@ impl<'a> Checker<'a> {
     /// `allow_loci` is a per-SITE answer, not a property of the
     /// question. Codegen does the rewrite for a generic locus as
     /// well as a generic type at a `let` ascription and a return
-    /// slot; at a locus param DEFAULT and at a locus literal's field
-    /// init only a generic TYPE resolves (a generic locus there dies
-    /// with "not synthesized — discovery missed the use site"), so
-    /// those two sites pass `false` and keep check agreeing with the
-    /// build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
+    /// slot, and at a locus literal's field override. A locus param
+    /// DEFAULT and a data-record field still admit only generic TYPE
+    /// literals at this seam, so those sites pass `false` and keep
+    /// check agreeing with the build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
     /// holds the site-by-site evidence.
     fn two_spellings_of_one_monomorph(
         &self,
@@ -16042,25 +16041,13 @@ impl<'a> Checker<'a> {
                     } else {
                         false
                     };
-                    // GH #911 B5: `Outer { inner: Box { value: 9 } }`
-                    // where `inner: Box<Int>` — the field's declared
-                    // type resolved to the mangled monomorph, the
-                    // literal typed as the template.
-                    // `populate_user_type_fields` rewrites the bare
-                    // name against the declared field type, so a
-                    // TYPE literal's field init builds and runs.
-                    //
-                    // TYPE literals only, and generic types only.
-                    // Codegen's locus-literal path has no such
-                    // rewrite (it rewrites a param DEFAULT, not a
-                    // field init at the literal), and
-                    // `L { b: Box { value: 8 } }` dies at build — so
-                    // a locus literal keeps the plain mismatch below,
-                    // the same call PR #531's review made for
-                    // perspective designation.
-                    let monomorph_field = kind_label == "type"
+                    // A declared field type supplies a bare generic
+                    // literal's arguments. Locus overrides now perform
+                    // the same rewrite as typed defaults; data-record
+                    // fields still admit only generic data types.
+                    let monomorph_field = matches!(kind_label, "type" | "locus")
                         && self.two_spellings_of_one_monomorph(
-                            want, &got, false,
+                            want, &got, kind_label == "locus",
                         );
                     if !interface_satisfied
                         && !perspective_designated

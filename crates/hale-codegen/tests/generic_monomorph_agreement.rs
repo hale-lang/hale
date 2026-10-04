@@ -497,10 +497,9 @@ fn main() {
 }
 
 #[test]
-fn a_generic_literal_at_a_locus_literals_field_stays_refused() {
-    // The struct-literal twin (`Outer { inner: Box { value: 9 } }`)
-    // builds; codegen's locus-literal path rewrites no bare generic
-    // name, so this one does not.
+fn a_generic_literal_at_a_locus_literals_field_uses_its_declared_type() {
+    // The explicit field override takes its generic arguments from
+    // the declared field type, like a param default.
     agree(
         "locus_literal_field",
         r#"
@@ -521,7 +520,7 @@ fn main() {
     let l: L = L { b: Box { value: 8 } };
 }
 "#,
-        &Expect::Refused("locus `L`: field `b` expects `Box_Int`, got `Box`"),
+        &Expect::Runs("v=8"),
     );
 }
 

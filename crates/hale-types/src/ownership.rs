@@ -1792,13 +1792,19 @@ fn refine_field_kinds(
                     for m in &l.members {
                         if let LocusMember::Params(p) = m {
                             for pd in &p.params {
-                                let kind = param_field_kind(
-                                    pd.ty.as_ref(),
-                                    &pd.init,
-                                    loci,
-                                    ifaces,
-                                    renames,
-                                );
+                                // A bare type parameter may specialize to
+                                // a handle. Only locus-producing values
+                                // acquire a field owner in walk_field_init;
+                                // scalar expressions produce no owned row.
+                                let generic = matches!(&pd.ty,
+                                    Some(TypeExpr::Named { path, generic_args, .. })
+                                    if generic_args.is_empty() && path.segments.len() == 1
+                                        && l.generics.iter().any(|g| g.name.name == path.segments[0].name));
+                                let kind = if generic {
+                                    FieldKind::Holder
+                                } else {
+                                    param_field_kind(pd.ty.as_ref(), &pd.init, loci, ifaces, renames)
+                                };
                                 fs.insert(pd.name.name.clone(), kind);
                             }
                         }

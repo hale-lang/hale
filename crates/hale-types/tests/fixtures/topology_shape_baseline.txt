@@ -743,6 +743,7 @@ crates/hale-codegen/tests/gate_counters.rs#1 f21a527aa7a90794
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#1 374369a4789d634b
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#15 8de9b2f27ae47148
+crates/hale-codegen/tests/generic_monomorph_agreement.rs#16 8de9b2f27ae47148
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#18 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#19 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#2 19c7ef92753cbc46
@@ -1003,6 +1004,8 @@ crates/hale-codegen/tests/obs_net_seq.rs#1 304944bd620cd334
 crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#0 afa7b4b1458e2788
 crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#1 afa7b4b1458e2788
 crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#2 c31f3127d0b085e6
+crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#3 44b4368fba9bf97f
+crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#4 76218e675d65eec6
 crates/hale-codegen/tests/or_block_disposer.rs#0 8321183f441b55cc
 crates/hale-codegen/tests/or_block_disposer.rs#1 8321183f441b55cc
 crates/hale-codegen/tests/or_block_disposer.rs#2 227c1d5e90db3a24

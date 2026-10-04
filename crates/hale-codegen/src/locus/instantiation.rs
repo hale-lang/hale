@@ -2876,7 +2876,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         (own_site_id, cx)
                     });
-                    let r = self.lower_expr(expr, scope);
+                    // A generic field gives its bare child literal
+                    // the same concrete type hint as a typed default.
+                    // Renaming preserves the source site's owner.
+                    let rewritten;
+                    let value = match (expr, info.fields.get(fname)) {
+                        (Expr::Struct { path, inits, span, id }, Some((_, ty))) => {
+                            match self.resolve_generic_struct_path_for_codegen_ty(path, ty) {
+                                Some(path) => {
+                                    rewritten = Expr::Struct {
+                                        path, inits: inits.clone(), span: *span, id: *id,
+                                    };
+                                    &rewritten
+                                }
+                                None => expr,
+                            }
+                        }
+                        _ => expr,
+                    };
+                    let r = self.lower_expr(value, scope);
                     self.field_holder = None;
                     let r = r?;
                     self.params_init_initialized = inner_init;

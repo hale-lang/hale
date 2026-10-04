@@ -261,7 +261,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Ok(CodegenTy::TypeRef(mangled))
                 } else if self.user_enums.contains_key(&mangled) {
                     Ok(CodegenTy::Enum(mangled))
-                } else if self.user_loci.contains_key(&mangled) {
+                } else if self.user_loci.contains_key(&mangled)
+                    || self.pending_locus_names.contains(&mangled)
+                {
+                    // A referenced monomorph may be declared later in
+                    // the locus layout pass; its name was registered
+                    // after synthesis, so this is still a known locus.
                     // m63: generic locus instantiation —
                     // resolves to a LocusRef pointing at the
                     // synthesized concrete locus.

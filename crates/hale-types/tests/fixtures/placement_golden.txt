@@ -2481,6 +2481,9 @@ dynamic	Cache	on main	in the seed
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#44e97b16
 row	L@main1	L	main	default
 
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#6f45e6cb
+row	L@main1	L	main	default
+
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#003aba50
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 
@@ -3134,6 +3137,22 @@ row	~	Sup	main	default
 row	~.a	A	main	inherited
 row	~.b	B	main	inherited
 row	~.c	C	main	inherited
+
+== crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#f05cd629
+hole	Supervisor@main1	unresolved arguments
+hole	Supervisor@main2	unresolved arguments
+shared	Supervisor@main1	Supervisor #01c6fdde
+shared	Supervisor@main2	Supervisor #01c6fdde
+
+== crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#213cefca
+hole	Supervisor@main1	unresolved arguments
+hole	Supervisor@main2	unresolved arguments
+-- Supervisor@main1	Supervisor
+row	~	Supervisor	main	default
+row	~.child	Alpha	main	inherited
+-- Supervisor@main2	Supervisor
+row	~	Supervisor	main	default
+row	~.child	Beta	main	inherited
 
 == crates/hale-codegen/tests/or_fallible_handler.rs#fbcec405
 row	Q@main1	Q	main	default
@@ -13185,6 +13204,10 @@ row	~.s	SessionSigner	main	inherited
 == shared Router #f7d48509
 row	~	Router	main	default
 row	~.quick	Quick	main	inherited
+
+== shared Supervisor #01c6fdde
+row	~	Supervisor	main	default
+row	~.child	Cell_T	main	inherited
 
 == shared Support #2066d0f8
 row	~	Support	main	default

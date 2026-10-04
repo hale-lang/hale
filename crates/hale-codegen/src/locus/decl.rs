@@ -2095,8 +2095,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // parent. The table is the routing rows' (F.40 phase 1.4): one
         // fn per row, keyed by the row's site, so the handler fn is a
         // column of the row. The rows are asked for by this
-        // declaration's identity (`handlers_of_decl`); a monomorph
-        // keeps its template's id, so it reads its template's rows.
+        // declaration's identity and specialization (`handlers_of_instance`);
+        // a monomorph reads its template's rows with concrete child types.
         // Each declaration finds its row by identity (`is_row_of`), and
         // every reader then goes by the row's site: the body pass
         // (method.rs) and a route (`failure_handler_for`).
@@ -2105,7 +2105,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // handler keeps the plain `<L>.on_failure` symbol; later ones
         // carry their child type (LLVM uniquifies a repeat).
         let rows: Vec<hale_types::handler_routing::HandlerRow> =
-            self.handlers.handlers_of_decl(l.id).cloned().collect();
+            self.handlers.handlers_of_instance(l.id, &l.name.name).cloned().collect();
         if rows.len() != failure_decls {
             return Err(CodegenError::Unsupported(format!(
                 "locus `{}` declares {} on_failure handler(s) but the \

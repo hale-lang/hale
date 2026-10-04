@@ -8380,6 +8380,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .ownership_accept_rows
                     .specialize(template, |t| Self::substitute_type_expr(t, &subst));
                 self.specialized_accepts.insert(mangled.clone(), accepts);
+                // Handler sites stay the template's, while their child
+                // types use this monomorph's substitution and route.
+                self.handlers.specialize(template, &mangled, |t| {
+                    Self::substitute_type_expr(t, &subst)
+                });
                 // The elision rows answer for it too: the same producer
                 // over the synthesized declaration.
                 let elision = self.alloc_routing.specialize(&synthesized);
@@ -12018,7 +12023,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 span: c.span.clone(),
                 id: c.id,
             }),
-            // Mode, Failure, Closure, Contract, Type pass through
+            LocusMember::Failure(fd) => {
+                let mut specialized = fd.clone();
+                for param in &mut specialized.params {
+                    param.ty = Self::substitute_type_expr(&param.ty, subst);
+                }
+                specialized.body = Self::substitute_block_type_ascriptions(&fd.body, subst);
+                LocusMember::Failure(specialized)
+            }
+            // Mode, Closure, Contract, Type pass through
             // unchanged at v0.1; m63b can extend them when a
             // workload exercises generic loci that use those
             // surfaces.
@@ -12602,8 +12615,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
             }
+            LocusMember::Failure(fd) => {
+                for param in &fd.params {
+                    Self::collect_generic_uses(&param.ty, generic_names, seen, requests)?;
+                }
+                Self::collect_in_block(&fd.body, generic_names, seen, requests)?;
+            }
             LocusMember::Contract(_)
-            | LocusMember::Failure(_)
             | LocusMember::Closure(_)
             | LocusMember::Type(_)
             | LocusMember::Bindings(_)

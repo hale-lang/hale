@@ -178,7 +178,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         for failure_decl in failure_decls {
             let row = self
                 .handlers
-                .handlers_of_decl(info.decl)
+                .handlers_of_instance(info.decl, &l.name.name)
                 .find(|r| r.is_row_of(failure_decl))
                 .ok_or_else(|| {
                     CodegenError::Unsupported(format!(
