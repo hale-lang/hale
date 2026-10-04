@@ -5903,6 +5903,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.emit_process_rows(spine, false, true)
     }
 
+    /// One of `fn main`'s exits, the fall-through, the test failure and
+    /// `return` (C21–C23): the exit spine's process rows read from the
+    /// plan, the head before the frame (`emit_teardown_obligations`) and
+    /// the rest from its pre-drain on, in the flush (`main_exit`); the
+    /// frame's entries; the process exit tail (C24: the global arena,
+    /// then the bus queue and router); `ret code`.
+    ///
+    /// The head joins the cooperative pools before any entry is torn
+    /// down (2026-05-30): a worker may have a coro parked inside a
+    /// locus's run() (a listener in accept()), and the join wakes and
+    /// cancels it while the locus's arena is still valid; it also keeps
+    /// workers joined before arena_destroy (the F.32-1γ-v2 TSAN fix).
+    /// Its ingress quiesce drains kernel-accepted LISTEN ingress through
+    /// the intact registry first (GH #468). Which rows a target emits is
+    /// its cells' (line 16: no pool join or quiesce on wasm32).
+    fn emit_main_exit(
+        &mut self,
+        spine: Spine,
+        frame: Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>,
+        code: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let lc_outer = std::mem::replace(&mut self.lc_spine, spine.name());
+        self.emit_teardown_obligations(spine)?;
+        self.main_exit = Some(spine);
+        self.emit_frame_teardown(frame, true)?;
+        self.lc_spine = lc_outer;
+        self.emit_arena_destroy()?;
+        self.emit_bus_queue_destroy()?;
+        self.builder.build_return(Some(&code)).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     /// The rest of a `fn main` exit's process obligations, emitted by its
     /// frame flush: the spine's rows from the frame's pre-drain on, in the
     /// plan's order (line 18's pre-drain, then, where the spine owes no
@@ -6053,11 +6085,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .deferred_dissolves
             .pop()
             .expect("flush without matching push");
-        // GH #717: main's teardown spine is now emitted from two
-        // places — this flush (the fall-through / `return` exits)
-        // and the recorded-assertion-failure exit block. Record
-        // main's own entries as they pass through so the failure
-        // block can emit the same teardown.
+        // GH #717: the recorded-assertion-failure exit tears down every
+        // entry main's frame ever held. The fall-through exit notes them
+        // itself (`emit_main_exit`'s caller); a flush of main's frame
+        // through here notes them too.
         if self.in_main
             && self.deferred_dissolves.len() + 1 == self.main_frame_depth
         {
@@ -6069,8 +6100,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// GH #717: merge main's frame entries into the set the
     /// assertion-failure exit block tears down.
     ///
-    /// Main's frame passes through `flush_dissolve_frame_kind` (or the
-    /// bare pop) once, at main's fall-through exit — a `return` in the
+    /// Main's frame is popped once, at main's fall-through exit (torn
+    /// down there, or dropped when the body never falls through) — a `return` in the
     /// middle of `main` emits its teardown from a CLONE and leaves the
     /// frame in place (GH #789), so that single pass carries every
     /// entry. The union is kept anyway: it is keyed on the dominating
@@ -9364,43 +9395,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // both `break`/`return`), the trailing block is already
         // closed and writing more IR is unsound.
         if end == BlockEnd::Open {
-            // Join cooperative-pool workers BEFORE the dissolve
-            // cascade (2026-05-30, wakeable-park prototype). A worker
-            // may have a coro PARKED inside a locus's run() (e.g. a
-            // listener in accept()); shutdown_all now wakes+cancels it
-            // so it unwinds. That must happen while the locus's arena
-            // is still valid — if flush_dissolve_frame dissolved the
-            // locus first, the resuming coro would read its `self`
-            // from freed memory (observed: core dump). Joining first
-            // also preserves the prior invariant (workers joined
-            // before arena_destroy — the F.32-1γ-v2 TSAN fix).
-            // WASM plan (entry inversion): no worker threads on wasm, so
-            // skip the pool join/cancel (its body references
-            // pthread_join + the wake-fd close, which would otherwise
-            // survive as host imports).
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainFallThrough");
-            // GH #468: drain kernel-accepted LISTEN ingress
-            // through the intact registry BEFORE pools join and
-            // loci dissolve — the exit half of the delivery
-            // contract (the boot half is the readers' early-
-            // ingress buffer). The obligations are the cells' and their
-            // order the plan's (`emit_teardown_obligations`).
-            self.emit_teardown_obligations(Spine::MainFallThrough)?;
-            self.main_exit = Some(Spine::MainFallThrough);
-            self.flush_dissolve_frame()?;
-            self.lc_spine = lc_outer;
-            // Tear down the arena before exit. exit(0) via `ret`
-            // would drop the chunk linked list either way (process
-            // exit reclaims everything), but going through
-            // lotus_arena_destroy keeps this path equivalent to
-            // the early-return path emitted in `lower_return` when
-            // a user `return n;` from main runs.
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
+            // The fall-through exit (C21) pops main's frame, noting its
+            // entries for the assertion-failure exit below (GH #717).
+            let frame = self.deferred_dissolves.pop().expect("main's dissolve frame");
+            self.note_main_dissolve_entries(&frame);
             let zero = i32_t.const_int(0, false);
-            self.builder
-                .build_return(Some(&zero))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_main_exit(Spine::MainFallThrough, frame, zero)?;
         } else {
             // Body terminated unconditionally — drop the frame
             // without emitting the dissolve calls. Any deferred
@@ -9413,29 +9413,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // assertion-failure block below still needs the entries.
             self.note_main_dissolve_entries(&dropped);
         }
-        // GH #717: fill the recorded-assertion-failure exit block, if
-        // any `std::test::assert*` call site in main branched to it.
-        // Same spine as the fall-through / `return` exits above —
-        // ingress quiesce, pool join, main's dissolve cascade, arena +
-        // bus-queue destroy — then `ret 1`. Emitted last so the frame
-        // it tears down is complete: entries whose instantiation this
-        // path never reached hold a NULL self slot and are skipped.
-        // `in_main` is still set, so the flush's GH #255 wait-abort
-        // fires here too.
+        // GH #717: fill the recorded-assertion-failure exit block (C22),
+        // if any `std::test::assert*` call site in main branched to it,
+        // then `ret 1`. Emitted last so the frame it tears down is
+        // complete: entries whose instantiation this path never reached
+        // hold a NULL self slot and are skipped.
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
-            self.emit_teardown_obligations(Spine::MainTestFailure)?;
-            self.main_exit = Some(Spine::MainTestFailure);
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
-            self.emit_frame_teardown(frame, true)?;
-            self.lc_spine = lc_outer;
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
             let one = i32_t.const_int(1, false);
-            self.builder
-                .build_return(Some(&one))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_main_exit(Spine::MainTestFailure, frame, one)?;
         }
         self.main_dissolve_frame = None;
         self.main_frame_depth = usize::MAX;
@@ -21950,23 +21937,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 }
             };
-            // Join cooperative-pool workers FIRST so a coro
-            // parked inside a locus's run() is woken+unwound while its
-            // arena is still valid — see the matching block in
-            // `lower_program`'s main-exit path (2026-05-30, extends
-            // the 2026-05-26 substrate-race fix). Then flush the
-            // dissolve frame (which now includes any locus the return
-            // expr itself instantiated), then tear down the arena.
-            // WASM plan (entry inversion): no worker threads on wasm, so
-            // skip the pool join/cancel (its body references
-            // pthread_join + the wake-fd close, which would otherwise
-            // survive as host imports).
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainReturn");
-            // GH #468: same exit-quiesce as the fallthrough
-            // main-exit path — return-from-main must not lose
-            // kernel-accepted ingress either. The obligations are the
-            // cells' and their order the plan's.
-            self.emit_teardown_obligations(Spine::MainReturn)?;
+            // The `return` exit (C23), through the same helper as the
+            // fall-through and the failure exit (`emit_main_exit`).
             // GH #789: emit the teardown for everything main owns at
             // this point, but LEAVE the frame on the stack. `return`
             // terminates its own block, so the frame is still the
@@ -22000,14 +21972,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // `in_main` clear.
             let frame =
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
-            self.main_exit = Some(Spine::MainReturn);
-            self.emit_frame_teardown(frame, true)?;
-            self.lc_spine = lc_outer;
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
-            self.builder
-                .build_return(Some(&code))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_main_exit(Spine::MainReturn, frame, code)?;
             return Ok(BlockEnd::Terminated);
         }
         let ret_ty = self.current_user_fn_ret.clone().ok_or_else(|| {
