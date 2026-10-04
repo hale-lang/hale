@@ -843,3 +843,174 @@ fn main() {
     assert!(stdout.contains("a=1 b=1 early=0"), "wrong receiver or readiness: {stdout}");
     assert!(stdout.contains("payload-123 payload-123"), "payload did not survive: {stdout}");
 }
+
+/// The PR #1336 review's arrangement: `Pumper`'s handler, on pool
+/// `side`'s worker, sends 200 flat cells to `Sub` while `Sub`'s birth
+/// (on the instantiating thread) holds its delivery, with another cell
+/// queued on `side` behind the handler. `SUBPOOL` places `Sub`. An
+/// ordinary string, not a raw one: the corpus harvests raw string
+/// programs out of test files, and this one belongs to these tests.
+const READINESS_CAP_POOL: &str = "type Ping { n: Int; }
+topic Pings { payload: Ping; }
+topic Go { payload: Ping; }
+topic Other { payload: Ping; }
+locus Pumper {
+    params { others: Int = 0; took: Int = 0; }
+    bus { subscribe Go as on_go; subscribe Other as on_other; publish Pings; }
+    fn on_go(g: Ping) {
+        let t0 = std::time::monotonic_ns();
+        for i in 0..g.n { Pings <- Ping { n: i }; }
+        self.took = (std::time::monotonic_ns() - t0) / 1000000;
+    }
+    fn on_other(o: Ping) { self.others = self.others + 1; }
+}
+locus Sub {
+    params { born: Int = 0; early: Int = 0; heard: Int = 0; next: Int = 0; disorder: Int = 0; }
+    bus { subscribe Pings as on_ping; publish Go; publish Other; }
+    fn on_ping(p: Ping) {
+        if self.born == 0 { self.early = self.early + 1; }
+        if p.n != self.next { self.disorder = self.disorder + 1; }
+        self.next = p.n + 1;
+        self.heard = self.heard + 1;
+    }
+    birth() {
+        Go <- Ping { n: 200 };
+        Other <- Ping { n: 0 };
+        std::time::sleep(200ms);
+        self.born = 1;
+    }
+}
+main locus App {
+    params { p: Pumper = Pumper { }; s: Sub = Sub { }; }
+    placement { p: cooperative(pool = side); s: cooperative(pool = SUBPOOL); }
+    run() {
+        std::time::sleep(100ms);
+        println(\"heard=\", self.s.heard, \" early=\", self.s.early, \" disorder=\", self.s.disorder, \" others=\", self.p.others);
+        if self.p.took >= 100 { println(\"publisher waited\"); } else { println(\"publisher never waited\"); }
+    }
+}
+fn main() { App { }; }
+";
+
+/// Build `src` under ASan in one dispatch mode and run it with a
+/// 64-cell queue cap; the stdout of a run that finished cleanly.
+fn run_at_readiness_cap(name: &str, src: &str, no_bus_devirt: bool) -> String {
+    let program = parse(src);
+    let bin = harness::unique_bin(name);
+    let opts = hale_codegen::BuildOptions { asan: true, no_bus_devirt, ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    let mut child = Command::new(&bin)
+        .env("LOTUS_BUS_QUEUE_CAP", "64")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn().expect("run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut timed_out = false;
+    while child.try_wait().expect("status").is_none() {
+        if std::time::Instant::now() >= deadline {
+            timed_out = true;
+            child.kill().expect("stop the stalled child");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let out = child.wait_with_output().expect("output");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let mode = if no_bus_devirt { "dispatch" } else { "devirt" };
+    assert!(!timed_out, "{name} ({mode}): readiness deadlocked; stdout: {stdout}");
+    assert!(out.status.success(), "{name} ({mode}): non-zero: {:?}: {stderr}", out.status);
+    assert!(!stderr.contains("AddressSanitizer"), "{name} ({mode}): {stderr}");
+    stdout
+}
+
+/// PR #1336 review (P1): a pool's worker publishing past the readiness
+/// cap to a held subscriber on its own pool parks instead of waiting,
+/// so the readiness step's posts into that pool always drain. Before,
+/// the worker waited at the cap and readiness blocked on the ring only
+/// that worker drains. Every cell arrives once, in order, after birth.
+#[test]
+fn a_pool_worker_never_waits_at_the_readiness_cap_for_its_own_pool() {
+    let src = READINESS_CAP_POOL.replace("SUBPOOL", "side");
+    for no_bus_devirt in [false, true] {
+        let stdout = run_at_readiness_cap("hale_readiness_cap_own_pool", &src, no_bus_devirt);
+        assert!(stdout.contains("heard=200 early=0 disorder=0 others=1"), "lost, early or reordered: {stdout}");
+        assert!(stdout.contains("publisher never waited"), "the pool's own worker waited at the cap: {stdout}");
+    }
+}
+
+/// The control: a publisher on another domain (`Sub` on pool `other`)
+/// keeps the bounded wait. It waits at the cap until `Sub`'s readiness,
+/// then every cell arrives once, in order, after birth.
+#[test]
+fn a_publisher_on_another_domain_still_waits_at_the_readiness_cap() {
+    let src = READINESS_CAP_POOL.replace("SUBPOOL", "other");
+    for no_bus_devirt in [false, true] {
+        let stdout = run_at_readiness_cap("hale_readiness_cap_other_pool", &src, no_bus_devirt);
+        assert!(stdout.contains("heard=200 early=0 disorder=0 others=1"), "lost, early or reordered: {stdout}");
+        assert!(stdout.contains("publisher waited"), "a cross-domain publisher skipped the cap: {stdout}");
+    }
+}
+
+/// The pinned twin: a nested `Pumper`'s handler, drained on the pinned
+/// `Sub`'s own thread during its birth, sends 200 cells to the held
+/// `Sub`, with another cell queued in its mailbox. The thread that
+/// drains the mailbox never waits at the cap; readiness posts into it.
+/// `Quiet` keeps `Go` and `Other` posted rather than fused to a call.
+#[test]
+fn a_pinned_thread_never_waits_at_the_readiness_cap_for_its_own_mailbox() {
+    let src = "type Ping { n: Int; }
+topic Pings { payload: Ping; }
+topic Go { payload: Ping; }
+topic Other { payload: Ping; }
+locus Pumper {
+    params { others: Int = 0; took: Int = 0; }
+    bus { subscribe Go as on_go; subscribe Other as on_other; publish Pings; }
+    fn on_go(g: Ping) {
+        let t0 = std::time::monotonic_ns();
+        for i in 0..g.n { Pings <- Ping { n: i }; }
+        self.took = (std::time::monotonic_ns() - t0) / 1000000;
+    }
+    fn on_other(o: Ping) { self.others = self.others + 1; }
+}
+locus Quiet {
+    params { seen: Int = 0; }
+    bus { subscribe Go as on_go; subscribe Other as on_other; }
+    fn on_go(g: Ping) { self.seen = self.seen + 1; }
+    fn on_other(o: Ping) { self.seen = self.seen + 1; }
+}
+locus Sub {
+    params { p: Pumper = Pumper { }; q: Quiet = Quiet { }; born: Int = 0; early: Int = 0; heard: Int = 0; next: Int = 0; disorder: Int = 0; }
+    bus { subscribe Pings as on_ping; publish Go; publish Other; }
+    fn on_ping(p: Ping) {
+        if self.born == 0 { self.early = self.early + 1; }
+        if p.n != self.next { self.disorder = self.disorder + 1; }
+        self.next = p.n + 1;
+        self.heard = self.heard + 1;
+    }
+    birth() {
+        Go <- Ping { n: 200 };
+        Other <- Ping { n: 0 };
+        std::time::sleep(200ms);
+        self.born = 1;
+    }
+    run() {
+        std::time::sleep(50ms);
+        println(\"heard=\", self.heard, \" early=\", self.early, \" disorder=\", self.disorder, \" others=\", self.p.others, \" seen=\", self.q.seen);
+        if self.p.took >= 100 { println(\"publisher waited\"); } else { println(\"publisher never waited\"); }
+    }
+}
+main locus App {
+    params { s: Sub = Sub { }; }
+    placement { s: pinned; }
+    run() { std::time::sleep(400ms); }
+}
+fn main() { App { }; }
+";
+    for no_bus_devirt in [false, true] {
+        let stdout = run_at_readiness_cap("hale_readiness_cap_pinned", src, no_bus_devirt);
+        assert!(stdout.contains("heard=200 early=0 disorder=0 others=1 seen=2"), "lost, early or reordered: {stdout}");
+        assert!(stdout.contains("publisher never waited"), "the pinned thread waited at its own cap: {stdout}");
+    }
+}

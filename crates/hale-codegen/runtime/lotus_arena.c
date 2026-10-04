@@ -8048,6 +8048,11 @@ typedef struct lotus_mailbox {
  * mailbox's own (pinned consumer) thread, which must not block. */
 lotus_mailbox_t *lotus_mailbox_get_current(void);
 
+/* Defined with the readiness windows below: a producer about to block
+ * on a full ring wakes the threads waiting at a readiness cap, so a
+ * consumer among them stops waiting and drains (decision line 6). */
+static void lotus_bus_ready_kick(void);
+
 lotus_mailbox_t *lotus_mailbox_create(void) {
     lotus_mailbox_t *mb = NULL;
     /* 64-byte alignment: the ring's enqueue/dequeue cursors are
@@ -8179,6 +8184,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
             atomic_thread_fence(memory_order_seq_cst);
             enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
             if (!enq) {
+                lotus_bus_ready_kick();
                 pthread_cond_wait(&mb->not_full, &mb->lock);
                 atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
                                           memory_order_seq_cst);
@@ -9445,6 +9451,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
             atomic_thread_fence(memory_order_seq_cst);
             enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
             if (!enq) {
+                lotus_bus_ready_kick();
                 pthread_cond_wait(&p->not_full, &p->lock);
                 atomic_fetch_sub_explicit(&p->producers_waiting, 1,
                                           memory_order_seq_cst);
@@ -12285,9 +12292,13 @@ static int lotus_bus_log_drop_enabled(void);
  * `lotus_bus_unready_count` (exported: a baked direct publish reads
  * it to take the helper while any subscriber is held). Parking is
  * bounded as the queue is: a publisher on another thread waits at the
- * queue's cap until the birth completes. A subscriber quarantined or
- * torn down with its window open drops what it parked
- * (`lotus_bus_quarantine_self`). Pinned subscribers use the same window:
+ * queue's cap until the birth completes, except the subscriber's own
+ * consumer (its pool's worker, the pinned thread draining its mailbox)
+ * and a consumer a producer is blocked on, which park past it so the
+ * readiness step's posts always drain (`lotus_bus_ready_may_wait`).
+ * A subscriber quarantined or torn down with its window open drops
+ * what it parked (`lotus_bus_quarantine_self`). Pinned subscribers use
+ * the same window:
  * their mailbox stays current so already-born nested subscribers can
  * make progress, and a birth that publishes beyond the mailbox cap
  * never waits on its own consumer. */
@@ -12376,6 +12387,48 @@ int32_t lotus_bus_is_unready(void *self) {
     return held;
 }
 
+/* Threads waiting at a readiness cap, counted under the lock. */
+static int g_bus_ready_waiters = 0;
+
+/* A producer about to block on a full ring (its `producers_waiting`
+ * already counted): wake the cap waiters, so the ring's consumer, if it
+ * is one of them, sees that count and stops waiting. The two counts
+ * are a Dekker pair (seq_cst): a waiter counts itself before it reads
+ * a ring's, and the producer counts itself before it reads this one,
+ * so at least one sees the other. Lock order: a ring's lock, then this
+ * one; nothing takes a ring's lock while holding this one. */
+static void lotus_bus_ready_kick(void) {
+    if (__atomic_load_n(&g_bus_ready_waiters, __ATOMIC_SEQ_CST) == 0) return;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    pthread_cond_broadcast(&g_bus_ready_cond);
+    pthread_mutex_unlock(&g_bus_ready_lock);
+}
+
+/* Whether this thread may wait at `u`'s cap, for a cell routed to
+ * `mailbox` or `coop_pool`. Not the thread running its birth (it would
+ * wait on itself). Not the cell's own consumer, the worker of the pool
+ * it goes to or the pinned thread draining its mailbox: readiness
+ * posts what is parked into that ring, so the consumer parks past the
+ * cap, as a self-publish never blocks on its own full ring. And not a
+ * consumer some producer is blocked on: that producer may be a
+ * readiness step posting parked cells (or wait on one that is), and
+ * only this thread frees its slots. */
+static int lotus_bus_ready_may_wait(const lotus_bus_unready_t *u,
+                                    lotus_mailbox_t *mailbox,
+                                    lotus_coop_pool_t *coop_pool) {
+    if (u->has_birth_thread && pthread_equal(u->birth_thread, pthread_self()))
+        return 0;
+    lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
+    lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
+    if (mailbox ? mailbox == own_mb : (coop_pool && coop_pool == own_pool))
+        return 0;
+    if (own_mb && atomic_load_explicit(&own_mb->producers_waiting, memory_order_seq_cst) > 0)
+        return 0;
+    if (own_pool && atomic_load_explicit(&own_pool->producers_waiting, memory_order_seq_cst) > 0)
+        return 0;
+    return 1;
+}
+
 /* 1 = parked: `self` is held, and the cell waits for its readiness. */
 static int lotus_bus_park_if_unready(void *handler, void *self,
                                      lotus_mailbox_t *mailbox,
@@ -12388,13 +12441,18 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
     if (!mailbox && !coop_pool && !queue) return 0;
     pthread_mutex_lock(&g_bus_ready_lock);
     lotus_bus_unready_t *u = lotus_bus_unready_find(self);
-    /* Bounded as the queue is: a publisher on another thread waits at
-     * the queue's cap for the birth to complete (the birth's own
-     * thread never waits on itself). */
-    while (u && u->parked >= bus_queue_max_cap()
-           && !(u->has_birth_thread && pthread_equal(u->birth_thread, pthread_self()))) {
-        pthread_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
-        u = lotus_bus_unready_find(self);
+    /* Bounded as the queue is: a publisher waits at the queue's cap
+     * for the birth to complete, unless waiting could hold up the
+     * readiness step it waits for (`lotus_bus_ready_may_wait`). It
+     * still parks behind every earlier cell. */
+    if (u && u->parked >= bus_queue_max_cap()) {
+        __atomic_add_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
+        while (u && u->parked >= bus_queue_max_cap()
+               && lotus_bus_ready_may_wait(u, mailbox, coop_pool)) {
+            pthread_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
+            u = lotus_bus_unready_find(self);
+        }
+        __atomic_sub_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
     }
     if (!u) {
         pthread_mutex_unlock(&g_bus_ready_lock);

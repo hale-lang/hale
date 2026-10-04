@@ -1955,7 +1955,16 @@ its `KNOWN_OPEN` table.
   (`lotus_bus_ready`, right after the birth) posts them, ahead of
   any published after. A publisher on another thread waits once
   the window holds a queue's worth. The thread running birth does
-  not wait on its own window. A pinned subscriber transfers that
+  not wait on its own window. Nor does the subscriber's own
+  consumer, the worker of the pool it is placed on or the pinned
+  thread that drains its mailbox: readiness posts the parked cells
+  into that consumer's queue, so it parks past the bound, as a
+  self-publish never blocks on its own full queue
+  (`topic_phase2.rs`, with a cross-domain control that still
+  waits). Nor does a consumer that a producer is blocked on,
+  since that producer may be a readiness step posting parked
+  cells, or wait on one. Either still parks behind every earlier
+  cell, so order holds. A pinned subscriber transfers that
   exemption to its thread before birth; its mailbox stays current
   so already-born nested subscribers can continue receiving. The closed-world optimization that turns a send
   into a direct call (`spec/semantics.md` § "Topic declarations →
