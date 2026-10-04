@@ -208,3 +208,27 @@ fn the_matrix_roles_read_the_deployed_roots_binding() {
     assert!(second.contains("more than one `main` locus declared"), "{second}");
     assert!(!second.contains(OWNER_UNMAPPED), "the second main's entry binds nothing: {second}");
 }
+
+// ---------------------------------------------------------------- 3 of 4
+
+/// The model's `entrypoint` names the root its arrangement is rooted at,
+/// the placement table's (the row's lowering root): the seed's own `main
+/// locus`, never an imported library's, which lowering does not deploy;
+/// with none, `main`. Before the row it named the first `main locus` of
+/// the merged program, so a seed whose only `main` is imported named the
+/// library's.
+#[test]
+fn the_models_entrypoint_is_the_deployed_root() {
+    let root = scratch("model_entry");
+    seed(&root, "alib", "main locus Head { }\nfn main() { Head { }; }\n");
+    let dump = |dir: &Path| hale(&["check".as_ref(), "--dump-model".as_ref(), dir.as_os_str()]);
+    // The controls: no import, and the seed's own main beside an
+    // imported one.
+    let plain = dump(&seed(&root, "plain", "main locus App { }\nfn main() { App { }; }\n"));
+    assert!(plain.contains("\nentrypoint App\n"), "{plain}");
+    let own = dump(&seed(&root, "own", "import \"../alib\" as lib;\nmain locus Own { }\nfn main() { Own { }; }\n"));
+    assert!(own.contains("\nentrypoint Own\n"), "{own}");
+    let bare = dump(&seed(&root, "bare", "import \"../alib\" as lib;\nfn main() { }\n"));
+    assert!(bare.contains("\nentrypoint main\n"), "an imported main is deployed by nothing here: {bare}");
+    let _ = std::fs::remove_dir_all(&root);
+}

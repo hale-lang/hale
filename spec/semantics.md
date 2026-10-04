@@ -2810,7 +2810,10 @@ the pinned-in-a-loop rule (placement rule 17), the instance-aliasing
 warning (one locus shared by two of the root's fields placed apart,
 #334), which reads where each field runs from the placement table, and
 the async_io advisory (`spec/verification.md` § "Placement-implied
-contracts"). A seed whose only `main locus` is module-nested therefore has no
+contracts"). The api binding is generated into that root too, and the
+editor's `hale/placement` view and the model's `entrypoint` name it
+(`main` when the build deploys none, as for a seed whose only `main
+locus` is imported). A seed whose only `main locus` is module-nested therefore has no
 entry, so its world is not closed and `--env` refuses it, and its
 placement is still checked as the top-level one's is, because the
 build still runs it.

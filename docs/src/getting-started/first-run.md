@@ -122,7 +122,8 @@ A few switches worth knowing from day one:
   source (materialized read-only from the compiler's embedded copy,
   so it works even when nothing is installed on disk) — and the custom requests `hale/busGraph`,
   `hale/placement`, and `hale/allocSummary` return the pub/sub
-  topology, the thread/pool map, and the allocation survey's leak
+  topology, the thread/pool map of the `main locus` the build deploys
+  (your own, never an imported library's), and the allocation survey's leak
   sites. If the compiler itself panics on a half-typed file the server
   stays up: that file gets one error, "the compiler hit an internal error
   on this file: …; please report it with the file" (a request gets a
