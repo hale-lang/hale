@@ -1,0 +1,67 @@
+// Decision L0-1: a pinned child's failure is delivered on its owner's
+// domain. `Kid` runs on its own thread and fails in a bus handler; its
+// owner `App` runs on main. The handler grows `App`'s heap state (a vec
+// form, reallocated by the pushes) and records the thread it ran on;
+// `App.run()` reads the same state in a window with no yield, so a
+// handler that runs during the window ran beside the owner's own code.
+// Then `run()` yields until the handler has run.
+// Expected outcome: the handler runs on the owner's thread, after the
+// window, exactly once.
+
+@ffi("c") fn pthread_self() -> Int;
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.pinned.go"; }
+
+@form(vec)
+locus Rows { capacity { heap values of Int; } }
+
+locus Kid {
+    params { n: Int = 0; }
+    closure fuse { captures: n; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    fn on_go(g: Go) { violate fuse; }
+}
+
+main locus App {
+    params { kid: Kid = Kid { }; rows: Rows = Rows { }; mine: Int = 0; heard: Int = 0; on_owner: Int = 0; }
+    placement { kid: pinned; }
+    bus { publish Gos; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        if pthread_self() == self.mine { self.on_owner = 1; }
+        let mut i = 0;
+        while i < 256 {
+            self.rows.push(i);
+            i = i + 1;
+        }
+        self.heard = self.heard + 1;
+    }
+    run() {
+        self.mine = pthread_self();
+        self.rows.push(41);
+        Gos <- Go { k: 1 };
+        let until = std::time::monotonic_ns() + 300000000;
+        let mut changed = 0;
+        let mut sum = 0;
+        while std::time::monotonic_ns() < until {
+            if self.heard != 0 || self.rows.len() != 1 { changed = 1; }
+            let v = self.rows.get(0) or 0;
+            sum = sum + v;
+        }
+        if changed == 1 {
+            println("ev state-changed-in-window");
+        } else {
+            println("ev state-held-in-window");
+        }
+        let deadline = std::time::monotonic_ns() + 8000000000;
+        while self.heard == 0 && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
+        if self.on_owner == 1 {
+            println("ev handler-on-owner");
+        } else {
+            println("ev handler-off-owner");
+        }
+        println("ev heard " + to_string(self.heard) + " rows " + to_string(self.rows.len()));
+    }
+}
+
+fn main() { App { }; }
