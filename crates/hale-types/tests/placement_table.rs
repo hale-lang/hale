@@ -638,6 +638,10 @@ fn a_root_built_in_a_params_default_is_recorded_as_expanded() {
     let got: Vec<(SiteRef, Vec<Construction>)> =
         root.expanded.iter().map(|e| (e.literal, e.built_by.clone())).collect();
     assert_eq!(got, want);
+    assert!(
+        root.expanded.iter().all(|e| e.per_use.is_empty()),
+        "a params default's chain has builders, and passes no position emitted at every use"
+    );
     assert_eq!(root.constructions.len(), 1, "`make_app`'s literal is the one construction");
     let expanded: Vec<SiteRef> = root.expanded.iter().map(|e| e.literal).collect();
     assert!(!expanded.contains(&root.constructions[0].literal));

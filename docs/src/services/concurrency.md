@@ -461,9 +461,14 @@ placement and the locus's shape are known at compile time:
   life. Instantiate it once, outside the loop. The same goes for a
   locus whose `params` default builds `main`: `Holder { }` in a loop,
   where `Holder`'s default is `App { }`, builds an `App` per iteration
-  and is refused at `Holder { }`. A loop that calls a *function*
-  holding the literal is fine — each call joins its own thread before
-  it returns:
+  and is refused at `Holder { }`. A `const`'s value, a type's field
+  default and a closure's assertion are built again at every use (each
+  read of the const, each literal of the type, each evaluation of the
+  closure), so the compiler can't show a `main` written in one is built
+  once: it is refused there outright, loop or no loop. Build it in a
+  locus's `params` or a function body instead. A loop that calls a
+  *function* holding the literal is fine — each call joins its own
+  thread before it returns:
 
   ```hale,refused
   locus Worker { }

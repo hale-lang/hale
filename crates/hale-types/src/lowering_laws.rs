@@ -23,7 +23,7 @@ use hale_syntax::{Diag, Span};
 
 use crate::binding_rows::BindingRows;
 use crate::ownership_graph::OwnershipGraph;
-use crate::placement::{Decision, DomainKind, Origin, PlacementTable, SiteRef, SiteUniverse};
+use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
 use crate::Bundle;
 
@@ -562,7 +562,12 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
 /// loop: it is judged at each of the outermost literals that build it
 /// (its `built_by`) that is built in a loop, as if that literal were the
 /// root's construction, and it pins what the declaration's entries pin
-/// (lowering pins every literal of the root).
+/// (lowering pins every literal of the root). A chain that passes
+/// through a position lowering emits at every use (a const's value, a
+/// type's field default, a closure's assertion: its `per_use`) has no
+/// construction the table records, so no bound shows the root built
+/// once: it is refused outright at that position's literal, loop or no
+/// loop, naming the hoist.
 fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     let placement = inputs.placement;
     let Some(root) = &placement.root else { return };
@@ -606,9 +611,39 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
             }
         }
     }
+    let locus = root.realizes.lowered.as_str();
+    // A chain through a position lowering emits at every use has no
+    // bound to judge: refused outright at that position's literal.
+    let per_use: BTreeMap<SiteRef, PerUsePosition> =
+        root.expanded.iter().flat_map(|e| e.per_use.iter().map(|p| (p.literal, p.position))).collect();
+    if let Some((entry_span, field)) = first_pinned(&|_| true).filter(|_| !per_use.is_empty()) {
+        for (literal, position) in per_use {
+            if sites.iter().any(|(s, _)| *s == literal) {
+                continue;
+            }
+            let Some(span) = span_of(literal) else { continue };
+            diags.push(
+                Diag::ty(
+                    span,
+                    format!(
+                        "locus `{}` is built by this literal, written in {}, but its `placement {{ }}` \
+                         block pins field `{}` to its own OS thread. The position does not let the \
+                         compiler show that `{}` is built once, and every build past the first spawns a \
+                         fresh pinned thread while only the last one is joined. Build `{}` in a locus's \
+                         `params` or a fn body instead, where the compiler sees how often it is built.",
+                        locus,
+                        position.describe(),
+                        field,
+                        locus,
+                        locus
+                    ),
+                )
+                .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+            );
+        }
+    }
     for (literal, (entry_span, field)) in sites {
         let Some(span) = span_of(literal) else { continue };
-        let locus = root.realizes.lowered.as_str();
         diags.push(
             Diag::ty(
                 span,

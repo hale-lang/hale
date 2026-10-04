@@ -335,3 +335,74 @@ fn a_root_literal_in_a_params_default_built_outside_a_loop_is_pinned() {
     assert!(stdout.contains("app") && stdout.contains("worker"), "both halves should run: {stdout:?}");
     assert_eq!(stdout.matches("tick").count(), 3, "the loop ran: {stdout:?}");
 }
+
+/// Rule 17 at the positions lowering emits at every use: a const's
+/// value (at each read), a type's field default (at each literal of the
+/// type taking it), a closure's assertion (at each evaluation). Each
+/// program below builds `App` once per iteration of `main`'s loop.
+/// Before C7 lowering refused the const and the type default (the
+/// GH #826 backstop saw the loop open where it re-lowered the literal)
+/// and built the closure's, whose evaluation runs where no loop is
+/// open; with the backstop deleted all of them built. The placement
+/// table records no construction for these positions, so the law
+/// refuses a pinned root written in one outright.
+fn per_use_positions() -> [(&'static str, &'static str, Vec<&'static str>); 4] {
+    [
+        ("a `const`'s value", "const", vec!["const C: App = App { };\n", "fn main() { for i in 0..3 { let a = C; } }\n"]),
+        (
+            "a `const`'s value",
+            "through_const",
+            vec![
+                "locus Holder { params { app: App = App { }; } }\n",
+                "const C: Holder = Holder { };\n",
+                "fn main() { for i in 0..3 { let h = C; } }\n",
+            ],
+        ),
+        (
+            "a type's field default",
+            "type_default",
+            vec![
+                "fn n(a: App) -> Int { return 1; }\n",
+                "type Box { k: Int = n(App { }); }\n",
+                "fn main() { for i in 0..3 { let b = Box { }; } }\n",
+            ],
+        ),
+        (
+            "a closure's assertion",
+            "closure",
+            vec![
+                "fn n(a: App) -> Int { return 1; }\n",
+                "locus Holder { params { x: Int = 1; } closure c { n(App { }) ~~ self.x within 0; } }\n",
+                "fn main() { for i in 0..3 { Holder { }; } }\n",
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn a_pinned_root_in_a_position_emitted_at_every_use_is_refused() {
+    for (position, tag, rest) in per_use_positions() {
+        let msg = harness_refusal(&format!("hale_placement_root_per_use_{tag}_1338"), &root_then(&rest));
+        let want = format!("locus `App` is built by this literal, written in {position}");
+        assert!(msg.contains(&want), "{tag}: expected the rule 17 law's refusal, got: {msg}");
+    }
+}
+
+/// The controls: the same programs with no `pinned` entry build and
+/// run, building `App` once per iteration.
+#[test]
+fn a_root_with_no_pinned_entry_in_a_position_emitted_at_every_use_builds() {
+    for (_, tag, rest) in per_use_positions() {
+        let src = root_then(&rest);
+        let unpinned = src.replace("    placement { w: pinned; }\n", "");
+        assert_ne!(unpinned, src, "{tag}: the entry was removed");
+        let program = hale_syntax::parse_source(&unpinned).expect("parse");
+        let bin = harness::unique_bin(&format!("hale_placement_root_per_use_control_{tag}_1338"));
+        build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+        let out = std::process::Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: non-zero exit");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(stdout.matches("app").count(), 3, "{tag}: `App` built per iteration: {stdout:?}");
+    }
+}

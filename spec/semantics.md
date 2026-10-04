@@ -3563,10 +3563,24 @@ main locus App {
     locus takes the default, so it inherits that literal's loop,
     through any depth of defaults, and is rejected at the outermost
     literal written in a loop (`for i in 0..3 { Holder { }; }`,
-    where `Holder`'s default is `App { }`, at `Holder { }`). The test
-    harness's build, which skips the rest of the check, judges it
-    too, so lowering keeps no refusal of its own. (GH #826,
-    2026-09-20; F.40 phase 3, C7.)
+    where `Holder`'s default is `App { }`, at `Holder { }`). A root
+    literal written in a position lowering emits again at every use
+    — a `const`'s value (at each read of the const), a type's field
+    default (at each literal of the type that takes it), a closure's
+    assertion (at each evaluation of the closure) — or reached
+    through `params` defaults from a literal written in one, has no
+    construction the table records, so the position does not let
+    the compiler show the root is built once: when the root pins a
+    field it is rejected outright at that position's literal, loop
+    or no loop, and the fix is to build it in a locus's `params` or
+    a fn body. A root literal in an adapter's inits is built once,
+    by the bindings prelude, and one in a perspective's members is
+    never lowered (a contract fn's body is not the `serves`-ing
+    locus's method); neither is judged. A `const` or `type` written
+    in a locus body is refused on its own rule. The test harness's
+    build, which skips the rest of the check, judges it too, so
+    lowering keeps no refusal of its own. (GH #826, 2026-09-20;
+    F.40 phase 3, C7.)
 18. **Every entry is consumed by exactly one instantiation
     (error).** A placement entry is carried by the locus LITERAL
     lowered for its field, and by nothing else: the thread class,
