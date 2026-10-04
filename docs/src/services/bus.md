@@ -257,7 +257,10 @@ hale model dump app.hl        # …then read the dispatch_plan section
 Each row names the wire subject, the flavor it lowers to
 (`dynamic`, `static_bucket`, `static_direct`), why — when the
 answer is "dynamic" — and which thread domains the publishers and
-subscribers actually run in. The decision is part of the build's
+subscribers actually run in. A subject is `static_direct` only when
+its payload is flat (every field an inline scalar: `Int`, `Float`,
+`Bool`, `Decimal`, `Duration`); one carrying a `String`, `Bytes` or
+another struct is a `static_bucket`, however quiet its handlers. The decision is part of the build's
 identity, so a recording made from one build is never replayed
 against another that dispatches differently.
 

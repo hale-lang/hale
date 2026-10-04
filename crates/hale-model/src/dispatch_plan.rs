@@ -39,8 +39,13 @@ impl DispatchFlavor {
     /// this rather than open-coding `if eligible { .. if direct
     /// { .. } }`, so the plan a recording pins and the plan the
     /// backend emits cannot drift by editing one of two ladders.
-    pub fn of(static_eligible: bool, direct_eligible: bool) -> Self {
-        if direct_eligible {
+    /// The direct tier takes all three legs: same-thread and quiet
+    /// (`direct_eligible`) and a flat payload (`payload_flat`); a
+    /// direct-eligible subject with a managed payload is a static
+    /// bucket, as lowering has always emitted it (F.40 phase 3, P3 3
+    /// of 3: the plan used to say `static_direct` for it).
+    pub fn of(static_eligible: bool, direct_eligible: bool, payload_flat: bool) -> Self {
+        if direct_eligible && payload_flat {
             // `direct_call_eligible` is computed as a REFINEMENT of
             // `eligible` upstream; assert the containment here so a
             // future gate edit that breaks it fails loudly instead
@@ -77,6 +82,9 @@ pub struct SubjectPlan {
     pub flavor: DispatchFlavor,
     /// The gate's reason when the flavor is `Dynamic`.
     pub ineligible_reason: Option<String>,
+    /// The gate's `payload_flat` column, the direct tier's third leg.
+    /// Not in [`DispatchPlan::digest`]: the flavor it decides is.
+    pub payload_flat: bool,
     /// Subscriber (locus, handler) pairs — what the direct lowering
     /// bakes.
     pub subscribers: Vec<(String, String)>,
@@ -181,7 +189,7 @@ impl DispatchPlan {
         let mut subjects: Vec<SubjectPlan> = Vec::new();
         for g in gates {
             let flavor =
-                DispatchFlavor::of(g.static_eligible, g.direct_eligible);
+                DispatchFlavor::of(g.static_eligible, g.direct_eligible, g.payload_flat);
             let collect = |loci: &[String]| -> (Vec<String>, bool) {
                 let mut out: Vec<String> = Vec::new();
                 let mut complete = !loci.is_empty();
@@ -214,6 +222,7 @@ impl DispatchPlan {
                 subject: g.subject.clone(),
                 flavor,
                 ineligible_reason: g.ineligible_reason.clone(),
+                payload_flat: g.payload_flat,
                 subscribers: g.subscribers.clone(),
                 publisher_domains,
                 subscriber_domains,

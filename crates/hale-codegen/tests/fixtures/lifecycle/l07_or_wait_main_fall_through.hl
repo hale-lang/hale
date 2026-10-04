@@ -1,23 +1,20 @@
 // Decision line 7, abort unsatisfiable waits before the join
-// (WaitAbort, PoolJoin), formerly inventory row R34.
+// (WaitAbort, PoolJoin), in `fn main`'s fall-through exit (C21).
 //
-// `Evt` holds at most two cells per subscriber and refuses past that.
-// `tally` subscribes on the main pool; `pusher` runs on pool `side` and
-// publishes a burst with `or wait`, after App's run() has returned and
-// fn main's exit is joining the pool workers. Only main drains
-// `tally`'s queue, and main is inside the join, so the third publish
-// waits for space that only the wait-abort can end. Every teardown
-// spine now raises the wait-abort before the pool join.
+// l07_pool_or_wait_teardown's program, with App let-bound in `fn main`:
+// nothing tears it down before main falls through, so the fall-through
+// exit's head is the first teardown, with `pusher` still on pool
+// `side`. `pusher` publishes a burst with `or wait` into a topic only
+// main drains, and main is in that teardown, so the third publish
+// waits for space that only the wait-abort would end.
 //
 // Expected terminal outcome: the wait is aborted before the join, and
-// the aborted publish is not a success: the process ends with the
-// `BusWaitAborted` report, `wait-aborted`. The worker exits the process
-// while main is inside the join, before the later teardown runs.
+// the aborted publish is not a success: `wait-aborted`.
 
 type E { n: Int = 0; }
 topic Evt {
     payload: E;
-    subject: "lifecycle.l07";
+    subject: "lifecycle.l07.fall_through";
     bounded(2);
     on_full: fail;
 }
@@ -50,4 +47,4 @@ main locus App {
     run() { std::time::sleep(10ms); }
 }
 
-fn main() { App { }; }
+fn main() { let app = App { }; }

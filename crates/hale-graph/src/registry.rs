@@ -255,7 +255,6 @@ const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";
 const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
 const CG_RESTART: &str = "crates/hale-codegen/src/locus/restart.rs";
 const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
-const CG_WIRE: &str = "crates/hale-codegen/src/bus/wire.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
@@ -837,16 +836,15 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement.",
-        inputs: &["bus_graph (gates)", "placement (domains)", "the flat-payload predicate", "--no-bus-devirt"],
+        inputs: &["bus_graph (gates, the payload_flat column among them)", "placement (domains)", "--no-bus-devirt"],
         producer: Some(site(M_DISPATCH, "fn derive")),
         legacy: &[
             legacy(TY_RESOLVED, "from_gates", "the resolved program derives lowering's plan with an empty domain map (#464's widening is a separate optimization); the model derives its own with the arrangement's domains for `same_domain`", "phase 3, one plan: lowering's plan takes the arrangement's domains only with #464's widening, an optimization with its own bench gate not yet taken on, so the two plans still differ by their domain maps (at the phase-2 close)"),
-            legacy(CG_WIRE, "bus_payload_is_flat", "the third leg of the direct-call gate exists only in codegen", "a gate column"),
         ],
         consumers: &[consumer_at("codegen", CG, "build_resolved"), consumer_at("codegen", "crates/hale-codegen/src/bus/dispatch.rs", "bus_devirt"), consumer_at("exec_digest (the resolved program's plan)", OPTIONS, "resolved.plan.digest()"), consumer("model dump")],
-        invariants: &["which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)", "lowering reads one plan, derived once per snapshot in the resolved program; the execution digest frames that plan", "the model's plan agrees with it on the flavor of every subject both carry (shadowed over the corpus at phase 1.5)"],
+        invariants: &["which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)", "lowering reads one plan, derived once per snapshot in the resolved program; the execution digest frames that plan", "the model's plan agrees with it on the flavor of every subject both carry (shadowed over the corpus at phase 1.5)", "the direct tier takes all three gate legs, same-thread, quiet and the payload_flat column (`bus_graph::payload_is_flat`, codegen's flatness rule over resolved types); codegen reads the flavor and refuses a plan whose column disagrees with the lowered payload, and the codec's own flatness equals the column at every publish over the corpus"],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs"],
+        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs", "crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)"],
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38"],
         owned: &[],
         seams: &[
@@ -1256,17 +1254,12 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "target_capability",
         layer: Layer::Placement,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Capability,
         answers: "What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability.",
         inputs: &["--target", "a source `target` declaration", "stdlib_surface", "FFI signatures"],
         producer: Some(site(CAPABILITY, "derive_capability_matrix")),
-        legacy: &[
-            legacy(CG, "link_wasm", "the export list, spelled at the link (its `[ffi] link` refusal moved ahead of every tool, into the check and the build's LinkLibrary read, in P3 2 of 3)", "same"),
-            legacy(CG_INST, "lotus_replay_start_ingress", "one of the per-site wasm skips; on wasm the eager main-locus spine emits the pool join where every other spine omits it, and every spine but the deferred entry emits wait-abort", "same"),
-            legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory; where the admission reads a cell (an exported locus's run(), an export-only host program) the check refuses first and codegen's refusal is a harness backstop", "emission configuration through TargetSpec only; every capability through the matrix"),
-            legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
-        ],
+        legacy: &[],
         consumers: &[
             consumer("check"),
             consumer("build"),
@@ -1277,7 +1270,11 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("the use rows, on the snapshot: the check's input beside the row", SNAPSHOT, "demand_capability_uses"),
             consumer_at("the admission law: every use's cell for the effective target, in the check of every entry point", CHECK, "admission_diags"),
             consumer_at("hale check and hale build: every link input (--link, each package's [ffi] link) held to LinkLibrary before any tool, located at its manifest line or flag", "crates/hale-cli/src/shared/options.rs", "link_refusals"),
-            consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read before lowering and before any tool", CG, "Capability::LinkLibrary"),
+            consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read off the lowering view's column before lowering and before any tool", CG, "Capability::LinkLibrary"),
+            consumer_at("lowering: every behaviour and obligation emitted or omitted per target, read off the lowering view's column (`LoweringView::cells`)", CG, "self.cells."),
+            consumer_at("the wasm32 link: the module's fixed exports are ExportSurface's lowering data", CG, "Lowering::Exports(fixed)"),
+            consumer_at("the check of an @ffi or @export signature: the FfiType cells for its ABI on the effective target", CHECK, "ffi_type_refusal"),
+            consumer_at("the teardown spines: the pool join, wait-abort and ingress quiesce each spine owes, in the lifecycle plan's order", CG, "emit_teardown_obligations"),
         ],
         invariants: &[
             "Approximate is legitimate only in layers 5 and 7; everywhere else a target lowers or rejects, with the row's witness",
@@ -1291,6 +1288,9 @@ pub const FAMILIES: &[Family] = &[
             "the program's own sources are the horizon: a use is refused once, at its first site in them, naming the capability, the target and its witness chain; a callee beyond it is refused at the call that crosses into it",
             "an unresolved requirement is never an admission on a target that rejects anything in its family: a hole is refused there and recorded elsewhere",
             "a policy refusal comes before any tool is probed: a link input the target refuses is refused by the check and by the build before clang, wasm-ld or zig is looked up, located at its input (T4)",
+            "emission configuration through TargetSpec only, every capability through the matrix: codegen's remaining wasm-ness reads are the emission choices and the link path, and every behaviour and obligation it emits per target is a read of the lowering view's cells, which the view takes from the effective target and lowering refuses options of another class against",
+            "the matrix selects a target's lifecycle obligations and the lifecycle plan orders them, alike in every teardown spine (the quiesce, then the wait-abort, then the pool join)",
+            "the portable subset prints the same bytes natively and under node; the comparison proves agreement for its programs and admits nothing outside them",
         ],
         missing: Missing::Error,
         tests: &[
@@ -1306,6 +1306,8 @@ pub const FAMILIES: &[Family] = &[
             "crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 0 divergences)",
             "crates/hale-types/tests/capability_uses.rs (the use producer's acceptance cases: a stdlib call, a construction with its lifecycle, a handle's method, a wrapper refused once, module-nested and on_failure bodies, a hole, declaration rows, an export-only program, an exported run(); T2's pinned, pool, async_io and transport refusals at the entry or binding; T3's stub namespaces; T5's @ffi(\"js\") on a native target, called or not; each type-only variant admitted)",
             "crates/hale-types/tests/capability_doc_matches.rs (both document regions equal the rendered matrix)",
+            "crates/hale-codegen/tests/target_lifecycle_cells.rs (the five teardown spines on both targets, each owing what its target's cells select, in the plan's order)",
+            "crates/hale-codegen/tests/portable_subset.rs (the design's programs and the playground's examples print the same bytes natively and under node; skipped, naming what is missing, without node, clang or wasm-ld)",
         ],
         spec: &["spec/decisions.md F.35", "spec/ffi.md § The `target` declaration + stdlib gating", "docs/src/systems/webassembly.md"],
         owned: &[site(CAPABILITY_USES, "derive_capability_uses"), site(CAPABILITY_USES, "admission_diags")],
@@ -1315,16 +1317,17 @@ pub const FAMILIES: &[Family] = &[
             Seam {
                 symbol: "derive_capability_matrix(",
                 allowed: &[
-                    (CAPABILITY, 2),
+                    // the definition, the document rendering, the
+                    // lowering view's column (an obligation, a behaviour)
+                    // and the checker's FFI type cell
+                    (CAPABILITY, 5),
                     (CAPABILITY_TRANSPORT, 1),
                     ("crates/hale-types/src/capability/laws.rs", 12),
                     (CAPABILITY_USES, 2),
                     // the target model's test, holding has_async_io to the cell
                     ("crates/hale-types/src/target.rs", 1),
-                    // LinkLibrary, read before any tool by the CLI and by a
-                    // build handed link libraries
+                    // LinkLibrary, read before any tool by the CLI
                     ("crates/hale-cli/src/shared/options.rs", 1),
-                    (CG, 1),
                 ],
             },
             // the definition, the snapshot's family, and the two checks
@@ -1376,9 +1379,9 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG_INST, "lower_locus_instantiation_inner", "the birth sequence is the order of emit calls in a 4,900-line function; its eager teardown spine is one of two copies", "an explicit action plan (compiler- and runtime-owned actions with domain, prerequisites, liveness, completion) read by emission"),
             legacy(CG, "emit_deferred_entry_teardown", "the deferred teardown spine, the second copy; #1208's pool join was added here after four other sites already had it", "same"),
             legacy(CG, "emit_frame_teardown", "the frame flush order (drain, wait-abort, pinned-first, reverse push)", "same"),
-            legacy(CG, "lower_program", "fn main's fall-through exit quiesces ingress and joins the pools before its flush, a third copy of the join-before-free order (the wait-abort comes from the flush's `in_main` gate)", "same"),
-            legacy(CG, "main_test_fail_bb", "fn main's test-failure exit repeats the quiesce and the join before its frame teardown, a fourth copy", "same"),
-            legacy(CG, "lower_return_inner", "a `return` from fn main repeats the quiesce and the join before its teardown, a fifth copy", "same"),
+            legacy(CG, "lower_program", "fn main's fall-through exit emits the process obligations its target's cells select before its flush, in the plan's order (`emit_teardown_obligations`, `lifecycle::TEARDOWN_EDGES`), a third call of the join-before-free order (the wait-abort comes from that head where a pool join follows it, else from the flush's `in_main` gate after its pre-drain)", "same"),
+            legacy(CG, "main_test_fail_bb", "fn main's test-failure exit emits the same head before its frame teardown, a fourth call", "same"),
+            legacy(CG, "lower_return_inner", "a `return` from fn main emits the same head before its teardown, a fifth call", "same"),
             legacy(CG, "__reclaim_", "the reclaim spine", "same"),
             legacy(CG_DISSOLVE, "emit_locus_arena_destroy", "the cascade (field drains, field dissolves, arena destroy)", "same"),
             legacy(CG_RESTART, "define_restart_fns", "restart and resume", "same"),
@@ -1395,12 +1398,12 @@ pub const FAMILIES: &[Family] = &[
             "one plan per snapshot, over the placement table's instance templates: a held row and the rows projected under it are their source's and owe nothing of their own, a hole owes nothing, and a dynamic literal's own fields are instances of their field literals in its domains, a field literal reached through several constructions of its owner's declaration one template that keeps each one's owner, domains and bound (its bound their sum, a nested field's the product of its owner's with its own placement), and a body or accepted literal one template whose owners are every template of its enclosing locus, each occurrence on the domain its enclosing occurrence runs it on (its bound the table's, which covers every enclosing scope); no check builds the plan",
             "a failure's rows are guarded, one set per source an instance can raise (a birth-epoch closure, the birth_check, a violate in run(), in a handler or in drain(), a dissolve-epoch closure): its delivery in place, the held alternative where the owner's params can still be open, and the recovery decision and the restart, performed or refused under teardown; a path through the plan picks one",
             "existence, each edge and each domain claim carry their own rule and status, so a row shipped to exist can carry a claim known open (decision L0-1 at C36) or pending (line 3); a domain is claimed only where the placement table and the rule resolve one for every occurrence: one domain, or the set where a template's occurrences are built under parents on different domains (each occurrence held to one of them), never one parent's alone",
-            "the plan the trace oracle holds a lifecycle fixture's or a matrix cell's run to is the producer's for its program, rendered along the run's path (`lifecycle::project::expected`): no hand-written expectation stands beside it, the negative controls' own plans aside and the hand-written plans of the fixtures the producer does not derive yet (`UNDERIVED`, L5's second part's three), and a run's known departures are named per inventory row in the known-open tables",
+            "the plan the trace oracle holds a lifecycle fixture's or a matrix cell's run to is the producer's for its program, rendered along the run's path (`lifecycle::project::expected`): no hand-written expectation stands beside it, the negative controls' own plans aside and the hand-written plans of the fixtures the producer does not derive yet (`UNDERIVED`: mixed-instance cancellation and repeated main literals, plus deferred main-entry, return and test-failure process spines), and a run's known departures are named per inventory row in the known-open tables",
             "a row whose every terminal is a not-started one is owed by no subject: a restart refused under teardown (RD, C42), a run a resumed locus does not declare (line 13, C48)",
             "a pinned or pool anchor's params initialize and settle on its own domain (C49/C50); each static nested field's instantiating domain follows that initialization, while the pool anchor's own birth retains its caller's domain; a nested run inside a pool init is inline and owes no queue admission or queued-run cancellation",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/lifecycle_plan.rs (the plan through the snapshot: demanded once and built by no check; its laws over every corpus program the snapshot scopes, edges naming its own rows and acyclic on events, birth and teardown owed once per template, every line a decision line, every delivery to an owner of known domain naming its domain; the rows lines 1, 3, 7, 12, 13, 14, 18, 19 and RD are about; started-run retention through physical reclaim; statement-position subscribers torn down at frame exit)", "crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs", "crates/hale-codegen/tests/reclaim_cancel_ir.rs (queued cancellation precedes the storage callback on every spine, and its hold wait dominates physical releases)", "crates/hale-codegen/tests/replay_canceled_run.rs (a canceled run replays clean; a held run keeps its retention; the hold buffer is freed by each thread that held, under ASan with no suppression)", "crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)", "crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one; the trace oracle holds each run to the producer's plan for the fixture's program, rendered along the run's path and its line's known-open rules, or, for a fixture in UNDERIVED, to its hand-written plan; TRACE_KNOWN_OPEN names today's departures, CONTROLS fail it)", "crates/hale-types/src/lifecycle/trace.rs (the trace's parser and oracle)", "crates/hale-codegen/tests/corpus_oracle.rs (corpus_traces_keep_the_lifecycle_laws: every runnable example, traced)", "crates/hale-codegen/tests/lifecycle_matrix.rs (failure phase × tree position × domain, a generated program per cell held to its outcome, the producer's plan for the program rendered along the cell's run, ASan on the sample and the let-bound differential; KNOWN_OPEN names today's failing cells; HALE_MATRIX=full runs every cell)"],
+        tests: &["crates/hale-types/tests/lifecycle_plan.rs (the plan through the snapshot: demanded once and built by no check; its laws over every corpus program the snapshot scopes, edges naming its own rows and acyclic on events, birth and teardown owed once per template, every line a decision line, every delivery to an owner of known domain naming its domain; the rows lines 1, 3, 7, 12, 13, 14, 18, 19 and RD are about; started-run retention through physical reclaim; statement-position subscribers torn down at frame exit)", "crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs", "crates/hale-codegen/tests/reclaim_cancel_ir.rs (queued cancellation precedes the storage callback on every spine, and its hold wait dominates physical releases)", "crates/hale-codegen/tests/replay_canceled_run.rs (a canceled run replays clean; a held run keeps its retention; the hold buffer is freed by each thread that held, under ASan with no suppression)", "crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)", "crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one; the trace oracle holds each run to the producer's plan for the fixture's program, rendered along the run's path and its line's known-open rules, or, for a fixture in UNDERIVED, to its hand-written plan; TRACE_KNOWN_OPEN names today's departures, CONTROLS fail it)", "crates/hale-types/src/lifecycle/trace.rs (the trace's parser and oracle)", "crates/hale-codegen/tests/corpus_oracle.rs (corpus_traces_keep_the_lifecycle_laws: every runnable example, traced)", "crates/hale-codegen/tests/lifecycle_matrix.rs (failure phase × tree position × domain, a generated program per cell held to its outcome, the producer's plan for the program rendered along the cell's run, ASan on the sample and the let-bound differential; KNOWN_OPEN names today's failing cells; HALE_MATRIX=full runs every cell)", "crates/hale-codegen/tests/target_lifecycle_cells.rs (the five teardown spines on both targets: each owes what its target's cells select, in TEARDOWN_EDGES' order, before the cascade; the call counts pinned per shape, variant and target)"],
         spec: &["spec/runtime.md (failure delivery; pool join rule b)", "spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart)", "spec/runtime.md § The lifecycle trace (a debug aid, not a contract)", "spec/runtime.md § Lossless recording mode (the replay hold and a canceled run)", "spec/semantics.md § lifecycle"],
         owned: &[site(LIFECYCLE, "LifecyclePlan"), site(LIFECYCLE_TRACE, "Expected"), site(LIFECYCLE_PROJECT, "expected")],
         seams: &[Seam { symbol: "derive_lifecycle(", allowed: &[(LIFECYCLE_DERIVE, 1), (SNAPSHOT, 1)] }],

@@ -660,11 +660,17 @@ pub struct SubjectInfo {
     ///       mutates ONLY its own `self` fields with pure expressions
     ///       and has no other effect.
     /// Defaults to `false` (default-bail). The FLAT-payload condition
-    /// is the third leg of the gate but is checked at the codegen
-    /// publish site (it needs the lowered payload type), so this flag
-    /// is ANDed with `bus_payload_is_flat` there. A false positive is
-    /// an observable-ordering bug, so this stays conservative.
+    /// is the third leg of the gate, [`SubjectInfo::payload_flat`]: the
+    /// plan's flavor ANDs the two (`DispatchFlavor::of`). A false
+    /// positive is an observable-ordering bug, so this stays
+    /// conservative.
     pub direct_call_eligible: bool,
+    /// The direct-call gate's third leg: the subject's payload is flat
+    /// ([`payload_is_flat`]) at every site that names its type (the
+    /// publishers', else the subscribers'), and at least one does. A
+    /// direct call hands the publisher's live storage to the handler,
+    /// which only pointer-free POD survives.
+    pub payload_flat: bool,
     /// The sends on this subject the intra-locus rewrite turned into
     /// direct calls, as (publishing locus, subscriber handler) pairs
     /// (F.40 boundary 7). Empty from [`build_bus_graph`]: a graph over
@@ -773,6 +779,7 @@ impl BusGraph {
                 subject: subject.clone(),
                 static_eligible: info.eligible,
                 direct_eligible: info.direct_call_eligible,
+                payload_flat: info.payload_flat,
                 ineligible_reason: info
                     .ineligible_reason
                     .as_ref()
@@ -901,6 +908,15 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRo
                         .map(handler_is_quiet)
                         .unwrap_or(false)
             });
+        // The third leg: the payload's flatness, over the resolved type
+        // each site names (the publishers', else the subscribers').
+        let site_tys: Vec<Option<&crate::ty::Ty>> = if publishers.is_empty() {
+            subscribers.iter().map(|s| resolve_payload_ty(top, &s.locus, &key)).collect()
+        } else {
+            publishers.iter().map(|p| resolve_payload_ty(top, &p.locus, &key)).collect()
+        };
+        let payload_flat =
+            !site_tys.is_empty() && site_tys.iter().all(|t| t.is_some_and(|t| payload_is_flat(bundle, top, t)));
         subjects.insert(
             key,
             SubjectInfo {
@@ -909,6 +925,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRo
                 eligible,
                 ineligible_reason: reason,
                 direct_call_eligible,
+                payload_flat,
                 direct_sends: Vec::new(),
                 written_topics: Vec::new(),
             },
@@ -967,6 +984,130 @@ fn classify(
         }
     }
     None
+}
+
+/// The resolved payload type of a site on `key`: the declared topic's,
+/// else the locus's publish or subscribe declaration on that subject.
+fn resolve_payload_ty<'t>(top: &'t TopScope, locus: &str, key: &str) -> Option<&'t crate::ty::Ty> {
+    for sym in top.symbols.values() {
+        if let TopSymbol::Topic(t) = sym {
+            if t.name == key || t.wire_subject == key {
+                return Some(&t.payload);
+            }
+        }
+    }
+    if let Some(TopSymbol::Locus(l)) = top.lookup(locus) {
+        if let Some(p) = l.bus_publishes.iter().find(|p| p.subject == key) {
+            return Some(&p.payload);
+        }
+        if let Some(s) = l.bus_subscribes.iter().find(|s| s.subject == key) {
+            return Some(&s.payload);
+        }
+    }
+    None
+}
+
+/// Whether a bus payload of type `ty` is flat: a struct whose every
+/// field is an inline-by-value scalar (`Int`, `Float`, `Bool`,
+/// `Decimal`, `Duration`, or an enum with no payload variant), and
+/// nothing else. A payload-carrying enum, a pointer-bearing field
+/// (`String`, `Bytes`, `Time`, a view, a nested struct, an array, a
+/// tuple, a locus) or a type the scope cannot resolve is not flat: the
+/// default is false. The direct-call gate's third leg (the gate's
+/// `payload_flat` column): codegen's `bus_payload_is_flat` rule, moved
+/// verbatim onto resolved types (F.40 phase 3, P3 3 of 3), so the plan
+/// decides the flavor; the codec keeps its own copy over lowered types,
+/// and lowering refuses a plan whose column disagrees with it.
+pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) -> bool {
+    use crate::symbol::TypeKind;
+    use crate::ty::Ty;
+    // A generic instantiation resolves to its monomorph's name
+    // (`Box<Int>` is `Box_Int`, `crate::resolve`), which no scope
+    // declares: its fields are the generic declaration's, each type
+    // parameter replaced by the argument the name's tokens spell, as
+    // codegen's monomorph lays them out.
+    fn generic_instance_fields(bundle: &Bundle<'_>, name: &str) -> Option<Vec<Ty>> {
+        let decl = bundle.programs.values().find_map(|p| {
+            flat_decls(&p.items).find_map(|it| match it {
+                TopDecl::Type(t)
+                    if !t.generics.is_empty()
+                        && name.strip_prefix(t.name.name.as_str()).is_some_and(|r| r.starts_with('_')) =>
+                {
+                    Some(t)
+                }
+                _ => None,
+            })
+        })?;
+        let tokens: Vec<&str> = name[decl.name.name.len() + 1..].split('_').collect();
+        if tokens.len() != decl.generics.len() {
+            return None;
+        }
+        let arg = |tok: &str| -> Ty {
+            let prim = [
+                PrimType::Int,
+                PrimType::Float,
+                PrimType::Bool,
+                PrimType::String,
+                PrimType::Duration,
+                PrimType::Decimal,
+                PrimType::Time,
+                PrimType::Bytes,
+                PrimType::BytesView,
+                PrimType::BytesMut,
+                PrimType::StringView,
+            ]
+            .into_iter()
+            .find(|p| crate::ty::generic_arg_mangle_token(*p) == Some(tok));
+            prim.map(Ty::Prim).unwrap_or_else(|| Ty::Named(tok.to_string()))
+        };
+        let TypeDeclBody::Struct(fields) = &decl.body else { return None };
+        Some(
+            fields
+                .iter()
+                .map(|f| match &f.ty {
+                    TypeExpr::Primitive(p, _) => Ty::Prim(*p),
+                    TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+                        let n = &path.segments[0].name;
+                        match decl.generics.iter().position(|g| g.name.name == *n) {
+                            Some(i) => arg(tokens[i]),
+                            None => Ty::Named(n.clone()),
+                        }
+                    }
+                    _ => Ty::Unknown,
+                })
+                .collect(),
+        )
+    }
+    fn field_is_flat_scalar(top: &TopScope, ty: &Ty, depth: usize) -> bool {
+        match ty {
+            Ty::Prim(p) => matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal | PrimType::Duration),
+            Ty::Named(n) if depth < 16 => match top.lookup(n) {
+                Some(TopSymbol::Type(t)) => match &t.kind {
+                    TypeKind::Enum(variants) => variants.iter().all(|v| v.fields.is_empty()),
+                    TypeKind::Alias(a) => field_is_flat_scalar(top, a, depth + 1),
+                    TypeKind::Struct(_) => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    fn flat(bundle: &Bundle<'_>, top: &TopScope, ty: &Ty, depth: usize) -> bool {
+        match ty {
+            Ty::Named(n) if depth < 16 => match top.lookup(n) {
+                Some(TopSymbol::Type(t)) => match &t.kind {
+                    TypeKind::Struct(fields) => fields.iter().all(|f| field_is_flat_scalar(top, &f.ty, 0)),
+                    TypeKind::Alias(a) => flat(bundle, top, a, depth + 1),
+                    TypeKind::Enum(_) => false,
+                },
+                None => generic_instance_fields(bundle, n)
+                    .is_some_and(|fields| fields.iter().all(|f| field_is_flat_scalar(top, f, 0))),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    flat(bundle, top, ty, 0)
 }
 
 /// Resolve a site's payload type name. Tries the declared-topic

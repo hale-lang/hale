@@ -525,7 +525,7 @@ model	M-7	Worker	correction	5	crates/hale-codegen/tests/bus_devirt_differential.
 model	M-7	Wrapper	correction	1	crates/hale-codegen/tests/method_scratch_elision.rs
 model	M-7	Writer	correction	1	crates/hale-codegen/tests/bus_bytes_payload.rs
 model	M-7	Zeta	correction	1	crates/hale-types/tests/violate.rs
-model	M-7	__StdBytesBytesBuilder	correction	87	crates/hale-cli/tests/wasm_link_is_quiet.rs
+model	M-7	__StdBytesBytesBuilder	correction	88	crates/hale-cli/tests/wasm_link_is_quiet.rs
 model	M-7	__StdCliResolver	correction	3	crates/hale-codegen/tests/stdlib_cli.rs
 model	M-7	__StdHttpEntryList	correction	8	crates/hale-codegen/tests/fixtures/examples/69-http-router/main.hl
 model	M-7	__StdHttpMwList	correction	8	crates/hale-codegen/tests/fixtures/examples/69-http-router/main.hl

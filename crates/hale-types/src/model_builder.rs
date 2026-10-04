@@ -2551,6 +2551,7 @@ pub fn derive_application_model_over(
             Some(g) => {
                 g.static_eligible &= info.eligible;
                 g.direct_eligible &= info.direct_call_eligible;
+                g.payload_flat &= info.payload_flat;
                 if g.ineligible_reason.is_none() {
                     g.ineligible_reason = reason;
                 }
@@ -2564,6 +2565,7 @@ pub fn derive_application_model_over(
                         subject: wire,
                         static_eligible: info.eligible,
                         direct_eligible: info.direct_call_eligible,
+                        payload_flat: info.payload_flat,
                         ineligible_reason: reason,
                         publisher_loci,
                         subscribers,

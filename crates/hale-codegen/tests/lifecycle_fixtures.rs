@@ -246,6 +246,10 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l06_readiness_main.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l06_readiness_pool.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l07_pool_or_wait_teardown.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_deferred_main_entry.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_main_fall_through.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_main_return.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_main_test_failure.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l08_birth_failure_kept.hl", line: "8", adopted: Some("closure-violation-child-kept"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l09_delivery_at_epoch.hl", line: "9", adopted: Some("delivered-at-epoch"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l10_dissolve_closures_first.hl", line: "10", adopted: Some("closures-before-dissolve"), run: RunMode::Plain, judge: closures_before_dissolve },
@@ -284,7 +288,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l06_readiness_main.hl", "C8", "delivered-during-birth"),
     ("l06_readiness_pool.hl", "C8", "delivered-during-birth"),
-    ("l07_pool_or_wait_teardown.hl", "R34", "hang-in-pool-join"),
     ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
@@ -305,6 +308,21 @@ const PENDING: &[(&str, &str)] = &[
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
+    (
+        "l07_or_wait_deferred_main_entry.hl",
+        "-: WaitAbort@DeferredMainEntry PoolJoin@DeferredMainEntry
+         edge -.WaitAbort@DeferredMainEntry.Completed -> -.PoolJoin@DeferredMainEntry.Entered",
+    ),
+    (
+        "l07_or_wait_main_return.hl",
+        "-: WaitAbort@MainReturn PoolJoin@MainReturn
+         edge -.WaitAbort@MainReturn.Completed -> -.PoolJoin@MainReturn.Entered",
+    ),
+    (
+        "l07_or_wait_main_test_failure.hl",
+        "-: WaitAbort@MainTestFailure PoolJoin@MainTestFailure
+         edge -.WaitAbort@MainTestFailure.Completed -> -.PoolJoin@MainTestFailure.Entered",
+    ),
     // R19 across pools: the run queued on `side` is canceled by the
     // reclaim on main, inside its bracket. The replacement's run is the
     // judge's, since one plan step cannot owe two ends.
@@ -414,8 +432,12 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l06_readiness_main.hl" | "l06_readiness_pool.hl" => &["6"],
         // Line 7 today: the pool join never returns.
-        "l07_pool_or_wait_teardown.hl" => {
-            p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(Spine::EagerTeardown) });
+        // The aborted wait is an unhandled structural failure: the
+        // worker exits the process while main is joining it. The abort
+        // completed, but neither the join nor later teardown completes.
+        "l07_pool_or_wait_teardown.hl" | "l07_or_wait_main_fall_through.hl" => {
+            let spine = if file == "l07_pool_or_wait_teardown.hl" { Spine::EagerTeardown } else { Spine::MainFallThrough };
+            p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(spine) });
             &["7"]
         }
         "l08_birth_failure_kept.hl" => {
@@ -495,13 +517,18 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
 
 /// Fixtures with a plan the producer does not derive yet, held to their
 /// hand-written one alone: (file, what the producer does not state).
-/// L5's second part wrote them after the producer. Each needs a fact a
+/// Each needs a fact a
 /// run path cannot carry or a row the producer does not emit: R19a's
 /// cancellation at a reclaim off the run's pool, the instances of one
 /// declaration whose runs end differently in one run (the trace names
 /// an instance by its declaration), and a main locus built more than
-/// once, each literal with its own teardown.
+/// once, each literal with its own teardown. The producer also does not
+/// enumerate deferred main-entry, return or test-failure process spines
+/// yet; P3's fixtures pin those spines until their producer rows exist.
 const UNDERIVED: &[(&str, &str)] = &[
+    ("l07_or_wait_deferred_main_entry.hl", "the producer has no deferred main-entry process spine"),
+    ("l07_or_wait_main_return.hl", "the producer has no main-return process spine or exit-path selection"),
+    ("l07_or_wait_main_test_failure.hl", "the producer has no test-failure process spine or exit-path selection"),
     (
         "l19_cross_pool_queued_run_canceled.hl",
         "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
@@ -567,16 +594,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         "l04_dissolve_route_cascade.hl",
         "C31",
         &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
-    ),
-    // Line 7: the host joins the pools and only then aborts the waits,
-    // and the join never returns, so the abort never comes.
-    (
-        "l07_pool_or_wait_teardown.hl",
-        "R34",
-        &[
-            "edge: -.PoolJoin@EagerTeardown.Entered (process) with -.WaitAbort@EagerTeardown.Completed not reached",
-            "missing: -.WaitAbort@EagerTeardown",
-        ],
     ),
     // Late declares no run(), and its resumed incarnation enters one.
     ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
@@ -660,17 +677,17 @@ const POOL_WORKER_PLAN: &str = "Worker: Birth Run!pool:side Drain Dissolve Recla
      edge Worker.Run.Ended -> -.PoolJoin@EagerTeardown.Completed";
 
 const CONTROLS: &[Control] = &[
-    // The first control, the host's own order (inventory decision 7):
-    // quiesce, join, then abort. The trace shows the join entered
-    // before any wait-abort completed.
+    // Inventory decision 7 undone: the wait-abort skipped, so the join
+    // is entered before any wait-abort completed (the host's order
+    // before P3 3 of 3 put the abort ahead of the join).
     Control {
-        name: "host_joins_before_it_aborts_waits",
+        name: "join_entered_with_no_wait_abort",
         covers: ObligationKind::WaitAbort,
         fixture: "l16_eager_spine_pool_join.hl",
-        skip: "",
+        skip: "WaitAbort",
         plan: Some(LINE_7_PLAN),
         fails_with: "edge: -.PoolJoin@EagerTeardown.Entered",
-        baseline_passes: false,
+        baseline_passes: true,
     },
     // The deferred-pool-join regression's shape: teardown reaches the
     // worker's fields with its run() still going.
@@ -1670,6 +1687,10 @@ fixture_tests! {
     l06_readiness_main => "l06_readiness_main.hl",
     l06_readiness_pool => "l06_readiness_pool.hl",
     l07_pool_or_wait_teardown => "l07_pool_or_wait_teardown.hl",
+    l07_or_wait_deferred_main_entry => "l07_or_wait_deferred_main_entry.hl",
+    l07_or_wait_main_fall_through => "l07_or_wait_main_fall_through.hl",
+    l07_or_wait_main_return => "l07_or_wait_main_return.hl",
+    l07_or_wait_main_test_failure => "l07_or_wait_main_test_failure.hl",
     l08_birth_failure_kept => "l08_birth_failure_kept.hl",
     l09_delivery_at_epoch => "l09_delivery_at_epoch.hl",
     l10_dissolve_closures_first => "l10_dissolve_closures_first.hl",
@@ -1915,7 +1936,7 @@ macro_rules! control_tests {
 }
 
 control_tests! {
-    host_joins_before_it_aborts_waits,
+    join_entered_with_no_wait_abort,
     pool_join_removed,
     hold_removed_delivers_before_settle,
     reclaim_completion_omitted,

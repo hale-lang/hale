@@ -1922,7 +1922,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 continue;
             }
             // The main locus aborts the waits only teardown ends before it
-            // joins the workers they block (line 7; after today, R34).
+            // joins the workers they block (line 7).
             let mut o = process_row(K::WaitAbort, Spine::EagerTeardown, Some("7"), Status::Shipped);
             if let Some(run) = self.rows[i].run {
                 o.edges.entry.push(after(run, Point::Completed, Rule::SHIPPED));
@@ -1930,7 +1930,7 @@ impl<'b, 'a> Builder<'b, 'a> {
             let abort = self.push(o);
             if pools {
                 let mut o = process_row(K::PoolJoin, Spine::EagerTeardown, None, Status::Shipped);
-                o.edges.entry.push(after(abort, Point::Completed, open("7", "R34")));
+                o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
                 if let Some(run) = self.rows[i].run {
                     o.edges.entry.push(after(run, Point::Completed, Rule::SHIPPED));
                 }
@@ -1952,8 +1952,8 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.push(o);
             }
         }
-        // `fn main`'s fall-through exit: the pool join, its pre-drain, the
-        // wait-abort, before the frame's entries are torn down.
+        // `fn main`'s fall-through exit aborts the waits before joining
+        // pools. Without pools, its abort follows the frame pre-drain.
         let has_fn_main = self.inputs.bundle.programs.values().any(|p| {
             p.items.iter().any(|it| matches!(it, TopDecl::Fn(f) if f.name.name == "main"))
         });
@@ -1963,19 +1963,29 @@ impl<'b, 'a> Builder<'b, 'a> {
                 o.edges.entry.extend(statements_done.iter().map(|&r| after(r, Point::Completed, Rule::SHIPPED)));
                 o
             };
-            if pools {
+            let abort = pools.then(|| self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped))));
+            let mut frame_join = None;
+            if let Some(abort) = abort {
                 let mut o = process_row(K::PoolJoin, Spine::MainFallThrough, None, Status::Shipped);
+                o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
                 o.progress = Progress {
                     rule: ProgressRule::Join { pumps: K::FailureDelivery },
                     status: Status::KnownOpen { inventory_row: "R20" },
                 };
                 let join = self.push(after_statements(o));
                 first_join.get_or_insert(join);
+                frame_join = Some(join);
             }
             let pre = self.push(after_statements(process_row(K::PreDrain, Spine::MainFallThrough, Some("18"), Status::Shipped)));
-            self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped)));
+            if let Some(join) = frame_join {
+                self.get(pre).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+            }
+            if abort.is_none() {
+                self.push(after_statements(process_row(K::WaitAbort, Spine::MainFallThrough, Some("7"), Status::Shipped)));
+            }
             // A let-bound literal of `fn main`: run at its statement, drained
             // and dissolved at the scope's exit, after the pre-drain (line 11).
+            let mut frame_tree = BTreeSet::new();
             for i in 0..self.subjects.len() {
                 let deferred = matches!(
                     self.subjects[i].how,
@@ -1987,11 +1997,37 @@ impl<'b, 'a> Builder<'b, 'a> {
                 if !deferred {
                     continue;
                 }
+                if !self.is_pinned(i) {
+                    frame_tree.insert(i);
+                }
                 if let Some(run) = self.rows[i].run {
                     self.get(pre).edges.entry.push(after(run, Point::Completed, shipped("11")));
                 }
                 if let Some(d) = self.rows[i].drain {
                     self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                }
+            }
+            // The frame's pre-drain also precedes the recursive drain of
+            // its entries' fields. Their bottom-up drain order cannot
+            // infer this from the edge into the root's drain. A pinned
+            // subtree drains on its own thread; a shared field template
+            // only gets this edge when every owner belongs to this frame.
+            loop {
+                let fields: Vec<usize> = (0..self.subjects.len()).filter(|&i| {
+                    if self.subjects[i].how != How::Field || self.is_pinned(i) || frame_tree.contains(&i) {
+                        return false;
+                    }
+                    let owners = self.owners(i);
+                    !owners.is_empty() && owners.iter().all(|o| frame_tree.contains(o))
+                }).collect();
+                if fields.is_empty() {
+                    break;
+                }
+                for i in fields {
+                    frame_tree.insert(i);
+                    if let Some(d) = self.rows[i].drain {
+                        self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                    }
                 }
             }
         }

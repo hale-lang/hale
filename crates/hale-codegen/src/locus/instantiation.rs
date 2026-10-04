@@ -2422,7 +2422,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // run on the thread its nested handlers run on. A target without
         // threads runs its pools' cells on the one thread it has.
         let on_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
-        let pool_init = if on_pinned || self.is_wasm { None } else { pool_anchor.clone() };
+        let pool_init = if on_pinned || !self.cells.behaviour(hale_types::capability::Capability::PoolThreads).is_lower() {
+            None
+        } else {
+            pool_anchor.clone()
+        };
         let thread_init = on_pinned || pool_init.is_some();
         let anchor_route = if on_pinned {
             match info.mailbox_field_idx {
@@ -4737,7 +4741,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // registered, run() not yet entered) is exactly the
             // boot/run boundary the runtime snapshot needs. Runs on
             // the main thread; no-op outside replay/feed.
-            if is_main_locus && !self.is_wasm {
+            if is_main_locus && self.cells.emits(hale_types::capability::Obligation::ReplayIngress) {
                 let start_fn = self
                     .module
                     .get_function("lotus_replay_start_ingress")
@@ -5015,14 +5019,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #468: drain kernel-accepted LISTEN ingress
                 // while the registry, pools, and subscriber loci
                 // are all still alive (the main locus's run() just
-                // returned; nothing has dissolved yet).
-                if !self.is_wasm {
-                    self.emit_bus_ingress_quiesce()?;
-                }
-                self.emit_coop_pool_shutdown_all()?;
-                // GH #255: wake `or wait` parked publishers into
-                // the raise path before the pinned joins below.
-                self.emit_bus_wait_abort_all()?;
+                // returned; nothing has dissolved yet). GH #255 and
+                // decision line 7: wake `or wait` parked publishers into
+                // the raise path before the pool join and the pinned
+                // joins below. Which of the three the target owes is its
+                // cells', their order the plan's.
+                self.emit_teardown_obligations(false)?;
             }
             // GH #253: join this locus's own pinned children (the
             // frame entries pushed during param init above) BEFORE

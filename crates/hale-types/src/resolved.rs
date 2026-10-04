@@ -157,6 +157,11 @@ pub struct LoweringView {
     /// table ([`route_anchors`]): the anchor's mailbox is their route
     /// (the placement correspondence's U-6).
     pub route_anchors: BTreeSet<String>,
+    /// The effective target's column of the capability matrix: every
+    /// behaviour and obligation lowering emits or omits per target is
+    /// read here, and lowering refuses options that name a target of
+    /// another class.
+    pub cells: crate::capability::LoweringCells,
 }
 
 /// The pinned anchors of `table` (a root field placed `pinned`, one per
@@ -272,7 +277,8 @@ pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
 /// Resolve `program` into the view codegen lowers: the intra-locus
 /// rewrite ([`rewrite_intra_locus`]), then [`resolve_rewritten`]. The
 /// snapshot runs the two halves as its `intra_locus` and
-/// `lowering_view` families; this is the bare program's entry.
+/// `lowering_view` families; this is the bare program's entry, and a
+/// bare program is the host's.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -284,6 +290,8 @@ pub fn resolve_program(
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
+    let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
+        .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     resolve_rewritten(
         &rewrite_intra_locus(program),
         sources,
@@ -294,6 +302,7 @@ pub fn resolve_program(
         bindings,
         placement,
         typed,
+        host,
     )
 }
 
@@ -326,7 +335,8 @@ pub fn resolve_program(
 /// gets its written discipline. `typed` is the snapshot's typed-body
 /// table (`Snapshot::demand_typed_bodies`); a caller with none passes
 /// `&TypedBodies::default()`, and lowering refuses every site that reads
-/// a row. The error is the message codegen
+/// a row. `class` is the effective target's column of the capability
+/// matrix, the cells the view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
@@ -339,6 +349,7 @@ pub fn resolve_rewritten(
     bindings: &crate::binding_rows::BindingRows,
     placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
+    class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
     let mut program_owned = stage.program.clone();
@@ -566,6 +577,7 @@ pub fn resolve_rewritten(
         top,
         alloc_routing,
         route_anchors,
+        cells: crate::capability::LoweringCells::of(class),
     })
 }
 

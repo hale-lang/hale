@@ -613,7 +613,7 @@ fn a_restart_is_refused_under_teardown() {
 }
 
 /// Lines 7 and 18: the main locus's eager teardown owes the process its
-/// wait-abort before the pool join (R34 today) and a pre-drain it does
+/// wait-abort before the pool join and a pre-drain it does
 /// not emit (C13).
 #[test]
 fn the_eager_spine_owes_the_wait_abort_before_the_join() {
@@ -623,11 +623,53 @@ fn the_eager_spine_owes_the_wait_abort_before_the_join() {
         p.obligations.iter().find(|o| o.site.is_none() && o.kind == kind && o.holder.spine == spine).expect("a process row")
     };
     let join = process(K::PoolJoin, Spine::EagerTeardown);
-    assert!(join.edges.entry.iter().any(|pr| pr.rule.status == Status::KnownOpen { inventory_row: "R34" }));
+    assert!(join.edges.entry.iter().any(|pr| {
+        pr.rule == Rule { line: Some("7"), status: Status::Shipped }
+            && pr.event.point == Point::Completed
+            && p.obligations[pr.event.obligation.0 as usize].kind == K::WaitAbort
+    }));
     assert_eq!(process(K::PreDrain, Spine::EagerTeardown).status, Status::KnownOpen { inventory_row: "C13" });
     // The pool's run ends before the join completes (line 19).
     let pusher_run = one(p, "Pusher", K::Run);
     let on = pusher_run.runs_on.clone().expect("a placed run names its domain");
     assert!(matches!(&p.domains[on.one().expect("one domain").0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
     assert!(join.edges.completion.iter().any(|pr| pr.rule.line == Some("19") && pr.event.point == Point::Ended));
+}
+
+/// The fall-through spine follows the same abort-before-join rule as
+/// eager teardown, before releasing the main frame's entries.
+#[test]
+fn the_main_fall_through_spine_owes_the_wait_abort_before_the_join() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_main_fall_through.hl"));
+    let p = plan(&s);
+    let join = p.obligations.iter().find(|o| {
+        o.site.is_none() && o.kind == K::PoolJoin && o.holder.spine == Spine::MainFallThrough
+    }).expect("the main fall-through pool join");
+    assert!(join.edges.entry.iter().any(|pr| {
+        let predecessor = &p.obligations[pr.event.obligation.0 as usize];
+        pr.rule == Rule { line: Some("7"), status: Status::Shipped }
+            && pr.event.point == Point::Completed
+            && predecessor.kind == K::WaitAbort
+            && predecessor.holder.spine == Spine::MainFallThrough
+    }));
+    let pre = p.obligations.iter().find(|o| {
+        o.site.is_none() && o.kind == K::PreDrain && o.holder.spine == Spine::MainFallThrough
+    }).expect("the main frame pre-drain");
+    assert!(pre.edges.entry.iter().any(|pr| {
+        let predecessor = &p.obligations[pr.event.obligation.0 as usize];
+        pr.rule.status == Status::Shipped
+            && pr.event.point == Point::Completed
+            && predecessor.kind == K::PoolJoin
+            && predecessor.holder.spine == Spine::MainFallThrough
+    }));
+    for decl in ["App", "Pusher", "Tally"] {
+        let drain = one(p, decl, K::Drain);
+        assert!(drain.edges.entry.iter().any(|pr| {
+            let predecessor = &p.obligations[pr.event.obligation.0 as usize];
+            pr.rule.status == Status::Shipped
+                && pr.event.point == Point::Completed
+                && predecessor.kind == K::PreDrain
+                && predecessor.holder.spine == Spine::MainFallThrough
+        }), "{decl}'s drain waits for the frame pre-drain");
+    }
 }
