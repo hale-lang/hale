@@ -895,8 +895,11 @@ pub struct AllocSummary {
     pub sync_holding_loci: BTreeSet<String>,
     /// #341: form loci whose `sync` discipline synchronizes — the forms
     /// themselves, not the loci that hold them. A direct call into one
-    /// takes its lock. The summary reads a written discipline (`none` is not one); the
-    /// effects engine adds the form rows' ([`AllocSummary::add_sync_forms`]).
+    /// takes its lock. The summary holds the stdlib analysis copy's, from
+    /// that universe's form rows (`stdlib_bodies::forms`); the effects
+    /// engine adds the program's own, from its snapshot's rows
+    /// ([`AllocSummary::add_sync_forms`]). No reader takes a `sync =`
+    /// argument for it.
     pub sync_forms: BTreeSet<String>,
     /// #345: classes a fn/locus DECLARES it carries, via
     /// `@effects(is: {…})`. The classification half of a user effect:
@@ -1728,10 +1731,9 @@ fn collect_sync_holding_loci(
 impl AllocSummary {
     /// The forms of `programs` their form rows say carry a `sync`
     /// discipline (F.40 phase 3, C1: [`crate::form_rows::FormRows::synchronizes`],
-    /// inference's pick included), added to the ones the summary read off
-    /// a written argument, and the loci holding them. The effects
-    /// certificate engine reads both: the written argument alone misses a
-    /// discipline sync inference gave the form.
+    /// inference's pick included), added to the stdlib analysis copy's the
+    /// summary holds, and the loci holding them. The effects certificate
+    /// engine reads both: the summary holds none of the program's own.
     pub fn add_sync_forms(&mut self, programs: &[&Program], forms: &crate::form_rows::FormRows) {
         for program in programs {
             for item in flat_decls(&program.items) {
@@ -2078,6 +2080,11 @@ pub fn summarize_identified(
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
         let universe = universe_of(ids);
+        // The stdlib's analysis copy's form rows: its own universe's
+        // (`stdlib_bodies::forms`). A program's own forms are its
+        // snapshot's rows, which the effects engine adds
+        // (`add_sync_forms`), so nothing here reads a `sync =` argument.
+        let copy_forms = is_stdlib_copy(ids).then(crate::stdlib_bodies::forms).flatten();
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
@@ -2126,12 +2133,7 @@ pub fn summarize_identified(
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
                     }
-                    if l.form.as_ref().is_some_and(|f| {
-                        matches!(
-                            crate::form_rows::sync_config(f),
-                            crate::form_rows::SyncConfig::Explicit(d) if d.synchronizes()
-                        )
-                    }) {
+                    if copy_forms.as_ref().is_some_and(|forms| forms.synchronizes(l)) {
                         sync_forms.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
