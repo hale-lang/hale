@@ -653,25 +653,21 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "in_main", "whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it", "same"),
             legacy(CG, "collect_shm_ring_subjects", "the shm-ring subjects are read through `root_bindings`, which takes the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again", "same"),
             legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
-            // The checker's own readers of `main` that E0 did not switch.
-            legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
-            legacy(CHECK, "check_pool_affinity", "validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4)"),
-            legacy(CHECK, "let api_bound", "`check_bus_graph`'s orphan lint is lifted when ANY `is_main` declaration carries an `api:` binding: a module-nested one, or an imported one whose api entry is inert (GH #1104 piece 5)", "reads the entry, whose binding is the one that binds (L4)"),
+            // The claims' world tier: STOPPED on GH #733.
             legacy(CLAIMS, "has_main = true", "world-tier claims are gathered from every `is_main` at any depth, an imported one included, and `has_main` refuses a top-level `claims` block in a seed that closes; GH #733 made that deliberate for an imported application whose `main` is the only one, whose inline claims are re-evaluated as the importer's world law (`crates/hale-cli/tests/imported_main_claims.rs`), which decision 1 does not settle", "a ruling on GH #733's world: whether an imported application's inline claims stay world law once an imported `main` is not the entry"),
-            // The graphs' closed worlds and effects.
-            legacy(BUS_GRAPH, "let has_entry_point", "the bus graph's closed world is any top-level `is_main` or top-level `fn main`, an imported `main` included; deliberately broader than rule 9's", "reads the entry, beside the `fn main` entry point (L4)"),
-            legacy(OWNERSHIP_GRAPH, "let has_entry_point", "the ownership DAG's closed world, the bus graph's test made again", "same"),
-            legacy(EFFECTS, "placement_implied_diags", "the async_io pool's locus types come from every top-level `is_main` declaration's placement, an imported one included and a module-nested one not", "reads `lowering_root`, since the pool is one lowering spawns; reads the entry with L4"),
-            // Readers of a declaration's own `main` keyword: they derive
-            // no entry fact, and are listed so the inventory is whole.
-            legacy(CHECK, "if parent.is_main", "`check_nested_long_running_child` exempts a `main locus`, as a parent and as a child, from the long-running-child rule: a property of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it reads the row's witness (`mains`) instead of the keyword (L4)"),
-            legacy(OWNERSHIP_GRAPH, "entry.singleton |= l.is_main", "every `main locus` declaration is a singleton in the ownership graph: a property of each declaration, which derives no entry fact", "same"),
-            legacy(ALLOC, "let mut eager_only_loci", "every top-level `main locus` declaration is excluded from eager reclamation, conservatively: a property of each declaration, which derives no entry fact", "same"),
+            // Readers added after E0 by other steps, listed so the
+            // inventory is whole; not switched here.
+            legacy(BINDING_ROWS, "binds_on_main", "whether the program's own `main locus` binds a transport (E2): a row of ANY `is_main && !imported` declaration, module-nested ones and a second one included, where lowering's prelude takes the lowering root's entries alone", "reads the rows of `lowering_root`, then of the entry (L4)"),
+            legacy(LIFECYCLE_DERIVE, "s.decl.is_main", "a top-level or body construction of any `main locus` declaration takes the deferred main-entry teardown spine (L4-2), keyed on the constructed declaration's keyword rather than on the row's lowering root", "reads `lowering_root` (and the entry once lowering does), L4"),
         ],
         consumers: &[
             consumer_at("check (rule 1's count reads the witness: the seed's own mains, module-nested ones included)", CHECK, "check_main_and_bindings"),
-            consumer_at("placement (the table is seeded from the lowering root; the F.31 rule, the form rows' sync inference, the blocking check, the pinned-in-a-loop rule and the model's arrangement read it)", PLACEMENT, "derive_placement"),
-            consumer_at("check (rule 9's closed world is a program with an entry)", CHECK, "check_bus_graph"),
+            consumer_at("placement (the table is seeded from the lowering root; the F.31 rule, the form rows' sync inference, the blocking check, the pinned-in-a-loop rule, instance aliasing and the model's arrangement read it)", PLACEMENT, "derive_placement"),
+            consumer_at("check (rule 9's closed world is a program with an entry, and its api exemption is the entry's `api:` binding, never an imported `main`'s, which is inert)", CHECK, "check_bus_graph"),
+            consumer_at("check (each `main locus`'s own `placement { }` block is validated over the witness, deployed or not: an affinity on no named pool, two for one pool)", CHECK, "check_pool_affinity"),
+            consumer_at("bus_graph (the closed world: the entry, or a top-level `fn main`)", BUS_GRAPH, "build_bus_graph"),
+            consumer_at("ownership (the closed world: the entry, or a top-level `fn main`, the bus graph's test)", OWNERSHIP_GRAPH, "collect_ownership_walk"),
+            consumer_at("effects (the async_io placement-implied advisory: the lowering root's placement, the pools lowering spawns)", EFFECTS, "placement_implied_diags"),
             consumer_at("check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import)", V_MATRIX, "seed_entry_kind"),
             consumer_at("--env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal)", SNAPSHOT, "demand_entry"),
             consumer("build"),
@@ -694,14 +690,23 @@ pub const FAMILIES: &[Family] = &[
             "a module-nested `main` is not the entry (decision 2, E0): the entry is a top-level `main locus` of the seed's own files, so rule 9's closed world is the top-level one; a seed whose only `main` is module-nested has no entry (`NoEntry::OnlyModuleNested`), and a seed with both keeps the top-level one. Rule 1 still counts a module-nested `main` (GH #825): the count reads the witness, not the entry",
             "the decisions bind what reads the entry (rule 9's closed world, `--env`, `--matrix`), not the placement-safety rules: until lowering reads the entry (L4) it deploys a module-nested `main` as its root and spawns its pinned threads, so the placement table, which the F.31 rule and the pinned-in-a-loop rule read, is seeded from the row's provisional `lowering_root`, and a seed whose only `main` is module-nested has no entry and its cross-pool call is still refused (the outside review of #1293, finding 1)",
             "with more than one candidate (rule 1's error) the entry is the last, as the checker's pool map (since replaced by the placement table) took it before the row; the lowering root is the first non-`__lib_` `main`, nested or not, as lowering takes it",
-            "the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one",
-            "every non-test reader of `LocusDecl::is_main` is the producer or a legacy row here; the parser's main-only member rules are syntax and are not rows, and `sync_inference`'s test helper is test code",
+            "the checker, the api binding and the environment, the model, the editor and the CLI read the row (F.40 phase 3, the entry's consumers); the legacy sites left are lowering's (`lowering_root`'s choice made again, name comparisons, and `in_main`, a definition of fn main), the claims' world tier, which waits on a ruling (GH #733), and two readers added after E0 (the binding rows' `binds_on_main`, the lifecycle's deferred main-entry spine); the row has one definition",
+            "three readers of the `main` keyword read a property of each declaration and derive no entry fact, so they are no definition of the entry and no legacy row, whichever `main` is the entry: `check_nested_long_running_child` exempts every `main locus`, as a parent (`parent.is_main`) and as a child (`!l.is_main`), from the long-running-child rule, since a root is supervised by no parent; the ownership graph makes every `main locus` declaration a singleton (`singleton |= l.is_main`), one instance per declaration, deployed or not; and the allocation summary defers every `main locus` declaration, module-nested ones included, from eager reclamation (`if l.is_main` in its flat walk), conservatively. Each expression is a seam, so a second reader of the keyword in those files is a new row to classify",
+            "every non-test reader of `LocusDecl::is_main` is the producer, a legacy row here, or one of the three per-declaration readers above; the binding rows copy the keyword into each row as a column (`is_main: l.is_main`), the parser's main-only member rules are syntax and are not rows, and `sync_inference`'s test helper is test code",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/check_entry_consumers.rs (each consumer's correction on the decided shapes, beside a control)", "crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
+        tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/check_entry_consumers.rs (each consumer's correction on the decided shapes, beside a control)", "crates/hale-lsp/src/lib.rs (the_placement_view_is_the_deployed_roots)","crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
-        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 2), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1), (TY_RESOLVED, 1)] }],
+        seams: &[
+            Seam { symbol: "entry_row(", allowed: &[(ENTRY, 2), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1), (TY_RESOLVED, 1)] },
+            // The per-declaration readers of the `main` keyword (the
+            // invariant above): each where it is, once.
+            Seam { symbol: "parent.is_main", allowed: &[(CHECK, 1)] },
+            Seam { symbol: "!l.is_main)", allowed: &[(CHECK, 1)] },
+            Seam { symbol: "singleton |= l.is_main", allowed: &[(OWNERSHIP_GRAPH, 1)] },
+            Seam { symbol: "if l.is_main {", allowed: &[(ALLOC, 1)] },
+        ],
     },
     Family {
         name: "ownership",
