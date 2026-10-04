@@ -7311,6 +7311,11 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->self_ptr     = self_ptr;
     slot->payload_size = payload_size;
     slot->payload_heap = heap_buf;
+    /* A queued cell has no per-delivery region until materialize makes
+     * one, and drop_old's tombstone (lotus_bus_shed_check) destroys a
+     * queued cell's region before that: NULL, not the slot's last
+     * occupant's (or realloc's) bytes. */
+    slot->payload_region = NULL;
     slot->deserialize  = g_bus_pending_wire_deser;
     slot->rec_pub_id   = g_bus_pending_rec_pub;
     slot->run_ticket   = NULL;
