@@ -445,3 +445,46 @@ fn a_program_with_no_affinity_dumps_no_cpu_sets() {
     assert!(m.relations.affined_to.is_empty());
     assert!(!hale_types::model_builder::render_internal(m).contains("affined_to"));
 }
+
+/// Review of #1332: an unenumerated descendant in one construction
+/// cannot be filled in from another construction's default subtree.
+#[test]
+fn unenumerated_descendants_in_any_template_are_not_arranged() {
+    let source = r#"
+interface Router { fn route() -> Int; }
+locus RouterV1 { fn route() -> Int { return 1; } }
+locus RouterV2 { fn route() -> Int { return 2; } }
+locus Roles { params { router: Router = RouterV1 { }; } }
+locus Holder { params { roles: Roles = Roles { }; } }
+main locus App { params { h: Holder = Holder { }; } }
+fn build_roles() -> Roles { return Roles { router: RouterV2 { } }; }
+fn start(r: Roles) { App { h: Holder { roles: r } }; }
+fn main() {
+    if true { App { }; }
+    else { start(Roles { router: RouterV2 { } }); }
+}
+"#;
+    for (case, source) in [
+        ("unlinked held value", source.to_string()),
+        ("unenumerable factory", source.replace("roles: r", "roles: build_roles()")),
+        ("alternatives within one construction", source
+            .replace("App { h: Holder { roles: r } };", "App { h: if true { Holder { } } else { Holder { roles: r } } };")
+            .replace("if true { App { }; }\n    else { start(Roles { router: RouterV2 { } }); }", "start(Roles { router: RouterV2 { } });")),
+    ] {
+        let s = snapshot(&source);
+        let checked = s.demand_check().expect("check available");
+        assert!(checked.diags.is_empty(), "{case}: {:?}", checked.diags);
+        let m = model(&s);
+        assert_eq!(arrangement(m), [
+            "0 App App - main -",
+            "1 App.h Holder - main 0",
+            "2 App.h.roles Roles - main 1",
+        ], "{case}");
+        let expected = "RouterV1 the root's construction templates disagree at `App.h.roles.router`: the arrangement names no instance there";
+        assert!(locus_holes(m).iter().any(|h| h == expected), "{case}: {:?}", locus_holes(m));
+    }
+    // Complete coverage of two equal realizations still publishes the path.
+    let s = snapshot(&source.replace("roles: r", "roles: Roles { }"));
+    let m = model(&s);
+    assert!(arrangement(m).iter().any(|row| row.contains(" App.h.roles.router RouterV1 ")));
+}

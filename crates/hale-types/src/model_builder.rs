@@ -3086,12 +3086,19 @@ pub fn derive_application_model_over(
             replica: if i == 0 { None } else { k.replica },
         };
         let handed_off = table.handed_off();
-        // Per path, every row that reaches it.
+        // Keep coverage before projecting user declarations. A template
+        // or alternative whose subtree is unenumerable must not borrow
+        // a known descendant from another template or alternative.
+        let mut coverage: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
+        let mut parents: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
+        // Per path, every user row that reaches it.
         let mut at_path: BTreeMap<String, Vec<Arranged>> = BTreeMap::new();
         for (k, r) in &table.instances {
             if !root_template(k.origin) || handed_off.contains(k) {
                 continue;
             }
+            let path = path_of(k);
+            coverage.entry(path.clone()).or_default().insert(k);
             // The row and every row above it realize a user locus.
             if !(0..k.path.len()).all(|i| table.instances.get(&prefix(k, i)).and_then(model_decl).is_some()) {
                 continue;
@@ -3112,7 +3119,9 @@ pub fn derive_application_model_over(
                     .unwrap_or(l.name.span),
                 _ => l.name.span,
             };
-            let path = path_of(k);
+            if let Some(owner) = &r.owner {
+                parents.entry(path.clone()).or_default().insert(owner);
+            }
             at_path.entry(path.clone()).or_default().push(Arranged {
                 path,
                 decl,
@@ -3129,7 +3138,15 @@ pub fn derive_application_model_over(
         }
         let disagree: Vec<String> = at_path
             .iter()
-            .filter(|(_, rows)| rows.iter().any(|a| a.decl != rows[0].decl || a.domain != rows[0].domain))
+            .filter(|(path, rows)| {
+                rows.iter().any(|a| a.decl != rows[0].decl || a.domain != rows[0].domain)
+                    || rows.len() != coverage[*path].len()
+                    // Full instance keys retain construction and
+                    // alternative identity, which the model path omits.
+                    || rows[0].parent.as_ref().is_some_and(|parent| {
+                        parents.get(*path) != coverage.get(parent)
+                    })
+            })
             .map(|(p, _)| p.clone())
             .collect();
         let mut arranged: Vec<Arranged> = Vec::new();

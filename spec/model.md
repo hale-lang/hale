@@ -292,10 +292,12 @@ its own for them.
 - **Paths and replicas.** A path is the fields from the root, with
   the replica index after the replicated field (`App.f[2].k`). A path
   has no construction component: it is arranged when every template
-  and alternative reaching it agrees on the declaration and the
-  domain, and otherwise it is left out with everything under it, each
+  and alternative enumerates it and agrees on the declaration and the
+  domain; otherwise it is left out with everything under it, each
   declaration realized there a `RuntimeInheritedPlacement` hole naming
-  the path. `LocusInstance::replica` is the replica row's own index;
+  the path. An unenumerable subtree in any template or alternative is
+  disagreement, even if the other templates agree.
+  `LocusInstance::replica` is the replica row's own index;
   an instance under a replica carries the index in its path and
   `None` in its `replica`.
 - **Domains.** `thread_domains` are the domains the arranged instances
