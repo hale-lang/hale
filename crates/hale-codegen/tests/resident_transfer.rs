@@ -111,7 +111,7 @@ fn run_asan(tag: &str, src: &str) -> String {
     let clean: Vec<_> = build_diags(&program).into_iter().filter(|d| d.is_error()).collect();
     assert!(clean.is_empty(), "the program must check clean: {clean:?}");
     let bin = harness::unique_bin(tag);
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .env("ASAN_OPTIONS", "detect_leaks=0")

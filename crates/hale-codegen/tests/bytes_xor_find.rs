@@ -4,7 +4,6 @@
 //! XOR masking — the WebSocket primitive that replaces a per-byte `from_int`
 //! + append loop).
 
-use hale_codegen::build_executable_with_options;
 use std::process::Command;
 
 #[path = "support/harness.rs"]
@@ -13,9 +12,8 @@ mod harness;
 mod build_opts;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bytes_xf_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)

@@ -25,21 +25,18 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build_named(name: &str, src: &str) -> Result<std::path::PathBuf, String> {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_test_xpool_bubble_{}_{}",
         name,
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).map_err(|e| format!("{:?}", e))?;
+    build_opts::build_source(src, &bin, &build_opts::options()).map_err(|e| format!("{:?}", e))?;
     Ok(bin)
 }
 
@@ -51,7 +48,6 @@ fn build_named_no_bubble(
     name: &str,
     src: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_test_xpool_bubble_{}_{}",
         name,
@@ -61,7 +57,7 @@ fn build_named_no_bubble(
         no_ownership_bubble: true,
         ..build_opts::options()
     };
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(src, &bin, &options)
         .map_err(|e| format!("{:?}", e))?;
     Ok(bin)
 }
@@ -234,9 +230,8 @@ fn world_collects_crosspool_bubbled_ships() {
 #[test]
 fn crosspool_bubble_is_clean_under_asan() {
     let _lock = bubble_lock();
-    let program = hale_syntax::parse_source(XPOOL_SRC).expect("parse");
     let bin = harness::unique_bin("hale_test_xpool_bubble_asan");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(XPOOL_SRC, &bin);
     let mut last = String::new();
     for _ in 0..6 {
         let out = Command::new(&bin)
@@ -326,10 +321,9 @@ const NESTED_UNDER_PINNED_SRC: &str = r#"
 #[test]
 fn a_nested_enclosing_under_a_pinned_field_posts_its_child() {
     let _lock = bubble_lock();
-    let program = hale_syntax::parse_source(NESTED_UNDER_PINNED_SRC).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_xpool_bubble_nested_pinned_{}", std::process::id()));
     let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    build_opts::build_source(NESTED_UNDER_PINNED_SRC, &bin, &options).expect("build");
     let out = Command::new(&bin).env("ASAN_OPTIONS", "detect_leaks=0").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);

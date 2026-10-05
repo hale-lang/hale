@@ -7,8 +7,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -29,9 +27,8 @@ fn examples_dir() -> PathBuf {
 /// Compile `source` to a fresh temp binary, run it, return
 /// (stdout, status). Caller asserts on the output.
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&output.stdout).to_string(), output.status)
@@ -347,13 +344,12 @@ fn mutable_counter_example_builds_and_runs() {
     src_path.push("06-mutable-counter");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_06_mutable_counter");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
 
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
@@ -385,9 +381,8 @@ fn build_time_sleep_blocks_for_at_least_requested_duration() {
             println("after");
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("lotus_test_time_sleep");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
 
     let start = Instant::now();
     let output = Command::new(&bin).output().expect("run");
@@ -429,9 +424,8 @@ fn build_time_sleep_in_loop_accumulates() {
             println("i=", i);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("lotus_test_time_sleep_loop");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
 
     let start = Instant::now();
     let output = Command::new(&bin).output().expect("run");
@@ -569,13 +563,12 @@ fn control_flow_example_builds_and_runs() {
     src_path.push("07-control-flow");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_07_control_flow");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -594,13 +587,12 @@ fn monotonic_sleep_example_builds_and_runs() {
     src_path.push("08-monotonic-sleep");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_08_monotonic_sleep");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
     let start = Instant::now();
     let output = Command::new(&bin_path).output().expect("run");
     let elapsed = start.elapsed();
@@ -738,13 +730,12 @@ fn locus_with_run_canonical_example_builds_and_runs() {
     src_path.push("01-locus-with-run");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_01_ticker");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
     let start = Instant::now();
     let output = Command::new(&bin_path).output().expect("run");
     let elapsed = start.elapsed();
@@ -861,13 +852,12 @@ fn parent_child_canonical_example_builds_and_runs() {
     src_path.push("02-parent-child");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_02_parent_child");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -924,13 +914,12 @@ fn stateful_locus_example_builds_and_runs() {
     src_path.push("10-stateful-locus");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_10_stateful_locus");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -946,13 +935,12 @@ fn functions_example_builds_and_runs() {
     src_path.push("09-functions");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     let temp_dir = std::env::temp_dir();
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_09_functions");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -973,7 +961,6 @@ fn hello_world_builds_and_runs() {
     src_path.push("hello-world");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
 
     // Use a temp file so the test is hermetic and doesn't
     // collide with any existing binary in examples/.
@@ -981,7 +968,7 @@ fn hello_world_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_hello_world");
 
-    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin_path, &build_opts::options()).expect("build");
 
     let output = Command::new(&bin_path)
         .output()

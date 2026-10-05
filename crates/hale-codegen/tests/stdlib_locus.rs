@@ -19,8 +19,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -34,9 +32,8 @@ fn pick_free_port() -> u16 {
 }
 
 fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_stdlib_locus_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -169,9 +166,8 @@ fn unknown_stdlib_path_struct_literal_errors_clearly() {
             std::io::tcp::Nonexistent { port: 1 };
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_locus_unknown");
-    let result = build_executable_with_options(&program, &bin, &[], &build_opts::options());
+    let result = build_opts::build_source(src, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     assert!(result.is_err(), "expected build error for unknown stdlib path");
     let msg = format!("{:?}", result.unwrap_err());
@@ -194,9 +190,8 @@ fn user_program_with_no_stdlib_use_still_compiles() {
             println("hello, world");
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_locus_no_use");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
 

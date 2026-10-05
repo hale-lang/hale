@@ -56,9 +56,8 @@ struct Ran {
 /// Build `src` and run it under a 128 MiB address-space limit. `exec`,
 /// so the status is the program's own and not the shell's.
 fn run_limited(tag: &str, src: &str) -> Ran {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("arena-oom-{tag}"));
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    build_opts::build_source(src, &bin, &build_opts::options())
         .expect("build");
     let out = Command::new("bash")
         .arg("-c")

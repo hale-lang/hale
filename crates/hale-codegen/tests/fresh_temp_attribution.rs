@@ -29,8 +29,6 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -44,9 +42,8 @@ mod build_opts;
 const DEADLINE: Duration = Duration::from_secs(60);
 
 fn build_and_run(tag: &str, src: &str) -> (String, String) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("fresh_temp_attr_{}", tag));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -290,7 +287,7 @@ fn a_factory_argument_of_a_returned_factory_is_reclaimed() {
 /// program reads clean (main's arena is destroyed at exit), which is
 /// PR #835's note and the reason this test is a method.
 ///
-/// The ASan build goes through `harness::build_asan`
+/// The ASan build goes through `harness::build_source_asan`
 /// (`BuildOptions::asan`, GH #843) — nothing here touches the
 /// process environment.
 #[test]
@@ -331,12 +328,11 @@ fn a_factory_argument_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("fresh_temp_attr_asan");
     // `BuildOptions::asan` through the harness — no test mutates the
     // process environment (GH #843), and the helper checks the
     // artifact really carries the ASan runtime.
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .output()
@@ -573,7 +569,7 @@ fn an_ascribed_array_or_tuple_reclaims_every_element_exactly_once() {
 /// fix the then-arm's `zeros(n)` took the binding's suppression and
 /// leaked once per call while the else-arm was reclaimed normally.
 ///
-/// The build goes through `harness::build_asan` (`BuildOptions::
+/// The build goes through `harness::build_source_asan` (`BuildOptions::
 /// asan`, GH #843), whose runtime cflags carry
 /// `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` (GH #816); the child states
 /// `LOTUS_NO_CHUNK_POOL=1` as well, so chunk recycling cannot mask
@@ -617,9 +613,8 @@ fn an_if_expression_binding_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("fresh_temp_arm_asan");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .env("LOTUS_NO_CHUNK_POOL", "1")

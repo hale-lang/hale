@@ -319,8 +319,8 @@ pub fn rewrite_intra_locus(
     let mut program_owned = program.clone();
     // The intra-locus rewrite moves each send's id onto the call that
     // replaces it and records it in the relation, so the sends have to
-    // be minted before it runs: a caller that did not mint (the
-    // harness adapter, `build_executable_with_options`) would otherwise
+    // be minted before it runs: a caller that did not mint (the test
+    // harness's bare-program snapshot, `Snapshot::from_program`) would otherwise
     // get a relation of `NodeId::NONE` sends no call can be joined to.
     // Idempotent: the ids a bundle already minted are kept, so the
     // relation names the sends the check's graph holds, and the mint
@@ -419,7 +419,7 @@ pub fn resolve_program(
 /// its span falls in, as the bundle's does. A caller with no source
 /// map passes `&[]`, and the user program is then seed 0 by ordinal.
 /// `import_renames` is the per-build path-rename table for cross-seed
-/// imports (see `hale_codegen::build_executable_with_options`); `api`
+/// imports (see `hale_frontend::snapshot::Snapshot::from_program`); `api`
 /// and `api_roles` are the build's `--api` path and the roles its
 /// environment binds, the ones the sequence shaped the api surface
 /// with, recorded on the envelope for lowering to hold its options

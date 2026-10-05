@@ -157,7 +157,6 @@ const REGISTERED_PRODUCER_NAMES: &[&str] = &[
     "desugar_intra_locus_topics",
     "desugar_before_check",
     "handler_rows",
-    "build_executable_with_options",
 ];
 
 /// A name the definition scan checks: a derivation prefix, or one of
@@ -626,11 +625,9 @@ fn registry_is_well_formed() {
         if f.answers.trim().is_empty() {
             problems.push(format!("`{}` answers nothing", f.name));
         }
-        for seam in f.seams {
-            if seam.allowed.is_empty() {
-                problems.push(format!("`{}` seam `{}` allows nobody", f.name, seam.symbol));
-            }
-        }
+        // A seam may allow nobody: the symbol is then one no scanned
+        // source may reference (`seam_symbols_are_referenced_only_as_the_registry_counts`
+        // fails on the first reference), a tests-only entry point.
     }
     for r in hale_graph::rules() {
         if !names.contains(r.family) {

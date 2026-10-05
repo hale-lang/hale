@@ -18,8 +18,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 /// Compile transport_driver.c + lotus_arena.c into a peer binary
 /// (same recipe as tests/transport.rs). GH #227 made an
 /// unrealizable binding a birth failure, so the connect-role
@@ -101,9 +99,8 @@ fn xor_codec_round_trip_through_in_process_wire_path() {
     "#,
         sock
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_test_codec_dispatch_roundtrip");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     // Listener peer first so the app's connect-with-retry lands.
     // The peer just absorbs the (scrambled) wire bytes; the
     // round-trip under test is the in-process wire path.

@@ -29,14 +29,12 @@
 //! pool_size == 0` with `misses > 0` — chunks were allocated, and
 //! every one of them went back to libc.
 //!
-//! The instrumented build goes through `harness::build_asan`
+//! The instrumented build goes through `harness::build_source_asan`
 //! (`BuildOptions::asan`, GH #843) — nothing here touches the
 //! process environment; the knob itself is exercised on the CHILD's
 //! env via `Command::env`.
 
 use std::process::Command;
-
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -194,11 +192,10 @@ fn assert_recycling_off(what: &str, s: &PoolStats) {
 
 #[test]
 fn no_chunk_pool_really_stops_recycling_and_asan_defaults_it_on() {
-    let program = hale_syntax::parse_source(PROGRAM).expect("parse");
 
     // --- ordinary build -------------------------------------------
     let plain = harness::unique_bin("no_chunk_pool_plain");
-    build_executable_with_options(&program, &plain, &[], &build_opts::options()).expect("build plain");
+    build_opts::build_source(PROGRAM, &plain, &build_opts::options()).expect("build plain");
 
     // Default: the pool recycles. The prefill alone guarantees the
     // first default-sized request is a hit and that chunks are
@@ -225,7 +222,7 @@ fn no_chunk_pool_really_stops_recycling_and_asan_defaults_it_on() {
     // `BuildOptions::asan` through the harness — no test mutates the
     // process environment (GH #843), and the helper checks the
     // artifact really carries the ASan runtime.
-    harness::build_asan(&program, &asan);
+    harness::build_source_asan(PROGRAM, &asan);
 
     let asan_default = stats_for(&asan, &[]);
     assert_recycling_off("an ASan build with no env set", &asan_default);

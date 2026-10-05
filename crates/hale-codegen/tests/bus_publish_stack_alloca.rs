@@ -36,8 +36,7 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
 
 fn dump_ir(src: &str, tag: &str) -> String {
     let bin = unique_path(tag, "bin");
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
+    let ir_text = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     ir_text
 }

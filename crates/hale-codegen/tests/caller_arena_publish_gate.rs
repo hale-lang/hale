@@ -38,8 +38,6 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-use hale_codegen::build_executable_with_options;
-
 /// Disassemble one function, asserting it survived optimization.
 ///
 /// The assert is not defensiveness. The first version of this file
@@ -108,9 +106,8 @@ fn publish_sites(bin: &std::path::Path, func: &str) -> usize {
 }
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

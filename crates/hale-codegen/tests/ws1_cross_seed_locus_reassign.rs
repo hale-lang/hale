@@ -20,10 +20,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-use hale_codegen::mangle;
-use hale_syntax::ast::{Program, TopDecl};
-use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -37,60 +33,14 @@ fn fixtures_dir() -> PathBuf {
     p
 }
 
-fn resolve_and_mangle_lib(
-    lib_dir: &PathBuf,
-    alias: &str,
-) -> (Vec<TopDecl>, Vec<(Vec<String>, String)>) {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(lib_dir)
-        .expect("read lib dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"))
-        .collect();
-    files.sort();
-    let mut parsed: Vec<(String, Program)> = Vec::new();
-    for f in &files {
-        let src = std::fs::read_to_string(f).expect("read lib file");
-        let prog = parse_source(&src).expect("parse lib file");
-        let stem = f
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("x")
-            .to_string();
-        parsed.push((stem, prog));
-    }
-    let stem_refs: Vec<(String, &Program)> =
-        parsed.iter().map(|(s, p)| (s.clone(), p)).collect();
-    let seed_renames = mangle::build_seed_renames(&stem_refs, alias);
-    let mut renames: Vec<(Vec<String>, String)> = Vec::new();
-    for (name, mangled) in &seed_renames {
-        renames.push((vec![alias.to_string(), name.clone()], mangled.clone()));
-    }
-    let mut items: Vec<TopDecl> = Vec::new();
-    for (_, mut prog) in parsed {
-        mangle::mangle_with_renames(&mut prog, &seed_renames);
-        items.extend(prog.items);
-    }
-    (items, renames)
-}
-
 #[test]
 fn cross_seed_nested_locus_param_whole_reassignment_is_fully_initialized() {
-    let conn_dir = fixtures_dir().join("lib-ws1-conn");
     let consumer_src_path = fixtures_dir()
         .join("import-ws1-conn-reassign-consumer")
         .join("main.hl");
 
-    let consumer_src =
-        std::fs::read_to_string(&consumer_src_path).expect("read consumer main.hl");
-    let mut consumer_prog = parse_source(&consumer_src).expect("parse consumer");
-    consumer_prog.imports.clear();
-
-    let (conn_items, renames) = resolve_and_mangle_lib(&conn_dir, "wsx");
-    consumer_prog.items.extend(conn_items);
-
     let bin = harness::unique_bin(&format!("hale_ws1_xseed_reassign_{}", std::process::id()));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    build_opts::build_seed_dir(&consumer_src_path, &bin, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run");

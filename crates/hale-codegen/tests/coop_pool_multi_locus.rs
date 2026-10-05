@@ -24,8 +24,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -85,9 +83,8 @@ fn multi_locus_per_coop_pool_codegen_path() {
         fn main() { App { }; }
     "#;
 
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path("3on1");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
 
     let out = Command::new(&bin).output().expect("run binary");
     let _ = std::fs::remove_file(&bin);

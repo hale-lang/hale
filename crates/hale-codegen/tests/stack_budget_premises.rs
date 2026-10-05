@@ -44,13 +44,12 @@ mod harness;
 
 /// Emit pre-optimization IR for a program and return it.
 fn ir_for(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_stackprem_{}_{}",
         name,
         std::process::id()
     ));
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     ir
 }

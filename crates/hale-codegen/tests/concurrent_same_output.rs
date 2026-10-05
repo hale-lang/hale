@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -26,12 +25,11 @@ const BUILDS_EACH: usize = 12;
 
 #[test]
 fn concurrent_builds_to_one_output_path_all_link() {
-    let program = Arc::new(hale_syntax::parse_source(SRC).expect("parse"));
     let bin = harness::unique_bin("concurrent_same_output");
 
     // One build first, so the runtime objects are cached and the race
     // under test is the per-output one, not the runtime's own.
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("first build");
+    build_opts::build_source(SRC, &bin, &build_opts::options()).expect("first build");
 
     // Builders run back to back with no barrier between builds, so
     // their emit / link / cleanup phases interleave at random: one
@@ -40,14 +38,13 @@ fn concurrent_builds_to_one_output_path_all_link() {
     let start = Arc::new(Barrier::new(BUILDERS));
     let handles: Vec<_> = (0..BUILDERS)
         .map(|i| {
-            let program = Arc::clone(&program);
             let bin = bin.clone();
             let start = Arc::clone(&start);
             std::thread::spawn(move || {
                 start.wait();
                 std::thread::sleep(std::time::Duration::from_millis(7 * i as u64));
                 (0..BUILDS_EACH)
-                    .map(|n| build_executable_with_options(&program, &bin, &[], &build_opts::options()).map_err(|e| format!("builder {i}, build {n}: {e:?}")))
+                    .map(|n| build_opts::build_source(SRC, &bin, &build_opts::options()).map_err(|e| format!("builder {i}, build {n}: {e:?}")))
                     .collect::<Result<Vec<()>, String>>()
             })
         })

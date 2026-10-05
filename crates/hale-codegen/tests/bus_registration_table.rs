@@ -42,11 +42,10 @@ fn the_fixture_is_formatted() {
 /// run prints both lines, exits 0, and reports nothing.
 #[test]
 fn registrations_on_an_anchors_thread_never_free_the_table_under_a_walk() {
-    let program = hale_syntax::parse_source(&source()).unwrap_or_else(|e| panic!("{FIXTURE}: parse: {e:?}"));
     for no_bus_devirt in [false, true] {
         let bin = harness::unique_bin(&format!("bus_table_{no_bus_devirt}"));
         let options = hale_codegen::BuildOptions { asan: true, no_bus_devirt, ..build_opts::options() };
-        hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        build_opts::build_source(&source(), &bin, &options)
             .unwrap_or_else(|e| panic!("{FIXTURE}: build: {e:?}"));
         let image = std::fs::read(&bin).expect("read the ASan binary");
         assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");

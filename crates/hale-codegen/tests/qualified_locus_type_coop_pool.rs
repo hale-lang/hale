@@ -20,8 +20,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -69,9 +67,8 @@ fn qualified_stdlib_locus_on_non_main_pool_does_not_starve_main_run() {
             println("[main] after App");
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_qualified_locus_coop_pool");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     // Run with a short timeout via `timeout` — the listener's
     // forever-accept loop on the io pool keeps the program alive
     // indefinitely, but main.run()'s println should land before

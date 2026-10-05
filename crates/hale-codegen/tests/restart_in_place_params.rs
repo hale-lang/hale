@@ -57,9 +57,8 @@ fn main() { App { }; }
 
 #[test]
 fn restart_in_place_restores_the_params_as_built_on_both_paths() {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin("hale_restart_in_place_params");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(SRC, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()

@@ -17,8 +17,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -111,9 +109,8 @@ fn hale_subscriber_reads_in_band_header_fields() {
         shm_name = shm_name,
     );
 
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let consumer_bin = harness::unique_bin(&format!("lotus_{}.bin", unique_tag("consumer")));
-    build_executable_with_options(&program, &consumer_bin, &[], &build_opts::options()).expect("build consumer");
+    build_opts::build_source(&src, &consumer_bin, &build_opts::options()).expect("build consumer");
 
     let producer_bin = build_producer();
     let mut producer = Command::new(&producer_bin)

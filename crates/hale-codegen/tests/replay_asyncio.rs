@@ -27,7 +27,7 @@
 use std::process::Command;
 use std::time::Instant;
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -45,7 +45,7 @@ fn build(name: &str, src: &str) -> std::path::PathBuf {
         model_hash: Some(model_hash),
         ..build_opts::options()
     };
-    build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(src, &bin, &options)
         .expect("build");
     bin
 }

@@ -11,8 +11,6 @@ use std::io::{Read, Write};
 use std::process::Command;
 use std::thread;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -21,9 +19,8 @@ mod build_opts;
 mod connect;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_http_resp_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     bin
 }
 

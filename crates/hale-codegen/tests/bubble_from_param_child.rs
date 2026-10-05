@@ -37,9 +37,8 @@ locus Ship {
 "#;
 
 fn run_asan(tag: &str, src: &str) -> Vec<String> {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .env("ASAN_OPTIONS", "detect_leaks=0")

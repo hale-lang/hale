@@ -11,8 +11,6 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -36,9 +34,8 @@ fn main() { App { }; }
 
 #[test]
 fn a_harness_build_leaves_manifest_entity_ids_zero() {
-    let program = hale_syntax::parse_source(PROG).expect("parse");
     let bin = harness::unique_bin("lotus_test_obs_ids_unstamped");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(PROG, &bin, &build_opts::options()).expect("build");
 
     let mut child = Command::new(&bin)
         .env("LOTUS_OBS", "1")

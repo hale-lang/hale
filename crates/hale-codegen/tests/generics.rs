@@ -21,8 +21,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -43,9 +41,8 @@ fn unique_bin(tag: &str) -> PathBuf {
 }
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -354,9 +351,8 @@ fn numeric_bound_rejects_string_arg() {
             let h = Holder { b: Box_String { value: "hi" } };
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_bin("numeric_str_reject");
-    let result = build_executable_with_options(&program, &bin, &[], &build_opts::options());
+    let result = build_opts::build_source(src, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     let err = result.expect_err("expected codegen error for non-numeric");
     let msg = format!("{:?}", err);

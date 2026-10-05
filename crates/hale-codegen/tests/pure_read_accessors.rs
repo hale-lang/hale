@@ -15,7 +15,6 @@
 //! accessor would be a miscompilation, not a slow path: hoisting a
 //! poll loop's `len` read out of the loop turns a spin into a hang.
 
-use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -24,9 +23,8 @@ mod harness;
 /// PRE-optimization, so a trivial program's IR carries every runtime
 /// declaration — no fixture needs to call them.
 fn builtin_ir(name: &str) -> String {
-    let program = parse_source("fn main() { println(\"hi\"); }").expect("parse");
     let bin = harness::unique_bin(name);
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text("fn main() { println(\"hi\"); }", &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     ir
 }

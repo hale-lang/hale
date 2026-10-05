@@ -19,8 +19,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -31,13 +29,12 @@ fn build_and_run(
     src: &str,
     argv: &[&str],
 ) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_split_{}_{}",
         name,
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).args(argv).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

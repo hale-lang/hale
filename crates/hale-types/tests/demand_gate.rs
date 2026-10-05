@@ -16,9 +16,11 @@
 //! - every build path (`build`, `run`, `test`, `replay`, `bench`, F.40
 //!   phase 2.2b): the whole seed with a build's config, the check, the
 //!   lowering view, and the model the build's identity reads;
-//! - the test harness (codegen's `build_executable_with_options`): a
-//!   bare program's snapshot (`Snapshot::from_program`), whose lowering
-//!   is not gated on the check.
+//! - the test harness (codegen's `tests/support/build.rs`: `build_source`
+//!   loads a seed from text, `build_seed_dir` from disk, and
+//!   `build_program` hands a bare program to `Snapshot::from_program`):
+//!   the harness configuration, whose lowering is not gated on the
+//!   check.
 //!
 //! A program that swears to nothing builds no model on the editor path;
 //! one that declares a law builds exactly one on `hale check`, which a

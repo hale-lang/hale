@@ -7,8 +7,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -34,9 +32,8 @@ fn dump_pool_residency_lists_each_pool_with_mode() {
         }
         fn main() { App { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_dump_pool_residency");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -70,9 +67,8 @@ fn dump_pool_residency_with_no_pools_emits_count_zero() {
         }
         fn main() { App { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_dump_pool_residency_empty");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&output.stderr);

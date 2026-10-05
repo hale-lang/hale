@@ -24,8 +24,6 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-use hale_codegen::build_executable_with_options;
-
 /// Count `lotus_bus_queue_drain` call sites in the binary's `main`.
 fn drain_call_sites(bin: &std::path::Path) -> usize {
     let out = Command::new("objdump")
@@ -40,9 +38,8 @@ fn drain_call_sites(bin: &std::path::Path) -> usize {
 }
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

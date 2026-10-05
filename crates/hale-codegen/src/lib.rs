@@ -65,6 +65,6 @@ pub use ownership::{
 
 pub use codegen::{
     stdlib_doc_source, stdlib_path_renames,
-    build_executable_with_options, build_resolved, BuildOptions, CodegenError, CompileTarget,
+    build_resolved, BuildOptions, CodegenError, CompileTarget,
     DebugSourceFile, DebugSources, LtoMode, TargetCpu,
 };

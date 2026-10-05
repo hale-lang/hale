@@ -7,8 +7,6 @@
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -17,8 +15,7 @@ mod build_opts;
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let bin = harness::unique_bin(&format!("lt-fromjson-{}-{}-{}.bin", name, std::process::id(), n));
-    let program = hale_syntax::parse_source(src).expect("parse");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)

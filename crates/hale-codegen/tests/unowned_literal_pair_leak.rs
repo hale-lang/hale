@@ -49,15 +49,16 @@ use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/sanitize.rs"]
 mod sanitize;
 
 /// Compile `src`, run it, return its stdout. Asserts a clean exit —
 /// which under `LOTUS_ASAN=1` is also the leak oracle.
 fn run(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_gh750_{}", name));
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
+    build_opts::build_source(src, &bin, &sanitize::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

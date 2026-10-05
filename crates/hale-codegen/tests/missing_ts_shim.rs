@@ -23,7 +23,7 @@
 
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, BuildOptions, CodegenError};
+use hale_codegen::{BuildOptions, CodegenError};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -34,11 +34,11 @@ mod build_opts;
 /// asks for it, so the request is scoped to one build and nothing
 /// touches the process environment.
 fn build_without_ts_shim(
-    program: &hale_syntax::ast::Program,
+    src: &str,
     bin: &std::path::Path,
 ) -> Result<(), CodegenError> {
     let options = BuildOptions { no_ts_shim: true, ..build_opts::options() };
-    build_executable_with_options(program, bin, &[], &options)
+    build_opts::build_source(src, bin, &options)
 }
 
 #[test]
@@ -50,9 +50,8 @@ fn main() {
     println("tanh0=", std::math::tanh(0.0));
 }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("libm_no_ts_shim");
-    build_without_ts_shim(&program, &bin)
+    build_without_ts_shim(src, &bin)
         .expect("a std::math program must link without the ts shim");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -73,9 +72,8 @@ fn main() {
     println("t=", t);
 }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("std_ts_no_shim");
-    let err = build_without_ts_shim(&program, &bin)
+    let err = build_without_ts_shim(src, &bin)
         .expect_err("a std::ts program must be refused without the shim");
     let _ = std::fs::remove_file(&bin);
     let (msg, span) = match err {

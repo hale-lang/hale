@@ -16,7 +16,7 @@ mod harness;
 mod build_opts;
 
 /// The harness's lowering view of `src`, the one
-/// `build_executable_with_options` lowers, owned so a test can take a
+/// `build_opts::build_program` lowers, owned so a test can take a
 /// row out of it.
 fn view(src: &str) -> LoweringView {
     let program = hale_syntax::parse_source(src).expect("parses");

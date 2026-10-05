@@ -14,8 +14,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -39,9 +37,8 @@ fn pick_free_port() -> u16 {
 fn build_docs_server() -> PathBuf {
     let src_path = examples_dir().join("docs-server").join("main.hl");
     let src = std::fs::read_to_string(&src_path).expect("read example");
-    let program = hale_syntax::parse_source(&src).expect("parse example");
     let bin = harness::unique_bin("docs_server");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build example");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build example");
     bin
 }
 

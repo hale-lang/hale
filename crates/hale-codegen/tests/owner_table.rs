@@ -595,10 +595,8 @@ fn the_table_keys_every_locus_producing_node_it_decides_by_its_minted_id() {
 
 /// Build the program and hand back the refusal, if any.
 fn build(src: &str, tag: &str) -> Option<String> {
-    let p = hale_syntax::parse_source(src)
-        .unwrap_or_else(|e| panic!("{tag}: does not parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&["ownertab_", tag].concat());
-    let r = hale_codegen::build_executable_with_options(&p, &bin, &[], &build_opts::options());
+    let r = build_opts::build_source(src, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     match r {
         Ok(()) => None,

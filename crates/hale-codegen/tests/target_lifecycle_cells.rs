@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use std::collections::BTreeSet;
 
-use hale_codegen::{build_executable_with_options, BuildOptions, CodegenError, CompileTarget};
+use hale_codegen::{BuildOptions, CodegenError, CompileTarget};
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_types::capability::{LoweringCells, Obligation, TargetClass};
 use hale_types::lifecycle::trace::{self, Trace};
@@ -303,12 +303,11 @@ struct Built {
 }
 
 fn build(src: &str, target: CompileTarget, trace: bool, name: &str) -> Built {
-    let program = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("{name}: parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(name);
     let out = if target == CompileTarget::Wasm32 { bin.with_extension("wasm") } else { bin.clone() };
     let ll = bin.with_extension("ll");
     let opts = BuildOptions { target, dump_ir: Some(ll.clone()), lifecycle_trace: trace, ..build_opts::options() };
-    let err = build_executable_with_options(&program, &out, &[], &opts).err();
+    let err = build_opts::build_source(src, &out, &opts).err();
     let ir = std::fs::read_to_string(&ll).unwrap_or_default();
     let _ = std::fs::remove_file(&ll);
     Built { ir, err, bin: out }
