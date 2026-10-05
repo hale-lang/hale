@@ -166,10 +166,29 @@ pub struct Family {
     pub seams: &'static [Seam],
 }
 
+/// What a rule's evaluator reads (filled from the evaluator's code).
+#[derive(Debug, Clone, Copy)]
+pub enum Reads {
+    /// The families whose rows it reads, each a registered family
+    /// (`registry_is_well_formed`). A rule that also reads the
+    /// declaration it judges says what, in a comment at the rule.
+    Rows(&'static [&'static str]),
+    /// The declaration it judges, and no fact another consumer
+    /// re-derives: a well-formedness check with one evaluator.
+    Declaration,
+}
+
 /// A numbered spec rule and the code that evaluates it.
 #[derive(Debug, Clone, Copy)]
 pub struct Rule {
     pub id: &'static str,
+    /// The spec's bold title for the rule, verbatim (a wrapped title
+    /// joined on single spaces, its bold markers dropped):
+    /// `rule_lists_match_the_spec` compares it, so a renumbering or a
+    /// retitling in the spec fails the build until the registry follows.
+    pub title: &'static str,
+    /// What the evaluator reads, from its code.
+    pub reads: Reads,
     pub gist: &'static str,
     pub family: &'static str,
     pub evaluator: Option<Site>,
@@ -649,21 +668,25 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Declarations,
         state: State::Migrating,
         kind: Kind::Capability,
-        answers: "What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as.",
-        inputs: &["the stdlib registry", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
-        producer: Some(site(STDLIB_SURFACE, "signature_for")),
+        answers: "What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as.",
+        inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one, and how it lowers: an intrinsic id, a Hale body by name, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
+        producer: Some(site(STDLIB_SURFACE, "SURFACES")),
         legacy: &[
-            legacy(CG, "lower_stdlib_path_call_expr", "271 `[\"std\", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`", "codegen dispatches from the registry row"),
-            legacy(CG, "lower_stdlib_path_call", "the statement-form twin of the expression dispatch: 191 more `[\"std\", ..]` literals", "same"),
+            legacy(CG, "lower_stdlib_path_call_expr", "271 `[\"std\", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`; each dispatched path's row names what its arm does (`Lower`), held equal to the arms by the parity test, but codegen does not dispatch from it yet", "codegen dispatches from the registry row"),
+            legacy(CG, "lower_stdlib_path_call", "the statement form: the expression dispatch with the value dropped, except for 54 more `[\"std\", ..]` literals, in the arms a statement answers differently (Unit-only primitives, the assertions, two Hale bodies) and its fallibility refusal (34 paths)", "same"),
             legacy(CG_CHANNELS, "try_lower_fallible_stdlib_path_call", "the fallible-call dispatch (`path or raise` on a stdlib path), a third copy of the stdlib call shapes: 150 more `[\"std\", ..]` literals", "same"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
             legacy(CG, "declare_builtin_closure_violation_type", "a hand-maintained mirror of the checker's injected builtin types", "one declaration"),
         ],
         consumers: &[consumer_at("effects", EFFECTS, "effects_for"), consumer_at("frontier", FRONTIER, "effects_for"), consumer("codegen"), consumer("lsp (hover, completion)"), consumer("doc")],
-        invariants: &["the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)"],
+        invariants: &[
+            "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature",
+            "every path a dispatcher lowers has a row whose lowering is what its arms do, every intrinsic or Hale-body row has an arm, a renamed row has none, and the unlowered rows are named (parity test)",
+            "the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs"],
+        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs"],
         spec: &["spec/stdlib.md"],
         owned: &[],
         seams: &[],
@@ -1065,7 +1088,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["@export, @gated, serve declarations", "the api binding", "roles (--env)"],
         producer: Some(site(API_GEN, "api_surface")),
         legacy: &[
-            legacy(API_GEN, "generate_api", "its one production call is the desugar sequence's (`desugar_sequence.rs`), with the snapshot's roles; codegen no longer runs it (F.40 phase 2.2b), and the snapshot's `Config` carries `api`, `api_roles` and `environment`, which `Config::digest` hashes. What remains: `Config::check` carries no roles and `hale check --env` adopts the environment's constitutions only, so the check judges a generated binding whose role source differs from the one `build --env` lowers", "`hale check --env` carries the environment's roles"),
             legacy(CHECK, "check_api_roles", "role declarations, includes and gates are judged over the AST", "a law over the surface rows"),
             legacy(V_MATRIX, "role_coverage", "re-runs the loader and reads pre-desugar programs", "reads the rows"),
         ],
@@ -1655,11 +1677,11 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(JUDGMENT, "claim_law_diags")),
         legacy: &[
             legacy(TOPO_LAW, "validate_law_account", "admitting an artifact, the CLI recomputes the law digest and compares the evidence inputs digest, decodes every law payload into a private copy of the law vocabulary (`decode_law`), re-renders the claims' forms with a private renderer that mirrors `hale-model`'s, and re-aggregates the stated verdicts (a row's from its certificates', the document's from the rows'); it evaluates no law over a model", "admission validates ties and reads verdicts; it re-derives none"),
-            legacy(V_MATRIX, "constitution_identities", "re-runs the loader (`collect_checkable`) and law selection's adoption, not the scope or the bus graph, to re-derive identities the artifact already carries", "reads the artifact's section"),
-            legacy(CLAIMS, "constitution_identities", "the identity derivation the matrix calls", "one derivation, projected"),
+            legacy(V_MATRIX, "constitution_identities", "re-runs the loader (`collect_checkable`) and law selection (`select_laws`) over the programs it loads, before the sequence, not the scope or the bus graph, and projects the identities the artifact already carries with the artifact's own projection (`LawSelection::identities`): one definition of the identities, but a second selection per pair", "reads the pair's snapshot's selection"),
         ],
-        consumers: &[consumer("check / verify"), consumer_at("the check's laws stage (judged over the snapshot's model, after its typing stage)", SNAPSHOT, "demand_laws"), consumer("topology (law section)"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
+        consumers: &[consumer("check / verify"), consumer_at("the check's law-selection diagnostics (the snapshot's selection, handed in)", CHECK, "laws.diags"), consumer_at("the check's laws stage (judged over the snapshot's model, after its typing stage; its lowering reads the snapshot's selection)", SNAPSHOT, "demand_laws"), consumer_at("topology (law section: the law rows, the constitution identities projected from the adoption, and the environment label, all the snapshot's selection, handed in)", V_CHECK, "demand_law_selection"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
         invariants: &[
+            "law selection runs once per snapshot (F.40 phase 4, A2): the `law_selection` cell (`Snapshot::demand_law_selection`) selects over the programs after the sequence, for the configuration's environment (its label and the constitutions it injected, passed as data, never a binding on the thread), and the check's selection diagnostics, the laws stage's lowering and the artifact's law rows, constitution identities (`LawSelection::identities`, a projection of the adoption) and environment label read that one selection; it is not gated on the typing, so a program that does not typecheck still answers it; a bundle no snapshot holds selects once per entry (`bundle_law_selection`)",
             "structural compiler laws are evaluated through model_query with shared witness rendering; the judgment path stays for user claims (final direction)",
             "a registered rule without an evaluator fails the compiler's own build",
             "a non-holds verdict is never silent",
@@ -1727,14 +1749,14 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Identity,
         state: State::Canonical,
         kind: Kind::Derivation,
-        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph, handler rows and flow rows, the arrangement, the effect rows, the model, the check in its two stages with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
+        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph, handler rows and flow rows, law selection, the arrangement, the effect rows, the model, the check in its two stages with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
         inputs: &["seed_loading", "desugar_sequence", "snapshot_identity", "the config (target, api, api roles, environment, the check's rules)", "editor overlays (LSP)", "a consumer's request"],
         producer: Some(site(SNAPSHOT, "Snapshot")),
         legacy: &[],
-        owned: &[site(SNAPSHOT, "demand_entry"), site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_flows"), site(SNAPSHOT, "demand_arrangement"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_typing"), site(SNAPSHOT, "demand_laws"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey"), site(SNAPSHOT, "declarations"), site(SNAPSHOT, "declaration_dependents"), site(DEPENDENTS, "DependencyIndex"), site(SNAPSHOT, "reusing_typing"), site(SNAPSHOT, "typing_reuse"), site(TYPING_REUSE, "ReuseKey"), site(TYPING_REUSE, "plan")],
+        owned: &[site(SNAPSHOT, "demand_entry"), site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_flows"), site(SNAPSHOT, "demand_law_selection"), site(SNAPSHOT, "demand_arrangement"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_typing"), site(SNAPSHOT, "demand_laws"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey"), site(SNAPSHOT, "declarations"), site(SNAPSHOT, "declaration_dependents"), site(DEPENDENTS, "DependencyIndex"), site(SNAPSHOT, "reusing_typing"), site(SNAPSHOT, "typing_reuse"), site(TYPING_REUSE, "ReuseKey"), site(TYPING_REUSE, "plan")],
         consumers: &[
             consumer_at("check", V_CHECK, "demand_check"),
-            consumer_at("the checker's rules (the handler rows: duplicate handlers, `@supervised`; the entry row: rule 1 and rule 9; the placement table: the F.31 rule per instance, the blocking check, pinned-in-a-loop, rule 20's construction paths; the bus graph: rules 7, 9 and 10; the ownership graph: rule 20), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion", SNAPSHOT, "CheckInputs"),
+            consumer_at("the checker's rules (the handler rows: duplicate handlers, `@supervised`; the entry row: rule 1 and rule 9; the placement table: the F.31 rule per instance, the blocking check, pinned-in-a-loop, rule 20's construction paths; the bus graph: rules 7, 9 and 10; the ownership graph: rule 20; law selection: the law-selection diagnostics), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion", SNAPSHOT, "CheckInputs"),
             consumer_at("topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model)", V_CHECK, "dump_topology_over"),
             consumer_at("the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for)", V_CHECK, "api_surface"),
             consumer_at("the model dump (`--dump-model`: the check's own model when it judged a law)", V_CHECK, "demand_model"),
@@ -1766,7 +1788,7 @@ pub const FAMILIES: &[Family] = &[
             "a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count a producer run inside another family's cell, nor a family it has no row for. The lowering view derives none of the snapshot's families again: its scope is the snapshot's; its ownership and bus graphs (F.40 phase 3, C5) and its handler rows (F.40 phase 4, Q1) are the snapshot's rows read through the view's correspondence with the stdlib's after them; its flow rows are the snapshot's `flows` cell, read by locus name; its dispatch domains are the snapshot's `arrangement` cell, the projection the model reads; and its routing rows take the scratch-local set the allocation summary classified (`AllocSummary::scratch_local`), the classifier's one run. So on a build path the scope, each graph, the handler rows, the flow rows and the arrangement are each derived once per snapshot, as `builds()` says, and the scratch-local classification once, which a thread-local count says (`demand_gate.rs`); the bare-program test entry (`resolve_program`) derives its own",
             "a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1); the bus graph (rules 7, 9 and 10) and the ownership graph (rule 20) it builds are the check's, once each",
             "the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows, the effect rows and the arrangement over the checked programs (the `bus_graph`, `ownership`, `handler_routing`, `effects` and `arrangement` counts), each once",
-            "the checker's inputs are families (2.3): the typing demands the handler rows, the flow rows, the entry row and the ownership graph before the checker runs and hands them in (`CheckInputs`), so a check with a law builds the handler rows and the ownership graph once for the checker and the model together; the producers read declarations and bodies, not types, so they are total over a program that does not typecheck",
+            "the checker's inputs are families (2.3): the typing demands the handler rows, the flow rows, the entry row, the ownership graph and law selection before the checker runs and hands them in (`CheckInputs`), so a check with a law builds the handler rows and the ownership graph once for the checker and the model together, and selects its laws once for the checker, the laws stage and the artifact (F.40 phase 4, A2: the `law_selection` count); the producers read declarations and bodies, not types, so they are total over a program that does not typecheck",
             "a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a member that did not parse or would not read has no scope (the editor's requests read `demand_editor_scope`, the scope over the members that parsed with the hole named, and never a scope of their own), a program that does not typecheck has no model, a program whose check reported an error has no lowering view; a ready result may still hold typed holes",
             "the lowering view (`LoweringView`, the `lowering_view` count) is a family: `demand_lowering` demands the check and the lifecycle plan (which it carries to the emitters, `LoweringView::lifecycle`), then runs `resolve_rewritten` once over the intra-locus stage (`demand_intra_locus`, the `intra_locus` count, which the check demanded too) with the snapshot's identities, source map, renames and api config; `build_resolved` reads it by reference; the view's correspondence (`hale_types::correspondence`, F.40 phase 3, C5) places every site of the merged program it lowers as a checked site (the same index, kind and span), the call the intra-locus rewrite put in a send's place (the send, by the rewrite's relation) or the stdlib analysis copy's site in the same walk position, and every checked site as the image of one merged site or the subject of a send a rewrite erased (`TopicRewrite::erased`, `IntraLocusRewrite::erased`); a site it cannot place refuses the view, and the law holds over the corpus, `tests/hale` and the DNA seeds (`lowering_correspondence`); every build path (build, run, test, replay, bench) demands it from a `Snapshot::load`, and the test harness from `Snapshot::load` over an overlay buffer or a directory (or from `Snapshot::from_program` for a program a test made), whose config (`Config::harness`) does not gate lowering on the check",
             "`Snapshot::from_program` is the frontend's entry for tests that construct a view directly: no `crates/*/src` file calls it (its seam's allowance is empty), so every verb, and the codegen crate, reach a snapshot through `Snapshot::load`; a bare program has no source map and its sites are seeded by ordinal",
@@ -1777,7 +1799,7 @@ pub const FAMILIES: &[Family] = &[
             "a declaration's dependents are the families' (F.40 phase 3, X2, `Snapshot::declaration_dependents`, `hale_frontend::dependents`), never the text's: the unit is a top-level declaration of a snapshot program (`Snapshot::declarations`, a module one, named by its own minted site); for a fn or a locus the answer is itself, every declaration whose resolved calls reach it (the callgraph whose targets the effect rows copy, read from the allocation summary's call edges: the rows' and the declaration bodies', which are every body the reveal rule reads that is no row, each its declaration's own; a call to a fn with no row by its bare name; its readers closed transitively), and its neighbours in the ownership graph (births, accepts, instantiations), the bus graph (one subject's publishers, subscribers and topic), the placement table (what an instance or a dynamic site realizes, where its literal sits, its owner's and its enclosing scope's, joined by site) and the flow rows (a flow child and its `release` owners); a name joins every declaration that declares it, so a shared name answers both; a placement hole that leaves its literal's declaration unresolved makes the declaration it sits in a dependent of every one, and so does a call the summary records no edge for (by its span, over the site walk: a call in a position no summary body covers, today a closure's clauses and a type's field defaults, neither of which the reveal rule reads); any other declaration, one with no site, and a site that names none is `Dependents::Whole`. The relation's domain is an edit to a declaration's bodies: over the example corpus, every body edit of a mutation (emptied, an ill-typed `let`, a print, a call added) re-derives typing diagnostics only in declarations the relation names before the edit or after it, and an edit to a declared surface reaches a reader no family names, which is why such an edit is the seed's",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/demand_gate.rs (a_build_derives_the_scope_and_each_graph_once_lowering_included: the lowering view derives no scope, graph, handler rows, flow rows or arrangement of its own, F.40 phase 3, C5 and phase 4, Q1; a_build_classifies_the_scratch_local_fns_once)", "crates/hale-types/tests/declaration_dependents.rs (a_declarations_dependents_cover_what_a_fresh_check_rederives, an_edit_to_a_declared_surface_escapes_the_families)","crates/hale-cli/tests/lsp.rs (the_check_is_its_typing_stage_followed_by_its_laws_stage, lsp_and_check_agree_over_a_seed_with_laws, lsp_publishes_the_typing_stage_first_and_the_laws_replace_it, the_incremental_typing_stage_is_the_full_one, the_incremental_typing_stage_is_the_full_one_over_the_dna_host, the_incremental_typing_stage_is_the_full_one_through_handler_and_initializer_calls, lsp_publishes_what_check_reports_after_a_helper_edit_through_handler_and_initializer_calls)", "crates/hale-cli/tests/lsp_latency.rs (lsp_latency_first_and_final_publication: the editor's latency, first and final publication apart; a measurement, ignored by default)", "crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, the_editor_scope_covers_the_members_that_parsed_and_names_the_hole, a_member_that_will_not_read_blocks_the_scope, a_program_that_does_not_typecheck_blocks_the_model, a_check_with_errors_blocks_the_lowering_view, the_lowering_view_is_resolved_once_after_the_check)", "crates/hale-lsp/src/lib.rs (a_request_builds_only_the_families_it_reads, a_request_over_a_seed_with_a_hole_answers_from_the_members_that_parsed, the_laws_replace_the_typing_stage_unless_a_newer_event_supersedes_them, a_pass_reuses_the_seeds_last_typed_snapshot)"],
+        tests: &["crates/hale-types/tests/demand_gate.rs (a_build_derives_the_scope_and_each_graph_once_lowering_included: the lowering view derives no scope, graph, handler rows, flow rows or arrangement of its own, F.40 phase 3, C5 and phase 4, Q1; a_build_classifies_the_scratch_local_fns_once; law_selection_runs_once_per_snapshot_on_every_verb_path, phase 4, A2)", "crates/hale-types/tests/declaration_dependents.rs (a_declarations_dependents_cover_what_a_fresh_check_rederives, an_edit_to_a_declared_surface_escapes_the_families)","crates/hale-cli/tests/lsp.rs (the_check_is_its_typing_stage_followed_by_its_laws_stage, lsp_and_check_agree_over_a_seed_with_laws, lsp_publishes_the_typing_stage_first_and_the_laws_replace_it, the_incremental_typing_stage_is_the_full_one, the_incremental_typing_stage_is_the_full_one_over_the_dna_host, the_incremental_typing_stage_is_the_full_one_through_handler_and_initializer_calls, lsp_publishes_what_check_reports_after_a_helper_edit_through_handler_and_initializer_calls)", "crates/hale-cli/tests/lsp_latency.rs (lsp_latency_first_and_final_publication: the editor's latency, first and final publication apart; a measurement, ignored by default)", "crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, the_editor_scope_covers_the_members_that_parsed_and_names_the_hole, a_member_that_will_not_read_blocks_the_scope, a_program_that_does_not_typecheck_blocks_the_model, a_check_with_errors_blocks_the_lowering_view, the_lowering_view_is_resolved_once_after_the_check)", "crates/hale-lsp/src/lib.rs (a_request_builds_only_the_families_it_reads, a_request_over_a_seed_with_a_hole_answers_from_the_members_that_parsed, the_laws_replace_the_typing_stage_unless_a_newer_event_supersedes_them, a_pass_reuses_the_seeds_last_typed_snapshot)"],
         spec: &["spec/decisions.md F.40", "RFC #1212 § phase 2 (demand and readiness)"],
         seams: &[
             Seam { symbol: "Snapshot::load(", allowed: &[(SNAPSHOT, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1)] },
@@ -1832,12 +1854,58 @@ pub const FAMILIES: &[Family] = &[
     },
 ];
 
-/// The spec's numbered rules and their evaluators. A registered rule
+/// A list of rules the spec states, identified by its file and heading.
+/// A rule's `id` is `<key>/<n>`: `n` is the spec's number for a
+/// numbered list, and a slug of the bold title for a table's row.
+#[derive(Debug, Clone, Copy)]
+pub struct RuleList {
+    pub key: &'static str,
+    /// The spec file, relative to the repository root.
+    pub spec: &'static str,
+    /// The heading's text, without its `#` marks.
+    pub heading: &'static str,
+    /// The heading's level (the number of `#`).
+    pub level: usize,
+    /// A numbered list (`N. **Title.**`), or a table whose rows open with a bold title.
+    pub numbered: bool,
+}
+
+/// The rule lists the spec states and the registry holds in full:
+/// `rule_lists_match_the_spec` (registry_rules_match_spec.rs) reads each
+/// section and fails on a rule one side lacks.
+pub const RULE_LISTS: &[RuleList] = &[
+    RuleList {
+        key: "semantics/placement",
+        spec: "spec/semantics.md",
+        heading: "Type-check rules",
+        level: 3,
+        numbered: true,
+    },
+    RuleList {
+        key: "semantics/slots",
+        spec: "spec/semantics.md",
+        heading: "Slot restrictions (v1)",
+        level: 3,
+        numbered: true,
+    },
+    RuleList {
+        key: "verification/structural",
+        spec: "spec/verification.md",
+        heading: "Structural & design rules",
+        level: 2,
+        numbered: false,
+    },
+];
+
+/// The spec's rules and their evaluators. A registered rule
 /// whose evaluator is `None` fails the build (registry_guard.rs),
 /// unless it is `Reserved`.
 pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/1",
+        title: "`placement { }` is `main locus` only.",
+        // The parser rejects the block while parsing: it reads the syntax it judges.
+        reads: Reads::Declaration,
         gist: "`placement { }` is main-locus-only",
         family: "placement",
         evaluator: Some(site(PARSER, "`placement` block is only valid inside")),
@@ -1845,6 +1913,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/2",
+        title: "Keys reference main-locus `params` field names.",
+        // The declared `params` come from the symbol table (`LocusInfo`); the block's keys are read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
         gist: "keys name main-locus params fields",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1852,6 +1923,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/3",
+        title: "Field values are locus types.",
+        // The field's type resolves through the symbol table (`TopSymbol::Locus`); the entry is read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
         gist: "field values are locus types",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1859,6 +1933,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/4",
+        title: "At most one placement entry per field.",
+        // A set of the block's own field names: the declaration.
+        reads: Reads::Declaration,
         gist: "at most one entry per field",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1866,6 +1943,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/5",
+        title: "Pool names use snake_case Idents.",
+        // The parser reads the identifiers it parses.
+        reads: Reads::Declaration,
         gist: "pool names are identifiers; `main` always exists",
         family: "placement",
         evaluator: Some(site(PARSER, "parse_placement_block")),
@@ -1873,6 +1953,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/6",
+        title: "Locus-pinning compatibility.",
+        // The instances are the placement table's rows (the entry's, each replica, the adapter binding's); the two features (an `accept` of any arity, a closure whose epoch is `birth` or `dissolve`) are still read off the declaration the instance realizes.
+        reads: Reads::Rows(&["placement"]),
         gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
@@ -1880,6 +1963,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/7",
+        title: "Dead bus receiver (error).",
+        // Where each field runs is the placement table's; the subscriptions are the bus graph's; the blocking-fn set is the effect rows'. The `run()` body's direct blocking call is still found by walking the declaration.
+        reads: Reads::Rows(&["placement", "bus_graph", "effects"]),
         gist: "dead bus receiver on a cooperative pool is an error",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
@@ -1887,6 +1973,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/8",
+        title: "Blocking syscall on a cooperative pool (warning).",
+        // As rule 7 (it judges what rule 7 spares): placement rows, the bus graph, the effect rows blocking-fn set, and the `run()` body's call walk on the declaration.
+        reads: Reads::Rows(&["placement", "bus_graph", "effects"]),
         gist: "a blocking syscall on a cooperative pool is a warning",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
@@ -1894,6 +1983,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/9",
+        title: "Orphan bus topic (warning).",
+        // The graph's subjects, wiring columns and canonical keys, and the entry row's closed world; the symbol table for a qualified subject.
+        reads: Reads::Rows(&["bus_graph", "entrypoint", "top_scope"]),
         gist: "orphan bus topic (closed world)",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_graph")),
@@ -1901,6 +1993,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/10",
+        title: "Bus cycles.",
+        // The graph's edges and `cycle_from`, joined by send id to the intra-locus rewrite relation.
+        reads: Reads::Rows(&["bus_graph", "desugar_sequence"]),
         gist: "bus cycles: a queued cycle warns, an unconditional intra-locus cycle of direct calls is an error",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_cycles")),
@@ -1908,6 +2003,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/11",
+        title: "Bus backpressure (warning).",
+        // Walks the locus bodies for a `while true` loop that publishes and has no flow-control point: the declaration alone.
+        reads: Reads::Declaration,
         gist: "bus backpressure heuristic",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_backpressure")),
@@ -1915,6 +2013,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/12",
+        title: "Bus subject type-mismatch (error).",
+        // Groups the literal subjects' `of type` clauses (by type identity) across the bundle's declarations; no row holds them.
+        reads: Reads::Declaration,
         gist: "one literal subject, one payload type",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_subject_types")),
@@ -1922,6 +2023,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/13",
+        title: "Empty / degenerate `pinned(cores = …)` (error).",
+        // The core spec of the entry is judged as written.
+        reads: Reads::Declaration,
         gist: "degenerate `pinned(cores = ..)` is an error",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1929,6 +2033,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/14",
+        title: "`topology { }` consistency + `pinned(node/l3)` resolution (error).",
+        // The `topology { }` block is judged as written (and the `pinned(node/l3)` specs against it).
+        reads: Reads::Declaration,
         gist: "topology consistency and node/l3 resolution",
         family: "placement",
         evaluator: Some(site(CHECK, "check_topology_block")),
@@ -1936,6 +2043,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/15",
+        title: "`replicas = K` (error on `K < 1`; pinned-only).",
+        // The entry's `replicas` value and spec kind, as written.
+        reads: Reads::Declaration,
         gist: "`replicas = K`: K >= 1, pinned only",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1943,6 +2053,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/16",
+        title: "Pool affinity (2026-08-12).",
+        // The entry row names the `main locus` declarations; each one's `placement { }` entries are still read off the declaration to compare their affinities per pool.
+        reads: Reads::Rows(&["entrypoint"]),
         gist: "pool affinity agrees per pool",
         family: "placement",
         evaluator: Some(site(CHECK, "check_pool_affinity")),
@@ -1950,6 +2063,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/17",
+        title: "A `pinned` placement forbids a loop (error).",
+        // The root's constructions and their `built_in_a_loop` bound, from the placement table.
+        reads: Reads::Rows(&["placement"]),
         gist: "a pinned locus is not instantiated in a loop",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_root_in_a_loop")),
@@ -1957,6 +2073,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/18",
+        title: "Every entry is consumed by exactly one instantiation (error).",
+        // The placement table's root and the literals that carry an entry; the main locus's `placement { }` and `params` are still read off the declaration to find the entries.
+        reads: Reads::Rows(&["placement"]),
         gist: "every placement entry is consumed exactly once",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "placement_entry_consumed")),
@@ -1964,6 +2083,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/19",
+        title: "Uncarriable bus payload (error).",
+        // Walks each locus's bus members for an `of type` clause and resolves the type through the symbol table.
+        reads: Reads::Rows(&["top_scope"]),
         gist: "a bus payload is carriable",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_payload_carriable")),
@@ -1971,9 +2093,112 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/20",
+        title: "Unowned subscriber (error).",
+        // The ownership graph's sites and owner resolution, and the placement table for the construction paths.
+        reads: Reads::Rows(&["ownership", "placement"]),
         gist: "a subscriber born in a bus handler is owned",
         family: "ownership",
         evaluator: Some(site(CHECK, "check_unowned_subscriber_locus")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "semantics/slots/1",
+        title: "Slot element type must be a value-shape, not a LocusRef.",
+        // The element type resolves through the symbol table (`TopSymbol::Locus`); the slot is read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a capacity slot's cell type is not a locus: a span-targeted typecheck error, and again at codegen (`locus/decl.rs`) as defense in depth",
+        family: "forms",
+        evaluator: Some(site(CHECK, "check_locus_member_at")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "semantics/slots/2",
+        title: "Slot pointers don't cross the bus.",
+        // Structural: nothing is checked. A `self.<slot>` reference types as `Ty::Unknown` here, and a payload field names a type, never a locus member, so a slot cannot be written as a payload field.
+        reads: Reads::Declaration,
+        gist: "structurally enforced, no check: a slot name is a locus member, not a typeable identifier (`self.<slot>` is typed `Unknown`, `check_expr_at`), so it cannot appear as a payload struct field",
+        family: "forms",
+        evaluator: Some(site(CHECK, "check_expr_at")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "semantics/slots/3",
+        title: "Duplicate slot names rejected.",
+        // The names within one `capacity { }` block, as written.
+        reads: Reads::Declaration,
+        gist: "two slots of one name are a typecheck error, and again at codegen (`locus/decl.rs`)",
+        family: "forms",
+        evaluator: Some(site(CHECK, "check_locus_member_at")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/cqrs-no-locus-return",
+        title: "CQRS / no-locus-return",
+        // A method's written return (or `fallible`) type, resolved through the symbol table to a locus.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a locus `fn` whose return type or `fallible(T)` payload names a user-declared locus (error)",
+        family: "surfaces",
+        evaluator: Some(site(CHECK, "check_no_locus_return")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/stdlib-error-type-shadow",
+        title: "Stdlib error-type shadow",
+        // The top scope's user types against the stdlib error shapes, gated on a usage fact (`StdlibErrorUsage`) the resolver collects from the declarations.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type (error)",
+        family: "stdlib_surface",
+        evaluator: Some(site(RESOLVE, "check_stdlib_error_shadowing")),
+        state: State::Migrating,
+    },
+    Rule {
+        id: "verification/structural/codec-purity",
+        title: "Codec purity",
+        // The binding's codec locus and its `encode` / `decode` methods are named by the declaration; whether each is pure is the effect rows' purity column.
+        reads: Reads::Rows(&["effects"]),
+        gist: "a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_main_and_bindings")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/ring-layout-contract",
+        title: "`ring_layout` contract",
+        // The `ring_layout` declaration judged on its own fields (and the `layout:` reference of a binding, in `check_main_and_bindings`).
+        reads: Reads::Declaration,
+        gist: "a foreign-ring layout declaration that is internally ill-formed (error); `check_ring_layout`, and `check_main_and_bindings` for a binding's `layout:` reference",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_ring_layout")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/ring-layout-geometry",
+        title: "`ring_layout` geometry",
+        // The declaration's offsets, widths and alignment, and the binding's `buffer_size` against it, as written.
+        reads: Reads::Declaration,
+        gist: "a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings`",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_ring_layout")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/foreign-ring-payload-shape",
+        title: "Foreign-ring payload shape",
+        // The topic's payload type is read through the symbol table (`is_flat_shapeable` over the top scope); the binding is read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error)",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_main_and_bindings")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/cell-slot-of-origin",
+        title: "Cell slot-of-origin",
+        // The cell's type carries its (locus, slot) of origin; the release call is lowered from the declaration. A codegen error, not a check: no row.
+        reads: Reads::Declaration,
+        gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen)",
+        family: "forms",
+        evaluator: Some(site(CG, "try_lower_capacity_slot_method_call")),
         state: State::Canonical,
     },
 ];
@@ -2278,18 +2503,51 @@ pub fn render_markdown() -> String {
         }
     }
     o.push_str("## Spec rules and their evaluators\n\n");
-    o.push_str("A registered rule without an evaluator fails the compiler's own build.\n\n");
-    o.push_str("| rule | gist | family | evaluator | state |\n|---|---|---|---|---|\n");
+    o.push_str(
+        "A registered rule without an evaluator fails the compiler's own build, and \
+         `registry_rules_match_spec.rs` reads each list below from the spec and fails on a rule \
+         one side lacks or a title that differs. `reads` is what the evaluator reads: the rows of \
+         the named families, or the declaration it judges.\n\n",
+    );
+    o.push_str("| list | rules |\n|---|---|\n");
+    for l in RULE_LISTS {
+        let n = RULES
+            .iter()
+            .filter(|r| r.id.starts_with(&format!("{}/", l.key)))
+            .count();
+        o.push_str(&format!("| `{}` § {} | {} |\n", l.spec, l.heading, n));
+    }
+    o.push('\n');
+    o.push_str(
+        "| rule | list | title | gist | family | evaluator | reads | state |\n\
+         |---|---|---|---|---|---|---|---|\n",
+    );
     for r in RULES {
+        let list = RULE_LISTS
+            .iter()
+            .find(|l| r.id.starts_with(&format!("{}/", l.key)))
+            .map(|l| format!("`{}` § {}", l.spec, l.heading))
+            .unwrap_or_default();
+        let reads = match r.reads {
+            Reads::Rows(fs) => fs
+                .iter()
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Reads::Declaration => "the declaration".to_string(),
+        };
         o.push_str(&format!(
-            "| {} | {} | `{}` | {} | {} |\n",
+            "| {} | {} | {} | {} | `{}` | {} | {} | {} |\n",
             r.id,
+            list,
+            r.title,
             r.gist,
             r.family,
             r.evaluator
                 .as_ref()
                 .map(site_md)
                 .unwrap_or_else(|| "—".into()),
+            reads,
             r.state.label()
         ));
     }

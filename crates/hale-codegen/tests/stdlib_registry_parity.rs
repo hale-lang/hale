@@ -1,154 +1,225 @@
 //! R2 completion — the stdlib registry and the codegen dispatch
 //! must not drift.
 //!
-//! The R2 refactor made `hale-types::stdlib_surface` the single
-//! table for the stdlib fn surface (name, effect class, and — via
-//! `signature_for` — types). But the *lowering* still lives in
-//! hand-written `["std", ns, fn] =>` match arms across
-//! `crates/hale-codegen/src/`, and nothing forced the two to agree.
-//! That is exactly the four-parallel-structures drift R2 set out to
-//! kill, only half-killed: adding a fn to the registry and
-//! forgetting the arm yields "unknown stdlib function" at lowering
-//! time; adding an arm and forgetting the registry yields a
-//! path that typechecks as `Ty::Unknown` and silently escapes
-//! effect classification (the class of hole that made
-//! `std::crypto` invisible downstream — Crumb batch-4 item 3).
+//! `hale_types::stdlib_surface::SURFACES` holds one row per stdlib
+//! function, and since F.40 phase 4 (S2) the row says how the function
+//! lowers (`Lower`): natively by a dispatcher arm (`Intrinsic`), by an
+//! arm that calls a Hale body of the stdlib seeds by name (`HaleBody`),
+//! through `hale_stdlib::PATH_RENAMES` (`Renamed`), or not at all
+//! (`Unlowered`). The lowering itself still lives in the three
+//! hand-written dispatchers matched on `["std", ..]` literals, so until
+//! they dispatch from the row (S3, S4) this test scrapes them — through
+//! `stdlib_dispatch_coverage`'s scraper, which expands the name
+//! families — and holds the column to them, in both directions:
 //!
-//! Generating the arms from the table is the eventual fix; it needs
-//! a lowering-shape column the table does not yet carry. Until
-//! then this test is the enforcement: **the two lists must cover
-//! each other**, and any deliberate exception must be named here
-//! with a reason, so drift is a failing build rather than a
-//! downstream mystery.
+//!   - every dispatched path has a row, and the row says what its arms
+//!     do: `HaleBody(name)` when every arm that lowers it calls that
+//!     body, `Intrinsic` otherwise;
+//!   - every `Intrinsic` row has a native arm, and every `HaleBody` row
+//!     an arm calling its body;
+//!   - a `Renamed` row is in `PATH_RENAMES` and has no arm (an arm
+//!     would win over the rename);
+//!   - an `Unlowered` row has neither, and is named in [`UNLOWERED`].
 //!
-//! **There are THREE lowering structures, not two.** The first cut of
-//! this test scraped only `match` arms — and passed, because
-//! `hale_stdlib::PATH_RENAMES` rows are *also* `["std", …]` literals
-//! and the scraper counted them by accident. Moving that table into
-//! its own crate exposed the conflation. The three are:
+//! Before the column, this file could only check that the scraped
+//! literals and the registry's names covered each other: adding a fn to
+//! the registry and forgetting the arm yielded "unknown stdlib function"
+//! at lowering time; adding an arm and forgetting the registry yielded a
+//! path that typechecked as `Ty::Unknown` and escaped effect
+//! classification (the class of hole that made `std::crypto` invisible
+//! downstream).
 //!
-//!   1. codegen `["std", ns, fn] =>` match arms — native lowering;
-//!   2. `PATH_RENAMES` — the path is rewritten to a **Hale-source**
-//!      fn/locus declared in `hale_stdlib::AP_SOURCE`;
-//!   3. prefix-pattern arms (`bytes::read_*`) covering a family.
-//!
-//! Counting (2) as coverage is correct — it IS a lowering — but only
-//! if the target it names actually exists. `rename_targets_exist`
-//! checks that, which the accidental version could not: a row
-//! pointing at a deleted Hale fn used to "cover" a registry entry
-//! while failing at codegen.
+//! `rename_targets_exist` checks the third structure's other end: a
+//! `PATH_RENAMES` row pointing at a deleted Hale fn would "lower" a
+//! registry row while failing at codegen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-/// Paths the codegen lowers but which are deliberately absent from
-/// the typecheck surface, each with the reason it is exempt.
-fn arm_only_exemptions() -> BTreeSet<String> {
-    // Locus / type paths (`std::io::file::File { ... }`) appear in
-    // path position but are struct-literal lowering, not path
-    // calls — the surface tracks them in its own LOCUS_PATHS list.
-    hale_types::stdlib_surface::LOCUS_PATHS
+use hale_types::stdlib_surface::{self as surf, Lower};
+
+use crate::stdlib_dispatch_coverage::{scrape, ArmCall, ArmKind};
+
+/// The rows no dispatcher lowers and no rename reaches, each with its
+/// reason. A new one is a public name that cannot be lowered, so it is
+/// named here deliberately.
+const UNLOWERED: &[(&str, &str)] = &[(
+    "std::io::file::close",
+    "a signature row the surface never listed, with no arm and no rename (the descriptor close the seeds call is `__close`)",
+)];
+
+/// What the dispatchers do with each path: for every arm that lowers
+/// it, the call that arm makes; and whether some arm refuses it.
+struct Dispatched {
+    lowering: Vec<ArmCall>,
+    refused: bool,
+}
+
+fn dispatched() -> BTreeMap<String, Dispatched> {
+    let mut out: BTreeMap<String, Dispatched> = BTreeMap::new();
+    for s in scrape() {
+        for (path, (kind, line)) in &s.paths {
+            let arm = s.arms.iter().find(|a| a.line == *line).expect("the path's arm");
+            let d = out.entry(path.clone()).or_insert(Dispatched { lowering: Vec::new(), refused: false });
+            match kind {
+                ArmKind::Lowers => d.lowering.push(arm.calls.clone()),
+                ArmKind::Refuses => d.refused = true,
+            }
+        }
+    }
+    out
+}
+
+fn renames() -> BTreeSet<String> {
+    hale_stdlib::PATH_RENAMES.iter().map(|(path, _)| path.join("::")).collect()
+}
+
+fn rows() -> BTreeMap<String, Lower> {
+    surf::rows().map(|(s, f)| (format!("std::{}::{}", s.ns.join("::"), f.name), f.lower)).collect()
+}
+
+/// The lowering the arms of one path imply: the body every lowering
+/// arm calls, or native.
+fn implied(d: &Dispatched) -> Result<Option<&str>, String> {
+    let bodies: BTreeSet<&str> = d
+        .lowering
         .iter()
-        .map(|p| p.join("::"))
-        .collect()
+        .filter_map(|c| match c {
+            ArmCall::HaleBody(b) => Some(b.as_str()),
+            ArmCall::Native => None,
+        })
+        .collect();
+    let natives = d.lowering.iter().filter(|c| **c == ArmCall::Native).count();
+    match (bodies.len(), natives) {
+        (0, 0) => Err("no arm lowers it (every arm refuses)".into()),
+        (0, _) => Ok(None),
+        (1, 0) => Ok(bodies.into_iter().next()),
+        _ => Err(format!("its arms disagree: bodies {bodies:?} and {natives} native arm(s)")),
+    }
 }
 
-/// Registry entries with no dispatch arm, each with its reason.
-fn registry_only_exemptions() -> BTreeSet<String> {
-    BTreeSet::new()
-}
-
-/// Prefix-pattern dispatch arms — `["std", "bytes", n] if
-/// n.starts_with("read_")` covers a whole family with one arm, which
-/// the literal scraper cannot see. Returns (namespace, prefix)
-/// pairs scraped from the source so the family counts as covered
-/// without hand-listing 34 names.
-fn prefix_pattern_covers() -> Vec<(String, String)> {
-    let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut out = Vec::new();
-    let mut stack = vec![src_dir];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if p.extension().map(|x| x != "rs").unwrap_or(true) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&p) else { continue };
-            for line in text.lines() {
-                let Some(ns_start) = line.find("[\"std\", \"") else { continue };
-                if !line.contains("starts_with(") {
-                    continue;
-                }
-                let after = &line[ns_start + 9..];
-                let Some(q) = after.find('"') else { continue };
-                let ns = after[..q].to_string();
-                let Some(sw) = line.find("starts_with(\"") else { continue };
-                let rest = &line[sw + 13..];
-                let Some(q2) = rest.find('"') else { continue };
-                out.push((ns, rest[..q2].to_string()));
-            }
+/// Every dispatched path has a row, and the row's lowering is what its
+/// arms do.
+#[test]
+fn every_dispatched_path_has_a_row_that_says_how_its_arms_lower() {
+    let rows = rows();
+    let mut wrong = Vec::new();
+    for (path, d) in dispatched() {
+        let Some(lower) = rows.get(&path) else {
+            wrong.push(format!("{path}: dispatched, but has no row"));
+            continue;
+        };
+        match (implied(&d), lower) {
+            (Err(why), _) => wrong.push(format!("{path}: {why}")),
+            (Ok(None), Lower::Intrinsic(_)) => {}
+            (Ok(Some(body)), Lower::HaleBody(b)) if body == *b => {}
+            (Ok(arms), row) => wrong.push(format!("{path}: the row says {row:?}, the arms say {arms:?}")),
         }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the lowering column disagrees with the dispatchers ({}):\n{:#?}\n\n\
+         A natively lowered path is `Intrinsic(<its id>)`; a path whose arms call a \
+         Hale body by name is `HaleBody(\"<the body>\")`.",
+        wrong.len(),
+        wrong
+    );
+}
+
+/// Every `Intrinsic` and `HaleBody` row is dispatched; `Renamed` and
+/// `Unlowered` rows are not.
+#[test]
+fn every_rows_lowering_is_where_the_column_says() {
+    let dispatched = dispatched();
+    let renames = renames();
+    let mut wrong = Vec::new();
+    let mut unlowered = Vec::new();
+    for (path, lower) in rows() {
+        let armed = dispatched.get(&path).is_some_and(|d| !d.lowering.is_empty());
+        match lower {
+            Lower::Intrinsic(_) | Lower::HaleBody(_) if !armed => {
+                wrong.push(format!("{path}: {lower:?}, but no dispatcher arm lowers it"))
+            }
+            Lower::Renamed if !renames.contains(&path) => {
+                wrong.push(format!("{path}: Renamed, but not in PATH_RENAMES"))
+            }
+            Lower::Renamed if dispatched.contains_key(&path) => {
+                wrong.push(format!("{path}: Renamed, but a dispatcher arm matches it first"))
+            }
+            Lower::Unlowered if dispatched.contains_key(&path) || renames.contains(&path) => {
+                wrong.push(format!("{path}: Unlowered, but an arm or a rename reaches it"))
+            }
+            Lower::Unlowered => unlowered.push(path),
+            _ => {}
+        }
+    }
+    assert!(wrong.is_empty(), "rows whose lowering is not where they say ({}):\n{:#?}", wrong.len(), wrong);
+    let named: Vec<String> = UNLOWERED.iter().map(|(p, _)| p.to_string()).collect();
+    assert_eq!(
+        unlowered, named,
+        "the rows nothing lowers are named in `UNLOWERED` with their reason: a public name \
+         the checker accepts and lowering cannot lower fails at the worst possible moment"
+    );
+}
+
+/// The `["std", ..]` literals anywhere in codegen's source — the three
+/// dispatchers and every helper — name a row or a locus path. A literal
+/// naming neither is a path lowering knows and the checker does not.
+#[test]
+fn every_std_literal_in_codegen_names_a_row_or_a_locus() {
+    let rows = rows();
+    let locus: BTreeSet<String> = surf::LOCUS_PATHS.iter().map(|p| p.join("::")).collect();
+    let orphans: Vec<String> =
+        std_literals().into_iter().filter(|p| !rows.contains_key(p) && !locus.contains(p)).collect();
+    assert!(
+        orphans.is_empty(),
+        "these paths are spelled in codegen but have no row in `stdlib_surface::SURFACES` — \
+         they type as `Ty::Unknown` and escape effect classification ({}):\n{:#?}",
+        orphans.len(),
+        orphans
+    );
+}
+
+/// `std::io::tcp::__connect` -> `IoTcpConnectRaw`: the segments after
+/// `std` in CamelCase, a leading `__` as a trailing `Raw`.
+fn intrinsic_name(path: &str) -> String {
+    let camel = |seg: &str| -> String {
+        seg.split('_')
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                let p = p.to_ascii_lowercase();
+                p[..1].to_ascii_uppercase() + &p[1..]
+            })
+            .collect()
+    };
+    let segs: Vec<&str> = path.split("::").skip(1).collect();
+    let (last, ns) = segs.split_last().expect("a function segment");
+    let mut out: String = ns.iter().map(|s| camel(s)).collect();
+    match last.strip_prefix("__") {
+        Some(rest) => out.push_str(&(camel(rest) + "Raw")),
+        None => out.push_str(&camel(last)),
     }
     out
 }
 
-/// Whole-namespace dispatch arms: `["std", "io", "mirror", op] =>`
-/// binds the leaf and handles every fn in that namespace with one
-/// arm. The literal scraper cannot see those (the last segment is an
-/// identifier, not a string), so without this a fully-dispatched
-/// namespace reads as entirely uncovered.
-fn namespace_wildcard_arms() -> Vec<Vec<String>> {
-    let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut out = Vec::new();
-    let mut stack = vec![src_dir];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if p.extension().map(|x| x != "rs").unwrap_or(true) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&p) else { continue };
-            for line in text.lines() {
-                let Some(s) = line.find("[\"std\", \"") else { continue };
-                let Some(e_rel) = line[s..].find(']') else { continue };
-                let inner = &line[s + 1..s + e_rel];
-                let parts: Vec<&str> =
-                    inner.split(',').map(|x| x.trim()).collect();
-                // literal segments then exactly one bare identifier
-                let (last, head) = match parts.split_last() {
-                    Some(x) => x,
-                    None => continue,
-                };
-                let head_literal = head
-                    .iter()
-                    .all(|x| x.len() >= 2 && x.starts_with('"') && x.ends_with('"'));
-                let last_is_ident = !last.starts_with('"')
-                    && last.chars().all(|c| c.is_alphanumeric() || c == '_')
-                    && !last.is_empty();
-                if head_literal && last_is_ident && head.len() >= 2 {
-                    out.push(
-                        head.iter()
-                            .map(|x| x.trim_matches('"').to_string())
-                            .collect(),
-                    );
-                }
+/// An intrinsic's id is its path's mechanical name, which is injective
+/// on paths, so the id names its row and no other.
+#[test]
+fn every_intrinsic_id_is_its_paths_name() {
+    let mut wrong = Vec::new();
+    for (path, lower) in rows() {
+        if let Lower::Intrinsic(id) = lower {
+            let want = intrinsic_name(&path);
+            if format!("{id:?}") != want {
+                wrong.push(format!("{path}: {id:?}, want {want}"));
             }
         }
     }
-    out
+    assert!(wrong.is_empty(), "intrinsic ids that are not their path's name:\n{wrong:#?}");
 }
 
-fn dispatch_arm_paths() -> BTreeSet<String> {
+/// Every all-literal `["std", ..]` slice in codegen's source.
+fn std_literals() -> BTreeSet<String> {
     let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out = BTreeSet::new();
     let mut stack = vec![src_dir];
@@ -171,23 +242,15 @@ fn dispatch_arm_paths() -> BTreeSet<String> {
                 let Some(end_rel) = text[start..].find(']') else { break };
                 let raw = &text[start..start + end_rel + 1];
                 idx = start + end_rel + 1;
-                // Parse ["std", "a", "b"] -> std::a::b
                 // Only LITERAL segments count: `["std", "bytes", n]`
                 // is a match arm binding a variable, not a path.
                 let inner = raw.trim_matches(|c| c == '[' || c == ']');
                 let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-                let all_literal = parts
-                    .iter()
-                    .all(|s| s.len() >= 2 && s.starts_with('"') && s.ends_with('"'));
-                if !all_literal {
+                if !parts.iter().all(|s| s.len() >= 2 && s.starts_with('"') && s.ends_with('"')) {
                     continue;
                 }
-                let segs: Vec<String> = parts
-                    .iter()
-                    .map(|s| s.trim_matches('"').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if segs.len() >= 2 && segs[0] == "std" {
+                let segs: Vec<&str> = parts.iter().map(|s| s.trim_matches('"')).filter(|s| !s.is_empty()).collect();
+                if segs.len() >= 3 && segs[0] == "std" {
                     out.insert(segs.join("::"));
                 }
             }
@@ -196,18 +259,9 @@ fn dispatch_arm_paths() -> BTreeSet<String> {
     out
 }
 
-/// Structure (2): paths lowered by rewriting to a Hale-source
-/// fn/locus. Just as much a lowering as a match arm.
-fn rename_paths() -> BTreeSet<String> {
-    hale_stdlib::PATH_RENAMES
-        .iter()
-        .map(|(path, _)| path.join("::"))
-        .collect()
-}
-
 /// Every name a rename row points at must actually be declared in
 /// the Hale-source stdlib. Without this, a stale row silently
-/// "covers" a registry entry that cannot lower.
+/// "lowers" a `Renamed` registry row that cannot lower.
 #[test]
 fn rename_targets_exist() {
     let src = hale_stdlib::AP_SOURCE;
@@ -273,122 +327,30 @@ fn rename_targets_exist() {
     );
 }
 
-fn registry_paths() -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for s in hale_types::stdlib_surface::SURFACES {
-        for e in s.fns {
-            let mut segs = vec!["std".to_string()];
-            segs.extend(s.ns.iter().map(|x| x.to_string()));
-            segs.push(e.name.to_string());
-            out.insert(segs.join("::"));
-        }
-    }
-    out
-}
-
-/// Every registry entry must have a lowering. A name the
-/// typechecker accepts but codegen cannot lower is a build failure
-/// deferred to the worst possible moment.
-#[test]
-fn every_registry_entry_has_a_dispatch_arm() {
-    let arms = dispatch_arm_paths();
-    let registry = registry_paths();
-    let exempt = registry_only_exemptions();
-    let prefixes = prefix_pattern_covers();
-    let wildcards = namespace_wildcard_arms();
-    let covered_by_wildcard = |path: &str| -> bool {
-        wildcards.iter().any(|ns| {
-            path.starts_with(&format!("{}::", ns.join("::")))
-                && path.split("::").count() == ns.len() + 1
-        })
-    };
-    let covered_by_prefix = |path: &str| -> bool {
-        prefixes.iter().any(|(ns, pre)| {
-            path.strip_prefix(&format!("std::{}::", ns))
-                .map(|leaf| leaf.starts_with(pre.as_str()))
-                .unwrap_or(false)
-        })
-    };
-    let renames = rename_paths();
-    let missing: Vec<&String> = registry
-        .iter()
-        .filter(|p| {
-            !arms.contains(*p)
-                && !renames.contains(*p)
-                && !exempt.contains(*p)
-                && !covered_by_prefix(p)
-                && !covered_by_wildcard(p)
-        })
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "these stdlib registry entries have no codegen dispatch arm — \
-         they typecheck but cannot lower ({} of {}):\n{:#?}\n\n\
-         Either add the lowering, or add the path to \
-         `registry_only_exemptions()` with the reason it is not a \
-         path-call.",
-        missing.len(),
-        registry.len(),
-        missing
-    );
-}
-
-/// Every lowered path must be in the registry. A path codegen
-/// handles but the surface does not know types as `Ty::Unknown`,
-/// which silently disables fallibility/arity checking AND exempts
-/// it from effect classification — the hole that let `std::crypto`
-/// look nonexistent from outside.
-#[test]
-fn every_dispatch_arm_is_in_the_registry() {
-    let arms = dispatch_arm_paths();
-    let registry = registry_paths();
-    let exempt = arm_only_exemptions();
-    let orphans: Vec<&String> = arms
-        .iter()
-        .filter(|p| !registry.contains(*p) && !exempt.contains(*p))
-        // Internal primitives (`__name`) are intentionally hidden
-        // from the user-facing surface.
-        .filter(|p| {
-            !p.rsplit("::").next().map(|n| n.starts_with("__")).unwrap_or(false)
-        })
-        .collect();
-    assert!(
-        orphans.is_empty(),
-        "these paths are lowered by codegen but absent from the stdlib \
-         registry — they type as `Ty::Unknown` (no fallibility/arity \
-         checking) and escape effect classification ({} found):\n{:#?}\n\n\
-         Add them to `stdlib_surface::SURFACES` with an effect class, or \
-         to `arm_only_exemptions()` with a reason.",
-        orphans.len(),
-        orphans
-    );
-}
-
-/// The parity check is only meaningful if it is actually seeing
-/// both lists — a scraper that silently matched nothing would make
-/// both tests above pass vacuously.
+/// The checks above are only meaningful if they see both sides: a
+/// scraper that silently matched nothing, or a column that said one
+/// thing everywhere, would make them pass vacuously.
 #[test]
 fn parity_check_is_not_vacuous() {
-    let arms = dispatch_arm_paths();
-    let registry = registry_paths();
+    let dispatched = dispatched();
+    let rows = rows();
     assert!(
-        arms.len() > 100,
-        "dispatch-arm scraper found only {} paths — it is not reading the \
-         source it thinks it is",
-        arms.len()
+        dispatched.len() > 300,
+        "the dispatcher scrape found only {} paths — it is not reading the source it thinks it is",
+        dispatched.len()
     );
-    assert!(
-        registry.len() > 200,
-        "registry has only {} entries — unexpected",
-        registry.len()
-    );
-    // And they must genuinely overlap, not just both be non-empty.
-    let overlap = arms.intersection(&registry).count();
-    assert!(
-        overlap > 100,
-        "only {} paths appear in BOTH lists — the two scrapers are \
-         producing different shapes, so the parity assertions are \
-         comparing apples to oranges",
-        overlap
-    );
+    assert!(rows.len() > 400, "the table has only {} rows — unexpected", rows.len());
+    let both = dispatched.keys().filter(|p| rows.contains_key(*p)).count();
+    assert!(both > 300, "only {both} paths are both dispatched and rows");
+    let count = |f: fn(&Lower) -> bool| rows.values().filter(|l| f(l)).count();
+    let intrinsic = count(|l| matches!(l, Lower::Intrinsic(_)));
+    let body = count(|l| matches!(l, Lower::HaleBody(_)));
+    let renamed = count(|l| matches!(l, Lower::Renamed));
+    assert!(intrinsic > 300, "only {intrinsic} Intrinsic rows");
+    assert!(body > 30, "only {body} HaleBody rows");
+    assert!(renamed > 30, "only {renamed} Renamed rows");
+    // And the arm classification sees both kinds of arm.
+    let hale_arms = dispatched.values().flat_map(|d| &d.lowering).filter(|c| matches!(c, ArmCall::HaleBody(_))).count();
+    assert!(hale_arms > 40, "only {hale_arms} arms call a Hale body by name");
+    assert!(std_literals().len() > 300, "the literal scrape found only {}", std_literals().len());
 }

@@ -1,11 +1,11 @@
 //! GH #476 Change 4 — lowering every law surface to `ClaimIr`.
 //!
-//! `lower_claims(bundle, model)` produces the typed law table for
+//! `lower_claims_over(bundle, model, laws)` produces the typed law table for
 //! one application: claims-block forms (world tier, adopted
-//! constitution clauses, library-tier blocks) through the SAME
-//! clause enumeration the evaluator walks
-//! (`claims::enumerate_clauses` — one authority, extracted so two
-//! walks cannot drift), plus the annotation surfaces
+//! constitution clauses, library-tier blocks) from the SAME law
+//! selection the check reports (`claims::LawSelection`, the
+//! snapshot's — one authority, so two walks cannot drift), plus the
+//! annotation surfaces
 //! (`@effects` / `@no_panic` / `@budget` / `@phase_effects` /
 //! `@effects(depends:)`). Fleet plan rows lower in `hale-cli`
 //! (`fleet::lower_plan_claims`) — their targets are plan-level
@@ -47,10 +47,24 @@ use hale_syntax::ast::{
 
 use crate::symbol::Bundle;
 
-/// Lower every law surface of one bundle against its derived model.
+/// Lower every law surface of one bundle against its derived model,
+/// for a bundle no snapshot holds (the tests'): its law selection is
+/// made here ([`crate::bundle_law_selection`]). The laws stage and the
+/// artifact lower their snapshot's ([`lower_claims_over`]).
 pub fn lower_claims(
     bundle: &Bundle<'_>,
     model: &ApplicationModel,
+) -> ClaimIrTable {
+    lower_claims_over(bundle, model, &crate::bundle_law_selection(bundle))
+}
+
+/// [`lower_claims`] over a law selection the caller holds: the
+/// claims-block forms are `laws`' clauses (the snapshot's
+/// `law_selection`, which the check reported).
+pub fn lower_claims_over(
+    bundle: &Bundle<'_>,
+    model: &ApplicationModel,
+    laws: &crate::claims::LawSelection,
 ) -> ClaimIrTable {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
@@ -386,16 +400,13 @@ pub fn lower_claims(
     // unresolvable group member — the checker rejected the program
     // while this table recorded no issue for it, so the artifact
     // could serialize the dependent law as `holds` and contradict
-    // the compiler that produced it.
-    let selection = crate::claims::select(
-        &programs,
-        &bundle.import_renames,
-    );
-    let universe = selection.universe;
+    // the compiler that produced it. It is handed in, run once per
+    // snapshot (F.40 phase 4, A2).
+    let selection = laws;
     // Carried, not re-derived: what selection concluded about each
     // group declaration travels WITH the laws that quantify over
     // them.
-    table.group_selection = selection.groups;
+    table.group_selection = selection.groups.clone();
     // Law-SELECTION invalidity becomes structured issues — never
     // silently dropped (review round 15).
     for d in &selection.diags {
@@ -412,11 +423,11 @@ pub fn lower_claims(
     let recs = &mut table.provenance.records;
     let mut rows: Vec<(String, ClaimOrigin, ClaimIr, hale_syntax::Span)> =
         Vec::new();
-    for c in &universe.claims {
-        let origin = if let Some(k) = universe.origins.get(&c.name.name)
+    for c in &selection.claims {
+        let origin = if let Some(k) = selection.origins.get(&c.name.name)
         {
             ClaimOrigin::Constitution { name: k.clone() }
-        } else if let Some(alias) = universe.library.get(&c.name.name)
+        } else if let Some(alias) = selection.library.get(&c.name.name)
         {
             ClaimOrigin::Library {
                 alias: alias.clone(),

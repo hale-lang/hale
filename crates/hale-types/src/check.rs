@@ -532,6 +532,12 @@ pub struct CheckInputs<'a> {
     /// one target the check judges the program against, and the row's
     /// own refusals, which the check reports.
     pub target: &'a crate::capability::TargetRow,
+    /// Law selection (the snapshot's `law_selection` cell, F.40 phase
+    /// 4, A2): its diagnostics are the check's law-selection issues
+    /// (constitutions, group resolution, the tier rule). It reads clause
+    /// text, adoption and membership, never types, so it is total over a
+    /// program that does not typecheck.
+    pub laws: &'a crate::claims::LawSelection,
     /// The use rows (the `target_capability` family's): every way the
     /// program asks its target for a capability, which the admission law
     /// holds to the effective target's cells.
@@ -543,6 +549,7 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
+/// [`crate::bundle_law_selection`],
 /// the bus and ownership graphs, by the snapshot's producers; the effect rows when
 /// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
 /// is read beside the numbered copy: a scope names declarations, not
@@ -579,6 +586,7 @@ fn check_numbered_bundle(
     let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
+    let laws = crate::bundle_law_selection(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -594,6 +602,7 @@ fn check_numbered_bundle(
         placement: &placement,
         target: &target,
         uses: &uses,
+        laws: &laws,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -999,10 +1008,9 @@ pub fn check_bundle_by_declaration(
         // that re-derived the same four families from source.
         // `tests/claim_diags_differential.rs` held the two
         // byte-equal over the corpus through the cutover.
-        diags.extend(crate::claims::selection_diags(
-            &programs_vec,
-            &bundle.import_renames,
-        ));
+        // The selection is the snapshot's (`law_selection`, F.40
+        // phase 4, A2), the one the laws stage and the artifact read.
+        diags.extend(inputs.laws.diags.iter().cloned());
         // The VERDICTS are appended by `check_bundle_opts`,
         // after this whole pass establishes that the program
         // denotes a valid model — see the note there. Selection
@@ -13369,7 +13377,7 @@ impl<'a> Checker<'a> {
                                     crate::typed_bodies::FallibleCall {
                                         span: expr.span(),
                                         kind: crate::typed_bodies::CalleeKind::Stdlib,
-                                        callee: sig.display_path(),
+                                        callee: segs.join("::"),
                                         payload,
                                         handled: self.handling,
                                     },
@@ -13382,7 +13390,7 @@ impl<'a> Checker<'a> {
                                     qn.span,
                                     format!(
                                         "`{}` takes {} argument{}, got {}",
-                                        sig.display_path(),
+                                        segs.join("::"),
                                         sig.params.len(),
                                         if sig.params.len() == 1 {
                                             ""
@@ -13402,7 +13410,7 @@ impl<'a> Checker<'a> {
                                             format!(
                                                 "`{}` argument {}: expected \
                                                  `{}`, got `{}`",
-                                                sig.display_path(),
+                                                segs.join("::"),
                                                 i + 1,
                                                 want.to_ty().display(),
                                                 got.display()

@@ -120,7 +120,7 @@ pub fn analysis_inputs_digest() -> u64 {
             eat(s.as_bytes());
             eat(b"\x1f");
         }
-        for f in surface.fns {
+        for f in surface.public() {
             eat(f.name.as_bytes());
             eat(&f.effects.0.to_le_bytes());
         }

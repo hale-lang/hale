@@ -40,14 +40,18 @@ fn topology_artifact<'c>(
     if cell.get().is_none() {
         match snap
             .demand_model()
-            .and_then(|model| Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?)))
+            .and_then(|model| {
+                Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?, snap.demand_law_selection()?))
+            })
         {
-            Ok((model, effects, summary)) => {
-                // The artifact's environment label is the snapshot's own
-                // (outside review of #1283, finding 1). Its law evidence
-                // reads the check's effects certificate report and the
-                // allocation summary the check read.
-                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary));
+            Ok((model, effects, summary, laws)) => {
+                // The artifact's law rows, constitution identities and
+                // environment label are the snapshot's law selection, the
+                // one the check reported (outside review of #1283,
+                // finding 1). Its law evidence reads the check's effects
+                // certificate report and the allocation summary the check
+                // read.
+                let art = hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary, laws);
                 let _ = cell.set(art);
             }
             Err(b) => return Err(refuse_without_model(target, doing, b)),
@@ -89,14 +93,19 @@ pub(crate) fn run_check_impl_env(
     gate_warnings: bool,
     adopt_env: &[String],
 ) -> u8 {
-    run_check_impl_labelled(target, gate_warnings, adopt_env, None)
+    run_check_impl_labelled(target, gate_warnings, adopt_env, None, None)
 }
 
+/// `env_roles` is the environment's role table (GH #1109), resolved by
+/// the function `build --env` uses (`options::env_roles`): the api
+/// binding the sequence generates bakes it in, so the check judges the
+/// binding the build lowers (F.40 phase 4, A1).
 pub(crate) fn run_check_impl_labelled(
     target: &Path,
     gate_warnings: bool,
     adopt_env: &[String],
     env_label: Option<&str>,
+    env_roles: Option<&str>,
 ) -> u8 {
     // F.18: a whole seed (a directory) is checked to what `build`
     // accepts — a call to a bare name nothing binds is an error here;
@@ -136,6 +145,7 @@ pub(crate) fn run_check_impl_labelled(
         name: name.to_string(),
         adopt: adopt_env.to_vec(),
     });
+    config.api_roles = env_roles.map(str::to_string);
     // F.40 phase 2.2a: one snapshot, and the check demanded from it.
     // `check` resolves cross-seed imports the same way `build` and
     // `run` do (an imported seed's bodies are in the program the

@@ -264,14 +264,13 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         // typing's: `--dump-topology` after the check reads the same
         // report and runs no second check.
         let report = s.demand_effect_certificates().expect("the check's report") as *const _;
-        let artifact = s.with_env(|| {
-            hale_types::topology::dump_topology_over(
-                &s.bundle(),
-                s.demand_model().expect("the check's model"),
-                s.demand_effect_certificates().expect("the same report"),
-                summary,
-            )
-        });
+        let artifact = hale_types::topology::dump_topology_over(
+            &s.bundle(),
+            s.demand_model().expect("the check's model"),
+            s.demand_effect_certificates().expect("the same report"),
+            summary,
+            s.demand_law_selection().expect("the check's selection"),
+        );
         assert!(artifact.contains("\"claims\""), "the artifact carries the law");
         assert_eq!(report, s.demand_effect_certificates().expect("still there") as *const _);
         assert_eq!(s.builds()["expression_typing"], 1, "the report is the one typing's");
@@ -322,6 +321,9 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 // The model's arrangement rows and lowering's dispatch
                 // domains are one projection (F.40 phase 4, Q1).
                 "arrangement",
+                // The check reads it, and the laws stage the same one
+                // (F.40 phase 4, A2).
+                "law_selection",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -549,6 +551,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "bindings",
         "handler_routing",
         "flows",
+        "law_selection",
         "ownership",
         "bus_graph",
         "alloc_summary",
@@ -618,6 +621,100 @@ fn a_demand_reads_its_own_snapshots_environment_not_the_last_loaded() {
         msgs.iter().any(|m| m.contains("unknown constitution `Missing`") && m.contains("`[environments.dev]` in hale.toml requires it")),
         "the first snapshot's claims are explained by ITS environment: {msgs:?}"
     );
-    let artifact = first.with_env(|| hale_types::topology::dump_topology(&first.bundle()));
+    // The label is the selection's, made for the first snapshot's
+    // configuration: data its artifact reads, not a binding on the thread.
+    let artifact = hale_types::topology::dump_topology_over(
+        &first.bundle(),
+        first.demand_model().expect("a claims error does not block the model"),
+        first.demand_effect_certificates().expect("the check's report"),
+        first.demand_alloc_summary().expect("the summary"),
+        first.demand_law_selection().expect("the selection"),
+    );
     assert!(artifact.contains("\"environment\": \"dev\""), "the artifact carries the first snapshot's label: {}", &artifact[..artifact.len().min(400)]);
+}
+
+// A plain literal, not a raw one: the corpus harvests `r#"…"#` programs
+// from test files, and this one belongs to this test.
+const WITH_CONSTITUTION: &str = "
+type Order { id: Int = 0; }
+topic Placed { payload: Order; }
+locus Desk {
+    params { seen: Int = 0; }
+    bus { subscribe Placed as on_placed; }
+    fn on_placed(o: Order) { self.seen = o.id; }
+}
+locus Feed {
+    bus { publish Placed; }
+    fn go() { Placed <- Order { id: 1 }; }
+}
+group feeds = { Feed };
+constitution Core { one_writer: count publishers(topic Placed) == 1; }
+constitution Prod extends Core { fed: require publishes(some feeds, topic Placed); }
+main locus App {
+    params { d: Desk = Desk { }; f: Feed = Feed { }; }
+    claims { adopt Core; }
+}
+fn main() { App { }; }
+";
+
+/// F.40 phase 4, A2: law selection runs once per snapshot. The check
+/// reports its diagnostics, the laws stage lowers its clauses, and the
+/// artifact (`--dump-topology`) projects its adoption to the
+/// constitution identities and carries its environment, each reading
+/// the snapshot's `law_selection` cell; it used to run four times for
+/// one `hale check --dump-topology`. The thread's count pins that no
+/// reader selects beside the cell; it is this thread's, so the tests of
+/// this binary do not share it.
+#[test]
+fn law_selection_runs_once_per_snapshot_on_every_verb_path() {
+    use hale_frontend::snapshot::Environment;
+    let selected = hale_types::claims::selections_on_this_thread;
+    for (name, text) in [("sel-plain", NO_CLAIMS), ("sel-law", WITH_CLAIM), ("sel-constitution", WITH_CONSTITUTION)] {
+        let d = seed(name, text);
+        let mut prod = Config::check(false, false);
+        prod.environment = Some(Environment { name: "prod".into(), adopt: vec!["Prod".into()] });
+        let paths: [(&str, Box<dyn Fn() -> Snapshot>, bool); 5] = [
+            ("lsp", Box::new(|| editor(&d.join("app.hl"), text)), false),
+            ("check", Box::new(|| check(&d)), true),
+            ("check --env", Box::new(|| load(&d, LoadMode::WholeSeed, &Disk, prod.clone())), true),
+            ("build", Box::new(|| build(&d)), false),
+            ("harness", Box::new(|| {
+                let program = hale_syntax::parse_source(text).expect("the fixture parses");
+                match Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) {
+                    Ok(s) => s,
+                    Err(_) => panic!("a bare program's snapshot is not refused"),
+                }
+            }), false),
+        ];
+        for (path, snapshot, dumps) in &paths {
+            let before = selected();
+            let s = snapshot();
+            if *path == "harness" {
+                assert!(s.demand_lowering().is_ok(), "{name} {path}: the harness lowers");
+            } else {
+                s.demand_check().expect("checked");
+            }
+            if *path == "build" {
+                assert!(s.demand_lowering().is_ok(), "{name} {path}: a clean program is lowered");
+                s.demand_model().expect("the build's identity reads the model");
+            }
+            if *dumps {
+                // `--dump-topology` after the check.
+                let artifact = hale_types::topology::dump_topology_over(
+                    &s.bundle(),
+                    s.demand_model().expect("a clean program has a model"),
+                    s.demand_effect_certificates().expect("the check's report"),
+                    s.demand_alloc_summary().expect("the summary"),
+                    s.demand_law_selection().expect("the selection"),
+                );
+                if *path == "check --env" {
+                    assert!(artifact.contains("\"environment\": \"prod\""), "{name}: the label is the selection's");
+                }
+            }
+            assert_eq!(s.builds()["law_selection"], 1, "{name} {path}: one selection, demanded by the check");
+            assert_eq!(selected() - before, 1, "{name} {path}: no reader selects beside the cell");
+            assert_at_most_once(&s, path);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

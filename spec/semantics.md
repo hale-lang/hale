@@ -2207,7 +2207,8 @@ so the program builds its source with its own state and keeps a
 handle to it, and the binding holds it as a `std::api::RoleSource`
 (a borrow) — or the stdlib's `std::api::StaticRoles`, whose table
 `hale build --env <name>` / `hale run --env <name>` bakes from
-`[environments.<name>.roles]` in `hale.toml` and `LOTUS_API_ROLES`
+`[environments.<name>.roles]` in `hale.toml` (and `hale check --env
+<name>` checks the binding with the same table) and `LOTUS_API_ROLES`
 overrides at run time. The table travels as one line the binding
 re-splits, so it is held to one rule at check, at build and at
 birth: a key is a role the program declares (an identifier), a

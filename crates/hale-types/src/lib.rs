@@ -362,6 +362,7 @@ fn check_numbered_bundle(
     let bus = bus_graph::build_bus_graph(bundle, &top, &bindings, &placement, &entry);
     let target = capability::target_row(bundle);
     let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
+    let laws = bundle_law_selection(bundle);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -379,6 +380,7 @@ fn check_numbered_bundle(
             placement: &placement,
             target: &target,
             uses: &uses,
+            laws: &laws,
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -415,10 +417,21 @@ fn check_numbered_bundle(
             &ownership,
             &placement,
         );
-        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
+        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary, &laws));
     }
     finish_check_diags(&mut diags);
     diags
+}
+
+/// Law selection over a bundle no snapshot holds, which names no
+/// deployment environment: what the test entries' check, its laws and
+/// the artifact's bundle entry read ([`check_bundle_opts_scoped`],
+/// [`check::check_bundle`], [`judgment::claim_law_diags`],
+/// [`topology::dump_topology`]), once per entry. Every verb reads its
+/// snapshot's (`Snapshot::demand_law_selection`).
+pub fn bundle_law_selection(bundle: &Bundle<'_>) -> claims::LawSelection {
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    claims::select_laws(&programs, &bundle.import_renames, &claims::EnvBinding::default())
 }
 
 /// The handler rows of a bundle no snapshot holds, in the bundle's

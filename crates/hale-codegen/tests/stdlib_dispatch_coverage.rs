@@ -9,7 +9,10 @@
 //! only proof that nothing changed. That proof is only as good as the
 //! set's reach, so this file holds it to every arm before an arm moves.
 //! It scrapes the `["std", ..]` literals out of the dispatchers' source,
-//! so it is deleted when those literals are gone (S3/S4).
+//! so it is deleted when those literals are gone (S3/S4). Until then
+//! `stdlib_registry_parity` reads the same scrape, with what each arm
+//! calls ([`ArmCall`]), to hold the registry's lowering column to the
+//! arms.
 //!
 //! A *pair* is a (path, position): a stdlib call path a dispatcher
 //! matches, and which dispatcher matched it. The *shadow set* is what
@@ -43,7 +46,12 @@ mod harness;
 ///   `lower_stdlib_path_call`: a call that IS a statement. A
 ///   statement-position `match` whose arm body is a call expression
 ///   routes that body through `lower_stmt` too (`lower_match_core`,
-///   `capture: None`), so it is a statement as well.
+///   `capture: None`), so it is a statement as well. That dispatcher's
+///   last arm hands every path it has no arm for to
+///   `lower_stdlib_path_call_expr` and drops the value (S1), so such a
+///   statement is lowered by an EXPRESSION arm: [`lowered_at`] says
+///   which, and the call covers that arm's pair and the fall-through
+///   arm's ([`FALL_THROUGH`]).
 /// * `lower_or_expr` (`channels/mod.rs`, reached from the `Stmt::Expr(
 ///   Expr::Or ..)` statement and from `lower_expr`'s `Expr::Or`) calls
 ///   `lower_fallible_call`, whose `Expr::Path` callee goes to
@@ -78,6 +86,24 @@ const DISPATCHERS: &[(&str, &str, Position)] = &[
     ("lower_stdlib_path_call_expr", "src/codegen.rs", Position::Expression),
     ("try_lower_fallible_stdlib_path_call", "src/channels/mod.rs", Position::Fallible),
 ];
+
+/// The pair of the statement dispatcher's last arm, which lowers every
+/// path the dispatcher has no arm for through the expression dispatcher
+/// (`let _ = self.lower_stdlib_path_call_expr(segs, args, scope)?`). Not
+/// a path: it stands for that one arm, covered by any statement call
+/// that falls through.
+pub const FALL_THROUGH: &str = "std::_";
+
+/// The position whose dispatcher arm lowers a call the walk found at
+/// `position`: a statement call of a path the statement dispatcher has
+/// no arm for falls through to the expression dispatcher.
+pub fn lowered_at(path: &str, position: Position, statement_paths: &BTreeMap<String, (ArmKind, usize)>) -> Position {
+    if position == Position::Statement && !statement_paths.contains_key(path) {
+        Position::Expression
+    } else {
+        position
+    }
+}
 
 // ---------------------------------------------------------------------
 // The scrape: Rust source → arms → pairs.
@@ -227,6 +253,39 @@ pub struct Arm {
     guard: Option<String>,
     /// The arm's value is an `Err(..)`: one of the refusal lists.
     pub refuses: bool,
+    /// What the arm's body calls to lower the path.
+    pub calls: ArmCall,
+}
+
+/// How an arm lowers its path: a Hale body of the stdlib seeds, named
+/// by a literal (`self.lower_user_fn_call("__md_to_html", ..)`), or
+/// anything else (a native helper, inline IR, or a body whose name the
+/// arm computes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArmCall {
+    HaleBody(String),
+    Native,
+}
+
+/// The call an arm's body (its lines, comments masked) makes.
+fn arm_call(body: &[&str]) -> ArmCall {
+    let text = body.join("\n");
+    let mut named = BTreeSet::new();
+    let mut computed = false;
+    for (at, _) in text.match_indices("lower_user_fn_call(") {
+        let arg = text[at + "lower_user_fn_call(".len()..].trim_start();
+        match arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
+            Some(name) => {
+                named.insert(name.to_string());
+            }
+            None => computed = true,
+        }
+    }
+    match (named.len(), computed) {
+        (0, _) | (_, true) => ArmCall::Native,
+        (1, false) => ArmCall::HaleBody(named.into_iter().next().unwrap()),
+        _ => panic!("an arm calls two Hale bodies: {named:?}"),
+    }
 }
 
 /// What a family pattern (a pattern whose last segment binds a name)
@@ -309,11 +368,22 @@ pub fn arms_of(name: &str, file: &str) -> Vec<Arm> {
                     rest
                 };
                 let (patterns, guard) = parse_head(&head);
+                // The body runs to the next line at the arm's indent
+                // that opens an arm (a pattern, or the `_` arm).
+                let end = (i + 1..lines.len())
+                    .find(|&j| {
+                        let t = lines[j].trim_start();
+                        indent_of(lines[j]) == arm_indent && (t.starts_with('[') || t.starts_with("_ "))
+                    })
+                    .unwrap_or(lines.len());
+                let mut body_lines = vec![&l[k + 2..]];
+                body_lines.extend_from_slice(&lines[i + 1..end]);
                 arms.push(Arm {
                     line: first_line + start,
                     patterns,
                     guard,
                     refuses: rest.starts_with("Err("),
+                    calls: arm_call(&body_lines),
                 });
                 break;
             }
@@ -372,7 +442,7 @@ fn expand(pattern: &[Seg], guard: Option<&str>, fam: &Families) -> Vec<String> {
             hale_types::stdlib_surface::SURFACES
                 .iter()
                 .filter(|s| s.ns == surface_ns.as_slice())
-                .flat_map(|s| s.fns.iter().map(|e| e.name))
+                .flat_map(|s| s.public().map(|e| e.name))
                 .filter(|n| n.starts_with(prefix))
                 .map(str::to_string)
                 .collect()
@@ -403,6 +473,19 @@ pub struct Scraped {
     pub shadowed: Vec<(String, usize)>,
     pub patterns: usize,
     pub family_patterns: usize,
+    /// The line of the call that hands every other path to the
+    /// expression dispatcher, when this dispatcher falls through to it.
+    pub falls_through: Option<usize>,
+}
+
+/// The line of `fn name`'s call of the expression dispatcher, if it
+/// makes one.
+fn fall_through_line(name: &str, file: &str) -> Option<usize> {
+    let src = crate_file(file);
+    let code = mask(&src, true);
+    let (open, close) = fn_body(&code, name);
+    let at = code[open..close].find("self.lower_stdlib_path_call_expr(")?;
+    Some(src[..open + at].matches('\n').count() + 1)
 }
 
 pub fn scrape() -> Vec<Scraped> {
@@ -411,6 +494,7 @@ pub fn scrape() -> Vec<Scraped> {
         .iter()
         .map(|&(name, file, position)| {
             let arms = arms_of(name, file);
+            let falls_through = fall_through_line(name, file);
             let mut paths = BTreeMap::new();
             let mut shadowed = Vec::new();
             let (mut patterns, mut family_patterns) = (0, 0);
@@ -430,20 +514,47 @@ pub fn scrape() -> Vec<Scraped> {
                     }
                 }
             }
-            Scraped { position, arms, paths, shadowed, patterns, family_patterns }
+            Scraped { position, arms, paths, shadowed, patterns, family_patterns, falls_through }
         })
         .collect()
 }
 
-/// Every (path, position) pair, with what its arm does.
+/// Every (path, position) pair, with what its arm does, and the
+/// statement dispatcher's fall-through arm as the pair
+/// ([`FALL_THROUGH`], statement).
 pub fn pairs(scraped: &[Scraped]) -> BTreeMap<(String, Position), (ArmKind, usize)> {
     let mut out = BTreeMap::new();
     for s in scraped {
         for (path, kind) in &s.paths {
             out.insert((path.clone(), s.position), *kind);
         }
+        if let Some(line) = s.falls_through {
+            assert_eq!(s.position, Position::Statement, "only the statement dispatcher falls through");
+            out.insert((FALL_THROUGH.to_string(), s.position), (ArmKind::Lowers, line));
+        }
     }
     out
+}
+
+/// The statement dispatcher's own paths (its arms', not the ones it
+/// hands on).
+fn statement_paths(scraped: &[Scraped]) -> &BTreeMap<String, (ArmKind, usize)> {
+    &scraped.iter().find(|s| s.position == Position::Statement).expect("a statement dispatcher").paths
+}
+
+/// The pairs one walked call covers: the arm that lowers it, and the
+/// fall-through arm when it is a statement handed on.
+fn covers(
+    path: String,
+    position: Position,
+    statement_paths: &BTreeMap<String, (ArmKind, usize)>,
+) -> Vec<(String, Position)> {
+    let at = lowered_at(&path, position, statement_paths);
+    if at == position {
+        vec![(path, position)]
+    } else {
+        vec![(FALL_THROUGH.to_string(), Position::Statement), (path, at)]
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1068,8 +1179,11 @@ pub fn shadow_set() -> Vec<ShadowProgram> {
 }
 
 /// Each pair the shadow set calls, with the programs (by source) that
-/// call it.
+/// call it. A statement call the statement dispatcher hands on covers
+/// the expression arm that lowers it, and the fall-through arm.
 pub fn coverage(set: &[ShadowProgram]) -> BTreeMap<(String, Position), BTreeSet<(Source, String)>> {
+    let scraped = scrape();
+    let statement = statement_paths(&scraped);
     let mut out: BTreeMap<(String, Position), BTreeSet<(Source, String)>> = BTreeMap::new();
     let mut walked = BTreeSet::new();
     for prog in set {
@@ -1084,7 +1198,9 @@ pub fn coverage(set: &[ShadowProgram]) -> BTreeMap<(String, Position), BTreeSet<
                 );
             }
             for (path, position, _) in w.found {
-                out.entry((path, position)).or_default().insert((prog.source, prog.origin.clone()));
+                for pair in covers(path, position, statement) {
+                    out.entry(pair).or_default().insert((prog.source, prog.origin.clone()));
+                }
             }
         }
     }
@@ -1092,14 +1208,18 @@ pub fn coverage(set: &[ShadowProgram]) -> BTreeMap<(String, Position), BTreeSet<
 }
 
 /// The std calls of the Hale-source stdlib (`hale_stdlib::AP_SOURCE`),
-/// by pair, with the declarations that make them.
+/// by the pairs they cover, with the declarations that make them.
 pub fn stdlib_calls() -> BTreeMap<(String, Position), BTreeSet<String>> {
+    let scraped = scrape();
+    let statement = statement_paths(&scraped);
     let program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE).expect("the stdlib parses");
     let w = CallWalk::program(&program);
     assert_eq!(w.calls, site_calls(&program), "the stdlib: the coverage walk missed a call");
     let mut out: BTreeMap<(String, Position), BTreeSet<String>> = BTreeMap::new();
     for (path, position, owner) in w.found {
-        out.entry((path, position)).or_default().insert(owner);
+        for pair in covers(path, position, statement) {
+            out.entry(pair).or_default().insert(owner.clone());
+        }
     }
     out
 }
@@ -1115,7 +1235,10 @@ pub fn stdlib_calls() -> BTreeMap<(String, Position), BTreeSet<String>> {
 fn the_scrape_and_the_walk_are_not_vacuous() {
     let scraped = scrape();
     for s in &scraped {
-        assert!(s.arms.len() > 50, "{:?}: only {} arms scraped", s.position, s.arms.len());
+        // The statement dispatcher keeps only the arms a statement
+        // answers differently (21 after S1) and hands the rest on.
+        let floor = if s.position == Position::Statement { 15 } else { 50 };
+        assert!(s.arms.len() > floor, "{:?}: only {} arms scraped", s.position, s.arms.len());
     }
     let all = pairs(&scraped);
     assert!(all.contains_key(&("std::io::sockopt::SOL_SOCKET".to_string(), Position::Expression)));
@@ -1125,6 +1248,11 @@ fn the_scrape_and_the_walk_are_not_vacuous() {
         all.get(&("std::str::parse_int".to_string(), Position::Expression)).map(|k| k.0),
         Some(ArmKind::Refuses)
     );
+    assert!(all.contains_key(&(FALL_THROUGH.to_string(), Position::Statement)));
+    let statement = statement_paths(&scraped);
+    assert_eq!(lowered_at("std::time::sleep", Position::Statement, statement), Position::Statement);
+    assert_eq!(lowered_at("std::str::contains", Position::Statement, statement), Position::Expression);
+    assert_eq!(lowered_at("std::str::contains", Position::Expression, statement), Position::Expression);
     let p = hale_syntax::parse_source(
         "fn f() -> Int {\n    std::time::sleep(1);\n    let n = std::str::len(\"ab\");\n    \
          let k = std::str::parse_int(\"1\") or 0;\n    match n {\n        2 -> std::process::exit(0),\n        \
@@ -1216,7 +1344,8 @@ const REFUSED_BARE: &[&str] = &[
 
 /// Allowance 1, refused by lowering, expression position only: the
 /// expression dispatcher's list also refuses the two parsers, which the
-/// statement dispatcher has no arm for at all.
+/// statement dispatcher has no arm for, so a bare statement call of one
+/// falls through and is refused by this same arm.
 const REFUSED_BARE_EXPRESSION_ONLY: &[&str] = &["std::str::parse_float", "std::str::parse_int"];
 
 /// Allowance 1, refused by lowering. The fallible dispatcher's list
@@ -1320,11 +1449,14 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
 /// NOT ONE OF THE PLAN'S KINDS, so listed apart (S0's stop rule): the
 /// bare arms of paths whose signature row is fallible. The checker
 /// refuses a bare call of a fallible signature (GH #738: "`..` can fail
-/// (..) and this call says nothing about it"), so these statement and
-/// expression arms are dead for every checked program, and `hale build`
-/// checks first. They are the plan's "9 fallible rows that keep a dead
-/// bare arm", which S5 removes; until then the IR shadow cannot reach
-/// them. The test derives the list from the rows and holds it equal.
+/// (..) and this call says nothing about it"), so these expression arms
+/// are dead for every checked program, and `hale build` checks first.
+/// They are the plan's "9 fallible rows that keep a dead bare arm",
+/// which S5 removes; until then the IR shadow cannot reach them. Each
+/// had a statement twin too, 18 dead arms in all; S1 folded the twins
+/// into the fall-through, so a bare statement call of one reaches the
+/// same dead expression arm. The test derives the list from the rows
+/// and holds it equal.
 const DEAD_BARE_OF_FALLIBLE_ROWS: &[&str] = &[
     "std::bytes::at",
     "std::io::fs::file_size",
@@ -1354,7 +1486,6 @@ fn allowances() -> BTreeMap<(String, Position), &'static str> {
         out.insert((p.to_string(), *position), "internal");
     }
     for p in DEAD_BARE_OF_FALLIBLE_ROWS {
-        out.insert((p.to_string(), Position::Statement), "dead bare arm of a fallible row");
         out.insert((p.to_string(), Position::Expression), "dead bare arm of a fallible row");
     }
     out

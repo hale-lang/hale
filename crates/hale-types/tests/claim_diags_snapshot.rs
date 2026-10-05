@@ -73,12 +73,7 @@ fn bundle_of<'a>(
 /// Exactly what `hale check` appends for the law block: selection,
 /// then every migrated judgment family over the canonical model.
 fn check_law_diags(bundle: &Bundle<'_>) -> Vec<String> {
-    let programs: Vec<&hale_syntax::ast::Program> =
-        bundle.programs.values().copied().collect();
-    let mut out = hale_types::claims::selection_diags(
-        &programs,
-        &bundle.import_renames,
-    );
+    let mut out = hale_types::bundle_law_selection(bundle).diags;
     out.extend(hale_types::judgment::claim_law_diags(bundle));
     out.iter().map(render).collect()
 }

@@ -22,14 +22,14 @@
 //!     whole fixture corpus was byte-identical before and after
 //!     this change; see the PR body.)
 //!
-//! Plus a typo guard: every `Named(...)` in `SIGS` must name a type
+//! Plus a typo guard: every `Named(...)` in the table's signatures must name a type
 //! the stdlib really declares AND the one `PATH_RENAMES` maps the
 //! user-facing path to. A mistyped name is not a compile error in
 //! Rust — it is a nominal type nobody declared, which silently
 //! reopens the permissive behavior this file exists to close.
 
 use hale_syntax::parse_source;
-use hale_types::stdlib_surface::{SigTy, SIGS};
+use hale_types::stdlib_surface::{rows, SigTy};
 
 /// Errors only, with their spans, so a pin can assert the
 /// diagnostic is LOCATED and not a spanless whole-program gripe.
@@ -276,13 +276,15 @@ fn the_parsed_request_shape_still_checks_clean() {
 /// Every `SigTy::Named` name in the table, from either position.
 fn named_in_sigs() -> Vec<(String, &'static str)> {
     let mut out = Vec::new();
-    for sig in SIGS {
+    for (ns, f) in rows() {
+        let Some(sig) = &f.sig else { continue };
+        let path = format!("std::{}::{}", ns.ns.join("::"), f.name);
         if let SigTy::Named(n) = sig.ret {
-            out.push((sig.display_path(), n));
+            out.push((path.clone(), n));
         }
         for p in sig.params {
             if let SigTy::Named(n) = p {
-                out.push((sig.display_path(), n));
+                out.push((path.clone(), n));
             }
         }
     }

@@ -235,7 +235,7 @@ fn no_row_shadows_a_real_stdlib_function() {
         {
             let name = path[fn_idx];
             assert!(
-                !surface.fns.iter().any(|e| e.name == name),
+                !surface.public().any(|e| e.name == name),
                 "`{}` is a real stdlib function and must not be a \
                  conventional-spelling row",
                 path.join("::")
