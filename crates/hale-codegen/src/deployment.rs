@@ -33,9 +33,6 @@ use hale_syntax::ast::ScheduleClass;
 /// table before any lowering runs.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct DeploymentPlan {
-    /// The main locus's type name (None when the program has no main
-    /// locus — plain `fn main` programs).
-    pub main_locus_name: Option<String>,
     /// Per-params-field placement override: field name →
     /// schedule class (pinned with resolved core set, cooperative,
     /// ...). Absent fields keep the locus's own default class.

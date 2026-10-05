@@ -418,7 +418,10 @@ placement and the locus's shape are known at compile time:
   It's suppressed when the other end is plausibly external: a
   transport `binding`, a wildcard (`log.**`) covering the subject, a
   cross-seed (`alias::Topic`) reference, or the same locus being both
-  ends. Library code (no `main`) isn't checked — its peers live
+  ends; and not at all when the entry carries an `api:` binding,
+  whose callers are every topic's other end (an imported library's
+  `main locus` and its `api:` entry don't count: that binding is
+  inert here). Library code (no `main`) isn't checked — its peers live
   downstream. A topic is one subject however you spell it: publish
   it by its name and subscribe its literal `subject:` string, and
   both ends are wired. A subject the compiler can't resolve (a

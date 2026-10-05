@@ -851,6 +851,19 @@ touches imported seeds. Group and topic references inside a
 traveling block canonicalize to mangled decls exactly as group
 decls do (#334); claim names are never mangled.
 
+**The world is every `main locus` the bundle declares.** World law
+is read from a column of the entry row (`EntryRow::world`): the
+entry's `claims { }` block, a module-nested main's, and an imported
+application's, each in declaration order. The column is wider than
+the entry on purpose. Which declaration a seed runs is the entry's
+question (`spec/semantics.md` § Bundle-wide rules: an imported `main
+locus` is never the entry); whose law binds the world it closes is
+this one, and an application's inline law keeps binding when another
+seed imports it, whether or not the importer has a `main locus` of
+its own. A bundle with any `main locus` closes a world, so a
+top-level `claims { }` block of the closing seed's own is refused
+there.
+
 **An imported main's inline claims keep their own seed's groups**
 (GH #733). A `main locus`'s `claims { }` block is world law, and an
 application that another seed imports still carries that block
@@ -1007,7 +1020,10 @@ identifier, a member spelling outside those five, or an account name
 outside letters, digits, `.`, `_`, `-` and `@` (the table travels as
 one line, so a name may not carry a separator) is a manifest error. `--matrix` proves, per (entrypoint,
 environment) pair, that every role the entrypoint declares — and
-`owner`, once it has an api binding — is mapped there (`[]` says
+`owner`, once it has an api binding (the one generated from the
+deployed `main locus`, `spec/semantics.md` § "The api binding (GH
+#1106)": a second `main locus`'s `api:` entry adds no `owner`) — is
+mapped there (`[]` says
 explicitly that nobody holds it), and that nothing is mapped that the
 entrypoint does not declare: an omission is indistinguishable from a
 mistake, and a misspelt key would otherwise map nobody quietly. `hale
@@ -2293,6 +2309,14 @@ assume the others in a build:
   is engaged, and the enforced error replaces it). This is the class
   of bug that shipped as a downstream latency mystery — a sleeping
   handler holding an engine pool — now visible at compile time.
+
+  **The pools are the deployed root's** (F.40 phase 3, the entry's
+  consumers). The async_io pools read are those of the `main locus`
+  the build deploys, the entry row's lowering root
+  (`spec/semantics.md` § "The entry locus"): a module-nested one
+  included, since the build spawns its pools; a second `main locus`
+  (rule 1's error) and an imported library's are not deployed, and
+  their `placement { }` entries imply nothing.
 
   **The leaf set is `block` minus what parks** (GH #791, 2026-09-20).
   Waiting stalls co-scheduled loci only if it holds the worker, and

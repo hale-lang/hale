@@ -1957,14 +1957,20 @@ as any other, under its qualified name. An imported seed's `main locus` is not t
 either: renamed with its seed, it does not count toward the one-main
 rule, its `placement { }` places nothing here, and an `api:` entry
 it carries is inert — a composed head that
-imports the standalone head declares its own entry to get a socket. A subscription by literal subject
+imports the standalone head declares its own entry to get a socket.
+The binding is generated from the entry of the `main locus` the build
+deploys, whose param it becomes (with a second `main locus`, rule 1's
+error, the first: a second one's entry binds nothing). A subscription by literal subject
 (`subscribe "log.**" ...`) names no topic and is not part of the
 API; a command reaches the loci that subscribe the topic by name,
 not those hearing it through a parent topic. `hale run --api
 <path>` (and `hale build --api <path>`, flags before the target)
 synthesizes the entry above with the dev defaults, `bound: 64,
-on_full: refuse`, and needs a `main locus` to put it on: a bare
-`fn main` program is refused with the rule. The path is an expression
+on_full: refuse`, and needs a `main locus` of the seed's own to put
+it on: a bare `fn main` program is refused with the rule, and so is a
+seed whose only `main locus` is an imported library's ("the only
+`main locus` here is an imported library's, whose bindings are
+inert"). The path is an expression
 the main locus evaluates as a param default — a literal, or
 `self.<param>` the program computed, so a head may listen at one
 socket per record under `XDG_RUNTIME_DIR` rather than at a fixed
@@ -2809,8 +2815,15 @@ the first `main locus` of the seed's own, in declaration order, a
 module-nested one included, and spawns that one's placement. The
 placement-safety rules guard what the build deploys, so they read that
 root, not the entry: the pool map behind the cross-pool method call
-error (`spec/types.md` § "Single-threaded-method invariant (F.31)")
-and the pinned-in-a-loop rule (placement rule 17). A seed whose only `main locus` is module-nested therefore has no
+error (`spec/types.md` § "Single-threaded-method invariant (F.31)"),
+the pinned-in-a-loop rule (placement rule 17), the instance-aliasing
+warning (one locus shared by two of the root's fields placed apart,
+#334), which reads where each field runs from the placement table, and
+the async_io advisory (`spec/verification.md` § "Placement-implied
+contracts"). The api binding is generated into that root too, and the
+editor's `hale/placement` view and the model's `entrypoint` name it
+(`main` when the build deploys none, as for a seed whose only `main
+locus` is imported). A seed whose only `main locus` is module-nested therefore has no
 entry, so its world is not closed and `--env` refuses it, and its
 placement is still checked as the top-level one's is, because the
 build still runs it.
@@ -3415,7 +3428,13 @@ main locus App {
    implies a cross-process peer), a **wildcard** subscriber/publisher
    covering the subject (`log.**` covers `log.app`), a **cross-seed**
    reference (`alias::Foo` — the other seed owns the other half), or
-   the same locus being both publisher and subscriber. The closed-
+   the same locus being both publisher and subscriber. The rule does
+   not fire at all when the entry carries an `api:` binding (GH
+   #1106: every subscribed topic is a command a caller may publish,
+   every published one a stream a caller may subscribe); the binding
+   is the entry's, so an imported `main locus`'s `api:` entry, which
+   is inert (GH #1104 piece 5), lifts nothing (F.40 phase 3, the
+   entry's consumers). The closed-
    world gate is why this is skipped for library seeds (no `main`):
    their consumers are downstream, out of the bundle. (GH #18 #4.)
    Rules 9 and 10 and the dead-receiver rule (7) are judged over

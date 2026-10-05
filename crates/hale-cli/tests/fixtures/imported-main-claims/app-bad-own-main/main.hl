@@ -1,0 +1,17 @@
+// An importer with a `main locus` of its own, importing the violating
+// application. The importer's main is the entry; the imported
+// application's inline claim is still the world's law here, so it must
+// still fire: the world is wider than the entry.
+import "../seed-bad" as chat;
+
+main locus Harness {
+    params { ticks: Int = 0; }
+    run() {
+        let r = chat::Room { room: 3 };
+        println("lines ", r.lines);
+    }
+}
+
+fn main() {
+    Harness { };
+}

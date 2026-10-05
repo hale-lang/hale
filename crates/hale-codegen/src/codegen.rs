@@ -20,6 +20,8 @@ use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
 use hale_types::capability::{Capability, Obligation, Transport};
+use hale_types::handler_routing::RetryBound;
+use hale_types::lifecycle::{ObligationKind, Spine};
 use hale_types::resolved::LoweringView;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
@@ -1069,6 +1071,22 @@ fn compile_cached_runtime_object_with(
     }
 }
 
+/// The `main locus` lowering deploys: the entry row's lowering root
+/// (`hale_types::entry::EntryRow::lowering_root`), found in lowering's
+/// program by its site (a user site is the node of the same index in the
+/// merged program, as the placement table's root is). A view with no row
+/// (a bare program's) or a row with no root deploys none.
+fn lowering_root<'p>(
+    entry: Option<&hale_types::entry::EntryRow>,
+    program: &'p Program,
+) -> Option<&'p hale_syntax::ast::LocusDecl> {
+    let site = entry?.lowering_root.as_ref()?.site?;
+    hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
+        TopDecl::Locus(l) if l.id.0 == site.index => Some(l),
+        _ => None,
+    })
+}
+
 /// Compile `program` to an executable at `output_path`, linking it with
 /// `clang`. The one entry point: what to build with (the cache directory
 /// the caller chose, the link surface for `@ffi("c")` consumers the CLI's
@@ -1466,6 +1484,7 @@ pub fn build_resolved(
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle: resolved.lifecycle(),
+        lowering_root: lowering_root(resolved.entry(), merged),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -1504,7 +1523,7 @@ pub fn build_resolved(
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
-        head_aborted_waits: false,
+        main_exit: None,
         dispatch_trace: options.dispatch_trace,
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
@@ -3353,6 +3372,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// emitters read each spine's obligations, in order, from it
     /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
     pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
+    /// The `main locus` lowering deploys, read from the view's entry row
+    /// (`LoweringView::entry`, its lowering root) and found in lowering's
+    /// program by identity: every comparison against "the main locus"
+    /// reads it (`is_lowering_root`). `None` with no root.
+    pub(crate) lowering_root: Option<&'p hale_syntax::ast::LocusDecl>,
     /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
     /// User-defined `type` declarations indexed by name. Filled
@@ -3643,10 +3667,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
     pub(crate) in_main: bool,
-    /// Set while one of fn main's exits tears its frame down after its
-    /// head aborted the waits (ahead of the pool join it emits), so the
-    /// frame teardown does not abort them a second time.
-    head_aborted_waits: bool,
+    /// The spine of the fn main exit tearing its frame down, set after its
+    /// head and taken by its flush, which emits that spine's process rows
+    /// from the frame's pre-drain on (`emit_flush_obligations`).
+    main_exit: Option<Spine>,
     /// `BuildOptions::dispatch_trace`: the publish sites print the
     /// codec's payload flatness beside the plan's rows.
     pub(crate) dispatch_trace: bool,
@@ -5890,37 +5914,98 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// destroying the arena concurrently with still-active
     /// worker threads. Idempotent + no-op when no pools were
     /// registered.
-    /// The process-wide obligations a teardown spine owes at its head
-    /// (the ingress quiesce R35, the pool join R20 where the program has
-    /// pools, the wait-abort R34), as the target's cells select them, in
-    /// the lifecycle plan's order (`hale_types::lifecycle::teardown_order`:
-    /// R35, then R34, then R20, so a pool worker parked in an `or wait`
-    /// only the abort ends is released before the join waits for it).
-    /// `frame_aborts`: the spine's frame teardown aborts the waits after
-    /// its pre-drain (fn main's three exits), so the head takes the
-    /// wait-abort only where the plan orders it ahead of a join the head
-    /// emits. Returns whether the head aborted the waits.
-    pub(crate) fn emit_teardown_obligations(&mut self, frame_aborts: bool) -> Result<bool, CodegenError> {
-        let joins = self.cells.emits(Obligation::PoolJoin) && !self.deployment.main_cooperative_pools.is_empty();
-        let mut selected = Vec::new();
-        if self.cells.emits(Obligation::IngressQuiesce) {
-            selected.push(Obligation::IngressQuiesce);
-        }
-        if joins {
-            selected.push(Obligation::PoolJoin);
-        }
-        if self.cells.emits(Obligation::WaitAbort) && (joins || !frame_aborts) {
-            selected.push(Obligation::WaitAbort);
-        }
-        for o in hale_types::lifecycle::teardown_order(&selected) {
-            match o {
-                Obligation::IngressQuiesce => self.emit_bus_ingress_quiesce()?,
-                Obligation::PoolJoin => self.emit_coop_pool_shutdown_all()?,
-                Obligation::WaitAbort => self.emit_bus_wait_abort_all()?,
-                other => unreachable!("{} is not a teardown spine's obligation", other.name()),
+    /// The process obligations a teardown spine owes at its head, read
+    /// from the lifecycle plan (`LifecyclePlan::process_order`): the
+    /// spine's process rows in the plan's order, up to its frame's
+    /// pre-drain (fn main's three exits flush their frame from there;
+    /// the eager and deferred main-entry spines have none), each emitted
+    /// where the target's cells select it (line 16) and the program has
+    /// what it acts on (a pool join needs a pool). A known-open row is
+    /// one the code does not emit (the eager spine's pre-drain, C13).
+    pub(crate) fn emit_teardown_obligations(&mut self, spine: Spine) -> Result<(), CodegenError> {
+        self.emit_process_rows(spine, false, true)
+    }
+
+    /// One of `fn main`'s exits, the fall-through, the test failure and
+    /// `return` (C21–C23): the exit spine's process rows read from the
+    /// plan, the head before the frame (`emit_teardown_obligations`) and
+    /// the rest from its pre-drain on, in the flush (`main_exit`); the
+    /// frame's entries; the process exit tail (C24: the global arena,
+    /// then the bus queue and router); `ret code`.
+    ///
+    /// The head joins the cooperative pools before any entry is torn
+    /// down (2026-05-30): a worker may have a coro parked inside a
+    /// locus's run() (a listener in accept()), and the join wakes and
+    /// cancels it while the locus's arena is still valid; it also keeps
+    /// workers joined before arena_destroy (the F.32-1γ-v2 TSAN fix).
+    /// Its ingress quiesce drains kernel-accepted LISTEN ingress through
+    /// the intact registry first (GH #468). Which rows a target emits is
+    /// its cells' (line 16: no pool join or quiesce on wasm32).
+    fn emit_main_exit(
+        &mut self,
+        spine: Spine,
+        frame: Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>,
+        code: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let lc_outer = std::mem::replace(&mut self.lc_spine, spine.name());
+        self.emit_teardown_obligations(spine)?;
+        self.main_exit = Some(spine);
+        self.emit_frame_teardown(frame, true)?;
+        self.lc_spine = lc_outer;
+        self.emit_arena_destroy()?;
+        self.emit_bus_queue_destroy()?;
+        self.builder.build_return(Some(&code)).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The rest of a `fn main` exit's process obligations, emitted by its
+    /// frame flush: the spine's rows from the frame's pre-drain on, in the
+    /// plan's order (line 18's pre-drain, then, where the spine owes no
+    /// pool join, line 7's wait-abort, so a handler the pre-drain runs may
+    /// still wait). `pre_drain` is false where the flush elides the drain
+    /// (a non-allocating body with an empty frame cannot have published).
+    fn emit_flush_obligations(&mut self, spine: Spine, pre_drain: bool) -> Result<(), CodegenError> {
+        self.emit_process_rows(spine, true, pre_drain)
+    }
+
+    /// The spine's process rows in the plan's order, the head's (those
+    /// before the frame's pre-drain) or the flush's (the pre-drain and
+    /// those after it), each where the target's cells select it.
+    fn emit_process_rows(&mut self, spine: Spine, flush: bool, pre_drain: bool) -> Result<(), CodegenError> {
+        let plan = self.lifecycle.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "the lowering view carries no lifecycle plan, and the {} spine's process obligations are read from it",
+                spine.name()
+            ))
+        })?;
+        let mut in_flush = false;
+        for step in plan.process_order(spine).map_err(CodegenError::Unsupported)? {
+            // A known-open row (the eager spine's pre-drain, C13) is not
+            // emitted, and divides nothing.
+            if matches!(plan.obligations[step.obligation.0 as usize].status, hale_types::lifecycle::Status::KnownOpen { .. }) {
+                continue;
+            }
+            in_flush |= step.kind == ObligationKind::PreDrain;
+            if in_flush != flush {
+                continue;
+            }
+            match step.kind {
+                ObligationKind::PreDrain if pre_drain => self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?,
+                ObligationKind::IngressQuiesce if self.cells.emits(Obligation::IngressQuiesce) => {
+                    self.emit_bus_ingress_quiesce()?
+                }
+                ObligationKind::PoolJoin
+                    if self.cells.emits(Obligation::PoolJoin) && !self.deployment.main_cooperative_pools.is_empty() =>
+                {
+                    self.emit_coop_pool_shutdown_all()?
+                }
+                ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort) => self.emit_bus_wait_abort_all()?,
+                // Omitted by the target's cells, elided, or no runtime
+                // call (the join's progress).
+                _ => {}
             }
         }
-        Ok(selected.contains(&Obligation::WaitAbort))
+        Ok(())
     }
 
     pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
@@ -6023,11 +6108,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .deferred_dissolves
             .pop()
             .expect("flush without matching push");
-        // GH #717: main's teardown spine is now emitted from two
-        // places — this flush (the fall-through / `return` exits)
-        // and the recorded-assertion-failure exit block. Record
-        // main's own entries as they pass through so the failure
-        // block can emit the same teardown.
+        // GH #717: the recorded-assertion-failure exit tears down every
+        // entry main's frame ever held. The fall-through exit notes them
+        // itself (`emit_main_exit`'s caller); a flush of main's frame
+        // through here notes them too.
         if self.in_main
             && self.deferred_dissolves.len() + 1 == self.main_frame_depth
         {
@@ -6039,8 +6123,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// GH #717: merge main's frame entries into the set the
     /// assertion-failure exit block tears down.
     ///
-    /// Main's frame passes through `flush_dissolve_frame_kind` (or the
-    /// bare pop) once, at main's fall-through exit — a `return` in the
+    /// Main's frame is popped once, at main's fall-through exit (torn
+    /// down there, or dropped when the body never falls through) — a `return` in the
     /// middle of `main` emits its teardown from a CLONE and leaves the
     /// frame in place (GH #789), so that single pass carries every
     /// entry. The union is kept anyway: it is keyed on the dominating
@@ -6087,25 +6171,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // skip the per-call drain entirely. See
         // `current_fn_skip_exit_drain`.
         let frame_statically_empty = frame.is_empty();
-        // The trace names fn main's three exits by the spine their
-        // caller set; any other fn's flush is the deferred spine.
-        let lc_spine = if self.lc_spine.starts_with("Main") { self.lc_spine } else { "DeferredEntry" };
-        let lc_outer = std::mem::replace(&mut self.lc_spine, lc_spine);
-        if drain_queue
-            && !(frame_statically_empty && self.current_fn_skip_exit_drain)
-        {
-            self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?;
+        let pre_drain = drain_queue && !(frame_statically_empty && self.current_fn_skip_exit_drain);
+        match self.main_exit.take() {
+            // GH #255: at one of fn main's exits this flush IS main
+            // teardown, and owes the rest of its spine's process rows:
+            // the pre-drain, and the wait-abort where the head (ahead of
+            // its pool join) did not abort the waits, so `or wait` parked
+            // publishers take the raise path before the pinned joins below
+            // would block on them. The trace names the exit's spine.
+            Some(spine) => {
+                let lc_outer = std::mem::replace(&mut self.lc_spine, spine.name());
+                self.emit_flush_obligations(spine, pre_drain)?;
+                self.lc_spine = lc_outer;
+            }
+            // Any other fn's flush drains only: it must not disable waits
+            // program-wide. The trace names it the deferred spine.
+            None if pre_drain => {
+                let lc_outer = std::mem::replace(&mut self.lc_spine, "DeferredEntry");
+                self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?;
+                self.lc_spine = lc_outer;
+            }
+            None => {}
         }
-        // GH #255: at fn-main's scope exit this flush IS main
-        // teardown — wake `or wait` parked publishers into the
-        // raise path before the pinned joins below would block on
-        // them. Gated on in_main: every other fn's flush must not
-        // disable waits program-wide. A main exit whose head already
-        // aborted them (ahead of its pool join) owes no second abort.
-        if self.in_main && !self.head_aborted_waits && self.cells.emits(Obligation::WaitAbort) {
-            self.emit_bus_wait_abort_all()?;
-        }
-        self.lc_spine = lc_outer;
         // GH #253: join subscription-less pinned entries FIRST,
         // before any cooperative teardown. Reverse push order
         // alone processed a parent (and its cascade of subscriber
@@ -6269,17 +6356,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // as it unwound, and the process died on every stop
             // (downstream handoff). Joining here is idempotent: the pools'
             // later join at main's exit finds no worker left.
-            let is_main_entry = self
-                .deployment
-                .main_locus_name
-                .as_deref()
-                .is_some_and(|n| n == locus_name);
+            let is_main_entry = self.is_lowering_root(&locus_name);
             let lc_outer = std::mem::replace(
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
             );
             if is_main_entry {
-                self.emit_teardown_obligations(false)?;
+                self.emit_teardown_obligations(Spine::DeferredMainEntry)?;
             }
             // m28a + m28b: pinned loci — pthread_join blocks until
             // the pinned thread's full lifecycle (birth → run →
@@ -7729,9 +7812,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, end_bb)
                     .map_err(e)?;
                 self.builder.position_at_end(restart_bb);
-                self.builder
-                    .build_call(rf.restart, &[self_arg.into()], "run.restart.call")
-                    .map_err(e)?;
+                self.emit_restart_call(rf.restart, self_arg, locus_name, "PoolRun", "run.restart.call")?;
                 self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
                 self.builder.position_at_end(end_bb);
                 self.builder
@@ -8184,9 +8265,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // F.31: main's deployment, read from the placement table.
         // Populates `main_placement_map` keyed by `params` field
-        // name, plus caches `main_locus_name` so the params-init loop
-        // in `lower_locus_instantiation` can decide whether to
-        // override the per-field placement.
+        // name, which the params-init loop in
+        // `lower_locus_instantiation` reads for the lowering root
+        // (`is_lowering_root`) to override the per-field placement.
         self.collect_main_placement();
 
         // Pass A0: declare every user-defined `type` so locus
@@ -9329,43 +9410,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // both `break`/`return`), the trailing block is already
         // closed and writing more IR is unsound.
         if end == BlockEnd::Open {
-            // Join cooperative-pool workers BEFORE the dissolve
-            // cascade (2026-05-30, wakeable-park prototype). A worker
-            // may have a coro PARKED inside a locus's run() (e.g. a
-            // listener in accept()); shutdown_all now wakes+cancels it
-            // so it unwinds. That must happen while the locus's arena
-            // is still valid — if flush_dissolve_frame dissolved the
-            // locus first, the resuming coro would read its `self`
-            // from freed memory (observed: core dump). Joining first
-            // also preserves the prior invariant (workers joined
-            // before arena_destroy — the F.32-1γ-v2 TSAN fix).
-            // WASM plan (entry inversion): no worker threads on wasm, so
-            // skip the pool join/cancel (its body references
-            // pthread_join + the wake-fd close, which would otherwise
-            // survive as host imports).
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainFallThrough");
-            // GH #468: drain kernel-accepted LISTEN ingress
-            // through the intact registry BEFORE pools join and
-            // loci dissolve — the exit half of the delivery
-            // contract (the boot half is the readers' early-
-            // ingress buffer). The obligations are the cells' and their
-            // order the plan's (`emit_teardown_obligations`).
-            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
-            self.flush_dissolve_frame()?;
-            self.head_aborted_waits = false;
-            self.lc_spine = lc_outer;
-            // Tear down the arena before exit. exit(0) via `ret`
-            // would drop the chunk linked list either way (process
-            // exit reclaims everything), but going through
-            // lotus_arena_destroy keeps this path equivalent to
-            // the early-return path emitted in `lower_return` when
-            // a user `return n;` from main runs.
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
+            // The fall-through exit (C21) pops main's frame, noting its
+            // entries for the assertion-failure exit below (GH #717).
+            let frame = self.deferred_dissolves.pop().expect("main's dissolve frame");
+            self.note_main_dissolve_entries(&frame);
             let zero = i32_t.const_int(0, false);
-            self.builder
-                .build_return(Some(&zero))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_main_exit(Spine::MainFallThrough, frame, zero)?;
         } else {
             // Body terminated unconditionally — drop the frame
             // without emitting the dissolve calls. Any deferred
@@ -9378,29 +9428,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // assertion-failure block below still needs the entries.
             self.note_main_dissolve_entries(&dropped);
         }
-        // GH #717: fill the recorded-assertion-failure exit block, if
-        // any `std::test::assert*` call site in main branched to it.
-        // Same spine as the fall-through / `return` exits above —
-        // ingress quiesce, pool join, main's dissolve cascade, arena +
-        // bus-queue destroy — then `ret 1`. Emitted last so the frame
-        // it tears down is complete: entries whose instantiation this
-        // path never reached hold a NULL self slot and are skipped.
-        // `in_main` is still set, so the flush's GH #255 wait-abort
-        // fires here too.
+        // GH #717: fill the recorded-assertion-failure exit block (C22),
+        // if any `std::test::assert*` call site in main branched to it,
+        // then `ret 1`. Emitted last so the frame it tears down is
+        // complete: entries whose instantiation this path never reached
+        // hold a NULL self slot and are skipped.
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
-            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
-            self.emit_frame_teardown(frame, true)?;
-            self.head_aborted_waits = false;
-            self.lc_spine = lc_outer;
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
             let one = i32_t.const_int(1, false);
-            self.builder
-                .build_return(Some(&one))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_main_exit(Spine::MainTestFailure, frame, one)?;
         }
         self.main_dissolve_frame = None;
         self.main_frame_depth = usize::MAX;
@@ -9556,8 +9593,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// F.31: main's deployment, read from the placement table (F.40
-    /// phase 3, P1 5 of 6) before any lowering runs: the root lowering
-    /// deploys (`main_locus_name`), and per root field a `placement { }`
+    /// phase 3, P1 5 of 6) before any lowering runs: for the root lowering
+    /// deploys (the table's, seeded from the entry row's lowering root,
+    /// which `is_lowering_root` reads), per root field a `placement { }`
     /// entry decides, its schedule class, pool, NUMA node and replicas,
     /// keyed by field name for the params init of the root. The domains
     /// give the pools their `async_io` and affinity; the type sets are
@@ -9580,7 +9618,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
         let Some(root) = table.root.as_ref() else { return };
-        self.deployment.main_locus_name = Some(root.realizes.lowered.clone());
         // The root's placement entries, by their sites: a user site is
         // the node of the same index in lowering's program.
         let root_id = NodeId(root.realizes.site.id.index);
@@ -9955,10 +9992,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // dispatcher needed. The handler is main's routing row for
         // the locus the connect entry's row names as its transport.
         if let Some(transport) = connect_transport {
-            let main_handler = self
-                .deployment.main_locus_name
-                .as_ref()
-                .and_then(|n| self.failure_handler_for(n, transport));
+            let main_handler = self.lowering_root.and_then(|l| self.failure_handler_for(&l.name.name, transport));
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler, transport)?;
             }
@@ -9966,22 +10000,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Whether `locus_name` is the `main locus` lowering deploys, the
+    /// entry row's lowering root (`lowering_root`).
+    pub(crate) fn is_lowering_root(&self, locus_name: &str) -> bool {
+        self.lowering_root.is_some_and(|l| l.name.name == locus_name)
+    }
+
     /// The lowering root's `bindings { }` entries, each with the row
-    /// that decides it (F.40 phase 3, P2): the root is the first `main
-    /// locus` over the flat declarations that is not a library's, as
-    /// `collect_main_placement` takes it. An entry the view holds no row
-    /// for is a missing required row, an error, not a guess.
+    /// that decides it (F.40 phase 3, P2): the root is the entry row's
+    /// (`lowering_root`). An entry the view holds no row for is a missing
+    /// required row, an error, not a guess.
     fn root_bindings(
         &self,
     ) -> Result<Vec<(&'p hale_syntax::ast::BindingEntry, &'p hale_types::binding_rows::BindingRow)>, CodegenError>
     {
-        let program: &'p Program = self.program;
         let rows = self.bindings;
-        let root = hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
-            _ => None,
-        });
-        let Some(l) = root else { return Ok(Vec::new()) };
+        let Some(l) = self.lowering_root else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for m in &l.members {
             let LocusMember::Bindings(b) = m else { continue };
@@ -17806,17 +17840,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Stmt::Block(b) => self.lower_block(b, scope),
             Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
-            Stmt::Recovery { op, args, modifier, .. } => {
+            Stmt::Recovery { op, args, modifier, span } => {
                 // `for N` bounds how many times this child is
                 // restarted; on the failure that exhausts it the
                 // supervisor quarantines instead. It is only
                 // meaningful on the restart ops — there is nothing to
-                // repeat about quarantining or bubbling.
+                // repeat about quarantining or bubbling. The bound is
+                // the restart rows' (`HandlerRouting::retry_bound_at`,
+                // the entries the model's `retry_bound` is derived
+                // from), with the expression written where the row
+                // says, for one only known when the statement runs.
                 let bound = match modifier {
                     None => None,
                     Some(RecoveryModifier::For(e)) => match op {
                         RecoveryOp::Restart
-                        | RecoveryOp::RestartInPlace => Some(e),
+                        | RecoveryOp::RestartInPlace => {
+                            let row = self.handlers.retry_bound_at(*span).ok_or_else(|| {
+                                CodegenError::Unsupported(
+                                    "`for N`: the restart rows state no bound for this \
+                                     statement"
+                                        .into(),
+                                )
+                            })?;
+                            Some((row, e))
+                        }
                         // `quarantine(c) for d` is a DIFFERENT
                         // modifier — a duration after which the child
                         // is automatically restarted (spec/semantics
@@ -21915,23 +21962,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 }
             };
-            // Join cooperative-pool workers FIRST so a coro
-            // parked inside a locus's run() is woken+unwound while its
-            // arena is still valid — see the matching block in
-            // `lower_program`'s main-exit path (2026-05-30, extends
-            // the 2026-05-26 substrate-race fix). Then flush the
-            // dissolve frame (which now includes any locus the return
-            // expr itself instantiated), then tear down the arena.
-            // WASM plan (entry inversion): no worker threads on wasm, so
-            // skip the pool join/cancel (its body references
-            // pthread_join + the wake-fd close, which would otherwise
-            // survive as host imports).
-            let lc_outer = std::mem::replace(&mut self.lc_spine, "MainReturn");
-            // GH #468: same exit-quiesce as the fallthrough
-            // main-exit path — return-from-main must not lose
-            // kernel-accepted ingress either. The obligations are the
-            // cells' and their order the plan's.
-            self.head_aborted_waits = self.emit_teardown_obligations(true)?;
+            // The `return` exit (C23), through the same helper as the
+            // fall-through and the failure exit (`emit_main_exit`).
             // GH #789: emit the teardown for everything main owns at
             // this point, but LEAVE the frame on the stack. `return`
             // terminates its own block, so the frame is still the
@@ -21965,14 +21997,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // `in_main` clear.
             let frame =
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
-            self.emit_frame_teardown(frame, true)?;
-            self.head_aborted_waits = false;
-            self.lc_spine = lc_outer;
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
-            self.builder
-                .build_return(Some(&code))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_main_exit(Spine::MainReturn, frame, code)?;
             return Ok(BlockEnd::Terminated);
         }
         let ret_ty = self.current_user_fn_ret.clone().ok_or_else(|| {
@@ -30784,7 +30809,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_call(
         &mut self,
         args: &[Expr],
-        bound: Option<&Expr>,
+        bound: Option<(RetryBound, &Expr)>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         self.lower_restart_call_kind(args, bound, scope, false)
@@ -30800,7 +30825,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_in_place_call(
         &mut self,
         args: &[Expr],
-        bound: Option<&Expr>,
+        bound: Option<(RetryBound, &Expr)>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         self.lower_restart_call_kind(args, bound, scope, true)
@@ -30809,7 +30834,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_call_kind(
         &mut self,
         args: &[Expr],
-        bound: Option<&Expr>,
+        bound: Option<(RetryBound, &Expr)>,
         scope: &Scope<'ctx>,
         in_place: bool,
     ) -> Result<BlockEnd, CodegenError> {
@@ -30852,15 +30877,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // exactly N of them, and the (N+1)th failure quarantines.
         let cont_bb = match bound {
             None => None,
-            Some(expr) => {
-                let (nval, nty) = self.lower_expr(expr, scope)?;
-                if !matches!(nty, CodegenTy::Int) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`{} for N`: the bound must be an Int; got {:?}",
-                        kind, nty
-                    )));
-                }
-                let n = nval.into_int_value();
+            Some((row, written)) => {
+                // The row's bound: a literal is its value; any other
+                // expression is the one written at the row's site,
+                // lowered here, once, as the statement runs.
+                let n = match row {
+                    RetryBound::Const(n) => i64_t.const_int(n as u64, true),
+                    RetryBound::Expr(site) => {
+                        if written.span() != site {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`{} for N`: the restart row's bound is not the \
+                                 expression this statement writes",
+                                kind
+                            )));
+                        }
+                        let (nval, nty) = self.lower_expr(written, scope)?;
+                        if !matches!(nty, CodegenTy::Int) {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`{} for N`: the bound must be an Int; got {:?}",
+                                kind, nty
+                            )));
+                        }
+                        nval.into_int_value()
+                    }
+                };
                 let rb_ptr = self
                     .builder
                     .build_struct_gep(

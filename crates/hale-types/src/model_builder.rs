@@ -3628,12 +3628,14 @@ pub fn derive_application_model_over(
     }
 
 
-    // entrypoint: the main locus, else "main".
-    let entrypoint = ast
-        .loci
-        .iter()
-        .find(|l| l.is_main)
-        .map(|l| l.name.name.clone())
+    // entrypoint: the root the arrangement is rooted at, the placement
+    // table's (the entry row's lowering root, F.40 phase 3; the entry
+    // once lowering deploys the entry, L4), else "main".
+    let entrypoint = inputs
+        .placement
+        .root
+        .as_ref()
+        .map(|r| r.decl.name.clone())
         .unwrap_or_else(|| "main".to_string());
 
     prov.records = records;

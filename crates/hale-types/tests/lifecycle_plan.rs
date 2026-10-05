@@ -388,7 +388,7 @@ fn a_contract_typed_field_owes_its_drain_before_its_owners() {
 #[test]
 fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
     let s = snapshot(
-        "locus Kid { run() { } }\nlocus Mid { params { k: Kid = Kid { }; } }\nmain locus App {\n    params { m: Mid = Mid { }; }\n    placement { m: cooperative(pool = side); }\n}\nfn main() { App { }; }\n",
+        "locus Kid { run() { let n = 1; } }\nlocus Mid { params { k: Kid = Kid { }; } }\nmain locus App {\n    params { m: Mid = Mid { }; }\n    placement { m: cooperative(pool = side); }\n}\nfn main() { App { }; }\n",
     );
     let p = plan(&s);
     let on = one(p, "Kid", K::Run).runs_on.clone().expect("the table gives it a pool");
@@ -458,7 +458,7 @@ fn two_parents(leaf: &str, extra: &str, worker_placed: bool) -> String {
 /// both parents.
 #[test]
 fn a_field_reached_under_parents_on_two_domains_claims_both() {
-    let s = snapshot(&two_parents("locus Leaf { run() { } }", "", true));
+    let s = snapshot(&two_parents("locus Leaf { run() { let n = 1; } }", "", true));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     let leaf: Vec<_> = p.instances.iter().filter(|i| i.site.decl.lowered == "Leaf").collect();
@@ -490,7 +490,7 @@ fn a_field_reached_under_parents_on_two_domains_claims_both() {
 /// alone before: `Once` for two Parents built once each).
 #[test]
 fn a_field_two_levels_under_parents_on_two_domains_claims_both() {
-    let s = snapshot(&two_parents("locus Leaf { params { twig: Twig = Twig { }; } }", "locus Twig { run() { } }\n", true));
+    let s = snapshot(&two_parents("locus Leaf { params { twig: Twig = Twig { }; } }", "locus Twig { run() { let n = 1; } }\n", true));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     assert_eq!(p.instances.iter().filter(|i| i.site.decl.lowered == "Twig").count(), 1);
@@ -512,7 +512,7 @@ fn a_field_two_levels_under_parents_on_two_domains_claims_both() {
 /// the claim is the one domain.
 #[test]
 fn a_field_reached_under_parents_on_one_domain_claims_it() {
-    let s = snapshot(&two_parents("locus Leaf { run() { } }", "", false));
+    let s = snapshot(&two_parents("locus Leaf { run() { let n = 1; } }", "", false));
     let p = plan(&s);
     for kind in [K::Birth, K::Run] {
         let o = one(p, "Leaf", kind);
@@ -567,7 +567,7 @@ fn two_enclosing(leaf: &str, mid_extra: &str, worker_placed: bool) -> String {
 /// neither. It is a child of both, and its bound is the table's.
 #[test]
 fn a_body_literal_under_enclosing_templates_on_two_domains_claims_both() {
-    let s = snapshot(&two_enclosing("locus Leaf { run() { } }", "", true));
+    let s = snapshot(&two_enclosing("locus Leaf { run() { let n = 1; } }", "", true));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     let leaf: Vec<_> = p.instances.iter().filter(|i| i.site.decl.lowered == "Leaf").collect();
@@ -631,7 +631,7 @@ fn an_accepted_literal_under_acceptors_on_two_domains_claims_both() {
 /// claim is the one domain.
 #[test]
 fn a_body_literal_under_enclosing_templates_on_one_domain_claims_it() {
-    let s = snapshot(&two_enclosing("locus Leaf { run() { } }", "", false));
+    let s = snapshot(&two_enclosing("locus Leaf { run() { let n = 1; } }", "", false));
     let p = plan(&s);
     assert!(laws(p).is_empty(), "{:?}", laws(p));
     for kind in [K::Birth, K::Run] {
@@ -681,14 +681,32 @@ fn the_pool_join_holds_a_run_only_where_every_occurrence_is_on_a_pool() {
             .collect();
         (waits.contains(&run), rows(p, "Leaf", K::Cancellation).is_empty())
     };
-    let both = two_enclosing("locus Leaf { run() { } }", "", true);
+    let both = two_enclosing("locus Leaf { run() { let n = 1; } }", "", true);
     assert_eq!(joined(&both), (false, true), "main and side: the run not joined");
     let side_only = both.replace("    run() { let m = Mid { }; m.make(); }\n}", "}");
     assert_eq!(joined(&side_only), (true, true), "side alone: the run joined");
 }
 
+/// A restart's steps, as an emitter reads them (L4): the decision, the
+/// restart's entry, the next incarnation's birth, then its run where the
+/// locus declares one (line 13, C48); nothing torn down in between.
+#[test]
+fn a_restart_reads_decision_entry_birth_then_run() {
+    use hale_types::lifecycle::spine::RecoveryStep as R;
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/rd_restart_during_teardown.hl"));
+    let p = plan(&s);
+    assert_eq!(p.recovery_order("Kid").unwrap(), [R::Decision, R::Restart, R::Birth, R::Run]);
+    let site = p.templates("Kid").next().expect("a Kid template");
+    let pairs = p.recovery_pairs(site);
+    for pair in [(R::Decision, R::Restart), (R::Restart, R::Birth), (R::Birth, R::Run)] {
+        assert!(pairs.contains(&pair), "{pair:?} is the rows' own: {pairs:?}");
+    }
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_neg_same_pool_held.hl"));
+    assert_eq!(plan(&s).recovery_order("Late").unwrap(), [R::Decision, R::Restart, R::Birth]);
+}
+
 /// Line 13: a locus that declares no run() owes none when it resumes;
-/// the row says so, known open (C48), and owes no event.
+/// the row says so, shipped (C48, L4), and owes no event.
 #[test]
 fn a_resumed_locus_with_no_run_owes_none() {
     let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_neg_same_pool_held.hl"));
@@ -697,7 +715,7 @@ fn a_resumed_locus_with_no_run_owes_none() {
     let runs = rows(p, "Late", K::Run);
     assert!(!runs.is_empty());
     for run in runs {
-        assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::KnownOpen { inventory_row: "C48" }));
+        assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::Shipped));
         assert_eq!(run.terminals, vec![Terminal::NotStarted(NotStarted::NoRun)]);
     }
 }
@@ -838,6 +856,50 @@ fn the_main_fall_through_spine_owes_the_wait_abort_before_the_join() {
     }
 }
 
+/// Lines 7 and 16, from one source: every teardown spine states its
+/// process rows and the plan's reader orders them. The quiesce, the
+/// wait-abort, the join on the main locus's own teardown, eager or
+/// deferred; `fn main`'s three exits likewise, then the frame's
+/// pre-drain, or, without pools, the pre-drain ahead of the wait-abort.
+/// The eager spine's pre-drain is the one it does not emit (C13).
+#[test]
+fn every_teardown_spine_states_its_process_rows() {
+    let pool_app = "locus Worker { run() { } }\n\
+                    main locus App { params { w: Worker = Worker { }; } placement { w: cooperative(pool = side); } run() { } }\n";
+    let bare_app = "main locus App { run() { } }\n";
+    let order = |app: &str, main: &str, spine: Spine| -> Vec<K> {
+        let s = snapshot(&format!("{app}{main}"));
+        let p = plan(&s);
+        assert!(laws(p).is_empty(), "{:?}", laws(p));
+        p.process_order(spine).expect("one order").iter().map(|st| st.kind).collect()
+    };
+    let eager = "fn main() { App { }; }\n";
+    let deferred = "fn start() { let app = App { }; }\nfn main() { start(); }\n";
+    let let_bound = "fn main() { let app = App { }; }\n";
+    let head = [K::IngressQuiesce, K::WaitAbort, K::PoolJoin, K::JoinProgress];
+    assert_eq!(order(pool_app, eager, Spine::EagerTeardown), [&[K::PreDrain][..], &head].concat());
+    assert_eq!(order(bare_app, eager, Spine::EagerTeardown), vec![K::PreDrain, K::IngressQuiesce, K::WaitAbort]);
+    assert_eq!(order(pool_app, deferred, Spine::DeferredMainEntry), head.to_vec());
+    assert_eq!(order(pool_app, let_bound, Spine::DeferredMainEntry), head.to_vec());
+    for spine in [Spine::MainFallThrough, Spine::MainReturn, Spine::MainTestFailure] {
+        assert_eq!(order(pool_app, let_bound, spine), [&head[..], &[K::PreDrain]].concat(), "{}", spine.name());
+        assert_eq!(order(bare_app, let_bound, spine), vec![K::IngressQuiesce, K::PreDrain, K::WaitAbort], "{}", spine.name());
+    }
+    // A main locus built by another fn is torn down at that fn's exit,
+    // before `fn main`'s: its head comes first.
+    let s = snapshot(&format!("{pool_app}{deferred}"));
+    let p = plan(&s);
+    let row = |kind: K, spine: Spine| p.iter().find(|(_, o)| o.site.is_none() && o.kind == kind && o.holder.spine == spine).expect("a row").0;
+    let (entry_join, exit_quiesce) = (row(K::PoolJoin, Spine::DeferredMainEntry), row(K::IngressQuiesce, Spine::MainFallThrough));
+    assert!(p.get(exit_quiesce).expect("a row").edges.entry.iter().any(|pr| pr.event.obligation == entry_join));
+    let eager_pre = p.iter().find(|(_, o)| o.kind == K::PreDrain && o.holder.spine == Spine::EagerTeardown);
+    assert!(eager_pre.is_none(), "no eager statement here");
+    let s = snapshot(&format!("{pool_app}{eager}"));
+    let p = plan(&s);
+    let pre = p.iter().find(|(_, o)| o.kind == K::PreDrain && o.holder.spine == Spine::EagerTeardown).expect("a pre-drain").1;
+    assert_eq!(pre.status, Status::KnownOpen { inventory_row: "C13" });
+}
+
 /// A subscribing main instance uses its deferred main-entry spine;
 /// static posted fields also owe cancellation if reclaimed while queued.
 #[test]
@@ -850,4 +912,45 @@ fn deferred_main_and_cross_pool_cancellation_name_their_spines() {
     // Its reclaim happens on main, so the child's worker must not be
     // asserted as the cancellation's execution domain.
     assert!(canceled.iter().filter(|o| o.holder.spine == Spine::Cascade).all(|o| o.runs_on.is_none()));
+}
+
+/// L4's ruling on the empty run: a `Run` is owed exactly where lowering
+/// calls `run()` (`hale_types::lifecycle::run_is_called`, which both
+/// read). An author-written empty `run() { }` is not called and owes
+/// none; a run with a body is; a flow's is called even with no run of its
+/// own, since its run wrapper reclaims it; a pinned locus's thread takes
+/// the step whatever the body.
+#[test]
+fn a_run_is_owed_exactly_where_lowering_calls_it() {
+    let s = snapshot(
+        "locus Quiet { run() { } }\n\
+         locus Busy { run() { println(\"busy\"); } }\n\
+         locus Kid { params { n: Int = 0; } }\n\
+         locus Spin { run() { } }\n\
+         locus Holder {\n\
+             accept(k: Kid) { }\n\
+             release(k: Kid) { }\n\
+             fn spawn() { Kid { }; }\n\
+             run() { self.spawn(); }\n\
+         }\n\
+         main locus App {\n\
+             params { holder: Holder = Holder { }; spin: Spin = Spin { }; }\n\
+             placement { spin: pinned; }\n\
+             run() { Quiet { }; Busy { }; }\n\
+         }\n\
+         fn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    let normal = |decl: &str| -> Vec<&Obligation> {
+        rows(p, decl, K::Run).into_iter().filter(|o| o.guard == PathGuard::Normal).collect()
+    };
+    assert!(normal("Quiet").is_empty(), "an empty run() is not called and owes no Run");
+    assert_eq!(normal("Busy").len(), 1, "a run() with a body is called");
+    assert_eq!(normal("Kid").len(), 1, "a flow's run wrapper calls its run(), the desugar's empty one included");
+    let spin = normal("Spin");
+    assert_eq!(spin.len(), 1, "a pinned thread takes its Run step");
+    assert_eq!(spin[0].holder.spine, Spine::PinnedMain);
+    assert!(hale_types::lifecycle::run_is_called(false, false));
+    assert!(!hale_types::lifecycle::run_is_called(true, false));
+    assert!(hale_types::lifecycle::run_is_called(true, true));
 }

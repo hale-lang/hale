@@ -11,7 +11,8 @@ use hale_types::check_program;
 fn check(src: &str) -> Vec<String> {
     let mut prog = parse_source(src).expect("parse failed");
     hale_syntax::json_gen::generate_json_parsers(&mut prog);
-    hale_syntax::api_gen::generate_api(&mut [&mut prog], None);
+    let row = hale_types::entry::entry_row_in(&[&prog]);
+    hale_syntax::api_gen::generate_api(&mut [&mut prog], row.lowering_root.as_ref().and_then(|m| m.index_in()), None);
     check_program(&prog).into_iter().map(|d| d.message).collect()
 }
 
@@ -487,11 +488,11 @@ fn main() { App { }; }
 "#;
     let mut prog = parse_source(src).expect("parse failed");
     hale_syntax::json_gen::generate_json_parsers(&mut prog);
-    let surface = hale_syntax::api_gen::api_surface(&[&prog]).expect("a surface");
+    let surface = hale_syntax::api_gen::api_surface(&[&prog], hale_types::entry::lowering_root_decl(&[&prog])).expect("a surface");
     assert_eq!(surface.streams[0].role.as_deref(), Some("support"), "inherited from the subscribers");
     let own = src.replace("publish Refunds;", "@gated(role: auditor) publish Refunds;");
     let mut prog = parse_source(&own).expect("parse failed");
     hale_syntax::json_gen::generate_json_parsers(&mut prog);
-    let surface = hale_syntax::api_gen::api_surface(&[&prog]).expect("a surface");
+    let surface = hale_syntax::api_gen::api_surface(&[&prog], hale_types::entry::lowering_root_decl(&[&prog])).expect("a surface");
     assert_eq!(surface.streams[0].role.as_deref(), Some("auditor"), "the publish member's own");
 }

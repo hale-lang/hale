@@ -487,6 +487,11 @@ dynamic	<hole>	on main|unresolved declaration `chat::Room`	in the seed
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-collision/main.hl#40cf887f
 row	Bystander@main1	Bystander	main	default
 
+== crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-own-main/main.hl#153e3d51
+root	Harness	the entry
+row	Harness@literal1	Harness	main	default
+dynamic	<hole>	on main|unresolved declaration `chat::Room`	in the seed
+
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-const-missing/main.hl#9088b209
 row	Bystander@main1	Bystander	main	default
 
@@ -3473,6 +3478,10 @@ row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
+== crates/hale-codegen/tests/restart_bound.rs#8217dfce
+row	Coordinator@main1	Coordinator	main	default
+dynamic	Worker	on main	in the seed
+
 == crates/hale-codegen/tests/restart_in_place_params.rs#437e6c79
 root	App	the entry
 row	App@literal1	App	main	default
@@ -4171,6 +4180,12 @@ row	App@literal1	App	main	default
 row	App@literal1.c	Clock	main	default
 row	App@literal1.w	Worker	main	default
 
+== crates/hale-types/tests/bus_graph.rs#fd86c6d8
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.c	Clock	main	default
+row	App@literal1.w	Worker	main	default
+
 == crates/hale-types/tests/bus_graph.rs#130c4f61
 row	W@main1	W	main	default
 
@@ -4696,6 +4711,15 @@ row	Holder@main1	Holder	main	default
 
 == crates/hale-types/tests/locus_member_type.rs#3ec7811a
 row	Holder@main1	Holder	main	default
+
+== crates/hale-types/tests/lowering_correspondence.rs#a55d8a6a
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+row	Sink@main1	Sink	main	default
+
+== crates/hale-types/tests/lowering_correspondence.rs#0685e192
+row	Solo@main1	Solo	main	default
 
 == crates/hale-types/tests/model_arrangement.rs#77a41871
 root	App	the entry
@@ -5465,6 +5489,8 @@ row	~.r.leaf	Leaf	main	inherited
 == crates/hale-types/tests/self_containing_locus.rs#e33d1b3f
 
 == crates/hale-types/tests/self_containing_locus.rs#03ba98b7
+
+== crates/hale-types/tests/self_containing_locus.rs#9b4e99f9
 
 == crates/hale-types/tests/self_containing_locus.rs#c1d27593
 hole	Tree@main1.leaf	unenumerable initializer

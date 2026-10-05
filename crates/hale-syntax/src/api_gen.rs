@@ -308,10 +308,22 @@ fn json_reason(
     None
 }
 
-/// Find the one main locus carrying an `api:` entry and classify the
-/// program around it. `None` when no program has one.
-pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
-    let mut main: Option<(&LocusDecl, ApiBinding)> = None;
+/// Classify the program around the `api:` entry of `root`, the `main
+/// locus` the binding joins as a param: the root lowering deploys (the
+/// entry row's lowering root, F.40 phase 3; the entry once lowering
+/// deploys the entry, L4). `None` when there is no root, or when it
+/// carries no `api:` entry. An imported seed's `main locus` is never
+/// the root (its bindings are inert), and neither is a second one.
+pub fn api_surface(programs: &[&Program], root: Option<&LocusDecl>) -> Option<ApiSurface> {
+    let main: Option<(&LocusDecl, ApiBinding)> = root.and_then(|l| {
+        l.members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Bindings(bb) => bb.api.clone().map(|api| (l, api)),
+                _ => None,
+            })
+            .last()
+    });
     let mut topics: BTreeMap<String, &TopicDecl> = BTreeMap::new();
     let mut loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
     let mut types: BTreeMap<String, &[StructField]> = BTreeMap::new();
@@ -321,18 +333,6 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         walk_items(&p.items, &mut |item| match item {
             TopDecl::Locus(l) => {
                 loci.insert(l.name.name.clone(), l);
-                // An imported seed's main locus is not the entrypoint
-                // (its bindings are inert): a composed head that imports
-                // one carrying an api entry gets no binding from it.
-                if l.is_main && !l.imported && main.is_none() {
-                    for m in &l.members {
-                        if let LocusMember::Bindings(bb) = m {
-                            if let Some(api) = &bb.api {
-                                main = Some((l, api.clone()));
-                            }
-                        }
-                    }
-                }
             }
             TopDecl::Topic(t) => {
                 topics.insert(t.name.name.clone(), t);
@@ -805,19 +805,18 @@ pub fn grants(surface: &ApiSurface, role: &str) -> Vec<String> {
 /// GH #1109: the roles the program declares (`role x;`), bundle-wide,
 /// in name order — what `hale check --matrix` asks each environment
 /// to map. `owner` is included when the program has an api binding or
-/// declares a role, because that is when something is gated on it.
-pub fn declared_roles(programs: &[&Program]) -> Vec<String> {
+/// declares a role, because that is when something is gated on it. The
+/// binding is `root`'s, the `main locus` it is generated into (see
+/// [`api_surface`]).
+pub fn declared_roles(programs: &[&Program], root: Option<&LocusDecl>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let mut has_api = false;
+    let has_api = root
+        .is_some_and(|l| l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())));
     for p in programs {
-        walk_items(&p.items, &mut |i| match i {
-            TopDecl::Role(r) => out.push(r.name.name.clone()),
-            TopDecl::Locus(l) if l.is_main && !l.imported => {
-                if l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())) {
-                    has_api = true;
-                }
+        walk_items(&p.items, &mut |i| {
+            if let TopDecl::Role(r) = i {
+                out.push(r.name.name.clone());
             }
-            _ => {}
         });
     }
     if (has_api || !out.is_empty()) && !out.iter().any(|r| r == "owner") {
@@ -1065,56 +1064,39 @@ pub fn describe(surface: &ApiSurface) -> String {
 }
 
 /// `hale run --api <path>`: put `api: unix(path, bound: 64, on_full:
-/// refuse)` on the main locus's bindings before the checker runs. A
-/// main locus that already carries an `api:` entry keeps it (the
-/// source wins over the flag); a program with no main locus cannot
-/// hold a binding and is refused with the rule.
-pub fn inject_api_entry(program: &mut Program, path: &str) -> Result<(), String> {
+/// refuse)` on the bindings of `l`, the `main locus` the binding joins
+/// ([`api_surface`]), before the checker runs; a program with none is
+/// refused by the caller, which knows why there is none. A `main locus`
+/// that already carries an `api:` entry keeps it (the source wins over
+/// the flag).
+pub fn inject_api_entry(l: &mut LocusDecl, path: &str) {
     let path = path.strip_prefix("unix:").unwrap_or(path).to_string();
-    let mut injected = false;
-    let mut main_seen = false;
-    walk_items_mut(&mut program.items, &mut |item| {
-        let TopDecl::Locus(l) = item else { return };
-        if !l.is_main || injected {
-            return;
+    let span = l.name.span;
+    let entry = ApiBinding {
+        transport: ApiTransport::Unix { path: Expr::Literal(Literal::String(path), span), span },
+        roles: None,
+        bound: Some((DEV_BOUND, span)),
+        on_full: Some((crate::ast::ApiFullPolicy::Refuse, span)),
+        watch_bound: None,
+        on_watch_full: None,
+        on_unauthorized: None,
+        serve: Vec::new(),
+        http: None,
+        span,
+    };
+    if let Some(LocusMember::Bindings(bb)) =
+        l.members.iter_mut().find(|m| matches!(m, LocusMember::Bindings(_)))
+    {
+        if bb.api.is_none() {
+            bb.api = Some(entry);
         }
-        main_seen = true;
-        let span = l.name.span;
-        let entry = ApiBinding {
-            transport: ApiTransport::Unix { path: Expr::Literal(Literal::String(path.clone()), span), span },
-            roles: None,
-            bound: Some((DEV_BOUND, span)),
-            on_full: Some((crate::ast::ApiFullPolicy::Refuse, span)),
-            watch_bound: None,
-            on_watch_full: None,
-            on_unauthorized: None,
-            serve: Vec::new(),
-            http: None,
+    } else {
+        l.members.push(LocusMember::Bindings(crate::ast::BindingsBlock {
+            entries: Vec::new(),
+            api: Some(entry),
             span,
-        };
-        if let Some(LocusMember::Bindings(bb)) =
-            l.members.iter_mut().find(|m| matches!(m, LocusMember::Bindings(_)))
-        {
-            if bb.api.is_none() {
-                bb.api = Some(entry);
-            }
-        } else {
-            l.members.push(LocusMember::Bindings(crate::ast::BindingsBlock {
-                entries: Vec::new(),
-                api: Some(entry),
-                span,
-            }));
-        }
-        injected = true;
-    });
-    if !main_seen {
-        return Err(
-            "--api needs a `main locus` to bind: the api entry lives in its \
-             `bindings { }` block, and this program has only a bare `fn main`"
-                .to_string(),
-        );
+        }));
     }
-    Ok(())
 }
 
 // ---- emission -------------------------------------------------------
@@ -2016,11 +1998,18 @@ fn extend_locus(
 }
 
 /// Synthesize the api binding across a bundle. `programs` are the
-/// seed's programs (one when merged); the generated top-level items
-/// land beside the main locus. Idempotent: a bundle that already has
-/// `__ApiBinding` is left alone. Returns the surface it emitted, or
-/// `None` when no main locus carries an `api:` entry.
-pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) -> Option<ApiSurface> {
+/// seed's programs (one when merged); `root` is where the `main locus`
+/// the binding joins is ([`api_surface`]: the program's index and the
+/// declaration's path in it, for [`crate::ast::locus_at`]); the
+/// generated top-level items land beside it. Idempotent: a bundle that
+/// already has `__ApiBinding` is left alone. Returns the surface it
+/// emitted, or `None` when there is no root or it carries no `api:`
+/// entry.
+pub fn generate_api(
+    programs: &mut [&mut Program],
+    root: Option<(usize, &[usize])>,
+    roles_table: Option<&str>,
+) -> Option<ApiSurface> {
     let already = programs.iter().any(|p| {
         let mut found = false;
         walk_items(&p.items, &mut |i| {
@@ -2033,20 +2022,11 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     if already {
         return None;
     }
+    let (main_idx, main_path) = root?;
     let surface = {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
-        api_surface(&ro)?
+        api_surface(&ro, crate::ast::locus_at(&ro.get(main_idx)?.items, main_path))?
     };
-    // Which program holds the main locus.
-    let main_idx = programs.iter().position(|p| {
-        let mut found = false;
-        walk_items(&p.items, &mut |i| {
-            if matches!(i, TopDecl::Locus(l) if l.name.name == surface.main_locus) {
-                found = true;
-            }
-        });
-        found
-    })?;
 
     // Every expression copied out of the entry (the socket path,
     // `roles:`, `principals:`, the HTTP host and port) is a new site
@@ -2213,28 +2193,24 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
             }
         }
     }
-    let main_name = surface.main_locus.clone();
-    walk_items_mut(&mut programs[main_idx].items, &mut |item| {
-        let TopDecl::Locus(l) = item else { return };
-        if l.name.name != main_name {
-            return;
-        }
-        let span = l.name.span;
-        let mut params = vec![new_param.clone()];
-        params.extend(extra_params.iter().cloned());
-        let mut placements = vec![new_placement.clone()];
-        placements.extend(extra_placements.iter().cloned());
-        if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-            pb.params.extend(params);
-        } else {
-            l.members.push(LocusMember::Params(crate::ast::ParamsBlock { params, span }));
-        }
-        if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
-            pl.entries.extend(placements);
-        } else {
-            l.members.push(LocusMember::Placement(PlacementBlock { entries: placements, span }));
-        }
-    });
+    // The entry's path still names it: everything above appended
+    // top-level items after it, or members inside loci.
+    let l = crate::ast::locus_at_mut(&mut programs[main_idx].items, main_path)?;
+    let span = l.name.span;
+    let mut params = vec![new_param];
+    params.extend(extra_params);
+    let mut placements = vec![new_placement];
+    placements.extend(extra_placements);
+    if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
+        pb.params.extend(params);
+    } else {
+        l.members.push(LocusMember::Params(crate::ast::ParamsBlock { params, span }));
+    }
+    if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
+        pl.entries.extend(placements);
+    } else {
+        l.members.push(LocusMember::Placement(PlacementBlock { entries: placements, span }));
+    }
     let _ = ParamInit::Inferred;
     Some(surface)
 }
