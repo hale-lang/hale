@@ -1353,7 +1353,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Invariants.**
 
 - law selection runs once per snapshot (F.40 phase 4, A2): the `law_selection` cell (`Snapshot::demand_law_selection`) selects over the programs after the sequence, for the configuration's environment (its label and the constitutions it injected, passed as data, never a binding on the thread), and the check's selection diagnostics, the laws stage's lowering and the artifact's law rows, constitution identities (`LawSelection::identities`, a projection of the adoption) and environment label read that one selection, as does the environment matrix's identity comparison, from the snapshot its pair's check read (F.40 phase 4, A3: a pair loads its seed once, and a pair the check refuses, which has no snapshot, compares nothing); it is not gated on the typing, so a program that does not typecheck still answers it; a bundle no snapshot holds selects once per entry (`bundle_law_selection`)
-- structural compiler laws are evaluated through model_query with shared witness rendering; the judgment path stays for user claims (final direction)
+- structural compiler laws are functions over family rows that the check runs, not queries over the model (F.40 phase 4, decision 3); their shared finding is `law::Violation` (`crates/hale-types/src/law.rs`): a registered rule's `RuleId`, the span, the message, and a witness of located steps, made a diagnostic by `Violation::into_diag` alone, each step a related location with its note (W2); the judgment path stays for user claims (final direction)
 - a registered rule without an evaluator fails the compiler's own build
 - a non-holds verdict is never silent
 

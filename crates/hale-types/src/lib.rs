@@ -43,6 +43,7 @@ pub mod check;
 pub mod correspondence;
 pub mod handler_routing;
 pub mod lifecycle;
+pub mod law;
 pub mod lowering_laws;
 pub mod claim_lowering;
 pub mod claims;
