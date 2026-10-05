@@ -740,6 +740,8 @@ fn type_size_info(ty: &TypeExpr, idx: &Index<'_>) -> TypeSizeInfo {
 fn type_decl_size_info(td: &TypeDecl, idx: &Index<'_>) -> TypeSizeInfo {
     match &td.body {
         TypeDeclBody::Alias(inner) => type_size_info(inner, idx),
+        // GH #1076: a scalar is represented as the base it counts in.
+        TypeDeclBody::Scalar(s) => type_size_info(&s.base, idx),
         TypeDeclBody::Struct(fields) => {
             // Walk declaration order, accumulating with
             // alignment padding. Final size is rounded up to
@@ -1101,7 +1103,8 @@ fn literal_storage_size(e: &Expr, idx: &Index<'_>) -> u64 {
         Expr::Literal(lit, _) => match lit {
             Literal::Int(_)
             | Literal::Float(_)
-            | Literal::Duration(_) => 8,
+            | Literal::Duration(_)
+            | Literal::Quantity { .. } => 8,
             Literal::Decimal(_) => 16,
             Literal::Bool(_) => 1,
             Literal::Nil => 8,

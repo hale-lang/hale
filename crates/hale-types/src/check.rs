@@ -4762,7 +4762,7 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                         diags,
                     );
                 }
-                TypeDeclBody::Alias(_) => {}
+                TypeDeclBody::Alias(_) | TypeDeclBody::Scalar(_) => {}
             },
             TopDecl::Interface(i) => once(
                 "method",
@@ -6563,6 +6563,12 @@ impl<'a> Checker<'a> {
                     TypeDeclBody::Alias(te) => {
                         self.check_type_annotation(te);
                     }
+                    TypeDeclBody::Scalar(_) => {
+                        self.diags.push(crate::units::not_yet_checked(
+                            t.span,
+                            &format!("type `{}`", t.name.name),
+                        ));
+                    }
                 }
                 self.generic_params = prev_generics;
             }
@@ -6706,6 +6712,12 @@ impl<'a> Checker<'a> {
                 // evaluation live in the bundle-level claims pass —
                 // this checker is per-decl, and both are law over the
                 // assembled whole.
+            }
+            TopDecl::Unit(u) => {
+                self.diags.push(crate::units::not_yet_checked(
+                    u.span,
+                    &format!("unit `{}`", u.name.name),
+                ));
             }
         }
     }
@@ -13162,6 +13174,12 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                if let Literal::Quantity { value, unit } = lit {
+                    self.diags.push(crate::units::not_yet_checked(
+                        *span,
+                        &format!("quantity literal `{value}{unit}`"),
+                    ));
+                }
                 lit_ty(lit)
             }
             Expr::Ident(id) => self.check_ident_expr(id, true),
@@ -16147,6 +16165,8 @@ fn lit_ty(lit: &Literal) -> Ty {
         Literal::Duration(_) => Ty::Prim(PrimType::Duration),
         Literal::Time(_) => Ty::Prim(PrimType::Time),
         Literal::Bytes(_) => Ty::Prim(PrimType::Bytes),
+        // GH #1076: refused where it is checked (`units::not_yet_checked`).
+        Literal::Quantity { .. } => Ty::Unknown,
     }
 }
 

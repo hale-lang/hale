@@ -56,6 +56,11 @@ pub enum SiteKind {
     /// `let`'s names, a `shm_write` binding. Its id is its `Ident`'s. A
     /// `let` and a `for` bind one name each and are their own sites.
     Binder,
+    /// GH #1076: a `unit` declaration, a node of the unit graph.
+    Unit,
+    /// GH #1076: a `unit` declaration's equation, an edge of the unit
+    /// graph (the catalogue's `Equation.site`).
+    UnitEquation,
 }
 
 /// Visit every identity field of the program in pre-order (a
@@ -184,6 +189,12 @@ macro_rules! walk {
                     }
                     TopDecl::Group(g) => {
                         f(SiteKind::Group, g.span, Some(g.name.name.as_str()), & $($m)? g.id);
+                    }
+                    TopDecl::Unit(u) => {
+                        f(SiteKind::Unit, u.span, Some(u.name.name.as_str()), & $($m)? u.id);
+                        if let Some(eq) = & $($m)? u.equation {
+                            f(SiteKind::UnitEquation, eq.span, None, & $($m)? eq.id);
+                        }
                     }
                     // No identity and no expression inside.
                     TopDecl::RingLayout(_)
@@ -376,6 +387,18 @@ macro_rules! walk {
                         for v in variants {
                             for t in & $($m)? v.fields {
                                 ty(t, f);
+                            }
+                        }
+                    }
+                    TypeDeclBody::Scalar(s) => {
+                        ty(& $($m)? s.base, f);
+                        for clause in & $($m)? s.clauses {
+                            match clause {
+                                ScalarClause::Range { lo, hi, .. } => {
+                                    expr(lo, f);
+                                    expr(hi, f);
+                                }
+                                ScalarClause::Round { .. } | ScalarClause::Origin { .. } => {}
                             }
                         }
                     }

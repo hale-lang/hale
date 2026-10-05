@@ -129,3 +129,51 @@ fn stdlib_mode_renders_public_surface() {
     // Locus methods as members.
     assert!(md.contains("`fn render() -> String`"), "method member missing");
 }
+
+/// GH #1076: `hale doc` parses and does not check, so the unit
+/// dialect's declarations document before the checker accepts them,
+/// each rendered as written.
+#[test]
+fn unit_dialect_declarations_render_as_written() {
+    let dir = std::env::temp_dir().join(format!("hale_doc_test_{}_units", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let f = dir.join("app.hl");
+    std::fs::write(
+        &f,
+        "/// Microseconds.\nunit us = 1_000 ns;\nunit pct = 1/100;\nunit tick;\n\n\
+         /// A ledger amount.\ntype Ledger = quantity Int in cent { round: half_even; }\n\
+         type Bucket = quantity Int in 100ms { round: floor; }\n\
+         type Celsius = point TempDelta { origin: 273_150 mK; }\n\
+         type Session = distinct Int { range: 0..64; }\n\
+         type WireStamp = Time in us;\n",
+    )
+    .expect("write");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["doc", "--json"])
+        .arg(&f)
+        .output()
+        .expect("run doc --json");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    let sig = |name: &str| {
+        let item = v
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|i| i["name"] == name)
+            .unwrap_or_else(|| panic!("no entry `{name}`: {v}"));
+        (item["kind"].as_str().unwrap().to_string(), item["signature"].as_str().unwrap().to_string())
+    };
+    assert_eq!(sig("us"), ("unit".into(), "unit us = 1_000 ns".into()));
+    assert_eq!(sig("pct"), ("unit".into(), "unit pct = 1/100".into()));
+    assert_eq!(sig("tick"), ("unit".into(), "unit tick".into()));
+    assert_eq!(
+        sig("Ledger"),
+        ("type".into(), "type Ledger = quantity Int in cent { round: half_even; }".into())
+    );
+    assert_eq!(sig("Bucket").1, "type Bucket = quantity Int in 100ms { round: floor; }");
+    assert_eq!(sig("Celsius").1, "type Celsius = point TempDelta { origin: 273_150 mK; }");
+    assert_eq!(sig("Session").1, "type Session = distinct Int { range: 0..64; }");
+    assert_eq!(sig("WireStamp").1, "type WireStamp = Time in us");
+    let _ = std::fs::remove_dir_all(&dir);
+}

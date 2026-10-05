@@ -110,7 +110,8 @@ impl Walk<'_> {
             | TopDecl::Target(_)
             | TopDecl::Role(_)
             | TopDecl::Claims(_)
-            | TopDecl::Constitution(_) => {}
+            | TopDecl::Constitution(_)
+            | TopDecl::Unit(_) => {}
         }
     }
 
@@ -253,6 +254,15 @@ impl Walk<'_> {
                 for v in variants {
                     for t in &v.fields {
                         self.ty(t);
+                    }
+                }
+            }
+            TypeDeclBody::Scalar(s) => {
+                self.ty(&s.base);
+                for c in &s.clauses {
+                    if let ScalarClause::Range { lo, hi, .. } = c {
+                        self.expr(lo);
+                        self.expr(hi);
                     }
                 }
             }

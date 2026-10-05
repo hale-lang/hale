@@ -820,6 +820,7 @@ impl<'a> QualifiedRenameApplier<'a> {
             }
             TopDecl::Type(t) => match &mut t.body {
                 TypeDeclBody::Alias(te) => self.rewrite_type_expr(te),
+                TypeDeclBody::Scalar(s) => self.rewrite_type_expr(&mut s.base),
                 TypeDeclBody::Struct(fields) => {
                     for f in fields {
                         self.rewrite_type_expr(&mut f.ty);
@@ -923,6 +924,9 @@ impl<'a> QualifiedRenameApplier<'a> {
             TopDecl::Role(_) => {
                 // GH #1109: a role's name and its `includes` are bare
                 // vocabulary, never qualified paths.
+            }
+            TopDecl::Unit(_) => {
+                // GH #1076: a unit and its target are bare vocabulary.
             }
             TopDecl::Group(g) => {
                 // GH #382: canonicalize qualified group members the
@@ -1039,6 +1043,7 @@ impl<'a> QualifiedRenameApplier<'a> {
             LocusMember::Const(c) => self.rewrite_type_expr(&mut c.ty),
             LocusMember::Type(t) => match &mut t.body {
                 TypeDeclBody::Alias(te) => self.rewrite_type_expr(te),
+                TypeDeclBody::Scalar(s) => self.rewrite_type_expr(&mut s.base),
                 TypeDeclBody::Struct(fields) => {
                     for f in fields {
                         self.rewrite_type_expr(&mut f.ty);
@@ -1255,7 +1260,12 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         // in `[environments.<env>.roles]` and the word a refusal
         // names — so it is never mangled either; the checker refuses
         // two declarations of one name bundle-wide instead.
-        TopDecl::Claims(_) | TopDecl::Constitution(_) | TopDecl::Role(_) => None,
+        // GH #1076: a unit is seed-global — one catalogue closed over
+        // every seed, and a literal suffix (`3bp`) that the rename
+        // table could not reach anyway — so its name is never mangled.
+        TopDecl::Claims(_) | TopDecl::Constitution(_) | TopDecl::Role(_) | TopDecl::Unit(_) => {
+            None
+        }
     }
 }
 
@@ -1529,6 +1539,11 @@ impl<'a> Mangler<'a> {
             TopDecl::Role(_) => {
                 // GH #1109: role names are deployment vocabulary and
                 // stay as written (see `decl_name`).
+            }
+            TopDecl::Unit(_) => {
+                // GH #1076: a unit is seed-global, as a role is: its
+                // name and its equation's target stay as written (see
+                // `top_decl_name`).
             }
             TopDecl::Group(g) => {
                 // GH #382: rewrite the decl name plus single-
@@ -1954,6 +1969,18 @@ impl<'a> Mangler<'a> {
                 for v in variants {
                     for fty in &mut v.fields {
                         self.walk_type_expr(fty);
+                    }
+                }
+            }
+            // GH #1076: the base and a range's bounds are ordinary
+            // references; the denomination's unit, the policy and the
+            // origin's unit are unit-dialect vocabulary, never renamed.
+            TypeDeclBody::Scalar(s) => {
+                self.walk_type_expr(&mut s.base);
+                for c in &mut s.clauses {
+                    if let ScalarClause::Range { lo, hi, .. } = c {
+                        self.walk_expr(lo);
+                        self.walk_expr(hi);
                     }
                 }
             }

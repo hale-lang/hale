@@ -50,7 +50,7 @@ use std::collections::BTreeMap;
 use hale_syntax::ast::{
     Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, IfStmt, LValueSeg, LocusMember,
     MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, PerspectiveMember, QualifiedName,
-    RecoveryModifier, Stmt, TopDecl, TypeDeclBody, TypeExpr,
+    RecoveryModifier, ScalarClause, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
 
@@ -806,6 +806,15 @@ fn type_body<'a>(body: &'a TypeDeclBody, f: &mut Visit<'_, 'a>) {
             }
         }
         TypeDeclBody::Alias(t) => ann(t, f),
+        TypeDeclBody::Scalar(s) => {
+            ann(&s.base, f);
+            for c in &s.clauses {
+                if let ScalarClause::Range { lo, hi, .. } = c {
+                    expr(lo, f);
+                    expr(hi, f);
+                }
+            }
+        }
     }
 }
 

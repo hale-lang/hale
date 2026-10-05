@@ -265,6 +265,12 @@ pub(crate) fn run_doc_stdlib(json: bool, out_path: Option<PathBuf>) -> ExitCode 
                         leaf,
                         demangle(&lsp::type_expr_str(inner))
                     ),
+                    TypeDeclBody::Scalar(s) => doc_scalar_signature(
+                        leaf,
+                        s,
+                        demangle(&lsp::type_expr_str(&s.base)),
+                        src,
+                    ),
                 };
                 groups.entry(ns_of(path)).or_default().push(DocEntry {
                     kind: "type",
@@ -572,6 +578,82 @@ pub(crate) fn doc_fn_signature(fd: &hale_syntax::ast::FnDecl) -> String {
     sig
 }
 
+/// The source text a span covers, or `fallback` when the span is not
+/// in `src`.
+fn doc_spelled(src: &str, span: hale_syntax::Span, fallback: impl FnOnce() -> String) -> String {
+    src.get(span.start.as_usize()..span.end.as_usize())
+        .map(str::to_string)
+        .unwrap_or_else(fallback)
+}
+
+/// GH #1076: a unit-dialect scalar type's signature, as written:
+/// `type Bucket = quantity Int in 100ms { round: floor; }`. `base` is
+/// the base type already rendered; each clause is its source text.
+fn doc_scalar_signature(
+    name: &str,
+    s: &hale_syntax::ast::ScalarDecl,
+    base: String,
+    src: &str,
+) -> String {
+    use hale_syntax::ast::{ScalarClause, ScalarKind};
+    let mut sig = format!("type {name} = ");
+    match s.kind {
+        Some(ScalarKind::Quantity) => sig.push_str("quantity "),
+        Some(ScalarKind::Point) => sig.push_str("point "),
+        Some(ScalarKind::Distinct) => sig.push_str("distinct "),
+        None => {}
+    }
+    sig.push_str(&base);
+    if let Some(d) = &s.denom {
+        sig.push_str(" in ");
+        if d.multiple != 1 {
+            sig.push_str(&d.multiple.to_string());
+        }
+        sig.push_str(&d.unit.name);
+    }
+    if !s.clauses.is_empty() {
+        let clauses = s
+            .clauses
+            .iter()
+            .map(|c| {
+                let fallback = || match c {
+                    ScalarClause::Range { inclusive, .. } => {
+                        format!("range: {}", if *inclusive { "..=" } else { ".." })
+                    }
+                    ScalarClause::Round { policy, .. } => format!("round: {}", policy.name),
+                    ScalarClause::Origin { value, unit, .. } => {
+                        format!("origin: {value} {}", unit.name)
+                    }
+                };
+                format!("{};", doc_spelled(src, c.span(), fallback))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        sig.push_str(&format!(" {{ {clauses} }}"));
+    }
+    sig
+}
+
+/// GH #1076: `unit us = 1_000 ns`, its equation as written.
+fn doc_unit_signature(u: &hale_syntax::ast::UnitDecl, src: &str) -> String {
+    match &u.equation {
+        None => format!("unit {}", u.name.name),
+        Some(eq) => {
+            let written = doc_spelled(src, eq.span, || {
+                let mut f = eq.num.to_string();
+                if eq.den != 1 {
+                    f.push_str(&format!("/{}", eq.den));
+                }
+                if let Some(t) = &eq.target {
+                    f.push_str(&format!(" {}", t.name));
+                }
+                f
+            });
+            format!("unit {} = {}", u.name.name, written)
+        }
+    }
+}
+
 pub(crate) fn doc_entries_for(
     src: &str,
     program: &hale_syntax::ast::Program,
@@ -682,6 +764,12 @@ pub(crate) fn doc_entries_for(
                         t.name.name,
                         lsp::type_expr_str(inner)
                     ),
+                    TypeDeclBody::Scalar(s) => doc_scalar_signature(
+                        &t.name.name,
+                        s,
+                        lsp::type_expr_str(&s.base),
+                        src,
+                    ),
                 };
                 out.push(DocEntry {
                     kind: "type",
@@ -769,6 +857,18 @@ pub(crate) fn doc_entries_for(
                     doc: doc_comment_above(
                         src,
                         c.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            TopDecl::Unit(u) => {
+                out.push(DocEntry {
+                    kind: "unit",
+                    name: u.name.name.clone(),
+                    signature: doc_unit_signature(u, src),
+                    doc: doc_comment_above(
+                        src,
+                        u.name.span.start.as_usize(),
                     ),
                     members: Vec::new(),
                 });

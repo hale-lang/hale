@@ -521,6 +521,17 @@ fn bce_call_safe(
     bce_expr_safe(callee, vkey, var)
 }
 
+/// GH #1076: a unit-dialect declaration reached lowering. The checker
+/// refuses every one until the dialect's rows and laws land, so only a
+/// program that skipped the check gets here; it is refused, named and
+/// located, never skipped.
+pub(crate) fn unit_dialect_unsupported(what: &str, span: hale_syntax::Span) -> CodegenError {
+    CodegenError::UnsupportedAt(
+        format!("{what}: the unit dialect is not lowered yet (GH #1076); `hale check` refuses it"),
+        span,
+    )
+}
+
 #[derive(Debug)]
 pub enum CodegenError {
     Unsupported(String),
@@ -12682,6 +12693,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 requests,
                             )?;
                         }
+                        TypeDeclBody::Scalar(_) => {
+                            return Err(unit_dialect_unsupported(
+                                &format!("type `{}`", t.name.name),
+                                t.span,
+                            ));
+                        }
                     }
                 }
                 TopDecl::Type(_) => {
@@ -12785,6 +12802,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TopDecl::Claims(_) | TopDecl::Constitution(_) => {
                     // #392 / #409: claims and constitutions lower to
                     // no code and carry no type-bearing positions.
+                }
+                TopDecl::Unit(u) => {
+                    return Err(unit_dialect_unsupported(
+                        &format!("unit `{}`", u.name.name),
+                        u.span,
+                    ));
                 }
             }
         }
@@ -12926,6 +12949,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             seen,
                             requests,
                         )?;
+                    }
+                    TypeDeclBody::Scalar(_) => {
+                        return Err(unit_dialect_unsupported(
+                            &format!("type `{}`", t.name.name),
+                            t.span,
+                        ));
                     }
                 }
             }
@@ -13103,6 +13132,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                      and enum templates only)",
                     template.name.name
                 )));
+            }
+            // The parser refuses a scalar with generic parameters, so
+            // no template is one.
+            TypeDeclBody::Scalar(_) => {
+                return Err(unit_dialect_unsupported(
+                    &format!("type `{}`", template.name.name),
+                    template.span,
+                ));
             }
             TypeDeclBody::Enum(variants) => {
                 // m61c: substitute generic params throughout each

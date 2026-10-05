@@ -3565,7 +3565,8 @@ fn resolve_function_values<'a>(
                             field_tys.entry(f.name.name.clone()).or_default().push(Some(&f.ty));
                         }
                     }
-                    TypeDeclBody::Enum(_) => {
+                    // GH #1076: a scalar is a type of its own, not its base.
+                    TypeDeclBody::Enum(_) | TypeDeclBody::Scalar(_) => {
                         nominal.insert(t.name.name.clone());
                     }
                 }

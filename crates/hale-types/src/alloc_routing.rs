@@ -242,7 +242,9 @@ fn literal_spells_call_or_struct(l: &Literal) -> bool {
         | Literal::Bool(_)
         | Literal::Nil
         | Literal::Duration(_)
-        | Literal::Bytes(_) => false,
+        | Literal::Bytes(_)
+        // A quantity literal's unit is an identifier.
+        | Literal::Quantity { .. } => false,
     }
 }
 

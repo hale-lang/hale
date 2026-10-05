@@ -756,6 +756,11 @@ fn register_top_decls(
                 // constitution is a claimset, so it registers no
                 // name a type expression could refer to.
             }
+            TopDecl::Unit(_) => {
+                // GH #1076: a unit names a node of the unit graph,
+                // never a value or a type; the checker refuses the
+                // declaration until the dialect's rows land.
+            }
         }
     }
 }
@@ -1279,6 +1284,10 @@ fn register_type(
     let known = scoped.as_ref();
     let kind = match &decl.body {
         TypeDeclBody::Alias(te) => TypeKind::Alias(resolve_type_expr(te, known)),
+        // GH #1076: registered so a use of the name is no second error;
+        // `Unknown` because nothing types it yet, and the checker
+        // refuses the declaration itself (`units::not_yet_checked`).
+        TypeDeclBody::Scalar(_) => TypeKind::Alias(Ty::Unknown),
         TypeDeclBody::Struct(fields) => {
             let infos: Vec<FieldInfo> = fields
                 .iter()

@@ -176,6 +176,13 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
                 claim(e, f);
             }
         }
+        TopDecl::Unit(u) => {
+            let UnitDecl { name: n, equation, span: _, id: _ } = u;
+            name(n, f);
+            if let Some(UnitEquation { num: _, den: _, target, span: _, id: _ }) = equation {
+                opt_name(target, f);
+            }
+        }
     }
 }
 
@@ -587,6 +594,23 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
                 }
             }
         }
+        TypeDeclBody::Scalar(s) => {
+            let ScalarDecl { kind: _, base, denom, clauses } = s;
+            ty(base, f);
+            if let Some(Denomination { multiple: _, unit, span: _ }) = denom {
+                name(unit, f);
+            }
+            for c in clauses {
+                match c {
+                    ScalarClause::Range { lo, hi, inclusive: _, span: _ } => {
+                        expr(lo, f);
+                        expr(hi, f);
+                    }
+                    ScalarClause::Round { policy, span: _ } => name(policy, f),
+                    ScalarClause::Origin { value: _, unit, span: _ } => name(unit, f),
+                }
+            }
+        }
     }
 }
 
@@ -783,6 +807,8 @@ fn pattern<'a>(p: &'a Pattern, f: &mut Visit<'_, 'a>) {
 fn literal<'a>(l: &'a Literal, f: &mut Visit<'_, 'a>) {
     match l {
         Literal::Decimal(s) | Literal::String(s) | Literal::Time(s) => text(s, f),
+        // The unit a quantity literal names.
+        Literal::Quantity { value: _, unit } => f(Spelled::Name(unit)),
         Literal::Int(_)
         | Literal::Float(_)
         | Literal::Bool(_)

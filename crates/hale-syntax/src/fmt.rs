@@ -215,7 +215,8 @@ fn is_wordlike(kind: &TokenKind) -> bool {
             | StringLit(_)
             | FStringLit(_)
             | BytesLit(_)
-            | DurationLit(_)
+            | DurationLit { .. }
+            | QuantityLit(..)
             | TimeLit(_)
     ) || kind.keyword_lexeme().is_some()
 }
@@ -270,7 +271,8 @@ fn ends_operand(kind: &TokenKind) -> bool {
             | StringLit(_)
             | FStringLit(_)
             | BytesLit(_)
-            | DurationLit(_)
+            | DurationLit { .. }
+            | QuantityLit(..)
             | TimeLit(_)
             | RParen
             | RBracket
