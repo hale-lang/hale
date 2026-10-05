@@ -413,10 +413,78 @@ enum Outcome {
     Fail(String),
 }
 
+/// The plan the producer derives for an example's program, on its run's
+/// path ([`corpus_run_path`]): what the traced pass holds the run to,
+/// beside the trace's laws. The examples are no decision line's
+/// fixture, so the shipped and adopted rules are held and no known-open
+/// one (`Focus::Lines(&[])`); a known-open rule's departure is its
+/// line's fixture's to pin, in `lifecycle_fixtures.rs`.
+fn corpus_plan(name: &str, program: &hale_syntax::ast::Program) -> Result<hale_types::lifecycle::trace::Expected, String> {
+    use hale_frontend::snapshot::{Config, Snapshot, Target};
+    use hale_types::lifecycle::project::{self, Focus};
+    let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::harness(Target::host()))
+        .map_err(|_| "no snapshot".to_string())?;
+    let plan = snap.demand_lifecycle().map_err(|_| "the lifecycle plan is blocked".to_string())?;
+    project::expected(plan, Focus::Lines(&[]), &corpus_run_path(name))
+}
+
+/// An example's path through its plan, where it is not the default one
+/// (no failure raised, each literal the plan bounds built as often as
+/// its bound, a body literal owed by none, `fn main` falling through):
+/// facts of the run the producer cannot know from the program.
+fn corpus_run_path(name: &str) -> hale_types::lifecycle::project::RunPath {
+    use hale_types::lifecycle::project::{Inside, PathFailure, RunPath};
+    use hale_types::lifecycle::{FailureSource, ObligationKind};
+    let count = |pairs: &[(&str, u32)]| pairs.iter().map(|(d, n)| (d.to_string(), *n)).collect();
+    let mut p = RunPath::default();
+    match name {
+        // CheckerL's closure (a dissolve-epoch one, the default) fails as
+        // its statement in AuditL's run() ends; AuditL's handler bubbles
+        // it, and the process exits inside CheckerL's dissolve.
+        "03c-closure-bubbled" => {
+            p.failures.push(PathFailure {
+                decl: "CheckerL".into(),
+                source: FailureSource::Dissolve,
+                held: false,
+                in_teardown: false,
+                restarts: 0,
+            });
+            p.occurrences = count(&[("CheckerL", 1)]);
+            p.ends_inside = Some(Inside { decl: Some("CheckerL".into()), kind: ObligationKind::Dissolve, spine: None });
+        }
+        // Ghost's literal is in the branch the run does not take.
+        "71-conditional-instantiation" => p.occurrences = count(&[("Ghost", 0)]),
+        // Server's `commands` default is bounded at most twice (fn serve
+        // runs twice) and both Server literals supply `commands`, so the
+        // default is never built: the five Providers are main's literals,
+        // the seven Rows theirs and the two Holders'.
+        "90-unowned-literal-positions" => p.occurrences = count(&[("Provider", 5), ("Rows", 7)]),
+        _ => {}
+    }
+    p
+}
+
+/// Examples whose run departs from their derived plan today: (example,
+/// inventory row, the departures, exactly). The traced pass asserts the
+/// run shows these and nothing else, so when the fix lands the entry
+/// fails and goes.
+const PLAN_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
+    // The producer reads a closure's epoch only from its `epoch` clause,
+    // so a closure with none (dissolve, the default: spec/runtime.md)
+    // owes no dissolve-epoch closure and no failure delivery for it in
+    // the plan. The runtime raises and delivers it as C37 says.
+    (
+        "03c-closure-bubbled",
+        "C37",
+        &["no plan on the run's path: the path fails CheckerL at Dissolve (held false), and the plan has no delivery row for it"],
+    ),
+];
+
 /// Build one fixture to a unique temp binary and run it under the
 /// oracles. With `traced` it is built with the lifecycle trace (F.40
 /// phase 3, L2), and a run that passes them must also keep the laws
-/// every trace owes (`hale_types::lifecycle::trace::laws`).
+/// every trace owes (`hale_types::lifecycle::trace::laws`) and hold its
+/// derived plan ([`corpus_plan`]).
 fn check_fixture(name: &str, main_hl: &Path, deadline: Duration, traced: bool) -> Outcome {
     let src = match std::fs::read_to_string(main_hl) {
         Ok(s) => s,
@@ -498,6 +566,25 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration, traced: bool) -
                 if !laws.is_empty() {
                     let shown: Vec<String> = laws.iter().take(6).map(|v| v.to_string()).collect();
                     return Outcome::Fail(format!("TRACE LAWS:\n{}", shown.join("\n")));
+                }
+                let departures: Vec<String> = match corpus_plan(name, &program) {
+                    Ok(plan) => plan.check(&trace, complete).iter().map(|v| v.to_string()).collect(),
+                    Err(e) => vec![format!("no plan on the run's path: {e}")],
+                };
+                match PLAN_KNOWN_OPEN.iter().find(|(f, ..)| *f == name) {
+                    Some((_, row, want)) if departures.iter().map(String::as_str).ne(want.iter().copied()) => {
+                        return Outcome::Fail(format!(
+                            "TRACE PLAN: the known-open departure ({row}) changed; if it is fixed, remove the \
+                             PLAN_KNOWN_OPEN entry:\n{}",
+                            departures.join("\n")
+                        ));
+                    }
+                    Some(_) => {}
+                    None if !departures.is_empty() => {
+                        let shown: Vec<&str> = departures.iter().take(6).map(String::as_str).collect();
+                        return Outcome::Fail(format!("TRACE PLAN ({}):\n{}", departures.len(), shown.join("\n")));
+                    }
+                    None => {}
                 }
             }
             match code {
@@ -636,11 +723,17 @@ fn corpus_terminates_and_exits_clean() {
 }
 
 /// The lifecycle trace over the corpus (F.40 phase 3, L2): every
-/// runnable fixture built with the trace passes the same oracles and
-/// keeps the trace's laws. The per-line plans and the negative
-/// controls are `lifecycle_fixtures.rs`'.
+/// runnable fixture built with the trace passes the same oracles, keeps
+/// the trace's laws, and holds its program's derived plan on its run's
+/// path ([`corpus_plan`]), but for the departures `PLAN_KNOWN_OPEN`
+/// names. The per-line plans and the negative controls are
+/// `lifecycle_fixtures.rs`'.
 #[test]
 fn corpus_traces_keep_the_lifecycle_laws() {
+    let runnable: Vec<String> = runnable_fixtures().into_iter().map(|(n, _)| n).collect();
+    for (name, row, _) in PLAN_KNOWN_OPEN {
+        assert!(runnable.iter().any(|n| n == name), "PLAN_KNOWN_OPEN names {name} ({row}), which is no runnable example");
+    }
     report(run_corpus_with(DEADLINE, true));
 }
 
