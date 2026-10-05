@@ -3473,6 +3473,10 @@ row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
+== crates/hale-codegen/tests/restart_bound.rs#8217dfce
+row	Coordinator@main1	Coordinator	main	default
+dynamic	Worker	on main	in the seed
+
 == crates/hale-codegen/tests/restart_in_place_params.rs#437e6c79
 root	App	the entry
 row	App@literal1	App	main	default
