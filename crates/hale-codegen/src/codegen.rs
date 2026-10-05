@@ -19162,48 +19162,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// reads identical to the same value passed to println.
     /// String passes through (so `to_string` is the identity on
     /// String — handy in generic-feeling helper fns).
-    /// Whether `value_to_string` can render a value of this type
-    /// inline. Used by the `String + <printable>` auto-coercion
-    /// in lower_expr's BinOp::Add branch — types not in this set
-    /// fall back to the existing mixed-type error.
-    /// Which types [`Self::value_to_string`] can render.
-    ///
-    /// Must stay in lockstep with `ty_is_printable` in the
-    /// typechecker. A type the checker accepts and this refuses is a
-    /// check/build divergence — `hale check` tells the author their
-    /// program is fine and `hale build` then rejects it from another
-    /// layer, usually without a span. That class is gated by
-    /// `corpus_check_build_agreement`, so widening one side alone
-    /// fails CI by design.
+    /// Which types [`Self::value_to_string`] renders: the
+    /// `String + <printable>` coercion in lower_expr's BinOp::Add
+    /// branch (a type outside it falls back to the mixed-type error)
+    /// and `println`'s composites. The rule is
+    /// `hale_types::printable`'s, which the checker reads too.
     fn value_to_string_supports(ty: &CodegenTy) -> bool {
+        hale_types::printable::prints(ty, &Self::print_shape)
+    }
+
+    /// `ty` as the printable rule sees it.
+    fn print_shape(ty: &CodegenTy) -> hale_types::printable::PrintShape<CodegenTy> {
+        use hale_types::printable::PrintShape;
         match ty {
-            CodegenTy::String
-            | CodegenTy::Int
-            | CodegenTy::Bool
-            | CodegenTy::Float
-            | CodegenTy::Decimal
-            | CodegenTy::Duration
-            | CodegenTy::Time
-            | CodegenTy::Enum(_)
-            | CodegenTy::TypeRef(_) => true,
-            // GH #469 A2. Element types are restricted to the
-            // scalars because those are the shapes whose SSA value
-            // is reliably a pointer to inline storage; a
-            // `[String; 3]` has no settled value repr to walk.
+            CodegenTy::String => PrintShape::Prim(PrimType::String),
+            CodegenTy::Int => PrintShape::Prim(PrimType::Int),
+            CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
+            CodegenTy::Float => PrintShape::Prim(PrimType::Float),
+            CodegenTy::Decimal => PrintShape::Prim(PrimType::Decimal),
+            CodegenTy::Duration => PrintShape::Prim(PrimType::Duration),
+            CodegenTy::Time => PrintShape::Prim(PrimType::Time),
+            CodegenTy::Bytes => PrintShape::Prim(PrimType::Bytes),
+            CodegenTy::BytesView => PrintShape::Prim(PrimType::BytesView),
+            CodegenTy::BytesMut => PrintShape::Prim(PrimType::BytesMut),
+            CodegenTy::StringView => PrintShape::StringViewUnlisted,
+            CodegenTy::Enum(_) => PrintShape::Enum,
+            CodegenTy::TypeRef(_) => PrintShape::RecordFieldsUnread,
             CodegenTy::Array(elem, _) | CodegenTy::Bounded(elem, _) => {
-                matches!(
-                    elem.as_ref(),
-                    CodegenTy::Int
-                        | CodegenTy::Float
-                        | CodegenTy::Bool
-                        | CodegenTy::Decimal
-                        | CodegenTy::Duration
-                )
+                PrintShape::Sequence(elem.as_ref().clone())
             }
-            CodegenTy::Tuple(elems) => {
-                elems.iter().all(Self::value_to_string_supports)
-            }
-            _ => false,
+            CodegenTy::Tuple(elems) => PrintShape::Tuple(elems.clone()),
+            CodegenTy::LocusRef(_)
+            | CodegenTy::FnPtr { .. }
+            | CodegenTy::Interface(_)
+            | CodegenTy::Perspective(_)
+            | CodegenTy::Cell(..)
+            | CodegenTy::Drain(_) => PrintShape::NoTextForm,
         }
     }
 
@@ -19772,8 +19766,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// [`Self::value_to_string`], which is what makes nesting work
     /// without a second implementation.
     ///
-    /// The printable set is fixed by the typechecker
-    /// (`ty_is_printable`); the errors below are for values that
+    /// The printable set is `hale_types::printable`'s, which the
+    /// checker enforces; the errors below are for values that
     /// reach codegen some other way (a synthesized type, a stdlib
     /// path typed `Unknown`), and they name a field rather than the
     /// whole record so the author knows which one to fix.
