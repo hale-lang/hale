@@ -48,6 +48,8 @@ use hale_types::lifecycle::{ObligationKind, Point, Spine};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/wasm_module.rs"]
+mod wasm_module;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
@@ -347,67 +349,7 @@ fn run(cmd: &mut Command) -> Ran {
 
 /// A wasm module's imported names, from its import section (id 2).
 fn wasm_imports(bytes: &[u8]) -> Option<Vec<String>> {
-    fn leb(b: &[u8], at: &mut usize) -> Option<u32> {
-        let (mut v, mut shift) = (0u32, 0);
-        loop {
-            let byte = *b.get(*at)?;
-            *at += 1;
-            v |= u32::from(byte & 0x7f) << shift;
-            if byte & 0x80 == 0 {
-                return Some(v);
-            }
-            shift += 7;
-        }
-    }
-    fn name(b: &[u8], at: &mut usize) -> Option<String> {
-        let len = leb(b, at)? as usize;
-        let s = String::from_utf8_lossy(b.get(*at..*at + len)?).into_owned();
-        *at += len;
-        Some(s)
-    }
-    fn limits(b: &[u8], at: &mut usize) -> Option<()> {
-        let flag = *b.get(*at)?;
-        *at += 1;
-        leb(b, at)?;
-        if flag & 1 == 1 {
-            leb(b, at)?;
-        }
-        Some(())
-    }
-    if bytes.get(..4)? != b"\0asm" {
-        return None;
-    }
-    let mut at = 8;
-    while at < bytes.len() {
-        let id = bytes[at];
-        at += 1;
-        let size = leb(bytes, &mut at)? as usize;
-        let end = at + size;
-        if id == 2 {
-            let n = leb(bytes, &mut at)?;
-            let mut out = Vec::new();
-            for _ in 0..n {
-                let _module = name(bytes, &mut at)?;
-                out.push(name(bytes, &mut at)?);
-                let kind = *bytes.get(at)?;
-                at += 1;
-                match kind {
-                    0 => {
-                        leb(bytes, &mut at)?;
-                    }
-                    1 => {
-                        at += 1;
-                        limits(bytes, &mut at)?;
-                    }
-                    2 => limits(bytes, &mut at)?,
-                    _ => at += 2,
-                }
-            }
-            return Some(out);
-        }
-        at = end;
-    }
-    Some(Vec::new())
+    Some(wasm_module::imports(bytes)?.into_iter().map(|i| i.name).collect())
 }
 
 fn tool(name: &str) -> Option<String> {
@@ -525,11 +467,14 @@ fn every_spine_owes_what_its_target_selects_in_the_plans_order() {
                 if target == CompileTarget::Wasm32 {
                     let bytes = std::fs::read(&b.bin).unwrap_or_default();
                     let imports = wasm_imports(&bytes).unwrap_or_else(|| panic!("{id}: not a wasm module"));
-                    // The thread and async_io startup the cells reject. (A
-                    // `pthread_join` or `pthread_cond_wait` import reaches
-                    // some of these modules through runtime paths that are
-                    // not the teardown obligations: the module calls
-                    // neither the pool join nor the quiesce, above.)
+                    let program = hale_syntax::parse_source(&src).expect("built above");
+                    if let Err(e) = wasm_module::backstop(&format!("target_lifecycle_cells::{id}"), &program, &b.bin) {
+                        failures.push(e);
+                    }
+                    // The thread and async_io startup the cells reject. (The
+                    // import backstop, below, holds the whole import list:
+                    // the runtime's thread joins and waits are compiled out
+                    // of a wasm32 module, P3 T7.)
                     for forbidden in ["pthread_create", "epoll_", "eventfd"] {
                         if let Some(i) = imports.iter().find(|i| i.starts_with(forbidden)) {
                             failures.push(format!("{id} wasm32: the module imports `{i}`"));
