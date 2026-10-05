@@ -8,9 +8,9 @@ use crate::shared::options::env_roles;
 use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
-use hale_frontend::snapshot::adopt_into_root;
+use hale_frontend::snapshot::{adopt_into_root, Snapshot};
 use super::run_impl::run_check_impl;
-use super::run_impl::run_check_impl_labelled;
+use super::run_impl::{check_loaded, load_for_check};
 /// GH #409: check every (entrypoint, environment) pair declared in
 /// `hale.toml`.
 ///
@@ -124,16 +124,31 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             // The pair's role table too, as `check --env` and `build
             // --env` resolve it (F.40 phase 4, A1).
             let roles = env_roles(spec);
-            let code = run_check_impl_labelled(
-                &target, verify, &adopt, Some(env), Some(&roles),
-            );
+            // One snapshot per pair (F.40 phase 4, A3): the check reads
+            // it, and so do the role coverage and the identity
+            // comparison below, so a pair loads its seed once. A load
+            // that fails has printed why and leaves no snapshot; such a
+            // pair (a listed seed the load refuses for having no entry:
+            // a library, an imported or a module-nested `main`) is still
+            // judged by the loader's programs, as before the snapshot.
+            let snap = load_for_check(&target, &adopt, Some(env), Some(&roles));
+            let code = match &snap {
+                Ok(s) => check_loaded(&target, verify, s),
+                Err(code) => *code,
+            };
+            let snap = snap.ok();
             if code != 0 {
                 failed.push(format!("{} @ {}", ep, env));
             }
             // GH #1109: every role the entrypoint declares is mapped
             // here (a `[]` is explicitly nobody), and nothing is
-            // mapped that it does not declare.
-            for msg in role_coverage(&target, env, &spec.roles) {
+            // mapped that it does not declare: the role rows'
+            // projection, not gated on the typing.
+            let declared = match &snap {
+                Some(s) => s.demand_role_rows().map(|rows| rows.declared_roles()).unwrap_or_default(),
+                None => refused_pair_roles(&target),
+            };
+            for msg in role_coverage(&target, env, &spec.roles, &declared) {
                 eprintln!("{}", msg);
                 failed.push(format!("{} @ {} (roles)", ep, env));
             }
@@ -143,9 +158,11 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             // so two seeds can each declare `Core` with different
             // clauses and both would satisfy the binding. The digest
             // covers the normalized closure, so agreement is real.
-            for (name, digest) in
-                constitution_identities(&target, &adopt)
-            {
+            let adopted = match &snap {
+                Some(s) => adopted_roots(s),
+                None => constitution_identities(&target, &adopt),
+            };
+            for (name, digest) in adopted {
                 // The `[claims] base` is ONE constitution carried by
                 // every environment, so it must agree workspace-wide.
                 // Keying it per-environment meant two environments
@@ -210,7 +227,8 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
 
 /// GH #1109: the role-coverage rule of `--matrix`, per (entrypoint,
 /// environment): the roles the entrypoint declares (plus `owner`
-/// when it has an api binding) against the environment's `roles`
+/// when it has an api binding), the pair's role rows' projection
+/// (`RoleRows::declared_roles`), against the environment's `roles`
 /// table. A declared role the table omits is a failure — an omission
 /// is indistinguishable from a mistake, and `[]` says "nobody" on
 /// purpose; a mapped role nothing declares is one too, because a
@@ -219,12 +237,8 @@ pub(crate) fn role_coverage(
     target: &Path,
     env: &str,
     table: &BTreeMap<String, Vec<String>>,
+    declared: &[String],
 ) -> Vec<String> {
-    let Ok((programs, _, _, _, _, _)) = collect_checkable(target, &Disk) else {
-        return Vec::new();
-    };
-    let refs: Vec<&hale_syntax::ast::Program> = programs.values().collect();
-    let declared = hale_syntax::api_gen::declared_roles(&refs, hale_types::entry::root_decl(&refs));
     let mut out = Vec::new();
     let missing: Vec<&String> = declared.iter().filter(|r| !table.contains_key(*r)).collect();
     if !missing.is_empty() {
@@ -252,9 +266,38 @@ pub(crate) fn role_coverage(
     out
 }
 
+/// The `(name, digest)` of each constitution the pair's snapshot
+/// adopts: its law selection's identities, the projection the
+/// artifact's `evaluation.roots` reads (F.40 phase 4, A3), not gated
+/// on the typing.
+fn adopted_roots(snap: &Snapshot) -> Vec<(String, String)> {
+    let Ok(laws) = snap.demand_law_selection() else {
+        return Vec::new();
+    };
+    let bundle = snap.bundle();
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    // ROOTS, not the whole closure: the manifest asked for these by
+    // name, so these are what must agree across entrypoints. The
+    // closure follows from them.
+    laws.identities(&programs).roots.into_iter().map(|i| (i.name, i.digest)).collect()
+}
+
+/// The roles a pair with no snapshot declares: a listed seed the load
+/// refuses for having no entry, read from the loader's programs before
+/// the sequence, as the matrix read every pair's before A3. Dropping
+/// the judgment of such a pair would change what the matrix prints, so
+/// it is not done here.
+fn refused_pair_roles(target: &Path) -> Vec<String> {
+    let Ok((programs, _, _, _, _, _)) = collect_checkable(target, &Disk) else {
+        return Vec::new();
+    };
+    let refs: Vec<&Program> = programs.values().collect();
+    hale_syntax::api_gen::declared_roles(&refs, hale_types::entry::root_decl(&refs))
+}
+
 /// The `(name, digest)` of each constitution adopted when `target`
-/// is checked with `adopt`. Reads the same artifact section a
-/// third party would, rather than a private side channel.
+/// is checked with `adopt`, for a pair with no snapshot (as
+/// [`refused_pair_roles`]).
 pub(crate) fn constitution_identities(
     target: &Path,
     adopt: &[String],
@@ -276,18 +319,14 @@ pub(crate) fn constitution_identities(
     let progs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // The projection the artifact reads, over the programs loaded
-    // here (the pair's snapshot is A3's): one definition of the
-    // identities. No environment is bound: the label only words a
-    // diagnostic, which is discarded.
+    // here: one definition of the identities. No environment is
+    // bound: the label only words a diagnostic, which is discarded.
     let ids = hale_types::claims::select_laws(
         &progs,
         &bundle.import_renames,
         &hale_types::claims::EnvBinding::default(),
     )
     .identities(&progs);
-    // ROOTS, not the whole closure: the manifest asked for these by
-    // name, so these are what must agree across entrypoints. The
-    // closure follows from them.
     ids.roots.into_iter().map(|i| (i.name, i.digest)).collect()
 }
 
@@ -393,4 +432,52 @@ pub(crate) fn run_workspace(root: &Path, verify: bool) -> ExitCode {
     // The worst code wins, so a usage error is not masked by an
     // ordinary check failure in another seed.
     ExitCode::from(failed.iter().map(|(_, c)| *c).max().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use hale_frontend::frontend::seed_loads_on_this_thread;
+
+    /// F.40 phase 4, A3: a pair loads its seed once. Its check, its role
+    /// coverage and its identity comparison read the one snapshot the
+    /// check built; the last two used to load the seed again each, three
+    /// loads a pair. The entrypoint declares a role and both environments
+    /// adopt a constitution, so both readers have something to read.
+    #[test]
+    fn a_pair_loads_its_seed_once() {
+        let root = std::env::temp_dir().join(format!("hale_matrix_loads_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |rel: &str, src: &str| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&p, src).expect("write");
+        };
+        write(
+            "lib/lib.hl",
+            "locus Research { params { n: Int = 0; } fn look() -> Int { return self.n; } }\n\
+             group research = { Research };\n\
+             constitution Core { solo: count publishers(topic Probe) == 0; }\n\
+             type Ping { v: Int; }\n\
+             topic Probe { payload: Ping; subject: \"app.probe\"; }\n",
+        );
+        write(
+            "app/main.hl",
+            "import \"../lib\" as lb;\nrole support;\n\
+             main locus A { params { r: lb::Research = lb::Research { }; } }\nfn main() { A { }; }\n",
+        );
+        write(
+            "hale.toml",
+            "[claims]\nno_base = true\n\n\
+             [environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
+             [environments.dev.roles]\nsupport = []\nowner = []\n\n\
+             [environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
+             [environments.prod.roles]\nsupport = []\nowner = []\n",
+        );
+        let before = seed_loads_on_this_thread();
+        let code = super::run_matrix(&root, false);
+        let loads = seed_loads_on_this_thread() - before;
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(code, std::process::ExitCode::SUCCESS, "both pairs hold");
+        assert_eq!(loads, 2, "two pairs, one load each");
+    }
 }

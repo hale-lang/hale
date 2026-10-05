@@ -496,6 +496,62 @@ fn one_environment_may_not_mean_two_different_claimsets() {
     assert_eq!(code2, 0, "one shared declaration is fine: {}", out2);
 }
 
+/// F.40 phase 4, A3: a pair whose check fails still has its role
+/// coverage and its identity comparison. Both read the pair's snapshot,
+/// whose law selection and role rows are not gated on the typing, so an
+/// entrypoint that does not typecheck still has the roles it declares
+/// compared with the table and its `Core` compared with its neighbour's.
+#[test]
+fn a_pair_that_does_not_typecheck_keeps_its_roles_and_its_identity() {
+    let r = root("untyped");
+    write(&r, "p1/p.hl", LIB);
+    write(
+        &r,
+        "p2/p.hl",
+        &LIB.replace(
+            "constitution Core { tenant_iso: forbid reaches(billing, research); }",
+            "constitution Core { tenant_iso: forbid reaches(billing, research); \
+             extra: count subscribers(topic Settled) == 0; }",
+        ),
+    );
+    let app = |lib: &str| {
+        format!(
+            "import \"../{lib}\" as lb;\nrole support;\n\
+             main locus A {{ params {{ r: lb::Research = lb::Research {{ }}; }} \
+             fn bad() -> Int {{ return \"x\"; }} }}\nfn main() {{ A {{ }}; }}\n"
+        )
+    };
+    write(&r, "app-a/main.hl", &app("p1"));
+    write(&r, "app-b/main.hl", &app("p2"));
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n\
+         \n[environments.prod.roles]\nsuport = []\n",
+    );
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(out.matches("type error: return: expected `Int`, got `String`").count(), 2, "neither typechecks: {out}");
+    for ep in ["app-a", "app-b"] {
+        assert!(
+            out.contains(&format!(
+                "{ep} @ prod: role(s) `owner`, `support` are not mapped in [environments.prod.roles]"
+            )) && out.contains(&format!(
+                "{ep} @ prod: [environments.prod.roles] maps `suport`, which the entrypoint does not declare \
+                 (declared: `owner`, `support`)"
+            )),
+            "{ep}'s roles are compared with the table: {out}"
+        );
+    }
+    assert!(
+        out.contains("environment `prod` resolves `Core` to two different claimsets: app-a sees ")
+            && out.contains("  app-b @ prod (constitution identity)\n"),
+        "and its `Core` with its neighbour's: {out}"
+    );
+    assert!(out.contains("7 pair(s) failed:"), "{out}");
+}
+
 /// Review acceptance 12: an entrypoint that genuinely lacks a
 /// component declares the vocabulary explicitly. An undeclared group
 /// is an unknown-name error, not an empty set — the PR's original
