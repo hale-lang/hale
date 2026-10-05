@@ -364,9 +364,12 @@ impl<'a> Graph<'a> {
         }
     }
 
-    /// Every fn's requirements, and every member node's, as a fixpoint
-    /// over the graph.
-    fn requirements(&self) -> BTreeMap<FnKey, Req> {
+    /// Every node's own requirements — a fn's, a member node's: what its
+    /// body asks for directly, each capability's chain the first edge's
+    /// that asks for it and the first hole met — and its out-edges to
+    /// other nodes, in the body's order, with the links each adds.
+    #[allow(clippy::type_complexity)]
+    fn direct(&self) -> (BTreeMap<FnKey, Req>, BTreeMap<FnKey, Vec<(FnKey, Vec<String>)>>) {
         let mut req: BTreeMap<FnKey, Req> = BTreeMap::new();
         // Each node's out-edges to other nodes, with the links they add.
         let mut out: BTreeMap<FnKey, Vec<(FnKey, Vec<String>)>> = BTreeMap::new();
@@ -428,6 +431,111 @@ impl<'a> Graph<'a> {
                 }
             }
         }
+        (req, out)
+    }
+
+    /// Every fn's requirements, and every member node's, as a fixpoint
+    /// over the graph, by a worklist over the reversed edges (F.40 phase
+    /// 4, Q2).
+    ///
+    /// **Which chain is kept.** A node's chain for a capability is a
+    /// user-read witness, and it is the FIRST one found, not the shortest:
+    /// the fixpoint runs in passes, each visiting the nodes in key order
+    /// and each node's edges in its body's order ([`Graph::direct`]),
+    /// reading a callee's requirements as they stand at that moment (one
+    /// visited earlier in the same pass has already gained this pass's
+    /// additions), and a capability, or the hole, once a node holds it is
+    /// never replaced. That is how the fixpoint has always run, and the
+    /// worklist keeps it exactly: it runs the same passes in the same
+    /// order and skips only visits that change nothing.
+    ///
+    /// **Why a skipped visit changes nothing.** After a node reads a
+    /// callee it holds every capability the callee held then, and a hole
+    /// if the callee held one, since what it lacked was added. Reading
+    /// the same callee again adds something only if the callee gained
+    /// something since — and a node only gains at its own visit. So a
+    /// visit is needed only when a callee's visit changed it after the
+    /// node's last visit: a callee later in key order than the node
+    /// changed it after the node's visit in the same pass, and the node
+    /// is due in the next pass; a callee earlier in key order changed it
+    /// before the node's turn in this pass, and the node is due in this
+    /// one. In the first pass every node is due. A visit the worklist
+    /// makes reads exactly what the pass-by-pass visit read (by induction
+    /// over the visits, the skipped ones being no-ops), so it adds the
+    /// same chains; the loop ends when no node is due, where the pass loop
+    /// would have run one more pass of no-op visits. A node's edge to
+    /// itself is read as a no-op (it holds what it holds) and makes no
+    /// node due.
+    fn requirements(&self) -> BTreeMap<FnKey, Req> {
+        let (req, out) = self.direct();
+        // `req` and `out` hold the same keys: index the nodes in their
+        // order, and each edge's callee by its index (an edge to a key
+        // with no node reads nothing).
+        let keys: Vec<FnKey> = req.keys().cloned().collect();
+        let mut rows: Vec<Req> = req.into_values().collect();
+        let at = |k: &FnKey| keys.binary_search(k).ok();
+        let edges: Vec<Vec<(usize, Vec<String>)>> = out
+            .into_values()
+            .map(|es| es.into_iter().filter_map(|(callee, links)| at(&callee).map(|c| (c, links))).collect())
+            .collect();
+        let mut callers: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
+        for (node, es) in edges.iter().enumerate() {
+            for &(callee, _) in es {
+                if callee != node && callers[callee].last() != Some(&node) {
+                    callers[callee].push(node);
+                }
+            }
+        }
+        let mut due = vec![true; keys.len()];
+        let mut next = vec![false; keys.len()];
+        loop {
+            for node in 0..keys.len() {
+                if !std::mem::take(&mut due[node]) {
+                    continue;
+                }
+                let mut r = std::mem::take(&mut rows[node]);
+                let mut changed = false;
+                for (callee, links) in &edges[node] {
+                    if *callee == node {
+                        continue;
+                    }
+                    let from = &rows[*callee];
+                    for (cap, chain) in &from.caps {
+                        if !r.caps.contains_key(cap) {
+                            r.caps.insert(*cap, links.iter().chain(chain).cloned().collect());
+                            changed = true;
+                        }
+                    }
+                    if r.hole.is_none() {
+                        if let Some((chain, why)) = &from.hole {
+                            r.hole = Some((links.iter().chain(chain).cloned().collect(), *why));
+                            changed = true;
+                        }
+                    }
+                }
+                rows[node] = r;
+                if changed {
+                    for &caller in &callers[node] {
+                        if caller > node {
+                            due[caller] = true;
+                        } else {
+                            next[caller] = true;
+                        }
+                    }
+                }
+            }
+            if !next.contains(&true) {
+                return keys.into_iter().zip(rows).collect();
+            }
+            std::mem::swap(&mut due, &mut next);
+        }
+    }
+
+    /// The pass-by-pass fixpoint [`Graph::requirements`] replaced, kept
+    /// for the differential that holds the two equal (F.40 phase 4, Q2)
+    /// and removed once it has run.
+    fn requirements_by_passes(&self) -> BTreeMap<FnKey, Req> {
+        let (mut req, out) = self.direct();
         loop {
             let mut changed = false;
             for (key, edges) in &out {
@@ -482,11 +590,35 @@ fn merged(name: &str) -> bool {
 /// The use rows of the programs a bundle holds, over the bundle's
 /// allocation summary (`target_capability`'s producer for uses).
 pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
+    uses_over(bundle, summary, false)
+}
+
+/// The use rows over the pass-by-pass fixpoint the worklist replaced
+/// (`Graph::requirements_by_passes`): the reference of the differential
+/// that holds the two equal over the corpus (F.40 phase 4, Q2), removed
+/// once it has run.
+#[doc(hidden)]
+pub fn capability_uses_by_passes(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
+    uses_over(bundle, summary, true)
+}
+
+/// Both fixpoints' rows for every node of the graph, each rendered
+/// (`Debug`), in key order: what the differential compares beside the
+/// use rows (F.40 phase 4, Q2), removed with the reference.
+#[doc(hidden)]
+pub fn requirement_rows_both_ways(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> (Vec<String>, Vec<String>) {
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let g = Graph::new(summary, &bundle.import_renames, &programs);
+    let render = |req: BTreeMap<FnKey, Req>| req.iter().map(|(k, r)| format!("{k:?} {r:?}")).collect();
+    (render(g.requirements()), render(g.requirements_by_passes()))
+}
+
+fn uses_over(bundle: &crate::Bundle<'_>, summary: &AllocSummary, by_passes: bool) -> CapabilityUses {
     // The bundle's authoritative summary already includes module-nested
     // bodies and resolved function-value alternatives. Read those rows.
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let g = Graph::new(summary, &bundle.import_renames, &programs);
-    let req = g.requirements();
+    let req = if by_passes { g.requirements_by_passes() } else { g.requirements() };
     let mut uses = Vec::new();
 
     // ---- operational uses, in the program's own bodies.
