@@ -2217,6 +2217,23 @@ its `KNOWN_OPEN` table, which is empty today.
   reclaim hands physical release to a callback that preserves the
   runtime's run and owner holds. The
   emitter refuses an order it cannot emit rather than reorder it.
+  A step with nothing to do costs no runtime call. Each runtime
+  function of the reclaim (the retirement check, the reclaim scope's
+  enter and leave, the cancellation, the deferral, the release's
+  enter and leave, the wait for runs, the flush of retained
+  descendants) first tests the runtime's "nothing outstanding" words,
+  no run ticket linked anywhere, no retirement record or reclaim
+  scope alive on any thread and, for the cancellation, no owner's
+  domain recorded, and answers at once when they are zero. The
+  compiled reclaim reads the same words, with the same acquire loads,
+  in front of each call, and skips a call whose answer they settle;
+  the retirement check then reads the instance's claim itself, as the
+  function would.
+  The guarantees are the protocol's: a guard reads exactly its
+  function's first test, so where it skips the call, the call would
+  have returned the same answer having done nothing. The trace build
+  carries the same guards; a skipped call names no step, as the call
+  would have named none.
   The trace build holds each instance's emitted reclaim, on the spine
   the plan holds it on, and a queued run's cancellation, on its
   reclaim's spine, to the plan's order over every fixture, with exact
