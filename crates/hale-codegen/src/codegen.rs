@@ -25966,8 +25966,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// picks its arm, a Hale body is called by the name the row gives,
     /// and a path with neither answers as [`Cx::lower_std_unarmed`]
     /// does. A statement drops the value: `None` is a statement that
-    /// produced none. The `or` position is
-    /// `try_lower_fallible_stdlib_path_call`'s.
+    /// produced none. The `or` position is [`Cx::lower_std_fallible_call`]'s.
     fn lower_std_call(
         &mut self,
         segs: &[&str],
@@ -27082,7 +27081,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
             },
             // No arm at either position: lowered only under `or`
-            // (`try_lower_fallible_stdlib_path_call`). A bare call of
+            // (`lower_std_intrinsic_fallible`). A bare call of
             // one the position's list refuses (`refuses_bare`) is
             // refused as fallible, in the words the parse_int family
             // has always had; any other answers as a path no arm
@@ -27514,9 +27513,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::ProcessSignalPidRaw => self.lower_std_process_signal_pid_fallible(args, scope),
             Id::ProcessPipeReadRaw => self.lower_std_process_pipe_read_fallible(args, scope),
             Id::ProcessPipeWriteRaw => self.lower_std_process_pipe_write_fallible(args, scope),
-            // Not moved yet (S4): the old dispatcher's literals still
-            // lower or refuse these.
-            Id::BytesBuilderAppendRaw
+            // No arm under `or`: not a stdlib fallible call. A call of one
+            // the not-fallible list names (`REFUSED_UNDER_OR`) is refused
+            // in the words it has always had; any other is `Ok(None)`, and
+            // the caller resolves the path as a function or refuses it.
+            Id::BusBindingFailRaw
+            | Id::BusLocalDispatchRaw
+            | Id::BusTransportRealizeRaw
+            | Id::BusTransportReclaimRaw
+            | Id::BusTransportSpawnServerRaw
+            | Id::BytesBuilderAppendF32Raw
+            | Id::BytesBuilderAppendF64Raw
+            | Id::BytesBuilderAppendPadRaw
+            | Id::BytesBuilderAppendRaw
+            | Id::BytesBuilderAppendScalarRaw
             | Id::BytesBuilderAppendSliceRaw
             | Id::BytesBuilderAppendStrRaw
             | Id::BytesBuilderClearRaw
@@ -27528,76 +27538,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::BytesBuilderSnapshotRaw
             | Id::BytesBuilderTextViewRaw
             | Id::BytesBuilderViewRaw
-            | Id::BytesClone
-            | Id::BytesFromString
-            | Id::BytesIsAllocFailRaw
-            | Id::BytesSlice
-            | Id::EnvArg
-            | Id::EnvArgOr
-            | Id::EnvArgsCount
-            | Id::EnvVar
-            | Id::EnvVarExists
-            | Id::IoFsFileExists
-            | Id::IoStdinReadLine
-            | Id::IoStdinReadLineStatus
-            | Id::IoTcpCloseFd
-            | Id::MathAcos
-            | Id::MathAsin
-            | Id::MathAtan
-            | Id::MathAtan2
-            | Id::MathCeil
-            | Id::MathCos
-            | Id::MathExp
-            | Id::MathFloor
-            | Id::MathInf
-            | Id::MathIsNan
-            | Id::MathLog
-            | Id::MathNan
-            | Id::MathPow
-            | Id::MathSin
-            | Id::MathSqrt
-            | Id::MathTan
-            | Id::MathTanh
-            | Id::ProcessPid
-            | Id::StrBuilderAppend
-            | Id::StrBuilderFinish
-            | Id::StrBuilderLen
-            | Id::StrBuilderNew
-            | Id::StrCanParseFloat
-            | Id::StrCanParseInt
-            | Id::StrClone
-            | Id::StrFromBytes
-            | Id::StrIndexOf
-            | Id::StrLower
-            | Id::StrPadLeft
-            | Id::StrPadRight
-            | Id::StrRepeat
-            | Id::StrReplace
-            | Id::StrSubstring
-            | Id::StrTrim
-            | Id::StrUpper
-            | Id::TextIsAlnum
-            | Id::TextIsAlpha
-            | Id::TextIsDigit
-            | Id::TextIsWhitespace
-            | Id::TextIsWordChar
-            | Id::TextTokenizeWordsInto
-            | Id::TimeMonotonic
-            | Id::TimeSleep => return self.lower_std_fallible_unmoved(segs),
-            // No arm under `or`: not a stdlib fallible call.
-            Id::BusBindingFailRaw
-            | Id::BusLocalDispatchRaw
-            | Id::BusTransportRealizeRaw
-            | Id::BusTransportReclaimRaw
-            | Id::BusTransportSpawnServerRaw
-            | Id::BytesBuilderAppendF32Raw
-            | Id::BytesBuilderAppendF64Raw
-            | Id::BytesBuilderAppendPadRaw
-            | Id::BytesBuilderAppendScalarRaw
             | Id::BytesBuilderXorMaskIntoRaw
+            | Id::BytesClone
             | Id::BytesConcat
             | Id::BytesFindByte
             | Id::BytesFromInt
+            | Id::BytesFromString
+            | Id::BytesIsAllocFailRaw
+            | Id::BytesSlice
             | Id::CryptoCrc32
             | Id::CryptoEcdsaP256Verify
             | Id::CryptoHmacSha256
@@ -27609,11 +27557,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::DecimalToFloat
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount
+            | Id::EnvArg
+            | Id::EnvArgOr
+            | Id::EnvArgsCount
+            | Id::EnvVar
+            | Id::EnvVarExists
             | Id::HttpHeader
             | Id::IoFileAtEofRaw
             | Id::IoFileCloseRaw
             | Id::IoFileReadLineRaw
             | Id::IoFsExtension
+            | Id::IoFsFileExists
             | Id::IoMirrorCapacityRaw
             | Id::IoMirrorCommitRaw
             | Id::IoMirrorConsumeRaw
@@ -27654,8 +27608,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoSockoptSoSndtimeo
             | Id::IoSockoptTcpNodelay
             | Id::IoStdinReadByte
+            | Id::IoStdinReadLine
+            | Id::IoStdinReadLineStatus
             | Id::IoStdoutWriteBytes
             | Id::IoTcpAcceptOneRaw
+            | Id::IoTcpCloseFd
             | Id::IoTcpCloseFdRaw
             | Id::IoTcpConnectRaw
             | Id::IoTcpIoErrorKindRaw
@@ -27693,13 +27650,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::JsonNextNonWs
             | Id::JsonNextQuoteOrBs
             | Id::JsonNextStructOrQuote
+            | Id::MathAcos
+            | Id::MathAsin
+            | Id::MathAtan
+            | Id::MathAtan2
+            | Id::MathCeil
+            | Id::MathCos
+            | Id::MathExp
             | Id::MathFloatToInt
+            | Id::MathFloor
+            | Id::MathInf
             | Id::MathIntToFloat
+            | Id::MathIsNan
+            | Id::MathLog
+            | Id::MathNan
+            | Id::MathPow
             | Id::MathRound
+            | Id::MathSin
+            | Id::MathSqrt
+            | Id::MathTan
+            | Id::MathTanh
             | Id::MathTrunc
             | Id::ProcessDumpArenaResidency
             | Id::ProcessDumpPoolResidency
             | Id::ProcessExit
+            | Id::ProcessPid
             | Id::ProcessRssBytes
             | Id::ProcessUid
             | Id::RandNextInt
@@ -27715,17 +27690,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ShmLastRecordKernelNs
             | Id::ShmLastRecordSeq
             | Id::ShmLastRecordUserNs
+            | Id::StrBuilderAppend
+            | Id::StrBuilderFinish
+            | Id::StrBuilderLen
+            | Id::StrBuilderNew
             | Id::StrByteAtUnchecked
+            | Id::StrCanParseFloat
+            | Id::StrCanParseInt
+            | Id::StrClone
             | Id::StrContains
             | Id::StrCpAt
             | Id::StrCpCount
             | Id::StrCpSize
             | Id::StrEndsWith
+            | Id::StrFromBytes
+            | Id::StrIndexOf
             | Id::StrJoin
+            | Id::StrLower
+            | Id::StrPadLeft
+            | Id::StrPadRight
             | Id::StrRangeCopy
             | Id::StrRangeEq
+            | Id::StrRepeat
+            | Id::StrReplace
             | Id::StrSplitInto
             | Id::StrStartsWith
+            | Id::StrSubstring
+            | Id::StrTrim
+            | Id::StrUpper
             | Id::TermIsTty
             | Id::TermRawDisableRaw
             | Id::TermRawEnableRaw
@@ -27737,13 +27729,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TextBase64Decode
             | Id::TextBase64Encode
             | Id::TextBase64UrlEncode
+            | Id::TextIsAlnum
+            | Id::TextIsAlpha
+            | Id::TextIsDigit
+            | Id::TextIsWhitespace
+            | Id::TextIsWordChar
+            | Id::TextTokenizeWordsInto
             | Id::TimeCanParseIso8601
             | Id::TimeCurrent
             | Id::TimeFromNanos
             | Id::TimeIso8601
+            | Id::TimeMonotonic
             | Id::TimeMonotonicNs
             | Id::TimeNanos
             | Id::TimeNow
+            | Id::TimeSleep
             | Id::TimeTimeFromUnix
             | Id::TimeUnix
             | Id::TsNodeChild
@@ -27756,7 +27756,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TsNodeStartByte
             | Id::TsNodeText
             | Id::TsParseGo
-            | Id::TsRootNode => return Ok(None),
+            | Id::TsRootNode => {
+                if REFUSED_UNDER_OR.contains(&id) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "`{}` is not a fallible call — remove the `or` clause. \
+                         Returns its value directly; failures (if any) use the \
+                         sentinel-with-discriminator idiom or are infallible.",
+                        segs.join("::")
+                    )));
+                }
+                return Ok(None);
+            }
         };
         lowered.map(Some)
     }
@@ -34160,7 +34170,9 @@ mod tests {
 /// Where a `std::*` call sits, for [`Cx::lower_std_call`]: a statement
 /// (`lower_stmt_at`'s path-call statement, through `lower_path_call`) or
 /// a value (`lower_expr`, through `lower_path_call_expr`). A call under
-/// `or` is the fallible dispatcher's.
+/// `or` has a match of its own, [`Cx::lower_std_intrinsic_fallible`]: what
+/// it produces is the call's success value and its error path, not a
+/// value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StdCallPos {
     Statement,
@@ -34265,6 +34277,82 @@ fn refuses_bare(id: IntrinsicId, pos: StdCallPos) -> bool {
         StdCallPos::Value => REFUSED_BARE_VALUE.contains(&id),
     }
 }
+
+/// The calls lowering refuses under `or` ("is not a fallible call —
+/// remove the `or` clause"): stdlib functions that return their value
+/// directly, with no error channel, refused with that focused word
+/// rather than as an unknown path call. S5 replaces this list with the
+/// row's fallibility.
+const REFUSED_UNDER_OR: &[IntrinsicId] = &[
+    IntrinsicId::BytesSlice,
+    IntrinsicId::BytesFromString,
+    IntrinsicId::StrFromBytes,
+    IntrinsicId::StrLower,
+    IntrinsicId::StrUpper,
+    IntrinsicId::StrTrim,
+    IntrinsicId::StrSubstring,
+    IntrinsicId::StrReplace,
+    IntrinsicId::StrRepeat,
+    IntrinsicId::StrPadLeft,
+    IntrinsicId::StrPadRight,
+    IntrinsicId::StrIndexOf,
+    IntrinsicId::StrCanParseInt,
+    IntrinsicId::StrCanParseFloat,
+    IntrinsicId::StrBuilderNew,
+    IntrinsicId::StrBuilderAppend,
+    IntrinsicId::StrBuilderLen,
+    IntrinsicId::StrBuilderFinish,
+    IntrinsicId::BytesBuilderNewRaw,
+    IntrinsicId::BytesBuilderAppendRaw,
+    IntrinsicId::BytesBuilderAppendStrRaw,
+    IntrinsicId::BytesBuilderLenRaw,
+    IntrinsicId::BytesBuilderFinishRaw,
+    IntrinsicId::BytesBuilderShiftFrontRaw,
+    IntrinsicId::BytesBuilderClearRaw,
+    IntrinsicId::BytesBuilderSnapshotRaw,
+    IntrinsicId::BytesBuilderFreeRaw,
+    IntrinsicId::BytesBuilderViewRaw,
+    IntrinsicId::BytesBuilderTextViewRaw,
+    IntrinsicId::BytesBuilderAppendSliceRaw,
+    IntrinsicId::BytesIsAllocFailRaw,
+    IntrinsicId::BytesClone,
+    IntrinsicId::StrClone,
+    IntrinsicId::MathSqrt,
+    IntrinsicId::MathExp,
+    IntrinsicId::MathLog,
+    IntrinsicId::MathFloor,
+    IntrinsicId::MathCeil,
+    IntrinsicId::MathPow,
+    IntrinsicId::MathTanh,
+    IntrinsicId::MathNan,
+    IntrinsicId::MathInf,
+    IntrinsicId::MathIsNan,
+    IntrinsicId::MathSin,
+    IntrinsicId::MathCos,
+    IntrinsicId::MathTan,
+    IntrinsicId::MathAsin,
+    IntrinsicId::MathAcos,
+    IntrinsicId::MathAtan,
+    IntrinsicId::MathAtan2,
+    IntrinsicId::IoFsFileExists,
+    IntrinsicId::IoTcpCloseFd,
+    IntrinsicId::IoStdinReadLine,
+    IntrinsicId::IoStdinReadLineStatus,
+    IntrinsicId::EnvArgsCount,
+    IntrinsicId::EnvArg,
+    IntrinsicId::EnvArgOr,
+    IntrinsicId::EnvVar,
+    IntrinsicId::EnvVarExists,
+    IntrinsicId::ProcessPid,
+    IntrinsicId::TimeMonotonic,
+    IntrinsicId::TimeSleep,
+    IntrinsicId::TextIsAlpha,
+    IntrinsicId::TextIsDigit,
+    IntrinsicId::TextIsAlnum,
+    IntrinsicId::TextIsWhitespace,
+    IntrinsicId::TextIsWordChar,
+    IntrinsicId::TextTokenizeWordsInto,
+];
 
 /// 2026-05-26 — named socket-option constants exposed via
 /// `std::io::sockopt::<NAME>()`. Each value is fetched at runtime

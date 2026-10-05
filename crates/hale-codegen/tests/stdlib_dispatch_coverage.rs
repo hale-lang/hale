@@ -11,10 +11,12 @@
 //! position branches this file scrapes ([`id_arms`]), a Hale-body row is
 //! lowered by `lower_std_hale_body` (its two lists scraped), and the
 //! bare refusals are two id lists (`REFUSED_BARE_STATEMENT`,
-//! `REFUSED_BARE_VALUE`). The `or` position is still the hand-written
-//! `try_lower_fallible_stdlib_path_call`, scraped for its `["std", ..]`
-//! literals until S4 folds it in. `stdlib_registry_parity` reads the
-//! same scrape, with what each arm calls ([`ArmCall`]).
+//! `REFUSED_BARE_VALUE`). Since S4 the `or` position dispatches from the
+//! row too (`lower_std_fallible_call`): an id picks its arm in
+//! `lower_std_intrinsic_fallible`'s `match id` ([`fallible_id_arms`]),
+//! and its refusal is the id list `REFUSED_UNDER_OR`. No position
+//! matches a `["std", ..]` literal any more. `stdlib_registry_parity`
+//! reads the same scrape, with what each arm calls ([`ArmCall`]).
 //!
 //! A *pair* is a (path, position): a stdlib call path an arm lowers or
 //! refuses, and the position it does so at. The *shadow set* is what
@@ -57,8 +59,8 @@ mod harness;
 /// * `lower_or_expr` (`channels/mod.rs`, reached from the `Stmt::Expr(
 ///   Expr::Or ..)` statement and from `lower_expr`'s `Expr::Or`) calls
 ///   `lower_fallible_call`, whose `Expr::Path` callee goes to
-///   `try_lower_fallible_stdlib_path_call`: the call directly under an
-///   `or`, wherever the `or` stands.
+///   `try_lower_fallible_stdlib_path_call`, `lower_std_fallible_call`:
+///   the call directly under an `or`, wherever the `or` stands.
 /// * Every other call — an argument, a `let` value, a block's tail
 ///   (`lower_block` and `lower_block_as_expr` both lower the tail with
 ///   `lower_expr`), a value-producing `match` arm — goes through
@@ -81,11 +83,6 @@ impl Position {
         }
     }
 }
-
-/// The dispatchers still matched on `["std", ..]` literals: the
-/// function, the file it is in, the position it serves.
-const DISPATCHERS: &[(&str, &str, Position)] =
-    &[("lower_std_fallible_unmoved", "src/channels/mod.rs", Position::Fallible)];
 
 /// The position whose arm lowers a call the walk found at `position`: a
 /// statement call of a path with no statement branch is the value
@@ -230,55 +227,26 @@ fn fn_body(code: &str, name: &str) -> (usize, usize) {
     panic!("unbalanced body of `fn {name}`");
 }
 
-/// One segment of a slice pattern.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Seg {
-    Lit(String),
-    Bind(String),
-}
-
-/// One arm of a dispatcher's top-level `match segs`.
+/// One arm of the row dispatch at one position: the paths of the ids
+/// (or Hale bodies) it names, or of a refusal list.
 #[derive(Clone, Debug)]
 pub struct Arm {
-    /// 1-indexed line of the arm's first pattern in its file.
+    /// 1-indexed line of the arm in `codegen.rs`.
     pub line: usize,
-    patterns: Vec<Vec<Seg>>,
-    guard: Option<String>,
-    /// The arm's value is an `Err(..)`: one of the refusal lists.
+    paths: Vec<String>,
+    /// One of the refusal lists.
     pub refuses: bool,
     /// What the arm's body calls to lower the path.
     pub calls: ArmCall,
 }
 
-/// How an arm lowers its path: a Hale body of the stdlib seeds, named
-/// by a literal (`self.lower_user_fn_call("__md_to_html", ..)`), or
-/// anything else (a native helper, inline IR, or a body whose name the
-/// arm computes).
+/// How an arm lowers its path: a Hale body of the stdlib seeds, called
+/// by the name its row gives (`lower_std_hale_body`), or natively (an
+/// intrinsic's arm).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArmCall {
     HaleBody(String),
     Native,
-}
-
-/// The call an arm's body (its lines, comments masked) makes.
-fn arm_call(body: &[&str]) -> ArmCall {
-    let text = body.join("\n");
-    let mut named = BTreeSet::new();
-    let mut computed = false;
-    for (at, _) in text.match_indices("lower_user_fn_call(") {
-        let arg = text[at + "lower_user_fn_call(".len()..].trim_start();
-        match arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
-            Some(name) => {
-                named.insert(name.to_string());
-            }
-            None => computed = true,
-        }
-    }
-    match (named.len(), computed) {
-        (0, _) | (_, true) => ArmCall::Native,
-        (1, false) => ArmCall::HaleBody(named.into_iter().next().unwrap()),
-        _ => panic!("an arm calls two Hale bodies: {named:?}"),
-    }
 }
 
 fn string_literals(s: &str) -> Vec<String> {
@@ -294,125 +262,6 @@ fn line_indent(text: &str, at: usize) -> usize {
     indent_of(&text[start..])
 }
 
-/// The arms of one dispatcher, in source order.
-pub fn arms_of(name: &str, file: &str) -> Vec<Arm> {
-    let src = crate_file(file);
-    let no_comments = mask(&src, false);
-    let code = mask(&src, true);
-    let (open, close) = fn_body(&code, name);
-    let body = &no_comments[open..close];
-    let first_line = src[..open].matches('\n').count() + 1;
-    let m = body.find("match segs {").unwrap_or_else(|| panic!("`{name}` matches on `segs`"));
-    let arm_indent = line_indent(body, m) + 4;
-    let lines: Vec<&str> = body.lines().collect();
-    let mut arms = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let l = lines[i];
-        if indent_of(l) != arm_indent || !l.trim_start().starts_with("[\"std\"") {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let mut head = String::new();
-        loop {
-            let l = lines[i];
-            if let Some(k) = l.find("=>") {
-                head.push_str(&l[..k]);
-                head.push(' ');
-                let rest = l[k + 2..].trim_start().trim_start_matches('{').trim_start();
-                let rest = if rest.is_empty() {
-                    lines.get(i + 1).map_or("", |n| n.trim_start())
-                } else {
-                    rest
-                };
-                let (patterns, guard) = parse_head(&head);
-                // The body runs to the next line at the arm's indent
-                // that opens an arm (a pattern, or the `_` arm).
-                let end = (i + 1..lines.len())
-                    .find(|&j| {
-                        let t = lines[j].trim_start();
-                        indent_of(lines[j]) == arm_indent && (t.starts_with('[') || t.starts_with("_ "))
-                    })
-                    .unwrap_or(lines.len());
-                let mut body_lines = vec![&l[k + 2..]];
-                body_lines.extend_from_slice(&lines[i + 1..end]);
-                arms.push(Arm {
-                    line: first_line + start,
-                    patterns,
-                    guard,
-                    refuses: rest.starts_with("Err("),
-                    calls: arm_call(&body_lines),
-                });
-                break;
-            }
-            head.push_str(l);
-            head.push(' ');
-            i += 1;
-        }
-        i += 1;
-    }
-    arms
-}
-
-fn parse_head(head: &str) -> (Vec<Vec<Seg>>, Option<String>) {
-    let mut patterns = Vec::new();
-    let mut rest = head;
-    while let Some(o) = rest.find('[') {
-        let c = o + rest[o..].find(']').expect("a pattern closes");
-        let segs = rest[o + 1..c]
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| match s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                Some(lit) => Seg::Lit(lit.to_string()),
-                None => Seg::Bind(s.to_string()),
-            })
-            .collect();
-        patterns.push(segs);
-        rest = &rest[c + 1..];
-    }
-    let guard = rest.trim();
-    let guard = guard.strip_prefix("if ").map(|g| g.trim().to_string());
-    (patterns, guard)
-}
-
-/// The paths one pattern accepts, its family expanded through what
-/// decides the bound name. (The `io::sockopt` and `io::mirror` families
-/// are rows since S3, each name an id.)
-fn expand(pattern: &[Seg], guard: Option<&str>) -> Vec<String> {
-    let lits: Vec<&str> = pattern
-        .iter()
-        .filter_map(|s| match s {
-            Seg::Lit(l) => Some(l.as_str()),
-            Seg::Bind(_) => None,
-        })
-        .collect();
-    if lits.len() == pattern.len() {
-        return vec![lits.join("::")];
-    }
-    let ns = lits.join("::");
-    let leaves: Vec<String> = match (ns.as_str(), guard) {
-        // `["std", "bytes", n] if n.starts_with("read_")` (and
-        // `write_`): `lower_std_bytes_read`/`_write` parse the name, so
-        // the family is what the registry lists under the prefix.
-        (_, Some(g)) if g.contains(".starts_with(\"") => {
-            let prefix = g.split('"').nth(1).expect("a prefix literal");
-            let surface_ns: Vec<&str> = lits[1..].to_vec();
-            hale_types::stdlib_surface::SURFACES
-                .iter()
-                .filter(|s| s.ns == surface_ns.as_slice())
-                .flat_map(|s| s.public().map(|e| e.name))
-                .filter(|n| n.starts_with(prefix))
-                .map(str::to_string)
-                .collect()
-        }
-        _ => panic!("a family pattern this scrape does not know how to expand: {pattern:?} if {guard:?}"),
-    };
-    assert!(!leaves.is_empty(), "family `{ns}::*` expanded to nothing");
-    leaves.into_iter().map(|l| format!("{ns}::{l}")).collect()
-}
-
 /// What an arm does with a path: lower it, or refuse it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArmKind {
@@ -424,23 +273,23 @@ pub enum ArmKind {
 pub struct Scraped {
     pub position: Position,
     pub arms: Vec<Arm>,
-    /// Every path a pattern names (families expanded), with the kind of
-    /// the FIRST arm matching it (the one `match` takes) and its line.
+    /// Every path an arm names, with the kind of the FIRST arm naming it
+    /// (the one that answers) and its line.
     pub paths: BTreeMap<String, (ArmKind, usize)>,
     /// What that arm calls, for each path.
     pub calls: BTreeMap<String, ArmCall>,
-    /// Patterns whose every path an earlier arm already matched: dead.
+    /// Paths an earlier arm already named: an arm no call reaches.
     pub shadowed: Vec<(String, usize)>,
-    pub patterns: usize,
-    pub family_patterns: usize,
 }
 
 // ---------------------------------------------------------------------
-// The row dispatch (S3): `lower_std_call` looks the path's row up, and
-// an intrinsic's id picks its arm in `lower_std_intrinsic`'s `match id`
-// while a Hale body is called by the name the row gives
-// (`lower_std_hale_body`). Its arms are scraped into arms of the
-// statement and expression positions, as the legacy dispatchers' were.
+// The row dispatch (S3, S4): `lower_std_call` looks the path's row up,
+// and an intrinsic's id picks its arm in `lower_std_intrinsic`'s
+// `match id` while a Hale body is called by the name the row gives
+// (`lower_std_hale_body`); under `or`, `lower_std_fallible_call` looks
+// it up and the id picks its arm in `lower_std_intrinsic_fallible`'s.
+// Their arms are scraped into arms of the three positions, as the
+// legacy dispatchers' were.
 // ---------------------------------------------------------------------
 
 /// What an arm of `lower_std_intrinsic` does at one position.
@@ -490,32 +339,14 @@ fn id_arms() -> Vec<IdArm> {
         .collect()
 }
 
-/// What an arm of `lower_std_intrinsic_fallible` does under `or`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FallibleBranch {
-    /// It lowers the call.
-    Lowers,
-    /// It says the call is not a stdlib fallible call (`Ok(None)`).
-    NotFallible,
-    /// It sends the call to the arms not moved yet
-    /// (`lower_std_fallible_unmoved`, scraped as a literal dispatcher).
-    Unmoved,
-}
-
-/// The arms of `lower_std_intrinsic_fallible`'s `match id`.
-fn fallible_id_arms() -> Vec<(usize, Vec<String>, FallibleBranch)> {
+/// The arms of `lower_std_intrinsic_fallible`'s `match id`, each with
+/// whether it lowers the call under `or`: the arm that answers `Ok(None)`
+/// ("not a stdlib fallible call", or the `REFUSED_UNDER_OR` refusal)
+/// lowers nothing.
+fn fallible_id_arms() -> Vec<(usize, Vec<String>, bool)> {
     match_id_arms("lower_std_intrinsic_fallible")
         .into_iter()
-        .map(|(line, ids, text)| {
-            let b = if text.contains("lower_std_fallible_unmoved(") {
-                FallibleBranch::Unmoved
-            } else if text.contains("Ok(None)") {
-                FallibleBranch::NotFallible
-            } else {
-                FallibleBranch::Lowers
-            };
-            (line, ids, b)
-        })
+        .map(|(line, ids, text)| (line, ids, !text.contains("Ok(None)")))
         .collect()
 }
 
@@ -630,21 +461,26 @@ fn row_dispatch() -> RowDispatch {
     let mut named = BTreeSet::new();
     let arm = |line: usize, paths: &[&String], refuses: bool, calls: ArmCall| Arm {
         line,
-        patterns: paths.iter().map(|p| p.split("::").map(|s| Seg::Lit(s.to_string())).collect()).collect(),
-        guard: None,
+        paths: paths.iter().map(|p| p.to_string()).collect(),
         refuses,
         calls,
     };
     let path_of = |id: &String| paths.get(id).unwrap_or_else(|| panic!("`Id::{id}` has no row"));
     // The refusals: a refused id's arm answers as a path no arm lowers
-    // once `refuses_bare` has not refused it, so the lists are its pairs.
-    for (list, position) in [("REFUSED_BARE_STATEMENT", Position::Statement), ("REFUSED_BARE_VALUE", Position::Expression)] {
+    // (or, under `or`, as not a fallible call) once its list has not
+    // refused it, so the lists are its pairs.
+    for (list, position) in [
+        ("REFUSED_BARE_STATEMENT", Position::Statement),
+        ("REFUSED_BARE_VALUE", Position::Expression),
+        ("REFUSED_UNDER_OR", Position::Fallible),
+    ] {
         let (ids, line) = id_list(list);
         let ps: Vec<&String> = ids.iter().map(path_of).collect();
         let a = arm(line, &ps, true, ArmCall::Native);
         match position {
             Position::Statement => rd.statement.push(a),
-            _ => rd.expression.push(a),
+            Position::Expression => rd.expression.push(a),
+            Position::Fallible => rd.fallible.push(a),
         }
     }
     for a in id_arms() {
@@ -661,15 +497,14 @@ fn row_dispatch() -> RowDispatch {
     }
     let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
     assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic` names: {unnamed:?}");
-    // The `or` position (S4): an arm that lowers is a pair; one that
-    // says "not a fallible call" is none; the ids sent to the arms not
-    // moved yet are the literal dispatcher's, scraped from it.
+    // The `or` position (S4): an arm that lowers is a pair; the arm that
+    // says "not a fallible call" is none, its refusal list's ids above.
     let mut named = BTreeSet::new();
-    for (line, ids, b) in fallible_id_arms() {
+    for (line, ids, lowers) in fallible_id_arms() {
         for id in &ids {
             assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic_fallible`");
         }
-        if b == FallibleBranch::Lowers {
+        if lowers {
             let ps: Vec<&String> = ids.iter().map(path_of).collect();
             rd.fallible.push(arm(line, &ps, false, ArmCall::Native));
         }
@@ -697,36 +532,26 @@ pub fn scrape() -> Vec<Scraped> {
     [Position::Statement, Position::Expression, Position::Fallible]
         .into_iter()
         .map(|position| {
-            let mut arms = match position {
+            let arms = match position {
                 Position::Statement => rd.statement.clone(),
                 Position::Expression => rd.expression.clone(),
                 Position::Fallible => rd.fallible.clone(),
             };
-            if let Some(&(name, file, _)) = DISPATCHERS.iter().find(|d| d.2 == position) {
-                arms.extend(arms_of(name, file));
-            }
             let mut paths = BTreeMap::new();
             let mut calls = BTreeMap::new();
             let mut shadowed = Vec::new();
-            let (mut patterns, mut family_patterns) = (0, 0);
             for arm in &arms {
                 let kind = if arm.refuses { ArmKind::Refuses } else { ArmKind::Lowers };
-                for p in &arm.patterns {
-                    patterns += 1;
-                    if p.iter().any(|s| matches!(s, Seg::Bind(_))) {
-                        family_patterns += 1;
-                    }
-                    for path in expand(p, arm.guard.as_deref()) {
-                        if paths.contains_key(&path) {
-                            shadowed.push((path, arm.line));
-                        } else {
-                            calls.insert(path.clone(), arm.calls.clone());
-                            paths.insert(path, (kind, arm.line));
-                        }
+                for path in &arm.paths {
+                    if paths.contains_key(path) {
+                        shadowed.push((path.clone(), arm.line));
+                    } else {
+                        calls.insert(path.clone(), arm.calls.clone());
+                        paths.insert(path.clone(), (kind, arm.line));
                     }
                 }
             }
-            Scraped { position, arms, paths, calls, shadowed, patterns, family_patterns }
+            Scraped { position, arms, paths, calls, shadowed }
         })
         .collect()
 }
@@ -1555,10 +1380,11 @@ const REFUSED_BARE: &[&str] = &[
 /// value list (`refuses_bare`) and covers this same pair.
 const REFUSED_BARE_EXPRESSION_ONLY: &[&str] = &["std::str::parse_float", "std::str::parse_int"];
 
-/// Allowance 1, refused by lowering. The fallible dispatcher's list
-/// (`try_lower_fallible_stdlib_path_call`'s `Err(".. is not a fallible
-/// call — remove the `or` clause ..")` arm): an `or` over a path that
-/// returns its value directly is refused, so no program builds with one.
+/// Allowance 1, refused by lowering. The `or` position's list
+/// (`REFUSED_UNDER_OR`, read by `lower_std_intrinsic_fallible`: ".. is
+/// not a fallible call — remove the `or` clause .."): an `or` over a
+/// path that returns its value directly is refused, so no program builds
+/// with one.
 const REFUSED_UNDER_OR: &[&str] = &[
     "std::bytes::__is_alloc_fail",
     "std::bytes::builder::__append",
@@ -1802,22 +1628,11 @@ fn every_dispatch_pair_is_reached_by_the_shadow_set() {
 fn report_the_dispatchers_and_the_coverage() {
     let scraped = scrape();
     let mut by_path: BTreeMap<String, BTreeSet<Position>> = BTreeMap::new();
-    let mut by_literal: BTreeMap<String, BTreeSet<Position>> = BTreeMap::new();
     for s in &scraped {
-        let literal: BTreeSet<String> = s
-            .arms
-            .iter()
-            .flat_map(|a| a.patterns.iter())
-            .filter(|p| p.iter().all(|seg| matches!(seg, Seg::Lit(_))))
-            .map(|p| p.iter().map(|seg| if let Seg::Lit(l) = seg { l.as_str() } else { "" }).collect::<Vec<_>>().join("::"))
-            .collect();
         eprintln!(
-            "{:<11} {:>3} patterns ({} family) in {:>3} arms; {:>3} literal paths, {:>3} with families expanded ({} refused); {} shadowed patterns {:?}",
+            "{:<11} {:>3} arms; {:>3} paths ({} refused); {} shadowed {:?}",
             s.position.word(),
-            s.patterns,
-            s.family_patterns,
             s.arms.len(),
-            literal.len(),
             s.paths.len(),
             s.paths.values().filter(|k| k.0 == ArmKind::Refuses).count(),
             s.shadowed.len(),
@@ -1826,15 +1641,10 @@ fn report_the_dispatchers_and_the_coverage() {
         for p in s.paths.keys() {
             by_path.entry(p.clone()).or_default().insert(s.position);
         }
-        for p in literal {
-            by_literal.entry(p).or_default().insert(s.position);
-        }
     }
-    for (what, m) in [("literal", &by_literal), ("expanded", &by_path)] {
-        let multi = m.values().filter(|ps| ps.len() >= 2).count();
-        let all3 = m.values().filter(|ps| ps.len() == 3).count();
-        eprintln!("{what}: union {} paths; {} in two or more dispatchers ({} in all three)", m.len(), multi, all3);
-    }
+    let multi = by_path.values().filter(|ps| ps.len() >= 2).count();
+    let all3 = by_path.values().filter(|ps| ps.len() == 3).count();
+    eprintln!("union {} paths; {} at two or more positions ({} at all three)", by_path.len(), multi, all3);
     let all = pairs(&scraped);
     let set = shadow_set();
     let mut per_source: BTreeMap<Source, usize> = BTreeMap::new();

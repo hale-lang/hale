@@ -8,22 +8,23 @@
 //! `hale_stdlib::PATH_RENAMES` (`Renamed`), or not at all (`Unlowered`).
 //!
 //! Since S3 the statement and value positions dispatch from the row
-//! (`lower_std_call`), so the compiler holds what this test used to
-//! scrape for them: an `Intrinsic` row's id has an arm in
-//! `lower_std_intrinsic`'s exhaustive `match id`, a `HaleBody` row is
-//! called by the body its row names, and a `Renamed` or `Unlowered` row
-//! reaches the fallback. What is left here:
+//! (`lower_std_call`), and since S4 the `or` position does too
+//! (`lower_std_fallible_call`), so the compiler holds what this test
+//! used to scrape: an `Intrinsic` row's id has an arm in
+//! `lower_std_intrinsic`'s and in `lower_std_intrinsic_fallible`'s
+//! exhaustive `match id`, a `HaleBody` row is called by the body its row
+//! names, and a `Renamed` or `Unlowered` row reaches the fallback (under
+//! `or`, the caller's resolution as a function: no id, so no fallible
+//! arm can match it first). What is left here:
 //!
-//!   - the `or` position is still the hand-written
-//!     `try_lower_fallible_stdlib_path_call` (until S4): every path it
-//!     matches has a row that says what its arm does;
 //!   - every `Intrinsic` row is lowered at some position (an id whose
-//!     arm only answers "not implemented" at both bare positions, with
-//!     no fallible arm, would compile);
+//!     arms only answer "not implemented" at both bare positions and
+//!     "not a fallible call" under `or` would compile);
 //!   - every `HaleBody` row names a function the stdlib declares;
-//!   - a `Renamed` row is in `PATH_RENAMES` and no fallible arm matches
-//!     it first; an `Unlowered` row has neither, and is named in
-//!     [`UNLOWERED`].
+//!   - a `Renamed` row is in `PATH_RENAMES`; an `Unlowered` row has
+//!     neither an arm nor a rename, and is named in [`UNLOWERED`];
+//!   - an all-literal `["std", ..]` path that codegen's source still
+//!     spells names a row or a locus path (none does today).
 //!
 //! Before the column, this file could only check that the scraped
 //! literals and the registry's names covered each other: adding a fn to
@@ -84,65 +85,12 @@ fn rows() -> BTreeMap<String, Lower> {
     surf::rows().map(|(s, f)| (format!("std::{}::{}", s.ns.join("::"), f.name), f.lower)).collect()
 }
 
-/// The lowering the arms of one path imply: the body every lowering
-/// arm calls, or native.
-fn implied(d: &Dispatched) -> Result<Option<&str>, String> {
-    let bodies: BTreeSet<&str> = d
-        .lowering
-        .iter()
-        .filter_map(|c| match c {
-            ArmCall::HaleBody(b) => Some(b.as_str()),
-            ArmCall::Native => None,
-        })
-        .collect();
-    let natives = d.lowering.iter().filter(|c| **c == ArmCall::Native).count();
-    match (bodies.len(), natives) {
-        (0, 0) => Err("no arm lowers it (every arm refuses)".into()),
-        (0, _) => Ok(None),
-        (1, 0) => Ok(bodies.into_iter().next()),
-        _ => Err(format!("its arms disagree: bodies {bodies:?} and {natives} native arm(s)")),
-    }
-}
-
-/// Every path the fallible dispatcher matches has a row, and the row's
-/// lowering is what its lowering arm does (a path it only refuses
-/// needs only the row).
-#[test]
-fn every_fallible_arm_has_a_row_that_says_how_it_lowers() {
-    let rows = rows();
-    let mut wrong = Vec::new();
-    for (path, d) in dispatched(&[Position::Fallible]) {
-        let Some(lower) = rows.get(&path) else {
-            wrong.push(format!("{path}: dispatched under `or`, but has no row"));
-            continue;
-        };
-        if d.lowering.is_empty() {
-            continue;
-        }
-        match (implied(&d), lower) {
-            (Err(why), _) => wrong.push(format!("{path}: {why}")),
-            (Ok(None), Lower::Intrinsic(_)) => {}
-            (Ok(Some(body)), Lower::HaleBody(b)) if body == *b => {}
-            (Ok(arms), row) => wrong.push(format!("{path}: the row says {row:?}, the arm says {arms:?}")),
-        }
-    }
-    assert!(
-        wrong.is_empty(),
-        "the lowering column disagrees with the fallible dispatcher ({}):\n{:#?}\n\n\
-         A natively lowered path is `Intrinsic(<its id>)`; a path whose arm calls a \
-         Hale body by name is `HaleBody(\"<the body>\")`.",
-        wrong.len(),
-        wrong
-    );
-}
-
-/// Every `Intrinsic` row is lowered at some position and every
-/// `HaleBody` row names a declared body; `Renamed` and `Unlowered` rows
-/// are matched by no fallible arm.
+/// Every `Intrinsic` row is lowered at some position, every `HaleBody`
+/// row names a declared body, every `Renamed` row is a rename, and the
+/// `Unlowered` rows are named.
 #[test]
 fn every_rows_lowering_is_where_the_column_says() {
     let lowered = dispatched(ALL);
-    let fallible = dispatched(&[Position::Fallible]);
     let renames = renames();
     let declared = declared_names();
     let mut wrong = Vec::new();
@@ -158,9 +106,6 @@ fn every_rows_lowering_is_where_the_column_says() {
             }
             Lower::Renamed if !renames.contains(&path) => {
                 wrong.push(format!("{path}: Renamed, but not in PATH_RENAMES"))
-            }
-            Lower::Renamed if fallible.contains_key(&path) => {
-                wrong.push(format!("{path}: Renamed, but a fallible arm matches it first"))
             }
             Lower::Unlowered if lowered.contains_key(&path) || renames.contains(&path) => {
                 wrong.push(format!("{path}: Unlowered, but an arm or a rename reaches it"))
@@ -379,8 +324,7 @@ fn parity_check_is_not_vacuous() {
     // And the arm classification sees both kinds of arm.
     let hale_arms = dispatched.values().flat_map(|d| &d.lowering).filter(|c| matches!(c, ArmCall::HaleBody(_))).count();
     assert!(hale_arms > 40, "only {hale_arms} arms call a Hale body by name");
-    // The statement and expression positions dispatch from the row
-    // (S3), and the `or` position's arms move to it a group at a time
-    // (S4); the 68 paths of its not-fallible list are the last to go.
-    assert!(std_literals().len() > 60, "the literal scrape found only {}", std_literals().len());
+    // Every position dispatches from the row (S3, S4), so codegen spells
+    // no all-literal `["std", ..]` path and `std_literals` finds none: the
+    // literal test above has nothing to check until one returns.
 }
