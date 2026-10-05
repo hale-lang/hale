@@ -8,7 +8,11 @@
 //! follow both functions for roots, nested fields, replicas, pinned and
 //! pool-placed fields, accepted children and elided arenas. The companion
 //! `reclaim_cancel_ir` tests verify that the wait dominates every physical
-//! release and that cancellation dominates every callback handoff.
+//! release and that cancellation dominates every callback handoff, and pin
+//! the guard in front of each runtime call: a step with nothing to do (no
+//! run linked, nothing retired) is skipped on the words the function's
+//! own first test reads, so a step here is located by its call, which
+//! stays on the guard's other edge.
 //!
 //! The dissolve cascade over the instance tree is pinned beside it, in
 //! the order the plan places it (`LifecyclePlan::cascade_order` and

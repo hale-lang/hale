@@ -6926,16 +6926,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             // Check the shared claim before reading __arena. The winner
             // may be on another worker, including one finishing run().
-            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
-            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "reclaim.pending")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value().left().expect("i64").into_int_value();
-            let pending = self.builder.build_int_compare(
-                inkwell::IntPredicate::NE, pending, i64_t.const_zero(), "reclaim.retired",
-            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let ready_bb = self.context.append_basic_block(reclaim, "reclaim.ready");
-            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_reclaim_pending(self_arg, Some(claim_ptr), "reclaim.pending", ret_bb, ready_bb)?;
             self.builder.position_at_end(ready_bb);
             // A child whose failure its parent is still holding (the
             // parent's params are not settled — spec/semantics.md §
@@ -7259,16 +7251,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let claim_ptr = self.builder.build_struct_gep(
                 info.struct_ty, self_arg, info.reclaim_claimed_field_idx, "drain.claim.ptr",
             ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
-            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "drain.pending")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value().left().expect("i64").into_int_value();
-            let pending = self.builder.build_int_compare(
-                inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "drain.retired",
-            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let ready_bb = self.context.append_basic_block(drain, "drain.ready");
-            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_reclaim_pending(self_arg, Some(claim_ptr), "drain.pending", ret_bb, ready_bb)?;
             self.builder.position_at_end(ready_bb);
             let arena_ptr = self
                 .builder

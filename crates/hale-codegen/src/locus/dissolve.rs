@@ -369,7 +369,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // F.31 Phase 3b: when this locus IS the main locus, skip
         // the cascade for fields whose placement is `pinned`. The
@@ -378,17 +377,27 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // pthread_join + arena_destroy happen via the
         // deferred-dissolve frame's flush at fn-scope exit.
         let is_main_locus = self.is_entry_locus(locus_name);
+        let pinned_on_main = |cx: &Self, fname: &str| {
+            is_main_locus && matches!(cx.deployment.main_placement_map.get(fname), Some(ScheduleClass::Pinned(_)))
+        };
         // The fields in the order the plan places their teardowns (line
         // 12: declaration order). Physical release can remain deferred.
         let field_entries = self.cascade_field_entries(info, locus_name)?;
+        // The scope collects the releases the fields' teardowns defer
+        // under this owner; a cascade that tears no field down runs
+        // nothing between its enter and its leave, and has none.
+        let tears_down = field_entries.iter().any(|(fname, _, ty)| {
+            !pinned_on_main(self, fname)
+                && match ty {
+                    CodegenTy::Interface(_) | CodegenTy::Perspective(_) => true,
+                    CodegenTy::LocusRef(n) => self.user_loci.contains_key(n),
+                    _ => false,
+                }
+        });
+        let retain = if tears_down { Some(self.emit_reclaim_scope_enter(self_ptr)?) } else { None };
         for (fname, field_idx, field_ty) in field_entries {
             // F.31 Phase 3b: skip cascade for pinned-placed fields.
-            if is_main_locus
-                && matches!(
-                    self.deployment.main_placement_map.get(&fname),
-                    Some(ScheduleClass::Pinned(_))
-                )
-            {
+            if pinned_on_main(self, &fname) {
                 continue;
             }
             // GH #871: a field typed by a CONTRACT — an `interface`
@@ -558,7 +567,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 self.builder.position_at_end(after_bb);
             }
         }
-        self.emit_reclaim_scope_leave(retain)?;
+        if let Some(retain) = retain {
+            self.emit_reclaim_scope_leave(retain)?;
+        }
         Ok(())
     }
 
@@ -904,20 +915,14 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // A null claim pointer bypasses only that claim, preserving the
         // current thread's queued/active retirement checks.
         let claim_ptr = if owns_claim {
-            ptr_t.const_null()
+            None
         } else {
-            self.builder.build_struct_gep(
+            Some(self.builder.build_struct_gep(
                 inner_info.struct_ty, inner_ptr, inner_info.reclaim_claimed_field_idx, &name("claim.ptr"),
-            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?)
         };
-        let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
-        let pending = self.builder.build_call(pending, &[inner_ptr.into(), claim_ptr.into()], "reclaim.pending")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.try_as_basic_value().left().expect("i64").into_int_value();
-        let pending = self.builder.build_int_compare(inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "reclaim.retired")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let unclaimed_bb = self.context.append_basic_block(func, &name("unclaimed"));
-        self.builder.build_conditional_branch(pending, skip_bb, unclaimed_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_reclaim_pending(inner_ptr, claim_ptr, &name("pending"), skip_bb, unclaimed_bb)?;
         self.builder.position_at_end(unclaimed_bb);
         let latch_ptr = self
             .builder
@@ -1420,35 +1425,187 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(order)
     }
 
+    /// The reclaim's "nothing outstanding" test over `words` (decision
+    /// line 19): each an acquire load of a runtime word, read in the
+    /// order the runtime's own first test reads them, and all zero.
+    /// `lotus_run_tickets_live` (no run ticket linked anywhere),
+    /// `lotus_reclaim_records_live` (no retirement record or reclaim
+    /// scope alive), `lotus_owner_domain_count` (no owner's domain
+    /// recorded).
+    fn emit_reclaim_idle(&mut self, words: &[&str], name: &str) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let mut idle: Option<inkwell::values::IntValue<'ctx>> = None;
+        for (i, word) in words.iter().enumerate() {
+            let g = self.module.get_global(word).expect("reclaim word declared");
+            let v = self
+                .builder
+                .build_load(i64_t, g.as_pointer_value(), &format!("{name}.{word}"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let load = v.as_instruction().expect("a load");
+            load.set_alignment(8).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            load.set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // The test the guard branches on is named `<name>`.
+            let last = i + 1 == words.len();
+            let zero_name = if last && idle.is_none() { name.to_string() } else { format!("{name}.{word}.zero") };
+            let zero = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, v, i64_t.const_zero(), &zero_name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            idle = Some(match idle {
+                None => zero,
+                Some(prev) => {
+                    let and_name = if last { name.to_string() } else { format!("{name}.{word}.and") };
+                    self.builder.build_and(prev, zero, &and_name).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                }
+            });
+        }
+        Ok(idle.expect("at least one word"))
+    }
+
+    /// A runtime call of the reclaim, skipped where `idle` holds: the
+    /// function's own first test reads the same words and answers
+    /// `at_once` there without touching anything. Emits `<tag>.call`
+    /// (the call) and `<tag>.after`; the answer is the call's, or
+    /// `at_once` on the idle edge.
+    fn emit_unless_idle(
+        &mut self,
+        idle: inkwell::values::IntValue<'ctx>,
+        tag: &str,
+        at_once: Option<BasicValueEnum<'ctx>>,
+        call: impl FnOnce(&mut Self) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let from = self.builder.get_insert_block().expect("inside a function");
+        let func = from.get_parent().expect("inside a function");
+        let call_bb = self.context.append_basic_block(func, &format!("{tag}.call"));
+        let after_bb = self.context.append_basic_block(func, &format!("{tag}.after"));
+        self.builder
+            .build_conditional_branch(idle, after_bb, call_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(call_bb);
+        let answer = call(self)?;
+        let call_end = self.builder.get_insert_block().expect("the call's block");
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(after_bb);
+        match (at_once, answer) {
+            (Some(at_once), Some(answer)) => {
+                let phi = self
+                    .builder
+                    .build_phi(at_once.get_type(), &format!("{tag}.answer"))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                phi.add_incoming(&[(&at_once, from), (&answer, call_end)]);
+                Ok(Some(phi.as_basic_value()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// `lotus_reclaim_pending(child, claim)`, branching to `retired` when
+    /// the instance's reclaim is claimed or retired on this thread, else
+    /// to `live`. With no record alive (`lotus_reclaim_records_live`
+    /// zero) the function answers from the claim alone, so the guard
+    /// reads the claim (acquire) itself; a null claim (the winning
+    /// spine's own storage step) answers no.
+    pub(crate) fn emit_reclaim_pending(
+        &mut self,
+        child: PointerValue<'ctx>,
+        claim: Option<PointerValue<'ctx>>,
+        tag: &str,
+        retired: inkwell::basic_block::BasicBlock<'ctx>,
+        live: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("inside a function");
+        let idle = self.emit_reclaim_idle(&["lotus_reclaim_records_live"], &format!("{tag}.idle"))?;
+        let claim_bb = match claim {
+            Some(_) => self.context.append_basic_block(func, &format!("{tag}.claim")),
+            None => live,
+        };
+        let call_bb = self.context.append_basic_block(func, &format!("{tag}.call"));
+        self.builder
+            .build_conditional_branch(idle, claim_bb, call_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(claim) = claim {
+            self.builder.position_at_end(claim_bb);
+            let v = self
+                .builder
+                .build_load(i64_t, claim, &format!("{tag}.claim.word"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let load = v.as_instruction().expect("a load");
+            load.set_alignment(8).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            load.set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // LOTUS_RECLAIM_CLAIMED
+            let claimed = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, v, i64_t.const_int(1, false), &format!("{tag}.claimed"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(claimed, retired, live)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder.position_at_end(call_bb);
+        let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
+        let claim_arg = claim.unwrap_or_else(|| ptr_t.const_null());
+        let answer = self
+            .builder
+            .build_call(pending, &[child.into(), claim_arg.into()], "reclaim.pending")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("i64")
+            .into_int_value();
+        let answer = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, answer, i64_t.const_zero(), &format!("{tag}.retired"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(answer, retired, live)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// A reclaim scope over `owner`'s cascade: none (null) when no run
+    /// is linked and nothing is retired, which is
+    /// `lotus_reclaim_scope_enter`'s own first answer.
     pub(crate) fn emit_reclaim_scope_enter(
         &mut self,
         owner: PointerValue<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let f = self
-            .module
-            .get_function("lotus_reclaim_scope_enter")
-            .expect("scope enter declared");
-        Ok(self
-            .builder
-            .build_call(f, &[owner.into()], "reclaim.scope")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("ptr")
-            .into_pointer_value())
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let idle = self.emit_reclaim_idle(&["lotus_run_tickets_live", "lotus_reclaim_records_live"], "reclaim.scope.idle")?;
+        let scope = self.emit_unless_idle(idle, "reclaim.scope", Some(ptr_t.const_null().into()), |cx| {
+            let f = cx.module.get_function("lotus_reclaim_scope_enter").expect("scope enter declared");
+            Ok(cx
+                .builder
+                .build_call(f, &[owner.into()], "reclaim.scope.entered")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left())
+        })?;
+        Ok(scope.expect("a scope or none").into_pointer_value())
     }
 
+    /// Leave the scope `emit_reclaim_scope_enter` answered; none is
+    /// `lotus_reclaim_scope_leave`'s own first test.
     pub(crate) fn emit_reclaim_scope_leave(
         &mut self,
         scope: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let f = self
-            .module
-            .get_function("lotus_reclaim_scope_leave")
-            .expect("scope leave declared");
-        self.builder
-            .build_call(f, &[scope.into()], "")
+        let none = self
+            .builder
+            .build_is_null(scope, "reclaim.scope.leave.idle")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_unless_idle(none, "reclaim.scope.leave", None, |cx| {
+            let f = cx.module.get_function("lotus_reclaim_scope_leave").expect("scope leave declared");
+            cx.builder.build_call(f, &[scope.into()], "").map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok(None)
+        })?;
         Ok(())
     }
 
@@ -1528,9 +1685,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
                 }
                 ReclaimStep::CancelQueuedRuns => {
-                    let cancel = self.module.get_function("lotus_run_cancel_only").expect("cancel declared");
-                    self.builder.build_call(cancel, &[self_ptr.into()], "")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // No run linked and no owner's domain recorded: both
+                    // halves of the call answer at once.
+                    let idle = self.emit_reclaim_idle(
+                        &["lotus_run_tickets_live", "lotus_owner_domain_count"],
+                        &format!("{locus_name}.runs.cancel.idle"),
+                    )?;
+                    self.emit_unless_idle(idle, &format!("{locus_name}.runs.cancel"), None, |cx| {
+                        let cancel = cx.module.get_function("lotus_run_cancel_only").expect("cancel declared");
+                        cx.builder.build_call(cancel, &[self_ptr.into()], "")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        Ok(None)
+                    })?;
                     if !info.arena_elidable && self.bus_state.is_some() {
                         let unsub = self.module.get_function("lotus_bus_quarantine_self").expect("quarantine declared");
                         self.builder.build_call(unsub, &[self_ptr.into()], &format!("{locus_name}.bus.deregister.call"))
@@ -1616,24 +1782,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_load(ptr_t, owner_slot, "owner")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let defer = self
-            .module
-            .get_function("lotus_reclaim_defer")
-            .expect("defer declared");
+        // No run linked and nothing retired: the defer answers "release
+        // now" (0) and the release scope none, each on its first test.
+        let idle = self.emit_reclaim_idle(&["lotus_run_tickets_live", "lotus_reclaim_records_live"], "defer.idle")?;
         let deferred = self
-            .builder
-            .build_call(
-                defer,
-                &[
-                    child.into(),
-                    owner.into(),
-                    f.as_global_value().as_pointer_value().into(),
-                ],
-                "deferred",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
+            .emit_unless_idle(idle, "defer", Some(i64_t.const_zero().into()), |cx| {
+                let defer = cx.module.get_function("lotus_reclaim_defer").expect("defer declared");
+                Ok(cx
+                    .builder
+                    .build_call(
+                        defer,
+                        &[child.into(), owner.into(), f.as_global_value().as_pointer_value().into()],
+                        "deferred",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left())
+            })?
             .expect("i64")
             .into_int_value();
         let deferred = self
@@ -1649,25 +1814,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_conditional_branch(deferred, done, release)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(release);
-        let enter = self
-            .module
-            .get_function("lotus_reclaim_release_enter")
-            .expect("release enter declared");
+        let idle = self.emit_reclaim_idle(&["lotus_run_tickets_live", "lotus_reclaim_records_live"], "release.enter.idle")?;
         let active = self
-            .builder
-            .build_call(enter, &[child.into(), owner.into()], "release.active")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("ptr");
+            .emit_unless_idle(idle, "release.enter", Some(ptr_t.const_null().into()), |cx| {
+                let enter = cx.module.get_function("lotus_reclaim_release_enter").expect("release enter declared");
+                Ok(cx
+                    .builder
+                    .build_call(enter, &[child.into(), owner.into()], "release.active")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left())
+            })?
+            .expect("ptr")
+            .into_pointer_value();
         self.emit_locus_storage_release_now(info, child, locus_name)?;
-        let leave = self
-            .module
-            .get_function("lotus_reclaim_release_leave")
-            .expect("release leave declared");
-        self.builder
-            .build_call(leave, &[active.into()], "")
+        let none = self
+            .builder
+            .build_is_null(active, "release.leave.idle")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_unless_idle(none, "release.leave", None, |cx| {
+            let leave = cx.module.get_function("lotus_reclaim_release_leave").expect("release leave declared");
+            cx.builder.build_call(leave, &[active.into()], "").map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok(None)
+        })?;
         self.builder
             .build_unconditional_branch(done)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1705,9 +1874,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // permits release. Wait for admitted runs and complete
                     // deferred descendants before freeing any owned storage.
                     self.emit_run_cancel_queued(self_ptr, locus_name)?;
-                    let flush = self.module.get_function("lotus_reclaim_flush_owned").expect("flush declared");
-                    self.builder.build_call(flush, &[self_ptr.into()], "")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // Nothing retired on any thread: no descendant to flush.
+                    let idle = self.emit_reclaim_idle(&["lotus_reclaim_records_live"], &format!("{locus_name}.flush.idle"))?;
+                    self.emit_unless_idle(idle, &format!("{locus_name}.flush"), None, |cx| {
+                        let flush = cx.module.get_function("lotus_reclaim_flush_owned").expect("flush declared");
+                        cx.builder.build_call(flush, &[self_ptr.into()], "")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        Ok(None)
+                    })?;
                 }
                 ReclaimStep::ReleaseArena if !info.arena_elidable => {
                     let arena = self.builder.build_load(ptr_t, arena_slot, &format!("{locus_name}.__arena"))
@@ -2160,19 +2334,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// runs still queued for the instance, on whatever pool, before its
     /// arena or struct is released, so a queued run finds the child
     /// whole or its ticket canceled. One call per reclaim path, past
-    /// the `__arena` latch.
+    /// the `__arena` latch. With no run ticket linked anywhere it has
+    /// nothing to cancel or wait for, its own first test, and is skipped.
     fn emit_run_cancel_queued(
         &mut self,
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        let cancel_fn = self
-            .module
-            .get_function("lotus_run_cancel_queued")
-            .expect("lotus_run_cancel_queued declared");
-        self.builder
-            .build_call(cancel_fn, &[self_ptr.into()], &format!("{}.runs.cancel", locus_name))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let idle = self.emit_reclaim_idle(&["lotus_run_tickets_live"], &format!("{locus_name}.runs.wait.idle"))?;
+        self.emit_unless_idle(idle, &format!("{locus_name}.runs.wait"), None, |cx| {
+            let cancel_fn = cx
+                .module
+                .get_function("lotus_run_cancel_queued")
+                .expect("lotus_run_cancel_queued declared");
+            cx.builder
+                .build_call(cancel_fn, &[self_ptr.into()], &format!("{}.runs.cancel", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok(None)
+        })?;
         Ok(())
     }
 

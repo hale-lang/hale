@@ -1203,6 +1203,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Invariants.**
 
+- each order the emitters read (birth, reclaim, cascade, recovery, process, entry, readiness) is computed once per plan by the spine index (`SpineIndex`, built in `build_resolved` beside the plan), never per literal or per teardown: the plan's own readers give the same answers by the same per-instance code, `lifecycle_plan.rs` holds the two equal over every corpus plan and their pair sets equal to a reference, and `birth_spine_ir.rs` bounds the readers' passes over a plan by a constant
 - equivalent parent execution contexts are represented once per owner (instantiating domain, queue domain, handler state); occurrence bounds still sum every owner, and domain claims retain every distinct context without enumerating ancestry paths
 - a handler runs on its owner's domain (decision L0-1, L5's fourth part): a failure raised off it is posted there with the copied violation and the child retained, and the failing thread waits for the handler's return servicing its own queue; the domain runs it wherever it services its queue (main's drain, a pinned mailbox's drains and yields, a pool worker between cells, every servicing wait, and the pinned and pool joins, which run nothing else); a domain that has ended runs nothing more, and a delivery to it runs where it was raised; the owner's reclaim waits for the posted delivery and for the failing cell's hold on the child, except that it never waits for a delivery only its own thread can run: reached inside a handler for a child whose delivery is held for that thread (a replaced failing sibling), it follows that delivery, after the running handler returns; wasm32 keeps the in-place call (failure_delivery_domain, the matrix's C36 cells, jp_late_failure_*, l08_sibling_replaced_kept, cascade_model's phases 3 and 4)
 - a spec/implementation disagreement is settled as a named decision, never by extraction picking a side
@@ -1239,10 +1240,10 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `derive_lifecycle(` may be referenced from: `crates/hale-types/src/lifecycle/derive.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
-- `process_order(` may be referenced from: `crates/hale-types/src/lifecycle/spine.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
-- `entry_order(` may be referenced from: `crates/hale-types/src/lifecycle/spine.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `process_order(` may be referenced from: `crates/hale-types/src/lifecycle/spine.rs` ×3, `crates/hale-codegen/src/codegen.rs` ×1
+- `entry_order(` may be referenced from: `crates/hale-types/src/lifecycle/spine.rs` ×3, `crates/hale-codegen/src/codegen.rs` ×1
 - `emit_main_exit(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×4
-- `recovery_order(` may be referenced from: `crates/hale-types/src/lifecycle/spine.rs` ×1, `crates/hale-codegen/src/locus/restart.rs` ×1
+- `recovery_order(` may be referenced from: `crates/hale-types/src/lifecycle/spine.rs` ×2, `crates/hale-codegen/src/locus/restart.rs` ×1
 
 ### `bus_inert` — Canonical · derivation
 

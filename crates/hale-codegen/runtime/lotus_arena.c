@@ -7526,6 +7526,39 @@ typedef struct lotus_reclaim_owner {
 } lotus_reclaim_owner_t;
 static __thread lotus_reclaim_owner_t *t_reclaim_owner = NULL;
 
+/* A reclaim with nothing outstanding. Two words say so: the run tickets
+ * linked anywhere (`lotus_run_tickets_live`, defined with the tickets
+ * below) and the retirement records and reclaim scopes alive on any
+ * thread (`lotus_reclaim_records_live`: one per record from its malloc
+ * to its free, one per scope from its enter to its leave). A thread's
+ * own lists are empty, and no reclaim callback is being entered on it,
+ * whenever the second reads zero there: its own increments precede the
+ * load, and only it decrements them. The functions below each begin by
+ * testing these words, and answer at once when they are zero; the
+ * compiled reclaim reads the same words, with the same (acquire)
+ * loads, before each call, and skips a call whose answer they settle
+ * (spec/runtime.md, decision line 19). A word another thread holds
+ * above zero only sends this one down the full path. */
+extern int64_t lotus_run_tickets_live;
+int64_t lotus_reclaim_records_live = 0;
+
+static inline int lotus_reclaim_none_retired(void) {
+    return __atomic_load_n(&lotus_reclaim_records_live, __ATOMIC_ACQUIRE) == 0;
+}
+
+static inline int lotus_reclaim_quiet(void) {
+    return __atomic_load_n(&lotus_run_tickets_live, __ATOMIC_ACQUIRE) == 0
+        && lotus_reclaim_none_retired();
+}
+
+static void lotus_reclaim_record_born(void) {
+    __atomic_add_fetch(&lotus_reclaim_records_live, 1, __ATOMIC_RELEASE);
+}
+
+static void lotus_reclaim_record_freed(void) {
+    __atomic_sub_fetch(&lotus_reclaim_records_live, 1, __ATOMIC_RELEASE);
+}
+
 static void *lotus_reclaim_owner_for(void *child, void *owner) {
     if (owner) return owner;
     for (lotus_reclaim_owner_t *hint = t_reclaim_owner; hint; hint = hint->prev)
@@ -7554,6 +7587,8 @@ int64_t lotus_reclaim_try_claim(int64_t *claimed) {
 /* A null claim pointer is reserved for the winning spine's final
  * storage step. Its TLS retirement guards still apply. */
 int64_t lotus_reclaim_pending(void *child, int64_t *claimed) {
+    if (lotus_reclaim_none_retired())
+        return claimed && __atomic_load_n(claimed, __ATOMIC_ACQUIRE) == LOTUS_RECLAIM_CLAIMED;
     if (claimed && __atomic_load_n(claimed, __ATOMIC_ACQUIRE) == LOTUS_RECLAIM_CLAIMED)
         return 1;
     for (lotus_retired_reclaim_t *r = t_reclaim_head; r; r = r->next)
@@ -7578,12 +7613,14 @@ typedef struct lotus_reclaim_scope {
 static __thread lotus_reclaim_scope_t *t_reclaim_scope = NULL;
 
 void *lotus_reclaim_scope_enter(void *owner) {
+    if (lotus_reclaim_quiet()) return NULL;
     if (!t_reclaim_scope && !lotus_run_child_live_other(owner))
         return NULL;
     lotus_reclaim_scope_t *s = malloc(sizeof *s);
     if (!s) abort();
     *s = (lotus_reclaim_scope_t){ owner, t_reclaim_scope };
     t_reclaim_scope = s;
+    lotus_reclaim_record_born();
     return s;
 }
 
@@ -7593,10 +7630,14 @@ void lotus_reclaim_scope_leave(void *scope) {
     if (s != t_reclaim_scope) abort();
     t_reclaim_scope = s->prev;
     free(s);
+    lotus_reclaim_record_freed();
 }
 
 int64_t lotus_reclaim_defer(void *child, void *owner, void *reclaim) {
     if (!child) return 0;
+    /* Nothing retired on this thread and no run anywhere: every test
+     * below falls through to one of its `return 0`s. */
+    if (lotus_reclaim_quiet()) return 0;
     owner = lotus_reclaim_owner_for(child, owner);
     /* The callback's first entry consumes its permission. A later
      * recursive request for the same instance is already covered. */
@@ -7639,6 +7680,7 @@ int64_t lotus_reclaim_defer(void *child, void *owner, void *reclaim) {
         abort();
     }
     *r = (lotus_retired_reclaim_t){ child, owner, (void (*)(void *))reclaim, NULL };
+    lotus_reclaim_record_born();
     if (t_reclaim_tail) t_reclaim_tail->next = r;
     else t_reclaim_head = r;
     t_reclaim_tail = r;
@@ -7658,12 +7700,14 @@ static void lotus_reclaim_after_handler(void);
  * Keep the same active-root protection as the deferred callback path:
  * that handler must not flush descendants out from under the wait. */
 void *lotus_reclaim_release_enter(void *child, void *owner) {
+    if (lotus_reclaim_quiet()) return NULL;
     for (lotus_retired_reclaim_t *r = t_reclaim_active; r; r = r->next)
         if (r->child == child) return NULL; /* already in perform() */
     if (!t_reclaim_head && !t_reclaim_active && !lotus_run_any_live()) return NULL;
     lotus_retired_reclaim_t *r = malloc(sizeof *r);
     if (!r) abort();
     *r = (lotus_retired_reclaim_t){ child, lotus_reclaim_owner_for(child, owner), NULL, t_reclaim_active };
+    lotus_reclaim_record_born();
     t_reclaim_active = r;
     t_reclaim_flushing++;
     return r;
@@ -7675,6 +7719,7 @@ void lotus_reclaim_release_leave(void *release) {
     if (r != t_reclaim_active) abort();
     t_reclaim_active = r->next;
     free(r);
+    lotus_reclaim_record_freed();
     t_reclaim_flushing--;
     if (!t_reclaim_flushing && !g_bus_drain_active)
         lotus_reclaim_after_handler();
@@ -7701,11 +7746,13 @@ static void lotus_reclaim_perform(lotus_retired_reclaim_t *r) {
     t_reclaim_entering = prev;
     t_reclaim_active = r->next;
     free(r);
+    lotus_reclaim_record_freed();
 }
 
 /* A retired field is no longer in its owner's current field slots.
  * Finish it before that owner's arena or recognition pool is freed. */
 void lotus_reclaim_flush_owned(void *owner) {
+    if (lotus_reclaim_none_retired()) return;
     for (;;) {
         lotus_retired_reclaim_t **at = &t_reclaim_head;
         while (*at && (*at)->owner != owner) at = &(*at)->next;
@@ -8942,8 +8989,10 @@ typedef struct lotus_coop_overflow {
  *
  * One mutex: a ticket is linked at a run post and unlinked at its
  * cancel or its run's end, rare next to bus traffic (a bus delivery
- * carries no ticket). `g_run_tickets_live` lets the reclaim of a child
- * with nothing queued or running, nearly every reclaim, skip the lock.
+ * carries no ticket). `lotus_run_tickets_live` lets the reclaim of a child
+ * with nothing queued or running, nearly every reclaim, skip the lock;
+ * exported, because the compiled reclaim reads it too, to skip the
+ * cancel call itself.
  * =================================================================== */
 #define LOTUS_RUN_TICKET_BUCKETS 256
 
@@ -8962,9 +9011,9 @@ typedef struct lotus_run_ticket {
 } lotus_run_ticket_t;
 
 static lotus_run_ticket_t *g_run_tickets[LOTUS_RUN_TICKET_BUCKETS];
-static size_t              g_run_tickets_live = 0;  /* atomic; linked tickets */
+int64_t lotus_run_tickets_live = 0;  /* atomic; linked tickets */
 static int lotus_run_any_live(void) {
-    return __atomic_load_n(&g_run_tickets_live, __ATOMIC_ACQUIRE) != 0;
+    return __atomic_load_n(&lotus_run_tickets_live, __ATOMIC_ACQUIRE) != 0;
 }
 static pthread_mutex_t     g_run_tickets_lock = PTHREAD_MUTEX_INITIALIZER;
 /* A run hold released wakes the reclaims waiting for one. */
@@ -8995,7 +9044,7 @@ static void lotus_run_ticket_unlink(lotus_run_ticket_t *t) {
     else g_run_tickets[lotus_run_ticket_bucket(t->child)] = t->next;
     if (t->next) t->next->prev = t->prev;
     t->prev = t->next = NULL;
-    __atomic_sub_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+    __atomic_sub_fetch(&lotus_run_tickets_live, 1, __ATOMIC_RELEASE);
 }
 
 /* A run post that cannot allocate fails at the failing call, as the
@@ -9021,7 +9070,7 @@ static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
     t->next = g_run_tickets[b];
     if (t->next) t->next->prev = t;
     g_run_tickets[b] = t;
-    __atomic_add_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&lotus_run_tickets_live, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_run_tickets_lock);
     return t;
 }
@@ -9135,7 +9184,7 @@ static void lotus_run_cancel(void *child, int wait) {
      * will dequeue, so the pools' teardown is what frees them. */
     if (lotus_lc_skips("Cancellation")) return;
 #endif
-    if (__atomic_load_n(&g_run_tickets_live, __ATOMIC_ACQUIRE) == 0) return;
+    if (__atomic_load_n(&lotus_run_tickets_live, __ATOMIC_ACQUIRE) == 0) return;
     lotus_run_ticket_t *own = lotus_run_hold_own();
     int canceled = 0;
     int held = 0;
@@ -9166,7 +9215,10 @@ static void lotus_run_cancel(void *child, int wait) {
 /* Logical teardown cancels queued runs even if a handler must postpone
  * waiting for started runs. The later physical release waits again. */
 /* The Reclaim's logical step, on every reclaim path: also the instance's
- * last moment as an owner, so its recorded domain goes (decision L0-1). */
+ * last moment as an owner, so its recorded domain goes (decision L0-1).
+ * Both halves answer at once on their first test when
+ * `lotus_run_tickets_live` and `lotus_owner_domain_count` are zero, and
+ * the compiled reclaim skips the call on those two words. */
 void lotus_run_cancel_only(void *child) {
     lotus_run_cancel(child, 0);
     lotus_failure_owner_forget(child);
@@ -10271,7 +10323,10 @@ typedef struct lotus_owner_domain {
 
 #define LOTUS_OWNER_BUCKETS 256
 static lotus_owner_domain_t *g_owner_domains[LOTUS_OWNER_BUCKETS];
-static int64_t g_owner_domain_count = 0;
+/* Exported: the compiled reclaim reads it (with `lotus_run_tickets_live`)
+ * to skip `lotus_run_cancel_only`, whose second half is
+ * `lotus_failure_owner_forget`. */
+int64_t lotus_owner_domain_count = 0;
 
 static lotus_owner_domain_t **lotus_owner_slot_locked(const void *owner) {
     uint64_t h = ((uint64_t)(uintptr_t)owner >> 4) * 0x9E3779B97F4A7C15ull;
@@ -10292,19 +10347,19 @@ static void lotus_failure_owner_note_locked(void *owner) {
     if (!e) lotus_held_oom("recording an owner's domain");
     *e = (lotus_owner_domain_t){ owner, d, NULL };
     *pp = e;
-    __atomic_add_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&lotus_owner_domain_count, 1, __ATOMIC_RELEASE);
 }
 
 /* An owner's reclaim: it receives no failure after this. */
 static void lotus_failure_owner_forget(void *owner) {
-    if (__atomic_load_n(&g_owner_domain_count, __ATOMIC_ACQUIRE) == 0) return;
+    if (__atomic_load_n(&lotus_owner_domain_count, __ATOMIC_ACQUIRE) == 0) return;
     pthread_mutex_lock(&g_params_open_lock);
     lotus_owner_domain_t **pp = lotus_owner_slot_locked(owner);
     if (*pp) {
         lotus_owner_domain_t *e = *pp;
         *pp = e->next;
         free(e);
-        __atomic_sub_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+        __atomic_sub_fetch(&lotus_owner_domain_count, 1, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&g_params_open_lock);
 }
@@ -10321,7 +10376,7 @@ static void lotus_owner_purge_locked(const lotus_domain_t *d) {
             lotus_owner_domain_t *e = *pp;
             *pp = e->next;
             free(e);
-            __atomic_sub_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+            __atomic_sub_fetch(&lotus_owner_domain_count, 1, __ATOMIC_RELEASE);
         }
     }
 }
@@ -10545,7 +10600,7 @@ static void lotus_failure_hold_cell(void *child) {
     t->next = g_run_tickets[b];
     if (t->next) t->next->prev = t;
     g_run_tickets[b] = t;
-    __atomic_add_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&lotus_run_tickets_live, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_run_tickets_lock);
 #if LOTUS_HAVE_ASYNC_IO
     if (g_current_coro_tls) {
@@ -10563,7 +10618,7 @@ static void lotus_failure_hold_cell(void *child) {
  * was posted to the owner's domain and its handler has returned. */
 int64_t lotus_failure_post(void *parent, void *fn, void *child,
                            const void *err, int64_t err_size) {
-    if (!parent || __atomic_load_n(&g_owner_domain_count, __ATOMIC_ACQUIRE) == 0)
+    if (!parent || __atomic_load_n(&lotus_owner_domain_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
     pthread_mutex_lock(&g_params_open_lock);
     lotus_owner_domain_t *e = *lotus_owner_slot_locked(parent);
@@ -10684,6 +10739,9 @@ static void lotus_domain_pool_enter(lotus_coop_pool_t *p) { (void)p; }
 static void lotus_domain_pool_end(lotus_coop_pool_t *p) { (void)p; }
 static void lotus_domain_pool_join_wait(lotus_coop_pool_t *p) { (void)p; }
 static void lotus_failure_owner_note_locked(void *owner) { (void)owner; }
+/* Nothing records an owner on wasm32: the word the compiled reclaim
+ * reads beside the tickets is zero for good. */
+int64_t lotus_owner_domain_count = 0;
 static void lotus_failure_owner_forget(void *owner) { (void)owner; }
 static void lotus_failure_service_here(void) {}
 static void lotus_failure_service_at_yield(void) {}
