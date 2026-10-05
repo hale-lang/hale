@@ -78,6 +78,7 @@ use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
+use hale_types::arrangement::Arrangement;
 use hale_types::capability::uses::CapabilityUses;
 use hale_types::capability::TargetRow;
 use hale_types::binding_rows::BindingRows;
@@ -110,7 +111,10 @@ use crate::source::SourceProvider;
 /// The names are the registry's (`spec/registry.md`). `bus_graph`,
 /// `ownership` and `handler_routing` count the checked programs' graphs,
 /// the model's inputs; `flows` the flow rows, which the check, the
-/// lifecycle plan and the lowering view read; `intra_locus` is the intra-locus rewrite, whose
+/// lifecycle plan and the lowering view read; `arrangement` the
+/// placement table's projection onto the user's declarations, which the
+/// model and the lowering view read ([`Snapshot::demand_arrangement`]);
+/// `intra_locus` is the intra-locus rewrite, whose
 /// relation the check reads (rule 10) and whose program lowering
 /// continues from; `lowering_view` is the `demand` family's own, the
 /// view over the resolved program whose tables are lowering's ownership,
@@ -122,7 +126,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 22] = [
+pub const FAMILIES: [&str; 23] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -140,6 +144,7 @@ pub const FAMILIES: [&str; 22] = [
     "alloc_summary",
     "effects",
     "placement",
+    "arrangement",
     "lifecycle_order",
     "model",
     "claims",
@@ -479,6 +484,7 @@ pub struct Snapshot {
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
+    arrangement: OnceCell<Result<Arrangement, Blocked>>,
     lifecycle: OnceCell<Result<LifecyclePlan, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     /// The typing stage, and how many of its diagnostics are the
@@ -668,6 +674,7 @@ impl Snapshot {
             alloc_summary: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
+            arrangement: OnceCell::new(),
             lifecycle: OnceCell::new(),
             model: OnceCell::new(),
             typing_stage: OnceCell::new(),
@@ -1457,6 +1464,26 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The arrangement ([`hale_types::arrangement::project_arrangement`]):
+    /// the placement table's rows projected onto the user's locus
+    /// declarations, with the births the ownership graph finds outside
+    /// it. The model makes its instances, owners, placements and
+    /// placement holes from it, and the lowering view its dispatch plans'
+    /// domains: one projection for both. Blocked with the table and the
+    /// graph.
+    pub fn demand_arrangement(&self) -> Result<&Arrangement, &Blocked> {
+        self.arrangement
+            .get_or_init(|| {
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                self.count("arrangement");
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership))
+            })
+            .as_ref()
+    }
+
     /// The top-level declarations of the programs held, in program then
     /// item order, each with its minted site ([`crate::dependents`]).
     /// Empty for a seed with a hole, which is not a program.
@@ -1571,6 +1598,7 @@ impl Snapshot {
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
                     placement: self.demand_placement().map_err(Clone::clone)?,
+                    arrangement: self.demand_arrangement().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1783,12 +1811,10 @@ impl Snapshot {
                 // entry row (F.40 phase 3, L4).
                 let entry = self.demand_entry().map_err(Clone::clone)?.clone();
                 // The dispatch plan's domains are the arrangement's, the
-                // projection the model's arrangement rows are made of, over
-                // the same programs, table and graph (F.40 phase 3, C5).
-                let bundle = self.bundle();
-                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                let arrangement =
-                    hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
+                // projection the model's arrangement rows are made of
+                // (F.40 phase 3, C5): the one the model reads (F.40
+                // phase 4, Q1).
+                let arrangement = self.demand_arrangement().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,

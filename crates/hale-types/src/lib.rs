@@ -493,7 +493,8 @@ pub(crate) fn bundle_intra_locus(
 /// [`derive_application_model`] over the scope, the rows, the
 /// allocation summary, the form rows, the bus graph, the binding rows,
 /// the ownership graph and the placement table its caller already built:
-/// the effect rows the model reads beside them are built here.
+/// the effect rows and the table's arrangement the model reads beside
+/// them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -506,6 +507,8 @@ fn model_over_scope(
     placement: &placement::PlacementTable,
 ) -> hale_model::ApplicationModel {
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let arrangement = arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
     model_builder::derive_application_model_over(
         bundle,
         &model_builder::ModelInputs {
@@ -517,6 +520,7 @@ fn model_over_scope(
             forms,
             bindings,
             placement,
+            arrangement: &arrangement,
         },
     )
 }

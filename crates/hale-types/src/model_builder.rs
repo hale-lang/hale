@@ -198,12 +198,12 @@ pub use crate::derive_application_model;
 /// What the model reads from the families it does not own, each built
 /// once over the CHECKED programs (F.40 phase 2.3): the top scope with
 /// its topic rows, the bus graph, the ownership graph, the handler
-/// rows, the effect rows, the form rows and the placement table. The
-/// frontend's snapshot demands each as a family of its own
-/// (`Snapshot::demand_scope`, `demand_bus_graph`,
+/// rows, the effect rows, the form rows, the placement table and its
+/// arrangement. The frontend's snapshot demands each as a family of its
+/// own (`Snapshot::demand_scope`, `demand_bus_graph`,
 /// `demand_ownership_graph`, `demand_handlers`, `demand_effects`,
-/// `demand_forms`, `demand_placement`) and hands them here; the model
-/// builds none of them.
+/// `demand_forms`, `demand_placement`, `demand_arrangement`) and hands
+/// them here; the model builds none of them.
 pub struct ModelInputs<'a> {
     pub top: &'a crate::resolve::TopScope,
     pub bus_graph: &'a crate::bus_graph::BusGraph,
@@ -222,6 +222,11 @@ pub struct ModelInputs<'a> {
     /// The placement table (F.40 phase 3, P1): the arrangement's
     /// instances, ownership edges and domains are its rows, projected.
     pub placement: &'a crate::placement::PlacementTable,
+    /// That projection (`crate::arrangement::project_arrangement`, over
+    /// these programs, the table and the ownership graph): the snapshot's
+    /// (`Snapshot::demand_arrangement`), which lowering's dispatch plans
+    /// read their domains from too (F.40 phase 4, Q1).
+    pub arrangement: &'a crate::arrangement::Arrangement,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -3000,21 +3005,17 @@ pub fn derive_application_model_over(
         };
         // The arrangement is the placement table's rows, projected
         // (`crate::arrangement`, which lowering's dispatch plan reads
-        // its domains from too). Each declaration realized under a path
-        // whose templates disagree is a hole (contract 3), and so is
-        // each declaration born outside the arrangement (below).
+        // its domains from too): the one projection handed in. Each
+        // declaration realized under a path whose templates disagree is
+        // a hole (contract 3), and so is each declaration born outside
+        // the arrangement (below).
         use crate::placement::DomainKind;
         let table = inputs.placement;
-        let projected = crate::arrangement::project_arrangement(
-            &programs,
-            &bundle.snapshot,
-            table,
-            inputs.ownership,
-        );
-        let root_name: Option<&str> = projected.root.map(|l| l.name.name.as_str());
+        let projected = inputs.arrangement;
+        let root_name: Option<&str> = projected.root.as_deref();
         let domain_name = |d: crate::placement::DomainId| projected.domain_name(table, d);
         for (a, d) in &projected.disagreeing {
-            let Some(decl) = locus_id.get(&a.decl.name.name).copied() else { continue };
+            let Some(decl) = locus_id.get(&a.decl).copied() else { continue };
             let pid = intern_span(&mut records, a.span);
             holes
                 .entry((
@@ -3042,7 +3043,7 @@ pub fn derive_application_model_over(
             .filter_map(|a| {
                 Some(Arranged {
                     path: a.path.clone(),
-                    decl: *locus_id.get(&a.decl.name.name)?,
+                    decl: *locus_id.get(&a.decl)?,
                     replica: a.replica,
                     domain: a.domain.clone(),
                     parent: a.parent.clone(),
@@ -3314,7 +3315,7 @@ pub fn derive_application_model_over(
         // evaluates defaults per construction, including explicit
         // overrides and additional dynamic holders).
         for (decl, span) in &projected.unarranged {
-            let Some(lid) = locus_id.get(&decl.name.name) else { continue };
+            let Some(lid) = locus_id.get(decl) else { continue };
             let pid = intern_span(&mut records, *span);
             let at = EntityRef::LocusDecl(*lid);
             holes

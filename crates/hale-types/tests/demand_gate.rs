@@ -317,6 +317,9 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 // The check reads it, and the lifecycle plan and lowering
                 // the same one (F.40 phase 4, Q1).
                 "flows",
+                // The model's arrangement rows and lowering's dispatch
+                // domains are one projection (F.40 phase 4, Q1).
+                "arrangement",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -348,9 +351,11 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     assert_eq!(builds["lowering_view"], 1);
     assert_eq!(builds["model"], 0, "nothing asked for the model yet");
     assert_eq!(builds["effects"], 0, "nor for the effect rows it reads");
+    assert_eq!(builds["arrangement"], 1, "lowering's dispatch domains are the arrangement's");
     s.demand_model().expect("the build's identity reads the model");
     assert_eq!(s.builds()["model"], 1);
     assert_eq!(s.builds()["effects"], 1);
+    assert_eq!(s.builds()["arrangement"], 1, "the model reads the projection lowering read (F.40 phase 4, Q1)");
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -541,6 +546,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "bus_graph",
         "alloc_summary",
         "placement",
+        "arrangement",
         "intra_locus",
         "expression_typing",
         "typed_bodies",
