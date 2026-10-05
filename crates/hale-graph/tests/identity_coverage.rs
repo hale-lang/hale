@@ -185,3 +185,137 @@ fn a_change_to_any_hashed_input_moves_the_cache_key() {
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+fn identity(name: &str) -> &'static hale_graph::identity::Identity {
+    hale_graph::identity::IDENTITIES
+        .iter()
+        .find(|i| i.name == name)
+        .unwrap_or_else(|| panic!("no inventory entry named `{name}`"))
+}
+
+#[test]
+fn the_inventory_names_each_identity_once_and_fills_every_column() {
+    let mut seen = std::collections::BTreeSet::new();
+    for i in hale_graph::identity::IDENTITIES {
+        assert!(seen.insert(i.name), "`{}` is inventoried twice", i.name);
+        for (column, text) in [
+            ("identifies", i.identifies),
+            ("computed", i.computed),
+            ("producer file", i.producer.0),
+            ("producer symbol", i.producer.1),
+            ("on_mismatch", i.on_mismatch),
+            ("versioned_by", i.versioned_by),
+        ] {
+            assert!(!text.trim().is_empty(), "`{}`: `{column}` is empty", i.name);
+        }
+        assert!(!i.covers.is_empty(), "`{}` covers nothing", i.name);
+        assert!(!i.consumers.is_empty(), "`{}` has no consumer", i.name);
+        for (_, why) in i.leaves_out {
+            assert!(!why.trim().is_empty(), "`{}` leaves an input out without a reason", i.name);
+        }
+        if let Some(f) = i.frozen {
+            assert!(!f.trim().is_empty(), "`{}` is frozen by nothing it names", i.name);
+        }
+    }
+}
+
+/// `fn NAME`, `struct NAME`, `const NAME` or `static NAME` at the start
+/// of a line (after `pub`, `pub(crate)` and the like), the name ended
+/// by a non-identifier character.
+fn defined_in(text: &str, name: &str) -> bool {
+    text.lines().any(|line| {
+        let mut t = line.trim_start();
+        for vis in ["pub(crate) ", "pub(super) ", "pub "] {
+            if let Some(r) = t.strip_prefix(vis) {
+                t = r;
+                break;
+            }
+        }
+        ["fn ", "struct ", "const ", "static "].iter().any(|k| {
+            t.strip_prefix(k).is_some_and(|rest| {
+                rest.starts_with(name)
+                    && !rest[name.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        })
+    })
+}
+
+#[test]
+fn every_inventory_producer_is_defined_in_its_file() {
+    for i in hale_graph::identity::IDENTITIES {
+        let (file, symbol) = i.producer;
+        let text = read(file);
+        assert!(
+            defined_in(&text, symbol),
+            "`{}`: its producer `{symbol}` is not defined in {file}",
+            i.name
+        );
+    }
+}
+
+/// The input classes a walked file belongs to, by extension and name.
+fn classes_of(files: &[PathBuf]) -> std::collections::BTreeSet<&'static str> {
+    use hale_graph::identity::MANIFEST_FILES;
+    files
+        .iter()
+        .map(|f| {
+            let rel = f.strip_prefix(root()).unwrap_or(f).to_string_lossy().replace('\\', "/");
+            if MANIFEST_FILES.contains(&rel.as_str()) {
+                return "manifests";
+            }
+            match f.extension().and_then(|s| s.to_str()) {
+                Some("rs") => "compiler",
+                Some("c") | Some("h") => "runtime",
+                Some("hl") => "stdlib",
+                other => panic!("{}: a walked file of no class ({other:?})", f.display()),
+            }
+        })
+        .collect()
+}
+
+fn covered_classes(i: &hale_graph::identity::Identity) -> std::collections::BTreeSet<&'static str> {
+    use hale_graph::identity::Input;
+    i.covers
+        .iter()
+        .filter_map(|c| match c {
+            Input::CompilerSources => Some("compiler"),
+            Input::RuntimeC => Some("runtime"),
+            Input::StdlibSeeds => Some("stdlib"),
+            Input::Manifests => Some("manifests"),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
+    let root = root();
+    let selected = classes_of(&hale_graph::identity::identity_files(&root));
+    for name in ["toolchain_digest", "compiler_src_hash"] {
+        assert_eq!(
+            covered_classes(identity(name)),
+            selected,
+            "`{name}` folds `identity_files`: its `covers` must name the classes that selection holds"
+        );
+    }
+    // `exec_digest` takes the compiler half whole, through `toolchain_digest`.
+    assert_eq!(
+        covered_classes(identity("exec_digest")),
+        selected,
+        "`exec_digest` frames `toolchain_digest`: it covers what that does"
+    );
+    let stale = classes_of(&hale_graph::identity::stale_hash_paths(&root.join("crates/hale-codegen")));
+    assert_eq!(
+        covered_classes(identity("codegen_src_hash")),
+        stale,
+        "`codegen_src_hash` folds `stale_hash_paths`: its `covers` must name the classes that list holds"
+    );
+    // The two build scripts and the stale check call the selection the
+    // entry says they fold.
+    assert!(read("crates/hale-cli/build.rs").contains("identity_files("));
+    assert!(read("crates/hale-iris/build.rs").contains("identity_files("));
+    assert!(read("crates/hale-cli/src/shared/stale.rs").contains("stale_hash_paths("));
+}
