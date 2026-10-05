@@ -18,7 +18,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::{ast::*, parse_source};
 use hale_syntax::desugar::{desugar_intra_locus_topics, desugar_topics};
 
@@ -46,9 +45,8 @@ fn typecheck_diags(src: &str) -> Vec<String> {
 }
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = parse(src);
     let bin = harness::unique_bin(&format!("hale_test_phase2_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -740,10 +738,9 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let program = parse(src);
     let bin = harness::unique_bin("hale_birth_pinned_full");
     let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    build_opts::build_source(src, &bin, &opts).expect("build");
     let mut child = Command::new(&bin)
         .env("LOTUS_BUS_QUEUE_CAP", "64")
         .stdout(std::process::Stdio::piped())
@@ -830,10 +827,9 @@ fn main() {
     println(a.text, " ", b.text);
 }
 "#;
-    let program = parse(src);
     let bin = harness::unique_bin("hale_birth_fused_managed");
     let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    build_opts::build_source(src, &bin, &opts).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -895,10 +891,9 @@ fn main() { App { }; }
 /// Build `src` under ASan in one dispatch mode and run it with a
 /// 64-cell queue cap; the stdout of a run that finished cleanly.
 fn run_at_readiness_cap(name: &str, src: &str, no_bus_devirt: bool) -> String {
-    let program = parse(src);
     let bin = harness::unique_bin(name);
     let opts = hale_codegen::BuildOptions { asan: true, no_bus_devirt, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    build_opts::build_source(src, &bin, &opts).expect("build");
     let mut child = Command::new(&bin)
         .env("LOTUS_BUS_QUEUE_CAP", "64")
         .stdout(std::process::Stdio::piped())

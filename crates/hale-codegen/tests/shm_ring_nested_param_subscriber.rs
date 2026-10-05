@@ -22,8 +22,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -38,9 +36,8 @@ fn unique_tag(label: &str) -> String {
 }
 
 fn build_binary(src: &str, label: &str) -> PathBuf {
-    let prog = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_shm_ws35_{}.bin", unique_tag(label)));
-    build_executable_with_options(&prog, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

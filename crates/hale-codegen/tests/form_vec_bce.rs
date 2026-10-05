@@ -22,17 +22,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_form_vec_bce_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -52,9 +49,8 @@ fn run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
 /// pre-opt but statically dead (`is_err = 1 == 0`), and O2 removes
 /// it (and vectorizes the loop) — so we assert on the emit-time facts.
 fn build_dump_ir(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_form_vec_bce_{}", name));
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     ir
 }

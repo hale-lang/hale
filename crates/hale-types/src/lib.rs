@@ -346,6 +346,7 @@ fn check_numbered_bundle(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
+    let flows = bundle_flow_rows(bundle);
     let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -366,6 +367,7 @@ fn check_numbered_bundle(
         &check::CheckInputs {
             top: &top,
             handlers: &handlers,
+            flows: &flows,
             ownership: &ownership,
             effects: &effects,
             entry: &entry,
@@ -429,6 +431,14 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
     handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot)
 }
 
+/// The flow rows of a bundle no snapshot holds: what the test entries'
+/// check reads ([`check_bundle_opts_scoped`], [`check::check_bundle`]).
+/// Every verb reads its snapshot's (`Snapshot::demand_flows`).
+pub(crate) fn bundle_flow_rows(bundle: &Bundle<'_>) -> flows::FlowRows {
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    flows::survey(&programs, &bundle.import_renames)
+}
+
 /// The application model of a bundle no snapshot holds: the test
 /// entry's ([`judgment::claim_law_diags`], the hale-types tests, the
 /// artifact's bundle entry `topology::dump_topology`). It builds the
@@ -483,7 +493,8 @@ pub(crate) fn bundle_intra_locus(
 /// [`derive_application_model`] over the scope, the rows, the
 /// allocation summary, the form rows, the bus graph, the binding rows,
 /// the ownership graph and the placement table its caller already built:
-/// the effect rows the model reads beside them are built here.
+/// the effect rows and the table's arrangement the model reads beside
+/// them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -496,6 +507,8 @@ fn model_over_scope(
     placement: &placement::PlacementTable,
 ) -> hale_model::ApplicationModel {
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let arrangement = arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
     model_builder::derive_application_model_over(
         bundle,
         &model_builder::ModelInputs {
@@ -507,6 +520,7 @@ fn model_over_scope(
             forms,
             bindings,
             placement,
+            arrangement: &arrangement,
         },
     )
 }

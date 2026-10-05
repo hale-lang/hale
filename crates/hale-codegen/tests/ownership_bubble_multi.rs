@@ -26,17 +26,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build_named(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_multi_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -45,13 +42,12 @@ fn build_named(name: &str, src: &str) -> std::path::PathBuf {
 /// environment, which every concurrent build in this binary would
 /// also have read; it is a per-build option now.
 fn build_named_no_bubble(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_multi_{}", name));
     let options = hale_codegen::BuildOptions {
         no_ownership_bubble: true,
         ..build_opts::options()
     };
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(src, &bin, &options)
         .expect("build");
     bin
 }

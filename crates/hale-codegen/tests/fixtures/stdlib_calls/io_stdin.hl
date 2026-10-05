@@ -1,0 +1,8 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::io::stdin` at
+// statement position. Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    std::io::stdin::read_byte(0);
+    std::io::stdin::read_line();
+    std::io::stdin::read_line_status();
+}

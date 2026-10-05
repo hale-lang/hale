@@ -66,7 +66,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
 use hale_types::lifecycle::trace::{self, Trace};
 use hale_types::lifecycle::{ObligationKind, Point};
 
@@ -156,20 +155,21 @@ fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/failure_delivery")
 }
 
-fn program(file: &str) -> hale_syntax::ast::Program {
+/// The fixture's text, once `hale check` takes it.
+fn checked_source(file: &str) -> String {
     let path = dir().join(file);
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let program = hale_syntax::parse_source(&src).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
     let errs: Vec<String> =
         hale_types::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
     assert!(errs.is_empty(), "{file}: `hale check` refuses it: {errs:?}");
-    program
+    src
 }
 
 fn build(file: &str, asan: bool, no_bus_devirt: bool) -> PathBuf {
     let bin = harness::unique_bin(&format!("hale_fd_{}", file.trim_end_matches(".hl")));
     let options = hale_codegen::BuildOptions { asan, lifecycle_trace: !asan, no_bus_devirt, ..build_opts::options() };
-    build_executable_with_options(&program(file), &bin, &[], &options).unwrap_or_else(|e| panic!("{file}: build: {e:?}"));
+    build_opts::build_source(&checked_source(file), &bin, &options).unwrap_or_else(|e| panic!("{file}: build: {e:?}"));
     if asan {
         let image = std::fs::read(&bin).expect("read the ASan binary");
         assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");

@@ -98,7 +98,7 @@ use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 
 #[path = "support/harness.rs"]
@@ -431,10 +431,9 @@ fn parse(stdout: &str, status: Option<i32>) -> Observed {
 /// what it printed.
 fn run(case: Case, variant: Variant, arm: Arm) -> Observed {
     let src = program(case, variant);
-    let program = hale_syntax::parse_source(&src).unwrap_or_else(|e| panic!("parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&format!("nested_offthread_{case:?}_{variant:?}_{arm:?}").to_lowercase());
     let opts = BuildOptions { no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+    build_opts::build_source(&src, &bin, &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
     let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn");
     // Drained while the program runs: a run that polls its count until
     // the deadline prints more than a pipe holds, and would block on it.
@@ -717,11 +716,10 @@ fn main() { App { }; }
 
 #[test]
 fn a_nested_subscribers_route_outlives_its_queued_cells() {
-    let program = hale_syntax::parse_source(ROUTE_TEARDOWN).expect("parse");
     for arm in [Arm::Devirt, Arm::NoDevirt] {
         let bin = harness::unique_bin(&format!("nested_offthread_teardown_{arm:?}").to_lowercase());
         let opts = BuildOptions { asan: true, no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
-        build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+        build_opts::build_source(ROUTE_TEARDOWN, &bin, &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
         let out = Command::new("timeout").arg("60").arg(&bin).output().expect("run");
         let _ = std::fs::remove_file(&bin);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -933,10 +931,9 @@ fn run_startup(name: &str, src: &str, arm: Arm, asan: bool) -> (Option<i32>, Str
 
 /// [`run_startup`] with `env` set on the child.
 fn run_startup_env(name: &str, src: &str, arm: Arm, asan: bool, env: &[(&str, &str)]) -> (Option<i32>, String, String) {
-    let program = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&format!("nested_offthread_startup_{name}_{arm:?}").to_lowercase());
     let opts = BuildOptions { asan, no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+    build_opts::build_source(src, &bin, &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
     let out = Command::new("timeout").arg("60").arg(&bin).envs(env.iter().copied()).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -1465,11 +1462,10 @@ fn a_worker_waiting_on_the_instantiating_thread_runs_the_init_it_waits_for() {
 /// The IR of `case`'s witnessing program.
 fn ir_of(case: Case) -> String {
     let src = program(case, Variant::Witness);
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("nested_offthread_ir_{case:?}").to_lowercase());
     let ll = bin.with_extension("ll");
     let opts = BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+    build_opts::build_source(&src, &bin, &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
     let ir = std::fs::read_to_string(&ll).expect("read IR");
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&ll);
@@ -1670,7 +1666,7 @@ fn a_pending_init_completes_with_a_full_ring_and_an_empty_ring() {
             assert!(!checked.diags.iter().any(|d| d.is_error()), "{:?}", checked.diags);
             let bin = harness::unique_bin(&format!("pool_start_ring_{arm:?}_{messages}"));
             let opts = BuildOptions { asan: true, no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
-            build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+            build_opts::build_source(&src, &bin, &opts).expect("build");
             let mut child = Command::new(&bin).env("LOTUS_BUS_QUEUE_CAP", "64")
                 .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("run");
             let deadline = Instant::now() + Duration::from_secs(8);

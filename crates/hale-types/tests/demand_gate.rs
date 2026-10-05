@@ -16,9 +16,11 @@
 //! - every build path (`build`, `run`, `test`, `replay`, `bench`, F.40
 //!   phase 2.2b): the whole seed with a build's config, the check, the
 //!   lowering view, and the model the build's identity reads;
-//! - the test harness (codegen's `build_executable_with_options`): a
-//!   bare program's snapshot (`Snapshot::from_program`), whose lowering
-//!   is not gated on the check.
+//! - the test harness (codegen's `tests/support/build.rs`: `build_source`
+//!   loads a seed from text, `build_seed_dir` from disk, and
+//!   `build_program` hands a bare program to `Snapshot::from_program`):
+//!   the harness configuration, whose lowering is not gated on the
+//!   check.
 //!
 //! A program that swears to nothing builds no model on the editor path;
 //! one that declares a law builds exactly one on `hale check`, which a
@@ -156,7 +158,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     // snapshot counts. The bus graph is one of them since rules 7, 9 and
     // 10 read it, the ownership graph since rule 20 does (F.40 phase 3,
     // C4).
-    for family in ["handler_routing", "entrypoint", "bus_graph", "ownership"] {
+    for family in ["handler_routing", "flows", "entrypoint", "bus_graph", "ownership"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_eq!(builds["alloc_summary"], 1, "the check's certificate engine reads the snapshot's summary");
@@ -314,6 +316,12 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "bus_graph",
                 "ownership",
                 "handler_routing",
+                // The check reads it, and the lifecycle plan and lowering
+                // the same one (F.40 phase 4, Q1).
+                "flows",
+                // The model's arrangement rows and lowering's dispatch
+                // domains are one projection (F.40 phase 4, Q1).
+                "arrangement",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -345,9 +353,11 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     assert_eq!(builds["lowering_view"], 1);
     assert_eq!(builds["model"], 0, "nothing asked for the model yet");
     assert_eq!(builds["effects"], 0, "nor for the effect rows it reads");
+    assert_eq!(builds["arrangement"], 1, "lowering's dispatch domains are the arrangement's");
     s.demand_model().expect("the build's identity reads the model");
     assert_eq!(s.builds()["model"], 1);
     assert_eq!(s.builds()["effects"], 1);
+    assert_eq!(s.builds()["arrangement"], 1, "the model reads the projection lowering read (F.40 phase 4, Q1)");
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -363,7 +373,9 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     let s = build(&d.join("app.hl"));
     let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
     let builds = s.builds();
-    for family in ["top_scope", "bus_graph", "ownership"] {
+    // And the handler rows, the flow rows and the arrangement (F.40
+    // phase 4, Q1).
+    for family in ["top_scope", "bus_graph", "ownership", "handler_routing", "flows", "arrangement"] {
         assert_eq!(builds[family], 1, "`{family}`: one derivation, and lowering reads it");
     }
     let scope = s.demand_scope().expect("scoped");
@@ -380,6 +392,105 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     assert_eq!(names(&view.ownership)[..own.declarations.len()], names(own)[..], "the view's ownership rows are the snapshot's, first");
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// The fixtures below are plain literals, not raw ones: the corpus
+// harvests `r#"…"#` programs from test files, and these belong to this
+// test.
+const WITH_FLOWS: &str = "
+locus Worker { params { ran: Int = 0; } run() { self.ran = 1; } }
+type Job = Worker;
+locus Pool {
+    params { n: Int = 0; }
+    accept(c: Job) { }
+    release(c: Job) { self.n = self.n + 1; }
+    run() { Worker { }; }
+}
+locus Manager<T> {
+    params { released: Int = 0; }
+    accept(c: T) { }
+    release(c: T) { self.released = self.released + 1; }
+}
+fn main() { Pool { }; let a: Manager<Worker> = Manager { }; }
+";
+
+/// F.40 phase 4, Q1: the flow rows are surveyed once per snapshot, and
+/// the lowering view reads that survey. It used to survey the merged
+/// program again; lowering reads the rows by locus name (`is_flow`,
+/// `specialize`), and the stdlib declares no `release` clause and no
+/// type alias, so that survey's clauses are the snapshot's, row for row:
+/// an alias followed, a template's clause kept for its specializations.
+#[test]
+fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
+    let std = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    assert!(hale_types::flows::survey(&[std], &[]).is_empty(), "the stdlib declares no `release` clause");
+    let declared = hale_types::handler_routing::DeclaredNames::of(&[std]);
+    assert!(declared.aliases.is_empty(), "the stdlib declares no type alias a clause's child could follow");
+
+    let d = seed("one-flows", WITH_FLOWS);
+    let s = build(&d.join("app.hl"));
+    assert_clean(&s);
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    assert_eq!(s.builds()["flows"], 1, "the check, the lifecycle plan and lowering read one survey");
+    let rows = |flows: &[hale_types::flows::Flow]| {
+        flows
+            .iter()
+            .flat_map(|f| {
+                f.clauses.iter().map(move |c| {
+                    (f.child.clone(), c.owner.clone(), c.param.clone(), c.span, c.locus.clone(), c.template.is_some())
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let snapshot = rows(s.demand_flows().expect("the rows"));
+    assert_eq!(
+        snapshot.iter().map(|r| (r.0.as_str(), r.4.as_deref(), r.5)).collect::<Vec<_>>(),
+        vec![("Job", Some("Worker"), false), ("T", None, true)],
+        "the alias resolved, the template's clause kept"
+    );
+    assert_eq!(rows(&view.flows), snapshot, "the view's rows are the snapshot's");
+    let merged = hale_types::flows::survey(&[&view.merged], &view.import_renames);
+    assert_eq!(rows(&merged), snapshot, "the merged program's survey is the snapshot's, row for row");
+    assert_at_most_once(&s, "build");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+const WITH_SCRATCH: &str = "
+fn shout(s: String) -> Int { let t = s + \"!\"; return len(t); }
+locus App {
+    params { n: Int = 0; }
+    run() { self.n = shout(\"a\"); }
+}
+fn main() { App { }; }
+";
+
+/// F.40 phase 4, Q1: the scratch-local free fns are classified once on
+/// a build path, in the allocation summary, and lowering's routing rows
+/// read that set; the harness's lowering too. The count is this
+/// thread's, so the tests of this binary do not share it.
+#[test]
+fn a_build_classifies_the_scratch_local_fns_once() {
+    let classified = hale_types::alloc_routing::scratch_local_derivations_on_this_thread;
+    let d = seed("one-scratch", WITH_SCRATCH);
+    let before = classified();
+    let s = build(&d.join("app.hl"));
+    assert_clean(&s);
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    assert_eq!(classified() - before, 1, "the summary classifies, and lowering reads its set");
+    let summary = s.demand_alloc_summary().expect("the summary");
+    assert!(summary.scratch_local.contains("shout"), "{:?}", summary.scratch_local);
+    assert_eq!(view.alloc_routing.scratch_local, summary.scratch_local, "the routing's set is the summary's");
+    let _ = std::fs::remove_dir_all(&d);
+
+    let program = hale_syntax::parse_source(WITH_SCRATCH).expect("the fixture parses");
+    let before = classified();
+    let s = match Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program's snapshot is not refused"),
+    };
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("the harness lowers what it is handed"));
+    assert_eq!(classified() - before, 1, "harness: one classification");
+    assert!(view.alloc_routing.is_scratch_local("shout"));
 }
 
 /// F.40 phase 2, use-site identity: which declaration each use names is
@@ -437,10 +548,12 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "entrypoint",
         "bindings",
         "handler_routing",
+        "flows",
         "ownership",
         "bus_graph",
         "alloc_summary",
         "placement",
+        "arrangement",
         "intra_locus",
         "expression_typing",
         "typed_bodies",

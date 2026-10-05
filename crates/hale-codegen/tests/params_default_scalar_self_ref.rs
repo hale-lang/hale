@@ -16,8 +16,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -38,9 +36,8 @@ fn unique_path(tag: &str) -> PathBuf {
 }
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)
@@ -184,9 +181,8 @@ fn default_reading_later_sibling_is_rejected() {
         }
         fn main() { L { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path("fwd_ref");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(src, &bin, &build_opts::options())
         .expect_err("forward-ref default must be rejected");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{err:?}");

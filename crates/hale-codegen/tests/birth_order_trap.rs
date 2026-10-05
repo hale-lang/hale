@@ -46,12 +46,9 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-use hale_codegen::build_executable_with_options;
-
 fn run_src(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     String::from_utf8_lossy(&out.stdout).to_string()

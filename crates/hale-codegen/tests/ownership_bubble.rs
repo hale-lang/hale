@@ -37,9 +37,8 @@ mod build_opts;
 mod sanitize;
 
 fn build_named(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
+    build_opts::build_source(src, &bin, &sanitize::options()).expect("build");
     bin
 }
 
@@ -48,13 +47,12 @@ fn build_named(name: &str, src: &str) -> std::path::PathBuf {
 /// environment, which every concurrent build in this binary would
 /// also have read; it is a per-build option now.
 fn build_named_no_bubble(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
     let options = hale_codegen::BuildOptions {
         no_ownership_bubble: true,
         ..build_opts::options()
     };
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(src, &bin, &options)
         .expect("build");
     bin
 }
@@ -359,9 +357,14 @@ fn resolved_birth_bubbles(tag: &str, birth: &str, alias: &str, renames: &[(Vec<S
         "    run() { self.yard.spawn(); println(\"count=\", self.harmonic()); println(\"total=\", self.bulk()); }\n",
         "}\nfn main() { World { }; }\n",
     ].concat();
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(tag);
-    hale_codegen::build_executable_with_options(&program, &bin, renames, &sanitize::options()).expect("build");
+    if renames.is_empty() {
+        build_opts::build_source(&src, &bin, &sanitize::options()).expect("build");
+    } else {
+        // the subject is the rename table handed through the API (no import line, no loaded seed has one)
+        let program = hale_syntax::parse_source(&src).expect("parse");
+        build_opts::build_program(&program, &bin, renames, &sanitize::options()).expect("build");
+    }
     let out = run(&bin);
     assert!(out.contains("count=2") && out.contains("total=42"), "both children belong to World: {out}");
     assert_eq!(out.matches("ship dissolved=").count(), 2, "each child dissolves once: {out}");

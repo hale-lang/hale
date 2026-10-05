@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, BuildOptions, CodegenError, CompileTarget};
+use hale_codegen::{BuildOptions, CodegenError, CompileTarget};
 use hale_graph::shadow::{gate_message, parse_fixture, program_id, Report};
 use hale_syntax::ast::{flat_decls, LocusMember, PlacementSpec, Program, TopDecl, TransportSpec};
 use hale_types::capability::{
@@ -109,7 +109,7 @@ struct Built {
     backstop: Option<String>,
 }
 
-fn build(program: &Program, target: CompileTarget, link: &[&str], name: &str, origin: &str) -> Built {
+fn build(program: &Program, src: &str, target: CompileTarget, link: &[&str], name: &str, origin: &str) -> Built {
     let bin = harness::unique_bin(name);
     let out = if target == CompileTarget::Wasm32 { bin.with_extension("wasm") } else { bin.clone() };
     let ll = bin.with_extension("ll");
@@ -119,7 +119,7 @@ fn build(program: &Program, target: CompileTarget, link: &[&str], name: &str, or
         link_libs: link.iter().map(|s| s.to_string()).collect(),
         ..build_opts::options()
     };
-    let err = build_executable_with_options(program, &out, &[], &options).err();
+    let err = build_opts::build_source(src, &out, &options).err();
     let ir = std::fs::read_to_string(&ll).unwrap_or_default();
     let built_wasm = target == CompileTarget::Wasm32 && err.is_none();
     let exports = built_wasm.then(|| std::fs::read(&out).ok().and_then(|b| wasm_module::exports(&b))).flatten();
@@ -510,9 +510,9 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
                     chunk
                         .iter()
                         .enumerate()
-                        .map(|(i, (o, _, p))| {
+                        .map(|(i, (o, s, p))| {
                             let name = format!("hale_shadow_cap_{c}_{i}");
-                            (build(p, CompileTarget::Native, &[], &name, o), build(p, CompileTarget::Wasm32, &[], &name, o))
+                            (build(p, s, CompileTarget::Native, &[], &name, o), build(p, s, CompileTarget::Wasm32, &[], &name, o))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -538,7 +538,7 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
     let link_probe = hale_syntax::parse_source(LINK_PROBE).unwrap();
     let id = program_id("crates/hale-codegen/tests/shadow_capability_lowering.rs#link-probe", LINK_PROBE);
     for (class, target) in [(TargetClass::PosixAsync, CompileTarget::Native), (TargetClass::Wasm32, CompileTarget::Wasm32)] {
-        let b = build(&link_probe, target, &["m"], "hale_shadow_cap_link", "shadow_capability_lowering#link-probe");
+        let b = build(&link_probe, LINK_PROBE, target, &["m"], "hale_shadow_cap_link", "shadow_capability_lowering#link-probe");
         let old = b.err.as_ref().map(refusal_text).unwrap_or_else(|| "lower".to_string());
         let new = shadow.behaviour_fact(class, Capability::LinkLibrary, &[("libs", "[\"m\"]")]);
         shadow.compare("link_wasm (refusal)", class, &id, vec![("[ffi] link".to_string(), old)], vec![("[ffi] link".to_string(), new)]);

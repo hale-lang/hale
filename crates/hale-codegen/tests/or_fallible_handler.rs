@@ -8,7 +8,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
 use hale_types::check_program;
 
@@ -18,9 +17,8 @@ mod harness;
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

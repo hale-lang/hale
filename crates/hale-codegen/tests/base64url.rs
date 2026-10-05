@@ -6,8 +6,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 /// Compile `source` to a temp binary, run it, return stdout.
 #[path = "support/harness.rs"]
 mod harness;
@@ -15,9 +13,8 @@ mod harness;
 mod build_opts;
 
 fn build_and_run(name: &str, source: &str) -> String {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_b64url_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     String::from_utf8_lossy(&output.stdout).to_string()

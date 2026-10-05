@@ -13,8 +13,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 /// Check whether a POSIX SHM object exists in the kernel
 /// namespace. On Linux, POSIX SHM objects live at
 /// `/dev/shm/<name>` (with the leading slash from the name
@@ -115,9 +113,8 @@ fn hale_publisher_routes_through_shm_ring() {
         slot_count = slot_count,
     );
 
-    let program = hale_syntax::parse_source(&hale_src).expect("parse");
     let publisher_bin = harness::unique_bin(&format!("lotus_shm_pub_{}.bin", tag));
-    build_executable_with_options(&program, &publisher_bin, &[], &build_opts::options()).expect("build publisher");
+    build_opts::build_source(&hale_src, &publisher_bin, &build_opts::options()).expect("build publisher");
 
     let reader_bin = build_reader(&tag);
 
@@ -196,9 +193,8 @@ fn shm_object_unlinked_on_clean_exit() {
         shm_name = shm_name,
         slot_count = slot_count,
     );
-    let program = hale_syntax::parse_source(&hale_src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_shm_unlink_{}.bin", tag));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&hale_src, &bin, &build_opts::options()).expect("build");
 
     // Pre-condition: name doesn't exist yet (unique per test).
     assert!(

@@ -296,6 +296,12 @@ impl HandlerRouting {
         self.bounds.get(&(statement.start.0, statement.end.0)).map(|b| b.bound)
     }
 
+    /// Every recovery statement's `for` bound [`HandlerRouting::retry_bound_at`]
+    /// answers, in the order of the statements' spans.
+    pub fn bounds(&self) -> impl Iterator<Item = &StatedBound> + '_ {
+        self.bounds.values()
+    }
+
     /// The identity the rows key the concrete locus `name`, declared at
     /// `decl`, by: the declaration's site, and for a monomorph the
     /// specialization `specialize` registered (two instances of one
@@ -532,7 +538,102 @@ pub fn handler_rows(
     import_renames: &[(Vec<String>, String)],
     snapshot: &Snapshot,
 ) -> HandlerRouting {
-    let declared = DeclaredNames::of(programs);
+    rows_over(
+        || programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)),
+        DeclaredNames::of(programs),
+        import_renames,
+        snapshot,
+    )
+}
+
+/// The rows of the stdlib's loci in a merged program (the lowering
+/// view's): `stdlib` is the stdlib's items, the tail of `merged`, which
+/// `ids` minted. The snapshot's rows are derived over the checked
+/// programs, which hold no stdlib, so the stdlib's are the one part of
+/// lowering's routing the merged program answers itself
+/// ([`lowering_handler_routing`]); each child type resolves against the
+/// whole merged program, as it did when the rows were derived over it.
+pub fn stdlib_handler_rows(
+    merged: &Program,
+    stdlib: &[TopDecl],
+    import_renames: &[(Vec<String>, String)],
+    ids: &Snapshot,
+) -> HandlerRouting {
+    rows_over(|| hale_syntax::ast::flat_decls(stdlib), DeclaredNames::of(&[merged]), import_renames, ids)
+}
+
+/// Lowering's handler routing (F.40 phase 4, Q1): the snapshot's rows,
+/// read for the program lowering walks through the view's
+/// correspondence, followed by the stdlib's ([`stdlib_handler_rows`]),
+/// with the indexes rebuilt over the union.
+///
+/// Every user row's handler and parent keep their identities in the
+/// merged program ([`crate::correspondence::Image::Checked`]); a row
+/// whose site is not that is refused, by name. Lowering joins a
+/// declaration to its rows by the site's index (`is_row_of`,
+/// `handlers_of_decl`), which the merged mint kept, and reads the rest
+/// of a row as the checked declaration's own: neither rewrite touches a
+/// locus's `on_failure`, closure or `birth_check`, nor any recovery
+/// statement the merged program keeps.
+///
+/// The bounds are keyed by the statement's span alone, and the stdlib's
+/// spans overlap the first user file's: the stdlib's are entered after
+/// the user's, as the walk over the merged program entered them. The
+/// resolver and the declaration sites are the stdlib rows' own, the
+/// merged program's, which a specialization lowering asks for
+/// (`specialize`) resolves through, as before. A user row's
+/// `child_decl` is the snapshot's (a stdlib child named in the analysis
+/// copy, `SiteRef::stdlib`); no lowering reader reads it.
+pub fn lowering_handler_routing(
+    snapshot: &HandlerRouting,
+    stdlib: HandlerRouting,
+    correspondence: &crate::correspondence::Correspondence,
+) -> Result<HandlerRouting, String> {
+    use crate::correspondence::Image;
+    for row in &snapshot.rows {
+        for (what, site) in [("handler", row.id), ("parent", row.parent_id)] {
+            let image = site.and_then(|s| correspondence.image(NodeId(s.index)));
+            if !matches!(image, Some(Image::Checked(c)) if Some(c) == site) {
+                return Err(format!(
+                    "the handler row of `{}`'s on_failure({}) at {:?}: its {what} has no checked image in the \
+                     merged program",
+                    row.parent, row.written, row.span
+                ));
+            }
+        }
+    }
+    for row in &stdlib.rows {
+        if !matches!(row.id.and_then(|s| correspondence.image(NodeId(s.index))), Some(Image::Stdlib(_))) {
+            return Err(format!(
+                "the stdlib's handler row of `{}`'s on_failure({}) is no stdlib site of the merged program",
+                row.parent, row.written
+            ));
+        }
+    }
+    let HandlerRouting { rows, declared, renames, declaration_sites, failing, bounds, .. } = stdlib;
+    let mut routing = HandlerRouting {
+        declared,
+        renames,
+        declaration_sites,
+        failing: snapshot.failing.iter().cloned().chain(failing).collect(),
+        bounds: snapshot.bounds.clone(),
+        ..HandlerRouting::default()
+    };
+    routing.bounds.extend(bounds);
+    for row in snapshot.rows.iter().cloned().chain(rows) {
+        routing.push(row);
+    }
+    Ok(routing)
+}
+
+/// The rows of the declarations `items` yields (called twice: the rows,
+/// then the bounds' walk), each child type resolved against `declared`.
+fn rows_over<'a, I: Iterator<Item = &'a TopDecl>>(
+    items: impl Fn() -> I,
+    declared: DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+    snapshot: &Snapshot,
+) -> HandlerRouting {
     let declaration_sites = declared.decls.iter().filter_map(|(name, at)| {
         declaration_site(*at, snapshot).map(|site| (name.clone(), site))
     }).collect();
@@ -542,8 +643,7 @@ pub fn handler_rows(
         declaration_sites,
         ..HandlerRouting::default()
     };
-    let items = programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items));
-    for item in items {
+    for item in items() {
         let TopDecl::Locus(l) = item else { continue };
         let fails = l
             .members
@@ -583,7 +683,7 @@ pub fn handler_rows(
     // handlers' (the rows' own, by the same walk), and one written in
     // any other body (a method that restarts a child it holds).
     let mut w = OpWalk::default();
-    for item in programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)) {
+    for item in items() {
         w.top_decl(item);
     }
     for b in w.bounds {

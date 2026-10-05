@@ -94,9 +94,12 @@ hale-ts-shim  staticlib; no dependents; linked by path
    api it was resolved with, its top scope, and hands out its bundle
    view), then **codegen**: `hale_codegen::build_resolved`
    (`codegen.rs`), which refuses options whose api disagrees with the
-   envelope's. `build_executable_with_options` is the adapter the test
-   harness uses; it runs the desugar sequence, resolves and then
-   lowers.
+   envelope's. The test harness builds as the verbs do:
+   `crates/hale-codegen/tests/support/build.rs` loads a seed
+   (`build_source` from text, `build_seed_dir` from disk) with the
+   harness configuration, demands the lowering view from the snapshot
+   and hands it to `build_resolved`; a test whose subject is a
+   `Program` it made uses `build_program` (`Snapshot::from_program`).
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
    (source, flags) key into a cache, linked by clang.
 
@@ -276,7 +279,8 @@ Where a test goes:
 
 - "Run a program, check what it computed": `tests/hale/*_test.hl`
   (`hale test tests/hale`, or `cargo test -p hale-cli --test
-  hale_native_suite`). It is typechecked; `build_executable` is not.
+  hale_native_suite`). It is typechecked; the Rust codegen tests'
+  harness build (`build_source` in `support/build.rs`) is not.
 - Compiler output (diagnostics, IR shape, leak counts, artifact
   JSON): Rust, in the owning crate's `tests/`. Artifact tests parse
   the JSON rather than matching substrings.

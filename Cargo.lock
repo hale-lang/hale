@@ -121,6 +121,9 @@ version = "0.22.0"
 [[package]]
 name = "hale-dna"
 version = "0.22.0"
+dependencies = [
+ "hale-graph",
+]
 
 [[package]]
 name = "hale-frontend"

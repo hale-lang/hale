@@ -1111,6 +1111,19 @@ fn entry_locus<'p>(
     })
 }
 
+/// Every locus declaration of `program` by its name, nested modules
+/// included, in `flat_decls` order. A name declared twice keeps its
+/// first declaration, the one a scan of `flat_decls` finds.
+fn locus_decl_index(program: &Program) -> BTreeMap<&str, &hale_syntax::ast::LocusDecl> {
+    let mut index = BTreeMap::new();
+    for item in hale_syntax::ast::flat_decls(&program.items) {
+        if let TopDecl::Locus(l) = item {
+            index.entry(l.name.name.as_str()).or_insert(l);
+        }
+    }
+    index
+}
+
 /// The `fn main` lowering emits as the process's entry point: the entry
 /// row's column (`hale_types::entry::EntryRow::fn_main`), found among
 /// lowering's top-level declarations by its site. Total: a row with no
@@ -1124,68 +1137,6 @@ fn entry_fn<'p>(entry: &hale_types::entry::EntryRow, program: &'p Program) -> Op
     })
 }
 
-/// Compile `program` to an executable at `output_path`, linking it with
-/// `clang`. The one entry point: what to build with (the cache directory
-/// the caller chose, the link surface for `@ffi("c")` consumers the CLI's
-/// `--link` and `--csrc` flags carry, every other knob) is in `options`,
-/// and `BuildOptions::new` takes the cache directory, so there is no way
-/// to build without choosing one.
-///
-/// `import_renames` is the per-build path-rename table for cross-seed
-/// imports (v1.x-IMPORT). The caller (the CLI) resolves any
-/// `import "lib/X" as foo;` declarations, mangles each imported
-/// sub-program, merges the mangled decls into `program`, and passes the
-/// table here. Each entry maps a segment vector (`["foo", "Bar"]`) to the
-/// mangled symbol name (`"__lib_<lib_id>__<stem>__Bar"`). The codegen consults
-/// this table after the static stdlib table when resolving
-/// qualified-name paths. A caller with no imports passes `&[]`.
-///
-/// This is the adapter for callers that hold a bare program (the test
-/// harness): it builds the harness's snapshot of the program
-/// (`hale_frontend::snapshot::Snapshot::from_program`, shaped as every
-/// verb's load shapes a seed, with no source map) and demands the
-/// lowering view from it, as the verbs demand theirs, then lowers it
-/// with [`build_resolved`]. The harness's snapshot does not gate
-/// lowering on a check (`Config::harness`): a test that wants the check
-/// runs it itself.
-pub fn build_executable_with_options(
-    program: &Program,
-    output_path: &Path,
-    import_renames: &[(Vec<String>, String)],
-    options: &BuildOptions,
-) -> Result<(), CodegenError> {
-    use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
-    let spec = options.target.spec();
-    // A harness build names its target, the host included: the view's
-    // effective target is the one lowering emits for, so its cells are
-    // the ones the build reads (a harness native build of a program
-    // that declares `target wasm` lowers natively, as it always has).
-    let target = Target {
-        name: match options.target {
-            CompileTarget::Native => "host".to_string(),
-            _ => spec.triple.to_string(),
-        },
-        spec,
-        explicit: true,
-    };
-    let mut config = Config::harness(target);
-    config.api = options.api.clone();
-    config.api_roles = options.api_roles.clone();
-    let snap = match Snapshot::from_program(program.clone(), import_renames.to_vec(), config) {
-        Ok(s) => s,
-        Err(LoadError::Refused(msg)) => return Err(CodegenError::Unsupported(msg)),
-        // A bare program is not read from anywhere; kept for totality.
-        Err(LoadError::Load(f)) => return Err(CodegenError::Unsupported(f.text())),
-    };
-    let view = snap.demand_lowering().map_err(|b| match (b.family, b.because.first()) {
-        ("target_capability", Some(d)) => CodegenError::CapabilityRefused(d.message.clone(), Some(d.span)),
-        _ => CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
-            b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
-        })),
-    })?;
-    build_resolved(view, output_path, options)
-}
-
 /// Lower the view the frontend produced
 /// (`hale_types::resolved::LoweringView`, a snapshot's `lowering_view`
 /// family) to an executable at `output_path`. The view is read, never
@@ -1193,8 +1144,11 @@ pub fn build_executable_with_options(
 /// rename table is the one the view was resolved with; `options` has to
 /// carry the view's `--api` path and roles, or the build is refused (the
 /// api surface was shaped by the view's, and lowering it under another
-/// would describe a program nobody resolved). See
-/// [`build_executable_with_options`].
+/// would describe a program nobody resolved). What to build with (the
+/// cache directory the caller chose, the link surface for `@ffi("c")`
+/// consumers the CLI's `--link` and `--csrc` flags carry, every other
+/// knob) is in `options`, and `BuildOptions::new` takes the cache
+/// directory, so there is no way to build without choosing one.
 pub fn build_resolved(
     resolved: &LoweringView,
     output_path: &Path,
@@ -1538,6 +1492,7 @@ pub fn build_resolved(
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
         specialized_locus_decls: BTreeMap::new(),
+        locus_decls_by_name: locus_decl_index(merged),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle,
@@ -3417,6 +3372,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// locus methods. Signature lookup must read these same declarations
     /// instead of searching the unspecialized program for a mangled name.
     pub(crate) specialized_locus_decls: BTreeMap<String, LocusDecl>,
+    /// Every locus declaration of `program` by name, built once
+    /// (`locus_decl_index`): what `locus_declaration` reads when the
+    /// name is no specialization, instead of a scan per method call.
+    pub(crate) locus_decls_by_name: BTreeMap<&'p str, &'p LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -3575,7 +3534,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// statically-ELIGIBLE subject's wire string → its stable
     /// compile-time bucket id. Eligibility comes from the authoritative
     /// `hale_types::bus_graph::BusGraph` gate, computed once over the
-    /// merged+desugared program in `build_executable_with_options`.
+    /// merged+desugared program the lowering view carries.
     /// A subject present here gets `lotus_bus_register_static` at each
     /// subscriber registration and `lotus_bus_dispatch_static` at each
     /// compile-time-literal publish; subjects absent here are
@@ -4213,8 +4172,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// blocks, no bindings, no accepts, no perspectives) — every
     /// emitted drain would be a no-op, so `emit_bus_drain` /
     /// `emit_pinned_mailbox_drain_pending` emit nothing. Computed
-    /// once in `build_executable_with_options`; see the comment
-    /// there for the producer enumeration.
+    /// once by the frontend (`hale_types::bus_inert`, on the lowering
+    /// view) and read in `build_resolved`, where the comment has the
+    /// producer enumeration.
     pub(crate) bus_inert: bool,
     pub(crate) di: Option<DiState<'ctx>>,
     /// Per-statement debug-location stack: (function the location
@@ -12354,12 +12314,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The declaration used for a locus's emitted methods, retaining
     /// source identities while substituting its type arguments.
     fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
-        self.specialized_locus_decls.get(name).or_else(|| {
-            hale_syntax::ast::flat_decls(&self.program.items).find_map(|d| match d {
-                TopDecl::Locus(l) if l.name.name == name => Some(l),
-                _ => None,
-            })
-        })
+        self.specialized_locus_decls
+            .get(name)
+            .or_else(|| self.locus_decls_by_name.get(name).copied())
     }
 
     /// m62: the specialization a generic fn call instantiates — its
@@ -34272,6 +34229,30 @@ mod tests {
         // io has 2; compute has 1 — both clamp to 64K.
         assert_eq!(chunk_hint_for_coop_pool(&mixed, "io"), 65536);
         assert_eq!(chunk_hint_for_coop_pool(&mixed, "compute"), 65536);
+    }
+
+    /// The locus index answers what the scan it replaced answered: a
+    /// name declared twice (here once nested in a module, once at the
+    /// top level after it) resolves to the first in `flat_decls`
+    /// order, and a module-nested locus is found by its bare name.
+    #[test]
+    fn locus_decl_index_keeps_the_first_declaration_of_a_name() {
+        let program = hale_syntax::parse_source(
+            "module m {\n    locus Twin { params { a: Int = 1; } }\n    locus Nested { params { b: Int = 2; } }\n}\nlocus Twin { params { c: Int = 3; } }\n",
+        )
+        .expect("parses");
+        let index = locus_decl_index(&program);
+        let scan = |name: &str| {
+            hale_syntax::ast::flat_decls(&program.items).find_map(|d| match d {
+                TopDecl::Locus(l) if l.name.name == name => Some(l),
+                _ => None,
+            })
+        };
+        for name in ["Twin", "Nested"] {
+            let indexed = index.get(name).copied().expect("indexed");
+            assert!(std::ptr::eq(indexed, scan(name).expect("scanned")), "{name}");
+        }
+        assert!(index.get("Missing").is_none());
     }
 }
 

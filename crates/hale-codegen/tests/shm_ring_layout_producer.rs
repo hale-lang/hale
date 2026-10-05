@@ -25,6 +25,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/sanitize.rs"]
 mod sanitize;
 
@@ -100,9 +102,8 @@ fn hale_producer_roundtrips_through_foreign_layout() {
         shm_name = shm_name,
     );
 
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_{}.bin", unique_tag("bin")));
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
+    build_opts::build_source(&src, &bin, &sanitize::options()).expect("build");
 
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

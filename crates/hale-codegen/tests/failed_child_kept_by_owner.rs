@@ -23,9 +23,8 @@ use std::process::Command;
 mod harness;
 
 fn run_asan(name: &str, src: &str) -> (String, String) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()

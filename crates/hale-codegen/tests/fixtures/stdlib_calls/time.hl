@@ -1,0 +1,19 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::time` at the
+// positions the rest of the line S shadow set does not reach. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let t = std::time::current();
+    std::time::current();
+    std::time::from_nanos(0);
+    std::time::iso8601(t);
+    std::time::monotonic();
+    std::time::monotonic_ns();
+    std::time::nanos(t);
+    std::time::now();
+    std::time::time_from_unix(0);
+    std::time::unix(t);
+    let ok = std::time::can_parse_iso8601("2026-01-01T00:00:00Z");
+    let secs = std::time::parse_iso8601("2026-01-01T00:00:00Z") or 0;
+    println(ok, secs);
+}

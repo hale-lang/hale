@@ -24,8 +24,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -56,7 +54,7 @@ fn build_binary(src: &str, label: &str) -> PathBuf {
         .collect();
     assert!(errors.is_empty(), "`hale build` refuses this program: {errors:?}");
     let bin = harness::unique_bin(&format!("lotus_shm_drain_{}.bin", unique_tag(label)));
-    build_executable_with_options(&prog, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

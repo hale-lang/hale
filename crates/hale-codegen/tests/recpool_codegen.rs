@@ -7,8 +7,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -16,7 +14,6 @@ mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let program = hale_syntax::parse_source(src).expect("parse");
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -27,7 +24,7 @@ fn build(name: &str, src: &str) -> std::path::PathBuf {
         std::process::id(),
         nanos
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

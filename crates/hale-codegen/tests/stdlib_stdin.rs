@@ -4,17 +4,14 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build_for_stdin(name: &str, source: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     bin
 }
 

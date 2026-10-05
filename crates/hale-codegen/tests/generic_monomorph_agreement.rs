@@ -25,7 +25,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
 use hale_types::check_program;
 
@@ -53,7 +52,7 @@ fn agree(tag: &str, src: &str, expect: &Expect) {
     let messages: Vec<String> =
         diags.iter().map(|d| d.message.clone()).collect();
     let bin = harness::unique_bin(&format!("hale_test_genmono_{tag}"));
-    let built = build_executable_with_options(&program, &bin, &[], &build_opts::options());
+    let built = build_opts::build_source(src, &bin, &build_opts::options());
     // The invariant, stated once and independent of the row: a
     // program the checker passes must build, and a program it
     // refuses must not build.

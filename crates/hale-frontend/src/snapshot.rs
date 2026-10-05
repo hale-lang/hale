@@ -17,6 +17,9 @@
 //!   graph and the handler rows over the checked programs, what the
 //!   model reads beside the scope. The checker reads the handler rows
 //!   too, demanded before it runs.
+//! - [`Snapshot::demand_flows`]: the flow rows over the checked
+//!   programs, which the check, the lifecycle plan, the lowering view,
+//!   the editor's dependents relation and `check --flows` read.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
 //!   over the checked programs and the stdlib's analysis copy, which
 //!   the check's effects certificate engine and the effect rows read.
@@ -75,6 +78,7 @@ use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
+use hale_types::arrangement::Arrangement;
 use hale_types::capability::uses::CapabilityUses;
 use hale_types::capability::TargetRow;
 use hale_types::binding_rows::BindingRows;
@@ -82,6 +86,7 @@ use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
 use hale_types::entry::EntryRow;
+use hale_types::flows::FlowRows;
 use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::lifecycle::LifecyclePlan;
@@ -105,7 +110,11 @@ use crate::source::SourceProvider;
 /// The families a snapshot produces, in the order a build demands them.
 /// The names are the registry's (`spec/registry.md`). `bus_graph`,
 /// `ownership` and `handler_routing` count the checked programs' graphs,
-/// the model's inputs; `intra_locus` is the intra-locus rewrite, whose
+/// the model's inputs; `flows` the flow rows, which the check, the
+/// lifecycle plan and the lowering view read; `arrangement` the
+/// placement table's projection onto the user's declarations, which the
+/// model and the lowering view read ([`Snapshot::demand_arrangement`]);
+/// `intra_locus` is the intra-locus rewrite, whose
 /// relation the check reads (rule 10) and whose program lowering
 /// continues from; `lowering_view` is the `demand` family's own, the
 /// view over the resolved program whose tables are lowering's ownership,
@@ -117,7 +126,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 21] = [
+pub const FAMILIES: [&str; 23] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -131,9 +140,11 @@ pub const FAMILIES: [&str; 21] = [
     "bus_graph",
     "ownership",
     "handler_routing",
+    "flows",
     "alloc_summary",
     "effects",
     "placement",
+    "arrangement",
     "lifecycle_order",
     "model",
     "claims",
@@ -235,8 +246,8 @@ impl Config {
         }
     }
 
-    /// The test harness's (codegen's `build_executable_with_options`,
-    /// over [`Snapshot::from_program`]): a build's config whose
+    /// The test harness's (codegen's `tests/support/build.rs`, over
+    /// [`Snapshot::load`] or [`Snapshot::from_program`]): a build's config whose
     /// lowering is not gated on a check. The harness runs no checker —
     /// a test that wants the check calls it itself, and the agreement
     /// sweep (`corpus_check_build_agreement`) compares the two — so its
@@ -467,11 +478,13 @@ pub struct Snapshot {
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
+    flows: OnceCell<Result<FlowRows, Blocked>>,
     /// Shared with the effect rows, which hold the summary their walk
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
+    arrangement: OnceCell<Result<Arrangement, Blocked>>,
     lifecycle: OnceCell<Result<LifecyclePlan, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     /// The typing stage, and how many of its diagnostics are the
@@ -560,10 +573,11 @@ impl Snapshot {
         Snapshot::shape(entry, Some(mode), key, config, loaded)
     }
 
-    /// A snapshot of a program a caller already holds: the test
-    /// harness's (codegen's `build_executable_with_options`), whose
-    /// program was parsed from a string and carries its imports
-    /// already merged under `import_renames`. It is shaped as
+    /// A snapshot of a program a caller already holds: the frontend's
+    /// entry for the tests that construct a view directly (codegen's
+    /// `tests/support/build.rs` `build_program` is one), whose
+    /// program was parsed from a string or built by the test and carries
+    /// its imports already merged under `import_renames`. It is shaped as
     /// [`Snapshot::load`] shapes a loaded seed; it has no files, so no
     /// source map, and its sites are seeded by ordinal.
     pub fn from_program(
@@ -657,9 +671,11 @@ impl Snapshot {
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
+            flows: OnceCell::new(),
             alloc_summary: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
+            arrangement: OnceCell::new(),
             lifecycle: OnceCell::new(),
             model: OnceCell::new(),
             typing_stage: OnceCell::new(),
@@ -1163,6 +1179,7 @@ impl Snapshot {
         let inputs = hale_types::check::CheckInputs {
             top: &scope.top,
             handlers: self.demand_handlers().map_err(Clone::clone)?,
+            flows: self.demand_flows().map_err(Clone::clone)?,
             ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
             effects: &effects,
             entry: self.demand_entry().map_err(Clone::clone)?,
@@ -1363,6 +1380,25 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The flow rows of the checked programs ([`hale_types::flows::survey`]):
+    /// which child types a `release` clause makes flows, and each locus
+    /// declaration's run row. The check's run-row rules and accept/release
+    /// law, the lifecycle plan, the lowering view, the editor's dependents
+    /// relation and `check --flows` read them. Blocked with the scope; the
+    /// survey reads declarations, not types.
+    pub fn demand_flows(&self) -> Result<&FlowRows, &Blocked> {
+        self.flows
+            .get_or_init(|| {
+                self.scope().map_err(Clone::clone)?;
+                self.count("flows");
+                // In the bundle's order, as the handler rows.
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::flows::survey(&programs, &bundle.import_renames))
+            })
+            .as_ref()
+    }
+
     /// The effect rows over the checked programs: one fixpoint, with
     /// the stdlib's analysis copy beside them and cross-seed calls
     /// resolved through the import renames. Per fn: the resolved call
@@ -1429,6 +1465,26 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The arrangement ([`hale_types::arrangement::project_arrangement`]):
+    /// the placement table's rows projected onto the user's locus
+    /// declarations, with the births the ownership graph finds outside
+    /// it. The model makes its instances, owners, placements and
+    /// placement holes from it, and the lowering view its dispatch plans'
+    /// domains: one projection for both. Blocked with the table and the
+    /// graph.
+    pub fn demand_arrangement(&self) -> Result<&Arrangement, &Blocked> {
+        self.arrangement
+            .get_or_init(|| {
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                self.count("arrangement");
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership))
+            })
+            .as_ref()
+    }
+
     /// The top-level declarations of the programs held, in program then
     /// item order, each with its minted site ([`crate::dependents`]).
     /// Empty for a seed with a hole, which is not a program.
@@ -1468,8 +1524,7 @@ impl Snapshot {
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
-                let programs: Vec<&Program> = self.programs.values().collect();
-                let flows = hale_types::flows::survey(&programs, &self.import_renames);
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 Ok(DependencyIndex::build(&crate::dependents::Families {
                     programs: &self.programs,
                     decls: self.declarations(),
@@ -1477,7 +1532,7 @@ impl Snapshot {
                     ownership,
                     bus,
                     placement,
-                    flows: &flows,
+                    flows,
                 }))
             })
             .as_ref()
@@ -1500,15 +1555,14 @@ impl Snapshot {
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 self.count("lifecycle_order");
                 let bundle = self.bundle();
-                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                let flows = hale_types::flows::survey(&programs, &bundle.import_renames);
                 Ok(hale_types::lifecycle::derive::derive_lifecycle(&hale_types::lifecycle::derive::LifecycleInputs {
                     bundle: &bundle,
                     placement,
                     handlers,
-                    flows: &flows,
+                    flows,
                     bus,
                     entry,
                 }))
@@ -1545,6 +1599,7 @@ impl Snapshot {
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
                     placement: self.demand_placement().map_err(Clone::clone)?,
+                    arrangement: self.demand_arrangement().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1733,10 +1788,18 @@ impl Snapshot {
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
                 // Lowering's scope is this one, and its bus and ownership
-                // graphs are these ones' rows (C5).
+                // graphs are these ones' rows (C5), and its handler rows
+                // (F.40 phase 4, Q1).
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                let handlers = self.demand_handlers().map_err(Clone::clone)?;
+                // And its flow rows these ones, and its scratch-local set
+                // the allocation summary's (F.40 phase 4, Q1): the check
+                // demanded the summary on the gated path, the target
+                // admission on the harness's.
+                let flows = self.demand_flows().map_err(Clone::clone)?;
+                let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
                 // target with no column (Windows) never reaches a snapshot.
@@ -1751,12 +1814,10 @@ impl Snapshot {
                 // entry row (F.40 phase 3, L4).
                 let entry = self.demand_entry().map_err(Clone::clone)?.clone();
                 // The dispatch plan's domains are the arrangement's, the
-                // projection the model's arrangement rows are made of, over
-                // the same programs, table and graph (F.40 phase 3, C5).
-                let bundle = self.bundle();
-                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                let arrangement =
-                    hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
+                // projection the model's arrangement rows are made of
+                // (F.40 phase 3, C5): the one the model reads (F.40
+                // phase 4, Q1).
+                let arrangement = self.demand_arrangement().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1772,6 +1833,9 @@ impl Snapshot {
                     &scope.top,
                     bus,
                     ownership,
+                    handlers,
+                    flows,
+                    &summary.scratch_local,
                     &arrangement.domains(),
                     class,
                 )

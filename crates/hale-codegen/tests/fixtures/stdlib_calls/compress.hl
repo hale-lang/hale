@@ -1,0 +1,12 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::compress` under
+// `or`, the one position it is dispatched from. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let b = std::bytes::from_string("payload");
+    let gz = std::compress::gzip(b) or b;
+    let raw = std::compress::gunzip(gz) or b;
+    let zs = std::compress::zstd(b) or b;
+    let back = std::compress::unzstd(zs) or b;
+    println(len(raw) + len(back));
+}

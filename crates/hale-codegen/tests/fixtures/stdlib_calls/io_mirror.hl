@@ -1,0 +1,26 @@
+// Build-only call fixture (F.40 phase 4, S0): every `std::io::mirror`
+// primitive behind the `["std", "io", "mirror", op]` arm, at statement
+// and at expression position. Never run; `stdlib_call_fixtures` builds
+// it to IR.
+
+fn main() {
+    std::io::mirror::__new(4096);
+    let h = std::io::mirror::__new(4096);
+    std::io::mirror::__commit(h, 1);
+    std::io::mirror::__consume(h, 1);
+    std::io::mirror::__readable(h);
+    std::io::mirror::__writable(h);
+    std::io::mirror::__len(h);
+    std::io::mirror::__capacity(h);
+    std::io::mirror::__recv_into(h, 0, 16);
+    std::io::mirror::__free(h);
+    let g = std::io::mirror::__new(4096);
+    let c = std::io::mirror::__commit(g, 1);
+    let d = std::io::mirror::__consume(g, 1);
+    let r = std::io::mirror::__readable(g);
+    let w = std::io::mirror::__writable(g);
+    let n = std::io::mirror::__len(g) + std::io::mirror::__capacity(g);
+    let got = std::io::mirror::__recv_into(g, 0, 16);
+    let f = std::io::mirror::__free(g);
+    println(c + d + n + got + f);
+}

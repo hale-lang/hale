@@ -33,10 +33,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-use hale_codegen::mangle;
-use hale_syntax::ast::{Program, TopDecl};
-use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -103,36 +99,21 @@ fn main() {
 }
 "#;
 
-/// Mirror of the cross_seed_imports.rs helper: parse the lib
-/// source as seed "lib", mangle, and produce (items, renames).
-fn mangle_lib(alias: &str) -> (Vec<TopDecl>, Vec<(Vec<String>, String)>) {
-    let prog = parse_source(LIB_SRC).expect("parse lib");
-    let parsed: Vec<(String, Program)> = vec![("lib".to_string(), prog)];
-    let stem_refs: Vec<(String, &Program)> =
-        parsed.iter().map(|(s, p)| (s.clone(), p)).collect();
-    let seed_renames = mangle::build_seed_renames(&stem_refs, alias);
-    let mut renames: Vec<(Vec<String>, String)> = Vec::new();
-    for (name, mangled) in &seed_renames {
-        renames.push((vec![alias.to_string(), name.clone()], mangled.clone()));
-    }
-    let mut items: Vec<TopDecl> = Vec::new();
-    for (_, mut prog) in parsed {
-        mangle::mangle_with_renames(&mut prog, &seed_renames);
-        items.extend(prog.items);
-    }
-    (items, renames)
-}
-
 #[test]
 fn factory_after_caught_cross_seed_failure_is_clean() {
-    let mut consumer = parse_source(PROBE_SRC).expect("parse probe");
-    consumer.imports.clear();
-    let (lib_items, renames) = mangle_lib("lib");
-    consumer.items.extend(lib_items);
+    // The seed on disk, as the probe's `import "../lib"` expects: the
+    // probe in `consumer/`, the lib beside it.
+    let dir = harness::unique_dir("caller_arena_tls_unwind_seed");
+    std::fs::create_dir_all(dir.join("consumer")).expect("create consumer dir");
+    std::fs::create_dir_all(dir.join("lib")).expect("create lib dir");
+    std::fs::write(dir.join("lib").join("lib.hl"), LIB_SRC).expect("write lib");
+    let entry = dir.join("consumer").join("main.hl");
+    std::fs::write(&entry, PROBE_SRC).expect("write probe");
 
     let bin = harness::unique_bin("caller_arena_tls_unwind");
-    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options())
-        .expect("build 2-seed probe");
+    let built = build_opts::build_seed_dir(&entry, &bin, &build_opts::options());
+    let _ = std::fs::remove_dir_all(&dir);
+    built.expect("build 2-seed probe");
 
     let out = Command::new(&bin).output().expect("run probe");
     let _ = std::fs::remove_file(&bin);

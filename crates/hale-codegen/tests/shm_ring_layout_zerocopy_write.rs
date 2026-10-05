@@ -9,8 +9,6 @@
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -84,9 +82,8 @@ fn hale_zero_copy_write_in_place_round_trips() {
     "#,
         shm_name = shm_name,
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_{}.bin", unique_tag("bin")));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(

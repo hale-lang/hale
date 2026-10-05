@@ -712,11 +712,10 @@ pub(crate) fn run_check_impl_labelled(
     // included, so a child still reclaimed when its `run()` returns after
     // its own owner dropped the hook is answered here: every clause that
     // names its type, with the file and line.
+    // The rows are the snapshot's, the ones the check judged with.
     if std::env::args().any(|a| a == "--flows") {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let flows = hale_types::flows::survey(&progs, &bundle.import_renames);
-        eprint!("{}", render_flows(&flows, file_bases, sources, import_renames));
+        let flows = snap.demand_flows().expect("a whole seed has no hole, so its flow rows are never blocked");
+        eprint!("{}", render_flows(flows, file_bases, sources, import_renames));
     }
     if std::env::args().any(|a| a == "--strict-secret") {
         let progs: Vec<&hale_syntax::ast::Program> =

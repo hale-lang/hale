@@ -50,7 +50,7 @@
 //!      runtime's registry of live top-level arenas at exit and
 //!      reports them on an ordinary build; the matrix requires `0
 //!      live arenas`.
-//!   3. **ASan** — `harness::build_asan` (`BuildOptions::asan`,
+//!   3. **ASan** — `harness::build_source_asan` (`BuildOptions::asan`,
 //!      GH #843), whose runtime cflags carry
 //!      `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` (GH #816, PR #875) so a
 //!      recycled chunk's intact bytes cannot hide a
@@ -110,8 +110,6 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -1018,7 +1016,7 @@ fn run_cell(c: Cell) -> Outcome {
     // --- oracle 0b: it builds --------------------------------
     ran.push(Oracle::Build);
     let bin = harness::unique_bin(&["ownmatrix_", &slug(&id)].concat());
-    if let Err(e) = build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
+    if let Err(e) = build_opts::build_source(&src, &bin, &build_opts::options()) {
         failures.push((Oracle::Build, format!("build refused it: {e:?}")));
         return Outcome { ran, failures };
     }
@@ -1099,12 +1097,9 @@ fn run_cell(c: Cell) -> Outcome {
     if position.twin_stmts.is_some() {
         ran.push(Oracle::Differential);
         let tsrc = program_source(c, true);
-        let tprogram = hale_syntax::parse_source(&tsrc).unwrap_or_else(|e| {
-            panic!("{id}: the generator emitted an unparsable twin: {e:?}\n{tsrc}")
-        });
         let tbin =
             harness::unique_bin(&["ownmatrix_twin_", &slug(&id)].concat());
-        match build_executable_with_options(&tprogram, &tbin, &[], &build_opts::options()) {
+        match build_opts::build_source(&tsrc, &tbin, &build_opts::options()) {
             Err(e) => failures.push((
                 Oracle::Differential,
                 format!("the `let`-named twin does not build: {e:?}"),
@@ -1135,7 +1130,7 @@ fn run_cell(c: Cell) -> Outcome {
     // --- oracle 3: the sanitizer --------------------------------
     ran.push(Oracle::Asan);
     let abin = harness::unique_bin(&["ownmatrix_asan_", &slug(&id)].concat());
-    harness::build_asan(&program, &abin);
+    harness::build_source_asan(&src, &abin);
     let arun = run_bin(
         &abin,
         &[

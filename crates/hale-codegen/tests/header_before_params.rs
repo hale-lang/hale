@@ -38,12 +38,11 @@ locus Ship {
 "#;
 
 fn run(tag: &str, src: &str, asan: bool) -> Output {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
     if asan {
-        harness::build_asan(&program, &bin);
+        harness::build_source_asan(src, &bin);
     } else {
-        hale_codegen::build_executable_with_options(&program, &bin, &[], &harness_build::options()).expect("build");
+        harness_build::build_source(src, &bin, &harness_build::options()).expect("build");
     }
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")

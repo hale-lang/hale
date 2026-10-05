@@ -18,8 +18,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -30,9 +28,8 @@ mod obs;
 use obs::{obs_bus_locus, read_u32, read_u64};
 
 fn build(name: &str, src: &str) -> PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_obs_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

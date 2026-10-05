@@ -319,8 +319,8 @@ pub fn rewrite_intra_locus(
     let mut program_owned = program.clone();
     // The intra-locus rewrite moves each send's id onto the call that
     // replaces it and records it in the relation, so the sends have to
-    // be minted before it runs: a caller that did not mint (the
-    // harness adapter, `build_executable_with_options`) would otherwise
+    // be minted before it runs: a caller that did not mint (the test
+    // harness's bare-program snapshot, `Snapshot::from_program`) would otherwise
     // get a relation of `NodeId::NONE` sends no call can be joined to.
     // Idempotent: the ids a bundle already minted are kept, so the
     // relation names the sends the check's graph holds, and the mint
@@ -349,7 +349,10 @@ pub fn rewrite_intra_locus(
 /// so they are built here over the minted program, by the snapshot's own
 /// producers (`bus_graph::build_bus_graph`,
 /// `ownership_graph::build_ownership_graph`), with `bindings` and
-/// `placement`.
+/// `placement`, its handler rows derived (`handler_routing::handler_rows`),
+/// its flow rows surveyed (`flows::survey`) and its
+/// allocation summary derived (`alloc_summary::derive_alloc_summary`),
+/// whose scratch-local set the view's routing rows are handed.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -365,16 +368,19 @@ pub fn resolve_program(
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     let mut minted = program.clone();
     let checked = crate::snapshot::mint([("program", &mut minted)], sources);
-    let (top, bus, ownership) = {
+    let (top, bus, ownership, summary) = {
         let bundle = merged_bundle(&minted, import_renames, &checked);
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         // The closed world is the entry row's, over the minted program.
         let entry = crate::entry::entry_row(&bundle);
         let bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement, &entry);
         let ownership = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement, &entry);
-        (top, bus, ownership)
+        let summary = crate::alloc_summary::derive_alloc_summary(&bundle);
+        (top, bus, ownership, summary)
     };
     let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
+    let flows = crate::flows::survey(&[&minted], import_renames);
+    let handlers = crate::handler_routing::handler_rows(&[&minted], import_renames, &checked);
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
         &checked,
@@ -389,6 +395,9 @@ pub fn resolve_program(
         &top,
         &bus,
         &ownership,
+        &handlers,
+        &flows,
+        &summary.scratch_local,
         &arrangement.domains(),
         host,
     )
@@ -410,7 +419,7 @@ pub fn resolve_program(
 /// its span falls in, as the bundle's does. A caller with no source
 /// map passes `&[]`, and the user program is then seed 0 by ordinal.
 /// `import_renames` is the per-build path-rename table for cross-seed
-/// imports (see `hale_codegen::build_executable_with_options`); `api`
+/// imports (see `hale_frontend::snapshot::Snapshot::from_program`); `api`
 /// and `api_roles` are the build's `--api` path and the roles its
 /// environment binds, the ones the sequence shaped the api surface
 /// with, recorded on the envelope for lowering to hold its options
@@ -436,7 +445,15 @@ pub fn resolve_program(
 /// over the checked programs: lowering's graph is its rows, read through
 /// the correspondence (`bus_graph::lowering_bus_graph`); `ownership` the
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
-/// the same way (`ownership_graph::lowering_ownership_graph`). `domains`
+/// the same way (`ownership_graph::lowering_ownership_graph`). `flows` is
+/// the snapshot's flow rows (`Snapshot::demand_flows`), which lowering
+/// reads by locus name, so they need no correspondence. `handlers` is the
+/// snapshot's handler rows (`Snapshot::demand_handlers`), read the way
+/// the graphs are (`handler_routing::lowering_handler_routing`): through
+/// the correspondence, the stdlib's after them. `scratch_local`
+/// is the snapshot's allocation summary's scratch-local set
+/// (`AllocSummary::scratch_local`), classified over the declarations the
+/// merged program holds; the routing rows read it. `domains`
 /// is the dispatch plan's domain map, the arrangement's
 /// ([`crate::arrangement::Arrangement::domains`] over the snapshot's
 /// programs, placement table and ownership graph): the map the model's
@@ -460,6 +477,9 @@ pub fn resolve_rewritten(
     top: &TopScope,
     bus: &BusGraph,
     ownership: &OwnershipGraph,
+    handlers: &crate::handler_routing::HandlerRouting,
+    flows: &crate::flows::FlowRows,
+    scratch_local: &std::collections::BTreeSet<String>,
     domains: &BTreeMap<&str, Vec<String>>,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
@@ -657,15 +677,26 @@ pub fn resolve_rewritten(
         (graph, bubble, bus, plan)
     };
 
-    // F.40 phase 1.4: the handler rows, over the same merged program,
-    // with the child type resolved the way lowering resolves it.
-    let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
-    // The flow rows over the same merged program, each clause's child
-    // resolved to the locus lowering names: lowering reads flow-ness here.
-    let flows = crate::flows::survey(&[&merged], import_renames);
+    // F.40 phase 1.4: the handler rows, with the child type resolved the
+    // way lowering resolves it. They are the snapshot's rows read through
+    // the correspondence, and after them the stdlib's, derived over the
+    // merged program's tail (F.40 phase 4, Q1,
+    // `handler_routing::lowering_handler_routing`).
+    let handlers = crate::handler_routing::lowering_handler_routing(
+        handlers,
+        crate::handler_routing::stdlib_handler_rows(&merged, &merged.items[user_items..], import_renames, &snapshot),
+        &correspondence,
+    )?;
+    // The flow rows are the snapshot's (F.40 phase 4, Q1): lowering reads
+    // them by locus name (`is_flow`, `specialize`), the stdlib declares no
+    // `release` clause and no type alias, and `DeclaredNames` holds the
+    // stdlib's loci over either program, so the merged program's survey
+    // is the checked one's in every row lowering reads.
+    let flows = flows.clone();
     // The allocation-routing rows over the same merged program, cross-seed
-    // calls resolved through the same renames: lowering reads them.
-    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames);
+    // calls resolved through the same renames: lowering reads them. Their
+    // scratch-local set is the allocation summary's (F.40 phase 4, Q1).
+    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames, scratch_local);
     // The snapshot's form rows, found by the identities the merge kept,
     // and a written-configuration row for every declaration they do not
     // hold (the stdlib's).

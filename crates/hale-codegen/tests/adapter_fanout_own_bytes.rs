@@ -15,8 +15,6 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -70,9 +68,8 @@ fn main() {
 
 #[test]
 fn an_adapter_beside_a_unix_route_leaves_the_published_bytes_alone() {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin("hale_1058_adapter_fanout");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(SRC, &bin, &build_opts::options()).expect("build");
     let sock = harness::unique_bin("hale_1058_sock").with_extension("sock");
     let listen_cfg = harness::unique_bin("hale_1058_listen").with_extension("conf");
     let send_cfg = harness::unique_bin("hale_1058_send").with_extension("conf");

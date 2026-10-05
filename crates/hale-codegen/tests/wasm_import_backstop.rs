@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, BuildOptions, CompileTarget};
+use hale_codegen::{BuildOptions, CompileTarget};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -49,7 +49,7 @@ fn build(name: &str, src: &str) -> (hale_syntax::ast::Program, PathBuf) {
     let program = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("{name}: parse: {e:?}"));
     let wasm = harness::unique_bin(&format!("hale_backstop_{name}")).with_extension("wasm");
     let opts = BuildOptions { target: CompileTarget::Wasm32, ..build_opts::options() };
-    build_executable_with_options(&program, &wasm, &[], &opts).unwrap_or_else(|e| panic!("{name}: wasm32 build: {e}"));
+    build_opts::build_source(src, &wasm, &opts).unwrap_or_else(|e| panic!("{name}: wasm32 build: {e}"));
     (program, wasm)
 }
 
@@ -142,7 +142,7 @@ fn no_observation_probe_is_emitted_for_wasm32() {
         let out = harness::unique_bin("hale_backstop_obs").with_extension(ext);
         let ll = out.with_extension(format!("{ext}.ll"));
         let opts = BuildOptions { target, dump_ir: Some(ll.clone()), ..build_opts::options() };
-        build_executable_with_options(&program, &out, &[], &opts).unwrap_or_else(|e| panic!("{ext} build: {e}"));
+        build_opts::build_source(REACHES_EVERY_PATH, &out, &opts).unwrap_or_else(|e| panic!("{ext} build: {e}"));
         let ir = std::fs::read_to_string(&ll).expect("the IR");
         let bytes = std::fs::read(&out).expect("the output");
         let _ = std::fs::remove_file(&ll);

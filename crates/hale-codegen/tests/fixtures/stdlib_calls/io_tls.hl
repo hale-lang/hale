@@ -1,0 +1,14 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::io::tls` at the
+// positions the rest of the line S shadow set does not reach. Never run:
+// the handle is never connected; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let h = 3;
+    let buf = std::bytes::BytesBuilder { };
+    std::io::tls::recv_bytes(h, 64);
+    std::io::tls::recv_into(h, buf, 64);
+    std::io::tls::recv_stamped_into(h, buf, 64);
+    let got = std::io::tls::recv_into(h, buf, 64);
+    let closed = std::io::tls::close(h);
+    println(got + closed);
+}

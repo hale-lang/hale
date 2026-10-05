@@ -20,7 +20,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_types::alloc_summary::{summarize_identified, SiteVerdict};
 
 #[path = "support/harness.rs"]
@@ -53,9 +52,8 @@ fn model_has_unbounded_site(src: &str) -> bool {
 /// two "stays flat" assertions pass vacuously (both sides clamped
 /// to the same floor, difference 0). See GH #772.
 fn build_and_rss(name: &str, src: &str) -> i64 {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_alloc_rss_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);

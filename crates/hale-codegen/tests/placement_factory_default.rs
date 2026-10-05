@@ -31,8 +31,6 @@
 //! rather than emit a program whose stated placement quietly does
 //! nothing. Lowering keeps no refusal of its own.
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -69,9 +67,8 @@ fn factory_default_under_a_placement_entry_is_refused() {
         "make_worker()",
         "fn make_worker() -> Worker { Worker { } }",
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_factory_890");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(&src, &bin, &build_opts::options())
         .expect_err("a dropped placement must not build");
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();
@@ -87,9 +84,8 @@ fn locus_literal_default_under_a_placement_entry_still_builds() {
     // spelled as the literal, which is the form that carries the
     // entry. The backstop must not touch it.
     let src = app("Worker { }", "");
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_literal_890");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = std::process::Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "non-zero exit");
@@ -155,9 +151,8 @@ fn a_placement_entry_on_a_scalar_field_is_refused_before_lowering() {
         "}\n",
     ]
     .concat();
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_slot_scope_921");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(&src, &bin, &build_opts::options())
         .expect_err("a placement entry on a scalar field must not reach lowering");
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();
@@ -188,9 +183,8 @@ const RULE_18_AT_SITE: &str =
     "placement entry `w` names a field no locus literal initialises: the value supplied for `w` here is a call";
 
 fn harness_refusal(tag: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(src, &bin, &build_opts::options())
         .expect_err("a dropped placement must not build");
     let _ = std::fs::remove_file(&bin);
     err.to_string()
@@ -265,11 +259,10 @@ fn a_root_literal_in_a_params_default_consuming_the_entry_is_pinned() {
 /// `Worker`'s pinned start, whose readiness is awaited), and it runs to a
 /// clean exit; its stdout.
 fn builds_with_one_pinned_thread(tag: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
     let ll = bin.with_extension("ll");
     let opts = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).expect("build");
+    build_opts::build_source(src, &bin, &opts).expect("build");
     let ir = std::fs::read_to_string(&ll).expect("read IR");
     let out = std::process::Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -396,9 +389,8 @@ fn a_root_with_no_pinned_entry_in_a_position_emitted_at_every_use_builds() {
         let src = root_then(&rest);
         let unpinned = src.replace("    placement { w: pinned; }\n", "");
         assert_ne!(unpinned, src, "{tag}: the entry was removed");
-        let program = hale_syntax::parse_source(&unpinned).expect("parse");
         let bin = harness::unique_bin(&format!("hale_placement_root_per_use_control_{tag}_1338"));
-        build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+        build_opts::build_source(&unpinned, &bin, &build_opts::options()).expect("build");
         let out = std::process::Command::new(&bin).output().expect("run");
         let _ = std::fs::remove_file(&bin);
         assert!(out.status.success(), "{tag}: non-zero exit");

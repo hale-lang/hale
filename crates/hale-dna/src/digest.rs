@@ -27,20 +27,12 @@
 use std::path::Path;
 
 /// The directories the toolchain embeds, with the extensions each
-/// contributes, listed NON-recursively (`dna/core/pond/README.md` neither). Keep this in step with the `FILES` / `HOST_FILES` / `POND_FILES` …
-/// lists in `lib.rs`; the unit tests fail if it drifts.
-pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
-    ("dna/core", &["hl"]),
-    ("dna/host", &["hl"]),
-    ("dna/operations", &["hl"]),
-    ("dna/organization_runtime", &["hl"]),
-    ("dna/organization_source", &["hl"]),
-    ("dna/core/pond/db", &["hl"]),
-    ("dna/core/pond/pq", &["hl"]),
-    ("dna/core/pond/realtime/nats", &["hl"]),
-    ("dna/core/legs", &["hl"]),
-    ("dna/ui", &["hl", "html"]),
-];
+/// contributes, listed NON-recursively: the inventory's list
+/// (`hale_graph::identity::EMBEDDED_DIRS`), which this crate and its
+/// build script both read. Keep it in step with the `FILES` /
+/// `HOST_FILES` / `POND_FILES` … lists in `lib.rs`; the unit tests
+/// fail if it drifts.
+pub use hale_graph::identity::EMBEDDED_DIRS;
 
 /// The framing tag: a digest says which algorithm produced it, so a
 /// later change of shape cannot be mistaken for a source change.

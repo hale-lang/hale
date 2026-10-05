@@ -10,8 +10,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 /// Compile `source`, run the binary, return (stdout, status).
 #[path = "support/harness.rs"]
 mod harness;
@@ -19,9 +17,8 @@ mod harness;
 mod build_opts;
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_stdlib_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&output.stdout).to_string(), output.status)
@@ -69,9 +66,8 @@ fn std_process_pid_matches_runtime_pid() {
             println("pid=", std::process::pid());
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_process_pid_match");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
 
@@ -108,9 +104,8 @@ fn unknown_std_path_errors_with_useful_message() {
             std::nonexistent::call();
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_unknown_path");
-    let result = build_executable_with_options(&program, &bin, &[], &build_opts::options());
+    let result = build_opts::build_source(src, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     assert!(result.is_err(), "expected build error for unknown std path");
     let msg = format!("{:?}", result.unwrap_err());

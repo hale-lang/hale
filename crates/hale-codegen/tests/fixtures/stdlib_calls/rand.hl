@@ -1,0 +1,6 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::rand::next_int` at
+// statement position. Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    std::rand::next_int(6);
+}

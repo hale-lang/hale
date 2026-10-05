@@ -8,17 +8,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_libshape_http_{}_{}", name, std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -207,9 +204,8 @@ fn http_server_without_handler_is_compile_error() {
             std::http::Server { port: 18182, max_accepts: 1 };
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_libshape_http_required_{}", std::process::id()));
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("expected compile error");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("expected compile error");
     let msg = format!("{:?}", err);
     assert!(
         msg.contains("handler") && msg.contains("required"),

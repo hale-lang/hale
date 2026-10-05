@@ -9,8 +9,6 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -66,9 +64,8 @@ fn pool_worker_thread_carries_the_declared_core_set() {
         eprintln!("skipping: needs >= 2 CPUs");
         return;
     }
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin("hale_pool_affinity");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(SRC, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

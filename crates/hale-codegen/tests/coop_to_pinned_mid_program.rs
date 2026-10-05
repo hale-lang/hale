@@ -16,8 +16,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -110,9 +108,8 @@ fn pinned_run_loop_drains_mailbox_via_sleep() {
         }
     "#;
 
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path("mid");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
 
@@ -197,9 +194,8 @@ fn pinned_returning_run_drains_mailbox() {
         }
         fn main() { App { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path("pinned-returning-run");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);

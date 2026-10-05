@@ -1,0 +1,25 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::process` at the
+// positions the rest of the line S shadow set does not reach, the child
+// primitives the `Child` surface is written over included (under `or
+// raise`, as `process.hl` calls them). Never run: nothing is spawned;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn child_primitives() -> Int fallible(IoError) {
+    let h = std::process::__spawn("true") or raise;
+    let waited = std::process::__wait_pid(h.pid) or raise;
+    let polled = std::process::__try_wait_pid(h.pid) or raise;
+    std::process::__signal_pid(h.pid, 15) or raise;
+    std::process::__kill_escalate(h.pid) or raise;
+    let out = std::process::__pipe_read(h.stdout_fd) or raise;
+    let wrote = std::process::__pipe_write(h.stdin_fd, "x") or raise;
+    return waited.code + polled.code + len(out) + wrote;
+}
+
+fn main() {
+    std::process::pid();
+    std::process::uid();
+    std::process::rss_bytes();
+    let pools = std::process::dump_pool_residency();
+    let n = child_primitives() or 0;
+    println(pools + n);
+}
