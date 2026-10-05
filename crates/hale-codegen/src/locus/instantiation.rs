@@ -5296,7 +5296,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// Interest-based ownership #2: get-or-create the internal global
     /// An instance's header: every synthetic field the literal sets
     /// rather than its params, stored right after the instance is
     /// allocated and its `__arena` set, before anything can reach it
@@ -5455,6 +5454,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Interest-based ownership #2: get-or-create the internal global
     /// `@__owner_singleton_<A>` that stashes a SingletonConst owner `A`'s
     /// self-pointer. Created lazily (ptr, internal linkage, null init) so
     /// the store (at A's instantiation) and every bubble-site load agree
