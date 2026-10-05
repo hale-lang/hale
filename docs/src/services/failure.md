@@ -216,6 +216,11 @@ letter away from a recovery is pointed at it. `dissolve` is
 refused in `persists_through(...)`: a closure's totals end with
 its locus, so there is nothing to keep.
 
+`resets_on(...)` says the default out loud: `resets_on(restart)`
+documents that the totals start over on a restart, which they do
+anyway. It is checked like `persists_through`, and naming the same
+recovery in both is refused, since the two cannot both hold.
+
 ## Crossing from value to structural
 
 Sometimes a method catches a value-level error and decides it's

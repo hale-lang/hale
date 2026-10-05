@@ -9,6 +9,8 @@
 mod arena_oom_is_loud;
 #[path = "birth_order_trap.rs"]
 mod birth_order_trap;
+#[path = "closure_recovery_events.rs"]
+mod closure_recovery_events;
 #[path = "closure_resets_per_epoch.rs"]
 mod closure_resets_per_epoch;
 #[path = "deferred_slot_per_iteration.rs"]

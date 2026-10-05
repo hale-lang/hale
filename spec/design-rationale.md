@@ -490,7 +490,7 @@ closure pnl_attribution {
     sum(intent.pnl) ~~ sum(book.realized_pnl) within 0.05d;
     epoch tick;
     persists_through(restart_in_place, quarantine);
-    resets_on(dissolve, replace);
+    resets_on(restart);
 }
 ```
 

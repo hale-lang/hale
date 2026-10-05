@@ -1526,7 +1526,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 9 |
+| `spec/verification.md` § Structural & design rules | 10 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1562,6 +1562,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/cell-slot-of-origin | `spec/verification.md` § Structural & design rules | Cell slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | the declaration | Canonical |
 | verification/structural/recovery-event-alphabet | `spec/verification.md` § Structural & design rules | Recovery event alphabet | a name in `persists_through(...)` or `resets_on(...)` outside `restart`, `restart_in_place`, `quarantine` (error, at the name, a misspelling one edit away suggesting the event) | `closures` | `crates/hale-types/src/closure_events.rs` · `outside_the_alphabet` | the declaration | Canonical |
 | verification/structural/persist-through-dissolve | `spec/verification.md` § Structural & design rules | Persisting through dissolve | `dissolve` in `persists_through(...)`, which can mean nothing: an accumulator does not outlive its locus's dissolve (error, at the name) | `closures` | `crates/hale-types/src/closure_events.rs` · `persists_through_dissolve` | the declaration | Canonical |
+| verification/structural/contradicting-recovery-clauses | `spec/verification.md` § Structural & design rules | Contradicting recovery clauses | an event one closure names in both `persists_through(...)` and `resets_on(...)` (error, at the `resets_on` name, the witness the `persists_through` name); `resets_on` otherwise states the default and changes nothing at run time | `closures` | `crates/hale-types/src/closure_events.rs` · `in_both_clauses` | the declaration | Canonical |
 
 ## The shadow facility's allowance
 

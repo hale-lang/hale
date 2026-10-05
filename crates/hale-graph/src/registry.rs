@@ -2233,6 +2233,16 @@ pub const RULES: &[Rule] = &[
         evaluator: Some(site(CLOSURE_EVENTS, "persists_through_dissolve")),
         state: State::Canonical,
     },
+    Rule {
+        id: "verification/structural/contradicting-recovery-clauses",
+        title: "Contradicting recovery clauses",
+        // The closure's two clauses, as the parser typed them.
+        reads: Reads::Declaration,
+        gist: "an event one closure names in both `persists_through(...)` and `resets_on(...)` (error, at the `resets_on` name, the witness the `persists_through` name); `resets_on` otherwise states the default and changes nothing at run time",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "in_both_clauses")),
+        state: State::Canonical,
+    },
 ];
 
 /// The shadow facility's call sites outside tests (F.40 §5: "the shadow

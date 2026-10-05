@@ -12,15 +12,17 @@
 //! laws accept is what runs.
 
 use hale_syntax::ast::{flat_decls, ClosureClause, ClosureDecl, LocusDecl, LocusMember, RecoveryEvent, RecoveryEvents, TopDecl};
-use hale_syntax::Diag;
+use hale_syntax::{Diag, SpanOrigin};
 
-use crate::law::{Law, RuleId, Severity, Violation};
+use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::Bundle;
 
 /// A name outside the alphabet.
 const ALPHABET: RuleId = RuleId::registered("verification/structural", "recovery-event-alphabet");
 /// `dissolve` in `persists_through(...)`.
 const DISSOLVE: RuleId = RuleId::registered("verification/structural", "persist-through-dissolve");
+/// An event in both clauses of one closure.
+const CONTRADICTION: RuleId = RuleId::registered("verification/structural", "contradicting-recovery-clauses");
 
 /// Which clause a row is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +90,7 @@ pub fn closure_event_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
     let rows = closure_event_rows(bundle);
     let mut diags = Law { rule: ALPHABET, eval: outside_the_alphabet }.diags(&rows);
     diags.extend(Law { rule: DISSOLVE, eval: persists_through_dissolve }.diags(&rows));
+    diags.extend(Law { rule: CONTRADICTION, eval: in_both_clauses }.diags(&rows));
     diags
 }
 
@@ -146,6 +149,56 @@ fn persists_through_dissolve(rows: &ClosureEventRows<'_>, out: &mut Vec<Violatio
                     alphabet(),
                 ),
                 witness: Vec::new(),
+            });
+        }
+    }
+}
+
+/// `resets_on(...)` states the default (an accumulator resets on every
+/// recovery event its closure does not persist through), so an event a
+/// closure names in both clauses contradicts itself. An error at each
+/// `resets_on` name whose event the closure also persists through, the
+/// first time the closure's `resets_on` clauses name it; the witness is
+/// where `persists_through` names it.
+fn in_both_clauses(rows: &ClosureEventRows<'_>, out: &mut Vec<Violation>) {
+    for (i, row) in rows.rows.iter().enumerate().filter(|(_, r)| r.clause == Clause::ResetsOn) {
+        let same_closure = |r: &&ClauseRow<'_>| std::ptr::eq(r.closure, row.closure);
+        let persisted = rows
+            .rows
+            .iter()
+            .filter(same_closure)
+            .filter(|r| r.clause == Clause::PersistsThrough)
+            .flat_map(|r| r.events.names.iter());
+        let earlier_resets: Vec<RecoveryEvent> = rows.rows[..i]
+            .iter()
+            .filter(same_closure)
+            .filter(|r| r.clause == Clause::ResetsOn)
+            .flat_map(|r| r.events.events())
+            .collect();
+        let mut seen = earlier_resets;
+        for n in &row.events.names {
+            let Some(event) = n.event else { continue };
+            if seen.contains(&event) {
+                continue;
+            }
+            seen.push(event);
+            let Some(kept) = persisted.clone().find(|p| p.event == Some(event)) else { continue };
+            out.push(Violation {
+                rule: CONTRADICTION,
+                severity: Severity::Error,
+                span: n.name.span,
+                message: format!(
+                    "closure `{}`: `{}` is in both `persists_through(...)` and `resets_on(...)`, which \
+                     contradict each other: its accumulators either survive `{}` or reset on it",
+                    row.closure.name.name,
+                    event.name(),
+                    event.name(),
+                ),
+                witness: vec![WitnessStep {
+                    span: kept.name.span,
+                    origin: SpanOrigin::Seed,
+                    note: format!("`persists_through` names `{}` here", event.name()),
+                }],
             });
         }
     }

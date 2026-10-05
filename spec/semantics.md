@@ -4257,6 +4257,14 @@ parent applies to a failed child: `restart`, `restart_in_place` and
   does not outlive its locus's dissolve, so the clause can mean
   nothing (*Persisting through dissolve*).
 
+`resets_on(...)` states the default. An accumulator resets on every
+recovery event its closure does not persist through, whether or not
+`resets_on` names it, so `resets_on(E)` adds nothing at run time; it
+is a statement the check holds to the alphabet like any other, and an
+event a closure names in both clauses is an error at the `resets_on`
+name, with the `persists_through` name as its witness (*Contradicting
+recovery clauses*).
+
 ## Inline closure violation
 
 (F.27, v1.x-VIOLATE.) Inline closures provide a pull-only

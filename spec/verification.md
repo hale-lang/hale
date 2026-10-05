@@ -1649,6 +1649,7 @@ state), and zeroization.
 | **Cell slot-of-origin** | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from | error | codegen |
 | **Recovery event alphabet** | a name in a closure's `persists_through(...)` or `resets_on(...)` that is not a recovery event: the alphabet is closed, `restart`, `restart_in_place` and `quarantine`; the message names it at the name, and suggests the event a misspelling one edit away means | error | `outside_the_alphabet` (closure events) |
 | **Persisting through dissolve** | `dissolve` in a closure's `persists_through(...)`: an accumulator does not outlive its locus's dissolve, so the clause can mean nothing | error | `persists_through_dissolve` (closure events) |
+| **Contradicting recovery clauses** | a recovery event one closure names in both `persists_through(...)` and `resets_on(...)`: the two contradict each other. Reported at the `resets_on` name, with the `persists_through` name as its witness | error | `in_both_clauses` (closure events) |
 
 CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the

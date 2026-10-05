@@ -112,6 +112,65 @@ fn persisting_through_dissolve_is_refused_and_says_why() {
     assert_eq!(at(&src, d), "dissolve");
 }
 
+// Ruling 4: `resets_on` states the default; a name in both clauses of
+// one closure is an error.
+
+#[test]
+fn resets_on_states_the_default_and_is_accepted() {
+    let src = tracker("persists_through(quarantine); resets_on(restart, restart_in_place);");
+    let all = diags(&src);
+    assert!(of(&all, "band").is_empty(), "{all:?}");
+}
+
+#[test]
+fn an_event_in_both_clauses_is_refused_with_the_other_clause_as_witness() {
+    let src = tracker("persists_through(restart_in_place, quarantine);\n        resets_on(restart, quarantine);");
+    let all = diags(&src);
+    let found = of(&all, "band");
+    assert_eq!(found.len(), 1, "{all:?}");
+    let d = found[0];
+    assert_eq!(d.kind, DiagKind::Type);
+    assert_eq!(
+        d.message,
+        "closure `band`: `quarantine` is in both `persists_through(...)` and `resets_on(...)`, which \
+         contradict each other: its accumulators either survive `quarantine` or reset on it"
+    );
+    // At the `resets_on` name: the second `quarantine` in the source.
+    let second = src.rfind("quarantine").unwrap();
+    assert_eq!((d.span.start.0 as usize, at(&src, d)), (second, "quarantine"));
+    let witness: Vec<(&str, usize, &str)> = d
+        .related
+        .iter()
+        .map(|r| (r.label.as_str(), r.span.start.0 as usize, &src[r.span.start.0 as usize..r.span.end.0 as usize]))
+        .collect();
+    let first = src.find("quarantine").unwrap();
+    assert_eq!(witness, [("`persists_through` names `quarantine` here", first, "quarantine")]);
+}
+
+#[test]
+fn a_contradiction_is_reported_once_per_event_and_only_within_one_closure() {
+    let src = "locus Tracker {
+    params { delta: Int = 0; }
+    closure a {
+        sum(self.delta) ~~ 0 within 100;
+        epoch tick;
+        persists_through(restart);
+        resets_on(restart, restart);
+        resets_on(restart);
+    }
+    closure b {
+        sum(self.delta) ~~ 0 within 100;
+        epoch tick;
+        resets_on(restart);
+    }
+}
+fn main() { Tracker { }; }
+";
+    let all = diags(src);
+    assert_eq!(of(&all, "a").len(), 1, "{all:?}");
+    assert!(of(&all, "b").is_empty(), "{all:?}");
+}
+
 #[test]
 fn the_alphabet_is_accepted() {
     let src = tracker("persists_through(restart, restart_in_place, quarantine);");
