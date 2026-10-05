@@ -1002,7 +1002,6 @@ const fn open(line: &'static str, row: &'static str) -> Rule {
     Rule::line(line, Status::KnownOpen { inventory_row: row })
 }
 
-const POOL_OWNER: &str = "the construction-time domain for an owner placed on a cooperative pool: decision L0-1 names the pool's worker, spec/semantics.md the settling thread";
 const NO_OPTION: &str = "the wave-2 decisions frame lines 1-3 as one protocol and choose no option for this line";
 
 fn local() -> Progress {
@@ -1222,16 +1221,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 o.holder.domain = DomainRole::Own;
             }
             o.line = Some("1");
-            // Anchors settle on their initialization thread. The wider
-            // construction-delivery policy for pool owners is pending.
-            o.runs_on = self.claim(i, |c| {
-                let on = initialization_domain(self.inputs.placement, s.placed, c);
-                if self.pool_placed(c) {
-                    Self::on(on, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
-                } else {
-                    Self::on(on, shipped("1"))
-                }
-            });
+            // Anchors settle on their initialization thread: a pool-placed
+            // owner on its worker, the domain a later failure is posted to
+            // (`fd_pool_owner_worker.hl` holds the handler's thread).
+            o.runs_on = self.claim(i, |c| Self::on(initialization_domain(self.inputs.placement, s.placed, c), shipped("1")));
             r.params_settle = Some(self.push(o));
         }
         // Accept (line 5): after the params, before the birth; no rejection.
@@ -1692,8 +1685,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         restarts: bool,
         r: &mut Rows,
     ) {
-        // The hold and the delivery at settle are shipped for every owner;
-        // which domain a pool-placed owner's delivery owes is pending.
+        // The hold and the delivery at settle are shipped for every owner,
+        // a pool-placed one's on its worker, where its params settle.
         let mut o = self.row(i, K::FailureDelivery, Holder { spine: Spine::Settle, domain: DomainRole::Instantiating });
         o.source = Some(source);
         o.epoch = epoch;
@@ -1709,12 +1702,7 @@ impl<'b, 'a> Builder<'b, 'a> {
             for oc in self.under(c) {
                 let owner = c.owner.expect("a routed contribution has an owner");
                 let settling = initialization_domain(self.inputs.placement, self.subjects[owner].placed, oc);
-                let rule = if self.pool_placed(oc) {
-                    Rule::line("1", Status::Pending { condition: POOL_OWNER })
-                } else {
-                    shipped("1")
-                };
-                claims.push(Self::on(settling, rule));
+                claims.push(Self::on(settling, shipped("1")));
             }
         }
         o.runs_on = combine(claims);

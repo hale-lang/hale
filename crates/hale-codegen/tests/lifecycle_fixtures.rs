@@ -230,7 +230,7 @@ impl Ran {
 
 const FIXTURES: &[Fixture] = &[
     Fixture { file: "l01_held_failure_settle.hl", line: "1", adopted: Some("delivered-at-settle"), run: RunMode::Plain, judge: outcome_line },
-    Fixture { file: "l01_pool_owner_settle.hl", line: "1", adopted: None, run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l01_pool_owner_settle.hl", line: "1", adopted: Some("delivered-at-settle"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l01_neg_same_pool_held.hl", line: "1", adopted: Some("delivered-once-resumed"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l01_neg_it_waits_worker_queue.hl", line: "1", adopted: Some("delivered-at-settle-queue-ran"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l02_tick_after_posted_run.hl", line: "2", adopted: None, run: RunMode::Plain, judge: outcome_line },
@@ -292,7 +292,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
 
 /// Fixtures on a pending line: (file, today's outcome).
 const PENDING: &[(&str, &str)] = &[
-    ("l01_pool_owner_settle.hl", "delivered-at-settle"),
     ("l02_tick_after_posted_run.hl", "tick-before-run-returned"),
     ("l03_pool_birth_domain.hl", "birth-inline-run-posted"),
     ("l16_eager_spine_pool_join.hl", "joined-before-teardown"),
@@ -342,7 +341,7 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
     let count = |pairs: &[(&str, u32)]| -> BTreeMap<String, u32> { pairs.iter().map(|(d, n)| (d.to_string(), *n)).collect() };
     let mut p = RunPath::default();
     let lines: &'static [&'static str] = match file {
-        "l01_held_failure_settle.hl" => {
+        "l01_held_failure_settle.hl" | "l01_pool_owner_settle.hl" => {
             p.failures.push(fails("Boom", FailureSource::Run, true, false, 0));
             &["1"]
         }
