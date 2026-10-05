@@ -302,6 +302,54 @@ fn statement_position_or_discards_value_type() {
     assert!(errs.is_empty(), "got: {:?}", errs);
 }
 
+// F.40 phase 4, S6 (a classified correction): every dispatched stdlib
+// function has a signature, the one its lowering helper enforced. Before,
+// the rows below had none, so the check typed their calls `Unknown` and
+// let any arguments through: a wrong count or type failed at build, in the
+// helper's own words and without a location, and an `or` over one of them
+// was refused by lowering. Each module's test pins, for one function, that
+// the check now refuses a wrong argument count at the callee, a wrong
+// argument type at the argument, and an `or` over a function that cannot
+// fail at the call, in the check's own words. The base compiler checked
+// every one of these programs clean (`hale check`, exit 0).
+
+/// The error diagnostics of checking `body` as `main`'s body, each with
+/// the text its span covers.
+fn located_errors(body: &str) -> Vec<(String, String)> {
+    let src = format!("fn main() {{\n{body}\n}}\n");
+    let prog = parse_source(&src).expect("parse");
+    check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message, src[d.span.start.0 as usize..d.span.end.0 as usize].to_string()))
+        .collect()
+}
+
+/// `body` checks with exactly the errors `want`, each `(message, the text
+/// its span covers)`.
+fn refused(body: &str, want: &[(&str, &str)]) {
+    let got = located_errors(body);
+    let want: Vec<(String, String)> = want.iter().map(|(m, at)| (m.to_string(), at.to_string())).collect();
+    assert_eq!(got, want, "checking:\n{body}");
+}
+
+#[test]
+fn std_io_sockopt_calls_are_checked() {
+    refused(
+        "    let n = std::io::sockopt::SO_RCVBUF(4);\n    println(n);",
+        &[("`std::io::sockopt::SO_RCVBUF` takes 0 arguments, got 1", "std::io::sockopt::SO_RCVBUF")],
+    );
+    refused(
+        "    let n = std::io::sockopt::SO_RCVBUF() or 0;\n    println(n);",
+        &[(
+            "`std::io::sockopt::SO_RCVBUF` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::io::sockopt::SO_RCVBUF()",
+        )],
+    );
+    // The value is the Int it always was.
+    refused("    let n: Int = std::io::sockopt::SO_RCVBUF();\n    println(n);", &[]);
+}
+
 #[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.

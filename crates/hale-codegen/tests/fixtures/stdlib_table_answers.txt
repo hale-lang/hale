@@ -649,37 +649,37 @@ std::io::mirror::__recv_into | lookup=io::mirror@3 | locus=false | effects=sysca
 std::io::mirror::__writable | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__writable
 std::io::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::io::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
-std::io::sockopt::IPPROTO_IP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IP
-std::io::sockopt::IPPROTO_IPV6 | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IPV6
-std::io::sockopt::IPPROTO_TCP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_TCP
-std::io::sockopt::IPPROTO_UDP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_UDP
-std::io::sockopt::IP_ADD_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_ADD_MEMBERSHIP
-std::io::sockopt::IP_DROP_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_DROP_MEMBERSHIP
-std::io::sockopt::IP_MTU_DISCOVER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MTU_DISCOVER
-std::io::sockopt::IP_MULTICAST_IF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_IF
-std::io::sockopt::IP_MULTICAST_LOOP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_LOOP
-std::io::sockopt::IP_MULTICAST_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_TTL
-std::io::sockopt::IP_PKTINFO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PKTINFO
-std::io::sockopt::IP_PMTUDISC_DO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DO
-std::io::sockopt::IP_PMTUDISC_DONT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DONT
-std::io::sockopt::IP_PMTUDISC_PROBE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_PROBE
-std::io::sockopt::IP_PMTUDISC_WANT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_WANT
-std::io::sockopt::IP_TOS | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_TOS
-std::io::sockopt::IP_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_TTL
-std::io::sockopt::SOL_SOCKET | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SOL_SOCKET
-std::io::sockopt::SO_BINDTODEVICE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_BINDTODEVICE
-std::io::sockopt::SO_BROADCAST | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_BROADCAST
-std::io::sockopt::SO_KEEPALIVE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_KEEPALIVE
-std::io::sockopt::SO_LINGER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_LINGER
-std::io::sockopt::SO_PRIORITY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_PRIORITY
-std::io::sockopt::SO_RCVBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_RCVBUF
-std::io::sockopt::SO_RCVTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_RCVTIMEO
-std::io::sockopt::SO_REUSEADDR | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEADDR
+std::io::sockopt::IPPROTO_IP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IP
+std::io::sockopt::IPPROTO_IPV6 | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IPV6
+std::io::sockopt::IPPROTO_TCP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_TCP
+std::io::sockopt::IPPROTO_UDP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_UDP
+std::io::sockopt::IP_ADD_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_ADD_MEMBERSHIP
+std::io::sockopt::IP_DROP_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_DROP_MEMBERSHIP
+std::io::sockopt::IP_MTU_DISCOVER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MTU_DISCOVER
+std::io::sockopt::IP_MULTICAST_IF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_IF
+std::io::sockopt::IP_MULTICAST_LOOP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_LOOP
+std::io::sockopt::IP_MULTICAST_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_TTL
+std::io::sockopt::IP_PKTINFO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PKTINFO
+std::io::sockopt::IP_PMTUDISC_DO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DO
+std::io::sockopt::IP_PMTUDISC_DONT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DONT
+std::io::sockopt::IP_PMTUDISC_PROBE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_PROBE
+std::io::sockopt::IP_PMTUDISC_WANT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_WANT
+std::io::sockopt::IP_TOS | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_TOS
+std::io::sockopt::IP_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_TTL
+std::io::sockopt::SOL_SOCKET | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SOL_SOCKET
+std::io::sockopt::SO_BINDTODEVICE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_BINDTODEVICE
+std::io::sockopt::SO_BROADCAST | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_BROADCAST
+std::io::sockopt::SO_KEEPALIVE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_KEEPALIVE
+std::io::sockopt::SO_LINGER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_LINGER
+std::io::sockopt::SO_PRIORITY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_PRIORITY
+std::io::sockopt::SO_RCVBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_RCVBUF
+std::io::sockopt::SO_RCVTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_RCVTIMEO
+std::io::sockopt::SO_REUSEADDR | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEADDR
 std::io::sockopt::SO_REUSEADR | lookup=io::sockopt@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::sockopt::SO_REUSEADR` — did you mean `std::io::sockopt::SO_REUSEADDR`? | suggest=SO_REUSEADDR
-std::io::sockopt::SO_REUSEPORT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEPORT
-std::io::sockopt::SO_SNDBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_SNDBUF
-std::io::sockopt::SO_SNDTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_SNDTIMEO
-std::io::sockopt::TCP_NODELAY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=TCP_NODELAY
+std::io::sockopt::SO_REUSEPORT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEPORT
+std::io::sockopt::SO_SNDBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_SNDBUF
+std::io::sockopt::SO_SNDTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_SNDTIMEO
+std::io::sockopt::TCP_NODELAY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=TCP_NODELAY
 std::io::stdin::read_byte | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=read_byte
 std::io::stdin::read_line | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=() -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=read_line
 std::io::stdin::read_line_status | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=read_line_status
