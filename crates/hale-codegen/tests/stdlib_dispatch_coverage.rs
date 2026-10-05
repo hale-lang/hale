@@ -9,7 +9,10 @@
 //! only proof that nothing changed. That proof is only as good as the
 //! set's reach, so this file holds it to every arm before an arm moves.
 //! It scrapes the `["std", ..]` literals out of the dispatchers' source,
-//! so it is deleted when those literals are gone (S3/S4).
+//! so it is deleted when those literals are gone (S3/S4). Until then
+//! `stdlib_registry_parity` reads the same scrape, with what each arm
+//! calls ([`ArmCall`]), to hold the registry's lowering column to the
+//! arms.
 //!
 //! A *pair* is a (path, position): a stdlib call path a dispatcher
 //! matches, and which dispatcher matched it. The *shadow set* is what
@@ -250,6 +253,39 @@ pub struct Arm {
     guard: Option<String>,
     /// The arm's value is an `Err(..)`: one of the refusal lists.
     pub refuses: bool,
+    /// What the arm's body calls to lower the path.
+    pub calls: ArmCall,
+}
+
+/// How an arm lowers its path: a Hale body of the stdlib seeds, named
+/// by a literal (`self.lower_user_fn_call("__md_to_html", ..)`), or
+/// anything else (a native helper, inline IR, or a body whose name the
+/// arm computes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArmCall {
+    HaleBody(String),
+    Native,
+}
+
+/// The call an arm's body (its lines, comments masked) makes.
+fn arm_call(body: &[&str]) -> ArmCall {
+    let text = body.join("\n");
+    let mut named = BTreeSet::new();
+    let mut computed = false;
+    for (at, _) in text.match_indices("lower_user_fn_call(") {
+        let arg = text[at + "lower_user_fn_call(".len()..].trim_start();
+        match arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
+            Some(name) => {
+                named.insert(name.to_string());
+            }
+            None => computed = true,
+        }
+    }
+    match (named.len(), computed) {
+        (0, _) | (_, true) => ArmCall::Native,
+        (1, false) => ArmCall::HaleBody(named.into_iter().next().unwrap()),
+        _ => panic!("an arm calls two Hale bodies: {named:?}"),
+    }
 }
 
 /// What a family pattern (a pattern whose last segment binds a name)
@@ -332,11 +368,22 @@ pub fn arms_of(name: &str, file: &str) -> Vec<Arm> {
                     rest
                 };
                 let (patterns, guard) = parse_head(&head);
+                // The body runs to the next line at the arm's indent
+                // that opens an arm (a pattern, or the `_` arm).
+                let end = (i + 1..lines.len())
+                    .find(|&j| {
+                        let t = lines[j].trim_start();
+                        indent_of(lines[j]) == arm_indent && (t.starts_with('[') || t.starts_with("_ "))
+                    })
+                    .unwrap_or(lines.len());
+                let mut body_lines = vec![&l[k + 2..]];
+                body_lines.extend_from_slice(&lines[i + 1..end]);
                 arms.push(Arm {
                     line: first_line + start,
                     patterns,
                     guard,
                     refuses: rest.starts_with("Err("),
+                    calls: arm_call(&body_lines),
                 });
                 break;
             }
@@ -395,7 +442,7 @@ fn expand(pattern: &[Seg], guard: Option<&str>, fam: &Families) -> Vec<String> {
             hale_types::stdlib_surface::SURFACES
                 .iter()
                 .filter(|s| s.ns == surface_ns.as_slice())
-                .flat_map(|s| s.fns.iter().map(|e| e.name))
+                .flat_map(|s| s.public().map(|e| e.name))
                 .filter(|n| n.starts_with(prefix))
                 .map(str::to_string)
                 .collect()
