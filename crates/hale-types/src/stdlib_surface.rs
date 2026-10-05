@@ -681,7 +681,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["decimal"],
         fns: &[
-            row!("format", PURE, _, Intrinsic(DecimalFormat)),
+            row!("format", PURE, [Decimal, Int] -> Str, Intrinsic(DecimalFormat)),
             row!("to_float", PURE, [Decimal] -> Float, Intrinsic(DecimalToFloat)),
         ],
         open_prefixes: &[],

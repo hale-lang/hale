@@ -450,6 +450,25 @@ fn std_crypto_calls_are_checked() {
 }
 
 #[test]
+fn std_decimal_calls_are_checked() {
+    refused(
+        "    let d = std::str::parse_decimal(\"1.5\") or raise;\n    let s = std::decimal::format(d);\n    println(s);",
+        &[("`std::decimal::format` takes 2 arguments, got 1", "std::decimal::format")],
+    );
+    refused(
+        "    let s = std::decimal::format(1.5, 2);\n    println(s);",
+        &[("`std::decimal::format` argument 1: expected `Decimal`, got `Float`", "1.5")],
+    );
+    refused(
+        "    let d = std::str::parse_decimal(\"1.5\") or raise;\n    let s = std::decimal::format(d, 2) or \"\";\n    println(s);",
+        &[(
+            "`std::decimal::format` is not fallible (it returns `String`); drop the `or` clause",
+            "std::decimal::format(d, 2)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
