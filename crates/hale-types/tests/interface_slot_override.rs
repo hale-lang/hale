@@ -8,8 +8,10 @@
 //! dispatch rewrite fans to every conformer, the rule a one-hop slot
 //! and an interface-typed fn param already followed.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn diags(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

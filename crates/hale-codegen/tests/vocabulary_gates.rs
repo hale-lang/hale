@@ -41,6 +41,8 @@
 //! that moves four committed baselines every time a row is added is a
 //! probe matrix nobody will add a row to.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::process::Command;
 
@@ -54,7 +56,7 @@ mod build_opts;
 /// Does the CHECKER accept this program? The verdict `hale check`
 /// reports, as the agreement sweep reads it.
 fn check_accepts(program: &hale_syntax::ast::Program) -> Result<(), String> {
-    let errs: Vec<String> = hale_types::check_program(program)
+    let errs: Vec<String> = entries::check_program(program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())

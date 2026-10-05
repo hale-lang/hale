@@ -3,8 +3,10 @@
 //! allocates more than its declared per-call ceiling; silent when the
 //! contract holds. Enforced in `hale_types::budget_check`.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 /// Budget-contract diagnostics only (the check emits hard `Type` errors;
 /// unrelated diagnostics from the rest of the checker are filtered out).

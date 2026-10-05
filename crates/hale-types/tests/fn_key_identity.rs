@@ -15,6 +15,8 @@
 //! `--dump-alloc-summary`, which prints whatever the check says, shows
 //! the second row.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_types::alloc_summary::{summarize_identified, AllocSummary, DeclId, FnKey};
 use hale_types::placement::SiteUniverse;
 
@@ -114,7 +116,7 @@ fn the_models_functions_carry_their_declarations_site() {
         }
     }
     let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
-    let model = hale_types::model_builder::derive_application_model(&bundle);
+    let model = entries::derive_application_model(&bundle);
     model.validate().expect("a model");
     let functions = &model.entities.functions;
     let names: Vec<&str> = functions.iter().map(|f| f.name.as_str()).collect();
@@ -176,7 +178,7 @@ fn two_declarations_sharing_a_name_are_two_rows() {
     // The checker refuses the program, which is why no checked program
     // has two such rows.
     let (program, _) = minted(src);
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     assert!(
         diags.iter().any(|d| d.message == "duplicate top-level name `f`"),
         "{:?}",

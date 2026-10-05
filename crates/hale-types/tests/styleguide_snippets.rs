@@ -34,6 +34,8 @@
 //! mdBook and Starlight both key highlighting off the first token, so
 //! rendering is unchanged either way (the `rust,ignore` convention).
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::path::{Path, PathBuf};
 
 fn styleguide() -> PathBuf {
@@ -107,7 +109,7 @@ fn every_styleguide_snippet_parses_and_typechecks() {
         };
         // The bar that matters: a snippet that parses but does not
         // typecheck is exactly the Option-claim failure mode.
-        let errs: Vec<String> = hale_types::check_program(&program)
+        let errs: Vec<String> = entries::check_program(&program)
             .into_iter()
             .filter(|d| d.message.contains("error") || d.is_error())
             .map(|d| d.message)
@@ -161,7 +163,7 @@ fn every_styleguide_snippet_parses_and_typechecks() {
 fn build_errs(src: &str) -> Vec<String> {
     match hale_syntax::parse_source(src) {
         Err(ds) => ds.into_iter().map(|d| d.message).collect(),
-        Ok(p) => hale_types::check_program(&p)
+        Ok(p) => entries::check_program(&p)
             .into_iter()
             .map(|d| d.message)
             .collect(),

@@ -15,6 +15,8 @@
 #[path = "support/harness.rs"]
 mod harness;
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::path::PathBuf;
 
 fn fixtures() -> Vec<PathBuf> {
@@ -44,7 +46,7 @@ fn every_stdlib_call_fixture_checks_and_lowers() {
                         Ok(p) => p,
                         Err(d) => return Some(format!("{name}: does not parse: {d:?}")),
                     };
-                    let errors: Vec<String> = hale_types::check_program(&program)
+                    let errors: Vec<String> = entries::check_program(&program)
                         .iter()
                         .filter(|d| d.is_error())
                         .map(|d| format!("{d:?}"))

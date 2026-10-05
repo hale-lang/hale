@@ -8,11 +8,13 @@
 //! the client's `__StdHttpConn`). Both shapes are refused by the checker,
 //! located, naming both declarations.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_syntax::error::SpanOrigin;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 use hale_types::stdlib_names::name_diags;
 
 /// Two loci of one name in the stdlib: refused at the second, pointing at

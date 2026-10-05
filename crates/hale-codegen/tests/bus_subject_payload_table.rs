@@ -9,6 +9,8 @@
 //! (`lotus_bus_declare_subject_payload`, C49), growing the table four
 //! times under the reads.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -40,7 +42,7 @@ fn the_fixtures_check_and_are_formatted() {
         assert!(formatted == src, "{file} is not `hale fmt` clean; formatted:\n{formatted}");
         let program = hale_syntax::parse_source(&src).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
         let errs: Vec<String> =
-            hale_types::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
+            entries::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
         assert!(errs.is_empty(), "{file}: `hale check` refuses it: {errs:?}");
     }
 }

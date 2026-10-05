@@ -9,7 +9,9 @@
 //! Pool affinity: entries naming one pool must agree, and affinity
 //! on the main pool has no worker thread to bind.
 
-use hale_types::check_program;
+#[path = "support/entries.rs"]
+mod entries;
+use entries::check_program;
 
 fn errors(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");

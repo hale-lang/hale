@@ -515,6 +515,67 @@ main locus App {
 fn main() { App { }; }
 ";
 
+// F.40 phase 4, W3: the recovery statements outside every handler are a
+// column of the rows, with their operation and the child their receiver
+// names; a handler's statements stay its row's ops.
+
+/// Each recovery row: its parent, op, bound, child and statement text.
+fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<ChildRef>, String)> {
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let routing = handler_rows(&[&program], &[], &Default::default());
+    routing
+        .recoveries()
+        .iter()
+        .map(|r| {
+            let text = src[r.statement.start.0 as usize..r.statement.end.0 as usize].to_string();
+            (r.parent.clone(), r.op, r.bounded, r.child.clone(), text)
+        })
+        .collect()
+}
+
+#[test]
+fn a_recovery_statement_outside_a_handler_is_a_row_with_its_child() {
+    assert_eq!(
+        recoveries(SUPERVISED),
+        [(
+            Some("App".to_string()),
+            RecoveryOp::Restart,
+            true,
+            Some(ChildRef::Locus("Worker".to_string())),
+            "restart(self.w) for 4;".to_string()
+        )],
+        "the handlers' statements are their rows' ops, not this column's"
+    );
+}
+
+#[test]
+fn a_receiver_is_named_by_its_declared_type_or_not_at_all() {
+    let src = "
+locus Worker { params { n: Int = 0; } closure boom { captures: n; epoch inline; } fn go() { violate boom; } }
+type Hand = Worker;
+main locus App {
+    params { w: Worker = Worker { }; h: Hand = Worker { }; }
+    fn by_param(c: Worker) { quarantine(c); }
+    fn by_alias() { restart_in_place(self.h); }
+    fn by_local() { let x = self.w; restart(x); }
+}
+fn by_free_param(c: Worker) { restart(c); }
+fn main() { App { }; }
+";
+    let worker = Some(ChildRef::Locus("Worker".to_string()));
+    let rows: Vec<(Option<String>, RecoveryOp, Option<ChildRef>)> =
+        recoveries(src).into_iter().map(|(p, op, _, child, _)| (p, op, child)).collect();
+    assert_eq!(
+        rows,
+        [
+            (Some("App".to_string()), RecoveryOp::Quarantine, worker.clone()),
+            (Some("App".to_string()), RecoveryOp::RestartInPlace, worker.clone()),
+            (Some("App".to_string()), RecoveryOp::Restart, None),
+            (None, RecoveryOp::Restart, worker),
+        ]
+    );
+}
+
 /// The bounds are keyed by the statement's span alone, and the stdlib's
 /// spans overlap the first user file's: a stdlib bound at a user bound's
 /// span would answer for it. The stdlib writes no recovery statement and
@@ -611,6 +672,11 @@ fn the_views_rows_answer_as_the_merged_programs_did() {
     assert_eq!(universe(&lowered), Some(SiteUniverse::StdlibAnalysis));
     assert_eq!(universe(&lowered), universe(s.demand_handlers().expect("the snapshot's rows")));
     assert_eq!(universe(&merged), Some(SiteUniverse::User));
+    // The recovery statements outside the handlers are carried as the
+    // snapshot's (the stdlib writes none): the method's one statement.
+    let snapshot_rows = s.demand_handlers().expect("the snapshot's rows");
+    assert_eq!(lowered.recoveries(), snapshot_rows.recoveries());
+    assert_eq!(lowered.recoveries().len(), 1);
 
     // A specialization: the template's rows under lowering's substitution.
     let sup = *loci.iter().find(|l| l.name.name == "Sup").expect("the generic supervisor");

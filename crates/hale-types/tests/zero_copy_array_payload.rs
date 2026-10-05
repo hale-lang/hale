@@ -15,8 +15,10 @@
 //! dangles in the reader's address space (the original cross-process
 //! segfault this test was born from).
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

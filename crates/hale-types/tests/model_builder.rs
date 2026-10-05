@@ -17,13 +17,15 @@
 //!      vs stringly unknowns), the test projects the model down and
 //!      compares.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::{
     DispatchKind, EntityRef, HoleKind, KeyOnUnmatched, KeyPredicate,
     SelectorForm, SupervisedRef,
 };
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::Bundle;
 
 fn bundle_of(src: &str) -> (hale_syntax::ast::Program, ()) {
@@ -218,7 +220,7 @@ fn model_and_artifact_extract_the_same_facts() {
     let bundle = Bundle::new(programs);
     let m = derive_application_model(&bundle);
     let art: serde_json::Value = serde_json::from_str(
-        &hale_types::topology::dump_topology(&bundle),
+        &entries::dump_topology(&bundle),
     )
     .expect("artifact parses");
 
@@ -620,7 +622,7 @@ fn every_corpus_program_derives_a_lawful_model() {
         match caught {
             Err(_) => bad.push(format!("{}: PANIC", p.origin)),
             Ok(Err(e)) => {
-                let checks_clean = hale_types::check_program(&program)
+                let checks_clean = entries::check_program(&program)
                     .iter()
                     .all(|d| !d.is_error());
                 if checks_clean {
@@ -1465,7 +1467,7 @@ fn main() {
     let m = derive_application_model(&bundle);
     m.validate().expect("lawful");
     let art: serde_json::Value = serde_json::from_str(
-        &hale_types::topology::dump_topology(&bundle),
+        &entries::dump_topology(&bundle),
     )
     .expect("artifact parses");
 
@@ -1835,7 +1837,7 @@ fn main() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
-    let art = hale_types::topology::dump_topology(&Bundle::new(programs));
+    let art = entries::dump_topology(&Bundle::new(programs));
     assert!(
         art.contains("\"from\": \"Gate::probe\"")
             && art.contains("\"to\": \"Hello::handle\""),

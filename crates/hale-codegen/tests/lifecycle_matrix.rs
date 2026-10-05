@@ -135,6 +135,8 @@
 //! literals that look like a program out of every Rust file under a
 //! `tests` directory (the ownership matrix's note).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
@@ -919,7 +921,7 @@ fn trace_build(src: &str, bin: &Path) -> Result<(), String> {
 /// the refusal's diagnostics otherwise.
 fn front_end(src: &str) -> Result<hale_syntax::ast::Program, Vec<String>> {
     let program = hale_syntax::parse_source(src).map_err(|e| vec![format!("{e:?}")])?;
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())

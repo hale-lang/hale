@@ -40,8 +40,10 @@
 //! at all, doc comments included: the harvester scans the text, not
 //! the parsed tokens.)
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 /// `(is_error, message)` for every diagnostic, in order.
 fn diags(src: &str) -> Vec<(bool, String)> {

@@ -2,6 +2,8 @@
 //! with the author's `sync` configuration and the discipline the form
 //! gets kept apart, and the two queries the readers ask.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{Program, TopDecl};
@@ -239,7 +241,7 @@ fn cross_pool_errors(sync: &str) -> Vec<String> {
 
 fn errors_of(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error() && d.message.contains("cross-pool method call"))
         .map(|d| d.message)
@@ -306,7 +308,7 @@ fn the_cross_pool_check_asks_whether_the_form_is_safe() {
     let program = hale_syntax::parse_source(&plain).expect("parse");
     let r = rows_of(&program);
     assert_eq!(r.named("Registry").unwrap().effective, Discipline::None);
-    let errors: Vec<_> = hale_types::check_program(&program)
+    let errors: Vec<_> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error() && d.message.contains("cross-pool method call"))
         .collect();

@@ -61,6 +61,8 @@
 //! every example to completion, and these read gate files and the
 //! thread's identity (`pthread_self`).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -161,7 +163,7 @@ fn checked_source(file: &str) -> String {
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let program = hale_syntax::parse_source(&src).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
     let errs: Vec<String> =
-        hale_types::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
+        entries::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
     assert!(errs.is_empty(), "{file}: `hale check` refuses it: {errs:?}");
     src
 }

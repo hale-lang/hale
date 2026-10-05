@@ -29,6 +29,8 @@
 //! not run) and then codegen, because half of the bug is that the two
 //! disagreed.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 use std::process::Command;
 
@@ -57,7 +59,7 @@ fn fixtures_dir() -> std::path::PathBuf {
 /// this file pins.
 fn check_build_run(tag: &str, src: &str) -> String {
     let program = parse_source(src).expect("parse");
-    let errors: Vec<String> = hale_types::check_program(&program)
+    let errors: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
@@ -328,7 +330,7 @@ fn qualified_paths_inside_a_module_body_resolve_across_an_import() {
     let mut bundle = hale_types::Bundle::new(programs);
     bundle.import_renames = renames.clone();
     let errors: Vec<String> =
-        hale_types::check_bundle_opts_whole_program(&bundle, false)
+        entries::check_bundle_opts_whole_program(&bundle, false)
             .into_iter()
             .filter(|d| d.is_error())
             .map(|d| d.message.clone())

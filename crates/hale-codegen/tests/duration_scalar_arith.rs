@@ -9,6 +9,8 @@
 //! `Duration * Duration` stays rejected (ns² has no meaning) —
 //! now with a real diagnostic instead of the codegen catch-all.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
 #[path = "support/harness.rs"]
@@ -62,7 +64,7 @@ fn duration_times_duration_is_rejected_with_a_pointer() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     assert!(
         diags.iter().any(|d| d
             .message

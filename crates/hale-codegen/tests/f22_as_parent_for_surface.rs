@@ -6,6 +6,8 @@
 //! instantiation, skip-destroy on borrowed slots at the child's
 //! dissolve — shipped in v1.x-4b.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
 #[path = "support/harness.rs"]
@@ -70,7 +72,7 @@ fn as_parent_for_typecheck_rejects_unknown_locus() {
         fn main() { }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     let joined: String = diags
         .iter()
         .map(|d| format!("{:?}", d))
@@ -100,7 +102,7 @@ fn as_parent_for_typecheck_rejects_mismatched_slot() {
         fn main() { }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     let joined: String = diags
         .iter()
         .map(|d| format!("{:?}", d))

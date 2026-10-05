@@ -48,6 +48,8 @@
 //! element-chain terminals are reached through a receiver, which no
 //! free fn claims.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
 use hale_syntax::parse_source;
@@ -65,7 +67,7 @@ mod build_opts;
 /// checker.
 fn check_build_run(name: &str, src: &str) -> String {
     let program = parse_source(src).expect("parse");
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())

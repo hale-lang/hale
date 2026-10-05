@@ -30,8 +30,10 @@
 //! writes — which is what made the restriction (rather than a silent
 //! deep copy) the right call.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn msgs(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

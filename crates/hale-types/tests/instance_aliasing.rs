@@ -12,12 +12,14 @@
 //! 100k increments on one shared locus produced ~140k of 200k, with
 //! `hale check` reporting `ok`.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::error::DiagKind;
 use hale_syntax::parse_source;
 
 fn diags(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()
@@ -107,7 +109,7 @@ main locus App {{
 fn main() {{ App {{ }}; }}"
     );
     let program = parse_source(&src).expect("parse");
-    let ds = hale_types::check_program(&program);
+    let ds = entries::check_program(&program);
     assert!(
         ds.iter().any(|d| d.message.contains("is shared by")),
         "the aliasing should still be surfaced"

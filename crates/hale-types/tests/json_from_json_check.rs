@@ -3,13 +3,15 @@
 //! unaddressed call is flagged by the two-channel rule (and an addressed
 //! one is clean). Mirrors the CLI pipeline: generate parsers, then check.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::json_gen::generate_json_parsers;
 use hale_syntax::parse_source;
 
 fn check(src: &str) -> Vec<String> {
     let mut prog = parse_source(src).expect("parse failed");
     generate_json_parsers(&mut prog);
-    hale_types::check_program(&prog).into_iter().map(|d| d.message).collect()
+    entries::check_program(&prog).into_iter().map(|d| d.message).collect()
 }
 
 #[test]

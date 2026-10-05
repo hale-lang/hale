@@ -2,8 +2,10 @@
 //! (shm-ring-interop Proposal B): a valid layout is clean; the
 //! layout contract (known reprs, framing, cursor) is enforced.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");
