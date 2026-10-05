@@ -80,6 +80,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hale_graph::ids::SiteId;
+use hale_model::dispatch_plan::DispatchPlan;
 use hale_model::ApplicationModel;
 use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program};
@@ -127,8 +128,9 @@ use crate::source::SourceProvider;
 /// itself is the desugar sequence's product); `arrangement` the
 /// placement table's projection onto the user's declarations, which the
 /// model and the lowering view read ([`Snapshot::demand_arrangement`]);
-/// `dispatch` the dispatch gates, the one gate set the dispatch plan is
-/// derived from ([`Snapshot::demand_dispatch_gates`]);
+/// `dispatch` the dispatch plan, derived once from the one gate set
+/// ([`Snapshot::demand_dispatch_plan`]), which the model and the lowering
+/// view read;
 /// `intra_locus` is the intra-locus rewrite, whose
 /// relation the check reads (rule 10) and whose program lowering
 /// continues from; `lowering_view` is the `demand` family's own, the
@@ -503,6 +505,7 @@ pub struct Snapshot {
     placement: OnceCell<Result<PlacementTable, Blocked>>,
     arrangement: OnceCell<Result<Arrangement, Blocked>>,
     dispatch_gates: OnceCell<Result<Vec<hale_model::DispatchGate>, Blocked>>,
+    dispatch_plan: OnceCell<Result<DispatchPlan, Blocked>>,
     lifecycle: OnceCell<Result<LifecyclePlan, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     /// The typing stage, and how many of its diagnostics are the
@@ -683,6 +686,7 @@ impl Snapshot {
             placement: OnceCell::new(),
             arrangement: OnceCell::new(),
             dispatch_gates: OnceCell::new(),
+            dispatch_plan: OnceCell::new(),
             lifecycle: OnceCell::new(),
             model: OnceCell::new(),
             typing_stage: OnceCell::new(),
@@ -1545,17 +1549,38 @@ impl Snapshot {
     /// stdlib's rows after them, which are derived once per process from
     /// the stdlib's analysis copy, so no lowering view is built for them.
     /// Lowering's subjects in lowering's order. Blocked with the graph.
+    /// The family's count is its plan's ([`Snapshot::demand_dispatch_plan`]):
+    /// the gates are its first product, derived once beside it.
     pub fn demand_dispatch_gates(&self) -> Result<&[hale_model::DispatchGate], &Blocked> {
         self.dispatch_gates
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
-                self.count("dispatch");
                 Ok(hale_types::bus_graph::derive_dispatch_gates(bus, &scope.top, placement))
             })
             .as_ref()
             .map(Vec::as_slice)
+    }
+
+    /// The dispatch plan (F.40 phase 4, S9): per bus subject, the flavor
+    /// it is lowered to, from the gates ([`Snapshot::demand_dispatch_gates`])
+    /// and the arrangement's domains ([`Snapshot::demand_arrangement`]),
+    /// derived once (`DispatchPlan::from_gates`). The one plan: the
+    /// lowering view carries it to lowering, whose execution digest frames
+    /// it, and the model holds it projected onto its own subjects and loci,
+    /// so the model's dump prints the plan lowering lowers. Neither reads
+    /// the other: a check that builds the model builds no lowering view
+    /// for it. Blocked with the gates and the arrangement.
+    pub fn demand_dispatch_plan(&self) -> Result<&DispatchPlan, &Blocked> {
+        self.dispatch_plan
+            .get_or_init(|| {
+                let gates = self.demand_dispatch_gates().map_err(Clone::clone)?;
+                let arrangement = self.demand_arrangement().map_err(Clone::clone)?;
+                self.count("dispatch");
+                Ok(DispatchPlan::from_gates(gates, &arrangement.domains()))
+            })
+            .as_ref()
     }
 
     /// The top-level declarations of the programs held, in program then
@@ -1673,6 +1698,7 @@ impl Snapshot {
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
                     placement: self.demand_placement().map_err(Clone::clone)?,
                     arrangement: self.demand_arrangement().map_err(Clone::clone)?,
+                    dispatch_plan: self.demand_dispatch_plan().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1887,11 +1913,9 @@ impl Snapshot {
                 // Lowering reads which `main locus` it deploys from the
                 // entry row (F.40 phase 3, L4).
                 let entry = self.demand_entry().map_err(Clone::clone)?.clone();
-                // The dispatch plan's domains are the arrangement's, the
-                // projection the model's arrangement rows are made of
-                // (F.40 phase 3, C5): the one the model reads (F.40
-                // phase 4, Q1).
-                let arrangement = self.demand_arrangement().map_err(Clone::clone)?;
+                // The dispatch plan is the snapshot's, the one the model
+                // holds projected (F.40 phase 4, S9).
+                let plan = self.demand_dispatch_plan().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1910,7 +1934,7 @@ impl Snapshot {
                     handlers,
                     flows,
                     &summary.scratch_local,
-                    &arrangement.domains(),
+                    plan,
                     class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;

@@ -1,23 +1,22 @@
 //! GH #476 Change 8 — `DispatchPlan`: the typed lowering plan.
 //!
 //! Which lowering flavor a subject's dispatch gets (direct call,
-//! static bucket, dynamic queue) is a CONCLUSION derived from the
-//! model, never a model row (`relation.rs`'s rule). This module owns
-//! that conclusion: `DispatchPlan::derive(&ApplicationModel)` turns
-//! the model's dispatch-gate facts (the trusted BusGraph analysis,
-//! bridged through [`crate::application::DispatchGate`] like every
-//! other legacy engine) and the Change-8 arrangement (instances,
-//! placements, thread domains) into one typed plan per subject —
-//! and #464's stage-0 survey question ("how much queued traffic is
-//! same-domain?") becomes a field on each row instead of a bespoke
-//! topology walk.
+//! static bucket, dynamic queue) is a CONCLUSION, never a model row
+//! (`relation.rs`'s rule). This module owns that conclusion:
+//! [`DispatchPlan::from_gates`] turns the program's dispatch-gate facts
+//! (the trusted BusGraph analysis, bridged through
+//! [`crate::application::DispatchGate`] like every other legacy engine)
+//! and the Change-8 arrangement's thread domains into one typed plan
+//! per subject — and #464's stage-0 survey question ("how much queued
+//! traffic is same-domain?") becomes a field on each row instead of a
+//! bespoke topology walk. A program has one plan: lowering lowers it,
+//! and the model holds it projected onto the subjects and loci the
+//! model names ([`DispatchPlan::projected`]).
 //!
 //! The plan participates in EXECUTION IDENTITY: `digest()` is folded
 //! into the exec digest, so two builds whose dispatch decisions
 //! differ can never share a recording identity (#464's
 //! boot-resolved-flag rule, applied from day one).
-
-use crate::application::ApplicationModel;
 
 /// The lowering flavor a subject's dispatch receives.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,7 +71,7 @@ impl DispatchFlavor {
 }
 
 /// One subject's plan row.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubjectPlan {
     /// The subject key the gates were computed over (the BusGraph's
     /// site spelling).
@@ -105,69 +104,26 @@ pub struct SubjectPlan {
 }
 
 /// The whole-program dispatch plan.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DispatchPlan {
     /// One plan per subject, in subject order.
     pub subjects: Vec<SubjectPlan>,
 }
 
 impl DispatchPlan {
-    /// Derive the plan from the model: gate facts × arrangement. The
-    /// domains are [`domain_map`]'s, over the model's arrangement rows
-    /// (`realizes` × `placed_in`) and its placement holes, keyed by
-    /// each locus's canonical `name`.
-    pub fn derive(m: &ApplicationModel) -> DispatchPlan {
-        let domain_name = |id: crate::ids::ThreadDomainId| {
-            m.entities
-                .thread_domains
-                .get(id.index())
-                .map(|d| d.name.clone())
-                .unwrap_or_default()
-        };
-        let placed = m.relations.realizes.iter().filter_map(|re| {
-            let decl = m.entities.loci.get(re.decl.index())?;
-            let domain = m
-                .relations
-                .placed_in
-                .iter()
-                .find(|p| p.instance == re.instance)
-                .map(|p| domain_name(p.domain))?;
-            Some((decl.name.as_str(), domain))
-        });
-        // A hole hiding OWNS or PLACED at a locus decl is the model
-        // admitting it does not place that locus's whole population.
-        let unplaced = m.holes.iter().filter_map(|h| {
-            if !h.hides.intersects(
-                crate::hole::RelationSet::OWNS
-                    .union(crate::hole::RelationSet::PLACED),
-            ) {
-                return None;
-            }
-            match h.at {
-                crate::ids::EntityRef::LocusDecl(id) => {
-                    m.entities.loci.get(id.index()).map(|d| d.name.as_str())
-                }
-                _ => None,
-            }
-        });
-        DispatchPlan::from_gates(
-            &m.analyses.dispatch_gates,
-            &domain_map(placed, unplaced),
-        )
-    }
-
     /// The plan over raw gate facts plus a locus → thread domains map,
     /// keyed by the gates' spelling of a locus (the raw post-merge
     /// symbol a gate's `publisher_loci` and `subscribers` carry).
-    /// Both plans are derived here, from two gate sets and one
-    /// [`domain_map`]: `derive` passes the model's gates (the checked
-    /// graph's), the resolved program (`hale_types::resolved`) the
-    /// lowering graph's (the same rows re-keyed, and the stdlib's,
-    /// which exist only inside the lowering view), with the domains
-    /// of the arrangement projection the model's rows are made from.
+    /// The one plan of a program is derived here once (F.40 phase 4,
+    /// S9): over its one gate set (`hale_types::bus_graph::
+    /// derive_dispatch_gates`, the bus graph's rows keyed by wire and
+    /// the stdlib's after them) with the [`domain_map`] of the
+    /// arrangement projection the model's rows are made from. Lowering
+    /// lowers it, and the model holds it [`DispatchPlan::projected`].
     /// The flavor depends only on the gates; the domains fill the
     /// `same_domain` survey column. A locus the map does not hold (a
-    /// stdlib locus among lowering's gates) forfeits it.
+    /// stdlib locus, which the arrangement places no instance of)
+    /// forfeits it.
     /// `domains_of` is a COMPLETE account per key: a locus present
     /// in the map has every one of its instances represented, and a
     /// locus the arrangement cannot fully place must be ABSENT (that
@@ -221,6 +177,35 @@ impl DispatchPlan {
             });
         }
         subjects.sort_by(|a, b| a.subject.cmp(&b.subject));
+        DispatchPlan { subjects }
+    }
+
+    /// The plan as a reader that names only `subjects` and declares
+    /// only `loci` holds it: the model's (F.40 phase 4, S9), which
+    /// names the subjects its own bus sites name and declares no stdlib
+    /// locus. The rows of those subjects, each with its subscriber
+    /// column restricted to those loci, sorted and deduplicated; every
+    /// other column is the plan's own, so a row's flavor, reason and
+    /// domains are the ones lowering lowers by. The stdlib's `log.**`
+    /// row is held only where the program names `log.**` itself, and
+    /// then without the stdlib's sinks among its subscribers.
+    pub fn projected(
+        &self,
+        subjects: &std::collections::BTreeSet<&str>,
+        loci: &std::collections::BTreeSet<&str>,
+    ) -> DispatchPlan {
+        let subjects = self
+            .subjects
+            .iter()
+            .filter(|s| subjects.contains(s.subject.as_str()))
+            .map(|s| {
+                let mut row = s.clone();
+                row.subscribers.retain(|(locus, _)| loci.contains(locus.as_str()));
+                row.subscribers.sort();
+                row.subscribers.dedup();
+                row
+            })
+            .collect();
         DispatchPlan { subjects }
     }
 
@@ -285,7 +270,7 @@ impl DispatchPlan {
     }
 }
 
-/// THE domain map both dispatch plans read (F.40 phase 3, C5): each
+/// THE domain map the dispatch plan reads (F.40 phase 3, C5): each
 /// locus → the thread domains of its arranged instances, from the
 /// arrangement's `(locus, domain)` pairs, minus every locus the
 /// arrangement does not fully place. A locus can have an arranged
@@ -297,10 +282,8 @@ impl DispatchPlan {
 /// incomplete, not partially known.
 ///
 /// Keys are the gates' spelling of a locus, the raw post-merge symbol,
-/// never a display name. The model feeds it its arrangement rows and
-/// placement holes ([`DispatchPlan::derive`]); lowering feeds it the
-/// arrangement projection those rows are made from
-/// (`hale_types::arrangement`).
+/// never a display name. It is fed the arrangement projection the
+/// model's arrangement rows are made from (`hale_types::arrangement`).
 pub fn domain_map<'a>(
     placed: impl IntoIterator<Item = (&'a str, String)>,
     unplaced: impl IntoIterator<Item = &'a str>,
@@ -343,5 +326,25 @@ mod tests {
         let mut other = plan(true);
         other.subjects[0].flavor = DispatchFlavor::Dynamic;
         assert_ne!(other.digest(), plan(true).digest(), "the flavor is");
+    }
+
+    /// The projection keeps the named subjects' rows, each subscriber
+    /// column over the named loci and sorted, and every other column as
+    /// the plan has it.
+    #[test]
+    fn the_projection_restricts_rows_and_subscribers_only() {
+        let mut p = plan(true);
+        p.subjects[0].subscribers =
+            vec![("Sub".to_string(), "on_evt".to_string()), ("__StdSink".to_string(), "on".to_string()), ("A".to_string(), "h".to_string())];
+        let mut other = p.subjects[0].clone();
+        other.subject = "log.**".to_string();
+        p.subjects.push(other);
+        let projected = p.projected(&["evt"].into(), &["A", "Sub"].into());
+        assert_eq!(projected.subjects.len(), 1, "the subjects named only");
+        let row = &projected.subjects[0];
+        assert_eq!(row.subscribers, [("A".to_string(), "h".to_string()), ("Sub".to_string(), "on_evt".to_string())]);
+        let mut rest = row.clone();
+        rest.subscribers = p.subjects[0].subscribers.clone();
+        assert_eq!(rest, p.subjects[0], "every other column is the plan's");
     }
 }

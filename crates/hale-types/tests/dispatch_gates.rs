@@ -11,13 +11,18 @@
 //! tests and the DNA mains, build and harness snapshots, the family's
 //! gates are lowering's graph's, column for column and in its order (the
 //! subscribers in registration order, which the direct lowering bakes
-//! and the plan's digest frames).
+//! and the plan's digest frames). And since the snapshot derives the
+//! one plan from them (S9 2 of 3), the plan each view carries is the one
+//! lowering's graph's own gates derive with the arrangement's domains,
+//! the derivation lowering ran for itself before: every column, so every
+//! plan digest the execution identity frames, is as it was.
 
 use std::path::{Path, PathBuf};
 
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_frontend::source::Disk;
+use hale_model::dispatch_plan::DispatchPlan;
 use hale_model::DispatchGate;
 
 fn root() -> PathBuf {
@@ -48,9 +53,13 @@ fn mains(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// One view's two gate sets: the family's, and lowering's graph's.
-/// `None` where the snapshot has no lowering view.
-fn gate_sets(target: &Path, harness: bool) -> Option<(Vec<DispatchGate>, Vec<DispatchGate>)> {
+/// One view's two gate sets, the family's and lowering's graph's, and
+/// whether the plan the view carries is the one lowering's graph's
+/// gates derive (with the arrangement's domains): the plan lowering
+/// derived for itself until the family held it (F.40 phase 4, S9 2 of
+/// 3), so its digest, which the execution identity frames, is the one
+/// every build had. `None` where the snapshot has no lowering view.
+fn gate_sets(target: &Path, harness: bool) -> Option<(Vec<DispatchGate>, Vec<DispatchGate>, bool)> {
     let target = target.to_path_buf();
     std::thread::scope(|s| {
         std::thread::Builder::new()
@@ -58,9 +67,12 @@ fn gate_sets(target: &Path, harness: bool) -> Option<(Vec<DispatchGate>, Vec<Dis
             .spawn_scoped(s, move || {
                 let config = if harness { Config::harness(Target::host()) } else { Config::build(Target::host()) };
                 let snap = Snapshot::load(&target, LoadMode::WholeSeed, &Disk, config).ok()?;
-                let lowering = snap.demand_lowering().ok()?.bus.dispatch_gates();
+                let view = snap.demand_lowering().ok()?;
+                let lowering = view.bus.dispatch_gates();
                 let gates = snap.demand_dispatch_gates().expect("a lowered snapshot has its gates").to_vec();
-                Some((gates, lowering))
+                let domains = snap.demand_arrangement().expect("a lowered snapshot is arranged").domains();
+                let its_graphs = view.plan == DispatchPlan::from_gates(&lowering, &domains);
+                Some((gates, lowering, its_graphs))
             })
             .unwrap()
             .join()
@@ -78,8 +90,11 @@ fn hold_over(targets: &[PathBuf], min_views: usize) -> usize {
     for t in targets {
         let name = t.strip_prefix(root()).unwrap().display().to_string();
         for harness in [false, true] {
-            let Some((gates, lowering)) = gate_sets(t, harness) else { continue };
+            let Some((gates, lowering, its_graphs)) = gate_sets(t, harness) else { continue };
             views += 1;
+            if !its_graphs {
+                broken.push(format!("{name} (harness: {harness}): the view's plan is not its graph's"));
+            }
             if gates != lowering {
                 let only = |a: &[DispatchGate], b: &[DispatchGate]| -> Vec<String> {
                     a.iter().filter(|g| !b.contains(g)).map(|g| format!("{g:?}")).collect()
@@ -142,7 +157,7 @@ fn the_dna_test_fixtures_gates_are_lowerings() {
 /// order, then the sinks, the order lowering dispatches in.
 #[test]
 fn a_program_subscribing_the_loggers_subject_shares_it_with_the_sinks() {
-    let (gates, lowering) = gate_sets(&root().join("tests/hale/log_fields_test.hl"), false).expect("it lowers");
+    let (gates, lowering, _) = gate_sets(&root().join("tests/hale/log_fields_test.hl"), false).expect("it lowers");
     assert_eq!(gates, lowering);
     let log = gates.iter().find(|g| g.subject == "log.**").unwrap();
     let loci: Vec<&str> = log.subscribers.iter().map(|(l, _)| l.as_str()).collect();

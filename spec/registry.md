@@ -25,7 +25,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `bus_graph` | Layer 3 | Canonical | derivation | `build_bus_graph` | 0 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
-| `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 1 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
+| `dispatch` | Layer 3 | Migrating | derivation | `fn from_gates` | 1 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
@@ -537,7 +537,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2
 - `stdlib_bus_rows(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1
 - `lowering_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
+- `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2
 - `cycle_from(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×2
 - `external_handlers(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
@@ -608,7 +608,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Inputs.** bus_graph (gates, the payload_flat column among them); placement (domains: the arrangement projection, `project_arrangement`, with the ownership graph's births outside it); --no-bus-devirt
 
-**Producer (today's authority, migrating).** `crates/hale-model/src/dispatch_plan.rs` · `fn derive`
+**Producer (today's authority, migrating).** `crates/hale-model/src/dispatch_plan.rs` · `fn from_gates`
 
 **Legacy producers (permitted until removal).**
 
@@ -628,16 +628,15 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Missing data.** total: no row means the subject dispatches dynamically: no static plan row names it, at its publish and its register alike
 
-**Focused tests.** crates/hale-cli/tests/dispatch_plan_cli.rs; crates/hale-codegen/tests/bus_devirt_direct.rs; crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed); crates/hale-types/tests/dispatch_gates.rs (the snapshot's gates are lowering's graph's over 545 views, the stdlib's sinks closing `log.**` in each); crates/hale-types/tests/dispatch_plan_law.rs (the model's plan is lowering's on the shared subjects over 334 views, with a control per column); crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main); crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)
+**Focused tests.** crates/hale-cli/tests/dispatch_plan_cli.rs; crates/hale-codegen/tests/bus_devirt_direct.rs; crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed); crates/hale-types/tests/dispatch_gates.rs (the snapshot's gates are lowering's graph's over 545 views, the stdlib's sinks closing `log.**` in each); crates/hale-types/tests/dispatch_plan_projection.rs (the model holds the snapshot's plan projected and the dump prints it: the stdlib's `log.**` row lowering's alone where the program names no `log.**`, a shared row without the stdlib's sinks, a DNA main whose registration order is not the model's); crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main); crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)
 
 **Spec.** spec/model.md § Derived products; spec/decisions.md F.38; spec/runtime.md § Placement classes (the dispatch plan)
 
 **Guarded seams.**
 
-- `DispatchPlan::derive(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
-- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
-- `domain_map(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-types/src/arrangement.rs` ×1
-- `derive_dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `domain_map(` may be referenced from: `crates/hale-types/src/arrangement.rs` ×1
+- `derive_dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 
 ### `handler_routing` — Canonical · derivation
 

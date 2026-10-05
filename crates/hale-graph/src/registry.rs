@@ -860,7 +860,7 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2)] },
             Seam { symbol: "stdlib_bus_rows(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1), (STDLIB_BODIES, 1)] },
             Seam { symbol: "lowering_bus_graph(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "dispatch_gates(", allowed: &[(BUS_GRAPH, 2), (TY_RESOLVED, 1)] },
+            Seam { symbol: "dispatch_gates(", allowed: &[(BUS_GRAPH, 2)] },
             Seam { symbol: "cycle_from(", allowed: &[(BUS_GRAPH, 1), (CHECK, 2)] },
             Seam { symbol: "external_handlers(", allowed: &[(BUS_GRAPH, 1), (CHECK, 1)] },
         ],
@@ -941,7 +941,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement.",
         inputs: &["bus_graph (gates, the payload_flat column among them)", "placement (domains: the arrangement projection, `project_arrangement`, with the ownership graph's births outside it)", "--no-bus-devirt"],
-        producer: Some(site(M_DISPATCH, "fn derive")),
+        producer: Some(site(M_DISPATCH, "fn from_gates")),
         legacy: &[
             legacy(TY_RESOLVED, "from_gates", "the plan is derived twice, from two gate sets: the model's (`derive`) from the checked graph's gates, lowering's (the resolved program) from the lowering graph's, which are the same rows re-keyed by wire plus the stdlib's; by one function (`from_gates`) with one domain map (`domain_map` over the arrangement projection, keyed by the gates' spelling of a locus); held equal on the subjects the model's gates name by the law (`dispatch_plan_law.rs`: every column, the subscriber column over the model's loci and in each plan's own order)", "phase 4, with `stdlib_surface`: one derivation needs the stdlib's rows at the snapshot, so that the model's gates and lowering's are one set (F.40 phase 3, C5 2 of 2, restated)"),
         ],
@@ -954,17 +954,20 @@ pub const FAMILIES: &[Family] = &[
             "the direct tier takes all three gate legs, same-thread, quiet and the payload_flat column (`bus_graph::payload_is_flat`, codegen's flatness rule over resolved types); codegen reads the flavor and refuses a plan whose column disagrees with the lowered payload, and the codec's own flatness equals the column at every publish over the corpus",
         ],
         missing: Missing::Total("no row means the subject dispatches dynamically: no static plan row names it, at its publish and its register alike"),
-        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs", "crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)", "crates/hale-types/tests/dispatch_gates.rs (the snapshot's gates are lowering's graph's over 545 views, the stdlib's sinks closing `log.**` in each)", "crates/hale-types/tests/dispatch_plan_law.rs (the model's plan is lowering's on the shared subjects over 334 views, with a control per column)", "crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main)", "crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)"],
+        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs", "crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)", "crates/hale-types/tests/dispatch_gates.rs (the snapshot's gates are lowering's graph's over 545 views, the stdlib's sinks closing `log.**` in each)", "crates/hale-types/tests/dispatch_plan_projection.rs (the model holds the snapshot's plan projected and the dump prints it: the stdlib's `log.**` row lowering's alone where the program names no `log.**`, a shared row without the stdlib's sinks, a DNA main whose registration order is not the model's)","crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main)", "crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)"],
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38", "spec/runtime.md § Placement classes (the dispatch plan)"],
         owned: &[site(M_DISPATCH, "domain_map"), site(BUS_GRAPH, "derive_dispatch_gates"), site(STDLIB_BODIES, "bus_rows")],
         seams: &[
-            Seam { symbol: "DispatchPlan::derive(", allowed: &[(MODEL_BUILDER, 1)] },
-            Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 2), (TY_RESOLVED, 1)] },
-            // The one domain map: the model's rows in `derive`, the
-            // arrangement projection's in `Arrangement::domains`.
-            Seam { symbol: "domain_map(", allowed: &[(M_DISPATCH, 1), (ARRANGEMENT, 1)] },
-            // The one gate set: the snapshot's cell.
-            Seam { symbol: "derive_dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1)] },
+            // The one plan: the snapshot's cell; and the entries over a
+            // bundle or a bare program no snapshot holds (the model of
+            // `derive_application_model`, `resolve_program`), through
+            // the same two producers.
+            Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 1), (SNAPSHOT, 1), (TLIB, 1), (TY_RESOLVED, 1)] },
+            // The one domain map, over the arrangement projection.
+            Seam { symbol: "domain_map(", allowed: &[(ARRANGEMENT, 1)] },
+            // The one gate set: the snapshot's cell, and the same two
+            // entries.
+            Seam { symbol: "derive_dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 1), (TY_RESOLVED, 1)] },
         ],
     },
     Family {
