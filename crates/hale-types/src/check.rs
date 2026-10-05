@@ -6068,19 +6068,6 @@ impl ScopeStack {
     }
 }
 
-/// GH #436 follow-up: which half of confinement a site exercises.
-///
-/// Reads resolve through the expression field-access arm and writes
-/// through LValue traversal — two paths, and the original check only
-/// hooked the first. Naming the distinction keeps the diagnostic
-/// honest ("writes one from outside", not "reads") and makes the
-/// second path impossible to forget again.
-#[derive(Clone, Copy)]
-enum SealedAccess {
-    Read,
-    Write,
-}
-
 /// A param access the walk reached: the body it is in, the row, and how
 /// many diagnostics stood before it, which is where the sealed rule's
 /// finding for it goes.
@@ -6097,27 +6084,6 @@ struct AccessVisit {
 struct WalkMark {
     diags: usize,
     visits: usize,
-}
-
-thread_local! {
-    /// The sealed rule as it was, decided at the access, for the
-    /// differential that holds the law over the rows to it.
-    static OLD_SEALED_RULE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` with the sealed rule decided at the access, as it was before
-/// the law over the `param_accesses` rows (F.40 phase 4, W4): the
-/// differential's other side. Not for any other use.
-#[doc(hidden)]
-pub fn with_the_old_sealed_rule<R>(f: impl FnOnce() -> R) -> R {
-    OLD_SEALED_RULE.with(|c| c.set(true));
-    let r = f();
-    OLD_SEALED_RULE.with(|c| c.set(false));
-    r
-}
-
-fn old_sealed_rule() -> bool {
-    OLD_SEALED_RULE.with(|c| c.get())
 }
 
 impl<'a> Checker<'a> {
@@ -11195,16 +11161,9 @@ impl<'a> Checker<'a> {
                     // writes. Confinement that stops a read and permits
                     // a write is not confinement — for `std::secret` it
                     // let outside code CHOOSE the signing key, which is
-                    // worse than reading it.
+                    // worse than reading it. A write is a row of its own
+                    // kind, so the rule says "writes one from outside".
                     self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
-                    if old_sealed_rule() {
-                    self.check_sealed_access(
-                        &ty,
-                        f,
-                        f.span,
-                        SealedAccess::Write,
-                    );
-                    }
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
                 }
                 LValueSeg::Index(idx) => {
@@ -11768,9 +11727,6 @@ impl<'a> Checker<'a> {
                 fresh.push((visit.at, visit.row));
             }
         }
-        if old_sealed_rule() {
-            return;
-        }
         let rows: Vec<crate::typed_bodies::ParamAccess> = fresh.iter().map(|(_, r)| r.clone()).collect();
         let found = crate::sealed_access::sealed_access_law(self.top, &rows);
         // From the last, so each insertion leaves the earlier places
@@ -11790,77 +11746,6 @@ impl<'a> Checker<'a> {
             SiteUniverse::StdlibAnalysis
         };
         Some(crate::typed_bodies::LocusRef { universe, decl: decl.id })
-    }
-
-    /// GH #436: `@sealed` — a sealed locus's `params` are reachable
-    /// only from inside its own methods.
-    ///
-    /// The rule is about the *reader*, not the receiver syntax: what
-    /// matters is whether the enclosing locus IS the sealed one. A
-    /// parent holding `s: Signer` reads `self.s.key` with receiver
-    /// type `Signer` while `current_locus` is `Gateway`, and that is
-    /// the read this forbids. `self.key` inside `Signer` has the same
-    /// receiver type with `current_locus == Signer`, and is fine.
-    ///
-    /// Only `params` are sealed. Capacity slots and methods are
-    /// untouched — sealing confines state, it does not make a locus
-    /// uncallable, which is the entire point.
-    fn check_sealed_access(
-        &mut self,
-        rt: &Ty,
-        name: &Ident,
-        span: Span,
-        access: SealedAccess,
-    ) {
-        let Ty::Named(locus_name) = rt else { return };
-        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name)
-        else {
-            return;
-        };
-        if !li.sealed {
-            return;
-        }
-        // Inside the sealed locus itself: every read is legal.
-        if self.current_locus.map_or(false, |cur| cur.name == li.name) {
-            return;
-        }
-        // Only `params` are confined; a slot or method name reaching
-        // here is not a state read.
-        if !li.params.iter().any(|p| p.name == name.name) {
-            return;
-        }
-        // Render the spelling the author wrote. A stdlib locus is
-        // declared under a mangled name (`__StdSecretSigner`) that
-        // appears nowhere in their program; they wrote
-        // `std::secret::Signer`.
-        let shown = hale_stdlib::PATH_RENAMES
-            .iter()
-            .find(|(_, m)| *m == li.name)
-            .map(|(p, _)| p.join("::"))
-            .unwrap_or_else(|| li.name.clone());
-        let callable: Vec<&str> =
-            li.methods.iter().map(|m| m.name.as_str()).collect();
-        let hint = if callable.is_empty() {
-            format!(
-                "`{shown}` declares no methods, so its state is \
-                 reachable only from inside it"
-            )
-        } else {
-            format!("call one of its methods instead ({})", callable.join(", "))
-        };
-        let (verb, gerund) = match access {
-            SealedAccess::Read => ("readable", "reads"),
-            SealedAccess::Write => ("writable", "writes"),
-        };
-        self.diags.push(Diag::ty(
-            span,
-            format!(
-                "`{shown}` is `@sealed`: its `params` are {verb} only \
-                 from inside its own methods, and `{shown}.{}` {gerund} \
-                 one from outside — {hint}",
-                name.name
-            ),
-        ));
     }
 
     /// GH #759: a type name written in a position the checker reads
@@ -14092,14 +13977,6 @@ impl<'a> Checker<'a> {
                 }
                 let rt = self.check_expr(receiver);
                 self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
-                if old_sealed_rule() {
-                self.check_sealed_access(
-                    &rt,
-                    name,
-                    *span,
-                    SealedAccess::Read,
-                );
-                }
                 match self.field_ty(&rt, &name.name) {
                     Some(t) => t,
                     None => {

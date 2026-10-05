@@ -1138,7 +1138,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Law,
         answers: "Which loci confine their state (`@sealed`), and which could.",
         inputs: &["locus declarations", "field accesses"],
-        producer: Some(site(CHECK, "check_sealed_access")),
+        producer: Some(site(CHECK, "record_param_access")),
         legacy: &[
             legacy("crates/hale-types/src/sealability.rs", "survey", "the `--sealable` survey seals every locus, re-runs a partial check and PARSES THE DIAGNOSTIC MESSAGE TEXT to decide", "the survey reads the sealed-access rows"),
         ],
