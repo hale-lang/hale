@@ -96,7 +96,7 @@ fn decl_order_hot_and_mode() {
 #[test]
 fn calls_and_sites_where_written() {
     let rows = rows();
-    let pump = &rows[&FnKey::free_fn("pump")];
+    let pump = &rows[&FnKey::free_fn(None, "pump")];
     let make = call(pump, CallSpelling::Ident("make".to_string()));
     assert!(make.in_loop);
     assert_eq!(make.let_span.map(text), Some("let c = make(i);"));
@@ -110,7 +110,7 @@ fn calls_and_sites_where_written() {
     assert!(child.bare_stmt && child.in_loop && child.self_replace.is_none());
     // A `return` payload allocates once per call, and is written in a
     // loop.
-    let pick = &rows[&FnKey::free_fn("pick")];
+    let pick = &rows[&FnKey::free_fn(None, "pick")];
     let child = literal(&pick.sites, "Child");
     assert_eq!((child.loop_depth, child.in_loop, child.bare_stmt), (0, true, false));
 }
@@ -120,7 +120,7 @@ fn calls_and_sites_where_written() {
 #[test]
 fn in_place_self_replace() {
     let rows = rows();
-    let on_t = &rows[&FnKey::method("Sink", "on_t")];
+    let on_t = &rows[&FnKey::method(None, "Sink", "on_t")];
     assert_eq!(on_t.entry, Some(EntryKind::BusHandler));
     assert!(on_t.sites.is_empty());
     let p = literal(&on_t.in_place_sites, "P");

@@ -35,6 +35,12 @@
 //! 5. `fallible_calls`, per call site whose callee is fallible, stdlib
 //!    callees included: the callee, its error type, and what addresses
 //!    the call where it stands. The `bare_fallible` law reads it.
+//! 6. `omitted_args`, per call site that leaves arguments to their
+//!    defaults: the declaration it calls (a fn or a locus method of the
+//!    program, resolved as the checker resolves the call, a method by
+//!    its receiver's type) and the first parameter it leaves. Lowering
+//!    expands those defaults at the call, in the caller's context; the
+//!    cross-pool value law reads where (C3 rest, the review of #1351).
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -211,6 +217,23 @@ pub struct FallibleCall {
     pub payload: Ty,
     pub handled: Handling,
 }
+
+/// A call that leaves trailing arguments to their defaults: the
+/// declaration of the fn or locus method it calls (a [`hale_syntax::ast::FnDecl`]'s
+/// id, in the checked program), and the index of the first parameter it
+/// leaves. Lowering expands each of those parameters' defaults at the
+/// call, under the caller's locus (`lower_default_in_caller`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OmittedArgs {
+    pub callee: u32,
+    pub from: usize,
+}
+
+/// The `omitted_args` column: by call site, what each call leaves to
+/// its defaults. A call the checker walks more than once (a default
+/// expanded at two callers, a generic body specialized) keeps every
+/// answer.
+pub type OmittedArgsByCall = BTreeMap<u32, std::collections::BTreeSet<OmittedArgs>>;
 
 /// Generic calls in defaults evaluated by one caller. Source sites
 /// stay unchanged; the invocation path distinguishes repeated expansion
@@ -406,9 +429,20 @@ pub struct TypingRecord {
     /// Which body each recorded call site belongs to.
     pub sites: BTreeMap<u32, u32>,
     pub monomorphs: Monomorphs,
+    /// The `omitted_args` column.
+    pub omitted_args: OmittedArgsByCall,
 }
 
 impl TypingRecord {
+    /// Record that `call` leaves `callee`'s parameters from `from` on to
+    /// their defaults.
+    pub fn omitted_args(&mut self, call: NodeId, callee: NodeId, from: usize) {
+        if call.is_none() || callee.is_none() {
+            return;
+        }
+        self.omitted_args.entry(call.0).or_default().insert(OmittedArgs { callee: callee.0, from });
+    }
+
     pub fn body(&mut self, decl: NodeId) -> &mut TypedBody {
         self.bodies.entry(decl.0).or_default()
     }
@@ -478,9 +512,15 @@ pub struct TypedBodies {
     monomorphs: Monomorphs,
     conformance: BTreeMap<(u32, u32), Conformance>,
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
+    omitted_args: OmittedArgsByCall,
 }
 
 impl TypedBodies {
+    /// The `omitted_args` column: what each call leaves to its defaults.
+    pub fn omitted_args(&self) -> &OmittedArgsByCall {
+        &self.omitted_args
+    }
+
     /// The rows of the body declared at `decl`.
     pub fn body(&self, decl: NodeId) -> Option<&TypedBody> {
         self.bodies.get(&decl.0)
@@ -656,6 +696,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         monomorphs: record.monomorphs.clone(),
         conformance: BTreeMap::new(),
         monomorph_conformance: Vec::new(),
+        omitted_args: record.omitted_args.clone(),
     };
     let mut decls = Declared::default();
     for p in bundle.programs.values() {

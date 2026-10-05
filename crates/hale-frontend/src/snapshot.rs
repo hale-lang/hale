@@ -1672,13 +1672,16 @@ impl Snapshot {
     /// ([`hale_types::lowering_laws`], the `law_backstops` family) over
     /// the rows they read, for a view the check does not gate: the
     /// check runs the same laws among its rules, so a gated view has
-    /// them already. Blocked with the rows.
+    /// them already. Blocked with the rows (the typed-body table's
+    /// `omitted_args` among them, so with the typing, not with its
+    /// diagnostics).
     fn demand_lowering_laws(&self) -> Result<Vec<Diag>, Blocked> {
         let ownership = || self.demand_ownership_graph().ok();
         let inputs = hale_types::lowering_laws::LoweringLawInputs {
             placement: self.demand_placement().map_err(Clone::clone)?,
             bindings: self.demand_bindings().map_err(Clone::clone)?,
             ownership: &ownership,
+            omitted: self.demand_typed_bodies().map_err(Clone::clone)?.omitted_args(),
         };
         let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
         hale_types::finish_check_diags(&mut diags);

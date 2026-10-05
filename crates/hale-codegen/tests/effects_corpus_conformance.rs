@@ -24,7 +24,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use hale_types::alloc_summary::{self, FnKey};
+use hale_types::alloc_summary::{self, DeclId, FnKey};
 use hale_types::frontier;
 
 fn corpus_files() -> Vec<PathBuf> {
@@ -49,11 +49,12 @@ fn fn_keys(program: &hale_syntax::ast::Program) -> Vec<FnKey> {
     let mut keys = Vec::new();
     for item in &program.items {
         match item {
-            TopDecl::Fn(fd) => keys.push(FnKey::free_fn(fd.name.name.clone())),
+            TopDecl::Fn(fd) => keys.push(FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone())),
             TopDecl::Locus(l) => {
                 for m in &l.members {
                     if let LocusMember::Fn(fd) = m {
                         keys.push(FnKey::method(
+                            DeclId::user(fd.id),
                             l.name.name.clone(),
                             fd.name.name.clone(),
                         ));

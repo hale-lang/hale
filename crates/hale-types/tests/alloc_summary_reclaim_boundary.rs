@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
-use hale_types::alloc_summary::{summarize_identified, AllocSummary, FnKey, Frame, LeakSite, LoopAt, ReclaimScope};
+use hale_types::alloc_summary::{summarize_identified, AllocSummary, Frame, LeakSite, LoopAt, ReclaimScope};
 
 /// The summary of `src` alone, minted as `app.hl`.
 fn summarize(src: &str) -> AllocSummary {
@@ -298,10 +298,10 @@ fn recursive_and_unresolved_callees() {
         fn main() { App { }; }
     "#;
     let now = summarize(src);
-    let rep = &now.fns[&FnKey::free_fn("rep")];
+    let rep = &now.fns[now.resolve(None, "rep").unwrap()];
     assert_eq!(rep.frame, Some(Frame::ScratchLocal { recursive: true }));
     assert!(!rep.frees_at_return());
-    let stamp = &now.fns[&FnKey::free_fn("stamp")];
+    let stamp = &now.fns[now.resolve(None, "stamp").unwrap()];
     assert_eq!(stamp.frame, Some(Frame::CallersArena), "a call outside the class demotes the fn, as lowering's row does");
     let dump = now.render();
     assert_eq!(fn_block(&dump, "rep")[0], "fn rep [scratch-local, recursive]");
@@ -335,13 +335,13 @@ fn mutually_recursive_frames_keep_the_conservative_boundary() {
     "#;
     let now = summarize(src);
     for name in ["first", "second"] {
-        let row = &now.fns[&FnKey::free_fn(name)];
+        let row = &now.fns[now.resolve(None, name).unwrap()];
         assert_eq!(row.frame, Some(Frame::ScratchLocal { recursive: true }), "{name}");
         assert!(!row.frees_at_return());
         assert!(row.sites.iter().any(|s| s.escape == hale_types::alloc_summary::Escape::Local));
         assert!(row.sites.iter().all(|s| s.reclaim != ReclaimScope::FnReturn));
     }
-    let leaf = &now.fns[&FnKey::free_fn("leaf")];
+    let leaf = &now.fns[now.resolve(None, "leaf").unwrap()];
     assert!(leaf.frees_at_return());
     assert!(leaf.sites.iter().any(|s| s.reclaim == ReclaimScope::FnReturn));
 }

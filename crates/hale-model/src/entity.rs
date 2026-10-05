@@ -14,6 +14,8 @@
 //! drag a dependency into this crate; the label set is validated
 //! against the upstream lattice at derivation time (Change 2).
 
+use hale_graph::ids::SiteId;
+
 use crate::ids::{LocusDeclId, PayloadContractId, ProvenanceId, SubjectId};
 use crate::keys::TopicKey;
 
@@ -112,6 +114,13 @@ pub struct Function {
     /// coverage and group projection both hang off ownership, so
     /// it is a closed account, never inferable-by-absence.
     pub owner: Option<LocusDeclId>,
+    /// The declaration this row is (F.40 phase 3, C3 rest): the site the
+    /// snapshot minted for the fn, method, hook, mode or failure handler;
+    /// `None` for a row no mint numbered. A join from an analysis row (a
+    /// summary key) to its function reads this column, never `name`,
+    /// which only ranks the row ([`crate::FunctionId`], law 2). Never
+    /// rendered and never hashed.
+    pub decl: Option<SiteId>,
     /// The function's declaration site.
     pub provenance: ProvenanceId,
 }

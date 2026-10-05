@@ -22,9 +22,10 @@ use hale_syntax::ast::{
 use hale_syntax::{Diag, Span};
 
 use crate::binding_rows::BindingRows;
-use crate::ownership_graph::OwnershipGraph;
+use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
+use crate::typed_bodies::OmittedArgsByCall;
 use crate::Bundle;
 
 /// The rows the laws read.
@@ -38,6 +39,9 @@ pub struct LoweringLawInputs<'a> {
     /// to an owner on another thread. Asked for only when the placement
     /// table runs something off the main thread.
     pub ownership: &'a dyn Fn() -> Option<&'a OwnershipGraph>,
+    /// The typed-body table's `omitted_args` column: which defaults each
+    /// call leaves to be expanded at it.
+    pub omitted: &'a OmittedArgsByCall,
 }
 
 /// Every law that replaced a lowering backstop, over `bundle`.
@@ -60,11 +64,24 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
 ///
 /// Read off the ownership graph's cross-pool bubble plan, keyed
 /// (enclosing locus, child locus) as lowering keys it while it lowers a
-/// literal in that locus's own member bodies. A literal in a params
-/// default is not judged here: lowering expands a default in the scope
-/// that instantiates the locus, under that scope's locus, so which plan
-/// entry it meets depends on the instantiation, a relation no row holds
-/// yet, and lowering keeps its own refusal for that shape.
+/// literal, at every place lowering lowers one: a literal in a locus's
+/// own member bodies under that locus, and a literal in a default under
+/// each locus lowering expands the default in
+/// ([`OwnershipGraph::expansions`]). A params default is expanded where a
+/// literal leaves its field unsupplied; a fn's or a method's argument
+/// default at each call that leaves the argument out (a call that
+/// supplies it expands nothing), so it is judged per invocation, in the
+/// caller's locus; and a chain of defaults of either kind is followed.
+///
+/// A params default is a field's value, never a bare statement, so every
+/// plan entry it meets is refused, at the literal in the default, once per
+/// locus that expands it (C3 rest). An argument default's literal is
+/// refused unless it is a bare statement of the default's own block, at
+/// the call or literal in the caller's body that expands it, once per
+/// such root: the same default reached from a caller on the owner's
+/// thread is not refused (the review of #1351; lowering passed a null
+/// pointer for it, after its own refusal was taken out). Lowering keeps
+/// an error for a value use that reaches it, as a judgment missing here.
 fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
     // A cross-pool edge needs a locus placed off the main thread; a
     // table whose one domain is main has none, and the graph is not
@@ -81,7 +98,9 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
     // context. Joining by a written leaf or reconstructing the context
     // here would miss aliases/imports or misclassify nested literals.
     for site in &ownership.sites {
-        if site.params_default || site.bare_statement {
+        // A default's literal is lowered where the default is expanded,
+        // not in this body: judged below, in each of those contexts.
+        if site.params_default || site.arg_default.is_some() || site.bare_statement {
             continue;
         }
         let child = &site.child_ty;
@@ -94,6 +113,108 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
                  (`{child} {{ ... }};`), not as a value (let-binding, sub-expression, or field)."
             ),
         ));
+    }
+    // The literals outside the member-body walk: a closure's assertion is
+    // lowered under its locus, and a const's value or a type's field
+    // default under the locus of each use, so under any locus whose plan
+    // posts the child.
+    let per_use_message = |child: &str, owner: &str, context: &str, position: PerUsePosition, through: &str| {
+        format!(
+            "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is built {through}in {}, so under every \
+             locus that uses it, and under `{context}` the instance is created on `{owner}`'s thread and cannot \
+             be a value. The compiler cannot show which loci lower this position: build the `{child}` in a \
+             locus's member body (`{child} {{ ... }};` as a bare statement where it crosses), or pass it in.",
+            position.describe()
+        )
+    };
+    let decl_names: Vec<&String> = ownership.declarations.iter().map(|d| &d.name).collect();
+    for other in &ownership.other_sites {
+        let site = &other.site;
+        if site.bare_statement {
+            continue;
+        }
+        let child = &site.child_ty;
+        match (other.position, other.enclosing_decl) {
+            (OtherPosition::Closure, Some(decl)) => {
+                let Some(owner) = crosspool.get(&(decl_names[decl].clone(), child.clone())) else { continue };
+                diags.push(Diag::ty(
+                    site.span,
+                    format!(
+                        "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
+                         `{owner}`'s thread and cannot be used here. Write it as a bare statement \
+                         (`{child} {{ ... }};`), not as a value (let-binding, sub-expression, or field)."
+                    ),
+                ));
+            }
+            (OtherPosition::PerUse(position), _) => {
+                let crossing = decl_names.iter().find_map(|d| crosspool.get(&((*d).clone(), child.clone())).map(|o| (d, o)));
+                let Some((context, owner)) = crossing else { continue };
+                diags.push(Diag::ty(site.span, per_use_message(child, owner, context, position, "here, ")));
+            }
+            (OtherPosition::Closure, None) => {}
+        }
+    }
+    let mut params_reported: BTreeSet<(ExpandedLiteral, usize)> = BTreeSet::new();
+    let mut roots_reported: BTreeSet<(ExpandedLiteral, u32, u32)> = BTreeSet::new();
+    for expansion in ownership.expansions(&crosspool, inputs.omitted) {
+        let site = ownership.literal(expansion.literal);
+        let (child, span, bare) = (&site.child_ty, site.span, site.bare_statement);
+        let (params_field, holder) = match expansion.literal {
+            ExpandedLiteral::Owned(i) => {
+                let s = &ownership.sites[i];
+                (s.params_field.as_deref().filter(|_| s.params_default), Some(s.enclosing_decl))
+            }
+            ExpandedLiteral::Free(_) | ExpandedLiteral::Other(_) => (None, None),
+        };
+        let context = &ownership.declarations[expansion.context].name;
+        let Some(owner) = crosspool.get(&(context.clone(), child.clone())) else { continue };
+        let root = expansion.root;
+        if let Some(position) = expansion.per_use {
+            // Every locus is a context here, so the root says it once.
+            if (bare && params_field.is_none())
+                || !roots_reported.insert((expansion.literal, root.start.0, root.end.0))
+            {
+                continue;
+            }
+            diags.push(
+                Diag::ty(root, per_use_message(child, owner, context, position, "through the defaults this leaves, "))
+                    .with_related(span, format!("the default builds `{child}` here")),
+            );
+        } else if let (Some(field), Some(holder)) = (params_field, holder) {
+            if !params_reported.insert((expansion.literal, expansion.context)) {
+                continue;
+            }
+            let holder = &ownership.declarations[holder].name;
+            diags.push(Diag::ty(
+                span,
+                format!(
+                    "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{holder}`'s param \
+                     `{field}`, which is built in `{context}` (a `{holder}` built there leaves `{field}` to its \
+                     default), so the instance is created on `{owner}`'s thread and cannot be the field's value. \
+                     Write it as a bare statement (`{child} {{ ... }};`), not as a value (let-binding, \
+                     sub-expression, or field)."
+                ),
+            ));
+        } else if let Some(arg) = &site.arg_default {
+            if bare || !roots_reported.insert((expansion.literal, root.start.0, root.end.0)) {
+                continue;
+            }
+            let (callee, param) = (&arg.fn_name, &arg.param);
+            diags.push(
+                Diag::ty(
+                    root,
+                    format!(
+                        "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{callee}`'s \
+                         argument `{param}`, expanded here, in `{context}` (a call that leaves an argument to its \
+                         default builds the default at the call, under the caller's locus), so the instance is \
+                         created on `{owner}`'s thread and cannot be the argument's value. Pass `{param}` at the \
+                         call, or build the `{child}` as a bare statement (`{child} {{ ... }};`) where it is \
+                         not a value."
+                    ),
+                )
+                .with_related(span, format!("the default of `{callee}`'s argument `{param}` builds `{child}` here")),
+            );
+        }
     }
 }
 
@@ -259,11 +380,11 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
 /// statement and expression form; `items` walks the positions the table
 /// records apart from them too (`PlacementTable`'s root `expanded`), and
 /// `expr` walks one expression alone.
-struct Literals<F> {
+pub(crate) struct Literals<F> {
     f: F,
 }
 
-fn literals<'a, F: FnMut(&'a Expr, bool)>(f: F) -> Literals<F> {
+pub(crate) fn literals<'a, F: FnMut(&'a Expr, bool)>(f: F) -> Literals<F> {
     Literals { f }
 }
 
@@ -478,7 +599,7 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
         }
     }
 
-    fn expr(&mut self, e: &'a Expr) {
+    pub(crate) fn expr(&mut self, e: &'a Expr) {
         if !matches!(e, Expr::Struct { .. }) {
             (self.f)(e, false);
         }

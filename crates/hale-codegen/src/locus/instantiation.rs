@@ -191,25 +191,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Anything else (an argument, a binding, a temporary) resolves
         // as before: the method body or params-init loop it sits in.
         let holder = self.field_holder.take();
+        let child = self.routing_key(locus_name);
         self.supervising_parent = match (&site_owner, holder) {
             (
                 crate::ownership::Owner::Field { owner, .. },
                 Some((Some(lit), cx)),
-            ) if *owner == lit => Some((locus_name.to_string(), cx)),
+            ) if *owner == lit => Some((child, cx)),
             (crate::ownership::Owner::Placement(_), Some((_, cx))) => {
-                Some((locus_name.to_string(), cx))
+                Some((child, cx))
             }
             (crate::ownership::Owner::Field { owner, .. }, None)
                 if *owner == crate::ownership::ExprId::DECLARED =>
             {
-                self.params_init_self
-                    .clone()
-                    .map(|cx| (locus_name.to_string(), cx))
+                self.params_init_self.clone().map(|cx| (child, cx))
             }
-            (crate::ownership::Owner::Placement(_), None) => self
-                .params_init_self
-                .clone()
-                .map(|cx| (locus_name.to_string(), cx)),
+            (crate::ownership::Owner::Placement(_), None) => {
+                self.params_init_self.clone().map(|cx| (child, cx))
+            }
             _ => None,
         };
         // The locus whose FIELD this instance is, when it is one (the
@@ -496,22 +494,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
         if let Some(owner_name) = crosspool_owner {
-            // A literal in the enclosing locus's own member bodies is
-            // judged before lowering, located (`hale_types::lowering_laws`,
-            // F.40 phase 3, C7). This refusal stays for the one shape the
-            // law cannot see: a literal in another locus's params default,
-            // expanded here under `current_self`, the instantiating
-            // locus, which no row relates to the literal.
+            // A value use is judged before lowering at every entry point,
+            // located (`hale_types::lowering_laws`, F.40 phase 3, C7): a
+            // literal in the enclosing locus's own member bodies, and one
+            // in a params or argument default under each locus that
+            // expands it here as `current_self`
+            // (`OwnershipGraph::expansions`, C3 rest and its review). The
+            // post returns no instance (the child is born on the owner's
+            // thread), so a value use that reaches it anyway is a missing
+            // judgment, refused in every build profile, never lowered as
+            // a null value.
             if !is_bare_stmt {
-                return Err(CodegenError::Unsupported(format!(
-                    "cross-pool spawn `{child}{{ }}` is fire-and-forget: \
-                     the instance is created on `{owner}`'s thread and \
-                     cannot be used here. Write it as a bare statement \
-                     (`{child} {{ ... }};`), not as a value (let-binding, \
-                     sub-expression, or field).",
-                    child = locus_name,
-                    owner = owner_name,
-                )));
+                let enclosing = self.current_self.as_ref().map(|cs| cs.locus_name.clone()).unwrap_or_default();
+                let msg = format!(
+                    "cross-pool spawn `{locus_name}{{ }}` reached lowering as a value under `{enclosing}`: the \
+                     instance is created on `{owner_name}`'s thread, so there is no value to use here. The \
+                     cross-pool value law (`hale_types::lowering_laws`, the `law_backstops` family) refuses \
+                     this shape before lowering and did not judge this expansion: a compiler defect, not a \
+                     decision of lowering's."
+                );
+                let span = own_site_id.and_then(|id| self.owner_table.entry(id)).map(|e| e.span);
+                return Err(match span {
+                    Some(span) => CodegenError::UnsupportedAt(msg, span),
+                    None => CodegenError::Unsupported(msg),
+                });
             }
             // Restore the cooperative-pool context we swapped in above
             // (the normal path restores it at fn exit; we early-return).

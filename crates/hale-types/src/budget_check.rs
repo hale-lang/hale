@@ -40,7 +40,7 @@ use hale_syntax::{Diag, Span};
 
 use crate::verdict::Verdict;
 use crate::alloc_summary::{AllocKind, AllocSite, AllocSummary,
-    CallEdge, FnKey};
+    CallEdge, DeclId, FnKey};
 use crate::callgraph::{self, FactVisitor};
 
 /// A per-call allocation count that saturates at `Unbounded` (a
@@ -358,7 +358,7 @@ fn budget_report_inner(
             match item {
                 TopDecl::Fn(fd) => {
                     if let Some(budget) = fd.budget {
-                        let key = FnKey::free_fn(fd.name.name.clone());
+                        let key = FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone());
                         let at =
                             one(&key, budget, fd, &mut diags, &mut rows);
                         starts.push(at);
@@ -369,6 +369,7 @@ fn budget_report_inner(
                         if let LocusMember::Fn(fd) = m {
                             if let Some(budget) = fd.budget {
                                 let key = FnKey::method(
+                                    DeclId::user(fd.id),
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 );

@@ -138,20 +138,44 @@ fn a_cross_pool_spawn_used_as_a_value_is_refused_by_the_law() {
     assert_eq!(msg.matches(FIRE_AND_FORGET).count(), 2, "expected the law's two refusals, got: {msg}");
 }
 
-/// The residue lowering keeps: `Driver` spawns `Ship` itself (a bare
-/// statement, legal), so the plan holds (Driver, Ship); `Holder`'s
-/// params default builds a `Ship` too, expanded under `Driver`'s self,
-/// which no row relates to the literal. Lowering's own refusal is still
-/// its only evaluator (the check passes it: hale-types'
-/// `ownership_graph.rs`).
+/// The shape lowering refused alone until C3 rest: `Driver` spawns
+/// `Ship` itself (a bare statement, legal), so the plan holds (Driver,
+/// Ship); `Holder`'s params default builds a `Ship` too, expanded under
+/// `Driver`'s self. The ownership graph gives the default that context
+/// (`expansions`), and the law refuses it before lowering, with its
+/// wording.
 #[test]
-fn a_cross_pool_spawn_in_another_locus_default_is_refused_by_lowering_alone() {
+fn a_cross_pool_spawn_in_another_locus_default_is_refused_by_the_law() {
     let err = build_err("hale_c7_xpool_default", &crosspool_src("Ship { hull: 7 }; Holder { };"));
     let msg = err.to_string();
     assert!(
-        msg.starts_with("unsupported in codegen v0: cross-pool spawn `Ship{ }` is fire-and-forget"),
-        "expected lowering's own refusal, got: {msg}"
+        msg.contains(
+            "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of `Holder`'s param `s`, \
+             which is built in `Driver`"
+        ),
+        "expected the law's refusal, got: {msg}"
     );
+}
+
+/// The review of #1351: `take()` leaves `s` to a `Ship` lowering builds
+/// at the call, under `Driver`, where it is a post with no value (the
+/// harness passed a null pointer for it). The harness skips the check but
+/// not the law, which reads the typing's `omitted_args` and refuses it at
+/// the call; lowering's own error for a value use that reaches it (a
+/// missing judgment) is not what refuses it.
+#[test]
+fn a_cross_pool_spawn_in_a_fn_argument_default_is_refused_by_the_law() {
+    let src = crosspool_src("Ship { hull: 7 }; take();")
+        .replace("locus Driver", "fn take(s: Ship = Ship { hull: 1 }) { println(s.hull); }\nlocus Driver");
+    let msg = build_err("hale_c3_xpool_arg_default", &src).to_string();
+    assert!(
+        msg.contains(
+            "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of `take`'s argument `s`, \
+             expanded here, in `Driver`"
+        ),
+        "expected the law's refusal, got: {msg}"
+    );
+    assert!(!msg.contains("reached lowering as a value"), "the law refuses it, not lowering: {msg}");
 }
 
 /// Two aliased value uses must be rejected by the shared law before

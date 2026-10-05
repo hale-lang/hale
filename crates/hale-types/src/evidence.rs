@@ -792,16 +792,23 @@ pub fn model_fanout<'a>(
           site: u32,
           subject: &str|
           -> Option<u64> {
-        // Join on the RAW canonical name: `FnKey::display` builds
-        // the raw `Locus::fn` spelling, while `Function::display` is
-        // the DEMANGLED author spelling — an imported publisher
-        // would miss (round 4).
-        let raw = key.display();
-        let fid = e
-            .functions
-            .iter()
-            .position(|f| f.name == raw)
-            .map(|i| hale_model::FunctionId(i as u32))?;
+        // Join on the declaration: the key's site is the function's
+        // (`Function::decl`; the model is the program's, one universe,
+        // whose index names the site). A key no mint numbered joins on
+        // the RAW canonical name: `FnKey::display` builds the raw
+        // `Locus::fn` spelling, while `Function::display` is the
+        // DEMANGLED author spelling — an imported publisher would miss
+        // (round 4).
+        let fid = match key.decl {
+            Some(d) => e.functions.iter().position(|f| {
+                d.universe == crate::placement::SiteUniverse::User && f.decl.is_some_and(|s| s.index == d.index)
+            }),
+            None => {
+                let raw = key.display();
+                e.functions.iter().position(|f| f.name == raw)
+            }
+        }
+        .map(|i| hale_model::FunctionId(i as u32))?;
         let root = r
             .publishes
             .iter()

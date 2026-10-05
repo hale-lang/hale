@@ -3915,9 +3915,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// override is lowered in the CALLER's context (F.4), so without
     /// this `resolve_failure_route` answered with the caller — `fn
     /// main`, no handler — and a child passed into its parent's
-    /// literal was unsupervised. Keyed by the child's locus name;
-    /// saved and restored around every instantiation.
-    pub(crate) supervising_parent: Option<(String, SelfCx<'ctx>)>,
+    /// literal was unsupervised. Keyed by the child's identity as the
+    /// routing rows key it (`Cx::routing_key`: its declaration's site,
+    /// and a monomorph's specialization); saved and restored around
+    /// every instantiation.
+    pub(crate) supervising_parent:
+        Option<(hale_types::handler_routing::InstanceKey, SelfCx<'ctx>)>,
     /// downstream handoff 2026-07-14 (finding 4): true while lowering a
     /// params-DEFAULT expression (the text written inside the
     /// instantiated locus's own `params { }` block), false for

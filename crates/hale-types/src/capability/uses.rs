@@ -60,7 +60,8 @@ use super::{
     Abi, BehaviourVerdict, Capability, CapabilityMatrix, Inversion, KnownOpen, OpenCell, Origin,
     TargetClass, TargetRow, Transport, KNOWN_OPEN,
 };
-use crate::alloc_summary::{loop_reassigned, AllocKind, AllocSummary, CallEdge, CallSpelling, Callee, FnKey};
+use crate::alloc_summary::{loop_reassigned, AllocKind, AllocSummary, CallEdge, CallSpelling, Callee, DeclId, FnKey};
+use crate::placement::SiteUniverse;
 
 /// What a use asks for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -218,13 +219,17 @@ impl<'a> Graph<'a> {
         // names; the stdlib's are its analysis copy's.
         let stdlib = crate::stdlib_bodies::program().filter(|_| !summary.analysis_copy_loci.is_empty());
         let mut members = BTreeMap::new();
-        for p in programs.iter().copied().chain(stdlib) {
+        let universes = programs
+            .iter()
+            .map(|p| (*p, SiteUniverse::User))
+            .chain(stdlib.map(|p| (p, SiteUniverse::StdlibAnalysis)));
+        for (p, universe) in universes {
             for item in flat_decls(&p.items) {
                 let TopDecl::Locus(l) = item else { continue };
                 if g.own_locus(&l.name.name) || members.contains_key(&l.name.name) {
                     continue;
                 }
-                members.insert(l.name.name.clone(), g.member_nodes(l));
+                members.insert(l.name.name.clone(), g.member_nodes(l, universe));
             }
         }
         g.members = members;
@@ -239,7 +244,7 @@ impl<'a> Graph<'a> {
     /// a function value it cannot resolve (a field, a call's result, a
     /// reassigned local), leaves a hole, so a requirement it cannot
     /// establish stays a refusal on a target that rejects one.
-    fn member_nodes(&self, l: &LocusDecl) -> Vec<(FnKey, String, Vec<Met>)> {
+    fn member_nodes(&self, l: &LocusDecl, universe: SiteUniverse) -> Vec<(FnKey, String, Vec<Met>)> {
         let locus = l.name.name.clone();
         let mut fields = BTreeMap::new();
         for member in &l.members {
@@ -263,7 +268,8 @@ impl<'a> Graph<'a> {
                             let mut w = Walker::beyond(self, &locus, &fields, BTreeMap::new());
                             w.expr(e);
                             let link = format!("params {{ {} }}", prm.name.name);
-                            out.push((FnKey::method(locus.clone(), link.clone()), link, w.met));
+                            let key = FnKey::method(DeclId::of(universe, prm.id), locus.clone(), link.clone());
+                            out.push((key, link, w.met));
                         }
                     }
                 }
@@ -272,7 +278,7 @@ impl<'a> Graph<'a> {
                     let mut w = Walker::beyond(self, &locus, &fields, params);
                     w.block(&f.body);
                     let link = "on_failure()".to_string();
-                    out.push((FnKey::method(locus.clone(), link.clone()), link, w.met));
+                    out.push((FnKey::method(DeclId::of(universe, f.id), locus.clone(), link.clone()), link, w.met));
                 }
                 _ => {}
             }
@@ -875,7 +881,7 @@ impl<'w, 'a> Walker<'w, 'a> {
     /// reaches: a merged name beyond the horizon, a fn of the program's
     /// own in its sources.
     fn names_fn(&self, name: &str) -> bool {
-        let keyed = || self.g.summary.fns.contains_key(&FnKey::free_fn(name.to_string()));
+        let keyed = || self.g.summary.resolve(None, name).is_some();
         crate::check::BARE_BUILTIN_CALLEES.contains(&name)
             || (name.starts_with("__") || self.receivers.is_none()) && keyed()
     }
@@ -888,12 +894,12 @@ impl<'w, 'a> Walker<'w, 'a> {
         match e {
             Expr::Ident(id) => match self.local(&id.name) {
                 Some(bound) => bound.clone(),
-                None if id.name.starts_with("__") => {
-                    let k = FnKey::free_fn(id.name.clone());
-                    Some(if self.g.summary.fns.contains_key(&k) { FnValue::Fn(k) } else { FnValue::Nothing })
-                }
-                None if self.receivers.is_none() && self.g.summary.fns.contains_key(&FnKey::free_fn(id.name.clone())) => {
-                    Some(FnValue::Fn(FnKey::free_fn(id.name.clone())))
+                None if id.name.starts_with("__") => Some(match self.g.summary.resolve(None, &id.name) {
+                    Some(k) => FnValue::Fn(k.clone()),
+                    None => FnValue::Nothing,
+                }),
+                None if self.receivers.is_none() && self.g.summary.resolve(None, &id.name).is_some() => {
+                    self.g.summary.resolve(None, &id.name).map(|k| FnValue::Fn(k.clone()))
                 }
                 None => crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()).then_some(FnValue::Nothing),
             },
@@ -902,7 +908,11 @@ impl<'w, 'a> Walker<'w, 'a> {
                 if let Some(ns) = std_namespace(self.g.m, &path) {
                     Some(FnValue::Primitive(Capability::StdNamespace(ns), path))
                 } else {
-                    self.g.renames.get(&path).map(|mangled| FnValue::Fn(FnKey::free_fn(mangled.clone())))
+                    // A merged name the summary keys no row for names
+                    // nothing the graph reaches.
+                    self.g.renames.get(&path).map(|mangled| {
+                        self.g.summary.resolve(None, mangled).map_or(FnValue::Nothing, |k| FnValue::Fn(k.clone()))
+                    })
                 }
             }
             _ => None,
@@ -943,8 +953,7 @@ impl<'w, 'a> Walker<'w, 'a> {
             Some(None) => {}
             Some(Some(ty)) => {
                 let ty = self.g.locus_of(&ty);
-                let k = FnKey::method(ty.clone(), name.to_string());
-                if self.g.summary.fns.contains_key(&k) {
+                if let Some(k) = self.g.summary.resolve(Some(&ty), name).cloned() {
                     let links = vec![k.display()];
                     self.met.push(Met::Calls(k, links, span));
                 } else if let Some(ns) = self.g.std_loci.get(&ty) {
@@ -968,8 +977,9 @@ impl<'w, 'a> Walker<'w, 'a> {
                         let path = qualified(qn);
                         if let Some(ns) = std_namespace(self.g.m, &path) {
                             self.met.push(Met::Needs(Capability::StdNamespace(ns), vec![path], qn.span));
-                        } else if let Some(mangled) = self.g.renames.get(&path) {
-                            let k = FnKey::free_fn(mangled.clone());
+                        } else if let Some(k) =
+                            self.g.renames.get(&path).and_then(|mangled| self.g.summary.resolve(None, mangled)).cloned()
+                        {
                             let links = vec![k.display()];
                             self.met.push(Met::Calls(k, links, qn.span));
                         }
@@ -986,8 +996,7 @@ impl<'w, 'a> Walker<'w, 'a> {
                     // fn by the merged (unspeakable) name; a builtin's is
                     // speakable.
                     Expr::Ident(id) if self.receivers.is_some() && id.name.starts_with("__") => {
-                        let k = FnKey::free_fn(id.name.clone());
-                        if self.g.summary.fns.contains_key(&k) {
+                        if let Some(k) = self.g.summary.resolve(None, &id.name).cloned() {
                             let links = vec![k.display()];
                             self.met.push(Met::Calls(k, links, id.span));
                         }

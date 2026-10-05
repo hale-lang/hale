@@ -48,6 +48,81 @@ const XPOOL_VALUE: &str = "locus Ship { params { hull: Int = 0; } }\n\
 
 const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget";
 
+/// A cross-pool spawn in another locus's params default (C3 rest):
+/// `Driver` builds a `Holder` that leaves `s` to its default, which
+/// lowering expands under `Driver`, where `Ship` is a cross-pool birth.
+/// The default's literal is line 2, column 35.
+const XPOOL_DEFAULT: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     locus Holder { params { s: Ship = Ship { hull: 1 }; } }\n\
+     locus Driver { run() { Ship { hull: 7 }; Holder { }; } }\n\
+     main locus World { params { driver: Driver = Driver { }; } placement { driver: cooperative(pool = workers); } \
+     accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+const FIRE_AND_FORGET_DEFAULT: &str =
+    "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of `Holder`'s param `s`, which is built in `Driver`";
+
+/// The review of #1351: a cross-pool spawn in a fn's argument default.
+/// `take()` leaves `s` to its default, which lowering expands at the call,
+/// under `Driver`, where `Ship` is a cross-pool birth (lowering used to
+/// pass a null pointer for it). The call is line 3, column 42.
+const XPOOL_ARG_DEFAULT: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     fn take(s: Ship = Ship { hull: 1 }) { println(s.hull); }\n\
+     locus Driver { run() { Ship { hull: 7 }; take(); } }\n\
+     main locus World { params { driver: Driver = Driver { }; } placement { driver: cooperative(pool = workers); } \
+     accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+/// The control: the same call with the argument supplied, a `Ship` built
+/// on `World`'s thread and handed to `Driver`. `World` waits for the
+/// bare spawn's `Ship` to arrive before it returns, as the cross-pool
+/// bubble's own runtime tests do (a `World` that returns first is gone
+/// when the post lands, defaults or none).
+const XPOOL_ARG_SUPPLIED: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     fn take(s: Ship = Ship { hull: 1 }) { println(s.hull); }\n\
+     locus Driver { params { got: Ship; } run() { Ship { hull: 7 }; take(self.got); } }\n\
+     main locus World { params { driver: Driver = Driver { got: Ship { hull: 5 } }; } \
+     placement { driver: cooperative(pool = workers); } accept(s: Ship) { } \
+     mode harmonic() -> Int { let mut n: Int = 0; for child in self.children { n = n + 1; } return n; } \
+     run() { let mut waited: Int = 0; while self.harmonic() < 1 && waited < 120 { std::time::sleep(100ms); \
+     waited = waited + 1; } } }\n\
+     fn main() { World { }; }\n";
+
+/// A method's default, called on a receiver. The call is line 3, column 60.
+const XPOOL_METHOD_DEFAULT: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     locus Tool { fn use_it(s: Ship = Ship { hull: 2 }) { println(s.hull); } }\n\
+     locus Driver { run() { Ship { hull: 7 }; let t = Tool { }; t.use_it(); } }\n\
+     main locus World { params { driver: Driver = Driver { }; } placement { driver: cooperative(pool = workers); } \
+     accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+/// Transitive: `outer()` leaves `n` to `inner()`, which leaves `s` to the
+/// `Ship`. The call in `Driver` is line 4, column 42.
+const XPOOL_DEFAULT_CHAIN: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     fn inner(s: Ship = Ship { hull: 1 }) -> Int { return s.hull; }\n\
+     fn outer(n: Int = inner()) { println(n); }\n\
+     locus Driver { run() { Ship { hull: 7 }; outer(); } }\n\
+     main locus World { params { driver: Driver = Driver { }; } placement { driver: cooperative(pool = workers); } \
+     accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+/// Two callers of one default: `Driver` (pool `workers`) crosses, `Local`
+/// (on `World`'s thread) does not.
+const XPOOL_ARG_TWO_CALLERS: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     fn take(s: Ship = Ship { hull: 1 }) { println(s.hull); }\n\
+     locus Driver { run() { Ship { hull: 7 }; take(); } }\n\
+     locus Local { run() { take(); } }\n\
+     main locus World { params { driver: Driver = Driver { }; local: Local = Local { }; } \
+     placement { driver: cooperative(pool = workers); } accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+fn fire_and_forget_arg(callee: &str, param: &str) -> String {
+    format!(
+        "cross-pool spawn `Ship{{ }}` is fire-and-forget: it is the default of `{callee}`'s argument `{param}`, \
+         expanded here, in `Driver`"
+    )
+}
+
 /// Rule 18 (GH #890), the review of PR #1338: a root literal written in
 /// another locus's params default overrides the placed field with a
 /// factory call. The override is line 8, column 45.
@@ -243,6 +318,124 @@ fn check_and_build_refuse_a_cross_pool_spawn_used_as_a_value_at_the_literal() {
 }
 
 #[test]
+fn check_and_build_refuse_a_cross_pool_spawn_in_another_locus_default_at_the_default() {
+    both_verbs_refuse("xpool_default", XPOOL_DEFAULT, FIRE_AND_FORGET_DEFAULT, ":2:35:");
+}
+
+/// Lowering's own error for a value use that reaches it (the judgment the
+/// law should have made): never what a user sees for a pinned shape.
+const LOWERING_BACKSTOP: &str = "reached lowering as a value";
+
+/// `hale check` admits `src`; `hale build` builds it with its IR dumped
+/// beside the binary, which runs and prints `prints`. The IR, for a
+/// caller to read.
+fn admitted_builds_and_runs(tag: &str, src: &str, prints: &str) -> String {
+    let d = seed(tag, src);
+    let (ok, out) = hale(&["check", &d.to_string_lossy()]);
+    assert!(ok, "check must pass:\n{out}");
+    let bin = d.join("out");
+    let build = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["build", &d.to_string_lossy(), "-o", &bin.to_string_lossy()])
+        .env("LOTUS_DUMP_IR", "1")
+        .current_dir(Path::new("/"))
+        .output()
+        .expect("hale build");
+    assert!(build.status.success(), "build must pass:\n{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&bin).output().expect("run");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "clean exit: {stdout:?} {:?} {}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(stdout.lines().any(|l| l.trim() == prints), "prints {prints}: {stdout:?}");
+    let ir = std::fs::read_to_string(d.join("out.ll")).expect("the dumped IR");
+    let _ = std::fs::remove_dir_all(&d);
+    ir
+}
+
+/// The calls of `@callee` in `ir`.
+fn calls_of<'a>(ir: &'a str, callee: &str) -> Vec<&'a str> {
+    ir.lines().filter(|l| l.contains(" call ") && l.contains(&format!("@{callee}("))).collect()
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_spawn_in_a_fn_argument_default_at_the_call() {
+    both_verbs_refuse("xpool_arg", XPOOL_ARG_DEFAULT, &fire_and_forget_arg("take", "s"), ":3:42:");
+    let d = seed("xpool_arg_backstop", XPOOL_ARG_DEFAULT);
+    let bin = d.join("out");
+    let build = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["build", &d.to_string_lossy(), "-o", &bin.to_string_lossy()])
+        .env("LOTUS_DUMP_IR", "1")
+        .current_dir(Path::new("/"))
+        .output()
+        .expect("hale build");
+    let out = String::from_utf8_lossy(&build.stderr);
+    assert!(!build.status.success(), "build must fail:\n{out}");
+    assert!(!out.contains(LOWERING_BACKSTOP), "the check refuses it, not lowering:\n{out}");
+    assert!(!d.join("out.ll").exists(), "no IR: nothing was lowered (it passed `ptr null` for `s`)");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The control: supplying the argument expands no default. It builds,
+/// runs, prints the hull, and the call passes a pointer, not `null`.
+#[test]
+fn check_and_build_admit_the_call_that_supplies_the_argument() {
+    let ir = admitted_builds_and_runs("xpool_arg_supplied", XPOOL_ARG_SUPPLIED, "5");
+    let calls = calls_of(&ir, "take");
+    assert_eq!(calls.len(), 1, "one call of `take`: {calls:?}");
+    assert!(calls[0].contains("ptr %") && !calls[0].contains("null"), "a non-null argument: {}", calls[0]);
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_spawn_in_a_method_argument_default_at_the_call() {
+    both_verbs_refuse("xpool_method", XPOOL_METHOD_DEFAULT, &fire_and_forget_arg("Tool.use_it", "s"), ":3:60:");
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_spawn_through_a_chain_of_defaults_at_the_callers_call() {
+    both_verbs_refuse("xpool_chain", XPOOL_DEFAULT_CHAIN, &fire_and_forget_arg("inner", "s"), ":4:42:");
+}
+
+/// `Driver` on `World`'s own thread, calling `take()` from a method
+/// `World.run()` calls: nothing crosses, and the default is built where
+/// the call stands, under `Driver`, bubbling to `World` on the same
+/// thread. The call is made from `World.run()` and not from
+/// `Driver.run()` on purpose: a child's `run()` executes inside its
+/// owner's literal, before the owner's children list is initialized, so
+/// a spawn that bubbles to the owner from there pushes onto
+/// uninitialized stack memory (a defect of the literal's order that
+/// predates the law and is independent of defaults; the first form of
+/// this test crashed on it on some hosts).
+const XPOOL_ARG_SAME_DOMAIN: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     fn take(s: Ship = Ship { hull: 1 }) { println(s.hull); }\n\
+     locus Driver { fn go() { take(); } }\n\
+     main locus World { params { driver: Driver = Driver { }; } accept(s: Ship) { } \
+     run() { self.driver.go(); } }\n\
+     fn main() { World { }; }\n";
+
+/// Builds, runs, and passes a pointer.
+#[test]
+fn check_and_build_admit_an_argument_default_expanded_on_the_owners_domain() {
+    let src = XPOOL_ARG_SAME_DOMAIN;
+    let ir = admitted_builds_and_runs("xpool_arg_same_domain", src, "1");
+    let calls = calls_of(&ir, "take");
+    assert_eq!(calls.len(), 1, "one call of `take`: {calls:?}");
+    assert!(!calls[0].contains("null"), "a non-null argument: {}", calls[0]);
+}
+
+/// One default, two callers: one diagnostic, at the call that crosses.
+#[test]
+fn check_and_build_refuse_only_the_caller_that_crosses() {
+    both_verbs_refuse("xpool_two_callers", XPOOL_ARG_TWO_CALLERS, &fire_and_forget_arg("take", "s"), ":3:42:");
+    let d = seed("xpool_two_callers_count", XPOOL_ARG_TWO_CALLERS);
+    let (_, out) = hale(&["check", &d.to_string_lossy()]);
+    assert_eq!(out.matches("is fire-and-forget").count(), 1, "one diagnostic:\n{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn check_and_build_refuse_a_root_literal_in_a_params_default_at_the_override() {
     both_verbs_refuse("rule18_default", ROOT_IN_A_DEFAULT, RULE_18, ":8:45:");
 }
@@ -296,6 +489,44 @@ fn check_and_build_refuse_a_pinned_root_in_a_type_field_default_at_the_defaults_
         &format!("{RULE_17_PER_USE} a type's field default"),
         ":8:23:",
     );
+}
+
+/// The positions outside a member body that lowering expands a default
+/// in: `inner()` leaves `s` to a `Ship` that `Driver` posts. A closure's
+/// assertion is evaluated under its locus (refused like a member body's
+/// call); a `const`'s value and a type's field default are emitted at
+/// every use, under whichever locus uses them, so they are refused at the
+/// position whenever some locus posts the child. Lowering refused all
+/// three alone, as a missing judgment, before.
+fn xpool_position(decls: &str, driver: &str) -> String {
+    format!(
+        "locus Ship {{ params {{ hull: Int = 0; }} }}\n\
+         fn inner(s: Ship = Ship {{ hull: 1 }}) -> Int {{ return s.hull; }}\n\
+         {decls}locus Driver {{ {driver} }}\n\
+         main locus World {{ params {{ driver: Driver = Driver {{ }}; }} \
+         placement {{ driver: cooperative(pool = workers); }} accept(s: Ship) {{ }} run() {{ }} }}\n\
+         fn main() {{ World {{ }}; }}\n"
+    )
+}
+
+const PER_USE: &str = "cross-pool spawn `Ship{ }` is fire-and-forget: it is built through the defaults this leaves, in";
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_default_reached_from_a_closure_assertion() {
+    let src = xpool_position("", "params { x: Int = 1; } closure c { inner() ~~ self.x within 5; } run() { Ship { hull: 7 }; }");
+    both_verbs_refuse("xpool_closure", &src, &fire_and_forget_arg("inner", "s"), ":3:51:");
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_default_reached_from_a_const_value() {
+    let src = xpool_position("const N: Int = inner();\n", "run() { Ship { hull: 7 }; println(N); }");
+    both_verbs_refuse("xpool_const", &src, &format!("{PER_USE} a `const`'s value"), ":3:16:");
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_default_reached_from_a_type_field_default() {
+    let src = xpool_position("type Box { k: Int = inner(); }\n", "run() { Ship { hull: 7 }; let b = Box { }; println(b.k); }");
+    both_verbs_refuse("xpool_type_default", &src, &format!("{PER_USE} a type's field default"), ":3:21:");
 }
 
 #[test]

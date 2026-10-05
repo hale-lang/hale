@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use hale_syntax::ast::*;
 use hale_syntax::Span;
 
+use crate::alloc_summary::DeclId;
 use crate::resolve::TopScope;
 
 /// Per-method purity result. [`Purity::Impure`] carries the first
@@ -74,6 +75,13 @@ pub use crate::alloc_summary::FnKey as PurityKey;
 
 /// Bundle-wide purity result keyed by [`PurityKey`].
 pub type PurityMap = BTreeMap<PurityKey, Purity>;
+
+/// The bundle's fn bodies by their row's key, and each free fn's row by
+/// the name a call spells it with (the last declaration of the name).
+struct Fns {
+    bodies: BTreeMap<PurityKey, (Vec<Stmt>, Span)>,
+    free: BTreeMap<String, PurityKey>,
+}
 
 /// Stdlib paths with observable side effects. Calls to any of
 /// these (matched by qualified path) make the calling fn impure.
@@ -183,21 +191,21 @@ pub fn infer_purity_for_bundle(
 ) -> PurityMap {
     // Collect every fn body the bundle owns so we can walk it
     // repeatedly during fixed-point iteration.
-    let mut fn_bodies: BTreeMap<PurityKey, (Vec<Stmt>, Span)> = BTreeMap::new();
+    let mut fns = Fns { bodies: BTreeMap::new(), free: BTreeMap::new() };
     for program in programs {
         for item in &program.items {
             match item {
                 TopDecl::Fn(decl) => {
-                    fn_bodies.insert(
-                        PurityKey::free_fn(decl.name.name.clone()),
-                        (decl.body.stmts.clone(), decl.span),
-                    );
+                    let key = PurityKey::free_fn(DeclId::user(decl.id), decl.name.name.clone());
+                    fns.free.insert(decl.name.name.clone(), key.clone());
+                    fns.bodies.insert(key, (decl.body.stmts.clone(), decl.span));
                 }
                 TopDecl::Locus(l) => {
                     for member in &l.members {
                         if let LocusMember::Fn(decl) = member {
-                            fn_bodies.insert(
+                            fns.bodies.insert(
                                 PurityKey::method(
+                                    DeclId::user(decl.id),
                                     l.name.name.clone(),
                                     decl.name.name.clone(),
                                 ),
@@ -210,6 +218,7 @@ pub fn infer_purity_for_bundle(
             }
         }
     }
+    let fn_bodies = &fns.bodies;
 
     // Initial state: every unknown fn marked pure (the absence of
     // an entry in `map` is treated as Unknown during a pass).
@@ -226,7 +235,7 @@ pub fn infer_purity_for_bundle(
     let mut prev_size = usize::MAX;
     while map.len() != prev_size {
         prev_size = map.len();
-        for (key, (body, _span)) in &fn_bodies {
+        for (key, (body, _span)) in fn_bodies {
             if map.contains_key(key) {
                 // Already settled; revisit only if a callee newly
                 // turned impure. For Slice 1 we keep it simple —
@@ -234,7 +243,7 @@ pub fn infer_purity_for_bundle(
                 // monotone worklist below).
                 continue;
             }
-            match scan_body_purity(body, &fn_bodies, &map) {
+            match scan_body_purity(body, &fns, &map) {
                 ScanResult::Resolved(p) => {
                     map.insert(key.clone(), p);
                 }
@@ -247,7 +256,7 @@ pub fn infer_purity_for_bundle(
     }
     // Conservative finalization: anything still unresolved (cycle
     // or unreachable) is impure.
-    for (key, (body, _)) in &fn_bodies {
+    for (key, (body, _)) in fn_bodies {
         if !map.contains_key(key) {
             let imp = first_explicit_impurity_in_body(body)
                 .unwrap_or(Impurity::ImpureCalleeCall {
@@ -270,7 +279,7 @@ enum ScanResult {
 
 fn scan_body_purity(
     body: &[Stmt],
-    all_fns: &BTreeMap<PurityKey, (Vec<Stmt>, Span)>,
+    all_fns: &Fns,
     map: &PurityMap,
 ) -> ScanResult {
     let mut any_unknown = false;
@@ -292,7 +301,7 @@ fn scan_body_purity(
 /// undetermined.
 fn scan_stmt(
     stmt: &Stmt,
-    all_fns: &BTreeMap<PurityKey, (Vec<Stmt>, Span)>,
+    all_fns: &Fns,
     map: &PurityMap,
     any_unknown: &mut bool,
 ) -> Option<Impurity> {
@@ -434,7 +443,7 @@ fn scan_stmt(
 
 fn scan_if_stmt(
     if_stmt: &IfStmt,
-    all_fns: &BTreeMap<PurityKey, (Vec<Stmt>, Span)>,
+    all_fns: &Fns,
     map: &PurityMap,
     any_unknown: &mut bool,
 ) -> Option<Impurity> {
@@ -466,7 +475,7 @@ fn scan_if_stmt(
 /// Walk an expression. Returns Some(first impurity) if found.
 fn scan_expr(
     expr: &Expr,
-    all_fns: &BTreeMap<PurityKey, (Vec<Stmt>, Span)>,
+    all_fns: &Fns,
     map: &PurityMap,
     any_unknown: &mut bool,
 ) -> Option<Impurity> {
@@ -567,7 +576,7 @@ fn scan_expr(
 fn scan_callee(
     callee: &Expr,
     call_span: Span,
-    all_fns: &BTreeMap<PurityKey, (Vec<Stmt>, Span)>,
+    all_fns: &Fns,
     map: &PurityMap,
     any_unknown: &mut bool,
 ) -> Option<Impurity> {
@@ -605,9 +614,8 @@ fn scan_callee(
                 });
             }
             // User free fn lookup.
-            let key = PurityKey::free_fn(id.name.clone());
-            if all_fns.contains_key(&key) {
-                match map.get(&key) {
+            if let Some(key) = all_fns.free.get(&id.name) {
+                match map.get(key) {
                     Some(Purity::Pure) => None,
                     Some(Purity::Impure(_)) => {
                         Some(Impurity::ImpureCalleeCall {
@@ -680,7 +688,7 @@ fn format_lvalue_chain(lv: &LValue) -> String {
 /// that landed at the conservative cycle-finalization step.
 fn first_explicit_impurity_in_body(body: &[Stmt]) -> Option<Impurity> {
     let empty_map: PurityMap = BTreeMap::new();
-    let empty_fns: BTreeMap<PurityKey, (Vec<Stmt>, Span)> = BTreeMap::new();
+    let empty_fns = Fns { bodies: BTreeMap::new(), free: BTreeMap::new() };
     let mut sink = false;
     for stmt in body {
         if let Some(imp) = scan_stmt(stmt, &empty_fns, &empty_map, &mut sink) {
@@ -733,7 +741,7 @@ mod tests {
     fn pure_free_fn_with_arithmetic_is_pure() {
         let p = purity_of(
             "fn add(a: Int, b: Int) -> Int { return a + b; } fn main() { }",
-            PurityKey::free_fn("add"),
+            PurityKey::free_fn(None, "add"),
         );
         assert!(matches!(p, Purity::Pure), "expected pure, got {:?}", p);
     }
@@ -742,7 +750,7 @@ mod tests {
     fn fn_calling_println_is_impure() {
         let p = purity_of(
             "fn shout(s: String) { println(s); } fn main() { }",
-            PurityKey::free_fn("shout"),
+            PurityKey::free_fn(None, "shout"),
         );
         match p {
             Purity::Impure(Impurity::ImpureStdlibCall { fn_name, .. }) => {
@@ -763,7 +771,7 @@ mod tests {
             }
             fn main() { }
         "#;
-        let p = purity_of(src, PurityKey::method("C", "bump"));
+        let p = purity_of(src, PurityKey::method(None, "C", "bump"));
         match p {
             Purity::Impure(Impurity::SelfFieldWrite { field_chain, .. }) => {
                 assert_eq!(field_chain, "self.n");
@@ -783,7 +791,7 @@ mod tests {
             }
             fn main() { }
         "#;
-        let p = purity_of(src, PurityKey::method("C", "get"));
+        let p = purity_of(src, PurityKey::method(None, "C", "get"));
         assert!(matches!(p, Purity::Pure), "expected pure, got {:?}", p);
     }
 
@@ -794,7 +802,7 @@ mod tests {
             fn wrapper(s: String) { does_io(s); }
             fn main() { }
         "#;
-        let p = purity_of(src, PurityKey::free_fn("wrapper"));
+        let p = purity_of(src, PurityKey::free_fn(None, "wrapper"));
         match p {
             Purity::Impure(Impurity::ImpureCalleeCall { callee_name, .. }) => {
                 assert_eq!(callee_name, "does_io");

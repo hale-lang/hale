@@ -35,22 +35,67 @@ use hale_graph::ids::SiteId;
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
-/// Identifies a fn for summary lookup. Free fns have `locus: None`; locus
-/// methods + lifecycle hooks carry the enclosing locus's name. Lifecycle
-/// hooks are keyed by their kind (`"run"`, `"birth"`, …) — these never
-/// collide with method names since the kinds are reserved keywords.
+use crate::placement::SiteUniverse;
+
+/// A fn-like declaration's identity (F.40 phase 3, C3): the site the mint
+/// gave the declaration (a fn, a method, a lifecycle hook, a mode, a
+/// failure handler, a perspective's fn), as the universe that minted it
+/// and its index there. One counter numbers every seed of a universe, so
+/// the index names the site in it, and a reader holding a declaration's
+/// `NodeId` names its row without the snapshot. The stdlib's analysis
+/// copy is its own universe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclId {
+    pub universe: SiteUniverse,
+    pub index: u32,
+}
+
+impl DeclId {
+    /// The declaration `node` of `universe`; `None` for a node no mint
+    /// numbered.
+    pub fn of(universe: SiteUniverse, node: NodeId) -> Option<DeclId> {
+        (!node.is_none()).then_some(DeclId { universe, index: node.0 })
+    }
+
+    /// A declaration of the checked programs.
+    pub fn user(node: NodeId) -> Option<DeclId> {
+        DeclId::of(SiteUniverse::User, node)
+    }
+
+    /// A declaration of the stdlib's analysis copy.
+    pub fn stdlib(node: NodeId) -> Option<DeclId> {
+        DeclId::of(SiteUniverse::StdlibAnalysis, node)
+    }
+}
+
+/// Identifies a fn for summary lookup: the declaration's identity
+/// ([`DeclId`]), with the (locus name, fn name) pair its display name.
+/// Free fns have `locus: None`; locus methods + lifecycle hooks carry
+/// the enclosing locus's name. Lifecycle hooks are keyed by their kind
+/// (`"run"`, `"birth"`, …) — these never collide with method names
+/// since the kinds are reserved keywords.
+///
+/// Two keys are one row only if they name one declaration: two
+/// declarations sharing a name (a `fn f` in each of two modules) are two
+/// rows. Ordering is the display name's first, so a reader iterating the
+/// rows meets them in name order. `decl` is `None` only for a
+/// declaration no snapshot minted (a bundle no entry point minted), whose
+/// rows join by name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FnKey {
     pub locus: Option<String>,
     pub fn_name: String,
+    pub decl: Option<DeclId>,
 }
 
 impl FnKey {
-    pub fn free_fn(name: impl Into<String>) -> Self {
-        Self { locus: None, fn_name: name.into() }
+    /// The row of the free fn declared at `decl`.
+    pub fn free_fn(decl: Option<DeclId>, name: impl Into<String>) -> Self {
+        Self { locus: None, fn_name: name.into(), decl }
     }
-    pub fn method(locus: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { locus: Some(locus.into()), fn_name: name.into() }
+    /// The row of the member of `locus` declared at `decl`.
+    pub fn method(decl: Option<DeclId>, locus: impl Into<String>, name: impl Into<String>) -> Self {
+        Self { locus: Some(locus.into()), fn_name: name.into(), decl }
     }
     pub fn display(&self) -> String {
         match &self.locus {
@@ -828,7 +873,14 @@ pub struct FormShape {
 pub struct AllocSummary {
     /// iris handoff P2.2: loci only ever instantiated eagerly.
     pub eager_only_loci: BTreeSet<String>,
+    /// One row per fn-like declaration, keyed by its identity.
     pub fns: BTreeMap<FnKey, FnSummary>,
+    /// The row a call that spells `(locus, name)` reaches: the walk's
+    /// resolution, by which an edge names its declaration (the last
+    /// declaration of the name, the copy's after the program's). A reader
+    /// that holds only the names a call spells (a bus subscriber's
+    /// handler) resolves them here ([`AllocSummary::resolve`]).
+    pub by_name: BTreeMap<(Option<String>, String), FnKey>,
     /// GH #18 item 1: loci carrying `@bounded` — their leak sites are
     /// reported even without the `--warn-unbounded-alloc` survey flag
     /// (the in-source opt-in).
@@ -843,8 +895,11 @@ pub struct AllocSummary {
     pub sync_holding_loci: BTreeSet<String>,
     /// #341: form loci whose `sync` discipline synchronizes — the forms
     /// themselves, not the loci that hold them. A direct call into one
-    /// takes its lock. The summary reads a written discipline (`none` is not one); the
-    /// effects engine adds the form rows' ([`AllocSummary::add_sync_forms`]).
+    /// takes its lock. The summary holds the stdlib analysis copy's, from
+    /// that universe's form rows (`stdlib_bodies::forms`); the effects
+    /// engine adds the program's own, from its snapshot's rows
+    /// ([`AllocSummary::add_sync_forms`]). No reader takes a `sync =`
+    /// argument for it.
     pub sync_forms: BTreeSet<String>,
     /// #345: classes a fn/locus DECLARES it carries, via
     /// `@effects(is: {…})`. The classification half of a user effect:
@@ -908,6 +963,12 @@ pub struct DeclarationBody {
 }
 
 impl AllocSummary {
+    /// The row a call spelling `name` (a member of `locus`, or a free fn
+    /// for `None`) reaches, as the walk resolves one.
+    pub fn resolve(&self, locus: Option<&str>, name: &str) -> Option<&FnKey> {
+        self.by_name.get(&(locus.map(str::to_string), name.to_string()))
+    }
+
     /// Is this site's owning fn inside a `@bounded` locus? Drives
     /// "report by default" without the survey flag.
     pub fn owner_is_bounded_scope(&self, owner: &FnKey) -> bool {
@@ -1075,6 +1136,7 @@ impl AllocSummary {
         AllocSummary {
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
+            by_name: self.by_name.iter().filter(|(_, k)| own_key(k)).map(|(n, k)| (n.clone(), k.clone())).collect(),
             bounded_loci: self.bounded_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             sync_holding_loci: self.sync_holding_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             sync_forms: self.sync_forms.iter().filter(|l| own_locus(l)).cloned().collect(),
@@ -1669,10 +1731,9 @@ fn collect_sync_holding_loci(
 impl AllocSummary {
     /// The forms of `programs` their form rows say carry a `sync`
     /// discipline (F.40 phase 3, C1: [`crate::form_rows::FormRows::synchronizes`],
-    /// inference's pick included), added to the ones the summary read off
-    /// a written argument, and the loci holding them. The effects
-    /// certificate engine reads both: the written argument alone misses a
-    /// discipline sync inference gave the form.
+    /// inference's pick included), added to the stdlib analysis copy's the
+    /// summary holds, and the loci holding them. The effects certificate
+    /// engine reads both: the summary holds none of the program's own.
     pub fn add_sync_forms(&mut self, programs: &[&Program], forms: &crate::form_rows::FormRows) {
         for program in programs {
             for item in flat_decls(&program.items) {
@@ -1805,7 +1866,16 @@ pub fn summarize_identified(
     // bindings). A body's place in the list is its `decl_index`.
     type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
-    let mut known: BTreeSet<FnKey> = BTreeSet::new();
+    // What a call spelling (locus, name) resolves to: the row of the last
+    // declaration of the name.
+    let mut known: Known = BTreeMap::new();
+    let universe_of = |ids: &crate::snapshot::Snapshot| {
+        if is_stdlib_copy(ids) {
+            SiteUniverse::StdlibAnalysis
+        } else {
+            SiteUniverse::User
+        }
+    };
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
     // GH #265: every declared locus type name (spawn-site detection).
     let mut locus_type_names: BTreeSet<String> = BTreeSet::new();
@@ -2009,24 +2079,27 @@ pub fn summarize_identified(
 
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
+        let universe = universe_of(ids);
+        // The stdlib's analysis copy's form rows: its own universe's
+        // (`stdlib_bodies::forms`). A program's own forms are its
+        // snapshot's rows, which the effects engine adds
+        // (`add_sync_forms`), so nothing here reads a `sync =` argument.
+        let copy_forms = is_stdlib_copy(ids).then(crate::stdlib_bodies::forms).flatten();
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
+                    let key = FnKey::free_fn(DeclId::of(universe, decl.id), decl.name.name.clone());
                     {
                         let c = carried_by(&decl.effects, &classes);
                         if c.0 != 0 {
-                            carries.insert(
-                                FnKey::free_fn(decl.name.name.clone()),
-                                c,
-                            );
+                            carries.insert(key.clone(), c);
                         }
                     }
-                    let key = FnKey::free_fn(decl.name.name.clone());
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
                     if decl.unbounded {
                         unbounded_fns.insert(key.clone());
                     }
-                    known.insert(key.clone());
+                    known.insert((None, key.fn_name.clone()), key.clone());
                     bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
                 }
                 TopDecl::Type(td) => {
@@ -2060,12 +2133,7 @@ pub fn summarize_identified(
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
                     }
-                    if l.form.as_ref().is_some_and(|f| {
-                        matches!(
-                            crate::form_rows::sync_config(f),
-                            crate::form_rows::SyncConfig::Explicit(d) if d.synchronizes()
-                        )
-                    }) {
+                    if copy_forms.as_ref().is_some_and(|forms| forms.synchronizes(l)) {
                         sync_forms.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
@@ -2095,10 +2163,11 @@ pub fn summarize_identified(
                                     ModeKind::Resolution => "resolution",
                                 };
                                 let key = FnKey::method(
+                                    DeclId::of(universe, md.id),
                                     locus.clone(),
                                     name.to_string(),
                                 );
-                                known.insert(key.clone());
+                                known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
                                     md.body.clone(),
@@ -2114,7 +2183,8 @@ pub fn summarize_identified(
                                 ));
                             }
                             LocusMember::Fn(decl) => {
-                                let key = FnKey::method(locus.clone(), decl.name.name.clone());
+                                let key =
+                                    FnKey::method(DeclId::of(universe, decl.id), locus.clone(), decl.name.name.clone());
                                 let c = carried_by(&decl.effects, &classes);
                                 if c.0 != 0 {
                                     carries.insert(key.clone(), c);
@@ -2127,7 +2197,7 @@ pub fn summarize_identified(
                                 if decl.unbounded {
                                     unbounded_fns.insert(key.clone());
                                 }
-                                known.insert(key.clone());
+                                known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
                                     decl.body.clone(),
@@ -2148,11 +2218,11 @@ pub fn summarize_identified(
                             // it lists the hooks the author wrote.
                             LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let (name, entry) = lifecycle_key(lc.kind);
-                                let key = FnKey::method(locus.clone(), name);
+                                let key = FnKey::method(DeclId::of(universe, lc.id), locus.clone(), name);
                                 if lc.unbounded {
                                     unbounded_fns.insert(key.clone());
                                 }
-                                known.insert(key.clone());
+                                known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
                                     lc.body.clone(),
@@ -2616,8 +2686,7 @@ pub fn summarize_identified(
             };
             let targets: Vec<FnKey> = conformers[iface.as_str()]
                 .iter()
-                .map(|l| FnKey::method(l.to_string(), method.clone()))
-                .filter(|k| known.contains(k))
+                .filter_map(|l| known.get(&(Some(l.to_string()), method.clone())).cloned())
                 .collect();
             if targets.is_empty() {
                 let mut e = edge;
@@ -2647,6 +2716,7 @@ pub fn summarize_identified(
         })
         .collect();
     resolve_function_values(&mut summary, &value_scopes, &known, next_group);
+    summary.by_name = known.clone();
     // The reclaim boundary of a scratch-local fn (GH #1208). The
     // classification is lowering's (`alloc_routing`), run over the
     // declarations lowering runs it over (`merged`: the program, its
@@ -2882,7 +2952,10 @@ struct MemberBody<'p> {
 /// [`DeclarationBody`] each), with the declaration each is a member of.
 /// The rows are a fn's body and a locus's methods, modes and authored
 /// hooks, a `module { }`'s declarations' included; the caller hands in
-/// those too (`flat_decls`).
+/// those too (`flat_decls`). `item` is the checked programs'; each key
+/// names the member's own declaration (a handler's, a perspective fn's, a
+/// synthesized hook's, a constant's), or the locus's or perspective's
+/// for its params, `birth_check` and `stable_when`.
 fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>)>) {
     let initializers = |pb: &'p ParamsBlock| -> Vec<&'p Expr> {
         pb.params
@@ -2902,7 +2975,7 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
         TopDecl::Const(c) => out.push((
             c.id,
             MemberBody {
-                key: FnKey::free_fn(c.name.name.clone()),
+                key: FnKey::free_fn(DeclId::user(c.id), c.name.name.clone()),
                 position: "const",
                 body: exprs(vec![&c.value], c.span),
                 params: &[],
@@ -2910,20 +2983,21 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
         )),
         TopDecl::Locus(l) => {
             let locus = &l.name.name;
-            let mut push = |name: &str, position: &'static str, body: Block, params: &'p [Param]| {
-                out.push((l.id, MemberBody { key: FnKey::method(locus.clone(), name), position, body, params }))
+            let mut push = |member: NodeId, name: &str, position: &'static str, body: Block, params: &'p [Param]| {
+                let key = FnKey::method(DeclId::user(member), locus.clone(), name);
+                out.push((l.id, MemberBody { key, position, body, params }))
             };
             for m in &l.members {
                 match m {
                     LocusMember::Lifecycle(lc) if lc.synthesized => {
-                        push(&lifecycle_key(lc.kind).0, "lifecycle", lc.body.clone(), &lc.params)
+                        push(lc.id, &lifecycle_key(lc.kind).0, "lifecycle", lc.body.clone(), &lc.params)
                     }
-                    LocusMember::Failure(fd) => push("on_failure", "on_failure", fd.body.clone(), &fd.params),
-                    LocusMember::Params(pb) => push("params", "params", exprs(initializers(pb), pb.span), &[]),
-                    LocusMember::Const(c) => push(&c.name.name, "const", exprs(vec![&c.value], c.span), &[]),
+                    LocusMember::Failure(fd) => push(fd.id, "on_failure", "on_failure", fd.body.clone(), &fd.params),
+                    LocusMember::Params(pb) => push(l.id, "params", "params", exprs(initializers(pb), pb.span), &[]),
+                    LocusMember::Const(c) => push(c.id, &c.name.name, "const", exprs(vec![&c.value], c.span), &[]),
                     LocusMember::BirthCheck(bc) => {
                         let es = std::iter::once(&bc.cond).chain(&bc.payload).collect();
-                        push("birth_check", "birth_check", exprs(es, bc.span), &[])
+                        push(l.id, "birth_check", "birth_check", exprs(es, bc.span), &[])
                     }
                     _ => {}
                 }
@@ -2931,14 +3005,17 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
         }
         TopDecl::Perspective(p) => {
             let perspective = &p.name.name;
-            let mut push = |name: &str, position: &'static str, body: Block, params: &'p [Param]| {
-                out.push((p.id, MemberBody { key: FnKey::method(perspective.clone(), name), position, body, params }))
+            let mut push = |member: NodeId, name: &str, position: &'static str, body: Block, params: &'p [Param]| {
+                let key = FnKey::method(DeclId::user(member), perspective.clone(), name);
+                out.push((p.id, MemberBody { key, position, body, params }))
             };
             for m in &p.members {
                 match m {
-                    PerspectiveMember::Fn(f) => push(&f.name.name, "fn", f.body.clone(), &f.params),
-                    PerspectiveMember::Params(pb) => push("params", "params", exprs(initializers(pb), pb.span), &[]),
-                    PerspectiveMember::StableWhen(b) => push("stable_when", "stable_when", b.clone(), &[]),
+                    PerspectiveMember::Fn(f) => push(f.id, &f.name.name, "fn", f.body.clone(), &f.params),
+                    PerspectiveMember::Params(pb) => {
+                        push(p.id, "params", "params", exprs(initializers(pb), pb.span), &[])
+                    }
+                    PerspectiveMember::StableWhen(b) => push(p.id, "stable_when", "stable_when", b.clone(), &[]),
                     _ => {}
                 }
             }
@@ -3209,7 +3286,7 @@ impl AuthorPositions {
                 match item {
                     TopDecl::Fn(f) => {
                         if let Some(o) = origin(f.id) {
-                            synthesized.insert(FnKey::free_fn(f.name.name.clone()), o);
+                            synthesized.insert(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), o);
                         }
                     }
                     TopDecl::Locus(l) => {
@@ -3221,7 +3298,7 @@ impl AuthorPositions {
                                 _ => continue,
                             };
                             if let Some(o) = origin(id).or(of_locus) {
-                                synthesized.insert(FnKey::method(l.name.name.clone(), name), o);
+                                synthesized.insert(FnKey::method(DeclId::user(id), l.name.name.clone(), name), o);
                             }
                         }
                     }
@@ -3447,7 +3524,7 @@ struct ValueScope<'a> {
 fn resolve_function_values<'a>(
     summary: &mut AllocSummary,
     scopes: &[ValueScope<'a>],
-    known: &BTreeSet<FnKey>,
+    known: &Known,
     mut next_group: u32,
 ) {
     use crate::fn_values::ValueName;
@@ -3459,10 +3536,9 @@ fn resolve_function_values<'a>(
             }
         }
     }
-    // Every free fn's declaration, by name (the values' signatures), and
-    // every free fn's and locus method's, by key (an indirect call's
-    // enclosing declaration, whose function-typed parameter types it).
-    let mut free: BTreeMap<String, &'a FnDecl> = BTreeMap::new();
+    // Every free fn's and locus method's declaration, by its row's key (a
+    // value's signature, and an indirect call's enclosing declaration,
+    // whose function-typed parameter types it).
     let mut decls: BTreeMap<FnKey, &'a FnDecl> = BTreeMap::new();
     let mut methods: BTreeSet<String> = BTreeSet::new();
     // Every declared field, by name: its declared type (`None` where it
@@ -3471,6 +3547,7 @@ fn resolve_function_values<'a>(
     let mut aliases: BTreeSet<String> = BTreeSet::new();
     let mut nominal: BTreeSet<String> = BTreeSet::new();
     for s in scopes {
+        let universe = if s.copy { SiteUniverse::StdlibAnalysis } else { SiteUniverse::User };
         for item in &s.items {
             fn type_decl<'a>(
                 t: &'a TypeDecl,
@@ -3496,8 +3573,7 @@ fn resolve_function_values<'a>(
             each_decl(item, &mut |d| {
                 match d {
                     TopDecl::Fn(f) => {
-                        free.insert(f.name.name.clone(), f);
-                        decls.insert(FnKey::free_fn(f.name.name.clone()), f);
+                        decls.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), f);
                     }
                     TopDecl::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys),
                     TopDecl::Interface(i) => {
@@ -3509,7 +3585,8 @@ fn resolve_function_values<'a>(
                             match m {
                                 LocusMember::Fn(f) => {
                                     methods.insert(f.name.name.clone());
-                                    decls.insert(FnKey::method(l.name.name.clone(), f.name.name.clone()), f);
+                                    let key = FnKey::method(DeclId::of(universe, f.id), l.name.name.clone(), f.name.name.clone());
+                                    decls.insert(key, f);
                                 }
                                 LocusMember::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys),
                                 LocusMember::Params(pb) => {
@@ -3566,8 +3643,8 @@ fn resolve_function_values<'a>(
             taken.entry(key).or_insert((callee, decl, false)).2 |= !s.copy;
         };
         let own_fn = |name: &str| {
-            let key = FnKey::free_fn(name.to_string());
-            (known.contains(&key) && s.scope_fns.contains(name)).then(|| (key, free.get(name).copied()))
+            let key = known.get(&(None, name.to_string())).filter(|_| s.scope_fns.contains(name))?;
+            Some((key.clone(), decls.get(key).copied()))
         };
         for name in names {
             match name {
@@ -3709,6 +3786,10 @@ enum Local {
     Field(String),
 }
 
+/// What a call spelling `(locus, name)` resolves to: the row of the last
+/// declaration of that name ([`AllocSummary::by_name`]).
+type Known = BTreeMap<(Option<String>, String), FnKey>;
+
 struct Walker<'a> {
     sites: Vec<AllocSite>,
     /// GH #265: syntactic effect sites (publish / spawn).
@@ -3731,7 +3812,7 @@ struct Walker<'a> {
     loops: Vec<LoopInfo>,
     escaping: &'a Escaping<'a>,
     enclosing_locus: Option<String>,
-    known: &'a BTreeSet<FnKey>,
+    known: &'a Known,
     /// The loci this body instantiates, by their declared names.
     starts: BTreeSet<String>,
     /// The free fns of the body's own scope (its seed's programs,
@@ -4122,6 +4203,11 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// The row a bare free-fn name of the body's own scope resolves to.
+    fn own_fn(&self, name: &str) -> Option<FnKey> {
+        self.known.get(&(None, name.to_string())).filter(|_| self.scope_fns.contains(name)).cloned()
+    }
+
     /// What a direct call of a `Path` callee resolves to.
     fn path_callee(&self, qp: &QualifiedName) -> Callee {
         let path = qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
@@ -4130,14 +4216,10 @@ impl<'a> Walker<'a> {
         // callgraph walk INTO an imported seed instead of
         // stopping at the boundary and reporting nothing.
         match self.rename_map.get(&path) {
-            Some(mangled) => {
-                let key = FnKey::free_fn(mangled.clone());
-                if self.known.contains(&key) && self.scope_fns.contains(mangled) {
-                    Callee::Resolved(key)
-                } else {
-                    Callee::Unresolved(path)
-                }
-            }
+            Some(mangled) => match self.own_fn(mangled) {
+                Some(key) => Callee::Resolved(key),
+                None => Callee::Unresolved(path),
+            },
             None => Callee::Unresolved(path),
         }
     }
@@ -4151,8 +4233,7 @@ impl<'a> Walker<'a> {
                 Some(Local::Unresolved) => Local::Unresolved,
                 Some(Local::Field(f)) => Local::Field(f.clone()),
                 None => {
-                    let key = FnKey::free_fn(id.name.clone());
-                    if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
+                    if let Some(key) = self.own_fn(&id.name) {
                         Local::Fn(Callee::Resolved(key))
                     } else if crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
                         Local::Fn(Callee::Unresolved(id.name.clone()))
@@ -4625,8 +4706,7 @@ impl<'a> Walker<'a> {
         let mut computed = false;
         let resolved = match callee {
             Expr::Ident(id) => {
-                let key = FnKey::free_fn(id.name.clone());
-                if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
+                if let Some(key) = self.own_fn(&id.name) {
                     Callee::Resolved(key)
                 } else if crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
                     Callee::Unresolved(id.name.clone())
@@ -4688,14 +4768,10 @@ impl<'a> Walker<'a> {
                 };
                 recv_ty = owner.clone();
                 match owner {
-                    Some(ty) => {
-                        let key = FnKey::method(ty, name.name.clone());
-                        if self.known.contains(&key) {
-                            Callee::Resolved(key)
-                        } else {
-                            Callee::Unresolved(name.name.clone())
-                        }
-                    }
+                    Some(ty) => match self.known.get(&(Some(ty), name.name.clone())) {
+                        Some(key) => Callee::Resolved(key.clone()),
+                        None => Callee::Unresolved(name.name.clone()),
+                    },
                     None => Callee::Unresolved(name.name.clone()),
                 }
             }
@@ -5353,10 +5429,15 @@ mod tests {
         unbounded_alloc_diags(&summary, programs, ids, sources, include_all)
     }
 
-    fn fns(s: &AllocSummary, key: &FnKey) -> FnSummary {
-        s.fns.get(key).cloned().unwrap_or_else(|| {
-            panic!("no summary for {:?}; keys = {:?}", key, s.fns.keys().collect::<Vec<_>>())
+    /// The row a call spelling `name` (of `locus`) resolves to.
+    fn named(s: &AllocSummary, locus: Option<&str>, name: &str) -> FnKey {
+        s.resolve(locus, name).cloned().unwrap_or_else(|| {
+            panic!("no row for {:?}::{}; keys = {:?}", locus, name, s.fns.keys().collect::<Vec<_>>())
         })
+    }
+
+    fn fns(s: &AllocSummary, locus: Option<&str>, name: &str) -> FnSummary {
+        s.fns[&named(s, locus, name)].clone()
     }
 
     #[test]
@@ -5367,7 +5448,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("make"));
+        let f = fns(&s, None, "make");
         assert_eq!(f.sites.len(), 1);
         assert!(matches!(f.sites[0].kind, AllocKind::StructLit(_)));
         assert_eq!(f.sites[0].escape, Escape::Returned);
@@ -5382,7 +5463,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("make"));
+        let f = fns(&s, None, "make");
         assert_eq!(f.sites[0].escape, Escape::Returned, "let-bound + returned should escape");
     }
 
@@ -5404,13 +5485,13 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("make"));
+        let f = fns(&s, None, "make");
         let escapes: Vec<Escape> = f.sites.iter().map(|s| s.escape).collect();
         assert_eq!(escapes, vec![Escape::Returned, Escape::Local], "the outer literal, the loop's: {:?}", f.sites);
         let call = f
             .calls
             .iter()
-            .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+            .find(|c| c.callee == Callee::Resolved(named(&s, None, "fresh_p")))
             .expect("the call in the `if`");
         assert_eq!(call.escape, Escape::Local, "the inner shadow's value");
     }
@@ -5435,10 +5516,10 @@ mod tests {
         "#;
         let s = summarize(src);
         let call_escape = |f: &str| {
-            fns(&s, &FnKey::free_fn(f))
+            fns(&s, None, f)
                 .calls
                 .iter()
-                .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+                .find(|c| c.callee == Callee::Resolved(named(&s, None, "fresh_p")))
                 .expect("the fresh_p call")
                 .escape
         };
@@ -5464,10 +5545,10 @@ mod tests {
         "#;
         let s = summarize(src);
         let call_escape = |f: &str| {
-            fns(&s, &FnKey::free_fn(f))
+            fns(&s, None, f)
                 .calls
                 .iter()
-                .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+                .find(|c| c.callee == Callee::Resolved(named(&s, None, "fresh_p")))
                 .expect("the fresh_p call")
                 .escape
         };
@@ -5490,7 +5571,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("run_it"));
+        let f = fns(&s, None, "run_it");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct site");
         assert_eq!(st.escape, Escape::Local);
         assert_eq!(st.loop_depth, 1);
@@ -5505,7 +5586,7 @@ mod tests {
     fn while_counter_ranking_is_sound() {
         let verdict = |src: &str| {
             let s = summarize(src);
-            let f = fns(&s, &FnKey::free_fn("run_it"));
+            let f = fns(&s, None, "run_it");
             f.sites
                 .iter()
                 .find(|s| matches!(s.kind, AllocKind::StructLit(_)))
@@ -5639,7 +5720,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("loopy"));
+        let f = fns(&s, None, "loopy");
         assert!(matches!(f.loops[0].kind, LoopKind::ForRange { bounded: Some(8) }));
     }
 
@@ -5654,7 +5735,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "on_tick"));
+        let f = fns(&s, Some("C"), "on_tick");
         assert_eq!(f.entry, Some(EntryKind::BusHandler));
         assert!(!f.entry.unwrap().one_shot());
     }
@@ -5668,7 +5749,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "run"));
+        let f = fns(&s, Some("C"), "run");
         assert_eq!(f.entry, Some(EntryKind::Run));
         assert!(f.loops.iter().any(|l| matches!(l.kind, LoopKind::WhileTrue)));
     }
@@ -5683,8 +5764,8 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "use_it"));
-        assert!(f.calls.iter().any(|c| c.callee == Callee::Resolved(FnKey::method("C", "helper"))));
+        let f = fns(&s, Some("C"), "use_it");
+        assert!(f.calls.iter().any(|c| c.callee == Callee::Resolved(named(&s, Some("C"), "helper"))));
     }
 
     #[test]
@@ -5700,7 +5781,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "run"));
+        let f = fns(&s, Some("C"), "run");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
         assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
         assert!(st.in_unbounded_loop);
@@ -5723,7 +5804,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("pump"));
+        let f = fns(&s, None, "pump");
         let st = f
             .sites
             .iter()
@@ -5752,7 +5833,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("find"));
+        let f = fns(&s, None, "find");
         for st in f.sites.iter().filter(|s| matches!(s.kind, AllocKind::StructLit(_))) {
             assert_eq!(st.verdict(), SiteVerdict::OncePerInvocation);
         }
@@ -5776,7 +5857,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("pump"));
+        let f = fns(&s, None, "pump");
         let q = f
             .sites
             .iter()
@@ -5799,7 +5880,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("work"));
+        let f = fns(&s, None, "work");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
         assert!(!st.in_unbounded_loop);
         assert_eq!(st.verdict(), SiteVerdict::AccumulatesBoundedLoop);
@@ -5813,7 +5894,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("make"));
+        let f = fns(&s, None, "make");
         assert_eq!(f.sites[0].verdict(), SiteVerdict::OncePerInvocation);
     }
 
@@ -5833,7 +5914,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "run"));
+        let f = fns(&s, Some("C"), "run");
         // The `q` bound by `let` is tagged Sent (it flows to the send), so
         // its alloc reclaims at dispatch.
         let sent = f.sites.iter().find(|s| s.reclaim == ReclaimScope::AfterBusDispatch);
@@ -5852,7 +5933,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "set"));
+        let f = fns(&s, Some("C"), "set");
         assert_eq!(f.sites[0].escape, Escape::StoredToSelf);
     }
 
@@ -5869,10 +5950,10 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        assert!(s.unbounded_invoked().contains(&FnKey::free_fn("make")));
+        assert!(s.unbounded_invoked().contains(&named(&s, None, "make")));
         let leaks = s.leak_sites();
         assert!(
-            leaks.iter().any(|l| l.owner == FnKey::free_fn("make")
+            leaks.iter().any(|l| l.owner == named(&s, None, "make")
                 && l.reason == LeakReason::InvokedUnboundedly),
             "make's alloc should be flagged via call-graph propagation; got {:?}",
             leaks
@@ -6253,7 +6334,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "run"));
+        let f = fns(&s, Some("C"), "run");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
         assert_eq!(st.escape, Escape::StoredToSelf);
         assert_eq!(
@@ -6283,7 +6364,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "run"));
+        let f = fns(&s, Some("C"), "run");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
         assert_eq!(st.escape, Escape::Local);
         assert_eq!(st.target_field, None, "a local alloc has no self-field target");
@@ -6300,7 +6381,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("C", "run"));
+        let f = fns(&s, Some("C"), "run");
         let call = f.calls.iter().find(|c| c.receiver_slot.is_some()).expect("slot call");
         assert_eq!(call.receiver_slot.as_deref(), Some("log"));
     }
@@ -6323,7 +6404,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("W", "on_ev"));
+        let f = fns(&s, Some("W"), "on_ev");
         let site = insert_site(&f).expect("vec-insert site");
         assert_eq!(site.kind, AllocKind::CollectionInsert("vec".into()));
         // A per-message handler is an unbounded-invocation context.
@@ -6342,7 +6423,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::free_fn("double_push"));
+        let f = fns(&s, None, "double_push");
         // The insert is recorded (typed param resolved)…
         assert!(insert_site(&f).is_some(), "param-typed vec push is detected");
         // …but called once, not in a loop → not a leak.
@@ -6363,7 +6444,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("W", "on_ev"));
+        let f = fns(&s, Some("W"), "on_ev");
         assert!(insert_site(&f).is_none(), "ring_buffer push must not flag");
         assert!(s.leak_sites().is_empty());
     }
@@ -6379,7 +6460,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("W", "run"));
+        let f = fns(&s, Some("W"), "run");
         let site = insert_site(&f).expect("insert detected");
         assert_eq!(
             site.verdict(),
@@ -6404,7 +6485,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("W", "run"));
+        let f = fns(&s, Some("W"), "run");
         assert!(insert_site(&f).is_none(), "user push on a non-form locus is not an insert");
         assert!(s.leak_sites().is_empty());
     }
@@ -6422,7 +6503,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let f = fns(&s, &FnKey::method("W", "run"));
+        let f = fns(&s, Some("W"), "run");
         let site = insert_site(&f).expect("typed-let hashmap insert detected");
         assert_eq!(site.kind, AllocKind::CollectionInsert("hashmap".into()));
         assert_eq!(site.verdict(), SiteVerdict::AccumulatesUnbounded);
@@ -6438,7 +6519,7 @@ mod tests {
     fn local_calls(src: &str, f: &str) -> Vec<(String, Option<String>, bool)> {
         let s = summarize(src);
         let mut seen: BTreeSet<u32> = BTreeSet::new();
-        fns(&s, &FnKey::free_fn(f))
+        fns(&s, None, f)
             .calls
             .iter()
             .filter(|c| c.via_value.is_none() || c.dispatch_group.is_some_and(|g| seen.insert(g)))
@@ -6460,7 +6541,7 @@ mod tests {
     /// callee as written when it is one).
     fn value_calls(src: &str, f: &str) -> Vec<(String, Option<String>)> {
         let s = summarize(src);
-        fns(&s, &FnKey::free_fn(f))
+        fns(&s, None, f)
             .calls
             .iter()
             .map(|c| {
@@ -6663,7 +6744,7 @@ mod tests {
         "#;
         assert_eq!(local_calls(src, "g"), vec![indirect("?h"), indirect("?cb")]);
         let s = summarize(src);
-        let param: Vec<bool> = fns(&s, &FnKey::free_fn("g")).calls.iter().map(|c| c.through_param).collect();
+        let param: Vec<bool> = fns(&s, None, "g").calls.iter().map(|c| c.through_param).collect();
         assert_eq!(param, [false, true], "only the parameter's own call is through the parameter");
     }
 
@@ -6689,7 +6770,7 @@ mod tests {
             fn main() { }
         "#;
         let s = summarize(src);
-        let marked: Vec<(String, bool)> = fns(&s, &FnKey::free_fn("g"))
+        let marked: Vec<(String, bool)> = fns(&s, None, "g")
             .calls
             .iter()
             .map(|c| match &c.spelling {
@@ -6764,7 +6845,7 @@ mod tests {
         // Each unfollowed call is two alternatives (`width`, `other`), each
         // still marked as written through an unfollowed local.
         let s = summarize(src);
-        let marked: Vec<bool> = fns(&s, &FnKey::free_fn("g")).calls.iter().map(|c| c.unresolved_local).collect();
+        let marked: Vec<bool> = fns(&s, None, "g").calls.iter().map(|c| c.unresolved_local).collect();
         assert_eq!(marked, [true, true, true, true, true, true, true, true, false, false, false, false]);
     }
 }

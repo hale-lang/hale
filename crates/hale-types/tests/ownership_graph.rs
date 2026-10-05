@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use hale_syntax::ast::Program;
 use hale_syntax::parse_source;
 use hale_types::ownership_graph::{
-    build_ownership_graph, EdgeClass, OwnedSite, OwnerKind, OwnerResolution,
+    build_ownership_graph, EdgeClass, ExpandedLiteral, OwnedSite, OwnerKind, OwnerResolution,
     OwnershipGraph,
 };
 use hale_types::resolve::build_top_scope;
@@ -662,22 +662,233 @@ fn a_bare_cross_pool_spawn_is_clean() {
     assert!(errs.is_empty(), "a bare statement is the legal spelling: {errs:?}");
 }
 
-/// The residue lowering still refuses alone: `Driver` spawns `Ship`
-/// itself (bare, legal), so the plan holds (Driver, Ship); `Holder`'s
-/// params default builds a `Ship` too, and lowering expands it under
-/// `Driver`'s self, where that entry applies. The graph keys the literal
-/// by `Holder`, whose edge to `World` is same-thread, so the law cannot
-/// see it; the harness pin is in hale-codegen's
-/// `harness_lowering_laws.rs`.
+/// The shape lowering refused alone until C3 rest: `Driver` spawns
+/// `Ship` itself (bare, legal), so the plan holds (Driver, Ship);
+/// `Holder`'s params default builds a `Ship` too, and lowering expands
+/// it under `Driver`'s self, where that entry applies. The graph keys the
+/// literal by `Holder` and gives it its context, `Driver`
+/// (`expansions`), so the law refuses it at the literal in the
+/// default.
+const FIRE_AND_FORGET_DEFAULT: &str = "cross-pool spawn `Ship{ }` is fire-and-forget: it is the default of \
+                                       `Holder`'s param `s`, which is built in `Driver` (a `Holder` built there \
+                                       leaves `s` to its default), so the instance is created on `World`'s \
+                                       thread and cannot be the field's value";
+
 #[test]
-fn a_cross_pool_spawn_in_another_locus_default_is_not_judged_by_the_law() {
+fn a_cross_pool_spawn_in_another_locus_default_is_refused_at_the_default() {
     let g = graph(&crosspool_src("        Ship { hull: 7 };\n        Holder { };"));
-    assert!(g.bubble_plans().crosspool.contains_key(&("Driver".to_string(), "Ship".to_string())));
+    let crosspool = g.bubble_plans().crosspool;
+    assert!(crosspool.contains_key(&("Driver".to_string(), "Ship".to_string())));
+    let contexts: Vec<(String, String)> = g
+        .expansions(&crosspool, &Default::default())
+        .into_iter()
+        .filter_map(|e| match e.literal {
+            ExpandedLiteral::Owned(i) => Some((
+                format!("{}.{}", g.declarations[g.sites[i].enclosing_decl].name, g.sites[i].child_ty),
+                g.declarations[e.context].name.clone(),
+            )),
+            ExpandedLiteral::Free(_) | ExpandedLiteral::Other(_) => None,
+        })
+        .collect();
+    assert!(contexts.contains(&("Holder.Ship".to_string(), "Driver".to_string())), "{contexts:?}");
     let errs = crosspool_errors("        Ship { hull: 7 };\n        Holder { };");
-    assert!(
-        !errs.iter().any(|(m, _)| m.contains("fire-and-forget")),
-        "the law judges a locus's own bodies only: {errs:?}"
+    assert_eq!(errs.len(), 1, "the law's refusal and nothing else: {errs:?}");
+    let (msg, at) = &errs[0];
+    assert!(msg.starts_with(FIRE_AND_FORGET_DEFAULT), "{msg}");
+    assert_eq!(at, "Ship { hull: 1 }", "located at the literal in the default");
+}
+
+/// Two defaults deep: `Driver` builds a `Dock`, whose default builds the
+/// `Holder` whose default builds the `Ship`; both expand under `Driver`.
+#[test]
+fn a_cross_pool_spawn_two_defaults_deep_is_refused_at_the_default() {
+    let src = crosspool_src("        Ship { hull: 7 };\n        Dock { };")
+        .replace("fn keep(", "locus Dock { params { h: Holder = Holder { }; } }\nfn keep(");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<(String, String)> = hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
+        .collect();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(FIRE_AND_FORGET_DEFAULT), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "Ship { hull: 1 }");
+}
+
+/// A default no cross-pool context expands is clean: the `Holder` that
+/// `Driver` builds supplies `s` (a value it was handed), and the one
+/// `World` builds expands the default on `World`'s own thread, where
+/// `World` accepts the `Ship`.
+#[test]
+fn a_default_no_cross_pool_context_expands_is_clean() {
+    let src = crosspool_src("        Ship { hull: 7 };")
+        .replace("locus Driver {\n", "locus Driver {\n    params { got: Ship; }\n    fn hold() { Holder { s: self.got }; }\n")
+        .replace("    run() { }\n}\n", "    run() { Holder { }; }\n}\n")
+        .replace("Driver { }", "Driver { got: Ship { } }");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<String> = hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error() && d.message.contains("fire-and-forget"))
+        .map(|d| d.message)
+        .collect();
+    assert!(errs.is_empty(), "{errs:?}");
+}
+
+/// The review of #1351: an argument's default is lowered at each call
+/// that leaves the argument out, in the caller's scope and under the
+/// caller's locus. `src` adds `decls` before `Driver` and runs `body` in
+/// `Driver.run()`; the errors, each with the text it is located at.
+fn arg_default_errors(decls: &str, body: &str) -> Vec<(String, String)> {
+    let src = crosspool_src(body).replace("locus Driver {\n", &format!("{decls}locus Driver {{\n"));
+    let prog = parse_source(&src).expect("parse failed");
+    hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
+        .collect()
+}
+
+const TAKE: &str = "fn take(s: Ship = Ship { hull: 1 }) -> Int { return s.hull; }\n";
+
+fn fire_and_forget_arg(callee: &str, param: &str) -> String {
+    format!(
+        "cross-pool spawn `Ship{{ }}` is fire-and-forget: it is the default of `{callee}`'s argument `{param}`, \
+         expanded here, in `Driver`"
+    )
+}
+
+/// The review's shape: `take()` leaves `s` to `Ship { hull: 1 }`, which
+/// lowering builds in `Driver`, where (Driver, Ship) is a post. Refused
+/// at the call; supplying the argument expands nothing.
+#[test]
+fn a_cross_pool_spawn_in_a_fn_argument_default_is_refused_at_the_call_that_omits_it() {
+    let errs = arg_default_errors(TAKE, "        Ship { hull: 7 };\n        take();");
+    assert_eq!(errs.len(), 1, "the law's refusal and nothing else: {errs:?}");
+    assert!(errs[0].0.starts_with(&fire_and_forget_arg("take", "s")), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "take()", "located at the call that omits the argument");
+    // `Driver` is handed a `Ship` built on `World`'s thread.
+    let src = crosspool_src("        Ship { hull: 7 };\n        take(self.got);")
+        .replace("locus Driver {\n", &format!("{TAKE}locus Driver {{\n    params {{ got: Ship; }}\n"))
+        .replace("Driver { }", "Driver { got: Ship { } }");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<String> =
+        hale_types::check_program(&prog).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errs.is_empty(), "a call that supplies the argument expands no default: {errs:?}");
+}
+
+/// A method's default, called on `self` and on a receiver: each call is
+/// judged in `Driver`, and the default's literal is never judged under
+/// the locus that declares it.
+#[test]
+fn a_cross_pool_spawn_in_a_method_argument_default_is_refused_at_each_call_that_omits_it() {
+    let tool = "locus Tool { fn use_it(s: Ship = Ship { hull: 2 }) -> Int { return s.hull; } }\n";
+    let errs = arg_default_errors(tool, "        Ship { hull: 7 };\n        let t = Tool { };\n        t.use_it();");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(&fire_and_forget_arg("Tool.use_it", "s")), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "t.use_it()");
+    // On `self`: `Driver`'s own method, its default expanded in `run()`.
+    let src = crosspool_src("        Ship { hull: 7 };\n        self.own();")
+        .replace("    run() {\n", "    fn own(s: Ship = Ship { hull: 3 }) -> Int { return s.hull; }\n    run() {\n");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<(String, String)> = hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
+        .collect();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(&fire_and_forget_arg("Driver.own", "s")), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "self.own()");
+}
+
+/// Transitive: `outer()` leaves `n` to `inner()`, which leaves `s` to the
+/// `Ship`; and a params default that calls `inner()` reaches it too. Each
+/// is refused at what `Driver`'s body writes.
+#[test]
+fn a_cross_pool_spawn_reached_through_a_chain_of_defaults_is_refused_at_the_callers_root() {
+    let chain = "fn inner(s: Ship = Ship { hull: 1 }) -> Int { return s.hull; }\n\
+                 fn outer(n: Int = inner()) -> Int { return n; }\n\
+                 locus Counter { params { n: Int = inner(); } }\n";
+    let errs = arg_default_errors(chain, "        Ship { hull: 7 };\n        outer();");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(&fire_and_forget_arg("inner", "s")), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "outer()");
+    let errs = arg_default_errors(chain, "        Ship { hull: 7 };\n        Counter { };");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(&fire_and_forget_arg("inner", "s")), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "Counter { }");
+    // `outer(5)` supplies `n`, so `inner()` is never expanded.
+    let errs = arg_default_errors(chain, "        Ship { hull: 7 };\n        outer(5);");
+    assert!(errs.is_empty(), "{errs:?}");
+    // An argument default that builds a `Holder` leaving `s`: `Holder`'s
+    // params default is expanded at the call too, and refused where a
+    // params default is, at its literal, built in `Driver`.
+    let errs = arg_default_errors(
+        "fn hold(h: Holder = Holder { }) { }\n",
+        "        Ship { hull: 7 };\n        hold();",
     );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(FIRE_AND_FORGET_DEFAULT), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "Ship { hull: 1 }");
+}
+
+/// A `const`'s value is lowered at every read, under the reader's locus,
+/// which no row names: a literal it builds, or one its defaults build, is
+/// refused at the const whenever some locus posts the child. Where none
+/// does, it is clean.
+#[test]
+fn a_cross_pool_spawn_in_a_const_value_is_refused_at_the_const() {
+    let per_use = "cross-pool spawn `Ship{ }` is fire-and-forget: it is built ";
+    let errs = arg_default_errors(
+        "const S: Ship = Ship { hull: 1 };\n",
+        "        Ship { hull: 7 };\n        println(S.hull);",
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].0.starts_with(&format!("{per_use}here, in a `const`'s value")), "{}", errs[0].0);
+    assert_eq!(errs[0].1, "Ship { hull: 1 }");
+    let errs = arg_default_errors("const H: Holder = Holder { };\n", "        Ship { hull: 7 };\n        let h = H;");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(
+        errs[0].0.starts_with(&format!("{per_use}through the defaults this leaves, in a `const`'s value")),
+        "{}",
+        errs[0].0
+    );
+    assert_eq!(errs[0].1, "Holder { }");
+    // No locus posts `Ship`: nothing crosses wherever the const is read.
+    let errs = arg_default_errors("const S: Ship = Ship { hull: 1 };\n", "        println(S.hull);");
+    assert!(errs.is_empty(), "{errs:?}");
+}
+
+/// A generic fn's default is never expanded: a generic call supplies
+/// every argument (the checker's arity rule), so there is no expansion
+/// before specialization for the law to place.
+#[test]
+fn a_generic_fn_call_leaves_no_argument_to_its_default() {
+    let errs = arg_default_errors(
+        "fn tag<T>(x: T, s: Ship = Ship { hull: 1 }) -> Int { return s.hull; }\n",
+        "        Ship { hull: 7 };\n        tag(3);",
+    );
+    assert!(errs.iter().any(|(m, at)| m == "generic fn `tag` takes 2 arguments, got 1" && at == "tag"), "{errs:?}");
+}
+
+/// The same default from two callers: `Driver` (pool `workers`) crosses,
+/// `World` (where `Ship` is accepted) does not. One refusal, at
+/// `Driver`'s call; and a caller with no post for `Ship` is clean.
+#[test]
+fn an_argument_default_is_refused_only_at_the_caller_that_crosses() {
+    let src = crosspool_src("        Ship { hull: 7 };\n        take();")
+        .replace("locus Driver {\n", &format!("{TAKE}locus Driver {{\n"))
+        .replace("    run() { }\n}\n", "    run() { take(); }\n}\n");
+    let prog = parse_source(&src).expect("parse failed");
+    let errs: Vec<(String, usize)> = hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message.clone(), d.span.start.as_usize()))
+        .collect();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].1, src.find("        take();").unwrap() + 8, "at `Driver`'s call: {errs:?}");
+    // No bare `Ship` in `Driver`: the plan has no (Driver, Ship) post,
+    // and lowering births the default's `Ship` where it stands.
+    assert!(arg_default_errors(TAKE, "        take();").is_empty());
 }
 
 // --- Real corpus regression ---------------------------------------

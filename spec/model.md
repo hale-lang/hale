@@ -243,6 +243,13 @@ subject, transport and role; `Phase`, `Seed` and `ThreadDomain`
 carry a name with no separate display. Consumers should read the
 table's own definition rather than assume a common shape.
 
+A `functions` row's id is the rank of its `name`; the row also
+carries `decl`, the site its snapshot minted for the declaration. A
+join from an analysis row (an allocation-summary or effect row, keyed
+by that site) to its function reads `decl`, never the name. `decl`
+is never rendered and never hashed, so it moves no dump and no
+digest.
+
 | table | what a row is |
 |---|---|
 | `functions` | free fn, method, lifecycle hook, mode, failure handler |
