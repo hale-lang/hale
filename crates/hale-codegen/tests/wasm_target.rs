@@ -17,16 +17,27 @@
 //!      ported yet) and asserts the result on the wasm32 ABI.
 
 use hale_codegen::{build_executable_with_options, BuildOptions, CompileTarget};
-use std::path::PathBuf;
+use hale_syntax::ast::Program;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/wasm_module.rs"]
+mod wasm_module;
 
 fn wasm_opts() -> BuildOptions {
     BuildOptions { target: CompileTarget::Wasm32, ..build_opts::options() }
+}
+
+/// Build `program` for wasm32 into `wasm` (with its loader beside it)
+/// and hold the module to the import backstop.
+fn build_wasm(program: &Program, wasm: &Path) {
+    build_executable_with_options(program, wasm, &[], &wasm_opts()).expect("wasm codegen + link");
+    let origin = std::thread::current().name().unwrap_or("wasm_target").to_string();
+    wasm_module::backstop(&origin, program, wasm).unwrap_or_else(|e| panic!("{e}"));
 }
 
 fn tmp(name: &str) -> PathBuf {
@@ -54,8 +65,7 @@ fn wasm_ffi_js_host_import() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse @ffi(\"js\")");
     let wasm = tmp("ffijs.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -97,8 +107,7 @@ fn wasm_string_int_concat_formats() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let wasm = tmp("concat.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -153,8 +162,7 @@ fn wasm_ffi_js_int_marshals_as_number() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let wasm = tmp("ffijs_int.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let harness = wasm.with_extension("harness.mjs");
     let loader_name = loader.file_name().unwrap().to_str().unwrap();
@@ -219,8 +227,7 @@ fn wasm_decimal_i128_builtins() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let wasm = tmp("decimal.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -272,8 +279,7 @@ fn wasm_export_entry_inversion_persists_state() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse @export program");
     let wasm = tmp("export_ei.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     // Drive the exports from a harness: _hale_start runs at load, then
     // three bumps, then read the accumulated counter.
@@ -330,8 +336,7 @@ fn wasm_export_locus_persists_field_state() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse @export locus");
     let wasm = tmp("export_locus.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let harness = wasm.with_extension("harness.mjs");
     let loader_name = loader.file_name().unwrap().to_str().unwrap();
@@ -404,8 +409,7 @@ fn wasm_export_locus_multiple_array_fields_no_alias() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let wasm = tmp("export_locus_arrays.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let harness = wasm.with_extension("harness.mjs");
     let loader_name = loader.file_name().unwrap().to_str().unwrap();
@@ -469,8 +473,7 @@ fn wasm_round_trunc_host_free() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let wasm = tmp("round_trunc.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let harness = wasm.with_extension("harness.mjs");
     let loader_name = loader.file_name().unwrap().to_str().unwrap();
@@ -534,8 +537,7 @@ fn wasm_in_process_bus_dispatch_delivers() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse target-wasm bus program");
     let wasm = tmp("bus.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -594,8 +596,7 @@ fn wasm_form_collections_run() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse target-wasm @form program");
     let wasm = tmp("form.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -652,8 +653,7 @@ fn wasm_capacity_and_recognition_run() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse target-wasm capacity/recognition");
     let wasm = tmp("capreg.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -709,8 +709,7 @@ fn wasm_free_fn_in_bus_handler_preserves_order() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse target-wasm bus+freefn");
     let wasm = tmp("busfreefn.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -754,8 +753,7 @@ fn wasm_wrap_main_runs_bare_main_body() {
     let wrapped = hale_syntax::desugar::wrap_main_as_wasm_export(&mut program);
     assert!(wrapped, "bare `fn main` should be wrapped");
     let wasm = tmp("wrapmain.wasm");
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen of the wrapped program");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     let run = Command::new(&node).arg(&loader).output().expect("run node loader");
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -800,8 +798,7 @@ fn wasm_build_emits_valid_module() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let obj = tmp("obj.wasm");
-    build_executable_with_options(&program, &obj, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &obj);
     let bytes = std::fs::read(&obj).expect("read wasm module");
     let _ = std::fs::remove_file(&obj);
     // WebAssembly module header: "\0asm" + version 1.
@@ -861,8 +858,7 @@ fn wasm_struct_runs_self_contained() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let wasm = tmp("sc.wasm");
     // The wasm path compiles + links the runtime AND emits a `.mjs` loader.
-    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
-        .expect("wasm codegen + link");
+    build_wasm(&program, &wasm);
     let loader = wasm.with_extension("mjs");
     assert!(wasm.exists(), "link_wasm should produce a .wasm");
     assert!(loader.exists(), "link_wasm should emit a .mjs loader beside the .wasm");

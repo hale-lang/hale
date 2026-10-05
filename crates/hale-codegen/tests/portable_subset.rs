@@ -22,6 +22,8 @@ use hale_codegen::{build_executable_with_options, BuildOptions, CompileTarget};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/wasm_module.rs"]
+mod wasm_module;
 
 fn tool(name: &str) -> Option<String> {
     [name.to_string(), format!("{name}-18")].into_iter().find(|c| Command::new(c).arg("--version").output().is_ok())
@@ -169,10 +171,12 @@ fn run_wasm(name: &str, program: &hale_syntax::ast::Program, entry: Entry, node:
     let wasm = harness::unique_bin(&format!("hale_portable_{name}")).with_extension("wasm");
     let opts = BuildOptions { target: CompileTarget::Wasm32, ..build_opts::options() };
     build_executable_with_options(&program, &wasm, &[], &opts).map_err(|e| format!("wasm32 build: {e}"))?;
+    let held = wasm_module::backstop(&format!("portable_subset::{name}"), &program, &wasm);
     let loader = wasm.with_extension("mjs");
     let out = Command::new(node).arg(&loader).output().map_err(|e| format!("node: {e}"))?;
     let _ = std::fs::remove_file(&wasm);
     let _ = std::fs::remove_file(&loader);
+    held?;
     if !out.status.success() {
         return Err(format!("node exited {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr)));
     }
