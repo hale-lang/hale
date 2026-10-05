@@ -781,6 +781,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("codegen (a monomorph's accept rows: its template's, specialized at synthesis)", CG, "specialized_accepts"), consumer_at("codegen (whether the enclosing locus accepts the child it births)", CG_INST, "parent_accepts_us"), consumer_at("borrow_lifetime (a bare literal's enclosing locus accepts its child: `accepts_ancestor`, over the snapshot's graph's rows)", "crates/hale-types/src/borrow_lifetime.rs", "accepts_ancestor"), consumer_at("lowering view (its graph: the snapshot's rows through the correspondence, then the stdlib's; the bubble plans, `accepts` and the accept rows lowering reads)", TY_RESOLVED, "lowering_ownership_graph"), consumer_at("model (dynamic births: the snapshot's graph)", SNAPSHOT, "demand_ownership_graph"), consumer_at("a declaration's dependents (X2: a locus's births, accepts and instantiations make its neighbours through the ownership graph, the snapshot's graph)", SNAPSHOT, "declaration_dependents"), consumer_at("check (type-check rule 20, the unowned-subscriber rule: `owner_of_site` over the snapshot's graph, handed in through `CheckInputs`)", CHECK, "check_unowned_subscriber_locus"), consumer("alloc_summary (eager-only accept sets)"), consumer_at("check and the harness (the cross-pool spawn law reads the bubble plan)", LOWERING_LAWS, "cross_pool_spawn_used_as_a_value"), consumer_at("codegen (the handed-back column: a root some literal hands back keeps its pinned fields' join records in their instances, C52)", CG, "collect_main_placement")],
         invariants: &[
             "a locus instantiation with no row is a CodegenError (F.39)",
+            "rule 20 is a `law::Law` over the graph and the placement table its construction paths come from (`UnownedSubscriberRows`); its finding is a `law::Violation` whose witness steps are the declaration judged when two share the child's name and the construction path no accepting ancestor lies on (phase 4, W5)",
             "ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files",
             "the ownership matrix stays green with an empty KNOWN_OPEN",
             "the model's `Owns` edges are the placement table's `owner` column projected with the arrangement (P1 4 of 6, C3): an arranged instance is owned by the arranged instance its row names as owner; `owns.push(` has that one writer",
@@ -845,6 +846,7 @@ pub const FAMILIES: &[Family] = &[
         ],
         invariants: &[
             "one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it (`cycle_from`)",
+            "rules 9 and 10 are `law::Law`s over the graph (`BusLawRows`: the graph, the entry row, the scope's declared topics, the intra-locus rewrite relation), their findings `law::Violation`s with no witness steps, rule 10 naming its cycle in its message (phase 4, W5)",
             "lowering derives no graph of the user's program: its graph is the snapshot's rows (`BusRows`), each user site found in the merged program through the view's correspondence and keyed by the wire the topic rewrite gave it, followed by the stdlib's rows over the merged program's tail (`stdlib_bus_rows`), the one part no snapshot holds; the subjects and their gates are assembled from the rows by one procedure (`BusRows::subjects`) on both sides",
             "a bundle no snapshot holds builds its graph through the snapshot's producer (`build_bus_graph`), never through a wrapper of its own",
             "the checker's bus rules (7, 9, 10) compare subjects under the canonical key, the wire subject (`Subject`, `wires`): a topic published by name and subscribed by its literal subject is one subject; the gates and the model keep `BusSubject::canonical()`'s keys (`subjects`)",
@@ -920,6 +922,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("api_surface"),
         ],
         invariants: &[
+            "the check's per-binding walk (`check_main_and_bindings`) runs over these rows; of the rules it judges, the two the registry lists over rows (codec purity, the foreign-ring payload shape) find `law::Violation`s, rendered where the walk reaches them, so the walk's order holds; the rest (topic existence, duplicates, role inference, adapter conformance, the ring-layout rules, the `where` constraint rules, the codec signatures) are checks of the entry as written (phase 4, W5)",
             "the transport-loss handler is named by the row: a `unix` entry's row carries the stdlib locus its transport instantiates (`loss_locus`, by role), lowering instantiates that locus, and a connect entry's is the locus whose failure the main locus's `on_failure` handles, so the handler is main's routing row for the locus the bindings row names, not one picked by a spelled name",
             "lowering holds the rows (`LoweringView::bindings`, the snapshot's) and finds an entry's by the id the mint kept (`BindingRows::for_entry`); it decides no transport, role, codec or producer-versus-attach itself, and an entry with no row is a `CodegenError`, not a guess",
             "F.36 and F.37: binding failure is structural; codec purity is a law over rows",
@@ -1029,6 +1032,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies)", CG, "specialize("),
         ],
         invariants: &[
+            "pool starvation and the birth-order trap are registered rules run as `law::Law`s over the run rows' columns and the placement table's rows for the deployed root (`RootRunRows`), their findings `law::Violation`s (phase 4, W5)",
             "a release clause's child is resolved once, by `child_locus_name` (handler_routing's resolver: aliases, generic instantiations, qualified paths), into the row (`FlowClause::locus`); lowering's flow-ness is a row read (`flows::is_flow`), never a comparison of its own",
             "the flow facts cover the specializations lowering creates: a clause whose type mentions its owner's type parameters names no locus by itself and carries its template (`FlowClause::template`: the owner's identity, its parameters in order, the type as written); `FlowRows::specialize` answers for one specialization by resolving the template's type under the substitution lowering's synthesis applied, so `Manager<Worker>`'s `release(c: T)` makes `Worker` a flow exactly as a concrete `release(c: Worker)` does",
             "the checker's accept/release rule judges over the rows: the release clauses a locus declares are the rows' clauses inside its declaration",
@@ -1245,6 +1249,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer("check (rules 7, 8)"), consumer("effects (@no_block)"), consumer_at("codegen (mark_pinned, no_pinned dispatch: `program_has_offthread` over the view's placement table and binding rows)", CG, "program_has_offthread")],
         invariants: &[
             "one leaf set (GH #830) and one propagation",
+            "rules 7 and 8 are judged by one walk over the deployed root's placed fields (`check_cooperative_pool_blocking`), which reports each finding as a `law::Violation` of its rule in the order it reaches them and hands the starvation law the pools rule 7 fired on (phase 4, W5)",
             "whether a thread crosses the bus boundary is read off rows, once, in lowering (`program_has_offthread`): a domain of the placement table that is not main (`PlacementTable::places_off_main`: a pinned anchor, a non-main pool, an adapter binding's thread, the api binding's synthesized pool) or an entry of the entry's `bindings { }` (`BindingRows::binds_on_main`: the rows of the locus the entry row names, by its site, as lowering's prelude lowers them); the `lotus_bus_mark_pinned` call and every static dispatch's `no_pinned` flag are that one value and its negation",
             "an imported library's `main locus` is never deployed, so its `placement { }` block places nothing and its `bindings { }` bind nothing: a program importing one is not off-thread for it (a classified correction, pinned in `offthread_imported_main.rs`); the entry's binding makes its program off-thread, and a module-nested `main`, which the old binding term (top-level items only) missed, is no longer deployed: as a seed's only `main locus` it is refused (L4)",
             "the helpers that block are the effect rows' (`worker_holding_fns`, demanded through `CheckInputs::effects` only once a placed field has a `run()` to walk): a fn whose `direct` BLOCK comes from a leaf `holds_cooperative_worker` names (the BLOCK class includes `std::time::sleep`, which yields the worker, so the leaf test stays beside the row), closed over the rows' resolved targets; the check folds no call graph of its own",
@@ -2008,8 +2013,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/6",
         title: "Locus-pinning compatibility.",
-        // The instances are the placement table's rows (the entry's, each replica, the adapter binding's); the two features (an `accept` of any arity, a closure whose epoch is `birth` or `dissolve`) are still read off the declaration the instance realizes.
-        reads: Reads::Rows(&["placement"]),
+        // The instances are the placement table's rows (the entry's, each replica, the adapter binding's); an adapter's topic is its binding row's; the two features (an `accept` of any arity, a closure whose epoch is `birth` or `dissolve`) are still read off the declaration the instance realizes.
+        reads: Reads::Rows(&["placement", "bindings"]),
         gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
@@ -2038,7 +2043,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/9",
         title: "Orphan bus topic (warning).",
-        // The graph's subjects, wiring columns and canonical keys, and the entry row's closed world; the symbol table for a qualified subject.
+        // The graph's subjects, wiring columns and canonical keys, and the entry row's closed world; the scope's declared topics and their wire subjects; whether the entry declares an `api:` binding is still read off its declaration.
         reads: Reads::Rows(&["bus_graph", "entrypoint", "top_scope"]),
         gist: "orphan bus topic (closed world)",
         family: "bus_graph",
@@ -2208,8 +2213,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/codec-purity",
         title: "Codec purity",
-        // The binding's codec locus and its `encode` / `decode` methods are named by the declaration; whether each is pure is the effect rows' purity column.
-        reads: Reads::Rows(&["effects"]),
+        // The walk is over the binding rows; the entry's `codec(L { })` clause names the locus; whether its `encode` / `decode` is pure is the effect rows' purity column.
+        reads: Reads::Rows(&["bindings", "effects"]),
         gist: "a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows",
         family: "bindings",
         evaluator: Some(site(CHECK, "check_main_and_bindings")),
@@ -2238,8 +2243,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/foreign-ring-payload-shape",
         title: "Foreign-ring payload shape",
-        // The topic's payload type is read through the symbol table (`is_flat_shapeable` over the top scope); the binding is read off the declaration.
-        reads: Reads::Rows(&["top_scope"]),
+        // The walk is over the binding rows; the entry's `layout:` is read off it; the topic's payload type through the symbol table (`is_flat_shapeable` over the top scope).
+        reads: Reads::Rows(&["bindings", "top_scope"]),
         gist: "a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error)",
         family: "bindings",
         evaluator: Some(site(CHECK, "check_main_and_bindings")),
