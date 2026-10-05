@@ -1100,10 +1100,11 @@ crates/hale-codegen/tests/release_two_parents.rs#0 ef45ee6209ff2c6e
 crates/hale-codegen/tests/replay_asyncio.rs#0 54fdacb60d7cfd77
 crates/hale-codegen/tests/replay_asyncio.rs#1 0576d42781aa84e9
 crates/hale-codegen/tests/replay_canceled_run.rs#0 678d19f49c43f9f5
-crates/hale-codegen/tests/replay_canceled_run.rs#2 3a362a43162c3f7d
-crates/hale-codegen/tests/replay_canceled_run.rs#4 3a362a43162c3f7d
-crates/hale-codegen/tests/replay_canceled_run.rs#5 66fddf3c588649b0
-crates/hale-codegen/tests/replay_canceled_run.rs#6 ecc12e0a0e15596c
+crates/hale-codegen/tests/replay_canceled_run.rs#2 737b1f8c8ed60968
+crates/hale-codegen/tests/replay_canceled_run.rs#3 3a362a43162c3f7d
+crates/hale-codegen/tests/replay_canceled_run.rs#5 3a362a43162c3f7d
+crates/hale-codegen/tests/replay_canceled_run.rs#6 66fddf3c588649b0
+crates/hale-codegen/tests/replay_canceled_run.rs#7 ecc12e0a0e15596c
 crates/hale-codegen/tests/replay_determinism.rs#0 4ff23f87ca9a42ec
 crates/hale-codegen/tests/replay_ingress.rs#10 ba3d943f9e5d705f
 crates/hale-codegen/tests/replay_ingress.rs#12 82ec73bcc9d9adc1

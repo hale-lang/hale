@@ -1121,10 +1121,13 @@ subscriptions (routed to X), its `birth()` and a cooperative
 child's inline `run()`, and the params bracket and its settle, so
 a failure a nested child raises during the initialization is
 delivered on the worker at settle. The instantiating thread then
-finishes the instantiation (the synthetic fields, the field's own
-subscriptions and its `birth()`, still on the instantiating
-thread) and posts the field's `run()` to X behind the job, as
-before. An override written at the literal is evaluated on the
+finishes the instantiation (the synthetic fields and the field's
+own subscriptions), posts the field's own birth step (its
+`birth()`, birth-epoch closures and `birth_check`, lowered into
+`__pool_birth_<LocusName>`) to X as a second job and waits for it
+the same way (§ "Lifecycle obligations", line 3), and posts the
+field's `run()` to X behind both, as before. The three are X's
+jobs in that order: init, birth, run. An override written at the literal is evaluated on the
 instantiating thread before the post, as for a pinned locus. A
 delivery to the subtree during the initialization is X's own: it
 runs on the worker, at a yield of the initialization or after it.
@@ -2899,7 +2902,14 @@ in the RECORDED order (Phase 4): dequeued cells that arrive ahead
 of their recorded turn are held per-consumer and released in
 order, with a bounded hold (1s) after which the oldest held cell
 is released and the miss counted, so a genuinely divergent replay
-reports rather than deadlocks. A run its child's reclaim canceled
+reports rather than deadlocks. A job posted to a pool is a queued
+cell of its own and so a recorded start: a consume of delivery
+identity 0 whose target is the locus it starts, matched by the gate
+against a recorded 0 slot. A pool-placed root posts three, each
+with its own slot in posting order — its initialization, its own
+birth step (decision line 3) and its `run()` — and a `run()` posted
+by any other child is one more; a replay consumes them in that
+order. A run its child's reclaim canceled
 in the queue (decision line 19) is dropped before the gate compares
 it, as the recording dropped it, with no consume; a live run the
 gate holds keeps its retention on the child and is admitted only
