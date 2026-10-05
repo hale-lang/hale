@@ -469,15 +469,11 @@ fn corpus_run_path(name: &str) -> hale_types::lifecycle::project::RunPath {
 /// run shows these and nothing else, so when the fix lands the entry
 /// fails and goes.
 const PLAN_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
-    // The producer reads a closure's epoch only from its `epoch` clause,
-    // so a closure with none (dissolve, the default: spec/runtime.md)
-    // owes no dissolve-epoch closure and no failure delivery for it in
-    // the plan. The runtime raises and delivers it as C37 says.
-    (
-        "03c-closure-bubbled",
-        "C37",
-        &["no plan on the run's path: the path fails CheckerL at Dissolve (held false), and the plan has no delivery row for it"],
-    ),
+    // The plan orders a statement-position literal's teardown before its
+    // owner's reclaim completes, not before the end of the body whose
+    // statement built it: a run that exits inside CheckerL's dissolve,
+    // in AuditL's run(), is still owed AuditL's drain and dissolve.
+    ("03c-closure-bubbled", "C13", &["missing: AuditL.Drain", "missing: AuditL.Dissolve"]),
 ];
 
 /// Build one fixture to a unique temp binary and run it under the

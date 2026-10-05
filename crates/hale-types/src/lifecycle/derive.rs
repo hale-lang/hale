@@ -890,19 +890,17 @@ impl Facts {
                     }
                 }
                 LocusMember::Closure(c) => {
-                    for clause in &c.clauses {
-                        if let hale_syntax::ast::ClosureClause::Epoch(e) = clause {
-                            f.closure_epochs.insert(match e {
-                                hale_syntax::ast::EpochSpec::Tick => Epoch::Tick,
-                                hale_syntax::ast::EpochSpec::Duration(_) => Epoch::Duration,
-                                hale_syntax::ast::EpochSpec::Birth => Epoch::Birth,
-                                hale_syntax::ast::EpochSpec::Dissolve => Epoch::Dissolve,
-                                hale_syntax::ast::EpochSpec::Explicit | hale_syntax::ast::EpochSpec::Inline => {
-                                    Epoch::Inline
-                                }
-                            });
-                        }
-                    }
+                    // The AST's one rule (`ClosureDecl::epoch`: the
+                    // clause, dissolve when there is none), which the
+                    // checker and codegen read too: a closure with no
+                    // `epoch` clause owes what `epoch dissolve` owes.
+                    f.closure_epochs.insert(match c.epoch() {
+                        hale_syntax::ast::EpochSpec::Tick => Epoch::Tick,
+                        hale_syntax::ast::EpochSpec::Duration(_) => Epoch::Duration,
+                        hale_syntax::ast::EpochSpec::Birth => Epoch::Birth,
+                        hale_syntax::ast::EpochSpec::Dissolve => Epoch::Dissolve,
+                        hale_syntax::ast::EpochSpec::Explicit | hale_syntax::ast::EpochSpec::Inline => Epoch::Inline,
+                    });
                 }
                 LocusMember::BirthCheck(_) => f.birth_check = true,
                 LocusMember::Failure(_) => f.handles = true,
