@@ -1072,8 +1072,9 @@ on a pinned thread that thread's mailbox (a yield on a pool
 worker drains neither, and neither does this wait). So a nested
 body that waits during the initialization for a reply from a
 subscriber on the instantiating thread gets it. Then it finishes the instantiation (the
-synthetic fields, the failure route, the locus's own
-subscriptions) and releases the thread (`lotus_pinned_start_go`)
+locus's own subscriptions; its synthetic fields and failure
+route were stored before the thread was created, so the
+initialization never reads one unset) and releases the thread (`lotus_pinned_start_go`)
 into `birth()` and the rest of its lifecycle, and continues. An
 override written at the literal (`Worker { started:
 pthread_self() }`) is the instantiating code's: it is evaluated
@@ -1112,9 +1113,9 @@ subscriptions (routed to X), its `birth()` and a cooperative
 child's inline `run()`, and the params bracket and its settle, so
 a failure a nested child raises during the initialization is
 delivered on the worker at settle. The instantiating thread then
-finishes the instantiation (the synthetic fields, the field's own
-subscriptions and its `birth()`, still on the instantiating
-thread) and posts the field's `run()` to X behind the job, as
+finishes the instantiation (the field's own subscriptions and its
+`birth()`, still on the instantiating thread; its synthetic fields
+were stored before the post) and posts the field's `run()` to X behind the job, as
 before. An override written at the literal is evaluated on the
 instantiating thread before the post, as for a pinned locus. A
 delivery to the subtree during the initialization is X's own: it

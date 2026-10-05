@@ -322,6 +322,20 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    until it returns. See § Birth order is load-bearing.
 8. Expression returns the locus handle.
 
+**The instance before its params.** Step 1 can already reach the
+locus being built: a default's child is instantiated inside the
+literal (its `run()` inline, step 7), and an `I{}` it births
+bubbles to this locus when this locus is the accepting ancestor.
+So the locus's own state is initialized before step 1, as soon as
+its region exists, before anything can reach it: its accepted
+children (`self.children`, empty), its restart, quarantine and
+drain state, its failure route and its owner link. Nothing later
+in the instantiation resets it. A child accepted during step 1
+stays in `self.children` and is torn down with the locus, like
+any other accepted child. The params themselves follow step 1's
+order: a field is its value once its turn comes, whatever an
+`accept` wrote to it before.
+
 **Accept bubbling.** The owner in step 2 need not be the direct
 parent. An `I{}` instantiated anywhere in a subtree bubbles to
 the nearest enclosing ancestor that declares `accept(I)`

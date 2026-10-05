@@ -1020,14 +1020,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
 
-        // Reset admission before publishing this incarnation to any
-        // worker. Recycled owner and deferred slots carry the old claim.
-        let reclaim_claim = self.builder.build_struct_gep(
-            info.struct_ty, self_ptr, info.reclaim_claimed_field_idx, "reclaim.claim.init",
-        ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.build_store(reclaim_claim, self.context.i64_type().const_zero())
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         // First — initialize the synthetic `__arena` field
         // (struct slot 0) with a fresh arena. Allocations made
         // on behalf of this locus during the rest of
@@ -1120,12 +1112,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 (AcquireStrategy::Fresh, None)
             };
 
-        // Recpool-strategy bookkeeping that must outlive this
-        // block: we acquire the arena here (so __arena can be set
-        // right after), but the child's __recpool_release_pool /
-        // __recpool_release_kind stores are deferred until after
-        // the unconditional zero-init pass further down (which
-        // would otherwise clobber them).
+        // Recpool-strategy bookkeeping: the parent recpool the arena
+        // came from and its release kind, which the header stores in
+        // the child's `__recpool_release_pool` / `__recpool_release_kind`.
         let mut pending_recpool_release: Option<(
             inkwell::values::BasicValueEnum,
             u64,
@@ -1353,8 +1342,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("recpool acquire returns ptr");
-                // Defer the child-side stores so the zero-init
-                // pass below doesn't overwrite them.
+                // The header stores the child-side release stash.
                 pending_recpool_release = Some((parent_recpool, kind_const));
                 cell_arena
             }
@@ -1371,6 +1359,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(arena_field, new_arena)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // The header, before anything can reach the instance (F.40 phase
+        // 3, a classified correction): before the owner singleton below
+        // publishes it, before its pointer is handed to the observer, the
+        // runtime or a child, and before any param is built. A params
+        // default's child runs inside this literal and can reach it —
+        // through the singleton, or the parent pointer threaded down — and
+        // bubble a child into its children list; nothing after the params
+        // stores a header field again, so that child stays accepted and is
+        // torn down with this instance. The failure route is the one the
+        // params loop leaves unchanged (it restores every context it
+        // swaps).
+        let route = self.resolve_failure_route(locus_name);
+        self.emit_instance_header(&info, self_ptr, locus_name, !is_bare_stmt, route, pending_recpool_release)?;
 
         // Interest-based ownership #2: if THIS locus is a bubble owner —
         // a SingletonConst `A` that some deeper site resolves to — stash
@@ -1523,23 +1525,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the parent's allocator outlives the child (F.4 depth-
         // first cascade: child dissolves first; parent dissolves
         // its own slot afterward).
-        // v1.x-4b: zero-init the synthetic __slot_borrowed_mask
-        // BEFORE the slot loop, whose borrow branch ORs bits into it.
-        {
-            let sbm_zero = self.context.i64_type().const_zero();
-            let sbm_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    info.slot_borrowed_mask_field_idx,
-                    &format!("{}.__slot_borrowed_mask.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(sbm_ptr, sbm_zero)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        }
+        // v1.x-4b: `__slot_borrowed_mask` was zeroed with the header,
+        // before this loop, whose borrow branch ORs bits into it.
         for slot in &info.capacity_slots {
             let slot_field_ptr = self
                 .builder
@@ -2168,54 +2155,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // arena ptr; arena_alloc's lookup prefers an override over
         // both `current_self` (the parent, here) and the program
         // global.
-        // F.29 follow-up: zero-init __locus_ref_owned_mask BEFORE
-        // the field-init loop, so the OR-sets that fire when a
-        // LocusRef-typed field is initialized via a locus literal
-        // aren't clobbered by a later zero-init pass. The cascade
-        // emitters read this mask at teardown; bits set here
-        // survive past the loop to flag parent-owned children.
-        {
-            let i64_t_zero = self.context.i64_type();
-            let zero_mask = i64_t_zero.const_int(0, false);
-            let lrom_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    info.locus_ref_owned_mask_field_idx,
-                    &format!(
-                        "{}.__locus_ref_owned_mask.ptr", locus_name
-                    ),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(lrom_ptr, zero_mask)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        }
-        // GH #871: same rule for the per-field
-        // `__owned_child_reclaim_<f>` slots — NULL before the loop
-        // so a field the parent does not own leaves the cascade
-        // nothing to call, and the stores the loop makes survive it.
-        {
-            let ptr_t_zero = self.context.ptr_type(AddressSpace::default());
-            for (fname, idx) in info.owned_child_reclaim_field_idxs.iter() {
-                let slot = self
-                    .builder
-                    .build_struct_gep(
-                        info.struct_ty,
-                        self_ptr,
-                        *idx,
-                        &format!(
-                            "{}.{}.__owned_child_reclaim.ptr",
-                            locus_name, fname
-                        ),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_store(slot, ptr_t_zero.const_null())
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-        }
+        // `__locus_ref_owned_mask` and the `__owned_child_reclaim_<f>`
+        // slots were zeroed with the header, so the bits and impls the
+        // loop records survive it.
         let prev_arena_override = self.current_arena_override;
         self.current_arena_override = Some(new_arena.into_pointer_value());
         // F.31 (2026-05-23): if we're instantiating the main
@@ -3297,385 +3239,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // function exit (after the run_bb code that consumes it
         // — see end of fn + the pinned-branch early-return).
 
-        // Zero-init the synthetic children-tracker fields if this
-        // locus iterates `self.children`: __children starts as a
-        // NULL heap pointer, __child_count and __child_cap at 0.
-        // lotus_children_push lazily allocates the buffer on the
-        // first accept. The buffer slots themselves are written on
-        // accept dispatch.
-        if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) = (
-            info.children_field_idx,
-            info.child_count_field_idx,
-            info.child_cap_field_idx,
-        ) {
-            let i64_t = self.context.i64_type();
-            let zero = i64_t.const_int(0, false);
-            let null_ptr = self
-                .context
-                .ptr_type(AddressSpace::default())
-                .const_null();
-            let arr_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    arr_idx,
-                    &format!("{}.children.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(arr_ptr, null_ptr)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let cnt_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    cnt_idx,
-                    &format!("{}.child_count.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(cnt_ptr, zero)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let cap_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    cap_idx,
-                    &format!("{}.child_cap.ptr", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(cap_ptr, zero)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        }
+        // The header was stored before the params (`emit_instance_header`,
+        // right after the arena); nothing here writes it again, so a child
+        // the params accepted stays accepted.
 
-        // m40: zero-init the synthetic __restart_count field.
-        // Always present on every locus struct so the
-        // `restart(child)` recovery primitive can bump it
-        // without first checking whether the locus opted in.
-        // Cap of 2 attempts per locus lifetime — past that,
-        // restart() returns false and the violation falls
-        // through to the parent's collapse path.
-        let rc_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.restart_count_field_idx,
-                &format!("{}.__restart_count.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let zero = self.context.i64_type().const_int(0, false);
-        self.builder
-            .build_store(rc_ptr, zero)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // Init `__restart_bound` to the DEFAULT cap, so a locus
-        // supervised by a plain `restart(c)` keeps exactly its
-        // previous behaviour. `restart(c) for N` overwrites this
-        // before restarting.
-        let rb_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.restart_bound_field_idx,
-                &format!("{}.__restart_bound.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(
-                rb_ptr,
-                self.context
-                    .i64_type()
-                    .const_int(crate::DEFAULT_RESTART_BOUND, false),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         // GH #1077: one live drain observer more, if this locus's code
         // reads `draining` (its arena destroy counts it out).
         self.emit_drain_observer_count(locus_name, 1)?;
-        // GH #1069: is this instance held by something that reclaims
-        // it later? Everything but a bare statement literal is — a
-        // param field, a binding, a returned or expression-position
-        // value. A failed child that is held keeps its memory until
-        // that owner's teardown.
-        let held_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.held_by_owner_field_idx,
-                &format!("{}.__held_by_owner.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(
-                held_ptr,
-                self.context.i64_type().const_int(u64::from(!is_bare_stmt), false),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // m41: zero-init the synthetic __quarantined flag.
-        let q_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.quarantined_field_idx,
-                &format!("{}.__quarantined.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(q_ptr, zero)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // m45: zero-init the synthetic __restart_in_place_pending
-        // flag. restart_in_place(c) sets it to 1; the rerun
-        // branch in __birth_closures reads + clears it.
-        let rip_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.restart_in_place_pending_field_idx,
-                &format!("{}.__restart_in_place_pending.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(rip_ptr, zero)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // v1.x-VIOLATE (F.27): zero-init the synthetic
-        // __drain_requested flag. `violate NAME;` sets it to 1;
-        // `self.draining` reads it back as a Bool.
-        let dr_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.drain_requested_field_idx,
-                &format!("{}.__drain_requested.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(dr_ptr, zero)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // v1.x-4b: `__slot_borrowed_mask` is zero-init'd BEFORE the
-        // capacity-slot loop (see the block right above it). It used
-        // to be zeroed here, after slot init, which clobbered the bit
-        // the borrow branch had just OR'd in — so a child whose slot
-        // was borrowed from an `as_parent_for` parent destroyed the
-        // parent's allocator at its own teardown, and the parent
-        // destroyed it again (2026-09-13: surfaced once accepting
-        // owners reclaimed their children on every path).
-        // F.29 follow-up: __locus_ref_owned_mask is zero-init'd
-        // earlier — see the matching block right before the
-        // field-init loop. The bits OR'd in by the field-init
-        // loop must survive past it; doing the zero-init here
-        // would clobber them.
-
-        // v1.x-3: init the three synthetic recpool fields.
-        //
-        // `__recpool` defaults to null and is overwritten below if
-        // this locus is Recognition-class with a shipped sub-mode.
-        // `__recpool_release_pool` + `__recpool_release_kind` stay
-        // zero at instantiation; they're set later by the parent's
-        // accept step when this locus is being acquired from a
-        // recognition pool (so that at dissolve we route through
-        // `lotus_recpool_*_release` instead of arena_destroy).
-        let ptr_t_local = self.context.ptr_type(AddressSpace::default());
-        let null_ptr = ptr_t_local.const_null();
-        let recpool_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.recpool_field_idx,
-                &format!("{}.__recpool.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(recpool_ptr, null_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let release_pool_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.recpool_release_pool_field_idx,
-                &format!("{}.__recpool_release_pool.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(release_pool_ptr, null_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let release_kind_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.recpool_release_kind_field_idx,
-                &format!("{}.__recpool_release_kind.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(release_kind_ptr, zero)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // v1.x-3: if this locus declares Recognition with a shipped
-        // sub-mode, allocate the recpool now. Subsequent child
-        // accepts read this handle through `parent.__recpool` and
-        // route the child's arena through `lotus_recpool_*_acquire`.
-        // The recpool is destroyed inside `emit_locus_arena_destroy`
-        // alongside the arena teardown, after the F.4 cascade has
-        // dissolved every child.
-        if let ProjectionClass::Recognition(Some(params)) = info.projection_class {
-            let create_fn_name = match params.sub_mode {
-                RecognitionSubMode::FixedCell => Some("lotus_recpool_fixed_create"),
-                RecognitionSubMode::SharedSlab => Some("lotus_recpool_slab_create"),
-                // Spillover + SummaryOnly are typecheck-rejected
-                // before codegen; defense: skip allocation here so
-                // a future code path that gets through doesn't
-                // crash on a missing extern.
-                RecognitionSubMode::Spillover | RecognitionSubMode::SummaryOnly => None,
-            };
-            if let Some(create_fn_name) = create_fn_name {
-                let create_fn = self
-                    .module
-                    .get_function(create_fn_name)
-                    .expect("recpool create extern declared");
-                // cap_count + cell_bytes are both `size_t` — build/narrow at
-                // the target size_t width (i32 wasm32).
-                let cap_const =
-                    self.usize_type().const_int(params.cap, false);
-                // Cell stride is derived from the parent's accept-
-                // method param type. v1 ships single-accept-per-
-                // locus; when multi-accept lands, this becomes a
-                // max-of-sizeof over the accept-type union.
-                // Empty accept set on a Recognition locus would be
-                // a typecheck error in principle; defense: pass
-                // size_of(unit) so the recpool allocates a degenerate
-                // block rather than crashing.
-                let bytes_const = match &info.accept_param {
-                    Some((_, child_locus_name)) => {
-                        let child_info = self
-                            .user_loci
-                            .get(child_locus_name)
-                            .expect("accept target locus known");
-                        child_info
-                            .struct_ty
-                            .size_of()
-                            .expect("child locus struct size known")
-                    }
-                    None => self.context.i64_type().const_zero(),
-                };
-                let bytes_const = self.size_to_usize(bytes_const)?;
-                let pool = self
-                    .builder
-                    .build_call(
-                        create_fn,
-                        &[cap_const.into(), bytes_const.into()],
-                        &format!("{}.__recpool.create", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("recpool_create returns ptr");
-                self.builder
-                    .build_store(recpool_ptr, pool)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-        }
-
-        // v1.x-3: if we acquired this locus's arena from a parent's
-        // recpool, restore the child-side release stash that the
-        // zero-init above cleared. Now `emit_locus_arena_destroy`
-        // will route teardown through the matching recpool release
-        // fn (kind=1 fixed, kind=2 slab) instead of arena_destroy.
-        if let Some((parent_recpool, kind_const)) = pending_recpool_release {
-            self.builder
-                .build_store(release_pool_ptr, parent_recpool)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(
-                    release_kind_ptr,
-                    self.context.i64_type().const_int(kind_const, false),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        }
-
-        // m42: init the synthetic __parent_self / __parent_on_failure
-        // fields. Resolve the (parent_self, on_failure_fn) pair via
-        // the same routing the birth/dissolve epochs use; the bus
-        // drain loop's tick wrapper reads these later when firing
-        // tick-epoch closures (it has no static call-site context
-        // for parent routing, so we bake it onto the struct here).
-        // Loci without tick closures still pay the 16 bytes — the
-        // uniform layout is worth more than the overhead.
-        let (parent_self_val, parent_handler_val) =
-            self.resolve_failure_route(locus_name);
-        let parent_self_slot = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.parent_self_field_idx,
-                &format!("{}.__parent_self.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(parent_self_slot, parent_self_val)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let parent_handler_slot = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.parent_on_failure_field_idx,
-                &format!("{}.__parent_on_failure.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(parent_handler_slot, parent_handler_val)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // 2026-05-30: init __owner_self to null. Overwritten at accept
-        // dispatch (below, for accept'd children) with the accept'ing
-        // parent's self_ptr; stays null for non-accept'd loci.
-        let owner_self_slot = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.owner_self_field_idx,
-                &format!("{}.__owner_self.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(
-                owner_self_slot,
-                self.context.ptr_type(AddressSpace::default()).const_null(),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // GH #526 F.6: `__owner_release` starts null too; accept
-        // dispatch stores the owner type's release fn (or leaves null).
-        let owner_release_slot = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.owner_release_field_idx,
-                &format!("{}.__owner_release.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(
-                owner_release_slot,
-                self.context.ptr_type(AddressSpace::default()).const_null(),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         // m43: init each __duration_last_fire_<i> field to
         // monotonic-now so the first fire happens after the
-        // declared `N` elapses (not immediately at birth).
+        // declared `N` elapses (not immediately at birth). The one
+        // synthetic field stored after the params: it is the birth's
+        // clock, and only this instance's own duration closures read
+        // it, after its run.
         // One time::monotonic() call per duration closure —
         // a tiny cost paid only for loci that declare
         // duration epochs.
@@ -3702,24 +3278,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(slot, now)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-        }
-
-        // m46: zero each closure-accumulator slot at instantiation.
-        // The slot's type drives the zero choice (Int/Duration use
-        // i64 zero; Float/Decimal use f64 zero). Each `sum(self.X)`
-        // detected during locus-decl gave us one slot.
-        for slots in info.accumulators_per_closure.values() {
-            for (i, slot) in slots.iter().enumerate() {
-                self.zero_accumulator_slot(
-                    info.struct_ty,
-                    self_ptr,
-                    slot,
-                    &format!(
-                        "{}.__acc[{}].ptr",
-                        locus_name, i
-                    ),
-                )?;
             }
         }
 
@@ -4218,8 +3776,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // drains the deliveries routed to it, as a yield on main
             // drains main's queue. Then the thread reports its params
             // ready and waits for the instantiating thread to finish the
-            // instantiation (synthetic fields, failure route, its own
-            // registrations) before `birth()`.
+            // instantiation (its own registrations; the header was stored
+            // before this thread was created) before `birth()`.
             self.builder
                 .build_call(start.init_fn, &[thread_self.into(), start_ptr.into()], &format!("{}.params.init", locus_name))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -5641,6 +5199,149 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Interest-based ownership #2: get-or-create the internal global
+    /// An instance's header: every synthetic field the literal sets
+    /// rather than its params, stored right after the instance is
+    /// allocated and its `__arena` set, before anything can reach it
+    /// (F.40 phase 3, a classified correction; spec/semantics.md
+    /// § Locus instantiation, "The instance before its params"). The
+    /// children list is empty, the restart,
+    /// quarantine, restart-in-place and drain flags are clear (the
+    /// restart bound at its default), the recpool fields hold this
+    /// locus's own recpool (Recognition-class) and the parent recpool
+    /// its arena came from (`recpool_release`), the failure route is
+    /// `route`, the owner pointers are null until an accept stores
+    /// them, and the masks, reclaim slots, snapshot, mailbox and
+    /// accumulators are zero. `held` is `__held_by_owner`.
+    ///
+    /// Nothing after the params stores a header field again; the
+    /// fields a later step of the birth sets (an accept's owner, a
+    /// pinned locus's mailbox, the params snapshot) are written over
+    /// these zeros by that step. `__duration_last_fire_<i>` is not a
+    /// header field: it is the birth's clock, stored after the params.
+    pub(crate) fn emit_instance_header(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        held: bool,
+        route: (PointerValue<'ctx>, PointerValue<'ctx>),
+        recpool_release: Option<(inkwell::values::BasicValueEnum<'ctx>, u64)>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let zero: inkwell::values::BasicValueEnum<'ctx> = i64_t.const_zero().into();
+        let null: inkwell::values::BasicValueEnum<'ctx> = ptr_t.const_null().into();
+        let store = |cx: &Self, idx: u32, v: inkwell::values::BasicValueEnum<'ctx>, what: &str| {
+            let slot = cx
+                .builder
+                .build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{locus_name}.{what}.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            cx.builder.build_store(slot, v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok::<(), CodegenError>(())
+        };
+        // Admission: a recycled owner or deferred slot carries the old
+        // incarnation's claim.
+        store(self, info.reclaim_claimed_field_idx, zero, "__reclaim_claimed")?;
+        // The children tracker: a NULL heap buffer, count and cap 0.
+        // `lotus_children_push` allocates the buffer on the first accept.
+        if let (Some(arr), Some(cnt), Some(cap)) =
+            (info.children_field_idx, info.child_count_field_idx, info.child_cap_field_idx)
+        {
+            store(self, arr, null, "children")?;
+            store(self, cnt, zero, "child_count")?;
+            store(self, cap, zero, "child_cap")?;
+        }
+        // m40: `restart(c)` bumps the count; `restart(c) for N` rewrites
+        // the bound before restarting.
+        store(self, info.restart_count_field_idx, zero, "__restart_count")?;
+        store(
+            self,
+            info.restart_bound_field_idx,
+            i64_t.const_int(crate::DEFAULT_RESTART_BOUND, false).into(),
+            "__restart_bound",
+        )?;
+        // GH #1069: held by something that reclaims it later — everything
+        // but a bare statement literal.
+        store(self, info.held_by_owner_field_idx, i64_t.const_int(u64::from(held), false).into(), "__held_by_owner")?;
+        // m41 / m45 / F.27: quarantine, restart-in-place and drain latches.
+        store(self, info.quarantined_field_idx, zero, "__quarantined")?;
+        store(self, info.restart_in_place_pending_field_idx, zero, "__restart_in_place_pending")?;
+        store(self, info.drain_requested_field_idx, zero, "__drain_requested")?;
+        // v1.x-4b / F.29 / GH #871: the masks and reclaim slots the slot
+        // loop and the params loop OR bits and impls into.
+        store(self, info.slot_borrowed_mask_field_idx, zero, "__slot_borrowed_mask")?;
+        store(self, info.locus_ref_owned_mask_field_idx, zero, "__locus_ref_owned_mask")?;
+        for (fname, idx) in info.owned_child_reclaim_field_idxs.iter() {
+            store(self, *idx, null, &format!("{fname}.__owned_child_reclaim"))?;
+        }
+        // v1.x-3: this locus's own recpool, which the children it accepts
+        // (during its params included) acquire their arenas from, and the
+        // parent recpool its own arena came from.
+        let recpool = match info.projection_class {
+            ProjectionClass::Recognition(Some(params)) => {
+                let create = match params.sub_mode {
+                    RecognitionSubMode::FixedCell => Some("lotus_recpool_fixed_create"),
+                    RecognitionSubMode::SharedSlab => Some("lotus_recpool_slab_create"),
+                    // Typecheck-rejected before codegen.
+                    RecognitionSubMode::Spillover | RecognitionSubMode::SummaryOnly => None,
+                };
+                match create {
+                    Some(create) => {
+                        let create_fn = self.module.get_function(create).expect("recpool create extern declared");
+                        let cap = self.usize_type().const_int(params.cap, false);
+                        // The cell stride is the accepted child's struct.
+                        let bytes = match &info.accept_param {
+                            Some((_, child)) => self
+                                .user_loci
+                                .get(child)
+                                .expect("accept target locus known")
+                                .struct_ty
+                                .size_of()
+                                .expect("child locus struct size known"),
+                            None => i64_t.const_zero(),
+                        };
+                        let bytes = self.size_to_usize(bytes)?;
+                        self.builder
+                            .build_call(create_fn, &[cap.into(), bytes.into()], &format!("{locus_name}.__recpool.create"))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("recpool_create returns ptr")
+                    }
+                    None => null,
+                }
+            }
+            _ => null,
+        };
+        store(self, info.recpool_field_idx, recpool, "__recpool")?;
+        let (release_pool, release_kind) = match recpool_release {
+            Some((pool, kind)) => (pool, i64_t.const_int(kind, false).into()),
+            None => (null, zero),
+        };
+        store(self, info.recpool_release_pool_field_idx, release_pool, "__recpool_release_pool")?;
+        store(self, info.recpool_release_kind_field_idx, release_kind, "__recpool_release_kind")?;
+        // m42: the failure route the tick / duration wrappers and a
+        // restart's re-birth read.
+        store(self, info.parent_self_field_idx, route.0.into(), "__parent_self")?;
+        store(self, info.parent_on_failure_field_idx, route.1.into(), "__parent_on_failure")?;
+        // Set by the accept step, for an accepted child.
+        store(self, info.owner_self_field_idx, null, "__owner_self")?;
+        store(self, info.owner_release_field_idx, null, "__owner_release")?;
+        // Set after the params, for a restart-in-place target.
+        store(self, info.built_params_field_idx, null, "__built_params")?;
+        // Set before the params, for a pinned locus whose tree subscribes.
+        if let Some(mb) = info.mailbox_field_idx {
+            store(self, mb, null, "__mailbox")?;
+        }
+        // m46: closure accumulators.
+        for slots in info.accumulators_per_closure.values() {
+            for (i, slot) in slots.iter().enumerate() {
+                self.zero_accumulator_slot(info.struct_ty, self_ptr, slot, &format!("{locus_name}.__acc[{i}].ptr"))?;
+            }
+        }
+        Ok(())
+    }
+
     /// `@__owner_singleton_<A>` that stashes a SingletonConst owner `A`'s
     /// self-pointer. Created lazily (ptr, internal linkage, null init) so
     /// the store (at A's instantiation) and every bubble-site load agree
@@ -6139,8 +5840,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .into_pointer_value()
         };
 
-        // Synthetic-field init: __arena, __owner_self=A, __parent_self,
-        // __parent_on_failure, __locus_ref_owned_mask=0.
+        // The header, as every instantiation stores it (a bare statement:
+        // not held; no failure route), then `__owner_self = A`. It used
+        // to store five of its fields here and leave the rest as the bump
+        // allocator handed them over.
         let store_ptr_field = |cx: &Self,
                                idx: u32,
                                val: inkwell::values::BasicValueEnum<'ctx>,
@@ -6156,44 +5859,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Ok(())
         };
         let null = ptr_t.const_null();
-        store_ptr_field(self, child_info.reclaim_claimed_field_idx, i64_t.const_zero().into(), "xpool.reclaim.claim.set")?;
         store_ptr_field(self, child_info.arena_field_idx, child_arena.into(), "xpool.arena.set")?;
+        self.emit_instance_header(&child_info, child_ptr, child_locus, false, (null, null), None)?;
         store_ptr_field(self, child_info.owner_self_field_idx, a_self.into(), "xpool.owner.set")?;
-        store_ptr_field(self, child_info.parent_self_field_idx, null.into(), "xpool.parent.set")?;
-        store_ptr_field(
-            self,
-            child_info.parent_on_failure_field_idx,
-            null.into(),
-            "xpool.parent_of.set",
-        )?;
-        {
-            let mask_slot = self
-                .builder
-                .build_struct_gep(
-                    child_info.struct_ty,
-                    child_ptr,
-                    child_info.locus_ref_owned_mask_field_idx,
-                    "xpool.mask.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(mask_slot, i64_t.const_int(0, false))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        }
-        // GH #871: NULL the per-field owned-child reclaim slots too.
-        // The zero mask above already keeps the cascade away from
-        // them, but a wire-built child's struct comes off the bump
-        // allocator uninitialized and a stale pointer in a slot the
-        // cascade indirect-calls is not a thing to leave lying
-        // around.
-        for (fname, idx) in child_info.owned_child_reclaim_field_idxs.iter() {
-            store_ptr_field(
-                self,
-                *idx,
-                null.into(),
-                &format!("xpool.{}.owned_child_reclaim.set", fname),
-            )?;
-        }
 
         // Deserialize the marshaled params into I's param slots. The
         // wire deserializer allocates String/Bytes into the program-
