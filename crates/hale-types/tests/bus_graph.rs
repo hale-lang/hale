@@ -927,6 +927,69 @@ fn main() { App { }; }
     assert_eq!(on_graph, expected);
 }
 
+/// F.40 phase 3, C5: lowering derives no bus graph of the user's
+/// program. Its graph is the snapshot's rows, each found in the merged
+/// program through the view's correspondence and keyed by the wire the
+/// topic rewrite gave it, followed by the stdlib's rows. A topic
+/// published by its name and subscribed by its wire subject is two
+/// subjects of the snapshot's graph, each with one end, and one subject
+/// of lowering's, with both: the gates are judged over the rows lowering
+/// sees, so the subject is a direct call there.
+#[test]
+fn lowerings_graph_is_the_snapshots_rows_through_the_correspondence() {
+    use hale_types::correspondence::Image;
+    let s = snapshot_of(
+        r#"
+type Tick { n: Int = 0; }
+topic Beat { payload: Tick; subject: "b.beat"; }
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe "b.beat" as on_beat of type Tick; }
+    fn on_beat(t: Tick) { self.seen = t.n; }
+}
+locus Clock {
+    bus { publish Beat; }
+    run() { Beat <- Tick { n: 1 }; }
+}
+main locus App {
+    params { w: Worker = Worker { }; c: Clock = Clock { }; }
+}
+fn main() { App { }; }
+"#,
+    );
+    let snap = s.demand_bus_graph().unwrap_or_else(|_| panic!("the bus graph is blocked"));
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("the lowering view is blocked"));
+
+    // The snapshot's graph: the subject as each site writes it.
+    let keys: Vec<&str> = snap.subjects.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["Beat", "b.beat"]);
+    let ends = |k: &str| (snap.subjects[k].publishers.len(), snap.subjects[k].subscribers.len());
+    assert_eq!((ends("Beat"), ends("b.beat")), ((1, 0), (0, 1)));
+
+    // Lowering's: the snapshot's rows, in order, by the same identities,
+    // the publish keyed by the topic rewrite's wire.
+    let user = |id: hale_syntax::ast::NodeId| matches!(view.correspondence.image(id), Some(Image::Checked(_)));
+    let ids = |rows: &[hale_types::bus_graph::PublishRow]| rows.iter().map(|r| r.id.0).collect::<Vec<_>>();
+    let lowered_pubs: Vec<_> = view.bus.rows.publishes.iter().filter(|r| user(r.id)).cloned().collect();
+    assert_eq!(ids(&lowered_pubs), ids(&snap.rows.publishes));
+    assert_eq!(lowered_pubs.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["b.beat"]);
+    let lowered_subs: Vec<u32> = view.bus.rows.subscribes.iter().filter(|r| user(r.id)).map(|r| r.id.0).collect();
+    assert_eq!(lowered_subs, snap.rows.subscribes.iter().map(|r| r.id.0).collect::<Vec<_>>());
+    // The stdlib's follow, each a stdlib site of the merged program.
+    let stdlib: Vec<&str> = view.bus.rows.subscribes.iter().filter(|r| !user(r.id)).map(|r| r.key.as_str()).collect();
+    assert!(!stdlib.is_empty() && stdlib.iter().all(|k| *k == "log.**"), "{stdlib:?}");
+    let stdlib_ids = view.bus.rows.publishes.iter().map(|r| r.id).chain(view.bus.rows.subscribes.iter().map(|r| r.id));
+    assert!(stdlib_ids
+        .filter(|id| !user(*id))
+        .all(|id| matches!(view.correspondence.image(id), Some(Image::Stdlib(_)))));
+
+    // One subject with both ends, judged over the rows lowering sees.
+    let info = view.bus.subjects.get("b.beat").expect("the wire subject is in lowering's graph");
+    assert_eq!((info.publishers.len(), info.subscribers.len()), (1, 1));
+    assert!(info.direct_call_eligible && info.payload_flat, "{info:?}");
+    assert!(!view.bus.subjects.contains_key("Beat"));
+}
+
 // --- placement labels read the placement table (F.40 phase 3, P1 3 of 6) ---
 //
 // The rows are the placement correspondence's (`notes/f40-placement-

@@ -58,12 +58,16 @@ use hale_graph::ids::SiteId;
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
 
+use crate::ownership_graph::OwnershipRows;
 use crate::snapshot::Snapshot;
 
 /// The lifetime rule and the key notice over `programs`, minted with
-/// `ids` (which declaration a returned name is).
-pub fn borrow_lifetime_diags(programs: &[&Program], ids: &Snapshot) -> Vec<Diag> {
-    borrow_lifetime_diags_with_renames(programs, ids, &[])
+/// `ids` (which declaration a returned name is). Whether a locus accepts
+/// the child a bare literal births is the ownership rows' relation
+/// (`OwnershipRows::accepts_ancestor`): the snapshot's graph's rows, or a
+/// bundle's own walk where no snapshot holds it.
+pub fn borrow_lifetime_diags(programs: &[&Program], ids: &Snapshot, ownership: &OwnershipRows) -> Vec<Diag> {
+    borrow_lifetime_diags_with_renames(programs, ids, &[], ownership)
 }
 
 /// The same, resolving an imported seed's `alias::Name` to the merged
@@ -72,11 +76,12 @@ pub fn borrow_lifetime_diags_with_renames(
     programs: &[&Program],
     ids: &Snapshot,
     renames: &[(Vec<String>, String)],
+    ownership: &OwnershipRows,
 ) -> Vec<Diag> {
     let world = World::gather(programs, renames);
     let mut diags = Vec::new();
     for p in programs {
-        let mut w = Walk { world: &world, ids, diags: &mut diags, ctx: None, calls: &world.calls };
+        let mut w = Walk { world: &world, ids, ownership, diags: &mut diags, ctx: None, calls: &world.calls };
         w.items(&p.items);
     }
     diags.extend(keyed_in_birth(programs));
@@ -91,8 +96,6 @@ pub fn borrow_lifetime_diags_with_renames(
 struct LocusFacts {
     /// param name -> the declared type's name (last path segment)
     params: BTreeMap<String, String>,
-    /// the child types this locus accepts
-    accepts: BTreeSet<String>,
     /// the fns a `subscribe … as h` names
     handlers: BTreeSet<String>,
     /// param fields mentioned as `self.<f>` anywhere but `birth()`: a
@@ -167,13 +170,6 @@ impl World {
                                         if let Some(n) = type_name(t) {
                                             f.params.insert(pd.name.name.clone(), n);
                                         }
-                                    }
-                                }
-                            }
-                            LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Accept => {
-                                if let Some(p) = lc.params.first() {
-                                    if let Some(n) = type_name(&p.ty) {
-                                        f.accepts.insert(n);
                                     }
                                 }
                             }
@@ -842,6 +838,8 @@ struct Walk<'a> {
     world: &'a World,
     /// the identities the walked programs were minted with
     ids: &'a Snapshot,
+    /// which locus accepts which child (`accepts_ancestor`)
+    ownership: &'a OwnershipRows,
     diags: &'a mut Vec<Diag>,
     ctx: Option<Ctx>,
     calls: &'a [CallSite],
@@ -1262,9 +1260,7 @@ impl<'a> Walk<'a> {
             Position::BareStmt => {
                 let accepted = ctx
                     .and_then(|c| c.locus.as_ref())
-                    .and_then(|l| self.world.loci.get(l))
-                    .map(|f| f.accepts.contains(literal_locus))
-                    .unwrap_or(false);
+                    .is_some_and(|l| self.ownership.accepts_ancestor(l, literal_locus));
                 if accepted { Holder::SelfOwned } else { Holder::Frame(depth) }
             }
         }

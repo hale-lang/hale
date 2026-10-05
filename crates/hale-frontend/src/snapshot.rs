@@ -1576,7 +1576,8 @@ impl Snapshot {
                 let own = diags.len();
                 let bundle = self.bundle();
                 if self.config.build_rules {
-                    diags.extend(hale_types::build_rule_diags(&bundle));
+                    let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                    diags.extend(hale_types::build_rule_diags(&bundle, &ownership.rows));
                 }
                 if self.config.alloc_advisory {
                     let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
@@ -1724,6 +1725,11 @@ impl Snapshot {
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+                // Lowering's scope is this one, and its bus and ownership
+                // graphs are these ones' rows (C5).
+                let scope = self.scope().map_err(Clone::clone)?;
+                let bus = self.demand_bus_graph().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
                 // target with no column (Windows) never reaches a snapshot.
@@ -1740,6 +1746,7 @@ impl Snapshot {
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
+                    &self.identities,
                     &self.source_map,
                     &self.import_renames,
                     self.config.api.as_deref(),
@@ -1748,6 +1755,9 @@ impl Snapshot {
                     bindings,
                     placement,
                     typed,
+                    &scope.top,
+                    bus,
+                    ownership,
                     class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;

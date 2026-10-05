@@ -19,7 +19,7 @@ use hale_syntax::{Diag, Span};
 use crate::symbol::*;
 use crate::ty::Ty;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TopScope {
     pub symbols: BTreeMap<String, TopSymbol>,
     /// F.40 phase 2.1b: the bundle's topic rows, built once here; the
