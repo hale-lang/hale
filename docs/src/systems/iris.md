@@ -105,10 +105,14 @@ $XDG_CACHE_HOME/hale/iris/<toolchain-hash>/     (or ~/.cache/…)
 ```
 
 and built there with the very compiler you are running. The
-hash covers the compiler version and every embedded byte, so a
-compiler upgrade rebuilds the observer once and a second launch
-is exec-only (`hale iris --where` prints the directory; delete
-it to force a rebuild). The observer is compiled by the same
+hash covers the compiler version and its sources, the build
+knobs set in the environment the build inherits (`HALE_DEV`, a
+sanitizer, `LOTUS_LTO`: the ones a recording's execution
+identity names), and every embedded byte, so a compiler upgrade
+rebuilds the observer once, an observer built under a sanitizer
+is never handed to a run without one, and a second launch is
+exec-only (`hale iris --where` prints the directory for the
+current environment; delete it to force a rebuild). The observer is compiled by the same
 codegen that compiled the observed program, so the wire layout
 (`crates/hale-codegen/runtime/obs_protocol.h`, pinned by
 `_Static_assert`s in the runtime and by a decoder test) can

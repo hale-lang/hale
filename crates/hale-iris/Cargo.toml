@@ -6,8 +6,13 @@ description = "The iris observer's sources, embedded so `hale iris` ships in the
 
 [dependencies]
 hale-dna = { path = "../hale-dna" }
-hale-stdlib = { path = "../hale-stdlib" }
 
 [build-dependencies]
 # The identity list and walk (F.40 phase 0 step 0.4); dependency-free.
 hale-graph = { path = "../hale-graph" }
+
+[dev-dependencies]
+# The cache key's tests hold the stdlib's embedded seeds against the
+# selection `HALE_COMPILER_SRC_HASH` folds (F.40 phase 4, I5).
+hale-graph = { path = "../hale-graph" }
+hale-stdlib = { path = "../hale-stdlib" }

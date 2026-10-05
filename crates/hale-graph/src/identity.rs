@@ -442,7 +442,7 @@ pub const IDENTITIES: &[Identity] = &[
         leaves_out: &[
             (Input::RustcVersion, "by design: two binaries of one source build one host"),
             (Input::GitCommit, "by design: the commit names no source the files do not"),
-            (Input::BuildOptions, "a gap, closed in I5: the build knobs the cache's `hale build` subprocess inherits from the environment (`HALE_DEV`, `LOTUS_NO_DEBUGINFO`, a sanitizer) are in no key"),
+            (Input::BuildOptions, "by design: this is the compiler half; `toolchain_hash` frames the options the cache's build inherits beside it"),
         ],
         producer: ("crates/hale-iris/build.rs", "main"),
         consumers: &["`toolchain_hash`"],
@@ -452,19 +452,18 @@ pub const IDENTITIES: &[Identity] = &[
     },
     Identity {
         name: "toolchain_hash",
-        identifies: "the DNA host cache's key: the compiler's sources, the stdlib and the embedded iris and DNA trees are the ones the cached host was built from",
+        identifies: "the DNA host cache's key: the compiler's sources (the stdlib among them, folded once), the options its `hale build` subprocess builds with, and the embedded iris and DNA trees are the ones the cached host was built from",
         computed: "hale iris, hale dna (per invocation)",
         fold: Fold::Fnv64,
-        covers: &[Input::CompilerVersion, Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests, Input::EmbeddedDna, Input::EmbeddedIris],
+        covers: &[Input::CompilerVersion, Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests, Input::BuildOptions, Input::EmbeddedDna, Input::EmbeddedIris],
         leaves_out: &[
-            (Input::BuildOptions, "a gap, closed in I5: the environment's build knobs are in no key, so a host cached under a sanitizer or `HALE_DEV` is served to a run without it"),
-            (Input::StdlibSeeds, "a gap, closed in I5: the stdlib is folded twice, once in `compiler_src_hash` and once as the embedded `AP_FILES`"),
+            (Input::BuildOptions, "by design: the options are the execution identity's fingerprint of the environment the subprocess inherits (`host_cache_options`), so what that fingerprint leaves out (the DWARF switch `LOTUS_NO_DEBUGINFO`, a narration or a timing, the C warnings, the linker, the cache's place) is no part of the key either"),
             (Input::RustcVersion, "by design: see `compiler_src_hash`"),
         ],
         producer: ("crates/hale-iris/src/lib.rs", "toolchain_hash"),
         consumers: &["the DNA host cache directory (`~/.cache/hale/iris/<hash>`)"],
         on_mismatch: "the cache directory is new; the host is rebuilt",
-        versioned_by: "moves with the version, the compiler's sources and every embedded byte",
+        versioned_by: "moves with the version, the compiler's sources, the inherited options and every embedded byte",
         frozen: None,
     },
     Identity {

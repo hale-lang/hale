@@ -70,7 +70,7 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         Some((name, path)) => (name, path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string()),
         None => (String::new(), String::new()),
     };
-    let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
+    let cache = hale_iris::materialize(&crate::build_env::host_cache_options()).map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
     let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(&host);
@@ -2337,7 +2337,7 @@ fn ui_cmd(args: &[String]) -> ExitCode {
     }
     let run = || -> Result<i32, String> {
         let (root, _) = project(&dir)?;
-        let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
+        let cache = hale_iris::materialize(&crate::build_env::host_cache_options()).map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
         let bin = crate::iris::ensure_built_in(&cache, hale_dna::UI_SEED, hale_dna::UI_BIN, "the surface")?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
         let _ = host_run("sync", &root, &[]);

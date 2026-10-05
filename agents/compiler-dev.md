@@ -250,11 +250,14 @@ The `hale` binary carries source that only a rebuild refreshes:
   after editing `dna/**`, rebuild before testing or you measure the
   old core. Compare: `hale dna --embedded-digest --from-tree <dir>`.
 - **iris**: `crates/hale-iris/src/lib.rs`. The cache key
-  (`toolchain_hash`) covers the version and embedded bytes, **not
-  codegen or the runtime**, and a cached binary is exec'd without a
-  staleness check. After a codegen or runtime change, delete
-  `~/.cache/hale/iris/` before trusting `hale iris` / `hale dna`
-  (verify).
+  (`toolchain_hash`) covers the version, the identity-covered
+  compiler sources (`HALE_COMPILER_SRC_HASH`: codegen, the runtime,
+  the stdlib seeds, the CLI, the manifests), the options fingerprint
+  of the `hale build` the cache runs (`HALE_DEV`, a sanitizer, LTO:
+  the knobs that subprocess inherits, F.40 phase 4, I5) and the
+  embedded bytes. A cached binary is exec'd without a staleness
+  check, so what the key leaves out (rustc, the C compiler) is the
+  reason to delete `~/.cache/hale/iris/`.
 - **spec**: `spec/*.md`, for `hale mcp`.
 
 The stale-binary warning (`check_stale_cli`, `main.rs`) runs on
