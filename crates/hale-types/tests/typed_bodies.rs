@@ -513,7 +513,8 @@ fn main() {
 /// declaration. An access through `self` is a row from inside; a free
 /// fn's has no reader; a method named on a locus is no row; a generic
 /// body has the template walk's rows only, and a receiver typed as a
-/// type parameter is none.
+/// type parameter is none; a fn param default, typed only where it is
+/// invoked and its findings discarded, has none.
 #[test]
 fn the_param_access_column_records_each_access_through_a_locus() {
     use hale_types::placement::SiteUniverse;
@@ -530,7 +531,8 @@ locus Holder<T> {
 }
 locus Gateway {
     params { s: Signer = Signer { }; p: Plain = Plain { }; }
-    fn look() -> Int { self.p.n = 2; return self.p.n + self.s.sign(1) + self.p.get(); }
+    fn look() -> Int { self.p.n = 2; return self.p.n + self.s.sign(1) + self.p.get() + self.helper(); }
+    fn helper(k: Int = self.p.n) -> Int { return k; }
 }
 fn free(p: Plain) -> Int { return p.n; }
 main locus App { params { g: Gateway = Gateway { }; h: Holder<Plain> = Holder { inner: Plain { } }; } }
@@ -586,6 +588,10 @@ fn main() { App { }; }
         ]
     );
     assert_eq!(rows(id_of(decl(p, "free"))), [row(None, "Plain", "n", Read, false)]);
+    // A fn param default is typed only at each invocation, in the
+    // caller, and that walk's findings are discarded: `self.p.n` in
+    // `helper`'s default is no row, in `helper` or at `self.helper()`.
+    assert_eq!(rows(method("Gateway", "helper")), []);
     // `self.inner` is `Holder`'s own; the template's `inner` is a `T`,
     // and the walk for `Holder_Plain` records nothing.
     assert_eq!(rows(method("Holder", "read")), [row(Some("Holder"), "Holder", "inner", Read, true)]);

@@ -14,7 +14,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `sync_inference` | Layer 1 | Canonical | derivation | `form_rows` | 0 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the domains each of its instances is called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
 | `unit_catalogue` | Layer 2 | Canonical | derivation | `close` | 0 | Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. This is a compiler API; source declarations and expression typing do not demand it yet. |
-| `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
+| `top_scope` | Layer 2 | Canonical | derivation | `build_top_scope` | 0 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
@@ -31,7 +31,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Canonical | law | `closure_event_rows` | 0 | Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep. |
 | `api_surface` | Layer 3 | Canonical | derivation | `api_surface` | 0 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form; and the role rows: every `role` declaration, every `@gated` site and the api entry's role source, with or without an `api:` entry. |
-| `sealability` | Layer 3 | Migrating | law | `record_param_access` | 1 | Which loci confine their state (`@sealed`), and which could. |
+| `sealability` | Layer 3 | Canonical | law | `record_param_access` | 0 | Which loci confine their state (`@sealed`), and which could. |
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
 | `effects` | Layer 4 | Canonical | derivation | `derive_effect_rows` | 0 | Which effect classes each fn and locus reaches (the callgraph fixpoint), the declared classes and their `causes:`/`depends:` DAG, and the certificate relating the two. |
@@ -244,17 +244,13 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Spec.** spec/units.md
 
-### `top_scope` — Migrating · derivation
+### `top_scope` — Canonical · derivation
 
 **Answers.** What every top-level name denotes: the symbol table over the merged program.
 
 **Inputs.** the merged program; import renames
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/resolve.rs` · `build_top_scope`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — `check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), the certificate report of such a bundle (`effect_certificates`, for its form rows) and `resolve_program` (the bare program's test entry, once over that program for the scope and the graphs it hands the view) rebuild it; the lowering view reads its snapshot's (F.40 phase 3, C5); every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs. *Removed when:* phase 4, when every consumer demands the scope from a snapshot: 2.3 moved every verb and the LSP, and what still builds its own is the test entries over a bundle or a program no snapshot holds (`check_program`, `derive_application_model`, `effect_certificates`, `resolve_program`), which phase 3 kept (C5's follow-up ruling).
+**Producer.** `crates/hale-types/src/resolve.rs` · `build_top_scope`
 
 **Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); check (type expressions: the scope's name table) (`crates/hale-types/src/check.rs` · `&top.names`); demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (the snapshot's scope, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); resolved program (lowering: the snapshot's scope, handed in; its topic rows, and the stdlib's bus rows and typed-body pairs answered over it) (`crates/hale-types/src/resolved.rs` · `top: &TopScope`); resolve_program (the bare program's test entry: once over that program) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (definition, placement, the allocation survey: the snapshot's scope) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`)
 
@@ -263,6 +259,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - one namespace decision: module-nested declarations and imported seeds resolve the same way everywhere
 - the editor's scope over a seed with a hole (`demand_editor_scope`) is the same producer over the members that parsed, counted as this family; the whole scope, the check and everything after it stay blocked, so no check runs over a partial program
 - one name table: the checker resolves every type expression against the scope's own (`TopScope::names`, the declared loci, types and perspectives with each alias's expanded target and the bundle's import renames), built once with the symbols, and keeps none of its own
+- every production path demands the scope from a snapshot (`demand_scope`): every verb, the LSP (its diagnostics and every request), the check, the model and its graphs, and the lowering view (F.40 phase 3, C5); since the `--sealable` survey reads its snapshot's rows (F.40 phase 4, W4), no production caller builds one outside it. What still builds its own is the entries over a bundle or a program no snapshot holds, which no code outside tests calls: the bare-bundle check (`check_bundle_opts_scoped`, under `check_program`, `check_bundle`, `check_bundle_opts`, `check_bundle_opts_whole_program`, `check_bundle_for_build`), the bare model (`derive_application_model`, under `claim_law_diags`, `model_shape_hash`, `dump_topology`), `effect_certificates` and `resolve_program`; and the unit tests of `lib.rs`, `sync_inference.rs` and `lifecycle/derive.rs`. The seam counts them
 
 **Missing data.** a missing required row is a compiler error
 
@@ -284,13 +281,13 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`; `crates/hale-types/src/typed_bodies.rs` · `typed_bodies`; `crates/hale-types/src/builtin_sigs.rs` · `BARE_BUILTIN_SIGS`
 
-**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law) (`crates/hale-types/src/check.rs` · `check_bundle_reporting`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); codegen (a bare builtin's arity and result: its signature row) (`crates/hale-codegen/src/codegen.rs` · `builtin_sig`); the cross-pool value law (`law_backstops`, at the harness's lowering view: the table's `omitted_args`; the check reads its record's) (`crates/hale-frontend/src/snapshot.rs` · `omitted_args`); every layer
+**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law) (`crates/hale-types/src/check.rs` · `check_bundle_reporting`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); codegen (a bare builtin's arity and result: its signature row) (`crates/hale-codegen/src/codegen.rs` · `builtin_sig`); the cross-pool value law (`law_backstops`, at the harness's lowering view: the table's `omitted_args`; the check reads its record's) (`crates/hale-frontend/src/snapshot.rs` · `omitted_args`); the sealed rule (`sealability`: the `param_accesses` rows of each declaration, as its walk ends) (`crates/hale-types/src/check.rs` · `settle_param_accesses`); check --sealable (the snapshot's table's `param_accesses`) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_typed_bodies`); every layer
 
 **Invariants.**
 
 - expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)
 - codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span
-- the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with six columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call), and `omitted_args` (per call that leaves arguments to their defaults, the declaration the checker resolves the callee to, a method by its receiver's type, and the first parameter it leaves; a type's field defaults, which the checker does not type, have their calls recorded too); a site the checker could not type is a hole with its reason
+- the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with seven columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call), `omitted_args` (per call that leaves arguments to their defaults, the declaration the checker resolves the callee to, a method by its receiver's type, and the first parameter it leaves; a type's field defaults, which the checker does not type, have their calls recorded too), and `param_accesses` (per body, each read or write of a locus's `params` through a receiver typed as that locus, with the reader and the receiver by declaration: the `sealability` family's rows); a site the checker could not type is a hole with its reason
 - the bare builtins (`len`, `to_string`, the `Int` / `Float` casts, `abs` / `min` / `max`, `starts_with` / `contains`) are typed by one signature table (`BARE_BUILTIN_SIGS`), lowering's inference written down: the checker types a call by its row where lowering lowers it and leaves it `Unknown` where lowering refuses, and lowering reads each builtin's arity and result from the same row
 
 **Missing data.** required: a missing row is a `CodegenError`, pinned by `crates/hale-codegen/tests/typed_body_rows.rs` · `an_accumulator_without_a_row_is_refused_at_its_expression`
@@ -791,29 +788,36 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Spec.** spec/model.md § The description; spec/semantics.md § The api binding (GH #1106); spec/types.md § Roles and `@gated` (GH #1109)
 
-### `sealability` — Migrating · law
+### `sealability` — Canonical · law
 
 **Answers.** Which loci confine their state (`@sealed`), and which could.
 
-**Inputs.** locus declarations; field accesses
+**Inputs.** expression_typing (the typed bodies' `param_accesses` column); top_scope (whether a receiver is sealed, and the methods it declares); locus declarations (the survey's loci)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `record_param_access`
+**Producer.** `crates/hale-types/src/check.rs` · `record_param_access`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/sealed_access.rs` · `sealed_access_law`; `crates/hale-types/src/sealed_access.rs` · `outside_access`; `crates/hale-types/src/sealability.rs` · `survey`
 
-- `crates/hale-types/src/sealability.rs` · `survey` — the `--sealable` survey seals every locus, re-runs a partial check and PARSES THE DIAGNOSTIC MESSAGE TEXT to decide. *Removed when:* the survey reads the sealed-access rows.
-
-**Consumers.** check; check --sealable; claims (require sealed)
+**Consumers.** check (the sealed rule, a law over the rows, run as each top-level declaration's walk ends: each finding placed where the walk first reached the access) (`crates/hale-types/src/check.rs` · `settle_param_accesses`); check --sealable (the survey, a group-by over the snapshot's rows: `demand_typed_bodies`) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `sealability::survey`); claims (require sealed: the declaration's `sealed`, not the rows)
 
 **Invariants.**
 
 - a diagnostic's wording is never an input to a derivation
+- the rows are the checker's (F.40 phase 4, W4): one `ParamAccess` per read or write of a locus's `params` field through a receiver the checker typed as that locus, recorded where it types the access (the field-read arm, an assignment target's field segment), sealed or not, before any rule judges it: the reader (the locus whose member is walked, `None` in a free fn) and the receiver by declaration (`LocusRef`: the minting universe and the id, a `std::` locus being the stdlib copy's), the receiver's scope name, the param, read or write, the span. An access through `self` in the locus's own members is a row whose reader is the receiver; a method or a capacity slot named on a locus is none; a receiver typed as a monomorph (`Box_Int`) is none, the scope declaring no locus by that name
+- a walk whose findings the check discards discards its accesses with them (`walk_mark` / `discard_since`): a receiver typed ahead of the call path that types it again, a default typed at an invocation, a generic body walked per monomorph; so a generic body has its template walk's rows, and an access in a fn param default (typed only at its invocations) is no row. An access the walk reaches twice is one row
+- the sealed rule is a filter over the rows (`sealed_access::outside_access`, a registered law on the law type, no witness): a row whose receiver the scope says is `@sealed` and whose reader is not the receiver, rendered with the author's spelling of the locus (`std::secret::Signer` for a stdlib locus) and the methods it declares; it decides nothing at the access
+- the `--sealable` survey is a query over the same rows of the check the command ran, imports resolved: per locus the programs declare (a module's included), the rows reaching it from outside its own members are its blockers, a locus with none is free; it re-checks nothing, so it agrees with the rule by construction
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/sealed_locus.rs
+**Focused tests.** crates/hale-types/tests/sealed_locus.rs; crates/hale-types/tests/typed_bodies.rs (the_param_access_column_records_each_access_through_a_locus); crates/hale-types/tests/sealability_survey.rs; crates/hale-types/tests/sealable_survey_correction.rs
 
-**Spec.** spec/verification.md § Secrets — confine, classify, claim
+**Spec.** spec/verification.md § Secrets — confine, classify, claim; spec/verification.md § Structural & design rules; spec/projects.md (`hale check --sealable`)
+
+**Guarded seams.**
+
+- `sealed_access_law(` may be referenced from: `crates/hale-types/src/sealed_access.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `sealability::survey(` may be referenced from: `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
 ### `runs_under` — Reserved · derivation
 
