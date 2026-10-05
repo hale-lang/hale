@@ -1111,6 +1111,19 @@ fn entry_locus<'p>(
     })
 }
 
+/// Every locus declaration of `program` by its name, nested modules
+/// included, in `flat_decls` order. A name declared twice keeps its
+/// first declaration, the one a scan of `flat_decls` finds.
+fn locus_decl_index(program: &Program) -> BTreeMap<&str, &hale_syntax::ast::LocusDecl> {
+    let mut index = BTreeMap::new();
+    for item in hale_syntax::ast::flat_decls(&program.items) {
+        if let TopDecl::Locus(l) = item {
+            index.entry(l.name.name.as_str()).or_insert(l);
+        }
+    }
+    index
+}
+
 /// The `fn main` lowering emits as the process's entry point: the entry
 /// row's column (`hale_types::entry::EntryRow::fn_main`), found among
 /// lowering's top-level declarations by its site. Total: a row with no
@@ -1538,6 +1551,7 @@ pub fn build_resolved(
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
         specialized_locus_decls: BTreeMap::new(),
+        locus_decls_by_name: locus_decl_index(merged),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle,
@@ -3417,6 +3431,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// locus methods. Signature lookup must read these same declarations
     /// instead of searching the unspecialized program for a mangled name.
     pub(crate) specialized_locus_decls: BTreeMap<String, LocusDecl>,
+    /// Every locus declaration of `program` by name, built once
+    /// (`locus_decl_index`): what `locus_declaration` reads when the
+    /// name is no specialization, instead of a scan per method call.
+    pub(crate) locus_decls_by_name: BTreeMap<&'p str, &'p LocusDecl>,
     /// B10: pre-collected locus names (concrete monomorphs +
     /// raw decls), populated before `declare_locus_struct` runs.
     /// Lets `type_expr_to_codegen_ty` resolve a forward-referenced
@@ -12354,12 +12372,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The declaration used for a locus's emitted methods, retaining
     /// source identities while substituting its type arguments.
     fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
-        self.specialized_locus_decls.get(name).or_else(|| {
-            hale_syntax::ast::flat_decls(&self.program.items).find_map(|d| match d {
-                TopDecl::Locus(l) if l.name.name == name => Some(l),
-                _ => None,
-            })
-        })
+        self.specialized_locus_decls
+            .get(name)
+            .or_else(|| self.locus_decls_by_name.get(name).copied())
     }
 
     /// m62: the specialization a generic fn call instantiates — its
@@ -34272,6 +34287,30 @@ mod tests {
         // io has 2; compute has 1 — both clamp to 64K.
         assert_eq!(chunk_hint_for_coop_pool(&mixed, "io"), 65536);
         assert_eq!(chunk_hint_for_coop_pool(&mixed, "compute"), 65536);
+    }
+
+    /// The locus index answers what the scan it replaced answered: a
+    /// name declared twice (here once nested in a module, once at the
+    /// top level after it) resolves to the first in `flat_decls`
+    /// order, and a module-nested locus is found by its bare name.
+    #[test]
+    fn locus_decl_index_keeps_the_first_declaration_of_a_name() {
+        let program = hale_syntax::parse_source(
+            "module m {\n    locus Twin { params { a: Int = 1; } }\n    locus Nested { params { b: Int = 2; } }\n}\nlocus Twin { params { c: Int = 3; } }\n",
+        )
+        .expect("parses");
+        let index = locus_decl_index(&program);
+        let scan = |name: &str| {
+            hale_syntax::ast::flat_decls(&program.items).find_map(|d| match d {
+                TopDecl::Locus(l) if l.name.name == name => Some(l),
+                _ => None,
+            })
+        };
+        for name in ["Twin", "Nested"] {
+            let indexed = index.get(name).copied().expect("indexed");
+            assert!(std::ptr::eq(indexed, scan(name).expect("scanned")), "{name}");
+        }
+        assert!(index.get("Missing").is_none());
     }
 }
 
