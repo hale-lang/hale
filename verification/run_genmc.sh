@@ -32,12 +32,23 @@ for model in "$here"/*_model.c; do
     [ -e "$model" ] || continue
     flags="$(sed -n 's|.*GENMC-FLAGS:[[:space:]]*||p' "$model" | head -1 \
                 | sed -e 's|\*/.*||' -e 's|[[:space:]]*$||')"
-    echo "── $(basename "$model") ${flags:+[$flags] }───────────────────────────────"
-    if "$GENMC" $flags -- "$model"; then
-        echo "  ✓ verified (no races / UAF / assertion violations)"
-    else
-        echo "  ✗ GenMC reported a violation in $(basename "$model")" >&2
-        fail=1
-    fi
+    # A model whose phases are independent names one run per phase with
+    # `GENMC-RUN:` lines in its header, each holding the compiler flags
+    # of that run (e.g. `GENMC-RUN: -DMODEL_PHASE=2`): phases run back
+    # to back in one execution multiply their interleavings. A model
+    # with no such line is run once, as it is.
+    mapfile -t runs < <(sed -n 's|.*GENMC-RUN:[[:space:]]*||p' "$model" \
+                            | sed -e 's|\*/.*||' -e 's|[[:space:]]*$||')
+    [ "${#runs[@]}" -gt 0 ] || runs=("")
+    for cflags in "${runs[@]}"; do
+        label="$(basename "$model")${flags:+ [$flags]}${cflags:+ ($cflags)}"
+        echo "── $label ───────────────────────────────"
+        if "$GENMC" $flags -- $cflags "$model"; then
+            echo "  ✓ verified (no races / UAF / assertion violations)"
+        else
+            echo "  ✗ GenMC reported a violation in $(basename "$model")${cflags:+ ($cflags)}" >&2
+            fail=1
+        fi
+    done
 done
 exit "$fail"

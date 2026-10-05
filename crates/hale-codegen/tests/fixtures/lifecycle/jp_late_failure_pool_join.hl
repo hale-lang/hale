@@ -1,8 +1,8 @@
 // Join progress, a late failure during the pool join (JoinProgress,
-// FailureDelivery). Known open at inventory row R20 for the domain the
-// handler runs on: the trace build (L2) shows the delivery completing
-// on the pool's worker, not on main (row C36); the outcome is pinned
-// here.
+// FailureDelivery). The pool's worker posts the delivery to main, its
+// owner's domain, and the pool join runs it while it waits for the
+// worker's end (decision L0-1; rows R20 and C36, closed by L5's fourth
+// part).
 //
 // `p` runs on pool `side` and fails 200ms into its run(), while fn
 // main's exit is joining the pool workers. The join waits for the

@@ -107,8 +107,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// runtime holds the failure and delivers it when they settle
     /// (`lotus_failure_hold`; spec/semantics.md § "on_failure(c,
     /// err)"). `hold` is false for a failure that cannot wait: a
-    /// dissolve-epoch one (the child's region goes right after) and a
-    /// birth-epoch closure's (`restart(c)` re-runs birth synchronously).
+    /// dissolve-epoch one (the child's region goes right after).
+    ///
+    /// Decision L0-1 (F.40 phase 3, L5 4 of 4): the handler runs on the
+    /// owner's domain. In a program with a thread besides main, the
+    /// runtime is asked next (`lotus_failure_post`): off the owner's
+    /// domain it posts the delivery there and returns once the handler
+    /// has, and the call here is skipped; on it, the call is in place. A
+    /// program with no other thread (wasm32 among them) has one domain
+    /// and keeps the in-place call alone.
     pub(crate) fn emit_on_failure_call(
         &mut self,
         handler: PointerValue<'ctx>,
@@ -124,19 +131,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
             false,
         );
-        // The trace: the delivery is entered here, on the raising
-        // thread, and completes when the handler returns, here or at
-        // the owner's settle (the runtime reports that one). The spine
-        // is whichever one raised it, which this site cannot name.
-        self.lc_in_spine("-", |cx| cx.lc_event("FailureDelivery", "Entered", Some(child_self), None))?;
+        let size = self
+            .user_types
+            .get("ClosureViolation")
+            .expect("ClosureViolation declared at startup")
+            .struct_ty
+            .size_of()
+            .expect("violation struct has known size");
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
         let join_bb = if hold {
-            let size = self
-                .user_types
-                .get("ClosureViolation")
-                .expect("ClosureViolation declared at startup")
-                .struct_ty
-                .size_of()
-                .expect("violation struct has known size");
             let hold_fn = self
                 .module
                 .get_function("lotus_failure_hold")
@@ -168,11 +175,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{name}.held"),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let func = self
-                .builder
-                .get_insert_block()
-                .and_then(|bb| bb.get_parent())
-                .expect("inside a function");
             let call_bb = self
                 .context
                 .append_basic_block(func, &format!("{name}.now"));
@@ -187,6 +189,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         } else {
             None
         };
+        let join_bb = if self.program_has_offthread {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let post_fn = self.module.get_function("lotus_failure_post").unwrap_or_else(|| {
+                self.module.add_function(
+                    "lotus_failure_post",
+                    i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+                    None,
+                )
+            });
+            let posted = self
+                .builder
+                .build_call(
+                    post_fn,
+                    &[parent_self.into(), handler.into(), child_self.into(), viol_ptr.into(), size.into()],
+                    &format!("{name}.post"),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_failure_post returns i64")
+                .into_int_value();
+            let is_posted = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::NE, posted, i64_t.const_zero(), &format!("{name}.posted"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let call_bb = self.context.append_basic_block(func, &format!("{name}.here"));
+            let join_bb = join_bb.unwrap_or_else(|| self.context.append_basic_block(func, &format!("{name}.join")));
+            self.builder
+                .build_conditional_branch(is_posted, join_bb, call_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(call_bb);
+            Some(join_bb)
+        } else {
+            join_bb
+        };
+        // The trace: a delivery in place is entered here, on the raising
+        // thread, and completes when the handler returns. A held one is
+        // reported by the runtime (entered at the hold, completed at the
+        // owner's settle), and so is a posted one (both on the owner's
+        // domain). The spine is whichever one raised it, which this site
+        // cannot name.
+        self.lc_in_spine("-", |cx| cx.lc_event("FailureDelivery", "Entered", Some(child_self), None))?;
         self.builder
             .build_indirect_call(
                 handler_callee_ty,

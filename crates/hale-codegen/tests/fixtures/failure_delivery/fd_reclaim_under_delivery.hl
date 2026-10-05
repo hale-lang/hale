@@ -1,0 +1,75 @@
+// Decision L0-1 with the reclaim: an owner never reclaims a child while
+// that child's failure delivery is in flight. `Kid` is placed on pool
+// `side` and fails in a bus handler; its owner `App` runs on main and
+// replaces it (`self.k = Kid { tag: 1 }`, which reclaims the old one).
+// Gate files force the order, never a sleep: `App.run()` replaces the
+// child once the handler has started (`delivering`), or, when no
+// handler can start while it waits without yielding, after 500 ms. The
+// handler waits for the replacement (`replaced`) for up to 500 ms, then
+// reads the child's heap String. A reclaim that does not wait for the
+// delivery frees that String under the handler.
+// Expected outcome: the handler reads the old child whole, on the
+// owner's thread, before the old child dissolves; each child dissolves
+// once.
+
+@ffi("c") fn pthread_self() -> Int;
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.reclaim.go"; }
+
+fn gate(what: String) -> String {
+    return "/tmp/hale-fd-reclaim-" + what + "-" + to_string(std::process::pid());
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    closure fuse { captures: tag; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) {
+        if self.tag == 0 { violate fuse; }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 0 }; mine: Int = 0; }
+    placement { k: cooperative(pool = side); }
+    bus { publish Gos; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        std::io::fs::write_file(gate("delivering"), "go") or discard;
+        let until = std::time::monotonic_ns() + 500000000;
+        let mut waiting = true;
+        while waiting {
+            waiting = !std::io::fs::file_exists(gate("replaced")) && std::time::monotonic_ns() < until;
+        }
+        if pthread_self() == self.mine {
+            println("ev handler-on-owner");
+        } else {
+            println("ev handler-off-owner");
+        }
+        println("ev handler " + c.name);
+        std::io::fs::write_file(gate("handled"), "go") or discard;
+    }
+    run() {
+        self.mine = pthread_self();
+        Gos <- Go { k: 1 };
+        let until = std::time::monotonic_ns() + 500000000;
+        let mut waiting = true;
+        while waiting {
+            waiting = !std::io::fs::file_exists(gate("delivering")) && std::time::monotonic_ns() < until;
+        }
+        self.k = Kid { tag: 1 };
+        std::io::fs::write_file(gate("replaced"), "go") or discard;
+        let deadline = std::time::monotonic_ns() + 8000000000;
+        while !std::io::fs::file_exists(gate("handled")) && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
+        println("ev replaced");
+    }
+    dissolve() {
+        std::io::fs::unlink(gate("delivering")) or discard;
+        std::io::fs::unlink(gate("replaced")) or discard;
+        std::io::fs::unlink(gate("handled")) or discard;
+    }
+}
+
+fn main() { App { }; }
