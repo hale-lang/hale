@@ -17,6 +17,9 @@
 //!   graph and the handler rows over the checked programs, what the
 //!   model reads beside the scope. The checker reads the handler rows
 //!   too, demanded before it runs.
+//! - [`Snapshot::demand_flows`]: the flow rows over the checked
+//!   programs, which the check, the lifecycle plan, the lowering view,
+//!   the editor's dependents relation and `check --flows` read.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
 //!   over the checked programs and the stdlib's analysis copy, which
 //!   the check's effects certificate engine and the effect rows read.
@@ -82,6 +85,7 @@ use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
 use hale_types::entry::EntryRow;
+use hale_types::flows::FlowRows;
 use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::lifecycle::LifecyclePlan;
@@ -105,7 +109,8 @@ use crate::source::SourceProvider;
 /// The families a snapshot produces, in the order a build demands them.
 /// The names are the registry's (`spec/registry.md`). `bus_graph`,
 /// `ownership` and `handler_routing` count the checked programs' graphs,
-/// the model's inputs; `intra_locus` is the intra-locus rewrite, whose
+/// the model's inputs; `flows` the flow rows, which the check, the
+/// lifecycle plan and the lowering view read; `intra_locus` is the intra-locus rewrite, whose
 /// relation the check reads (rule 10) and whose program lowering
 /// continues from; `lowering_view` is the `demand` family's own, the
 /// view over the resolved program whose tables are lowering's ownership,
@@ -117,7 +122,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 21] = [
+pub const FAMILIES: [&str; 22] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -131,6 +136,7 @@ pub const FAMILIES: [&str; 21] = [
     "bus_graph",
     "ownership",
     "handler_routing",
+    "flows",
     "alloc_summary",
     "effects",
     "placement",
@@ -467,6 +473,7 @@ pub struct Snapshot {
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
+    flows: OnceCell<Result<FlowRows, Blocked>>,
     /// Shared with the effect rows, which hold the summary their walk
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
@@ -657,6 +664,7 @@ impl Snapshot {
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
+            flows: OnceCell::new(),
             alloc_summary: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
@@ -1163,6 +1171,7 @@ impl Snapshot {
         let inputs = hale_types::check::CheckInputs {
             top: &scope.top,
             handlers: self.demand_handlers().map_err(Clone::clone)?,
+            flows: self.demand_flows().map_err(Clone::clone)?,
             ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
             effects: &effects,
             entry: self.demand_entry().map_err(Clone::clone)?,
@@ -1363,6 +1372,25 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The flow rows of the checked programs ([`hale_types::flows::survey`]):
+    /// which child types a `release` clause makes flows, and each locus
+    /// declaration's run row. The check's run-row rules and accept/release
+    /// law, the lifecycle plan, the lowering view, the editor's dependents
+    /// relation and `check --flows` read them. Blocked with the scope; the
+    /// survey reads declarations, not types.
+    pub fn demand_flows(&self) -> Result<&FlowRows, &Blocked> {
+        self.flows
+            .get_or_init(|| {
+                self.scope().map_err(Clone::clone)?;
+                self.count("flows");
+                // In the bundle's order, as the handler rows.
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::flows::survey(&programs, &bundle.import_renames))
+            })
+            .as_ref()
+    }
+
     /// The effect rows over the checked programs: one fixpoint, with
     /// the stdlib's analysis copy beside them and cross-seed calls
     /// resolved through the import renames. Per fn: the resolved call
@@ -1468,8 +1496,7 @@ impl Snapshot {
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
-                let programs: Vec<&Program> = self.programs.values().collect();
-                let flows = hale_types::flows::survey(&programs, &self.import_renames);
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 Ok(DependencyIndex::build(&crate::dependents::Families {
                     programs: &self.programs,
                     decls: self.declarations(),
@@ -1477,7 +1504,7 @@ impl Snapshot {
                     ownership,
                     bus,
                     placement,
-                    flows: &flows,
+                    flows,
                 }))
             })
             .as_ref()
@@ -1500,15 +1527,14 @@ impl Snapshot {
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 self.count("lifecycle_order");
                 let bundle = self.bundle();
-                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                let flows = hale_types::flows::survey(&programs, &bundle.import_renames);
                 Ok(hale_types::lifecycle::derive::derive_lifecycle(&hale_types::lifecycle::derive::LifecycleInputs {
                     bundle: &bundle,
                     placement,
                     handlers,
-                    flows: &flows,
+                    flows,
                     bus,
                     entry,
                 }))
@@ -1737,6 +1763,8 @@ impl Snapshot {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                // And its flow rows these ones (F.40 phase 4, Q1).
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
                 // target with no column (Windows) never reaches a snapshot.
@@ -1772,6 +1800,7 @@ impl Snapshot {
                     &scope.top,
                     bus,
                     ownership,
+                    flows,
                     &arrangement.domains(),
                     class,
                 )

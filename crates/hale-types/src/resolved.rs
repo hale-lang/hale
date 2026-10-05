@@ -349,7 +349,7 @@ pub fn rewrite_intra_locus(
 /// so they are built here over the minted program, by the snapshot's own
 /// producers (`bus_graph::build_bus_graph`,
 /// `ownership_graph::build_ownership_graph`), with `bindings` and
-/// `placement`.
+/// `placement`, and its flow rows surveyed (`flows::survey`).
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -375,6 +375,7 @@ pub fn resolve_program(
         (top, bus, ownership)
     };
     let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
+    let flows = crate::flows::survey(&[&minted], import_renames);
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
         &checked,
@@ -389,6 +390,7 @@ pub fn resolve_program(
         &top,
         &bus,
         &ownership,
+        &flows,
         &arrangement.domains(),
         host,
     )
@@ -436,7 +438,9 @@ pub fn resolve_program(
 /// over the checked programs: lowering's graph is its rows, read through
 /// the correspondence (`bus_graph::lowering_bus_graph`); `ownership` the
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
-/// the same way (`ownership_graph::lowering_ownership_graph`). `domains`
+/// the same way (`ownership_graph::lowering_ownership_graph`). `flows` is
+/// the snapshot's flow rows (`Snapshot::demand_flows`), which lowering
+/// reads by locus name, so they need no correspondence. `domains`
 /// is the dispatch plan's domain map, the arrangement's
 /// ([`crate::arrangement::Arrangement::domains`] over the snapshot's
 /// programs, placement table and ownership graph): the map the model's
@@ -460,6 +464,7 @@ pub fn resolve_rewritten(
     top: &TopScope,
     bus: &BusGraph,
     ownership: &OwnershipGraph,
+    flows: &crate::flows::FlowRows,
     domains: &BTreeMap<&str, Vec<String>>,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
@@ -660,9 +665,12 @@ pub fn resolve_rewritten(
     // F.40 phase 1.4: the handler rows, over the same merged program,
     // with the child type resolved the way lowering resolves it.
     let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
-    // The flow rows over the same merged program, each clause's child
-    // resolved to the locus lowering names: lowering reads flow-ness here.
-    let flows = crate::flows::survey(&[&merged], import_renames);
+    // The flow rows are the snapshot's (F.40 phase 4, Q1): lowering reads
+    // them by locus name (`is_flow`, `specialize`), the stdlib declares no
+    // `release` clause and no type alias, and `DeclaredNames` holds the
+    // stdlib's loci over either program, so the merged program's survey
+    // is the checked one's in every row lowering reads.
+    let flows = flows.clone();
     // The allocation-routing rows over the same merged program, cross-seed
     // calls resolved through the same renames: lowering reads them.
     let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames);

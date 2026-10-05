@@ -156,7 +156,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     // snapshot counts. The bus graph is one of them since rules 7, 9 and
     // 10 read it, the ownership graph since rule 20 does (F.40 phase 3,
     // C4).
-    for family in ["handler_routing", "entrypoint", "bus_graph", "ownership"] {
+    for family in ["handler_routing", "flows", "entrypoint", "bus_graph", "ownership"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_eq!(builds["alloc_summary"], 1, "the check's certificate engine reads the snapshot's summary");
@@ -314,6 +314,9 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "bus_graph",
                 "ownership",
                 "handler_routing",
+                // The check reads it, and the lifecycle plan and lowering
+                // the same one (F.40 phase 4, Q1).
+                "flows",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -382,6 +385,64 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+const WITH_FLOWS: &str = r#"
+locus Worker { params { ran: Int = 0; } run() { self.ran = 1; } }
+type Job = Worker;
+locus Pool {
+    params { n: Int = 0; }
+    accept(c: Job) { }
+    release(c: Job) { self.n = self.n + 1; }
+    run() { Worker { }; }
+}
+locus Manager<T> {
+    params { released: Int = 0; }
+    accept(c: T) { }
+    release(c: T) { self.released = self.released + 1; }
+}
+fn main() { Pool { }; let a: Manager<Worker> = Manager { }; }
+"#;
+
+/// F.40 phase 4, Q1: the flow rows are surveyed once per snapshot, and
+/// the lowering view reads that survey. It used to survey the merged
+/// program again; lowering reads the rows by locus name (`is_flow`,
+/// `specialize`), and the stdlib declares no `release` clause and no
+/// type alias, so that survey's clauses are the snapshot's, row for row:
+/// an alias followed, a template's clause kept for its specializations.
+#[test]
+fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
+    let std = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    assert!(hale_types::flows::survey(&[std], &[]).is_empty(), "the stdlib declares no `release` clause");
+    let declared = hale_types::handler_routing::DeclaredNames::of(&[std]);
+    assert!(declared.aliases.is_empty(), "the stdlib declares no type alias a clause's child could follow");
+
+    let d = seed("one-flows", WITH_FLOWS);
+    let s = build(&d.join("app.hl"));
+    assert_clean(&s);
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    assert_eq!(s.builds()["flows"], 1, "the check, the lifecycle plan and lowering read one survey");
+    let rows = |flows: &[hale_types::flows::Flow]| {
+        flows
+            .iter()
+            .flat_map(|f| {
+                f.clauses.iter().map(move |c| {
+                    (f.child.clone(), c.owner.clone(), c.param.clone(), c.span, c.locus.clone(), c.template.is_some())
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let snapshot = rows(s.demand_flows().expect("the rows"));
+    assert_eq!(
+        snapshot.iter().map(|r| (r.0.as_str(), r.4.as_deref(), r.5)).collect::<Vec<_>>(),
+        vec![("Job", Some("Worker"), false), ("T", None, true)],
+        "the alias resolved, the template's clause kept"
+    );
+    assert_eq!(rows(&view.flows), snapshot, "the view's rows are the snapshot's");
+    let merged = hale_types::flows::survey(&[&view.merged], &view.import_renames);
+    assert_eq!(rows(&merged), snapshot, "the merged program's survey is the snapshot's, row for row");
+    assert_at_most_once(&s, "build");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// F.40 phase 2, use-site identity: which declaration each use names is
 /// resolved once per snapshot, by its mint — the load's, and the
 /// lowering view's over the merged program — and nothing the check, the
@@ -437,6 +498,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "entrypoint",
         "bindings",
         "handler_routing",
+        "flows",
         "ownership",
         "bus_graph",
         "alloc_summary",

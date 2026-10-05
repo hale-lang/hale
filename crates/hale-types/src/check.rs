@@ -487,6 +487,10 @@ fn substitute_generic_ty(
 pub struct CheckInputs<'a> {
     pub top: &'a TopScope,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
+    /// The flow rows over the programs checked (the `flows` family's):
+    /// the long-running-child rule's and the starvation and birth-order
+    /// laws' run rows, and the accept/release law's release clauses.
+    pub flows: &'a crate::flows::FlowRows,
     /// The ownership graph over the programs checked: the
     /// unowned-subscriber rule's births, declarations and owners.
     pub ownership: &'a crate::ownership_graph::OwnershipGraph,
@@ -557,6 +561,7 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
+    let flows = crate::bundle_flow_rows(bundle);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -577,6 +582,7 @@ fn check_numbered_bundle(
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
+        flows: &flows,
         ownership: &ownership,
         effects: &effects,
         entry: &entry,
@@ -906,13 +912,13 @@ pub fn check_bundle_by_declaration(
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
     //
-    // The flow rows, surveyed once: the long-running-child rule and the
-    // starvation and birth-order laws read their run rows (F.40 phase 3,
-    // E2: "long-running" and "never returns" are two columns), and the
-    // accept/release law their release clauses.
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let flows = crate::flows::survey(&programs, &bundle.import_renames);
-    check_nested_long_running_child(bundle, &flows, &mut diags);
+    // The flow rows, the snapshot's (F.40 phase 4, Q1): the
+    // long-running-child rule and the starvation and birth-order laws
+    // read their run rows (F.40 phase 3, E2: "long-running" and "never
+    // returns" are two columns), and the accept/release law their
+    // release clauses.
+    let flows = inputs.flows;
+    check_nested_long_running_child(bundle, flows, &mut diags);
     // F.40 phase 3, E2: the three rules that ask where a root field runs
     // read the placement table's rows for the root lowering deploys (a
     // `main locus` lowering does not deploy places nothing, so it starves
@@ -922,8 +928,8 @@ pub fn check_bundle_by_declaration(
         let fields = root_field_placements(bundle, inputs.placement);
         let errored_pools =
             check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut diags);
-        check_pool_starvation(main, &fields, &flows, &errored_pools, &mut diags);
-        check_birth_order(main, &fields, &flows, &mut diags);
+        check_pool_starvation(main, &fields, flows, &errored_pools, &mut diags);
+        check_birth_order(main, &fields, flows, &mut diags);
     }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
@@ -936,7 +942,7 @@ pub fn check_bundle_by_declaration(
     check_decorator_stacks(bundle, &mut diags);
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
-    check_accept_release(bundle, &flows, &mut diags);
+    check_accept_release(bundle, flows, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     // hot-path allocation contract. A hard error when an annotated fn
     // allocates more than its declared per-call ceiling (0 = zero-alloc

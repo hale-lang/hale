@@ -346,6 +346,7 @@ fn check_numbered_bundle(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
+    let flows = bundle_flow_rows(bundle);
     let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -366,6 +367,7 @@ fn check_numbered_bundle(
         &check::CheckInputs {
             top: &top,
             handlers: &handlers,
+            flows: &flows,
             ownership: &ownership,
             effects: &effects,
             entry: &entry,
@@ -427,6 +429,14 @@ fn check_numbered_bundle(
 pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::HandlerRouting {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot)
+}
+
+/// The flow rows of a bundle no snapshot holds: what the test entries'
+/// check reads ([`check_bundle_opts_scoped`], [`check::check_bundle`]).
+/// Every verb reads its snapshot's (`Snapshot::demand_flows`).
+pub(crate) fn bundle_flow_rows(bundle: &Bundle<'_>) -> flows::FlowRows {
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    flows::survey(&programs, &bundle.import_renames)
 }
 
 /// The application model of a bundle no snapshot holds: the test
