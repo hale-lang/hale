@@ -523,7 +523,8 @@ so nothing tears it down twice. The rules that order gives you:
   there reaches the parent before your cleanup runs.
 - **Replacing a field dissolves the old child before creating the new
   one.** A started run keeps the old child's storage and owned
-  descendants alive until it returns. If a queued main-thread handler
+  descendants alive until it returns, and so does a bus handler the
+  old child is running on its pool. If a queued main-thread handler
   performs the replacement, storage release waits until that handler
   returns, so another queued handler can answer the old run. Cleanup
   in `dissolve()`, including closing handles, still happens before the

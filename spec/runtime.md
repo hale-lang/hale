@@ -1907,10 +1907,19 @@ zero_copy binding produces.
     owner's settle while another failure is posted to the same
     thread; the posted handler's entry and exit lines follow the held
     one's. Before the settle's guard they came inside it.
-  - `fd_handler_cell_no_hold.hl`, known open at inventory row R52 and
-    asserted to fail under ASan: a pool-placed child replaced while
-    its bus handler runs is freed under that handler (decision line
-    19).
+  - `fd_handler_cell*.hl` (inventory row R52, decision line 19): a
+    pool-placed child replaced while its bus handler runs keeps its
+    storage until that handler returns, under ASan in both dispatch
+    modes (before the handler's hold it was freed under the handler);
+    the owner's failure handler replacing and restarting the child
+    whose bus handler waits for that delivery, and a reclaim waiting
+    for a handler that waits on main, each end under the deadline. A
+    worker that carries the hold from cell to cell ends it for the
+    reclaim: a subscriber flooded so that its worker never finds its
+    queue empty is replaced mid-flood, and one of two subscribers
+    sharing a worker, their cells interleaved, is replaced
+    mid-stream; each reclaim completes with the publisher still
+    running, under ASan in both dispatch modes and the deadline.
 
   The lifecycle matrix holds the domain of every cell's
   `FailureDelivery` to the plan's: the cells whose failure is raised
@@ -2468,15 +2477,44 @@ its `KNOWN_OPEN` table, which is empty today.
   running run, a heap-use-after-free under AddressSanitizer in both
   dispatch modes. A run whose child is never reclaimed until its
   pool joins is still ordered against the teardown by the join.
-  A bus handler's cell holds nothing (inventory row R52, known
-  open): a reclaim of a pool-placed child does not wait for its
-  running bus handler, so replacing the child while its handler runs
-  frees the storage under it, a heap-use-after-free under
-  AddressSanitizer in both dispatch modes
-  (`fd_handler_cell_no_hold.hl`, under
-  `crates/hale-codegen/tests/fixtures/failure_delivery/`). A hold per
-  dispatched cell would close it at a cost on the dispatch path the
-  row states.
+  A bus handler running on a pool's worker holds its subscriber the
+  same way (inventory row R52): the worker takes a held ticket on the
+  subscriber when it starts the handler for a dequeued cell and ends it
+  when the handler returns, or where a shutdown abandons the parked
+  coroutine, and a reclaim waits for it as it waits for a running
+  `run()`, so a pool-placed child replaced while its bus handler runs
+  keeps its storage until that handler returns. Its drain and dissolve
+  still run beside the handler. Every locus a pool hosts is a placed
+  field of the main locus or nested under one, so main can reclaim it
+  while its worker runs a handler. The main queue's handlers and a
+  pinned thread's take no hold: their subscribers are reclaimed on
+  the thread that runs them, between handlers, or after the pinned
+  thread's join. A cell still queued for a subscriber whose reclaim
+  has deregistered it is dropped unrun when its worker reaches it
+  (GH #703); the worker takes the hold before it looks, so it either
+  drops the cell or the reclaim waits for its handler. Before the
+  hold, replacing the child while its handler ran freed the storage
+  under it, a heap-use-after-free under AddressSanitizer in both
+  dispatch modes (`fd_handler_cell_no_hold.hl`, under
+  `crates/hale-codegen/tests/fixtures/failure_delivery/`). Taking and
+  ending the hold costs
+  two acquisitions of the run tickets' lock, so a classic pool's
+  worker carries it from a handler to its next cell when that cell is
+  the same subscriber's, and ends it: before a cell of another
+  subscriber or one that is no bus cell (a run, a root's init, a
+  failure's wake) and before a failure posted to its domain is
+  delivered; before it parks or idles (its queue empty, replay's
+  idle wait, the end of a root's init yield), so never across its
+  pool's shutdown; when the next cell's dead-self check drops it,
+  which runs on every cell; after the handler in progress when a
+  reclaim waits for the hold (the reclaim marks the ticket wanted
+  under the lock as it counts it, and the worker reads that word once
+  per cell before it carries); and after 64 handlers under one hold,
+  whatever else. A reclaim therefore waits for the handler in
+  progress and no further one. An async pool's worker carries
+  nothing: a coroutine's hold spans its parks, and the cells of one
+  subscriber overlap there, so each costs its cell the two
+  acquisitions. A dispatch on the publishing thread takes none.
   Shipped (F.40 phase 3,
   L5): the cancellation is named in the trace build on the thread
   that reclaims, inside the Reclaim's bracket, and the release build
@@ -2624,7 +2662,10 @@ skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
 place while the params are open; for `Cancellation`, a reclaim
 cancels no queued run, which only a fixture whose cells no worker
-will dequeue may use); `<Kind>.<Point>` drops that one
+will dequeue may use); two name a hold, not a kind: `RunHold`, where
+a reclaim does not wait for its child's started runs, and
+`HandlerHold`, where a pool worker takes no hold on a handler's
+subscriber (and so carries none); `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan

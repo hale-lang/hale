@@ -8988,8 +8988,12 @@ typedef struct lotus_coop_overflow {
  * and a run post that cannot allocate aborts.
  *
  * One mutex: a ticket is linked at a run post and unlinked at its
- * cancel or its run's end, rare next to bus traffic (a bus delivery
- * carries no ticket). `lotus_run_tickets_live` lets the reclaim of a child
+ * cancel or its run's end. A bus cell carries no ticket while it is
+ * queued; a pool worker links a held one when it starts the cell's
+ * handler and unlinks it once the handler has returned (R52,
+ * `lotus_handler_hold_take`), a classic worker carrying it across
+ * consecutive cells for the same subscriber, so a run of them takes
+ * the lock twice in all. `lotus_run_tickets_live` lets the reclaim of a child
  * with nothing queued or running, nearly every reclaim, skip the lock;
  * exported, because the compiled reclaim reads it too, to skip the
  * cancel call itself.
@@ -9008,6 +9012,19 @@ typedef struct lotus_run_ticket {
     void                    *runner;
     struct lotus_run_ticket *prev;
     struct lotus_run_ticket *next;
+    /* A bus handler's hold (`lotus_handler_hold_take`, inventory row
+     * R52), never a queued ticket: 1 taken, and in the trace build 2
+     * once its handler has started, 3 abandoned parked at the pool's
+     * shutdown; 0 for a run's ticket and a posted failure's hold. */
+    int                      handler;
+    /* A reclaim waits for this hold: set (atomic) under the lock by the
+     * reclaim that counts it held, read without the lock by the worker
+     * carrying a handler's hold, which then ends it instead of carrying
+     * it to the next cell (`lotus_handler_hold_settle`). */
+    int                      wanted;
+    /* The handlers a classic worker has run under this hold, carried
+     * from cell to cell (bound 5). The worker's alone. */
+    int                      carried;
 } lotus_run_ticket_t;
 
 static lotus_run_ticket_t *g_run_tickets[LOTUS_RUN_TICKET_BUCKETS];
@@ -9065,6 +9082,7 @@ static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
     t->held     = 0;
     t->runner   = NULL;
     t->prev     = NULL;
+    t->handler  = 0;
     pthread_mutex_lock(&g_run_tickets_lock);
     size_t b = lotus_run_ticket_bucket(child);
     t->next = g_run_tickets[b];
@@ -9115,6 +9133,26 @@ static int lotus_run_admit(lotus_run_ticket_t *t, void *pool) {
     return !canceled;
 }
 
+/* A bus handler's hold, once ended, is kept for the next handler this
+ * thread starts: a pool worker takes one per cell (R52), and the
+ * allocation was most of what the hold cost. Thread-local, as the
+ * coroutine slots' free-list is, and off under the no-pool knob
+ * (GH #816), so the sanitizer sees each ticket freed. */
+#define LOTUS_HANDLER_HOLD_SPARE_MAX 64
+static __thread lotus_run_ticket_t *t_handler_hold_spare = NULL;
+static __thread int t_handler_hold_spares = 0;
+
+static void lotus_run_ticket_free(lotus_run_ticket_t *t) {
+    if (t->handler && t_handler_hold_spares < LOTUS_HANDLER_HOLD_SPARE_MAX
+        && !lotus_no_chunk_pool()) {
+        t->next = t_handler_hold_spare;
+        t_handler_hold_spare = t;
+        t_handler_hold_spares++;
+        return;
+    }
+    free(t);
+}
+
 /* An admitted run returned, or its parked coroutine was abandoned at
  * the pool's shutdown: its hold on the child ends, and a reclaim
  * waiting for it proceeds. Frees the ticket. */
@@ -9124,7 +9162,129 @@ static void lotus_run_hold_release(lotus_run_ticket_t *t) {
     lotus_run_ticket_unlink(t);
     if (g_run_hold_waiters) pthread_cond_broadcast(&g_run_holds_cv);
     pthread_mutex_unlock(&g_run_tickets_lock);
-    free(t);
+    lotus_run_ticket_free(t);
+}
+
+/* Inventory row R52: a bus handler's cell holds its subscriber, as a
+ * started run holds its child. A pool worker takes this hold on the
+ * cell's subscriber when it dequeues a bus cell, before the cell is
+ * materialized, and it ends where a run's hold ends (the dispatch's
+ * `lotus_run_hold_release`, or the coroutine's release or abandonment),
+ * or, on a classic worker, where the carry below ends it.
+ * The subscriber of a cell a pool runs can be reclaimed by another
+ * thread while its handler runs: only `main locus` places, so every
+ * locus a pool hosts is a placed field of the main locus or nested
+ * under one, and main replaces that field, or reclaims it in its
+ * teardown, cascading to everything under it. The reclaim already waits
+ * for the instance's held tickets before it releases the storage
+ * (`lotus_run_hold_wait`), so a held one keeps it until the handler
+ * returns. The main queue's handlers and a pinned thread's take none:
+ * their subscribers are reclaimed on the thread that runs them (main's
+ * queue runs one handler at a time, and releases the running handler's
+ * own subscriber after it returns), or after the pinned thread's join.
+ *
+ * Taken before the cell's dead-self check (`lotus_bus_cell_materialize`):
+ * a reclaim marks its subscriber dead (`lotus_bus_quarantine_self`)
+ * before it looks for holds, and each side fences between its write and
+ * its read of the other's word, so the worker either finds the
+ * subscriber dead and drops the cell, or the reclaim finds the hold and
+ * waits for it. A cell still queued once the reclaim has quarantined its
+ * subscriber is ended unrun there, as before.
+ *
+ * Linked held under one lock, so no cancel sees it unheld; nothing to
+ * admit, since nothing queued it. `LOTUS_LIFECYCLE_SKIP=HandlerHold` in
+ * the trace build takes none (the negative control). */
+static lotus_run_ticket_t *lotus_handler_hold_take(void *child, void *pool) {
+#ifdef LOTUS_LIFECYCLE_TRACE
+    if (lotus_lc_skips("HandlerHold")) return NULL;
+#endif
+    lotus_run_ticket_t *t = t_handler_hold_spare;
+    if (t) {
+        t_handler_hold_spare = t->next;
+        t_handler_hold_spares--;
+    } else {
+        t = (lotus_run_ticket_t *)malloc(sizeof *t);
+        if (!t) lotus_held_oom("holding a bus handler's subscriber");
+    }
+    *t = (lotus_run_ticket_t){ child, 0, 1, pool, NULL, NULL, 1 };
+    pthread_mutex_lock(&g_run_tickets_lock);
+    size_t b = lotus_run_ticket_bucket(child);
+    t->next = g_run_tickets[b];
+    if (t->next) t->next->prev = t;
+    g_run_tickets[b] = t;
+    __atomic_add_fetch(&lotus_run_tickets_live, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    atomic_thread_fence(memory_order_seq_cst);
+    return t;
+}
+
+/* The held handler is about to be called. Only the trace build keeps
+ * the handler's state past "a handler's hold". */
+static inline void lotus_handler_hold_started(lotus_run_ticket_t *t) {
+#ifdef LOTUS_LIFECYCLE_TRACE
+    if (t && t->handler == 1) t->handler = 2;
+#else
+    (void)t;
+#endif
+}
+
+/* A classic worker carries its handler's hold across consecutive cells
+ * for the same subscriber: taking and ending it costs two acquisitions
+ * of the ticket lock, more than the rest of the cell's dispatch, and a
+ * worker draining a backlog for one subscriber would pay them per cell.
+ * The carried hold stands between cells, where no handler runs; the
+ * reclaim's wait does not tell the two apart, so the carry is bounded,
+ * and ended:
+ *   1. before the worker runs a cell for another subscriber, or a cell
+ *      that is not a bus cell (a run, a root's init, a failure's wake),
+ *      and before it delivers a failure posted to its domain;
+ *   2. before the worker parks or idles (its queue empty, the replay
+ *      gate's idle wait, the end of a root's init yield, the switch to
+ *      the async drain), and so before it sees its pool's shutdown;
+ *   3. when the cell's dead-self check drops the cell, which still runs
+ *      on every cell, the hold carried or not;
+ *   4. when a reclaim waits for it: the reclaim sets the ticket's
+ *      `wanted` under the lock as it counts the hold, and the worker
+ *      reads that word once per cell, after the handler, before it
+ *      carries, so the reclaim waits for the handler in progress and
+ *      no further one;
+ *   5. after LOTUS_HANDLER_CARRY_MAX handlers under one hold, a backstop
+ *      that bounds the wait even if 4 were missed. 64 amortizes the two
+ *      lock acquisitions to about three instructions a cell (3% of a
+ *      cross-pool cell's dispatch; 256 would save two more), and a
+ *      missed flag costs the reclaim at most 63 handlers more, a quarter
+ *      of what 256 would.
+ * A reclaim of the carried subscriber on this thread itself ends it too
+ * (`lotus_run_cancel`). The carry is non-NULL only between two cells of
+ * a classic drain: a cell's dispatch takes it before anything runs. An
+ * async pool's worker carries nothing: a coroutine's hold spans its
+ * parks, and the cells of one subscriber overlap there. */
+#define LOTUS_HANDLER_CARRY_MAX 64
+static __thread lotus_run_ticket_t *t_handler_carry = NULL;
+
+static void lotus_handler_carry_end(void) {
+    lotus_run_ticket_t *t = t_handler_carry;
+    if (!t) return;
+    t_handler_carry = NULL;
+    lotus_run_hold_release(t);
+}
+
+/* The handler has returned (its delivery region already gone): carry
+ * its hold to the next cell, or end it (bounds 4 and 5). */
+static inline void lotus_handler_hold_settle(lotus_run_ticket_t *t) {
+#ifdef LOTUS_LIFECYCLE_TRACE
+    /* The negative control takes no hold. */
+    if (!t) return;
+#endif
+    if (++t->carried < LOTUS_HANDLER_CARRY_MAX
+        && !__atomic_load_n(&t->wanted, __ATOMIC_ACQUIRE)) {
+#ifdef LOTUS_LIFECYCLE_TRACE
+        t->handler = 1;
+#endif
+        t_handler_carry = t;
+        return;
+    }
+    lotus_run_hold_release(t);
 }
 
 /* Defined with the pool workers below, where the coroutine state is. */
@@ -9185,6 +9345,10 @@ static void lotus_run_cancel(void *child, int wait) {
     if (lotus_lc_skips("Cancellation")) return;
 #endif
     if (__atomic_load_n(&lotus_run_tickets_live, __ATOMIC_ACQUIRE) == 0) return;
+    /* This thread carries a hold on the child between its cells: no
+     * handler of it runs here, and the wait below could never see it
+     * end. */
+    if (t_handler_carry && t_handler_carry->child == child) lotus_handler_carry_end();
     lotus_run_ticket_t *own = lotus_run_hold_own();
     int canceled = 0;
     int held = 0;
@@ -9194,7 +9358,12 @@ static void lotus_run_cancel(void *child, int wait) {
         lotus_run_ticket_t *next = t->next;
         if (t->child == child) {
             if (t->held) {
-                if (t != own) held++;
+                if (t != own) {
+                    held++;
+                    /* A worker carrying it ends it after the cell in
+                     * progress (bound 4). */
+                    __atomic_store_n(&t->wanted, 1, __ATOMIC_RELEASE);
+                }
             } else {
                 t->canceled = 1;
                 lotus_run_ticket_unlink(t);
@@ -9500,15 +9669,32 @@ static const char *lotus_locus_label(void *self_ptr) {
     return "";
 }
 
+/* Defined with the pool start below. */
+static void lotus_pool_start_job(void *self_ptr, void *payload);
+
 static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
                                           lotus_bus_cell_t *cell) {
     /* Decision line 19: a run whose child was reclaimed while it sat
      * in the queue was canceled, and named, by that reclaim. An
      * admitted one holds its child until it returns. */
     lotus_run_ticket_t *hold = (lotus_run_ticket_t *)cell->run_ticket;
+    /* A bus cell holds its subscriber until the handler returns (R52);
+     * a pool-placed root's init is no handler. A hold carried from the
+     * previous cell ends unless this cell is its subscriber's (bound 1). */
+    int bus = !hold && cell->self_ptr && cell->handler != (void *)lotus_pool_start_job;
+    lotus_run_ticket_t *carry = t_handler_carry;
+    if (carry) {
+        t_handler_carry = NULL;
+        if (!bus || carry->child != cell->self_ptr) {
+            lotus_run_hold_release(carry);
+            carry = NULL;
+        }
+    }
     if (hold && !lotus_run_admit(hold, p)) return;
+    if (bus) hold = carry ? carry : lotus_handler_hold_take(cell->self_ptr, p);
     /* Wire cell? Deserialize into the subscriber's arena HERE, on
-     * its owner thread (bug 3, downstream handoff 2026-07-15). */
+     * its owner thread (bug 3, downstream handoff 2026-07-15). A
+     * dropped cell ends the hold, carried or not (bound 3). */
     if (!lotus_bus_cell_materialize(cell)) {
         lotus_run_hold_release(hold);
         return;
@@ -9523,15 +9709,19 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     p->running_label = lotus_locus_label(cell->self_ptr);
     lotus_run_ticket_t *outer = t_run_running;
     t_run_running = hold;
+    lotus_handler_hold_started(hold);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
-    /* The run's hold, or the one a failure posted from the cell took
-     * (`lotus_failure_hold_cell`). */
+    /* The run's or the handler's hold, or the one a failure posted from
+     * the cell took (`lotus_failure_hold_cell`). */
     hold = t_run_running;
     t_run_running = outer;
     p->running_label = NULL;
-    lotus_run_hold_release(hold);
+    /* The per-delivery region is a subregion of the subscriber's arena:
+     * gone before the hold that keeps that arena ends. */
     if (cell->payload_heap) free(cell->payload_heap);
     if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
+    if (bus) lotus_handler_hold_settle(hold);
+    else lotus_run_hold_release(hold);
 }
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
@@ -9587,7 +9777,8 @@ static void lotus_coop_pool_wake_consumer(lotus_coop_pool_t *p) {
 
 /* `run`: the cell is a child's run() (the compiler's only post, through
  * `lotus_coop_pool_post`), which takes a retention on the child; a bus
- * delivery (`lotus_coop_pool_post_bus`) takes none. */
+ * delivery (`lotus_coop_pool_post_bus`) takes none while queued, and
+ * holds its subscriber from its handler's start (R52). */
 static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
                                       void *handler,
                                       void *self_ptr,
@@ -9756,6 +9947,8 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
                 lotus_coop_pool_dispatch_cell(p, &cell);
                 return 1;
             }
+            /* Idle: no hold carried across the wait (bound 2). */
+            lotus_handler_carry_end();
             struct timespec ts = {0, 200 * 1000};
             nanosleep(&ts, NULL);
             if (atomic_load_explicit(&p->shutdown, memory_order_relaxed))
@@ -9764,7 +9957,9 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
         }
 
         /* Both empty — park under the mutex with the seq_cst handshake.
-         * Byte-identical to lotus_mailbox_drain_one. */
+         * Byte-identical to lotus_mailbox_drain_one, but that no hold
+         * is carried into the park, nor out at the shutdown (bound 2). */
+        lotus_handler_carry_end();
         pthread_mutex_lock(&p->lock);
         atomic_store_explicit(&p->parked, 1, memory_order_seq_cst);
         atomic_thread_fence(memory_order_seq_cst);
@@ -9950,6 +10145,8 @@ static void lotus_pool_init_yield(void) {
         if (replaying && !lotus_replay_gate_cell(&cell)) continue;
         lotus_coop_pool_dispatch_cell(p, &cell);
     }
+    /* The queue is empty and the init resumes: no hold carried (bound 2). */
+    lotus_handler_carry_end();
     p->running_label = label;
     g_pool_init_draining = 0;
 }
@@ -10092,6 +10289,8 @@ static int lotus_run_holds_outstanding(void *child, lotus_run_ticket_t *own,
          t; t = t->next) {
         if (t->child != child || !t->held || t == own) continue;
         held++;
+        /* One taken since the reclaim's first look, too (bound 4). */
+        __atomic_store_n(&t->wanted, 1, __ATOMIC_RELEASE);
         if (g_current_pool_tls && t->runner == (void *)g_current_pool_tls)
             *same_worker = 1;
     }
@@ -10464,6 +10663,9 @@ static void lotus_failure_service_here(void) {
         }
         lotus_failure_claim_locked(n);
         pthread_mutex_unlock(&g_params_open_lock);
+        /* A delivery is no cell of the carried hold's subscriber, and
+         * its handler may reclaim that subscriber (bound 1). */
+        lotus_handler_carry_end();
         lotus_failure_deliver_posted(n, 0);
     }
     t_failure_servicing = 0;
@@ -10586,7 +10788,8 @@ static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
  * holds (`lotus_run_hold_wait`), never releases the child under the rest
  * of the cell: what follows the handler's decision, the tick closures
  * after a handler (C40), the cell's scratch region. A run's cell holds
- * its child already. Taken linked and held under one lock, so no cancel
+ * its child already, and a bus cell its subscriber (R52), the child a
+ * failure from its handler is about. Taken linked and held under one lock, so no cancel
  * sees it unheld; released where the cell's run hold would be (the
  * dispatch, or the coroutine's release). A pinned thread needs none:
  * its owner reclaims it after joining the thread. */
@@ -11007,8 +11210,11 @@ static void lotus_coro_payload_dispose(lotus_coro_t *c) {
 
 static void lotus_coro_free(lotus_coro_t *c) {
     if (!c) return;
-    /* An abandoned run ends its hold here (decision line 19). */
-    lotus_run_hold_release((lotus_run_ticket_t *)c->run_ticket);
+    /* An abandoned run ends its hold here (decision line 19), and so
+     * does a handler abandoned parked (R52): it never returned. */
+    lotus_run_ticket_t *hold = (lotus_run_ticket_t *)c->run_ticket;
+    if (hold && hold->handler == 2) hold->handler = 3;
+    lotus_run_hold_release(hold);
     c->run_ticket = NULL;
     /* A coro freed here either completed (release already disposed its
      * payload) or is being ABANDONED mid-handler at pool shutdown. In
@@ -11334,6 +11540,10 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
      * with (`lotus_coro_release`, `lotus_coro_free`). */
     lotus_run_ticket_t *hold = (lotus_run_ticket_t *)cell_copy->run_ticket;
     if (hold && !lotus_run_admit(hold, p)) return 1;
+    /* A bus cell holds its subscriber until its coroutine is finished
+     * with (R52), across every park; a root's init is no handler. */
+    if (!hold && cell_copy->self_ptr && cell_copy->handler != (void *)lotus_pool_start_job)
+        hold = lotus_handler_hold_take(cell_copy->self_ptr, p);
     /* Wire cell from a cross-thread publisher: deserialize into the
      * subscriber's arena here, on this pool's worker (bug 3,
      * downstream handoff 2026-07-15). Completes before the coro is
@@ -11375,18 +11585,20 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         p->running_label = lotus_locus_label(cell_copy->self_ptr);
         lotus_run_ticket_t *outer = t_run_running;
         t_run_running = hold;
+        lotus_handler_hold_started(hold);
         ((lotus_handler_fn)cell_copy->handler)(
             cell_copy->self_ptr, payload_ptr);
         hold = t_run_running;   /* or a posted failure's (L0-1) */
         t_run_running = outer;
         p->running_label = NULL;
-        lotus_run_hold_release(hold);
         if (cell_copy->payload_heap) free(cell_copy->payload_heap);
         if (cell_copy->payload_region)
             lotus_arena_destroy(cell_copy->payload_region);
+        lotus_run_hold_release(hold);
         return 1;
     }
     c->run_ticket = hold;
+    lotus_handler_hold_started(hold);
     c->rec_pub_id = cell_copy->rec_pub_id;
     c->birth_ord = ord;
     g_current_coro_tls = c;
@@ -12179,6 +12391,8 @@ static void *lotus_coop_pool_worker(void *arg) {
         lotus_failure_service_here();
 #if LOTUS_HAVE_ASYNC_IO
         if (async) {
+            /* A late enable: the classic drain's carried hold ends. */
+            lotus_handler_carry_end();
             progressed = lotus_coop_pool_drain_one_async(p);
         } else {
             progressed = lotus_coop_pool_drain_one(p);
@@ -14536,6 +14750,12 @@ void lotus_bus_quarantine_self(void *self_ptr) {
      * materialization, on their consumer's thread — see
      * `bus_self_dead`. Only a self that ever subscribed can have one. */
     if (subscribed) bus_dead_add(self_ptr);
+    /* R52: the reclaim reads the run tickets past this point (its
+     * guards, the hold wait), and a pool worker takes its handler's
+     * hold before it reads the dead set: with a fence on each side,
+     * either the worker drops the cell or the reclaim waits for its
+     * handler (`lotus_handler_hold_take`). */
+    atomic_thread_fence(memory_order_seq_cst);
     /* Decision line 6: and the cells it parked before it was ready. */
     lotus_bus_ready_forget(self_ptr);
 }

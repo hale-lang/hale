@@ -34,10 +34,25 @@
 //!     sleeps while another failure is posted to the same thread. The
 //!     posted handler starts after the held one returns (handlers do not
 //!     nest). The word is the order of the handlers' entry and exit lines.
-//!   * `fd_handler_cell_no_hold.hl`, known open at inventory row R52: a
+//!   * `fd_handler_cell*.hl`, inventory row R52: a bus handler's cell
+//!     holds its subscriber, as a started run holds its child. A
 //!     pool-placed child is replaced while its bus handler runs, with no
-//!     failure involved, and the handler reads freed storage. It is the
-//!     window the sibling fixtures leave 250 ms to stay out of.
+//!     failure involved (`fd_handler_cell_no_hold.hl`, the window the
+//!     sibling fixtures leave 250 ms to stay out of); the handler reads
+//!     its heap name whole, since the reclaim waits for the handler's
+//!     hold. The two waits that could close on themselves: the owner's
+//!     own failure handler replaces and restarts the child whose bus
+//!     handler is waiting for that delivery
+//!     (`fd_handler_cell_restart_replaced.hl`), and the reclaim waits for
+//!     a handler that fails while main is inside that wait, so the
+//!     handler waits for main (`fd_handler_cell_blocked_on_owner.hl`).
+//!     A pool worker carries a handler's hold to its next cell when that
+//!     cell is the same subscriber's, and ends it for a reclaim that waits
+//!     for it: a subscriber its worker never finds idle, flooded by a
+//!     publisher, is replaced mid-flood (`fd_handler_cell_flooded.hl`),
+//!     and two subscribers sharing a worker, their cells interleaved, one
+//!     of them replaced mid-stream (`fd_handler_cell_interleaved.hl`).
+//!     Each is run under [`DEADLINE`].
 //!   * `fd_restart*_replaced*.hl`: the reclaim wins. A handler asks for a
 //!     restart (`restart`, `restart_in_place`) of a child whose reclaim is
 //!     owed: the child its own delivery is about, after replacing it; a
@@ -93,6 +108,13 @@ const ADOPTED: &[(&str, &str)] = &[
     ("fd_restart_replaced_by_owner.hl", RECLAIM_WINS),
     ("fd_settle_no_nest.hl", "ev held-enter / ev held-exit / ev posted-enter / ev posted-exit / ev finished"),
     ("fd_handler_cell_no_hold.hl", "read-whole"),
+    (
+        "fd_handler_cell_restart_replaced.hl",
+        "old-born-1 old-dissolved-1 read-whole delivered-whole new-born-1 new-dissolved-1 finished",
+    ),
+    ("fd_handler_cell_blocked_on_owner.hl", "read-whole delivered-whole dissolved-once-each finished"),
+    ("fd_handler_cell_flooded.hl", "replaced flood-running read-whole dissolved-once-each finished"),
+    ("fd_handler_cell_interleaved.hl", "replaced a-after read-whole dissolved-once-each finished"),
     ("fd_pool_owner_worker.hl", "raised-off-worker held-on-worker posted-on-worker heard-2"),
 ];
 
@@ -111,6 +133,10 @@ const DELIVERED_ON: &[(&str, &str, &[&str])] = &[
     ("fd_restart_sibling_replaced.hl", "main", &["Kid"]),
     ("fd_restart_replaced_by_owner.hl", "main", &["Kid"]),
     ("fd_settle_no_nest.hl", "main", &["Kid"]),
+    ("fd_handler_cell_restart_replaced.hl", "main", &["Kid"]),
+    ("fd_handler_cell_blocked_on_owner.hl", "main", &["Kid"]),
+    ("fd_handler_cell_flooded.hl", "main", &[]),
+    ("fd_handler_cell_interleaved.hl", "main", &[]),
     ("fd_pool_owner_worker.hl", "pool:side", &["Boom", "Kid"]),
 ];
 
@@ -133,17 +159,11 @@ const SIBLING_OUTPUT: &str = "handling 0 / replacing sibling / replaced sibling 
 /// off-owner heard-1`), and on the pool's worker while the owner's
 /// replacement reclaimed the old child under it (`off-owner
 /// read-after-dissolve dissolved-once-each`, a heap-use-after-free under
-/// ASan).
-///
-/// `fd_handler_cell_no_hold.hl` is judged under ASan only, where its word
-/// is deterministic: a plain build reads freed storage, whatever reused
-/// it. A bus handler's cell takes no hold on its subscriber, so replacing
-/// a pool-placed child frees it under its running handler; no failure is
-/// involved. A fix is a hold per dispatched cell, a dispatch-path cost
-/// recorded at the row, not taken here.
-const KNOWN_OPEN: &[(&str, &str, &str)] = &[
-    ("fd_handler_cell_no_hold.hl", "R52", "heap-use-after-free"),
-];
+/// ASan). `fd_handler_cell_no_hold.hl`'s went when a bus handler's cell
+/// came to hold its subscriber (R52): before, replacing a pool-placed
+/// child freed it under its running handler, a `heap-use-after-free`
+/// under ASan in both dispatch modes.
+const KNOWN_OPEN: &[(&str, &str, &str)] = &[];
 
 struct Ran {
     stdout: String,
@@ -169,8 +189,12 @@ fn checked_source(file: &str) -> String {
 }
 
 fn build(file: &str, asan: bool, no_bus_devirt: bool) -> PathBuf {
+    build_with(file, asan, !asan, no_bus_devirt)
+}
+
+fn build_with(file: &str, asan: bool, lifecycle_trace: bool, no_bus_devirt: bool) -> PathBuf {
     let bin = harness::unique_bin(&format!("hale_fd_{}", file.trim_end_matches(".hl")));
-    let options = hale_codegen::BuildOptions { asan, lifecycle_trace: !asan, no_bus_devirt, ..build_opts::options() };
+    let options = hale_codegen::BuildOptions { asan, lifecycle_trace, no_bus_devirt, ..build_opts::options() };
     build_opts::build_source(&checked_source(file), &bin, &options).unwrap_or_else(|e| panic!("{file}: build: {e:?}"));
     if asan {
         let image = std::fs::read(&bin).expect("read the ASan binary");
@@ -375,7 +399,72 @@ fn handler_cell(r: &Ran) -> String {
     if let Some(w) = exit_word(r) {
         return w;
     }
-    if count(r, "ev handler-read kid-1-name") == 1 { "read-whole".into() } else { "read-torn".into() }
+    read_word(r).into()
+}
+
+fn read_word(r: &Ran) -> &'static str {
+    if count(r, "ev handler-read kid-1-name") == 1 { "read-whole" } else { "read-torn" }
+}
+
+fn delivered_word(r: &Ran) -> &'static str {
+    if count(r, "ev delivered kid-1-name") == 1 { "delivered-whole" } else { "delivered-torn" }
+}
+
+fn finished_word(r: &Ran) -> &'static str {
+    if count(r, "ev finished") == 1 { "finished" } else { "unfinished" }
+}
+
+/// `fd_handler_cell_restart_replaced.hl`: the old child's and the new
+/// one's births and dissolves (the restart is not performed), and whether
+/// the bus handler and the delivery each read the old child whole.
+fn handler_cell_restart(r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return format!("{w} after: {}", r.stdout.lines().collect::<Vec<_>>().join(" / "));
+    }
+    format!(
+        "old-born-{} old-dissolved-{} {} {} new-born-{} new-dissolved-{} {}",
+        count(r, "ev kid-birth 1"),
+        count(r, "ev kid-dissolve 1"),
+        read_word(r),
+        delivered_word(r),
+        count(r, "ev kid-birth 2"),
+        count(r, "ev kid-dissolve 2"),
+        finished_word(r),
+    )
+}
+
+/// `fd_handler_cell_blocked_on_owner.hl`: whether the bus handler and the
+/// delivery it waited for read the old child whole, and the dissolves.
+fn handler_cell_blocked(r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return format!("{w} after: {}", r.stdout.lines().collect::<Vec<_>>().join(" / "));
+    }
+    let once = if count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1 {
+        "dissolved-once-each"
+    } else {
+        "dissolved-other"
+    };
+    format!("{} {} {once} {}", read_word(r), delivered_word(r), finished_word(r))
+}
+
+/// `fd_handler_cell_flooded.hl` and `fd_handler_cell_interleaved.hl`:
+/// whether the replacement returned, what ran beside it (the flood, or
+/// the other subscriber's cells), whether every handler read its own
+/// name whole, and each child's dissolve.
+fn handler_cell_carried(file: &str, r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return format!("{w} after: {}", r.stdout.lines().collect::<Vec<_>>().join(" / "));
+    }
+    let (beside, kids) = if file == "fd_handler_cell_flooded.hl" { ("flood-running", 1..=2) } else { ("a-after", 1..=3) };
+    let replaced = if count(r, "ev replaced") == 1 { "replaced" } else { "unreplaced" };
+    let beside = if count(r, &format!("ev {beside}")) == 1 { beside } else { "alone" };
+    let read = if r.stdout.lines().any(|l| l.starts_with("ev handler-torn")) { "read-torn" } else { "read-whole" };
+    let once = if kids.clone().all(|t| count(r, &format!("ev kid-dissolve {t} kid-{t}-name")) == 1) {
+        "dissolved-once-each"
+    } else {
+        "dissolved-other"
+    };
+    format!("{replaced} {beside} {read} {once} {}", finished_word(r))
 }
 
 /// `fd_pool_owner_worker.hl`: whether the posted failure was raised off
@@ -399,6 +488,9 @@ fn pool_owner_worker(r: &Ran) -> String {
 fn judge(file: &str, r: &Ran) -> String {
     match file {
         "fd_handler_cell_no_hold.hl" => handler_cell(r),
+        "fd_handler_cell_restart_replaced.hl" => handler_cell_restart(r),
+        "fd_handler_cell_blocked_on_owner.hl" => handler_cell_blocked(r),
+        f @ ("fd_handler_cell_flooded.hl" | "fd_handler_cell_interleaved.hl") => handler_cell_carried(f, r),
         f if f.starts_with("fd_restart") => reclaim_wins(f, r),
         "fd_pinned_owner_state.hl" => owner_state(r),
         "fd_reclaim_under_delivery.hl" => reclaim_under_delivery(r),
@@ -489,25 +581,6 @@ fn assert_asan(file: &str) {
         let hits = sanitizer_hits(&ran);
         assert!(hits.is_empty(), "{file}, no_bus_devirt={no_bus_devirt}: {hits:?}\n{}", report(&ran));
         assert_eq!(judge(file, &ran), adopted(file), "{file} under ASan, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
-    }
-}
-
-/// A known-open fixture under AddressSanitizer, chunk pooling off, both
-/// dispatch modes: today's word, so the fix fails the assertion and the
-/// entry has to go.
-fn assert_asan_known_open(file: &str) {
-    let (row, today) = known_open(file).unwrap_or_else(|| panic!("{file} is not in KNOWN_OPEN"));
-    for no_bus_devirt in [false, true] {
-        let bin = build(file, true, no_bus_devirt);
-        let ran = run_bin(&bin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
-        let _ = std::fs::remove_file(&bin);
-        assert_eq!(
-            judge(file, &ran),
-            today,
-            "{file} (KNOWN_OPEN at {row}) under ASan, no_bus_devirt={no_bus_devirt}, no longer gives today's word; adopted is `{}`, so the entry has to go\n{}",
-            adopted(file),
-            report(&ran)
-        );
     }
 }
 
@@ -637,13 +710,77 @@ fn a_held_handler_at_settle_does_not_nest_a_posted_one() {
     }
 }
 
-/// Recorded, not fixed (inventory row R52): a bus handler's cell takes no
-/// hold on its subscriber, so replacing a pool-placed child while its
-/// handler runs frees the child under that handler. Asserted to fail
-/// under ASan today.
+/// Inventory row R52: a bus handler's cell holds its subscriber. Replacing
+/// a pool-placed child while its handler runs leaves the child's storage
+/// to that handler until it returns, under ASan in both dispatch modes.
+/// Before the hold the handler read freed storage (`heap-use-after-free`).
 #[test]
-fn a_bus_handlers_cell_takes_no_hold_on_its_subscriber_known_open() {
-    assert_asan_known_open("fd_handler_cell_no_hold.hl");
+fn a_bus_handlers_cell_holds_its_subscriber() {
+    assert_asan("fd_handler_cell_no_hold.hl");
+}
+
+/// The negative control: the same fixture under ASan, with the trace
+/// build's `HandlerHold` skip, which takes no hold, reads freed storage
+/// again in both dispatch modes.
+#[test]
+fn without_the_handler_hold_the_subscriber_is_freed_under_its_handler() {
+    let file = "fd_handler_cell_no_hold.hl";
+    for no_bus_devirt in [false, true] {
+        let bin = build_with(file, true, true, no_bus_devirt);
+        let ran = run_bin(
+            &bin,
+            &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1"), ("LOTUS_LIFECYCLE_SKIP", "HandlerHold")],
+        );
+        let _ = std::fs::remove_file(&bin);
+        assert_eq!(judge(file, &ran), "heap-use-after-free", "{file} without the hold, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
+    }
+}
+/// The owner's failure handler replaces, and asks to restart, the child
+/// whose bus handler is waiting on main for that very delivery: the
+/// reclaim is deferred behind the delivery, then waits for the bus
+/// handler's hold, and the restart is not performed. No wait closes on
+/// itself (each run is under [`DEADLINE`]).
+#[test]
+fn a_handler_replacing_the_child_whose_handler_waits_on_it_does_not_deadlock() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_handler_cell_restart_replaced.hl", no_bus_devirt);
+    }
+    assert_asan("fd_handler_cell_restart_replaced.hl");
+}
+
+/// The reclaim waits for a handler that is waiting for the reclaiming
+/// thread: the wait runs the failure posted to main, so the handler
+/// returns and the reclaim completes.
+#[test]
+fn a_reclaim_waiting_for_a_handler_runs_what_the_handler_waits_for() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_handler_cell_blocked_on_owner.hl", no_bus_devirt);
+    }
+    assert_asan("fd_handler_cell_blocked_on_owner.hl");
+}
+
+/// A worker that never finds its queue empty carries its handler's hold
+/// from cell to cell for the one subscriber it serves; replacing that
+/// subscriber mid-flood ends the carry after the handler in progress (the
+/// reclaim's `wanted`, or the dead-self check of the next cell), so the
+/// reclaim completes while the flood still runs, and the program ends.
+#[test]
+fn a_reclaim_of_a_flooded_subscriber_ends_its_workers_carried_hold() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_handler_cell_flooded.hl", no_bus_devirt);
+    }
+    assert_asan("fd_handler_cell_flooded.hl");
+}
+
+/// Two subscribers on one worker, their cells interleaved: each cell ends
+/// the other subscriber's carried hold, and the one replaced mid-stream is
+/// reclaimed while the other's cells go on.
+#[test]
+fn a_carried_hold_ends_at_another_subscribers_cell() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_handler_cell_interleaved.hl", no_bus_devirt);
+    }
+    assert_asan("fd_handler_cell_interleaved.hl");
 }
 
 /// The owner's own reclaim reached the child first: App's run() replaces
