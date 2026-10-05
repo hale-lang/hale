@@ -114,6 +114,14 @@ is instantiated without the field, so when a worker builds a
 `Holder { }` whose `s: Ship = Ship { ... }` default it leaves
 alone, the default's `Ship` is a cross-pool spawn used as
 `Holder`'s field, and `hale check` points at it in the default.
+A function's or a method's argument default works the same way, one
+call at a time: `fn take(s: Ship = Ship { ... })` builds its `Ship`
+at each call that leaves `s` out, in the caller, so a worker's
+`take()` is refused at that call, while `take(ship)` and a `take()`
+made on the owner's own thread are fine. A `const` or a type's field
+default that builds a `Ship` is built wherever it is used, so it is
+refused where it is written as soon as some worker would spawn a
+`Ship` across pools.
 
 "A different thread" counts instances, not types. A worker nested
 inside a pinned or pool-placed locus runs on that locus's thread,

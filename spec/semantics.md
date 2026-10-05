@@ -331,12 +331,22 @@ owner may live in a different tower or on a different pool: a
 cross-pool owner is served by an async handoff over the bus, so a
 cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
-compile time. The typechecker rejects it at the literal: in a
-member body, under the locus whose body it is; in a `params`
-default, under each locus that builds the defaulting locus and
-leaves that field to its default, through any chain of defaults
-(the default is expanded there, and a default is a field's value,
-never a bare statement). See `runtime.md`
+compile time. The rule holds at every expansion of a default, since
+a default is lowered where it is expanded, not where it is written.
+The typechecker rejects it at the literal: in a member body (a
+closure's assertion included), under the locus whose body it is; in
+a `params` default, under each locus that builds the defaulting
+locus and leaves that field to its default (the default is expanded
+there, and a default is a field's value, never a bare statement). A
+fn's or a locus method's argument default is judged per invocation:
+each call that leaves the argument out expands the default in the
+caller, under the caller's locus, and is rejected at the call when
+the default builds a cross-pool `I{}` there; a call that supplies
+the argument expands nothing, and a caller on the owner's thread is
+not rejected. Chains of defaults of either kind are followed. A
+`const`'s value and a type's field default are expanded at every
+use, under whichever locus uses them, so one that builds an `I{}`
+some locus would post is rejected at the position. See `runtime.md`
 "Interest-based ownership (accept bubbling)."
 
 Whether the owner is on another pool is a fact of each *instance*

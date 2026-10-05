@@ -70,7 +70,11 @@ Two rules keep the calling convention unambiguous:
 - **Defaults are evaluated at the call site**, in the caller's
   scope — not baked in when the function is defined. For a constant
   literal (the common case) that's identical; for an expression
-  that names a caller-visible binding, it sees *that* binding.
+  that names a caller-visible binding, it sees *that* binding. A
+  default that builds a locus builds it in the caller too, so a
+  worker on another pool that leaves such an argument out may be
+  making a [cross-pool spawn](../services/parents-children.md),
+  which `hale check` refuses at that call.
 
 Locus methods support defaults too. One caveat: bus-handler
 methods and mode methods reject them — their argument shape is
