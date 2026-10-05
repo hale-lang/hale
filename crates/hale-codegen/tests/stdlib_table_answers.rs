@@ -157,16 +157,12 @@ fn answers(path: &str) -> String {
     line
 }
 
-/// Every path a table, the renames, the dispatchers or the probes name.
+/// Every path the table, the side lists, the renames, the dispatchers or
+/// the probes name.
 fn paths() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for s in surf::SURFACES {
-        for f in s.fns {
-            out.insert(format!("std::{}::{}", s.ns.join("::"), f.name));
-        }
-    }
-    for s in surf::SIGS {
-        out.insert(s.display_path());
+    for (s, f) in surf::rows() {
+        out.insert(format!("std::{}::{}", s.ns.join("::"), f.name));
     }
     for p in surf::LOCUS_PATHS {
         out.insert(p.join("::"));
@@ -195,7 +191,7 @@ fn listing() -> String {
     let mut out = String::new();
     for s in surf::SURFACES {
         writeln!(out, "ns std::{} open_prefixes={:?}", s.ns.join("::"), s.open_prefixes).unwrap();
-        for f in s.fns {
+        for f in s.public() {
             writeln!(out, "  {} {}", f.name, effects(f.effects)).unwrap();
         }
     }

@@ -13363,7 +13363,7 @@ impl<'a> Checker<'a> {
                                     crate::typed_bodies::FallibleCall {
                                         span: expr.span(),
                                         kind: crate::typed_bodies::CalleeKind::Stdlib,
-                                        callee: sig.display_path(),
+                                        callee: segs.join("::"),
                                         payload,
                                         handled: self.handling,
                                     },
@@ -13376,7 +13376,7 @@ impl<'a> Checker<'a> {
                                     qn.span,
                                     format!(
                                         "`{}` takes {} argument{}, got {}",
-                                        sig.display_path(),
+                                        segs.join("::"),
                                         sig.params.len(),
                                         if sig.params.len() == 1 {
                                             ""
@@ -13396,7 +13396,7 @@ impl<'a> Checker<'a> {
                                             format!(
                                                 "`{}` argument {}: expected \
                                                  `{}`, got `{}`",
-                                                sig.display_path(),
+                                                segs.join("::"),
                                                 i + 1,
                                                 want.to_ty().display(),
                                                 got.display()
