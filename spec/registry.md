@@ -48,7 +48,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
 | `law_backstops` | Layer 8 | Canonical | law | `lowering_laws` | 0 | The laws that replaced lowering's own refusals of rules the spec states. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
-| `claims` | The law engine | Migrating | law | `claim_law_diags` | 1 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
+| `claims` | The law engine | Canonical | law | `claim_law_diags` | 0 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Canonical | derivation | `mint` | 0 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (numbered over the user program before the intra-locus rewrite, so the sends it records are numbered on every path, and minted over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance; and which declaration each use names (`binding_of`), resolved once by the mint. |
 | `demand` | Identity | Canonical | derivation | `Snapshot` | 0 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph, handler rows and flow rows, law selection, the role rows, the arrangement, the effect rows, the model, the check in its two stages with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
@@ -1336,19 +1336,15 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `derive_application_model(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×2
 - `derive_application_model_over(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
-### `claims` — Migrating · law
+### `claims` — Canonical · law
 
 **Answers.** Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account.
 
 **Inputs.** model; claim and constitution declarations; evidence (certificates, budgets); effects
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/judgment.rs` · `claim_law_diags`
+**Producer.** `crates/hale-types/src/judgment.rs` · `claim_law_diags`
 
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-cli/src/topology_law.rs` · `validate_law_account` — admitting an artifact, the CLI recomputes the law digest and compares the evidence inputs digest, decodes every law payload into a private copy of the law vocabulary (`decode_law`), re-renders the claims' forms with a private renderer that mirrors `hale-model`'s, and re-aggregates the stated verdicts (a row's from its certificates', the document's from the rows'); it evaluates no law over a model. *Removed when:* admission validates ties and reads verdicts; it re-derives none.
-
-**Consumers.** check / verify; the check's law-selection diagnostics (the snapshot's selection, handed in) (`crates/hale-types/src/check.rs` · `laws.diags`); the check's laws stage (judged over the snapshot's model, after its typing stage; its lowering reads the snapshot's selection) (`crates/hale-frontend/src/snapshot.rs` · `demand_laws`); topology (law section: the law rows, the constitution identities projected from the adoption, and the environment label, all the snapshot's selection, handed in) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_law_selection`); check --matrix (each pair's identity comparison: the roots its snapshot's selection adopted, `LawSelection::identities`, the projection the artifact reads; a pair the check refuses has no snapshot, so no constitution of its takes part) (`crates/hale-cli/src/verbs/check/matrix.rs` · `adopted_roots`); fleet; dna (dna_law.rs wording); model diff
+**Consumers.** check / verify; admission (`hale topology graph`, `hale fleet`: an artifact's law account is validated against itself, with the family's own functions; it recomputes the law digest and the evidence inputs digest, checks every reference against the artifact's catalogs, re-renders every stated form with the model's spelling (`hale_model::claim_form`) and recomputes a row's verdict and the document's with the model's aggregation (`certificate_row_verdict`, `document_verdict`); its decoder is the artifact schema's reader, since a payload carries no model ids and cannot rebuild a `ClaimIr`, held to the emitter by a round trip over every artifact the corpus emits, `law_account_round_trip.rs`, F.40 phase 4, A5) (`crates/hale-cli/src/topology_law.rs` · `validate_law_account`); the check's law-selection diagnostics (the snapshot's selection, handed in) (`crates/hale-types/src/check.rs` · `laws.diags`); the check's laws stage (judged over the snapshot's model, after its typing stage; its lowering reads the snapshot's selection) (`crates/hale-frontend/src/snapshot.rs` · `demand_laws`); topology (law section: the law rows, the constitution identities projected from the adoption, and the environment label, all the snapshot's selection, handed in) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_law_selection`); check --matrix (each pair's identity comparison: the roots its snapshot's selection adopted, `LawSelection::identities`, the projection the artifact reads; a pair the check refuses has no snapshot, so no constitution of its takes part) (`crates/hale-cli/src/verbs/check/matrix.rs` · `adopted_roots`); fleet; dna (dna_law.rs wording); model diff
 
 **Invariants.**
 
@@ -1356,10 +1352,11 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - structural compiler laws are evaluated through model_query with shared witness rendering; the judgment path stays for user claims (final direction)
 - a registered rule without an evaluator fails the compiler's own build
 - a non-holds verdict is never silent
+- admission evaluates no law; it refuses an artifact whose sections disagree (`spec/verification.md`)
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/claim_diags_snapshot.rs; crates/hale-cli/tests/law_selection_reaches_the_artifact.rs; crates/hale-cli/tests/dna_law.rs; crates/hale-types/tests/one_reachability_engine.rs
+**Focused tests.** crates/hale-types/tests/claim_diags_snapshot.rs; crates/hale-cli/tests/law_selection_reaches_the_artifact.rs; crates/hale-cli/tests/law_account_round_trip.rs; crates/hale-cli/tests/dna_law.rs; crates/hale-types/tests/one_reachability_engine.rs
 
 **Spec.** spec/verification.md § Claims; spec/model.md § Adding a judgment family
 

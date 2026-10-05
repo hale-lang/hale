@@ -254,6 +254,24 @@ pub enum CountCmpIr {
     Ge,
 }
 
+impl CountCmpIr {
+    /// The comparison as written, and as the law payload carries it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CountCmpIr::Eq => "==",
+            CountCmpIr::Le => "<=",
+            CountCmpIr::Ge => ">=",
+        }
+    }
+
+    /// The comparison a written word names; `None` outside the three.
+    pub fn from_word(word: &str) -> Option<CountCmpIr> {
+        [CountCmpIr::Eq, CountCmpIr::Le, CountCmpIr::Ge]
+            .into_iter()
+            .find(|c| c.as_str() == word)
+    }
+}
+
 /// A quantitative budget dimension (`@budget(<dim> = N)`).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum QuantDimIr {
@@ -263,6 +281,25 @@ pub enum QuantDimIr {
     Fanout,
     /// `@budget(<user class> = N)` — carrier-call bound.
     UserClass(EffectClassRef),
+}
+
+impl QuantDimIr {
+    /// The built-in dimensions, by the name the law payload's
+    /// `{"builtin": …}` tag and the budget form carry.
+    pub const BUILTINS: [(&'static str, QuantDimIr); 4] = [
+        ("stack_bytes", QuantDimIr::StackBytes),
+        ("block_points", QuantDimIr::BlockPoints),
+        ("publish", QuantDimIr::Publish),
+        ("fanout", QuantDimIr::Fanout),
+    ];
+
+    /// A built-in dimension's name; `None` for a user class.
+    pub fn builtin_name(&self) -> Option<&'static str> {
+        Self::BUILTINS
+            .iter()
+            .find(|(_, d)| d == self)
+            .map(|(name, _)| *name)
+    }
 }
 
 /// Where a law came from. Origin is provenance at the law grain —
@@ -583,6 +620,26 @@ impl JudgmentFamily {
             JudgmentFamily::Unmigrated => "unmigrated",
             JudgmentFamily::Fleet => "fleet",
         }
+    }
+
+    /// Every family, in declaration order.
+    pub const ALL: [JudgmentFamily; 10] = [
+        JudgmentFamily::Reachability,
+        JudgmentFamily::Boundary,
+        JudgmentFamily::Endpoint,
+        JudgmentFamily::Bound,
+        JudgmentFamily::Certificate,
+        JudgmentFamily::Causes,
+        JudgmentFamily::Depends,
+        JudgmentFamily::Budget,
+        JudgmentFamily::Unmigrated,
+        JudgmentFamily::Fleet,
+    ];
+
+    /// The family a stated word names (an artifact row's `family`);
+    /// `None` outside the vocabulary.
+    pub fn from_word(word: &str) -> Option<JudgmentFamily> {
+        Self::ALL.into_iter().find(|f| f.as_str() == word)
     }
 
     /// The relation families this judgment's projection consumes —
@@ -966,11 +1023,7 @@ impl ClaimRow {
                  \"topic\": {}, \"cmp\": {}, \"n\": {}}}",
                 publishers,
                 tref(topic),
-                json_str(match cmp {
-                    CountCmpIr::Eq => "==",
-                    CountCmpIr::Le => "<=",
-                    CountCmpIr::Ge => ">=",
-                }),
+                json_str(cmp.as_str()),
                 n
             ),
             ClaimIr::EffectForbid { at, classes } => format!(
@@ -1044,21 +1097,17 @@ impl ClaimRow {
                 // closed tag; a user class is a full class
                 // reference with its resolution state.
                 let dim_json = match dim {
-                    QuantDimIr::StackBytes => {
-                        "{\"builtin\": \"stack_bytes\"}".to_string()
-                    }
-                    QuantDimIr::BlockPoints => {
-                        "{\"builtin\": \"block_points\"}".to_string()
-                    }
-                    QuantDimIr::Publish => {
-                        "{\"builtin\": \"publish\"}".to_string()
-                    }
-                    QuantDimIr::Fanout => {
-                        "{\"builtin\": \"fanout\"}".to_string()
-                    }
                     QuantDimIr::UserClass(c) => {
                         format!("{{\"user_class\": {}}}", cref(c))
                     }
+                    builtin => format!(
+                        "{{\"builtin\": {}}}",
+                        json_str(
+                            builtin
+                                .builtin_name()
+                                .expect("every builtin is named")
+                        )
+                    ),
                 };
                 format!(
                     "{{\"kind\": \"quant_budget\", \"at\": {}, \
@@ -1173,28 +1222,20 @@ impl ClaimRow {
     /// rows that are not claims-block forms (annotations render via
     /// [`ClaimRow::certificate_forms`]; fleet rows via Change 7).
     pub fn claims_form(&self) -> Option<String> {
+        use crate::claim_form as form;
         let set = |s: &SetIr| -> String {
             match s {
                 SetIr::Group(g) => g.name.display.clone(),
-                SetIr::EffectCarriers(c) => {
-                    format!("effects({})", c.name)
-                }
+                SetIr::EffectCarriers(c) => form::effect_carriers(&c.name),
             }
         };
-        let cmp = |c: &CountCmpIr| match c {
-            CountCmpIr::Eq => "==",
-            CountCmpIr::Le => "<=",
-            CountCmpIr::Ge => ">=",
-        };
         Some(match &self.law {
-            ClaimIr::RequireSealed { group } => format!(
-                "require sealed(all {})",
-                group.name.display
-            ),
-            ClaimIr::RequireAttributed { class } => format!(
-                "require attributed(all {})",
-                class.name
-            ),
+            ClaimIr::RequireSealed { group } => {
+                form::require_sealed(&group.name.display)
+            }
+            ClaimIr::RequireAttributed { class } => {
+                form::require_attributed(&class.name)
+            }
             ClaimIr::ForbidReaches {
                 src,
                 dst,
@@ -1202,94 +1243,42 @@ impl ClaimRow {
                 via_bus,
                 during,
                 avoiding,
-            } => {
-                let mut out = format!(
-                    "forbid reaches({}, {})",
-                    set(src),
-                    set(dst)
-                );
-                match (via_calls, via_bus) {
-                    (true, true) => {}
-                    (true, false) => {
-                        out.push_str(" via { calls }")
-                    }
-                    (false, true) => out.push_str(" via { bus }"),
-                    (false, false) => {}
-                }
-                if let Some(p) = during {
-                    out.push_str(&format!(
-                        " during {}",
-                        p.name
-                    ));
-                }
-                if let Some(a) = avoiding {
-                    out.push_str(&format!(
-                        " avoiding {}",
-                        a.name.display
-                    ));
-                }
-                out
-            }
-            ClaimIr::OnlyEdges { src, dst, grants } => {
-                let gs: Vec<String> = grants
-                    .iter()
-                    .map(|g| {
-                        format!(
-                            "{} {}",
-                            if g.publish {
-                                "publish"
-                            } else {
-                                "subscribe"
-                            },
-                            g.topic.name.display
-                        )
-                    })
-                    .collect();
-                format!(
-                    "only edges {} -> {} {{ {} }}",
-                    src.name.display,
-                    dst.name.display,
-                    gs.join("; ")
-                )
-            }
-            ClaimIr::Bound { class, limit, from } => format!(
-                "bound {} <= {} on paths from {}",
-                class.name, limit, from.name.display
+            } => form::forbid_reaches(
+                &set(src),
+                &set(dst),
+                *via_calls,
+                *via_bus,
+                during.as_ref().map(|p| p.name.as_str()),
+                avoiding.as_ref().map(|a| a.name.display.as_str()),
             ),
+            ClaimIr::OnlyEdges { src, dst, grants } => form::only_edges(
+                &src.name.display,
+                &dst.name.display,
+                grants
+                    .iter()
+                    .map(|g| (g.publish, g.topic.name.display.as_str())),
+            ),
+            ClaimIr::Bound { class, limit, from } => {
+                form::bound(&class.name, *limit, &from.name.display)
+            }
             ClaimIr::RequireEndpoint {
                 publishers,
                 group,
                 topic,
-            } => format!(
-                "require {}(some {}, topic {})",
-                if *publishers {
-                    "publishes"
-                } else {
-                    "subscribes"
-                },
-                group.name.display,
-                topic.name.display
+            } => form::require_endpoint(
+                *publishers,
+                &group.name.display,
+                &topic.name.display,
             ),
-            ClaimIr::Cover { seed, group } => format!(
-                "cover topic in seed({}): subscribed_by(some {})",
-                seed.name, group.name.display
-            ),
+            ClaimIr::Cover { seed, group } => {
+                form::cover(&seed.name, &group.name.display)
+            }
             ClaimIr::Count {
                 publishers,
                 topic,
-                cmp: c,
+                cmp,
                 n,
-            } => format!(
-                "count {}(topic {}) {} {}",
-                if *publishers {
-                    "publishers"
-                } else {
-                    "subscribers"
-                },
-                topic.name.display,
-                cmp(c),
-                n
-            ),
+            } => form::count(*publishers, &topic.name.display, *cmp, *n),
             _ => return None,
         })
     }
@@ -1309,23 +1298,21 @@ impl ClaimRow {
     /// (round 6) and admission can re-render it from the typed
     /// operands.
     pub fn budget_lowered_form(&self) -> Option<String> {
+        use crate::claim_form as form;
         match &self.law {
-            ClaimIr::AllocBudget { at, per_call } => Some(format!(
-                "bound alloc <= {} on paths from {{{}}}",
-                per_call, at.1.display
+            ClaimIr::AllocBudget { at, per_call } => Some(form::budget(
+                "alloc",
+                u64::from(*per_call),
+                &at.1.display,
             )),
             ClaimIr::QuantBudget { at, dim, limit } => {
                 let d = match dim {
-                    QuantDimIr::StackBytes => "stack_bytes".to_string(),
-                    QuantDimIr::BlockPoints => "block_points".to_string(),
-                    QuantDimIr::Publish => "publish".to_string(),
-                    QuantDimIr::Fanout => "fanout".to_string(),
-                    QuantDimIr::UserClass(c) => c.name.clone(),
+                    QuantDimIr::UserClass(c) => c.name.as_str(),
+                    builtin => builtin
+                        .builtin_name()
+                        .expect("every builtin is named"),
                 };
-                Some(format!(
-                    "bound {} <= {} on paths from {{{}}}",
-                    d, limit, at.1.display
-                ))
+                Some(form::budget(d, *limit, &at.1.display))
             }
             _ => None,
         }
@@ -1338,34 +1325,22 @@ impl ClaimRow {
     /// the row (an operand mutation changes the fingerprint and
     /// orphans the report entry).
     pub fn legacy_form(&self) -> Option<String> {
+        use crate::claim_form as form;
         match &self.law {
-            ClaimIr::EffectCauses { at, classes } => {
-                let cs: Vec<&str> = classes
-                    .iter()
-                    .map(|c| c.name.as_str())
-                    .collect();
-                Some(format!(
-                    "causes {{{}}} from {{{}}}",
-                    cs.join(", "),
-                    at.1.display
-                ))
-            }
-            ClaimIr::DependsSet { locus, entries } => {
-                let es: Vec<&str> = entries
-                    .iter()
-                    .map(|b| b.name.as_str())
-                    .collect();
-                Some(format!(
-                    "depends {{{}}} on {{{}}}",
-                    es.join(", "),
-                    locus.1.display
-                ))
-            }
+            ClaimIr::EffectCauses { at, classes } => Some(form::causes(
+                classes.iter().map(|c| c.name.as_str()),
+                &at.1.display,
+            )),
+            ClaimIr::DependsSet { locus, entries } => Some(form::depends(
+                entries.iter().map(|b| b.name.as_str()),
+                &locus.1.display,
+            )),
             _ => None,
         }
     }
 
     pub fn certificate_forms(&self) -> Vec<(String, String)> {
+        use crate::claim_form as form;
         let subject_disp =
             |at: &(Option<FunctionId>, NameRef)| at.1.display.clone();
         match &self.law {
@@ -1374,61 +1349,36 @@ impl ClaimRow {
                 .map(|c| {
                     (
                         subject_disp(at),
-                        format!(
-                            "forbid reaches({{{}}}, effects({}))",
-                            at.1.display, c.name
-                        ),
+                        form::forbid_effect(&at.1.display, &c.name),
                     )
                 })
                 .collect(),
-            ClaimIr::EffectOnly { at, classes } => {
-                let set = classes
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                vec![(
-                    subject_disp(at),
-                    format!(
-                        "only effects {{{}}} on {{{}}}",
-                        set, at.1.display
-                    ),
-                )]
-            }
-            ClaimIr::EffectPublishSet { at, entries } => {
-                let allowed = entries
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                vec![(
-                    subject_disp(at),
-                    format!(
-                        "only publishes {{{}}} from {{{}}}",
-                        allowed, at.1.display
-                    ),
-                )]
-            }
-            ClaimIr::NoPanic { at } => vec![(
+            ClaimIr::EffectOnly { at, classes } => vec![(
                 subject_disp(at),
-                format!(
-                    "forbid reaches({{{}}}, panic)",
-                    at.1.display
+                form::only_effects(
+                    classes.iter().map(|c| c.name.as_str()),
+                    &at.1.display,
                 ),
             )],
+            ClaimIr::EffectPublishSet { at, entries } => vec![(
+                subject_disp(at),
+                form::only_publishes(
+                    entries.iter().map(|s| s.name.as_str()),
+                    &at.1.display,
+                ),
+            )],
+            ClaimIr::NoPanic { at } => {
+                vec![(subject_disp(at), form::no_panic(&at.1.display))]
+            }
             ClaimIr::PhaseEffects { locus, phases } => phases
                 .iter()
                 .map(|(phase, allowed)| {
-                    let set = allowed
-                        .iter()
-                        .map(|c| c.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ");
                     (
                         locus.1.display.clone(),
-                        format!(
-                            "only effects {{{}}} on {{{}}} during {}",
-                            set, locus.1.display, phase
+                        form::phase_effects(
+                            allowed.iter().map(|c| c.name.as_str()),
+                            &locus.1.display,
+                            phase,
                         ),
                     )
                 })
