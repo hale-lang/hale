@@ -16,9 +16,12 @@ use hale_types::judgment::{
     judge_bound, judge_endpoints, judge_forbid_reaches,
     judge_only_edges,
 };
-use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
+
+#[path = "support/entries.rs"]
+mod entries;
+use entries::derive_application_model;
 
 /// A single-program bundle WITH a populated source table, so model
 /// provenance is Source-backed and the engine reconstructs the
