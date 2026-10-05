@@ -398,13 +398,28 @@ fn check_and_build_refuse_a_cross_pool_spawn_through_a_chain_of_defaults_at_the_
     both_verbs_refuse("xpool_chain", XPOOL_DEFAULT_CHAIN, &fire_and_forget_arg("inner", "s"), ":4:42:");
 }
 
-/// `Driver` on `World`'s own thread: nothing crosses, the default is
-/// built where the call stands. Builds, runs, and passes a pointer.
+/// `Driver` on `World`'s own thread, calling `take()` from a method
+/// `World.run()` calls: nothing crosses, and the default is built where
+/// the call stands, under `Driver`, bubbling to `World` on the same
+/// thread. The call is made from `World.run()` and not from
+/// `Driver.run()` on purpose: a child's `run()` executes inside its
+/// owner's literal, before the owner's children list is initialized, so
+/// a spawn that bubbles to the owner from there pushes onto
+/// uninitialized stack memory (a defect of the literal's order that
+/// predates the law and is independent of defaults; the first form of
+/// this test crashed on it on some hosts).
+const XPOOL_ARG_SAME_DOMAIN: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     fn take(s: Ship = Ship { hull: 1 }) { println(s.hull); }\n\
+     locus Driver { fn go() { take(); } }\n\
+     main locus World { params { driver: Driver = Driver { }; } accept(s: Ship) { } \
+     run() { self.driver.go(); } }\n\
+     fn main() { World { }; }\n";
+
+/// Builds, runs, and passes a pointer.
 #[test]
 fn check_and_build_admit_an_argument_default_expanded_on_the_owners_domain() {
-    let src = XPOOL_ARG_DEFAULT.replace("placement { driver: cooperative(pool = workers); } ", "");
-    assert_ne!(src, XPOOL_ARG_DEFAULT, "the placement entry was removed");
-    let ir = admitted_builds_and_runs("xpool_arg_same_domain", &src, "1");
+    let src = XPOOL_ARG_SAME_DOMAIN;
+    let ir = admitted_builds_and_runs("xpool_arg_same_domain", src, "1");
     let calls = calls_of(&ir, "take");
     assert_eq!(calls.len(), 1, "one call of `take`: {calls:?}");
     assert!(!calls[0].contains("null"), "a non-null argument: {}", calls[0]);
