@@ -26018,10 +26018,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// A stdlib call no arm lowers at `pos`: the Hale body
-    /// `hale_stdlib::PATH_RENAMES` names for the path, which must
-    /// return a value (`std::io::file::at_eof(f)` and the other
-    /// user-facing wrappers in `../../hale-stdlib/hl/file.hl`), or "not
-    /// implemented" in the position's words.
+    /// `hale_stdlib::PATH_RENAMES` names for the path
+    /// (`std::io::file::at_eof(f)` and the other user-facing wrappers in
+    /// `../../hale-stdlib/hl/file.hl`), or "not implemented" in the
+    /// position's words. A statement calls a body that returns nothing
+    /// and is done (`std::process::adopt`, F.40 phase 4, S5); a value
+    /// position needs a value back.
     fn lower_std_unarmed(
         &mut self,
         segs: &[&str],
@@ -26032,13 +26034,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(mangled) = self.mangled_for_path(segs) {
             if self.user_fns.contains_key(&mangled) {
                 let result = self.lower_user_fn_call(&mangled, args, scope)?;
-                return result.map(Some).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
+                return match (result, pos) {
+                    (Some(value), _) => Ok(Some(value)),
+                    (None, StdCallPos::Statement) => Ok(None),
+                    (None, StdCallPos::Value) => Err(CodegenError::Unsupported(format!(
                         "stdlib path `{}` returns no value but is \
                          used in expression position",
                         segs.join("::")
-                    ))
-                });
+                    ))),
+                };
             }
         }
         Err(CodegenError::Unsupported(match pos {
@@ -26068,22 +26072,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The bodies a statement calls itself, dropping whatever comes
         // back: `std::http::parse_request` and `std::text::md_to_html`
         // (whose value position also refuses a body that returns
-        // none), and the five that return no value, below.
+        // none), and the four that return no value, below.
+        // (`std::process::adopt` was one until F.40 phase 4, S5; it is a
+        // rename now, which a statement calls the same way.)
         const STATEMENT_BODIES: &[&str] = &[
             "__parse_http_request",
             "__md_to_html",
             "__write_http_response",
-            "__std_process_adopt",
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
         ];
-        // The bodies that return no value (m85's response writer,
-        // GH #716's `adopt`, m87's assertions): a value position has no
-        // arm for them.
+        // The bodies that return no value (m85's response writer, m87's
+        // assertions): a value position has no arm for them.
         const NO_VALUE_BODIES: &[&str] = &[
             "__write_http_response",
-            "__std_process_adopt",
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",

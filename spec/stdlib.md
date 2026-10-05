@@ -46,7 +46,12 @@ the one such call that still reaches the build is an `or` over a
 function with no signature row (the check types it permissively),
 which the build refuses for every such function with "is not a
 fallible call — remove the `or` clause" (some used to read "`or` over
-unknown path call"). An ARGUMENT position names a stdlib type the same way
+unknown path call"). A stdlib function written in Hale (a body the
+stdlib's rename table names, like `std::process::adopt` or the
+`std::io::file` wrappers) is called like any fn: a statement drops what
+it returns, and one that returns nothing can be called as a statement
+and only there (F.40 phase 4, S5: before, only `adopt` could, through
+a branch of lowering's own). An ARGUMENT position names a stdlib type the same way
 (GH #829): `recv_into`'s `buf` is a `std::bytes::BytesBuilder`,
 the one type its lowering accepts, so
 `std::io::tcp::recv_into(fd, 0, 64)` is a located error at the

@@ -1105,7 +1105,10 @@ pub const SURFACES: &[NsSurface] = &[
             // TERM/KILL-reaps its process, so it carries the same
             // syscall class as kill — not PURE, despite reading like
             // an assignment.
-            row!("adopt", SYSCALL, _, HaleBody("__std_process_adopt")),
+            // Reached through its rename like the other `process.hl`
+            // wrappers: a statement calls a body that returns nothing (F.40
+            // phase 4, S5; a hand-kept statement branch until then).
+            row!("adopt", SYSCALL, _, Renamed),
             row!("dump_arena_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
             row!("dump_pool_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
             row!("exit", SYSCALL, [Int] -> Unit, Intrinsic(ProcessExit)),

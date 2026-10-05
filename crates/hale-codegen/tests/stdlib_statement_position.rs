@@ -13,8 +13,9 @@
 //! 1. a path only the expression form had an arm for now lowers;
 //! 2. a function with a Hale body named by `hale_stdlib::PATH_RENAMES`
 //!    now lowers through the expression form's fallback to that body
-//!    (one that returns no value is still refused there, so
-//!    `std::process::adopt`, Unit, keeps its own statement arm);
+//!    (one that returned no value was still refused there, so
+//!    `std::process::adopt`, Unit, kept its own statement arm until S5,
+//!    when a statement became a call of such a body and done);
 //! 3. `std::str::parse_int` and `parse_float`, bare, got the expression
 //!    form's fallibility refusal; since S5 every bare call of a fallible
 //!    row gets one answer, read from the row.
@@ -78,6 +79,37 @@ fn a_hale_body_named_by_path_renames_lowers_at_statement_position() {
     let (ir, stdout) = build_and_run(&program, "stmt_path_renames_body");
     assert!(main_body(&ir).contains("@__std_log_kv("), "main does not call the Hale body");
     assert_eq!(stdout, "after\n");
+}
+
+/// F.40 phase 4, S5 (a classified correction): a stdlib function whose
+/// Hale body, reached through `PATH_RENAMES`, returns nothing can be called
+/// as a statement. The fallback was written for a value position and
+/// answered "returns no value but is used in expression position" at a
+/// statement too, which is why `std::process::adopt` kept a hand-kept
+/// statement branch; that branch did nothing the rule does not, so it is
+/// gone and `adopt`'s row is a rename like the other `process.hl` wrappers.
+/// A value position keeps its refusal, worded for a value.
+#[test]
+fn a_renamed_body_that_returns_nothing_is_called_as_a_statement() {
+    use hale_types::stdlib_surface::{row, Lower};
+    assert_eq!(row(&["std", "process", "adopt"]).map(|r| r.lower), Some(Lower::Renamed));
+    let program = checks_clean(
+        "fn main() {\n    let a = std::process::Child { };\n    let b = std::process::Child { };\n    \
+         std::process::adopt(a, b);\n    println(\"after\");\n}\n",
+    );
+    let (ir, stdout) = build_and_run(&program, "stmt_renamed_no_value_body");
+    assert!(main_body(&ir).contains("@__std_process_adopt("), "main does not call the Hale body");
+    assert_eq!(stdout, "after\n");
+    let (text, _) = lowering_error(
+        "fn main() {\n    let a = std::process::Child { };\n    let b = std::process::Child { };\n    \
+         let v = std::process::adopt(a, b);\n}\n",
+        "value_renamed_no_value_body",
+    );
+    assert_eq!(
+        text,
+        "unsupported in codegen v0: stdlib path `std::process::adopt` returns no value but is used in \
+         expression position"
+    );
 }
 
 /// Build `source` without the check, and return lowering's refusal: its
