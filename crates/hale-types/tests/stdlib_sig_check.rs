@@ -564,6 +564,21 @@ fn std_shm_calls_are_checked() {
 }
 
 #[test]
+fn std_term_calls_are_checked() {
+    refused(
+        "    std::term::__raw_enable(0);",
+        &[("`std::term::__raw_enable` takes 0 arguments, got 1", "std::term::__raw_enable")],
+    );
+    refused(
+        "    let p = std::term::__size_packed() or 0;\n    println(p);",
+        &[(
+            "`std::term::__size_packed` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::term::__size_packed()",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

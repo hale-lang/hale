@@ -958,9 +958,9 @@ std::tar::pack | lookup=tar@2 | locus=false | effects=pure | sig=(Bytes, Str, By
 std::tar::pack_dir | lookup=tar@2 | locus=false | effects=pure | sig=(Bytes, Str) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=pack_dir
 std::term::RawMode | lookup=term@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::term::TermSize | lookup=term@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::term::__raw_disable | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__raw_disable
-std::term::__raw_enable | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__raw_enable
-std::term::__size_packed | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__size_packed
+std::term::__raw_disable | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__raw_disable
+std::term::__raw_enable | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__raw_enable
+std::term::__size_packed | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__size_packed
 std::term::is_tty | lookup=term@2 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_tty
 std::term::size | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=size
 std::test::__failed | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__failed` | suggest=-

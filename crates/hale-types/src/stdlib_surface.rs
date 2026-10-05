@@ -1249,9 +1249,9 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["term"],
         fns: &[
-            row!("__raw_disable", SYSCALL, _, Intrinsic(TermRawDisableRaw)),
-            row!("__raw_enable", SYSCALL, _, Intrinsic(TermRawEnableRaw)),
-            row!("__size_packed", SYSCALL, _, Intrinsic(TermSizePackedRaw)),
+            row!("__raw_disable", SYSCALL, [] -> Int, Intrinsic(TermRawDisableRaw)),
+            row!("__raw_enable", SYSCALL, [] -> Int, Intrinsic(TermRawEnableRaw)),
+            row!("__size_packed", SYSCALL, [] -> Int, Intrinsic(TermSizePackedRaw)),
             row!("is_tty", SYSCALL, [Int] -> Bool, Intrinsic(TermIsTty)),
             row!("size", SYSCALL, _, Renamed),
         ],
