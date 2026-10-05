@@ -27500,6 +27500,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoFileOpenRaw => self.lower_std_io_file_open_fallible(args, scope),
             Id::IoFileWriteBytesRaw => self.lower_std_io_file_write_bytes_fallible(args, scope),
             Id::IoFileSeekRaw => self.lower_std_io_file_seek_fallible(args, scope),
+            // C2 (pond/subprocess): synchronous run + async
+            // lifecycle primitives. `run` is user-facing; the
+            // `__*` variants are stdlib internals consumed by
+            // process.hl's spawn/wait/kill wrappers.
+            Id::ProcessRun => self.lower_std_process_run_fallible(args, scope),
+            Id::ProcessSpawnRaw => self.lower_std_process_spawn_fallible(args, scope),
+            Id::ProcessWaitPidRaw => self.lower_std_process_wait_pid_fallible(args, scope),
+            Id::ProcessKillEscalateRaw => {
+                self.lower_std_process_kill_escalate_fallible(args, scope)
+            }
+            Id::ProcessTryWaitPidRaw => self.lower_std_process_try_wait_pid_fallible(args, scope),
+            Id::ProcessSignalPidRaw => self.lower_std_process_signal_pid_fallible(args, scope),
+            Id::ProcessPipeReadRaw => self.lower_std_process_pipe_read_fallible(args, scope),
+            Id::ProcessPipeWriteRaw => self.lower_std_process_pipe_write_fallible(args, scope),
             // Not moved yet (S4): the old dispatcher's literals still
             // lower or refuse these.
             Id::BytesBuilderAppendRaw
@@ -27544,15 +27558,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::MathSqrt
             | Id::MathTan
             | Id::MathTanh
-            | Id::ProcessKillEscalateRaw
             | Id::ProcessPid
-            | Id::ProcessPipeReadRaw
-            | Id::ProcessPipeWriteRaw
-            | Id::ProcessRun
-            | Id::ProcessSignalPidRaw
-            | Id::ProcessSpawnRaw
-            | Id::ProcessTryWaitPidRaw
-            | Id::ProcessWaitPidRaw
             | Id::StrBuilderAppend
             | Id::StrBuilderFinish
             | Id::StrBuilderLen
@@ -27577,7 +27583,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TextIsWordChar
             | Id::TextTokenizeWordsInto
             | Id::TimeMonotonic
-            | Id::TimeSleep => return self.lower_std_fallible_unmoved(segs, args, scope),
+            | Id::TimeSleep => return self.lower_std_fallible_unmoved(segs),
             // No arm under `or`: not a stdlib fallible call.
             Id::BusBindingFailRaw
             | Id::BusLocalDispatchRaw

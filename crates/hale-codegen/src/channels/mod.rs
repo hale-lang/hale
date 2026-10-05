@@ -22,7 +22,6 @@ use crate::codegen::{
     bce_receiver_key, view_coerces_to, BlockEnd, CodegenError, CodegenTy,
     Cx, FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
 };
-use crate::stdlib::process::ProcessStdlib;
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The `on_failure` fn a failing child of locus type `child`
@@ -1377,42 +1376,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The `or` position's arms not yet moved to
     /// [`Cx::lower_std_intrinsic_fallible`] (F.40 phase 4, S4), which
-    /// sends their ids here.
+    /// sends their ids here: the not-fallible list alone.
     pub(crate) fn lower_std_fallible_unmoved(
         &mut self,
         segs: &[&str],
-        args: &[Expr],
-        scope: &Scope<'ctx>,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
         match segs {
-            // C2 (pond/subprocess): synchronous run + async
-            // lifecycle primitives. `run` is user-facing; the
-            // `__*` variants are stdlib internals consumed by
-            // process.hl's spawn/wait/kill wrappers.
-            ["std", "process", "run"] => Ok(Some(
-                self.lower_std_process_run_fallible(args, scope)?,
-            )),
-            ["std", "process", "__spawn"] => Ok(Some(
-                self.lower_std_process_spawn_fallible(args, scope)?,
-            )),
-            ["std", "process", "__wait_pid"] => Ok(Some(
-                self.lower_std_process_wait_pid_fallible(args, scope)?,
-            )),
-            ["std", "process", "__kill_escalate"] => Ok(Some(
-                self.lower_std_process_kill_escalate_fallible(args, scope)?,
-            )),
-            ["std", "process", "__try_wait_pid"] => Ok(Some(
-                self.lower_std_process_try_wait_pid_fallible(args, scope)?,
-            )),
-            ["std", "process", "__signal_pid"] => Ok(Some(
-                self.lower_std_process_signal_pid_fallible(args, scope)?,
-            )),
-            ["std", "process", "__pipe_read"] => Ok(Some(
-                self.lower_std_process_pipe_read_fallible(args, scope)?,
-            )),
-            ["std", "process", "__pipe_write"] => Ok(Some(
-                self.lower_std_process_pipe_write_fallible(args, scope)?,
-            )),
             // Known stdlib paths that AREN'T fallible — surface a
             // focused diagnostic instead of "unknown path call".
             // Each name here is a path-call that returns a value
