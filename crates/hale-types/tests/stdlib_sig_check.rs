@@ -167,11 +167,12 @@ fn tranche2_io_fs_checks_fire() {
 
 #[test]
 fn bare_fallible_calls_are_the_law_s_errors_and_type_permissively() {
-    // Stdlib fallible path-calls are dual-mode at codegen: the bare
-    // (no `or`) legacy form returns a direct value (read_file → the
-    // String, write_file → an Int status). The checker types the bare
-    // call permissively, so its uses report nothing; the call itself is
-    // the `bare_fallible` law's error (GH #738), one per call.
+    // A bare (no `or`) stdlib fallible call — once a legacy form that
+    // returned a direct value (read_file → the String, write_file → an
+    // Int status), gone from lowering since F.40 phase 4, S5. The checker
+    // types the bare call permissively, so its uses report nothing; the
+    // call itself is the `bare_fallible` law's error (GH #738), one per
+    // call.
     let m = msgs(
         r#"
         fn main() {
@@ -190,6 +191,95 @@ fn bare_fallible_calls_are_the_law_s_errors_and_type_permissively() {
     assert_eq!(bare.len(), 2, "got: {:?}", m);
     assert!(bare[0].starts_with("`std::io::fs::read_file` can fail (IoError)"), "got: {:?}", bare);
     assert!(bare[1].starts_with("`std::io::fs::write_file` can fail (IoError)"), "got: {:?}", bare);
+}
+
+/// F.40 phase 4, S5 (a classified correction): the functions lowering
+/// lowered only under an `or` and whose rows said nothing about it — the
+/// tcp and tls setters, the `File`, udp and process primitives — say
+/// they can fail, so a bare call is the bare-fallible law's error, at the
+/// call, from the check. Lowering refused most of them without a span and
+/// answered "not implemented" for the rest. One per module.
+#[test]
+fn a_function_lowering_treats_as_fallible_is_refused_bare_by_the_check() {
+    let calls = [
+        ("std::io::file::__seek(3, 0)", "std::io::file::__seek"),
+        ("std::io::tcp::set_recv_timeout(3, 5ms)", "std::io::tcp::set_recv_timeout"),
+        ("std::io::tls::set_nodelay(3, true)", "std::io::tls::set_nodelay"),
+        ("std::io::udp::__send(3, \"127.0.0.1\", 9, \"x\")", "std::io::udp::__send"),
+        ("std::process::__kill_escalate(3)", "std::process::__kill_escalate"),
+    ];
+    for (call, path) in calls {
+        let src = format!("fn main() {{\n    {call};\n}}\n");
+        let prog = parse_source(&src).expect("parse");
+        let errors: Vec<_> = check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "{call}: {:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert_eq!(
+            errors[0].message,
+            format!(
+                "`{path}` can fail (IoError) and this call says nothing about it: write \
+                 `or raise` to hand the failure to the caller, `or <fallback>` for a value \
+                 to use instead, `or handler(err)` to deal with it here, or `or discard` \
+                 when losing it is the intent. A bare call to a fallible entry point is an \
+                 error since v0.22.0 (GH #738)."
+            )
+        );
+        let at = src.find(call).expect("the call") as u32;
+        assert_eq!(
+            (errors[0].span.start.0, errors[0].span.end.0),
+            (at, at + call.len() as u32),
+            "{call}: the error is the call's"
+        );
+    }
+}
+
+/// F.40 phase 4, S5 (a classified correction): `ecdsa_p256_sign` has one
+/// mode. Its bare call answered an empty `Bytes` on a bad key and passed
+/// the check; its row now says it can fail, so the bare call is the law's
+/// error at the call, and an `or` checks against the `Bytes` it succeeds
+/// with.
+#[test]
+fn ecdsa_p256_sign_is_fallible_and_its_bare_call_is_refused() {
+    let call = "std::crypto::ecdsa_p256_sign(k, k)";
+    let src = format!("fn main() {{\n    let k = std::bytes::from_string(\"key\");\n    let s = {call};\n    println(len(s));\n}}\n");
+    let prog = parse_source(&src).expect("parse");
+    let errors: Vec<_> = check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        errors[0].message.starts_with(
+            "`std::crypto::ecdsa_p256_sign` can fail (CryptoError) and this call says nothing about it"
+        ),
+        "{}",
+        errors[0].message
+    );
+    let at = src.find(call).unwrap() as u32;
+    assert_eq!((errors[0].span.start.0, errors[0].span.end.0), (at, at + call.len() as u32));
+
+    let substitute = msgs(
+        "fn main() {\n    let k = std::bytes::from_string(\"key\");\n    let s = std::crypto::ecdsa_p256_sign(k, k) or b\"\";\n    println(len(s));\n}\n",
+    );
+    assert!(substitute.is_empty(), "got: {substitute:?}");
+    let wrong = msgs(
+        "fn main() {\n    let k = std::bytes::from_string(\"key\");\n    let s = std::crypto::ecdsa_p256_sign(k, k) or 0;\n    println(s);\n}\n",
+    );
+    assert!(wrong.iter().any(|m| m.contains("does not match success type") && m.contains("Bytes")), "got: {wrong:?}");
+}
+
+/// F.40 phase 4, S5 (a classified correction): `std::io::file::close`
+/// does not exist. Its row was a signature and nothing else (no surface
+/// entry, no lowering), so a call was an unknown function whose arity the
+/// signature still checked; the row is gone, and a call is the unknown
+/// function alone.
+#[test]
+fn io_file_close_is_an_unknown_function_and_nothing_else() {
+    let m = msgs("fn main() {\n    let r = std::io::file::close(1, 2);\n    println(r);\n}\n");
+    assert_eq!(
+        m,
+        vec![
+            "unknown stdlib function `std::io::file::close` — did you mean `std::io::file::__close`?"
+                .to_string()
+        ]
+    );
+    assert!(hale_types::stdlib_surface::row(&["std", "io", "file", "close"]).is_none());
 }
 
 #[test]

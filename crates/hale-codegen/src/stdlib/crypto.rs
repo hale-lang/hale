@@ -44,11 +44,6 @@ pub(crate) trait CryptoStdlib<'ctx> {
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 
-    fn lower_std_crypto_ecdsa_p256_sign(
-        &mut self,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 
     fn lower_std_crypto_ecdsa_p256_sign_fallible(
         &mut self,
@@ -321,62 +316,17 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((iv, CodegenTy::Int))
     }
 
-    /// a downstream handoff (2026-06-02): lower
+    /// a downstream handoff (2026-06-02, fallible 2026-06-04): lower
     /// `std::crypto::ecdsa_p256_sign(key: Bytes, message: Bytes) ->
-    /// Bytes`. ES256 — SHA-256 the message, ECDSA over P-256, return
-    /// the 64-byte raw r‖s signature (JWS/COSE form). `key` is a PEM
-    /// EC private key (SEC1 or PKCS#8). Returns an EMPTY Bytes blob
-    /// on failure (bad key / non-P-256), the base64::decode
-    /// convention — caller checks `len(sig) == 0` (the length of a
-    /// `Bytes` is the bare builtin; there is no `std::bytes::len`).
-    /// Backed by OpenSSL in lotus_tls.c; anchored in the payload arena.
-    fn lower_std_crypto_ecdsa_p256_sign(
-        &mut self,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 2 {
-            return Err(CodegenError::Unsupported(format!(
-                "std::crypto::ecdsa_p256_sign takes 2 args (key, message), got {}",
-                args.len()
-            )));
-        }
-        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::crypto::ecdsa_p256_sign: key must be Bytes, got {:?}",
-                key_ty
-            )));
-        }
-        let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
-        if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::crypto::ecdsa_p256_sign: message must be Bytes, got {:?}",
-                msg_ty
-            )));
-        }
-        let key_val = self.unpack_view_if_needed(key_val, &key_ty)?;
-        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
-        let f = self
-            .module
-            .get_function("lotus_crypto_ecdsa_p256_sign")
-            .expect("lotus_crypto_ecdsa_p256_sign declared");
-        let call = self
-            .builder
-            .build_call(f, &[key_val.into(), msg_val.into()], "ecdsa.sign.ret")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let ptr = call.try_as_basic_value().left().expect("returns ptr");
-        Ok((ptr, CodegenTy::Bytes))
-    }
-
-    /// 2026-06-04: the `or`-context form of `ecdsa_p256_sign` —
-    /// `std::crypto::ecdsa_p256_sign(key, message) -> Bytes
-    /// fallible(CryptoError)`. Calls the NULL-returning runtime
-    /// symbol; a NULL result (bad/unparseable key, non-P-256 curve,
-    /// signing failure) becomes a `CryptoError { kind:
-    /// "ecdsa_p256_sign", detail: "signing failed (bad key or
-    /// non-P-256 curve)" }`. Bare (non-`or`) calls stay on the
-    /// empty-bytes form via the non-fallible dispatcher.
+    /// Bytes fallible(CryptoError)`. ES256 — SHA-256 the message, ECDSA
+    /// over P-256, the 64-byte raw r‖s signature (JWS/COSE form). `key`
+    /// is a PEM EC private key (SEC1 or PKCS#8). Calls the
+    /// NULL-returning runtime symbol; a NULL result (bad/unparseable key,
+    /// non-P-256 curve, signing failure) becomes a `CryptoError { kind:
+    /// "ecdsa_p256_sign", detail: "signing failed (bad key or non-P-256
+    /// curve)" }`. Backed by OpenSSL in lotus_tls.c. Its one mode since
+    /// F.40 phase 4, S5: the bare form that answered an empty Bytes is
+    /// gone.
     fn lower_std_crypto_ecdsa_p256_sign_fallible(
         &mut self,
         args: &[Expr],

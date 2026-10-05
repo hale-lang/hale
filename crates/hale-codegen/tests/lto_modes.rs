@@ -15,7 +15,7 @@ mod build_opts;
 const SRC: &str = r#"
     fn main() {
         let b = std::bytes::from_string("hello");
-        println(std::bytes::at(b, 0));
+        println(std::bytes::at(b, 0) or -1);
     }
 "#;
 

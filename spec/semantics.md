@@ -4992,7 +4992,14 @@ concerned are the signature table's rows with a payload
 (`stdlib_surface.rs`): 94 at the time of the ruling, across
 `std::io::fs`, `std::process`, `std::http::client`, `std::io::tcp`,
 `std::compress`, `std::tar`, `std::bytes`, `std::str` and
-`std::time`.
+`std::time`. Lowering carries no bare form of any of them: it reads
+the same rows, and the last bare forms (`std::bytes::at`, which
+answered -1, and `std::io::fs`'s `read_file`, `read_bytes`,
+`write_file`, `write_file_append`, `mkdir`, `file_size`,
+`list_dir_count` and `list_dir_at`, which answered a direct value or
+an Int status) are gone (F.40 phase 4, S5). A bare call that reaches
+lowering, in a build that skipped the check, is an internal error
+naming the row.
 
 **Limitations to lift.** These are where lowering's support stops
 today, not part of the rule:
@@ -5006,10 +5013,6 @@ today, not part of the rule:
   works, `or (f(err) or raise)`. That covers a stdlib entry point, a
   generic fn, an interface's or a perspective's method, and a
   container's, an array's or a stdlib handle's method.
-- **The stdlib's legacy form.** Lowering still carries a bare form
-  for some stdlib entry points (`read_file` returns the success value,
-  the write fns an Int status). The check refuses every bare call, so
-  no program reaches it.
 - **A call through an interface-typed value.** The checker types a
   local or parameter whose declared type is an interface as unknown
   (an interface slot accepts any locus that satisfies it), so it does

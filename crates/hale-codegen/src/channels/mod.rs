@@ -1202,7 +1202,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // path-calls that #68 flipped to fallible(IoError)
                 // emit their wrappers inline here.
                 if let Some(result) =
-                    self.try_lower_fallible_stdlib_path_call(&segs, args, scope)?
+                    self.try_lower_fallible_stdlib_path_call(&segs, qn.span, args, scope)?
                 {
                     return Ok(result);
                 }
@@ -1364,14 +1364,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   - `Ok(None)` — it is not; the caller falls through to other
     ///     resolution paths.
     ///   - `Err(_)` — it is, but lowering failed (arity, type, etc.),
-    ///     or it is a stdlib call that is not fallible.
+    ///     or it is a stdlib call whose row says it cannot fail.
     pub(crate) fn try_lower_fallible_stdlib_path_call(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
-        self.lower_std_fallible_call(segs, args, scope)
+        self.lower_std_fallible_call(segs, at, args, scope)
     }
 
     /// Shared completion helper for the IoError-bearing fallible

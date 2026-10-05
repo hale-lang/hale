@@ -64,7 +64,7 @@ fn read_bytes_returns_full_length_with_embedded_nuls() {
     let src = format!(
         r#"
         fn main() {{
-            let b = std::io::fs::read_bytes("{}");
+            let b = std::io::fs::read_bytes("{}") or b"";
             println("len=", len(b));
         }}
         "#,
@@ -91,13 +91,12 @@ fn read_bytes_returns_full_length_with_embedded_nuls() {
 
 #[test]
 fn read_bytes_on_missing_file_returns_zero_len() {
-    // lotus_fs_read_bytes_global returns NULL on open failure;
-    // lotus_bytes_len handles NULL by returning 0. So a missing
-    // file gives a Bytes value whose len() is 0 — same
-    // soft-failure shape as read_file, no exception path.
+    // A missing file fails the read (IoError), and the `or`
+    // substitute is the empty Bytes. The bare form that answered a
+    // zero-length Bytes itself went in F.40 phase 4, S5.
     let src = r#"
         fn main() {
-            let b = std::io::fs::read_bytes("/tmp/hale_definitely_does_not_exist_xyz123.bin");
+            let b = std::io::fs::read_bytes("/tmp/hale_definitely_does_not_exist_xyz123.bin") or b"";
             println("len=", len(b));
         }
     "#;
@@ -119,7 +118,7 @@ fn println_of_bytes_prints_summary_not_body() {
     let src = format!(
         r#"
         fn main() {{
-            let b = std::io::fs::read_bytes("{}");
+            let b = std::io::fs::read_bytes("{}") or b"";
             println("got=", b);
         }}
         "#,
@@ -163,7 +162,7 @@ fn stream_send_bytes_ships_full_body_through_tcp() {
         fn main() {{
             let fd = std::io::tcp::__connect("127.0.0.1", {});
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
-            let body = std::io::fs::read_bytes("{}");
+            let body = std::io::fs::read_bytes("{}") or b"";
             s.send_bytes(body) or raise;
         }}
         "#,
@@ -202,7 +201,7 @@ fn bytes_round_trips_through_helper_fn() {
     let src = format!(
         r#"
         fn load(p: String) -> Bytes {{
-            return std::io::fs::read_bytes(p);
+            return std::io::fs::read_bytes(p) or b"";
         }}
 
         fn main() {{

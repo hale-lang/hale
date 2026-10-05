@@ -2446,6 +2446,12 @@ assume the others in a build:
   when a count exceeds a declared ceiling); and **fd-leak detection**
   `--warn-resource-leak` (an fd-acquiring call whose result is stored
   resident in an unbounded context). See `notes/resource-budgets.md`.
+  The fd-opening calls are `std::io::file::open`, `std::io::tcp`'s
+  `connect`, `connect_wait`, `listen_socket` and `accept_one` (and the
+  last two's `__` primitives), and `std::io::unix`'s `connect`,
+  `connect_wait` and `listen_socket`; the tcp `connect_wait` was
+  missing until F.40 phase 4, S5, so a program that calls it counts one
+  more site per call.
 
   The budget counts the resource, not the declaration that asks for it,
   and reads the threads and pools from the placement table (F.40 phase
