@@ -3403,7 +3403,12 @@ main locus App {
    `bindings { }`, which has a thread of its own with no entry —
    and judges the locus the instance realizes (a construction
    site's override literal, a `std::` locus), at the entry's
-   span. A locus that uses neither feature can be placed either
+   span. The refusal carries its witness as related locations,
+   in order: the entry that runs the instance pinned (the
+   placement entry, or the binding entry), the declaration the
+   instance realizes, and the member that conflicts (the
+   `accept`, or the closure's assertion). A locus that uses
+   neither feature can be placed either
    cooperative or pinned at the deployment's discretion. (F.40
    phase 0: until then the rule was stated as "no closure
    declarations" while lowering refused only birth and dissolve
@@ -3412,7 +3417,8 @@ main locus App {
    table's rows, so the adapter, an `accept()` with no parameter
    and a field whose written type the entry walk could not
    resolve are judged too, and lowering keeps no refusal of its
-   own.)
+   own. Phase 4, W2: the refusal's message is unchanged, and the
+   witness is new.)
 7. **Dead bus receiver (error).** A locus that declares
    `bus { subscribe ... }`, is placed `cooperative(pool = X)` with
    `X != main` (and not `where async_io`), **and** whose `run()`
