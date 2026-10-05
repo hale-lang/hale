@@ -641,6 +641,25 @@ fn std_json_calls_are_checked() {
 }
 
 #[test]
+fn std_test_calls_are_checked() {
+    refused(
+        "    std::test::assert(1 == 1);",
+        &[("`std::test::assert` takes 2 arguments, got 1", "std::test::assert")],
+    );
+    refused(
+        "    std::test::assert_eq_int(\"1\", 1, \"one\");",
+        &[("`std::test::assert_eq_int` argument 1: expected `Int`, got `String`", "\"1\"")],
+    );
+    refused(
+        "    std::test::assert_eq_str(\"a\", \"a\", \"same\") or discard;",
+        &[(
+            "`std::test::assert_eq_str` is not fallible (it returns `()`); drop the `or` clause",
+            "std::test::assert_eq_str(\"a\", \"a\", \"same\")",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

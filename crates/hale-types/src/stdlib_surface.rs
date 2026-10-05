@@ -1260,9 +1260,9 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["test"],
         fns: &[
-            row!("assert", PURE, _, HaleBody("__test_assert")),
-            row!("assert_eq_int", PURE, _, HaleBody("__test_assert_eq_int")),
-            row!("assert_eq_str", PURE, _, HaleBody("__test_assert_eq_str")),
+            row!("assert", PURE, [Bool, Str] -> Unit, HaleBody("__test_assert")),
+            row!("assert_eq_int", PURE, [Int, Int, Str] -> Unit, HaleBody("__test_assert_eq_int")),
+            row!("assert_eq_str", PURE, [Str, Str, Str] -> Unit, HaleBody("__test_assert_eq_str")),
             // GH #230 / #717: the pass counter and the recorded-failure
             // latch, called by the `__test_assert*` bodies and
             // `__test_fail_trailer`.

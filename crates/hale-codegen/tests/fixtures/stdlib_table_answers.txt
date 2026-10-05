@@ -968,9 +968,9 @@ std::test::__note_fail | lookup=test@2 | locus=false | effects=- | sig=- | parks
 std::test::__note_pas | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pas` | suggest=-
 std::test::__note_pass | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pass` | suggest=-
 std::test::__passes | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__passes` | suggest=-
-std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=assert
-std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
-std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str
+std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=(Bool, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert
+std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=(Int, Int, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
+std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str
 std::text::FileSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::Sink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::StdoutSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
