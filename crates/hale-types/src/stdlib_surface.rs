@@ -220,6 +220,11 @@ pub enum Lower {
     /// rename enters the call graph, and the body's effects would then
     /// be inferred rather than read from the row.
     HaleBody(&'static str),
+    /// An overload on the first argument: one Hale body per receiver
+    /// type, each pair `(type name, body)` naming the receiver's mangled
+    /// type (`__StdHttpRequest`) and the body that serves it. Lowering
+    /// lowers the receiver once and calls the body its type picks.
+    HaleBodyByReceiver(&'static [(&'static str, &'static str)]),
     /// Reached through `hale_stdlib::PATH_RENAMES` by the dispatchers'
     /// fallback.
     Renamed,
@@ -450,6 +455,9 @@ macro_rules! lower {
     };
     (HaleBody($body:literal)) => {
         Lower::HaleBody($body)
+    };
+    (HaleBodyByReceiver([$(($ty:literal, $body:literal)),+ $(,)?])) => {
+        Lower::HaleBodyByReceiver(&[$(($ty, $body)),+])
     };
     (Renamed) => {
         Lower::Renamed
@@ -691,7 +699,13 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("build_context", PURE, _, Renamed),
             row!("get", SYSCALL | BLOCK, _, Renamed),
-            row!("header", PURE, _, Intrinsic(HttpHeader)),
+            // The header of a Request or of a Response: the receiver's type
+            // picks the body (F.40 phase 4, S5; an arm chose it from the
+            // receiver's lowered type until then, lowering it twice).
+            row!("header", PURE, _, HaleBodyByReceiver([
+                ("__StdHttpRequest", "__http_request_header"),
+                ("__StdHttpResponse", "__http_response_header"),
+            ])),
             row!("is_route", PURE, _, Renamed),
             // GH #771: the one non-json member of the same class — also
             // dispatch-routed, also a struct return.
@@ -1421,7 +1435,6 @@ pub enum IntrinsicId {
     EnvArgsCount,
     EnvVar,
     EnvVarExists,
-    HttpHeader,
     IoFileAtEofRaw,
     IoFileCloseRaw,
     IoFileOpenRaw,

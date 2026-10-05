@@ -1177,6 +1177,7 @@ crates/hale-codegen/tests/stdlib_http_request.rs#2 865d341109268295
 crates/hale-codegen/tests/stdlib_http_request.rs#3 865d341109268295
 crates/hale-codegen/tests/stdlib_http_request.rs#4 865d341109268295
 crates/hale-codegen/tests/stdlib_http_request.rs#5 865d341109268295
+crates/hale-codegen/tests/stdlib_http_request.rs#6 c8e3bfe6b2413c9f
 crates/hale-codegen/tests/stdlib_iter.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_iter.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_iter.rs#2 f2c1228edb650960

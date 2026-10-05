@@ -106,6 +106,19 @@ fn every_rows_lowering_is_where_the_column_says() {
             Lower::HaleBody(body) if !declared.contains(body) => {
                 wrong.push(format!("{path}: HaleBody({body:?}), but the stdlib declares no `{body}`"))
             }
+            Lower::HaleBodyByReceiver(bodies) => {
+                if !armed {
+                    wrong.push(format!("{path}: HaleBodyByReceiver, but no position lowers it"));
+                }
+                for (ty, body) in bodies {
+                    if !declared.contains(body) {
+                        wrong.push(format!("{path}: the `{ty}` receiver's body `{body}` is declared nowhere"));
+                    }
+                    if !hale_stdlib::PATH_RENAMES.iter().any(|(_, m)| m == ty) {
+                        wrong.push(format!("{path}: the receiver type `{ty}` is no stdlib type a user spells"));
+                    }
+                }
+            }
             Lower::Renamed if !renames.contains(&path) => {
                 wrong.push(format!("{path}: Renamed, but not in PATH_RENAMES"))
             }

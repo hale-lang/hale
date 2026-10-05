@@ -243,11 +243,13 @@ pub struct Arm {
 }
 
 /// How an arm lowers its path: a Hale body of the stdlib seeds, called
-/// by the name its row gives (`lower_std_hale_body`), or natively (an
-/// intrinsic's arm).
+/// by the name its row gives (`lower_std_hale_body`), one of several the
+/// receiver's type picks (`lower_std_hale_body_by_receiver`, S5), or
+/// natively (an intrinsic's arm).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArmCall {
     HaleBody(String),
+    HaleBodyByReceiver(Vec<String>),
     Native,
 }
 
@@ -490,15 +492,28 @@ fn row_dispatch() -> RowDispatch {
     assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic_fallible` names: {unnamed:?}");
     let (statement_bodies, line) = const_list_in("lower_std_hale_body", "STATEMENT_BODIES");
     let (no_value_bodies, _) = const_list_in("lower_std_hale_body", "NO_VALUE_BODIES");
+    let by_receiver_line = {
+        let src = crate_file("src/codegen.rs");
+        fn_line(&src, &mask(&src, true), "lower_std_hale_body_by_receiver")
+    };
     for (s, f) in hale_types::stdlib_surface::rows() {
-        let hale_types::stdlib_surface::Lower::HaleBody(body) = f.lower else { continue };
         let path = format!("std::{}::{}", s.ns.join("::"), f.name);
-        let call = ArmCall::HaleBody(body.to_string());
-        if !no_value_bodies.iter().any(|b| b == body) {
-            rd.expression.push(arm(line, &[&path], false, call.clone()));
-        }
-        if statement_bodies.iter().any(|b| b == body) {
-            rd.statement.push(arm(line, &[&path], false, call));
+        match f.lower {
+            hale_types::stdlib_surface::Lower::HaleBody(body) => {
+                let call = ArmCall::HaleBody(body.to_string());
+                if !no_value_bodies.iter().any(|b| b == body) {
+                    rd.expression.push(arm(line, &[&path], false, call.clone()));
+                }
+                if statement_bodies.iter().any(|b| b == body) {
+                    rd.statement.push(arm(line, &[&path], false, call));
+                }
+            }
+            // A value, which a statement drops: an expression pair.
+            hale_types::stdlib_surface::Lower::HaleBodyByReceiver(bodies) => {
+                let call = ArmCall::HaleBodyByReceiver(bodies.iter().map(|(_, b)| b.to_string()).collect());
+                rd.expression.push(arm(by_receiver_line, &[&path], false, call));
+            }
+            _ => {}
         }
     }
     rd

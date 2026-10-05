@@ -208,3 +208,31 @@ fn parse_request_line_with_one_space_only() {
         stdout
     );
 }
+
+/// F.40 phase 4, S5 (a classified correction): `std::http::header`'s
+/// overload is its row's (`Lower::HaleBodyByReceiver`), and the receiver
+/// is evaluated once. The arm it replaces lowered the receiver to learn
+/// its type, then the call lowered it again, so a receiver with an effect
+/// ran twice: here `made()` printed "made" twice.
+#[test]
+fn http_header_evaluates_its_receiver_once() {
+    let src = r#"
+        fn made() -> std::http::Request {
+            println("made");
+            return std::http::parse_request("GET / HTTP/1.1\r\nHost: example\r\n\r\n");
+        }
+
+        fn main() {
+            let h = std::http::header(made(), "Host");
+            println("host=", h);
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let errors: Vec<String> =
+        hale_types::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "the checker refuses it: {errors:?}");
+    let (stdout, status) = build_and_run("header_receiver_once", src);
+    assert!(status.success(), "exit: {:?}", status);
+    assert_eq!(stdout.matches("made").count(), 1, "the receiver ran more than once: {stdout:?}");
+    assert!(stdout.contains("host=example"), "got: {stdout:?}");
+}

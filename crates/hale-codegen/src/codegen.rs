@@ -15285,6 +15285,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        self.lower_user_fn_call_from(name, None, None, args, scope)
+    }
+
+    /// [`Cx::lower_user_fn_call`], for a caller that has already lowered
+    /// the first argument (`first`, which `args` then omits) and so took
+    /// the call site's arena before it did (`caller_arena`):
+    /// `lower_std_hale_body_by_receiver`, which lowers a receiver once to
+    /// learn the body its type picks. With neither, it is the plain call.
+    fn lower_user_fn_call_from(
+        &mut self,
+        name: &str,
+        caller_arena: Option<PointerValue<'ctx>>,
+        first: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let sig = self
             .user_fns
             .get(name)
@@ -15292,7 +15308,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .ok_or_else(|| {
                 CodegenError::Unsupported(format!("call to unknown fn `{}`", name))
             })?;
-        if sig.is_ffi {
+        if sig.is_ffi && first.is_none() {
             return self.lower_ffi_fn_call(name, &sig, args, scope);
         }
         if sig.fallible.is_some() {
@@ -15302,23 +15318,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name
             )));
         }
-        if args.len() > sig.params.len() {
+        // The arguments the call has: the pre-lowered first one, then `args`.
+        let skip = usize::from(first.is_some());
+        let given = args.len() + skip;
+        if given > sig.params.len() {
             return Err(CodegenError::Unsupported(format!(
                 "fn `{}` expects at most {} args, got {}",
                 name,
                 sig.params.len(),
-                args.len()
+                given
             )));
         }
         // Verify each missing positional slot has a default.
         for (i, default) in sig.defaults.iter().enumerate() {
-            if i >= args.len() && default.is_none() {
+            if i >= given && default.is_none() {
                 return Err(CodegenError::Unsupported(format!(
                     "fn `{}`: required param at position {} not \
                      provided (only {} args given)",
                     name,
                     i,
-                    args.len()
+                    given
                 )));
             }
         }
@@ -15332,13 +15351,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // to allocate (e.g. building a string) and we want the
         // arena snapshot to be the call site's arena, not whatever
         // intermediate state the arg-lowering walks into.
-        let caller_arena_at_call = self.current_arena_ptr()?;
+        let caller_arena_at_call = match caller_arena {
+            Some(arena) => arena,
+            None => self.current_arena_ptr()?,
+        };
         let mut llvm_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(sig.params.len() + 1);
         llvm_args.push(caller_arena_at_call.into());
+        let mut first = first;
         for i in 0..sig.params.len() {
-            let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+            let (v, ty) = if let Some(lowered) = first.take() {
+                lowered
+            } else if i < given {
+                self.lower_expr(&args[i - skip], scope)?
             } else {
                 // Default expressions evaluate at the call site.
                 // For const/literal defaults that's a constant; for
@@ -25983,6 +26008,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
             Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic(id, segs, at, args, scope, pos),
             Some(Lower::HaleBody(body)) => self.lower_std_hale_body(body, segs, args, scope, pos),
+            Some(Lower::HaleBodyByReceiver(bodies)) => {
+                self.lower_std_hale_body_by_receiver(bodies, segs, args, scope).map(Some)
+            }
             Some(Lower::Renamed) | Some(Lower::Unlowered) | None => {
                 self.lower_std_unarmed(segs, args, scope, pos)
             }
@@ -26090,6 +26118,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })
             }
         }
+    }
+
+    /// A stdlib function overloaded on its first argument
+    /// (`Lower::HaleBodyByReceiver`): the receiver is lowered once, its
+    /// type picks the body the row pairs with it, and that body is called
+    /// with the receiver's value. `std::http::header(r, name)` reads a
+    /// Request's or a Response's header block (ws-echo; C11 added the
+    /// Response side). Until F.40 phase 4, S5 an arm chose the body by
+    /// lowering the receiver, and the call lowered it again.
+    fn lower_std_hale_body_by_receiver(
+        &mut self,
+        bodies: &[(&str, &str)],
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let path = segs.join("::");
+        let Some((receiver, rest)) = args.split_first() else {
+            return Err(CodegenError::Unsupported(format!(
+                "{path} expects a receiver first; got no arguments"
+            )));
+        };
+        // The call site's arena, captured before any argument is lowered,
+        // as `lower_user_fn_call` captures it.
+        let caller_arena = self.current_arena_ptr()?;
+        let (value, ty) = self.lower_expr(receiver, scope)?;
+        let body = match &ty {
+            CodegenTy::TypeRef(name) => bodies.iter().find(|(t, _)| t == name).map(|(_, b)| *b),
+            _ => None,
+        };
+        let Some(body) = body else {
+            // The receivers by their public names (`Request`), as the user
+            // spells them.
+            let names: Vec<&str> = bodies
+                .iter()
+                .map(|(t, _)| {
+                    hale_stdlib::PATH_RENAMES
+                        .iter()
+                        .find(|(_, m)| m == t)
+                        .and_then(|(p, _)| p.last().copied())
+                        .unwrap_or(t)
+                })
+                .collect();
+            return Err(CodegenError::Unsupported(format!(
+                "{path} receiver must be {}; got {:?}",
+                names.join(" or "),
+                ty
+            )));
+        };
+        let result =
+            self.lower_user_fn_call_from(body, Some(caller_arena), Some((value, ty)), rest, scope)?;
+        result.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "stdlib path `{path}` returns no value but is used in expression position"
+            ))
+        })
     }
 
     /// A natively lowered stdlib function, by its id. Exhaustive: an id
@@ -26287,53 +26371,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::EnvVar => self.lower_std_env_var(args, scope),
             Id::EnvVarExists => {
                 self.lower_std_env_var_exists(args, scope)
-            }
-            // Per-receiver header lookup. ws-echo added the
-            // Request-side surface; C11 (pond follow-up) extended
-            // it to Responses so server code can read back the
-            // headers it attached via `Response.headers` and so
-            // pond/http/client can lift its private `__find_header`
-            // walker into the stdlib. Dispatch forks on the type
-            // of the first argument: a Request receiver routes to
-            // `__http_request_header`; a Response receiver routes
-            // to `__http_response_header`. Both Hale fns are
-            // thin wrappers over the shared `__http_find_header_in_block`
-            // walker. We peek the type by lowering args[0] once;
-            // `lower_user_fn_call` will lower it again to build
-            // the actual call. For the typical Ident receiver
-            // (`std::http::header(r, name)`), the duplicate
-            // lowering is just an extra load — semantically
-            // equivalent.
-            Id::HttpHeader => {
-                if args.is_empty() {
-                    return Err(CodegenError::Unsupported(
-                        "std::http::header expects 2 args (receiver, name); got 0".to_string(),
-                    ));
-                }
-                let (_, recv_ty) = self.lower_expr(&args[0], scope)?;
-                let callee = match &recv_ty {
-                    CodegenTy::TypeRef(n) if n == "__StdHttpRequest" => {
-                        "__http_request_header"
-                    }
-                    CodegenTy::TypeRef(n) if n == "__StdHttpResponse" => {
-                        "__http_response_header"
-                    }
-                    other => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "std::http::header receiver must be Request or \
-                             Response; got {:?}",
-                            other
-                        )));
-                    }
-                };
-                let result = self.lower_user_fn_call(callee, args, scope)?;
-                result.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "std::http::header returns String but called \
-                         in a position that expects no value"
-                            .to_string(),
-                    )
-                })
             }
             Id::JsonNextStructOrQuote => {
                 self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
@@ -27196,7 +27233,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use hale_types::stdlib_surface::Lower;
         match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
             Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic_fallible(id, segs, at, args, scope),
-            Some(Lower::HaleBody(_)) | Some(Lower::Renamed) | Some(Lower::Unlowered) | None => Ok(None),
+            Some(Lower::HaleBody(_))
+            | Some(Lower::HaleBodyByReceiver(_))
+            | Some(Lower::Renamed)
+            | Some(Lower::Unlowered)
+            | None => Ok(None),
         }
     }
 
@@ -27540,7 +27581,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::EnvArgsCount
             | Id::EnvVar
             | Id::EnvVarExists
-            | Id::HttpHeader
             | Id::IoFileAtEofRaw
             | Id::IoFileCloseRaw
             | Id::IoFileReadLineRaw
