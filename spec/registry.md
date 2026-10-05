@@ -256,7 +256,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — `check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), the certificate report of such a bundle (`effect_certificates`, for its form rows) and `resolve_program` (the bare program's test entry, once over that program for the scope and the graphs it hands the view) rebuild it; the lowering view reads its snapshot's (F.40 phase 3, C5); every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs. *Removed when:* phase 4, when every consumer demands the scope from a snapshot: 2.3 moved every verb and the LSP, and what still builds its own is the test entries over a bundle or a program no snapshot holds (`check_program`, `derive_application_model`, `effect_certificates`, `resolve_program`), which phase 3 kept (C5's follow-up ruling).
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); check (type expressions: the scope's name table) (`crates/hale-types/src/check.rs` · `&top.names`); demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (the snapshot's scope, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); resolved program (lowering: the snapshot's scope, handed in; its topic rows, and the stdlib's bus rows and typed-body pairs answered over it) (`crates/hale-types/src/resolved.rs` · `top: &TopScope`); resolve_program (the bare program's test entry: once over that program) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (definition, placement, the allocation survey: the snapshot's scope) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); check (type expressions: the scope's name table) (`crates/hale-types/src/check.rs` · `&top.names`); demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (the snapshot's scope, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); resolved program (lowering: the snapshot's scope, handed in; its topic rows, and the stdlib's bus rows and typed-body pairs answered over it) (`crates/hale-types/src/resolved.rs` · `top: &TopScope`); resolve_program (the bare program's test entry: once over that program) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); the stdlib's bus rows (the scope of no program, which holds the stdlib's declarations alone: once per process) (`crates/hale-types/src/stdlib_bodies.rs` · `build_top_scope`); lsp (definition, placement, the allocation survey: the snapshot's scope) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`)
 
 **Invariants.**
 
@@ -272,7 +272,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1
 
 ### `expression_typing` — Canonical · derivation
 
@@ -515,6 +515,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it (`cycle_from`)
 - lowering derives no graph of the user's program: its graph is the snapshot's rows (`BusRows`), each user site found in the merged program through the view's correspondence and keyed by the wire the topic rewrite gave it, followed by the stdlib's rows over the merged program's tail (`stdlib_bus_rows`), the one part no snapshot holds; the subjects and their gates are assembled from the rows by one procedure (`BusRows::subjects`) on both sides
+- the dispatch gates (`derive_dispatch_gates`, the `dispatch` family's) are the same rows keyed by wire with the stdlib's after them, the stdlib's derived once per process over its analysis copy (`stdlib_bodies::bus_rows`, by the same `stdlib_bus_rows`) rather than over a merged program: equal to lowering's graph's gates, column for column and in registration order, over the corpus examples, the lifecycle fixtures, tests/hale and the DNA mains, build and harness snapshots (`dispatch_gates.rs`)
 - a bundle no snapshot holds builds its graph through the snapshot's producer (`build_bus_graph`), never through a wrapper of its own
 - the checker's bus rules (7, 9, 10) compare subjects under the canonical key, the wire subject (`Subject`, `wires`): a topic published by name and subscribed by its literal subject is one subject; the gates and the model keep `BusSubject::canonical()`'s keys (`subjects`)
 - an edge belongs to the locus declaration that wrote its handler (`BusEdge::decl`), never to a name: two loci of one name have their own edges
@@ -534,9 +535,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2
-- `stdlib_bus_rows(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `stdlib_bus_rows(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1
 - `lowering_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 - `cycle_from(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×2
 - `external_handlers(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
@@ -613,7 +614,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-types/src/resolved.rs` · `from_gates` — the plan is derived twice, from two gate sets: the model's (`derive`) from the checked graph's gates, lowering's (the resolved program) from the lowering graph's, which are the same rows re-keyed by wire plus the stdlib's; by one function (`from_gates`) with one domain map (`domain_map` over the arrangement projection, keyed by the gates' spelling of a locus); held equal on the subjects the model's gates name by the law (`dispatch_plan_law.rs`: every column, the subscriber column over the model's loci and in each plan's own order). *Removed when:* phase 4, with `stdlib_surface`: one derivation needs the stdlib's rows at the snapshot, so that the model's gates and lowering's are one set (F.40 phase 3, C5 2 of 2, restated).
 
-**Also owned.** `crates/hale-model/src/dispatch_plan.rs` · `domain_map`
+**Also owned.** `crates/hale-model/src/dispatch_plan.rs` · `domain_map`; `crates/hale-types/src/bus_graph.rs` · `derive_dispatch_gates`; `crates/hale-types/src/stdlib_bodies.rs` · `bus_rows`
 
 **Consumers.** codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`); codegen (`crates/hale-codegen/src/bus/dispatch.rs` · `bus_devirt`); exec_digest (the resolved program's plan) (`crates/hale-cli/src/shared/options.rs` · `resolved.plan.digest()`); model dump
 
@@ -627,7 +628,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Missing data.** total: no row means the subject dispatches dynamically: no static plan row names it, at its publish and its register alike
 
-**Focused tests.** crates/hale-cli/tests/dispatch_plan_cli.rs; crates/hale-codegen/tests/bus_devirt_direct.rs; crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed); crates/hale-types/tests/dispatch_plan_law.rs (the model's plan is lowering's on the shared subjects over 334 views, with a control per column); crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main); crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)
+**Focused tests.** crates/hale-cli/tests/dispatch_plan_cli.rs; crates/hale-codegen/tests/bus_devirt_direct.rs; crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed); crates/hale-types/tests/dispatch_gates.rs (the snapshot's gates are lowering's graph's over 545 views, the stdlib's sinks closing `log.**` in each); crates/hale-types/tests/dispatch_plan_law.rs (the model's plan is lowering's on the shared subjects over 334 views, with a control per column); crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main); crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)
 
 **Spec.** spec/model.md § Derived products; spec/decisions.md F.38; spec/runtime.md § Placement classes (the dispatch plan)
 
@@ -636,6 +637,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `DispatchPlan::derive(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
 - `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 - `domain_map(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-types/src/arrangement.rs` ×1
+- `derive_dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `handler_routing` — Canonical · derivation
 

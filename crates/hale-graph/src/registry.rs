@@ -548,7 +548,7 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(TLIB, "check_bundle_opts_scoped", "`check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), the certificate report of such a bundle (`effect_certificates`, for its form rows) and `resolve_program` (the bare program's test entry, once over that program for the scope and the graphs it hands the view) rebuild it; the lowering view reads its snapshot's (F.40 phase 3, C5); every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs", "phase 4, when every consumer demands the scope from a snapshot: 2.3 moved every verb and the LSP, and what still builds its own is the test entries over a bundle or a program no snapshot holds (`check_program`, `derive_application_model`, `effect_certificates`, `resolve_program`), which phase 3 kept (C5's follow-up ruling)"),
         ],
-        consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("check (type expressions: the scope's name table)", CHECK, "&top.names"),consumer_at("demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot)", SNAPSHOT, "build_top_scope"), consumer_at("model (the snapshot's scope, handed in)", MODEL_BUILDER, "ModelInputs"), consumer_at("resolved program (lowering: the snapshot's scope, handed in; its topic rows, and the stdlib's bus rows and typed-body pairs answered over it)", TY_RESOLVED, "top: &TopScope"), consumer_at("resolve_program (the bare program's test entry: once over that program)", TY_RESOLVED, "build_top_scope"), consumer_at("lsp (definition, placement, the allocation survey: the snapshot's scope)", LSP, "demand_scope"), consumer_at("lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not)", LSP, "demand_editor_scope")],
+        consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("check (type expressions: the scope's name table)", CHECK, "&top.names"),consumer_at("demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot)", SNAPSHOT, "build_top_scope"), consumer_at("model (the snapshot's scope, handed in)", MODEL_BUILDER, "ModelInputs"), consumer_at("resolved program (lowering: the snapshot's scope, handed in; its topic rows, and the stdlib's bus rows and typed-body pairs answered over it)", TY_RESOLVED, "top: &TopScope"), consumer_at("resolve_program (the bare program's test entry: once over that program)", TY_RESOLVED, "build_top_scope"), consumer_at("the stdlib's bus rows (the scope of no program, which holds the stdlib's declarations alone: once per process)", STDLIB_BODIES, "build_top_scope"), consumer_at("lsp (definition, placement, the allocation survey: the snapshot's scope)", LSP, "demand_scope"), consumer_at("lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not)", LSP, "demand_editor_scope")],
         invariants: &[
             "one namespace decision: module-nested declarations and imported seeds resolve the same way everywhere",
             "the editor's scope over a seed with a hole (`demand_editor_scope`) is the same producer over the members that parsed, counted as this family; the whole scope, the check and everything after it stay blocked, so no check runs over a partial program",
@@ -558,7 +558,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-types/src/lifecycle/derive.rs (shared ancestry regression)", "crates/hale-types/tests/checks_inside_modules.rs", "crates/hale-cli/tests/check_unknown_identifier.rs", "crates/hale-types/tests/type_alias.rs"],
         spec: &["spec/semantics.md"],
         owned: &[],
-        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (SYNC, 1), (EFFECTS, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1), (LIFECYCLE_DERIVE, 1)] }],
+        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (SYNC, 1), (EFFECTS, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1), (LIFECYCLE_DERIVE, 1), (STDLIB_BODIES, 1)] }],
     },
     Family {
         name: "expression_typing",
@@ -839,6 +839,7 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it (`cycle_from`)",
             "lowering derives no graph of the user's program: its graph is the snapshot's rows (`BusRows`), each user site found in the merged program through the view's correspondence and keyed by the wire the topic rewrite gave it, followed by the stdlib's rows over the merged program's tail (`stdlib_bus_rows`), the one part no snapshot holds; the subjects and their gates are assembled from the rows by one procedure (`BusRows::subjects`) on both sides",
+            "the dispatch gates (`derive_dispatch_gates`, the `dispatch` family's) are the same rows keyed by wire with the stdlib's after them, the stdlib's derived once per process over its analysis copy (`stdlib_bodies::bus_rows`, by the same `stdlib_bus_rows`) rather than over a merged program: equal to lowering's graph's gates, column for column and in registration order, over the corpus examples, the lifecycle fixtures, tests/hale and the DNA mains, build and harness snapshots (`dispatch_gates.rs`)",
             "a bundle no snapshot holds builds its graph through the snapshot's producer (`build_bus_graph`), never through a wrapper of its own",
             "the checker's bus rules (7, 9, 10) compare subjects under the canonical key, the wire subject (`Subject`, `wires`): a topic published by name and subscribed by its literal subject is one subject; the gates and the model keep `BusSubject::canonical()`'s keys (`subjects`)",
             "an edge belongs to the locus declaration that wrote its handler (`BusEdge::decl`), never to a name: two loci of one name have their own edges",
@@ -857,9 +858,9 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 2), (CHECK, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2)] },
-            Seam { symbol: "stdlib_bus_rows(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "stdlib_bus_rows(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1), (STDLIB_BODIES, 1)] },
             Seam { symbol: "lowering_bus_graph(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "dispatch_gates(", allowed: &[(BUS_GRAPH, 2), (TY_RESOLVED, 1)] },
             Seam { symbol: "cycle_from(", allowed: &[(BUS_GRAPH, 1), (CHECK, 2)] },
             Seam { symbol: "external_handlers(", allowed: &[(BUS_GRAPH, 1), (CHECK, 1)] },
         ],
@@ -953,15 +954,17 @@ pub const FAMILIES: &[Family] = &[
             "the direct tier takes all three gate legs, same-thread, quiet and the payload_flat column (`bus_graph::payload_is_flat`, codegen's flatness rule over resolved types); codegen reads the flavor and refuses a plan whose column disagrees with the lowered payload, and the codec's own flatness equals the column at every publish over the corpus",
         ],
         missing: Missing::Total("no row means the subject dispatches dynamically: no static plan row names it, at its publish and its register alike"),
-        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs", "crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)", "crates/hale-types/tests/dispatch_plan_law.rs (the model's plan is lowering's on the shared subjects over 334 views, with a control per column)", "crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main)", "crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)"],
+        tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs", "crates/hale-cli/tests/dispatch_payload_flat.rs (every wire payload alternative through both publish arms against the codec, the column against the codec at every publish over the corpus, the plan change recorded as a compatibility change: --dump-model's row, a pre-change recording refused by its exec digest and admitted with --allow-unverified-model, a post-change recording replayed)", "crates/hale-types/tests/dispatch_gates.rs (the snapshot's gates are lowering's graph's over 545 views, the stdlib's sinks closing `log.**` in each)", "crates/hale-types/tests/dispatch_plan_law.rs (the model's plan is lowering's on the shared subjects over 334 views, with a control per column)", "crates/hale-types/tests/dispatch_plan.rs (an_imported_seeds_loci_have_their_domains: a two-seed fixture's imported loci have their domains, same-domain on main)", "crates/hale-model/src/dispatch_plan.rs (same_domain_is_no_part_of_the_digest)"],
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38", "spec/runtime.md § Placement classes (the dispatch plan)"],
-        owned: &[site(M_DISPATCH, "domain_map")],
+        owned: &[site(M_DISPATCH, "domain_map"), site(BUS_GRAPH, "derive_dispatch_gates"), site(STDLIB_BODIES, "bus_rows")],
         seams: &[
             Seam { symbol: "DispatchPlan::derive(", allowed: &[(MODEL_BUILDER, 1)] },
             Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 2), (TY_RESOLVED, 1)] },
             // The one domain map: the model's rows in `derive`, the
             // arrangement projection's in `Arrangement::domains`.
             Seam { symbol: "domain_map(", allowed: &[(M_DISPATCH, 1), (ARRANGEMENT, 1)] },
+            // The one gate set: the snapshot's cell.
+            Seam { symbol: "derive_dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1)] },
         ],
     },
     Family {

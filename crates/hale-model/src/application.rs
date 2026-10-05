@@ -171,7 +171,7 @@ pub struct Relations {
 /// from the model alone (no summary/AST side channel). Deleted when
 /// One subject's dispatch-gate facts (GH #476 Change 8) — copied
 /// verbatim from the BusGraph's soundness gates.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DispatchGate {
     /// The BusGraph's subject key (site spelling).
     pub subject: String,
