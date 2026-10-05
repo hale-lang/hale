@@ -340,7 +340,7 @@ fn declared_names() -> BTreeSet<&'static str> {
 fn rename_targets_exist() {
     let declared = declared_names();
     // Compiler-SYNTHESIZED types: declared by codegen at lowering
-    // time (`declare_builtin_parse_error_type`), not by Hale source,
+    // time (`declare_builtin_types`), not by Hale source,
     // so they are legitimately absent from AP_SOURCE.
     const SYNTHESIZED: &[&str] = &["ParseError"];
     let missing: Vec<String> = hale_stdlib::PATH_RENAMES

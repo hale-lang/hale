@@ -19,7 +19,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Canonical | law | `check_form_shape` | 0 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
-| `stdlib_surface` | Layer 2 | Migrating | capability | `SURFACES` | 3 | What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as. |
+| `stdlib_surface` | Layer 2 | Migrating | capability | `SURFACES` | 2 | What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Canonical | derivation | `entry_row` | 0 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Canonical | derivation | `resolve_owners` | 0 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Canonical | derivation | `build_bus_graph` | 0 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
@@ -382,7 +382,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-codegen/src/codegen.rs` · `value_to_string_supports` — the printable set, kept in lockstep by hand with the checker's `ty_is_printable`. *Removed when:* one predicate.
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.
-- `crates/hale-codegen/src/codegen.rs` · `declare_builtin_closure_violation_type` — a hand-maintained mirror of the checker's injected builtin types. *Removed when:* one declaration.
 
 **Consumers.** effects (`crates/hale-types/src/effects.rs` · `effects_for`); frontier (`crates/hale-types/src/frontier.rs` · `effects_for`); codegen; lsp (hover, completion); doc
 

@@ -12435,7 +12435,11 @@ impl<'a> Checker<'a> {
     fn type_name_is_declared(&self, name: &str) -> bool {
         if self.known.contains_key(name)
             || self.known.alias_target(name).is_some()
-            || SYNTHESIZED_TYPE_NAMES.contains(&name)
+            // GH #877: a builtin type names something even where the
+            // resolver injects nothing (`BusUnmatchedKey` without a fail
+            // topic, `ClosureViolation`): lowering declares every one
+            // unconditionally, so a signature naming one lowers.
+            || crate::builtin_types::builtin_type(name).is_some()
             || self.generic_params.iter().any(|g| g == name)
             || self.generic_types.contains_key(name)
         {
@@ -12487,7 +12491,7 @@ impl<'a> Checker<'a> {
                 .filter(|k| !k.starts_with("__")),
         );
         cands.extend(self.generic_params.iter().map(|g| g.as_str()));
-        cands.extend(SYNTHESIZED_TYPE_NAMES.iter().copied());
+        cands.extend(crate::builtin_types::BUILTIN_TYPES.iter().map(|t| t.name));
         cands.extend(
             self.top
                 .symbols
@@ -16137,35 +16141,6 @@ fn locus_has_unsynchronized_state(
     }
     None
 }
-
-/// GH #877: the type names the COMPILER declares, which therefore
-/// name something even when no declaration in the bundle does.
-///
-/// Codegen synthesizes each of these unconditionally (`codegen.rs`'s
-/// builtin-type declarations; `CapacityError` in `form/bounded.rs`),
-/// so a signature naming one lowers. The resolver injects most of
-/// them into the top scope as well — `IoError`, `ParseError`,
-/// `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
-/// `CapacityError` are there unconditionally since 2026-07-29, and
-/// `BusUnmatchedKey` only when a topic declares `on_unmatched: fail`
-/// — but `ClosureViolation`, the `on_failure` error payload, is
-/// injected nowhere and has always resolved to `Ty::Unknown`.
-///
-/// Listing all of them keeps the unknown-bare-type-name rule at
-/// least as permissive as codegen: an entry that the top scope
-/// already carries is simply redundant, while a missing one would
-/// refuse a program `hale build` accepts.
-const SYNTHESIZED_TYPE_NAMES: &[&str] = &[
-    "BusUnmatchedKey",
-    "CapacityError",
-    "ClosureViolation",
-    "CryptoError",
-    "EmptyError",
-    "IndexError",
-    "IoError",
-    "KeyError",
-    "ParseError",
-];
 
 /// The bare names codegen answers itself when they resolve to no user
 /// fn. A call to any other unbound bare name is refused by `hale

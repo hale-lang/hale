@@ -27,6 +27,7 @@ pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
 pub mod builtin_sigs;
+pub mod builtin_types;
 pub mod budget_check;
 pub mod bus_graph;
 pub mod bus_inert;

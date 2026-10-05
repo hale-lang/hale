@@ -2249,7 +2249,7 @@ mod tests {
         // stdlib's parse_int / parse_float don't expect. The
         // collision check fires at the user's decl span — we
         // need to USE a stdlib parse_* fn so `bundle_uses_form_machinery`
-        // routes through inject_form_stdlib_types.
+        // routes through inject_builtin_types.
         let src = r#"
             type ParseError { code: Int; }
             fn main() {
@@ -2335,7 +2335,7 @@ mod tests {
 
     #[test]
     fn ok_user_parse_error_in_form_free_program() {
-        // Without any form machinery in use, inject_form_stdlib_types
+        // Without any form machinery in use, inject_builtin_types
         // doesn't run, so the collision check is skipped. The
         // user is free to declare any type name.
         let src = r#"
