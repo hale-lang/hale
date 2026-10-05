@@ -1058,9 +1058,9 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["shm"],
         fns: &[
-            row!("last_record_kernel_ns", PURE, _, Intrinsic(ShmLastRecordKernelNs)),
-            row!("last_record_seq", PURE, _, Intrinsic(ShmLastRecordSeq)),
-            row!("last_record_user_ns", PURE, _, Intrinsic(ShmLastRecordUserNs)),
+            row!("last_record_kernel_ns", PURE, [] -> Int, Intrinsic(ShmLastRecordKernelNs)),
+            row!("last_record_seq", PURE, [] -> Int, Intrinsic(ShmLastRecordSeq)),
+            row!("last_record_user_ns", PURE, [] -> Int, Intrinsic(ShmLastRecordUserNs)),
         ],
         open_prefixes: &[],
     },

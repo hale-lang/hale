@@ -897,9 +897,9 @@ std::secret::Credential | lookup=secret@2 | locus=true | effects=- | sig=- | par
 std::secret::Signer | lookup=secret@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::secret::vault_local_dir | lookup=secret@2 | locus=false | effects=env | sig=- | parks=false | holds=false | unknown=- | suggest=vault_local_dir
 std::secret::vault_name_is_safe | lookup=secret@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=vault_name_is_safe
-std::shm::last_record_kernel_ns | lookup=shm@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_record_kernel_ns
-std::shm::last_record_seq | lookup=shm@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_record_seq
-std::shm::last_record_user_ns | lookup=shm@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_record_user_ns
+std::shm::last_record_kernel_ns | lookup=shm@2 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_record_kernel_ns
+std::shm::last_record_seq | lookup=shm@2 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_record_seq
+std::shm::last_record_user_ns | lookup=shm@2 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_record_user_ns
 std::source::Walk | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::str::ByteView | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::str::ParseError | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-

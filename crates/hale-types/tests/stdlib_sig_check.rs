@@ -549,6 +549,21 @@ fn std_io_udp_calls_are_checked() {
 }
 
 #[test]
+fn std_shm_calls_are_checked() {
+    refused(
+        "    let s = std::shm::last_record_seq(0);\n    println(s);",
+        &[("`std::shm::last_record_seq` takes 0 arguments, got 1", "std::shm::last_record_seq")],
+    );
+    refused(
+        "    let s = std::shm::last_record_seq() or 0;\n    println(s);",
+        &[(
+            "`std::shm::last_record_seq` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::shm::last_record_seq()",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
