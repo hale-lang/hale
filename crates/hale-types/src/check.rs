@@ -967,14 +967,16 @@ pub fn check_bundle_by_declaration(
         let errored_pools =
             check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut found);
         diags.extend(crate::law::diags(found));
-        check_pool_starvation(main, &fields, flows, &errored_pools, &mut diags);
-        check_birth_order(main, &fields, flows, &mut diags);
+        let rows = RootRunRows { main, fields: &fields, flows, errored_pools: &errored_pools };
+        diags.extend(Law { rule: STARVATION, eval: check_pool_starvation }.diags(&rows));
+        diags.extend(Law { rule: BIRTH_ORDER, eval: check_birth_order }.diags(&rows));
     }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    check_hot_path_alloc(inputs.alloc_summary, top, &mut diags);
+    let rows = HotPathRows { summary: inputs.alloc_summary, top };
+    diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
@@ -2095,8 +2097,12 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 /// a recovery, `shm_write`): a locus instantiated there in a loop is a
 /// finding now. It does not walk a callee that is an expression of its
 /// own, which the lint's walk did, so nothing written there is.
-fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopScope, diags: &mut Vec<Diag>) {
+///
+/// Its finding is a [`Violation`] (F.40 phase 4, W5): an error under
+/// `@hot`, else a warning.
+fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
+    let (summary, top) = (rows.summary, rows.top);
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =
         summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
     rows.sort_by_key(|f| f.decl_index);
@@ -2144,12 +2150,22 @@ fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopS
         found.dedup();
         for (span, msg) in found {
             if f.hot {
-                diags.push(Diag::ty(span, format!("@hot: {}", msg)));
+                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
             } else if !summary.unbounded_fns.contains(&f.key) {
-                diags.push(Diag::warn(span, msg));
+                out.push(Violation::warning(HOT_PATH, span, msg));
             }
         }
     }
+}
+
+/// The hot-path allocation lint.
+const HOT_PATH: RuleId = RuleId::registered("verification/structural", "hot-path-allocation");
+
+/// What the hot-path lint reads: the allocation summary's rows, and the
+/// scope, for which literal is a locus and which call is a factory.
+struct HotPathRows<'r> {
+    summary: &'r crate::alloc_summary::AllocSummary,
+    top: &'r TopScope,
 }
 
 // === GH #723: decorator stacks =====================================
@@ -2584,13 +2600,8 @@ const RULE_8: RuleId = RuleId::registered("semantics/placement", "8");
 /// both warnings (blocking AND starving a sibling); they name different
 /// defects. Not reported on a pool where the dead-receiver error fired
 /// (`errored_pools`): that error already says the thread is monopolized.
-fn check_pool_starvation(
-    main: &LocusDecl,
-    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    flows: &crate::flows::FlowRows,
-    errored_pools: &BTreeSet<String>,
-    diags: &mut Vec<Diag>,
-) {
+fn check_pool_starvation(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
+    let RootRunRows { main, fields, flows, errored_pools } = *rows;
     let mut by_pool: BTreeMap<String, Vec<(String, Span)>> =
         BTreeMap::new();
     for m in &main.members {
@@ -2671,7 +2682,8 @@ fn check_pool_starvation(
         } else {
             String::new()
         };
-        diags.push(Diag::warn(
+        out.push(Violation::warning(
+            STARVATION,
             *first_span,
             format!(
                 "cooperative pool `{}` is shared by {}, whose `run()` \
@@ -2721,12 +2733,8 @@ fn check_pool_starvation(
 /// mis-filed as a cooperative-child handler-cadence question. It is
 /// neither: the drain is fine and the cadence is fine; the publisher
 /// simply had not been born yet.
-fn check_birth_order(
-    main: &LocusDecl,
-    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    flows: &crate::flows::FlowRows,
-    diags: &mut Vec<Diag>,
-) {
+fn check_birth_order(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
+    let RootRunRows { main, fields, flows, .. } = *rows;
     // Params in declaration order, tagged with whether
     // each one blocks the births that follow it.
     let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
@@ -2780,7 +2788,8 @@ fn check_birth_order(
         return;
     }
     let (field, span, _, _) = &ordered[i];
-    diags.push(Diag::warn(
+    out.push(Violation::warning(
+        BIRTH_ORDER,
         *span,
         format!(
             "params field `{}` runs inline on the main \
@@ -2806,6 +2815,25 @@ fn check_birth_order(
             field,
         ),
     ));
+}
+
+/// Pool starvation.
+const STARVATION: RuleId = RuleId::registered("verification/structural", "pool-starvation");
+/// The birth-order trap.
+const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
+
+/// What the starvation and birth-order laws read: where each params
+/// field of the deployed root runs (the placement table's rows,
+/// [`root_field_placements`]), the flow rows' run columns, and the pools
+/// where rule 7 fired; the root's params, in the order written and with
+/// the type each names (the stdlib's long-running list is by path), are
+/// read off its declaration.
+#[derive(Clone, Copy)]
+struct RootRunRows<'r, 'a> {
+    main: &'r LocusDecl,
+    fields: &'r BTreeMap<&'a str, RootFieldPlacement<'a>>,
+    flows: &'r crate::flows::FlowRows,
+    errored_pools: &'r BTreeSet<String>,
 }
 
 /// Where a root params field runs, as the blocking check reads it.
@@ -3858,7 +3886,10 @@ fn check_binding_codec<'e>(
             Some(crate::purity::Purity::Pure) => {}
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);
-                diags.push(Diag::ty(
+                // The codec-purity rule's finding (F.40 phase 4, W5),
+                // where the walk reaches it among the codec's checks.
+                diags.push(Violation::error(
+                    CODEC_PURITY,
                     codec.locus.span,
                     format!(
                         "codec `{}.{}` is not safe to dispatch from \
@@ -3872,7 +3903,7 @@ fn check_binding_codec<'e>(
                          help: {}",
                         codec.locus.name, method_name, line, hint,
                     ),
-                ));
+                ).into_diag());
             }
             None => {
                 // Method should have been in the map if the
@@ -3885,6 +3916,12 @@ fn check_binding_codec<'e>(
         }
     }
 }
+
+/// Codec purity, a registered rule over the effect rows' purity column.
+const CODEC_PURITY: RuleId = RuleId::registered("verification/structural", "codec-purity");
+/// The foreign-ring payload shape, a registered rule over the scope's
+/// payload types.
+const FOREIGN_RING_PAYLOAD: RuleId = RuleId::registered("verification/structural", "foreign-ring-payload-shape");
 
 /// Render an [`Impurity`] as `(note_line, fix_hint)` strings for
 /// embedding in a codec binding-site diagnostic.
@@ -4604,7 +4641,10 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                         if !is_raw_view
                             && !is_flat_shapeable(&topic.payload, top)
                         {
-                            diags.push(Diag::ty(
+                            // The foreign-ring payload rule's finding
+                            // (F.40 phase 4, W5), in the walk's place.
+                            diags.push(Violation::error(
+                                FOREIGN_RING_PAYLOAD,
                                 entry.span,
                                 format!(
                                     "shm_ring binding for topic \
@@ -4619,7 +4659,7 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                                     lid.name,
                                     topic.payload.display()
                                 ),
-                            ));
+                            ).into_diag());
                         }
                     }
                 }

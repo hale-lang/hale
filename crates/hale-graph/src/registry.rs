@@ -1281,7 +1281,7 @@ pub const FAMILIES: &[Family] = &[
             "the run-to-exit rule (a `main` and no long-lived entry: no leak sites) reads the program's own entries, never the stdlib's analysis copy's (`AllocSummary::analysis_copy` names the copy's fns, `is_own` the program's), since the copy always carries `run` hooks (a classified correction, pinned per target in `alloc_summary_construction_correction.rs`)",
             "a program's declaration is the row where the stdlib's analysis copy declares the same name: the copy's top-level free fn, locus or interface of a name a checked program declares stays out of the summary, so a stdlib source file checked as itself keeps its own rows (its bodies, its spans, resolved in its own scope); only stdlib source shares such a name (a classified correction, pinned in `alloc_summary_construction_correction.rs`)",
             "the rows carry what the hot-path lint reads: a fn's `@hot` and whether it is a mode (`FnSummary::hot`, `mode`), the order of the declarations (`decl_index`), where a site or a call is written (`in_loop`, which a `return` / `fail` payload does not reset as it resets `loop_depth`), a struct literal written as a whole statement (`AllocSite::bare_stmt`) or as the whole right side of a `self.<field> =` replace (`self_replace`, the statement's span; an in-place replace, which allocates nothing, is in `FnSummary::in_place_sites`, not `sites`), the `let` a call is the value of (`CallEdge::let_span`), how a call is spelled (`CallSpelling`), and the allocating receives (`CallEdge::allocating_recv`, the one list, which `@budget` reads too)",
-            "the hot-path lint is a law over the rows (`check_hot_path_alloc`, over the summary the check is handed): the program's own fns, a mode aside, in declaration order, each finding where its site or call is written, a bus handler's at any depth, `@hot` an error and `@unbounded` silencing the advisory; no reader walks bodies for it, so it sees what the summary's walk sees (a publish, a bare block, `violate`, a recovery and `shm_write` included, which the lint's own walk skipped; an index expression's subscript included, walked as any operand is, as the lint's walk walked it, so a `@hot` fn keeps that rejection (a classified correction, pinned in `hot_path_alloc.rs`); a callee that is an expression of its own excluded, which it reached) and its diagnostics over the corpus, the targets and the lint's pins are the lint's, in order (pinned in `hot_path_alloc.rs`)",
+            "the hot-path lint is a law over the rows (`check_hot_path_alloc`, over the summary the check is handed): the program's own fns, a mode aside, in declaration order, each finding where its site or call is written, a bus handler's at any depth, `@hot` an error and `@unbounded` silencing the advisory; no reader walks bodies for it, so it sees what the summary's walk sees (a publish, a bare block, `violate`, a recovery and `shm_write` included, which the lint's own walk skipped; an index expression's subscript included, walked as any operand is, as the lint's walk walked it, so a `@hot` fn keeps that rejection (a classified correction, pinned in `hot_path_alloc.rs`); a callee that is an expression of its own excluded, which it reached) and its diagnostics over the corpus, the targets and the lint's pins are the lint's, in order (pinned in `hot_path_alloc.rs`); it is a registered rule (the structural table's \"Hot-path allocation\") run as a `law::Law`, its finding a `law::Violation`, an error under `@hot` and a warning otherwise (phase 4, W5)",
             "a module-nested declaration is summarized like a top-level one: every declaration pass walks `module { … }` nesting (`flat_decls`; a module is a namespace, not an analysis boundary, GH #764), so a module-nested fn or locus member has a row and a call into it resolves, and the model holes out no module-nested body; the one body with no row is an `on_failure` handler, summarized as a declaration body (a classified correction, pinned in `alloc_summary_construction_correction.rs`)",
             "the advisory, `--dump-alloc-summary` and the editor's hale/allocSummary read the snapshot's summary and report the program's own rows judged over the whole of it (the stdlib's analysis copy and the renames included: a classified correction, pinned per target in `alloc_summary_correction.rs`); a leak site is the program's own (`AllocSummary::is_own`) and is left out of the advisory only when it has no author position (`AuthorPositions::has`: its span at or beyond `API_SYNTH_BASE`, or in a declaration the origin rows mark synthesized whose offset no source file owns), never by its owner's name; the check's warnings, the editor's diagnostics and the editor's hale/allocSummary decide with one function (`advisory_leak_sites`)",
             "a call through a function value resolves to the program's function values (F.40 E5): the summary marks a call through a function-typed parameter, a local its walk does not follow to a fn, or a computed callee `CallEdge::indirect`, and `resolve_function_values` rewrites it into one alternative per fn some expression of the bundle reads as a value (`fn_values`: every expression the identity walk reaches, a callee written as a name or a path and a name a binding in scope spells excluded; resolved as a `let` of it resolves) whose arity is the call's and whose declared signature can be the parameter's or the bound field's declared type, sharing a dispatch group (`CallEdge::via_value` the callee as written); a call no such value can be stays indirect, and so does every call of a bundle that reads a locus's method as a value, which this does not follow",
@@ -1299,7 +1299,8 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "scratch_local_free_fns(", allowed: &[(ALLOC, 1)] },
             Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 4)] },
             Seam { symbol: "allocating_recv(", allowed: &[(ALLOC, 2)] },
-            Seam { symbol: "check_hot_path_alloc(", allowed: &[(CHECK, 2)] },
+            // Its definition: the check runs it as a `law::Law`, by name.
+            Seam { symbol: "check_hot_path_alloc(", allowed: &[(CHECK, 1)] },
             Seam { symbol: "derive_alloc_summary(", allowed: &[(ALLOC, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (TY_RESOLVED, 1), (EFFECTS, 1), (EVIDENCE, 1), (JUDGMENT, 1), (TOPOLOGY, 1), ("crates/hale-types/src/resource_budget.rs", 1)] },
             Seam { symbol: "own_rows(", allowed: &[(ALLOC, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/budget_check.rs", 1), ("crates/hale-types/src/quantitative.rs", 1), (FRONTIER, 1), ("crates/hale-types/src/resource_budget.rs", 2)] },
             Seam { symbol: "derive_alloc_routing(", allowed: &[(ALLOC_ROUTING, 1), (TY_RESOLVED, 1)] },
@@ -2442,6 +2443,36 @@ pub const RULES: &[Rule] = &[
         gist: "a role source's `fn holds` that is not `std::api::RoleSource`'s (error, at the fn's name, the witness the api entry)",
         family: "api_surface",
         evaluator: Some(site(ROLES, "holds_is_not_a_role_source")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/pool-starvation",
+        title: "Pool starvation",
+        // Where each root field runs (the placement table's rows, `root_field_placements`), the flow rows' "never returns" column, and the pools rule 7 fired on; the root's params, in order and with the type each names (the stdlib's long-running list is by path), are still read off its declaration.
+        reads: Reads::Rows(&["placement", "flows"]),
+        gist: "two or more never-returning `run()` bodies on one cooperative pool of the deployed root (warning, at the first)",
+        family: "flows",
+        evaluator: Some(site(CHECK, "check_pool_starvation")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/birth-order-trap",
+        title: "Birth-order trap",
+        // As pool starvation: the placement table's rows and the flow rows' "never returns" column; the root's params, in order, off its declaration.
+        reads: Reads::Rows(&["placement", "flows"]),
+        gist: "a root params field whose never-returning `run()` runs inline on main, so the params after it are never born (warning, at the first such field)",
+        family: "flows",
+        evaluator: Some(site(CHECK, "check_birth_order")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/hot-path-allocation",
+        title: "Hot-path allocation",
+        // The allocation summary's rows (each own fn's sites and calls, where they are written, `@hot`, `@unbounded`), and the scope, for which literal names a locus and which call a factory.
+        reads: Reads::Rows(&["alloc_summary", "top_scope"]),
+        gist: "an allocation per loop iteration or per bus message (warning; an error under `@hot`, where it also flags `snapshot()` / `finish()` and a whole-struct self-field replace)",
+        family: "alloc_summary",
+        evaluator: Some(site(CHECK, "check_hot_path_alloc")),
         state: State::Canonical,
     },
 ];
