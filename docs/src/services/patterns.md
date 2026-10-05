@@ -158,6 +158,10 @@ self.read_msg();
 println(name);   // ✓ owns its own copy
 ```
 
+Rendering a view copies it too: `to_string(view)`, `"name=" + view`
+and `f"{view}"` each produce a `String` of their own, so any of them
+is as good a copy as `std::str::clone`.
+
 A builder's views are **panic-guarded**: reading one after its
 `BytesBuilder` changed exits with a diagnostic rather than reading
 garbage — `violation: StringView read after source BytesBuilder

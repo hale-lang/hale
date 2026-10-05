@@ -66,13 +66,6 @@ pub enum PrintShape<T> {
     /// interface, a function, an unsized array (no length to walk), a
     /// fallible, a cell, a batch.
     NoTextForm,
-    /// Lowering's record before S7's correction: lowering's predicate
-    /// prints any named record without looking at its fields, where the
-    /// checker requires every field to print.
-    RecordFieldsUnread,
-    /// Lowering's `StringView` before S7's correction: lowering's
-    /// predicate does not list it, where the checker prints it.
-    StringViewUnlisted,
 }
 
 /// Whether a value of type `t` prints; `shape_of` maps the reader's type
@@ -89,14 +82,14 @@ pub fn prints_at<T>(t: &T, depth: u32, shape_of: &impl Fn(&T) -> PrintShape<T>) 
     }
     match shape_of(t) {
         PrintShape::Prim(p) => PRINTABLE_PRIMS.contains(&p),
-        PrintShape::Enum | PrintShape::Unseen | PrintShape::RecordFieldsUnread => true,
+        PrintShape::Enum | PrintShape::Unseen => true,
         PrintShape::Record(fields) => fields.iter().all(|f| prints_at(f, depth + 1, shape_of)),
         PrintShape::Alias(inner) => prints_at(&inner, depth + 1, shape_of),
         PrintShape::Tuple(parts) => parts.iter().all(|p| prints_at(p, depth + 1, shape_of)),
         PrintShape::Sequence(elem) => {
             matches!(shape_of(&elem), PrintShape::Prim(p) if SEQUENCE_ELEMENT_PRIMS.contains(&p))
         }
-        PrintShape::NoTextForm | PrintShape::StringViewUnlisted => false,
+        PrintShape::NoTextForm => false,
     }
 }
 

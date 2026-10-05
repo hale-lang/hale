@@ -19167,12 +19167,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// branch (a type outside it falls back to the mixed-type error)
     /// and `println`'s composites. The rule is
     /// `hale_types::printable`'s, which the checker reads too.
-    fn value_to_string_supports(ty: &CodegenTy) -> bool {
-        hale_types::printable::prints(ty, &Self::print_shape)
+    fn value_to_string_supports(&self, ty: &CodegenTy) -> bool {
+        hale_types::printable::prints(ty, &|t: &CodegenTy| self.print_shape(t))
     }
 
     /// `ty` as the printable rule sees it.
-    fn print_shape(ty: &CodegenTy) -> hale_types::printable::PrintShape<CodegenTy> {
+    fn print_shape(&self, ty: &CodegenTy) -> hale_types::printable::PrintShape<CodegenTy> {
         use hale_types::printable::PrintShape;
         match ty {
             CodegenTy::String => PrintShape::Prim(PrimType::String),
@@ -19185,9 +19185,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bytes => PrintShape::Prim(PrimType::Bytes),
             CodegenTy::BytesView => PrintShape::Prim(PrimType::BytesView),
             CodegenTy::BytesMut => PrintShape::Prim(PrimType::BytesMut),
-            CodegenTy::StringView => PrintShape::StringViewUnlisted,
+            CodegenTy::StringView => PrintShape::Prim(PrimType::StringView),
             CodegenTy::Enum(_) => PrintShape::Enum,
-            CodegenTy::TypeRef(_) => PrintShape::RecordFieldsUnread,
+            // The fields in declaration order, as `value_to_string`
+            // walks them; a record it cannot walk has no text form.
+            CodegenTy::TypeRef(name) => self
+                .user_types
+                .get(name)
+                .and_then(|info| {
+                    info.field_order
+                        .iter()
+                        .map(|f| info.fields.get(f).map(|(_, t)| t.clone()))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .map_or(PrintShape::NoTextForm, PrintShape::Record),
             CodegenTy::Array(elem, _) | CodegenTy::Bounded(elem, _) => {
                 PrintShape::Sequence(elem.as_ref().clone())
             }
@@ -19233,6 +19244,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ty = ty.clone();
         match ty {
             CodegenTy::String => Ok(v),
+            CodegenTy::StringView => {
+                // A view renders as its text, copied out as
+                // `std::str::clone` copies it: the result is a String,
+                // which must not alias the builder a later append
+                // moves.
+                let data = self.unpack_view_if_needed(v, &CodegenTy::StringView)?;
+                let arena_ptr = self.current_arena_ptr()?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_clone")
+                    .expect("lotus_str_clone declared");
+                let res = self
+                    .builder
+                    .build_call(f, &[arena_ptr.into(), data.into()], "to_string.view")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_clone returns ptr");
+                Ok(res)
+            }
             CodegenTy::Time => {
                 // GH #607: an instant renders as ISO-8601 UTC, the
                 // fraction only when it is not zero.
@@ -23701,11 +23732,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // println('p=', n) works." Other mixed-type binops
                 // remain errors.
                 if *op == BinOp::Add && lt != rt {
-                    if lt == CodegenTy::String && Self::value_to_string_supports(&rt) {
+                    if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
                         let coerced = self.value_to_string(rv, &rt)?;
                         return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
                     }
-                    if rt == CodegenTy::String && Self::value_to_string_supports(&lt) {
+                    if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
                         let coerced = self.value_to_string(lv, &lt)?;
                         return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
                     }
@@ -25315,7 +25346,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // because no embedded program prints a bounded; the
                 // compiler's own unreachable-pattern warning did.
                 CodegenTy::Bounded(_, _) => {
-                    if !Self::value_to_string_supports(&ty) {
+                    if !self.value_to_string_supports(&ty) {
                         return Err(CodegenError::Unsupported(
                             "cannot print a bounded[T; N] value \
                              directly unless its elements are scalars \
@@ -25454,7 +25485,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::TypeRef(_)
                 | CodegenTy::Tuple(_)
                 | CodegenTy::Array(_, _)
-                    if Self::value_to_string_supports(&ty) =>
+                    if self.value_to_string_supports(&ty) =>
                 {
                     let rendered = self.value_to_string(val, &ty)?;
                     format.push_str("%s");

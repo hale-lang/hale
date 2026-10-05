@@ -246,7 +246,17 @@ Rendering is defined recursively, with two rules about the nesting:
 
 Rendering has no user-visible ordering or allocation guarantees
 beyond producing the text above; results are owned by the caller's
-arena like any other constructed String.
+arena like any other constructed String. A `StringView` renders as
+its text, copied as `std::str::clone` copies it, so the String that
+`to_string(view)`, `"x=" + view` or `f"{view}"` produces does not
+follow the builder the view reads (2026-10-05, F.40 phase 4: before
+it, only `println` and `print` rendered a view, and the other three
+passed the check and were refused at build).
+
+The checker and lowering read one definition of this rule
+(`hale_types::printable`): the checker refuses a value outside the
+set at its span, and lowering renders a record only when every
+field is printable, as the checker does.
 
 ### Format specs
 
