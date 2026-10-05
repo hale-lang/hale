@@ -1,0 +1,28 @@
+// Build-only call fixture (F.40 phase 4, S0): the `std::io::tcp`
+// primitives at the positions the rest of the line S shadow set does
+// not reach (the `Stream` and `Server` loci call most of them at one
+// position only). Never run: the fd is never connected;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let fd = 3;
+    let buf = std::bytes::BytesBuilder { };
+    std::io::tcp::__listen_socket("127.0.0.1", 0);
+    std::io::tcp::__connect("127.0.0.1", 1);
+    std::io::tcp::__accept_one(fd);
+    std::io::tcp::__recv(fd, 64);
+    std::io::tcp::__recv_bytes(fd, 64);
+    std::io::tcp::__send_bytes(fd, std::bytes::from_string("x"));
+    std::io::tcp::__shutdown_listen_socket(fd);
+    std::io::tcp::recv_into(fd, buf, 64);
+    std::io::tcp::recv_stamped_into(fd, buf, 64);
+    let got = std::io::tcp::__recv(fd, 64);
+    let raw = std::io::tcp::__recv_bytes(fd, 64);
+    let sent = std::io::tcp::__send(fd, "x");
+    let status = std::io::tcp::__last_io_status();
+    let kind = std::io::tcp::__io_error_kind(11);
+    let shut = std::io::tcp::__shutdown_listen_socket(fd);
+    let closed = std::io::tcp::__close_fd(fd);
+    let waited = std::io::tcp::connect_wait("127.0.0.1", 1, 10ms) or - 1;
+    println(got, len(raw), sent + status + shut + closed + waited, kind);
+}

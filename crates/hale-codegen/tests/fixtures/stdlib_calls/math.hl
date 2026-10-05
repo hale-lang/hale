@@ -1,0 +1,11 @@
+// Build-only call fixture (F.40 phase 4, S0): the trigonometric
+// `std::math` functions at expression position. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let x = 0.5;
+    let t = std::math::sin(x) + std::math::cos(x) + std::math::tan(x);
+    let inv = std::math::asin(x) + std::math::acos(x) + std::math::atan(x);
+    let a2 = std::math::atan2(x, x);
+    println(t + inv + a2);
+}

@@ -1,4 +1,4 @@
-//! The `stdlib_data` integration-test binary: 14 test files of this area, kept
+//! The `stdlib_data` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,10 @@
 
 #[path = "stdlib_bytes.rs"]
 mod stdlib_bytes;
+#[path = "stdlib_call_fixtures.rs"]
+mod stdlib_call_fixtures;
+#[path = "stdlib_dispatch_coverage.rs"]
+mod stdlib_dispatch_coverage;
 #[path = "stdlib_iter.rs"]
 mod stdlib_iter;
 #[path = "stdlib_json.rs"]

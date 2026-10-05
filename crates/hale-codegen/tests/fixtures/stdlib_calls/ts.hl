@@ -1,0 +1,23 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::ts` at the positions
+// the rest of the line S shadow set does not reach. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let src = "package main\n";
+    std::ts::parse_go(src);
+    let tree = std::ts::parse_go(src);
+    std::ts::root_node(tree);
+    let root = std::ts::root_node(tree);
+    std::ts::node_kind(root);
+    std::ts::node_text(root);
+    std::ts::node_child_count(root);
+    std::ts::node_named_child_count(root);
+    std::ts::node_child(root, 0);
+    std::ts::node_named_child(root, 0);
+    std::ts::node_start_byte(root);
+    std::ts::node_end_byte(root);
+    std::ts::node_is_named(root);
+    let n = std::ts::node_child_count(root) + std::ts::node_child(root, 0)
+        + std::ts::node_is_named(root);
+    println(n);
+}

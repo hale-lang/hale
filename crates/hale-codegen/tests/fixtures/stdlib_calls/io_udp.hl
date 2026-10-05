@@ -1,0 +1,17 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::io::udp` at the
+// positions the rest of the line S shadow set does not reach. Never run:
+// the socket is never bound; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let fd = std::io::udp::__bind("127.0.0.1", 0) or - 1;
+    std::io::udp::__send(fd, "127.0.0.1", 9, "x") or raise;
+    let got = std::io::udp::__recv(fd, 64) or std::bytes::from_string("");
+    std::io::udp::set_multicast_iface(fd, "127.0.0.1") or raise;
+    let buf = std::bytes::BytesBuilder { };
+    std::io::udp::recv_into(fd, buf, 64);
+    std::io::udp::last_source_host();
+    std::io::udp::last_source_port();
+    let closed = std::io::udp::__close(fd);
+    std::io::udp::__close(fd);
+    println(len(got) + closed);
+}
