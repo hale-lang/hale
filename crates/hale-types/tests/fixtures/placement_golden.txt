@@ -4171,6 +4171,12 @@ row	App@literal1	App	main	default
 row	App@literal1.c	Clock	main	default
 row	App@literal1.w	Worker	main	default
 
+== crates/hale-types/tests/bus_graph.rs#fd86c6d8
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.c	Clock	main	default
+row	App@literal1.w	Worker	main	default
+
 == crates/hale-types/tests/bus_graph.rs#130c4f61
 row	W@main1	W	main	default
 
@@ -5474,6 +5480,8 @@ row	~.r.leaf	Leaf	main	inherited
 == crates/hale-types/tests/self_containing_locus.rs#e33d1b3f
 
 == crates/hale-types/tests/self_containing_locus.rs#03ba98b7
+
+== crates/hale-types/tests/self_containing_locus.rs#9b4e99f9
 
 == crates/hale-types/tests/self_containing_locus.rs#c1d27593
 hole	Tree@main1.leaf	unenumerable initializer
