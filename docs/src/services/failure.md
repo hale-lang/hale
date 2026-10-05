@@ -221,6 +221,13 @@ documents that the totals start over on a restart, which they do
 anyway. It is checked like `persists_through`, and naming the same
 recovery in both is refused, since the two cannot both hold.
 
+`hale check` warns when a clause cannot take effect: when no
+`on_failure` (and no recovery statement elsewhere) in the program
+applies that recovery to the locus, it lists the handlers that do
+handle it and what they apply; and when a closure with no `sum`,
+`count` or `mean` says `persists_through`, since it has no totals to
+keep.
+
 ## Crossing from value to structural
 
 Sometimes a method catches a value-level error and decides it's

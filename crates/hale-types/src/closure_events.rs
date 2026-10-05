@@ -11,10 +11,18 @@
 //! the same typed list (`ClosureDecl::persists_through`), so what the
 //! laws accept is what runs.
 
-use hale_syntax::ast::{flat_decls, ClosureClause, ClosureDecl, LocusDecl, LocusMember, RecoveryEvent, RecoveryEvents, TopDecl};
+use std::collections::{BTreeMap, BTreeSet};
+
+use hale_syntax::ast::{
+    flat_decls, ClosureClause, ClosureDecl, LocusDecl, LocusMember, RecoveryEvent, RecoveryEvents, RecoveryOp, TopDecl,
+};
 use hale_syntax::{Diag, SpanOrigin};
 
+use crate::entry::EntryRow;
+use crate::handler_routing::{ChildRef, HandlerRouting, HandlerRow, RecoveryRow};
 use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
+use crate::placement::SiteRef;
+use crate::typed_bodies::accumulator_sites;
 use crate::Bundle;
 
 /// A name outside the alphabet.
@@ -23,6 +31,10 @@ const ALPHABET: RuleId = RuleId::registered("verification/structural", "recovery
 const DISSOLVE: RuleId = RuleId::registered("verification/structural", "persist-through-dissolve");
 /// An event in both clauses of one closure.
 const CONTRADICTION: RuleId = RuleId::registered("verification/structural", "contradicting-recovery-clauses");
+/// An event the closed world never applies to the locus.
+const UNREACHED: RuleId = RuleId::registered("verification/structural", "unreached-recovery-event");
+/// `persists_through(...)` on a closure that accumulates nothing.
+const NOTHING_KEPT: RuleId = RuleId::registered("verification/structural", "persistence-without-accumulator");
 
 /// Which clause a row is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,12 +97,26 @@ pub fn closure_event_rows<'b>(bundle: &Bundle<'b>) -> ClosureEventRows<'b> {
     ClosureEventRows { rows }
 }
 
+/// What the reach law reads beside the clauses: the handler rows (who
+/// applies which recovery to a child of which type), the entry row
+/// (whether the world is closed), and the bundle's declarations (whose
+/// generic params a handler's child may be).
+struct Reach<'r, 'b> {
+    clauses: &'r ClosureEventRows<'b>,
+    handlers: &'r HandlerRouting,
+    entry: &'r EntryRow,
+    bundle: &'r Bundle<'b>,
+}
+
 /// Every recovery-event law over `bundle`'s clauses, as diagnostics.
-pub fn closure_event_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
+pub fn closure_event_laws(bundle: &Bundle<'_>, handlers: &HandlerRouting, entry: &EntryRow) -> Vec<Diag> {
     let rows = closure_event_rows(bundle);
     let mut diags = Law { rule: ALPHABET, eval: outside_the_alphabet }.diags(&rows);
     diags.extend(Law { rule: DISSOLVE, eval: persists_through_dissolve }.diags(&rows));
     diags.extend(Law { rule: CONTRADICTION, eval: in_both_clauses }.diags(&rows));
+    let reach = Reach { clauses: &rows, handlers, entry, bundle };
+    diags.extend(Law { rule: UNREACHED, eval: unreached_events }.diags(&reach));
+    diags.extend(Law { rule: NOTHING_KEPT, eval: nothing_to_keep }.diags(&rows));
     diags
 }
 
@@ -201,6 +227,199 @@ fn in_both_clauses(rows: &ClosureEventRows<'_>, out: &mut Vec<Violation>) {
                 }],
             });
         }
+    }
+}
+
+/// The recovery event a statement applies: its own, for the three in the
+/// alphabet (`reorganize` and `bubble` apply none to the child).
+fn event_of(op: RecoveryOp) -> Option<RecoveryEvent> {
+    match op {
+        RecoveryOp::Restart => Some(RecoveryEvent::Restart),
+        RecoveryOp::RestartInPlace => Some(RecoveryEvent::RestartInPlace),
+        RecoveryOp::Quarantine => Some(RecoveryEvent::Quarantine),
+        RecoveryOp::Reorganize | RecoveryOp::Bubble => None,
+    }
+}
+
+/// The events a handler row applies to its child: its ops', and
+/// `quarantine` when a restart states a `for` bound (a spent bound
+/// quarantines).
+fn handler_events(row: &HandlerRow) -> BTreeSet<RecoveryEvent> {
+    let mut out: BTreeSet<RecoveryEvent> = row.ops.iter().filter_map(|op| event_of(*op)).collect();
+    if row.bounds.iter().any(|b| matches!(b.op, RecoveryOp::Restart | RecoveryOp::RestartInPlace)) {
+        out.insert(RecoveryEvent::Quarantine);
+    }
+    out
+}
+
+/// The events a recovery statement outside the handlers applies.
+fn statement_events(row: &RecoveryRow) -> BTreeSet<RecoveryEvent> {
+    let mut out: BTreeSet<RecoveryEvent> = event_of(row.op).into_iter().collect();
+    if row.bounded && matches!(row.op, RecoveryOp::Restart | RecoveryOp::RestartInPlace) {
+        out.insert(RecoveryEvent::Quarantine);
+    }
+    out
+}
+
+/// The events, as the witness says them.
+fn spelled(events: &BTreeSet<RecoveryEvent>) -> String {
+    let names: Vec<String> = events.iter().map(|e| format!("`{}`", e.name())).collect();
+    match names.len() {
+        0 => "no recovery event".to_string(),
+        1 => names[0].clone(),
+        n => format!("{} and {}", names[..n - 1].join(", "), names[n - 1]),
+    }
+}
+
+/// Whether a child, as a row names it, is `locus`: by the declaration
+/// the child resolves to when the row has it (a monomorph's is its
+/// template's), else by name.
+fn is_locus(child: &ChildRef, child_decl: Option<SiteRef>, locus: &LocusDecl, site: Option<SiteRef>) -> bool {
+    match (child_decl, site) {
+        (Some(c), Some(l)) => c == l,
+        _ => matches!(child, ChildRef::Locus(n) if *n == locus.name.name),
+    }
+}
+
+/// An event a closure names that no recovery in the closed world applies
+/// to its locus, for a locus of the program's own seed: a warning at the
+/// name, whose witness is every handler and recovery statement that
+/// names the locus with the events it applies (or the locus, when none
+/// does). A spent `restart(c) for N` bound is `quarantine`.
+///
+/// Not judged when the world is not closed (the entry row has no entry,
+/// as rule 9 asks: a library checked alone has no parents), for an
+/// imported locus, or for an event some recovery applies to a child the
+/// rows cannot name: a generic supervisor's child (its parent's type
+/// parameter) or a statement whose receiver is not a declared param.
+fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
+    if reach.entry.entry().is_none() {
+        return;
+    }
+    let generics: BTreeMap<&str, Vec<&str>> = reach
+        .bundle
+        .programs
+        .values()
+        .flat_map(|p| flat_decls(&p.items))
+        .filter_map(|d| match d {
+            TopDecl::Locus(l) => Some((l.name.name.as_str(), l.generics.iter().map(|g| g.name.name.as_str()).collect())),
+            _ => None,
+        })
+        .collect();
+    let is_type_param = |parent: Option<&str>, child: &ChildRef| match (parent, child) {
+        (Some(p), ChildRef::External(n)) => generics.get(p).is_some_and(|gs| gs.contains(&n.as_str())),
+        _ => false,
+    };
+    // The events some recovery applies to a child the rows cannot name.
+    let mut unnamed: BTreeSet<RecoveryEvent> = BTreeSet::new();
+    for row in reach.handlers.rows() {
+        if is_type_param(Some(&row.parent), &row.child) {
+            unnamed.extend(handler_events(row));
+        }
+    }
+    for row in reach.handlers.recoveries() {
+        if row.child.as_ref().is_none_or(|c| is_type_param(row.parent.as_deref(), c)) {
+            unnamed.extend(statement_events(row));
+        }
+    }
+    for row in reach.clauses.rows.iter().filter(|r| !r.locus.imported) {
+        let locus = row.locus;
+        let site = reach.bundle.snapshot.site_id(locus.id).map(SiteRef::user);
+        let handlers: Vec<&HandlerRow> =
+            reach.handlers.rows().iter().filter(|h| is_locus(&h.child, h.child_decl, locus, site)).collect();
+        let statements: Vec<&RecoveryRow> = reach
+            .handlers
+            .recoveries()
+            .iter()
+            .filter(|s| s.child.as_ref().is_some_and(|c| is_locus(c, s.child_decl, locus, site)))
+            .collect();
+        let applied: BTreeSet<RecoveryEvent> = handlers
+            .iter()
+            .map(|h| handler_events(h))
+            .chain(statements.iter().map(|s| statement_events(s)))
+            .flatten()
+            .collect();
+        let mut judged: Vec<RecoveryEvent> = Vec::new();
+        for n in &row.events.names {
+            let Some(event) = n.event else { continue };
+            if judged.contains(&event) || applied.contains(&event) || unnamed.contains(&event) {
+                continue;
+            }
+            judged.push(event);
+            let l = locus.name.name.as_str();
+            let mut witness: Vec<WitnessStep> = handlers
+                .iter()
+                .map(|h| WitnessStep {
+                    span: h.span,
+                    origin: SpanOrigin::Seed,
+                    note: format!("`{}` handles a failing `{l}` here and applies {}", h.parent, spelled(&handler_events(h))),
+                })
+                .collect();
+            witness.extend(statements.iter().map(|s| WitnessStep {
+                span: s.statement,
+                origin: SpanOrigin::Seed,
+                note: format!(
+                    "{} applies {} to a `{l}` here",
+                    s.parent.as_deref().map(|p| format!("`{p}`")).unwrap_or_else(|| "a free fn".to_string()),
+                    spelled(&statement_events(s)),
+                ),
+            }));
+            if witness.is_empty() {
+                witness.push(WitnessStep {
+                    span: locus.name.span,
+                    origin: SpanOrigin::Seed,
+                    note: format!(
+                        "`{l}` is declared here; no `on_failure` in the program handles one, and no recovery \
+                         statement is applied to one"
+                    ),
+                });
+            }
+            out.push(Violation {
+                rule: UNREACHED,
+                severity: Severity::Warning,
+                span: n.name.span,
+                message: format!(
+                    "closure `{}`: no recovery in this program applies `{}` to a `{l}`, so `{}({})` never \
+                     takes effect",
+                    row.closure.name.name,
+                    event.name(),
+                    row.clause.keyword(),
+                    event.name(),
+                ),
+                witness,
+            });
+        }
+    }
+}
+
+/// `persists_through(...)` on a closure whose assertion accumulates
+/// nothing (no `sum`, `count` or `mean`) keeps nothing: a warning at the
+/// clause, for a locus of the program's own seed. The witness is the
+/// assertion, when the closure has one.
+fn nothing_to_keep(rows: &ClosureEventRows<'_>, out: &mut Vec<Violation>) {
+    for row in rows.rows.iter().filter(|r| r.clause == Clause::PersistsThrough && !r.locus.imported) {
+        let assertion = row.closure.assertion.as_ref();
+        if assertion.is_some_and(|a| !accumulator_sites(a).is_empty()) {
+            continue;
+        }
+        out.push(Violation {
+            rule: NOTHING_KEPT,
+            severity: Severity::Warning,
+            span: row.events.span,
+            message: format!(
+                "closure `{}`: `persists_through(...)` keeps a closure's accumulators through a recovery, and \
+                 this closure has none, so the clause keeps nothing",
+                row.closure.name.name,
+            ),
+            witness: assertion
+                .map(|a| WitnessStep {
+                    span: a.span,
+                    origin: SpanOrigin::Seed,
+                    note: "the assertion accumulates nothing: no `sum`, `count` or `mean`".to_string(),
+                })
+                .into_iter()
+                .collect(),
+        });
     }
 }
 

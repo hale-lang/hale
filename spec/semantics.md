@@ -4265,6 +4265,21 @@ event a closure names in both clauses is an error at the `resets_on`
 name, with the `persists_through` name as its witness (*Contradicting
 recovery clauses*).
 
+Two warnings say when a clause cannot take effect:
+
+- In a closed world (the program has an entry), an event a closure of
+  the program's own seed names that no recovery applies to its locus:
+  no parent's `on_failure` for the locus's type performs it, and no
+  recovery statement outside a handler performs it on a child of that
+  type. The witness lists each handler and statement that names the
+  locus, with the events it applies. A library checked alone has no
+  parents, so it is not judged; nor is an imported locus, nor an event
+  some recovery applies to a child the check cannot name (a generic
+  supervisor's type parameter, a receiver that is not a declared
+  param) (*Unreached recovery event*).
+- `persists_through(...)` on a closure whose assertion accumulates
+  nothing keeps nothing (*Persistence with no accumulator*).
+
 ## Inline closure violation
 
 (F.27, v1.x-VIOLATE.) Inline closures provide a pull-only
