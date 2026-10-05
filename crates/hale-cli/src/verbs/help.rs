@@ -434,8 +434,10 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 NOT connect seeds to each other.");
     println!("  --env <name>                   also adopt the constitution that");
     println!("                                 `[environments.<name>]` in hale.toml");
-    println!("                                 requires. One entrypoint deployed to");
-    println!("                                 two environments is checked twice.");
+    println!("                                 requires, and check the api binding");
+    println!("                                 with its roles table, as build bakes");
+    println!("                                 it. One entrypoint deployed to two");
+    println!("                                 environments is checked twice.");
     println!("  --matrix                       check every (entrypoint, environment)");
     println!("                                 pair the manifest declares. An");
     println!("                                 entrypoint listed in NO environment");

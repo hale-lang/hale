@@ -200,7 +200,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// `hale check`'s: the host, no api, no environment.
+    /// `hale check`'s: the host, no api, no environment. `--env` sets
+    /// the environment and its roles, as a build's caller does.
     pub fn check(whole_program: bool, allow_unowned_subscriber: bool) -> Self {
         Config {
             target: Target::host(),

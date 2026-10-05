@@ -1094,3 +1094,103 @@ fn the_matrix_accepts_a_bearer_member_and_refuses_a_misspelled_prefix() {
     assert_ne!(code, 0, "{}", out);
     assert!(out.contains("is not a bearer name"), "{}", out);
 }
+
+/// F.40 phase 4, A1: `hale check --env` carries the environment's role
+/// table, the one `hale build --env` bakes into the api binding, so the
+/// check judges the binding the build lowers. Two workspaces hold the
+/// same program under the same environment, one with a `roles` table
+/// and one without. The build bakes the table verbatim. The check sees
+/// it through the one artifact the table reaches: the generated
+/// binding's sites after its `roles` line sit exactly the table's
+/// length further on in `--dump-topology`'s provenance, and nothing
+/// else moves but `artifact_digest`, which covers those spans. The
+/// diagnostics, `--dump-api` (the description carries no table) and
+/// `shape_hash` (the hashed half renders no param default) are equal,
+/// and a program with no api entry gets the same artifact byte for
+/// byte.
+#[test]
+fn check_env_judges_the_binding_build_lowers() {
+    const TABLE: &str = "auditor=;owner=user:root;support=uid:1000,group:ops";
+    const PLAIN_APP: &str = "main locus P { run() { println(\"hi\"); } }\nfn main() { P { }; }\n";
+    let manifest = "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"plain\"]\n";
+    let with_roles = root("a1_roles");
+    let without = root("a1_bare");
+    for (r, roles) in [
+        (&with_roles, "\n[environments.dev.roles]\nsupport = [\"uid:1000\", \"group:ops\"]\nauditor = []\nowner = [\"user:root\"]\n"),
+        (&without, ""),
+    ] {
+        write(r, "app/main.hl", GATED_APP);
+        write(r, "plain/main.hl", PLAIN_APP);
+        write(r, "hale.toml", &format!("{}{}", manifest, roles));
+    }
+    // Relative targets from the workspace, so the two artifacts name
+    // the same sources.
+    let run = |dir: &Path, args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(dir).output().expect("run hale");
+        (String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string(), o.status.code())
+    };
+
+    let (_, err, code) = run(&with_roles, &["build", "--env", "dev", "app", "-o", "app.bin"]);
+    assert_eq!(code, Some(0), "build --env: {}", err);
+    let bin = std::fs::read(with_roles.join("app.bin")).expect("the built binary");
+    assert!(bin.windows(TABLE.len()).any(|w| w == TABLE.as_bytes()), "build --env bakes the table `{}`", TABLE);
+
+    for args in [&["check", "app", "--env", "dev"][..], &["check", "app", "--env", "dev", "--dump-api"]] {
+        let got = run(&with_roles, args);
+        assert_eq!(got.2, Some(0), "{:?}: {}{}", args, got.0, got.1);
+        assert_eq!(got, run(&without, args), "{:?} does not depend on the role table", args);
+    }
+    let plain = ["check", "plain", "--env", "dev", "--dump-topology"];
+    let got = run(&with_roles, &plain);
+    assert_eq!(got.2, Some(0), "{}", got.1);
+    assert_eq!(got, run(&without, &plain), "with no api entry the artifact is byte-identical");
+
+    let topology = |dir: &Path| -> serde_json::Value {
+        let (out, err, code) = run(dir, &["check", "app", "--env", "dev", "--dump-topology"]);
+        assert_eq!(code, Some(0), "{}", err);
+        serde_json::from_str(&out).expect("the artifact is JSON")
+    };
+    let (mut a, mut b) = (topology(&with_roles), topology(&without));
+    assert_eq!(a["shape_hash"], b["shape_hash"], "the hashed half does not see the table");
+    // Take the spans out, in document order, with the site each is
+    // the span of; what is left must be equal.
+    fn spans(v: &mut serde_json::Value, site: &str, out: &mut Vec<(String, i64, i64)>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                let site = match ["from", "fn", "locus"].iter().find_map(|k| m.get(*k)) {
+                    Some(s) => s.as_str().unwrap_or("").to_string(),
+                    None => site.to_string(),
+                };
+                m.remove("artifact_digest");
+                if let Some(s) = m.remove("span") {
+                    out.push((site.clone(), s[0].as_i64().expect("start"), s[1].as_i64().expect("end")));
+                }
+                for (_, x) in m.iter_mut() {
+                    spans(x, &site, out);
+                }
+            }
+            serde_json::Value::Array(xs) => xs.iter_mut().for_each(|x| spans(x, site, out)),
+            _ => {}
+        }
+    }
+    let (mut sa, mut sb) = (Vec::new(), Vec::new());
+    spans(&mut a, "", &mut sa);
+    spans(&mut b, "", &mut sb);
+    assert_eq!(a, b, "only spans and artifact_digest depend on the table");
+    assert_eq!(sa.len(), sb.len());
+    let shift = TABLE.len() as i64;
+    let mut moved = 0;
+    for ((site, s, e), (_, s0, e0)) in sa.iter().zip(&sb) {
+        let d = s - s0;
+        assert_eq!(e - e0, d, "{}: a span moves whole", site);
+        if d == 0 {
+            continue;
+        }
+        assert_eq!(d, shift, "{}: a site after the roles line moves by the table's length", site);
+        assert!(site.starts_with("__ApiBinding"), "{}: only the generated binding's sites move", site);
+        moved += 1;
+    }
+    assert!(moved > 0, "the check's binding carries the table");
+    let _ = std::fs::remove_dir_all(&with_roles);
+    let _ = std::fs::remove_dir_all(&without);
+}
