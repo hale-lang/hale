@@ -26401,9 +26401,225 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::TextBase64UrlEncode => {
                 self.lower_std_text_base64_url_encode(args, scope)
             }
+            Id::StrFromBytes => {
+                self.lower_std_str_from_bytes(args, scope)
+            }
+            Id::StrIndexOf => {
+                self.lower_std_str_index_of(args, scope)
+            }
+            Id::StrJoin => self.lower_std_str_join(args, scope),
+            // #353: UTF-8 code-point decoding. Byte-oriented String
+            // stays byte-oriented; these let a caller walk code points
+            // deliberately rather than pretending bytes are characters.
+            Id::StrCpCount => {
+                self.lower_str_cp_call("lotus_str_cp_count", 1, args, scope)
+            }
+            Id::StrCpAt => {
+                self.lower_str_cp_call("lotus_str_cp_at", 2, args, scope)
+            }
+            Id::StrCpSize => {
+                self.lower_str_cp_call("lotus_str_cp_size", 2, args, scope)
+            }
+            Id::StrContains => self.lower_std_str_predicate(
+                "lotus_str_contains",
+                "contains",
+                args,
+                scope,
+            ),
+            Id::StrStartsWith => self.lower_std_str_predicate(
+                "lotus_str_starts_with",
+                "starts_with",
+                args,
+                scope,
+            ),
+            Id::StrEndsWith => self.lower_std_str_predicate(
+                "lotus_str_ends_with",
+                "ends_with",
+                args,
+                scope,
+            ),
+            Id::StrRangeEq => {
+                self.lower_std_str_range_eq(args, scope)
+            }
+            Id::StrByteAtUnchecked => {
+                self.lower_std_str_byte_at_unchecked(args, scope)
+            }
+            Id::StrRangeCopy => {
+                self.lower_std_str_range_copy(args, scope)
+            }
+            Id::StrCanParseFloat => {
+                self.lower_std_str_can_parse_float(args, scope)
+            }
+            Id::StrCanParseInt => {
+                self.lower_std_str_can_parse_int(args, scope)
+            }
+            Id::StrLower => {
+                self.lower_std_str_case_fold(args, scope, "lower")
+            }
+            Id::StrUpper => {
+                self.lower_std_str_case_fold(args, scope, "upper")
+            }
+            Id::StrTrim => {
+                self.lower_std_str_case_fold(args, scope, "trim")
+            }
+            Id::StrSubstring => {
+                self.lower_std_str_substring(args, scope)
+            }
+            Id::StrReplace => {
+                self.lower_std_str_replace(args, scope)
+            }
+            Id::StrRepeat => {
+                self.lower_std_str_repeat(args, scope)
+            }
+            Id::StrPadLeft => {
+                self.lower_std_str_pad(args, scope, "pad_left")
+            }
+            Id::StrPadRight => {
+                self.lower_std_str_pad(args, scope, "pad_right")
+            }
+            Id::StrBuilderNew => {
+                self.lower_std_str_builder_new(args)
+            }
+            Id::StrBuilderAppend => {
+                self.lower_std_str_builder_append(args, scope)
+            }
+            Id::StrBuilderLen => {
+                self.lower_std_str_builder_len(args, scope)
+            }
+            Id::StrBuilderFinish => {
+                self.lower_std_str_builder_finish(args, scope)
+            }
+            Id::StrClone => {
+                self.lower_std_str_clone(args, scope)
+            }
+            Id::StrSplitInto => match pos {
+                StdCallPos::Statement => {
+                    self.lower_std_str_split_into(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::BytesFromString => {
+                self.lower_std_bytes_from_string(args, scope)
+            }
+            Id::BytesAt => {
+                self.lower_std_bytes_at(args, scope)
+            }
+            Id::BytesFindByte => {
+                self.lower_std_bytes_find_byte(args, scope)
+            }
+            Id::BytesSlice => {
+                self.lower_std_bytes_slice(args, scope)
+            }
+            Id::BytesFromInt => {
+                self.lower_std_bytes_from_int(args, scope)
+            }
+            Id::BytesConcat => {
+                self.lower_std_bytes_concat(args, scope)
+            }
+            Id::BytesIsAllocFailRaw => {
+                self.lower_std_bytes_is_alloc_fail(args, scope)
+            }
+            Id::BytesClone => {
+                self.lower_std_bytes_clone(args, scope)
+            }
+            // Internal C-primitive bridges for the BytesBuilder
+            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
+            // prefix marks these as not-for-user-code: user code
+            // constructs `std::bytes::BytesBuilder { }` and calls
+            // `.append() / .len() / .snapshot()` etc.; the locus's
+            // method bodies route through here.
+            Id::BytesBuilderXorMaskIntoRaw => {
+                self.lower_std_bytes_builder_xor_mask_into(args, scope)
+            }
+            Id::BytesBuilderNewRaw => {
+                self.lower_std_bytes_builder_new(args, scope)
+            }
+            Id::BytesBuilderAppendRaw => {
+                self.lower_std_bytes_builder_append(args, scope)
+            }
+            Id::BytesBuilderAppendStrRaw => {
+                self.lower_std_bytes_builder_append_str(args, scope)
+            }
+            Id::BytesBuilderLenRaw => {
+                self.lower_std_bytes_builder_len(args, scope)
+            }
+            Id::BytesBuilderFinishRaw => {
+                self.lower_std_bytes_builder_finish(args, scope)
+            }
+            Id::BytesBuilderShiftFrontRaw => {
+                self.lower_std_bytes_builder_shift_front(args, scope)
+            }
+            Id::BytesBuilderClearRaw => {
+                self.lower_std_bytes_builder_clear(args, scope)
+            }
+            Id::BytesBuilderSnapshotRaw => {
+                self.lower_std_bytes_builder_snapshot(args, scope)
+            }
+            Id::BytesBuilderFreeRaw => {
+                self.lower_std_bytes_builder_free(args, scope)
+            }
+            Id::BytesBuilderViewRaw => {
+                self.lower_std_bytes_builder_view(args, scope)
+            }
+            Id::BytesBuilderAppendSliceRaw => {
+                self.lower_std_bytes_builder_append_slice(args, scope)
+            }
+            Id::BytesBuilderAppendScalarRaw => {
+                self.lower_std_bytes_builder_append_scalar(args, scope)
+            }
+            Id::BytesBuilderAppendF64Raw => {
+                self.lower_std_bytes_builder_append_float(args, scope, false)
+            }
+            Id::BytesBuilderAppendF32Raw => {
+                self.lower_std_bytes_builder_append_float(args, scope, true)
+            }
+            Id::BytesBuilderAppendPadRaw => {
+                self.lower_std_bytes_builder_append_pad(args, scope)
+            }
+            Id::BytesBuilderTextViewRaw => {
+                self.lower_std_bytes_builder_text_view(args, scope)
+            }
             // Lowered only under `or` (`try_lower_fallible_stdlib_path_call`):
             // a bare call has no arm at either position.
-            Id::TarEntries
+            Id::BytesReadF32Le
+            | Id::BytesReadF64Be
+            | Id::BytesReadF64Le
+            | Id::BytesReadI16Be
+            | Id::BytesReadI16Le
+            | Id::BytesReadI32Be
+            | Id::BytesReadI32Le
+            | Id::BytesReadI64Be
+            | Id::BytesReadI64Le
+            | Id::BytesReadI8
+            | Id::BytesReadU16Be
+            | Id::BytesReadU16Le
+            | Id::BytesReadU32Be
+            | Id::BytesReadU32Le
+            | Id::BytesReadU64Be
+            | Id::BytesReadU64Le
+            | Id::BytesReadU8
+            | Id::BytesWriteF32Le
+            | Id::BytesWriteF64Be
+            | Id::BytesWriteF64Le
+            | Id::BytesWriteI16Be
+            | Id::BytesWriteI16Le
+            | Id::BytesWriteI32Be
+            | Id::BytesWriteI32Le
+            | Id::BytesWriteI64Be
+            | Id::BytesWriteI64Le
+            | Id::BytesWriteI8
+            | Id::BytesWriteU16Be
+            | Id::BytesWriteU16Le
+            | Id::BytesWriteU32Be
+            | Id::BytesWriteU32Le
+            | Id::BytesWriteU64Be
+            | Id::BytesWriteU64Le
+            | Id::BytesWriteU8
+            | Id::StrParseDecimal
+            | Id::StrRangeParseDecimal
+            | Id::StrRangeParseInt
+            | Id::TarEntries
             | Id::TarEntryData
             | Id::TarEntryName
             | Id::TarEntrySize
@@ -26426,65 +26642,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoMirrorWritableRaw
             | Id::IoMirrorLenRaw
             | Id::IoMirrorCapacityRaw
-            | Id::BytesIsAllocFailRaw
-            | Id::BytesAt
-            | Id::BytesClone
-            | Id::BytesConcat
-            | Id::BytesFindByte
-            | Id::BytesFromInt
-            | Id::BytesFromString
-            | Id::BytesReadF32Le
-            | Id::BytesReadF64Be
-            | Id::BytesReadF64Le
-            | Id::BytesReadI16Be
-            | Id::BytesReadI16Le
-            | Id::BytesReadI32Be
-            | Id::BytesReadI32Le
-            | Id::BytesReadI64Be
-            | Id::BytesReadI64Le
-            | Id::BytesReadI8
-            | Id::BytesReadU16Be
-            | Id::BytesReadU16Le
-            | Id::BytesReadU32Be
-            | Id::BytesReadU32Le
-            | Id::BytesReadU64Be
-            | Id::BytesReadU64Le
-            | Id::BytesReadU8
-            | Id::BytesSlice
-            | Id::BytesWriteF32Le
-            | Id::BytesWriteF64Be
-            | Id::BytesWriteF64Le
-            | Id::BytesWriteI16Be
-            | Id::BytesWriteI16Le
-            | Id::BytesWriteI32Be
-            | Id::BytesWriteI32Le
-            | Id::BytesWriteI64Be
-            | Id::BytesWriteI64Le
-            | Id::BytesWriteI8
-            | Id::BytesWriteU16Be
-            | Id::BytesWriteU16Le
-            | Id::BytesWriteU32Be
-            | Id::BytesWriteU32Le
-            | Id::BytesWriteU64Be
-            | Id::BytesWriteU64Le
-            | Id::BytesWriteU8
-            | Id::BytesBuilderAppendRaw
-            | Id::BytesBuilderAppendF32Raw
-            | Id::BytesBuilderAppendF64Raw
-            | Id::BytesBuilderAppendPadRaw
-            | Id::BytesBuilderAppendScalarRaw
-            | Id::BytesBuilderAppendSliceRaw
-            | Id::BytesBuilderAppendStrRaw
-            | Id::BytesBuilderClearRaw
-            | Id::BytesBuilderFinishRaw
-            | Id::BytesBuilderFreeRaw
-            | Id::BytesBuilderLenRaw
-            | Id::BytesBuilderNewRaw
-            | Id::BytesBuilderShiftFrontRaw
-            | Id::BytesBuilderSnapshotRaw
-            | Id::BytesBuilderTextViewRaw
-            | Id::BytesBuilderViewRaw
-            | Id::BytesBuilderXorMaskIntoRaw
             | Id::CryptoCrc32
             | Id::CryptoEcdsaP256Sign
             | Id::CryptoEcdsaP256Verify
@@ -26665,39 +26822,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessUid
             | Id::ProcessRssBytes
             | Id::ProcessRun
-            | Id::StrBuilderAppend
-            | Id::StrBuilderFinish
-            | Id::StrBuilderLen
-            | Id::StrBuilderNew
-            | Id::StrByteAtUnchecked
-            | Id::StrCanParseFloat
-            | Id::StrCanParseInt
-            | Id::StrClone
-            | Id::StrFromBytes
-            | Id::StrRangeCopy
-            | Id::StrIndexOf
-            | Id::StrContains
-            | Id::StrSplitInto
-            | Id::StrJoin
-            | Id::StrCpCount
-            | Id::StrCpAt
-            | Id::StrCpSize
-            | Id::StrStartsWith
-            | Id::StrEndsWith
-            | Id::StrLower
-            | Id::StrPadLeft
-            | Id::StrPadRight
-            | Id::StrParseDecimal
             | Id::StrParseFloat
             | Id::StrParseInt
-            | Id::StrRangeEq
-            | Id::StrRangeParseDecimal
-            | Id::StrRangeParseInt
-            | Id::StrRepeat
-            | Id::StrReplace
-            | Id::StrSubstring
-            | Id::StrTrim
-            | Id::StrUpper
             | Id::TimeParseIso8601
             | Id::TimeCanParseIso8601
             | Id::TimeCurrent
@@ -26752,9 +26878,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // into.
             ["std", "process", "exit"] => {
                 self.lower_std_process_exit(args, scope)
-            }
-            ["std", "str", "split_into"] => {
-                self.lower_std_str_split_into(args, scope)
             }
             // C9: new fallible-only fs surfaces + C4: getrandom +
             // C2: subprocess primitives. Same "use `or`" diagnostic
@@ -27344,30 +27467,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "udp", "recv_into"] => {
                 self.lower_std_io_udp_recv_into(args, scope)
             }
-            ["std", "str", "from_bytes"] => {
-                self.lower_std_str_from_bytes(args, scope)
-            }
-            ["std", "bytes", "from_string"] => {
-                self.lower_std_bytes_from_string(args, scope)
-            }
-            ["std", "bytes", "at"] => {
-                self.lower_std_bytes_at(args, scope)
-            }
-            ["std", "bytes", "find_byte"] => {
-                self.lower_std_bytes_find_byte(args, scope)
-            }
-            ["std", "bytes", "builder", "__xor_mask_into"] => {
-                self.lower_std_bytes_builder_xor_mask_into(args, scope)
-            }
-            ["std", "bytes", "slice"] => {
-                self.lower_std_bytes_slice(args, scope)
-            }
-            ["std", "bytes", "from_int"] => {
-                self.lower_std_bytes_from_int(args, scope)
-            }
-            ["std", "bytes", "concat"] => {
-                self.lower_std_bytes_concat(args, scope)
-            }
             ["std", "crypto", "sha1"] => {
                 self.lower_std_crypto_sha1(args, scope)
             }
@@ -27426,49 +27525,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "stdin", "read_line_status"] => {
                 self.lower_std_io_stdin_read_line_status(args, scope)
             }
-            ["std", "str", "index_of"] => {
-                self.lower_std_str_index_of(args, scope)
-            }
-            ["std", "str", "join"] => self.lower_std_str_join(args, scope),
-            // #353: UTF-8 code-point decoding. Byte-oriented String
-            // stays byte-oriented; these let a caller walk code points
-            // deliberately rather than pretending bytes are characters.
-            ["std", "str", "cp_count"] => {
-                self.lower_str_cp_call("lotus_str_cp_count", 1, args, scope)
-            }
-            ["std", "str", "cp_at"] => {
-                self.lower_str_cp_call("lotus_str_cp_at", 2, args, scope)
-            }
-            ["std", "str", "cp_size"] => {
-                self.lower_str_cp_call("lotus_str_cp_size", 2, args, scope)
-            }
-            ["std", "str", "contains"] => self.lower_std_str_predicate(
-                "lotus_str_contains",
-                "contains",
-                args,
-                scope,
-            ),
-            ["std", "str", "starts_with"] => self.lower_std_str_predicate(
-                "lotus_str_starts_with",
-                "starts_with",
-                args,
-                scope,
-            ),
-            ["std", "str", "ends_with"] => self.lower_std_str_predicate(
-                "lotus_str_ends_with",
-                "ends_with",
-                args,
-                scope,
-            ),
-            ["std", "str", "range_eq"] => {
-                self.lower_std_str_range_eq(args, scope)
-            }
-            ["std", "str", "byte_at_unchecked"] => {
-                self.lower_std_str_byte_at_unchecked(args, scope)
-            }
-            ["std", "str", "range_copy"] => {
-                self.lower_std_str_range_copy(args, scope)
-            }
             // 2026-05-26 — named socket-option constants. Each
             // resolves to a zero-arg call into the matching C
             // getter, which returns the platform's numeric
@@ -27489,111 +27545,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "udp", "last_source_port"] => {
                 self.lower_std_io_udp_last_source_port(args)
-            }
-            ["std", "str", "can_parse_float"] => {
-                self.lower_std_str_can_parse_float(args, scope)
-            }
-            ["std", "str", "lower"] => {
-                self.lower_std_str_case_fold(args, scope, "lower")
-            }
-            ["std", "str", "upper"] => {
-                self.lower_std_str_case_fold(args, scope, "upper")
-            }
-            ["std", "str", "trim"] => {
-                self.lower_std_str_case_fold(args, scope, "trim")
-            }
-            ["std", "str", "substring"] => {
-                self.lower_std_str_substring(args, scope)
-            }
-            ["std", "str", "replace"] => {
-                self.lower_std_str_replace(args, scope)
-            }
-            ["std", "str", "repeat"] => {
-                self.lower_std_str_repeat(args, scope)
-            }
-            ["std", "str", "pad_left"] => {
-                self.lower_std_str_pad(args, scope, "pad_left")
-            }
-            ["std", "str", "pad_right"] => {
-                self.lower_std_str_pad(args, scope, "pad_right")
-            }
-            ["std", "str", "builder_new"] => {
-                self.lower_std_str_builder_new(args)
-            }
-            ["std", "str", "builder_append"] => {
-                self.lower_std_str_builder_append(args, scope)
-            }
-            ["std", "str", "builder_len"] => {
-                self.lower_std_str_builder_len(args, scope)
-            }
-            ["std", "str", "builder_finish"] => {
-                self.lower_std_str_builder_finish(args, scope)
-            }
-            // Internal C-primitive bridges for the BytesBuilder
-            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
-            // prefix marks these as not-for-user-code: user code
-            // constructs `std::bytes::BytesBuilder { }` and calls
-            // `.append() / .len() / .snapshot()` etc.; the locus's
-            // method bodies route through here.
-            ["std", "bytes", "builder", "__new"] => {
-                self.lower_std_bytes_builder_new(args, scope)
-            }
-            ["std", "bytes", "builder", "__append"] => {
-                self.lower_std_bytes_builder_append(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_str"] => {
-                self.lower_std_bytes_builder_append_str(args, scope)
-            }
-            ["std", "bytes", "builder", "__len"] => {
-                self.lower_std_bytes_builder_len(args, scope)
-            }
-            ["std", "bytes", "builder", "__finish"] => {
-                self.lower_std_bytes_builder_finish(args, scope)
-            }
-            ["std", "bytes", "builder", "__shift_front"] => {
-                self.lower_std_bytes_builder_shift_front(args, scope)
-            }
-            ["std", "bytes", "builder", "__clear"] => {
-                self.lower_std_bytes_builder_clear(args, scope)
-            }
-            ["std", "bytes", "builder", "__snapshot"] => {
-                self.lower_std_bytes_builder_snapshot(args, scope)
-            }
-            ["std", "bytes", "builder", "__free"] => {
-                self.lower_std_bytes_builder_free(args, scope)
-            }
-            ["std", "bytes", "builder", "__view"] => {
-                self.lower_std_bytes_builder_view(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_slice"] => {
-                self.lower_std_bytes_builder_append_slice(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_scalar"] => {
-                self.lower_std_bytes_builder_append_scalar(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_f64"] => {
-                self.lower_std_bytes_builder_append_float(args, scope, false)
-            }
-            ["std", "bytes", "builder", "__append_f32"] => {
-                self.lower_std_bytes_builder_append_float(args, scope, true)
-            }
-            ["std", "bytes", "builder", "__append_pad"] => {
-                self.lower_std_bytes_builder_append_pad(args, scope)
-            }
-            ["std", "bytes", "builder", "__text_view"] => {
-                self.lower_std_bytes_builder_text_view(args, scope)
-            }
-            ["std", "bytes", "__is_alloc_fail"] => {
-                self.lower_std_bytes_is_alloc_fail(args, scope)
-            }
-            ["std", "bytes", "clone"] => {
-                self.lower_std_bytes_clone(args, scope)
-            }
-            ["std", "str", "clone"] => {
-                self.lower_std_str_clone(args, scope)
-            }
-            ["std", "str", "can_parse_int"] => {
-                self.lower_std_str_can_parse_int(args, scope)
             }
             // m96: std::ts::* tree-sitter substrate. A statement
             // reaches these too, its value dropped, for
