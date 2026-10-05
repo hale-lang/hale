@@ -10,13 +10,15 @@
 //! picks its arm in `lower_std_intrinsic`'s `match id`, whose arms and
 //! position branches this file scrapes ([`id_arms`]), a Hale-body row is
 //! lowered by `lower_std_hale_body` (its two lists scraped), and the
-//! bare refusals are two id lists (`REFUSED_BARE_STATEMENT`,
-//! `REFUSED_BARE_VALUE`). Since S4 the `or` position dispatches from the
-//! row too (`lower_std_fallible_call`): an id picks its arm in
+//! bare refusal is the arm that calls `bare_call_of_a_fallible_row`.
+//! Since S4 the `or` position dispatches from the row too
+//! (`lower_std_fallible_call`): an id picks its arm in
 //! `lower_std_intrinsic_fallible`'s `match id` ([`fallible_id_arms`]),
-//! and its refusal is the id list `REFUSED_UNDER_OR`. No position
-//! matches a `["std", ..]` literal any more. `stdlib_registry_parity`
-//! reads the same scrape, with what each arm calls ([`ArmCall`]).
+//! and its refusal is the arm that calls `or_over_an_infallible_row`.
+//! Since S5 the two refusals are the rows' fallibility, not id lists
+//! ([`refused_by_the_rows`]). No position matches a `["std", ..]` literal
+//! any more. `stdlib_registry_parity` reads the same scrape, with what
+//! each arm calls ([`ArmCall`]).
 //!
 //! A *pair* is a (path, position): a stdlib call path an arm lowers or
 //! refuses, and the position it does so at. The *shadow set* is what
@@ -294,16 +296,20 @@ pub struct Scraped {
 
 /// What an arm of `lower_std_intrinsic` does at one position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Branch {
+pub enum Branch {
     /// It lowers the call.
     Lowers,
-    /// It answers as a path no arm lowers (`lower_std_unarmed`), or
-    /// refuses a bare call of a fallible one (`refuses_bare`).
+    /// It answers as a path no arm lowers (`lower_std_unarmed`).
     Unarmed,
+    /// It refuses a bare call of a function whose row is fallible
+    /// (`bare_call_of_a_fallible_row`).
+    Refuses,
 }
 
 fn branch(text: &str) -> Branch {
-    if text.contains("lower_std_unarmed(") {
+    if text.contains("bare_call_of_a_fallible_row(") {
+        Branch::Refuses
+    } else if text.contains("lower_std_unarmed(") {
         Branch::Unarmed
     } else {
         Branch::Lowers
@@ -311,18 +317,18 @@ fn branch(text: &str) -> Branch {
 }
 
 /// One arm of `lower_std_intrinsic`'s `match id`.
-struct IdArm {
-    line: usize,
-    ids: Vec<String>,
+pub struct IdArm {
+    pub line: usize,
+    pub ids: Vec<String>,
     /// The statement branch, when the arm matches on `pos`; `None` when
     /// a statement drops the value position's answer.
-    statement: Option<Branch>,
-    value: Branch,
+    pub statement: Option<Branch>,
+    pub value: Branch,
 }
 
 /// The arms of `lower_std_intrinsic`'s `match id`, with their positions'
 /// branches.
-fn id_arms() -> Vec<IdArm> {
+pub fn id_arms() -> Vec<IdArm> {
     match_id_arms("lower_std_intrinsic")
         .into_iter()
         .map(|(line, ids, text)| {
@@ -340,13 +346,13 @@ fn id_arms() -> Vec<IdArm> {
 }
 
 /// The arms of `lower_std_intrinsic_fallible`'s `match id`, each with
-/// whether it lowers the call under `or`: the arm that answers `Ok(None)`
-/// ("not a stdlib fallible call", or the `REFUSED_UNDER_OR` refusal)
+/// whether it lowers the call under `or`: the arm that refuses an `or`
+/// over a function whose row cannot fail (`or_over_an_infallible_row`)
 /// lowers nothing.
-fn fallible_id_arms() -> Vec<(usize, Vec<String>, bool)> {
+pub fn fallible_id_arms() -> Vec<(usize, Vec<String>, bool)> {
     match_id_arms("lower_std_intrinsic_fallible")
         .into_iter()
-        .map(|(line, ids, text)| (line, ids, !text.contains("Ok(None)")))
+        .map(|(line, ids, text)| (line, ids, !text.contains("or_over_an_infallible_row(")))
         .collect()
 }
 
@@ -432,21 +438,6 @@ fn const_list_in(func: &str, name: &str) -> (Vec<String>, usize) {
     (string_literals(&body[at..end]), fn_line(&src, &code, func))
 }
 
-/// The ids of the module-level `const name: &[IntrinsicId]`, and the
-/// line it is on.
-fn id_list(name: &str) -> (Vec<String>, usize) {
-    let src = crate_file("src/codegen.rs");
-    let code = mask(&src, false);
-    let at = code.find(&format!("const {name}: &[IntrinsicId] = &[")).unwrap_or_else(|| panic!("no `{name}`"));
-    let end = at + code[at..].find("];").expect("the list closes");
-    let ids = code[at..end]
-        .split("IntrinsicId::")
-        .skip(1)
-        .map(|s| s.split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap().to_string())
-        .collect();
-    (ids, src[..at].matches('\n').count() + 1)
-}
-
 /// The row dispatch's arms at the statement, expression and fallible
 /// positions.
 struct RowDispatch {
@@ -466,30 +457,18 @@ fn row_dispatch() -> RowDispatch {
         calls,
     };
     let path_of = |id: &String| paths.get(id).unwrap_or_else(|| panic!("`Id::{id}` has no row"));
-    // The refusals: a refused id's arm answers as a path no arm lowers
-    // (or, under `or`, as not a fallible call) once its list has not
-    // refused it, so the lists are its pairs.
-    for (list, position) in [
-        ("REFUSED_BARE_STATEMENT", Position::Statement),
-        ("REFUSED_BARE_VALUE", Position::Expression),
-        ("REFUSED_UNDER_OR", Position::Fallible),
-    ] {
-        let (ids, line) = id_list(list);
-        let ps: Vec<&String> = ids.iter().map(path_of).collect();
-        let a = arm(line, &ps, true, ArmCall::Native);
-        match position {
-            Position::Statement => rd.statement.push(a),
-            Position::Expression => rd.expression.push(a),
-            Position::Fallible => rd.fallible.push(a),
-        }
-    }
+    // A bare refusal (S5) is the value position's arm, which a statement
+    // reaches with its value dropped: an expression pair, as every arm
+    // with no statement branch is.
     for a in id_arms() {
         for id in &a.ids {
             assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic`");
         }
         let ps: Vec<&String> = a.ids.iter().map(path_of).collect();
-        if a.value == Branch::Lowers {
-            rd.expression.push(arm(a.line, &ps, false, ArmCall::Native));
+        match a.value {
+            Branch::Lowers => rd.expression.push(arm(a.line, &ps, false, ArmCall::Native)),
+            Branch::Refuses => rd.expression.push(arm(a.line, &ps, true, ArmCall::Native)),
+            Branch::Unarmed => {}
         }
         if a.statement == Some(Branch::Lowers) {
             rd.statement.push(arm(a.line, &ps, false, ArmCall::Native));
@@ -497,17 +476,15 @@ fn row_dispatch() -> RowDispatch {
     }
     let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
     assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic` names: {unnamed:?}");
-    // The `or` position (S4): an arm that lowers is a pair; the arm that
-    // says "not a fallible call" is none, its refusal list's ids above.
+    // The `or` position (S4): an arm that lowers is a pair, and so is the
+    // arm that refuses an `or` over a function that cannot fail (S5).
     let mut named = BTreeSet::new();
     for (line, ids, lowers) in fallible_id_arms() {
         for id in &ids {
             assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic_fallible`");
         }
-        if lowers {
-            let ps: Vec<&String> = ids.iter().map(path_of).collect();
-            rd.fallible.push(arm(line, &ps, false, ArmCall::Native));
-        }
+        let ps: Vec<&String> = ids.iter().map(path_of).collect();
+        rd.fallible.push(arm(line, &ps, !lowers, ArmCall::Native));
     }
     let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
     assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic_fallible` names: {unnamed:?}");
@@ -1272,14 +1249,18 @@ fn the_scrape_and_the_walk_are_not_vacuous() {
         Some(ArmKind::Refuses)
     );
     assert_eq!(
-        all.get(&("std::process::run".to_string(), Position::Statement)).map(|k| k.0),
+        all.get(&("std::tar::pack".to_string(), Position::Expression)).map(|k| k.0),
         Some(ArmKind::Refuses)
     );
+    assert_eq!(
+        all.get(&("std::math::sqrt".to_string(), Position::Fallible)).map(|k| k.0),
+        Some(ArmKind::Refuses)
+    );
+    assert!(!all.contains_key(&("std::process::run".to_string(), Position::Statement)));
     assert!(!all.contains_key(&("std::str::parse_int".to_string(), Position::Statement)));
     assert_eq!(all.get(&("std::json::valid".to_string(), Position::Expression)).map(|k| k.0), Some(ArmKind::Lowers));
     assert_eq!(all.get(&("std::test::assert".to_string(), Position::Statement)).map(|k| k.0), Some(ArmKind::Lowers));
     assert!(!all.contains_key(&("std::test::assert".to_string(), Position::Expression)));
-    assert!(!all.contains_key(&("std::tar::pack".to_string(), Position::Expression)));
     let statement = &statement_scrape(&scraped).paths;
     assert_eq!(lowered_at("std::time::sleep", Position::Statement, statement), Position::Statement);
     assert_eq!(lowered_at("std::ring::__spsc_emit", Position::Statement, statement), Position::Statement);
@@ -1330,131 +1311,35 @@ fn write_harvested_programs() {
 // the reason from the code, each list held to what it claims.
 // ---------------------------------------------------------------------
 
-/// Allowance 1, refused by lowering. The paths of the statement and
-/// value positions' fallibility refusal lists (`REFUSED_BARE_STATEMENT`
-/// and `REFUSED_BARE_VALUE`, read by `refuses_bare`: "returns a fallible
-/// value — address the error with `or raise` .."): a bare call of a
-/// path lowering treats as fallible is refused at both positions, so no
-/// program builds with one. Most have no signature row, so the checker
-/// does not refuse them first.
-const REFUSED_BARE: &[&str] = &[
-    "std::io::file::__open",
-    "std::io::file::__seek",
-    "std::io::file::__write_bytes",
-    "std::io::fs::mktemp",
-    "std::io::fs::rename",
-    "std::io::fs::unlink",
-    "std::io::tls::set_recv_timeout",
-    "std::io::tls::set_send_timeout",
-    "std::io::udp::__bind",
-    "std::io::udp::__recv",
-    "std::io::udp::__send",
-    "std::io::udp::bind",
-    "std::io::udp::get_option_int",
-    "std::io::udp::join_group",
-    "std::io::udp::leave_group",
-    "std::io::udp::recv",
-    "std::io::udp::recv_with_source",
-    "std::io::udp::send",
-    "std::io::udp::set_multicast_iface",
-    "std::io::udp::set_multicast_loop",
-    "std::io::udp::set_multicast_ttl",
-    "std::io::udp::set_option_bool",
-    "std::io::udp::set_option_int",
-    "std::io::udp::set_recv_timeout",
-    "std::io::udp::set_send_timeout",
-    "std::os::getrandom",
-    "std::process::__kill_escalate",
-    "std::process::__pipe_read",
-    "std::process::__pipe_write",
-    "std::process::__signal_pid",
-    "std::process::__spawn",
-    "std::process::__try_wait_pid",
-    "std::process::__wait_pid",
-    "std::process::run",
-];
+/// Allowance 1, refused by lowering, read from the rows (S5; until then
+/// three hand-kept lists): a bare call of a function whose row says it can
+/// fail (`bare_call_of_a_fallible_row`, the value position's arm, which a
+/// statement reaches too), and an `or` over one whose row says it cannot
+/// (`or_over_an_infallible_row`). No program builds with one, and the
+/// check refuses all but an `or` over a row with no signature yet. The
+/// rows' exceptions are the arms the rulings after S5's second remove: a
+/// fallible row whose bare arm still lowers ([`DEAD_BARE_OF_FALLIBLE_ROWS`])
+/// and the one infallible row an `or` still lowers.
+pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
+    use hale_types::stdlib_surface::{rows, Lower};
+    rows()
+        .filter(|(_, f)| matches!(f.lower, Lower::Intrinsic(_)))
+        .map(|(s, f)| {
+            let path = format!("std::{}::{}", s.ns.join("::"), f.name);
+            let fallible = f.sig.is_some_and(|s| s.fallible.is_some());
+            (path, if fallible { Position::Expression } else { Position::Fallible })
+        })
+        .filter(|(path, position)| match position {
+            Position::Expression => !DEAD_BARE_OF_FALLIBLE_ROWS.contains(&path.as_str()),
+            _ => !OR_LOWERS_AN_INFALLIBLE_ROW.contains(&path.as_str()),
+        })
+        .collect()
+}
 
-/// Allowance 1, refused by lowering, expression position only: the
-/// value list also refuses the two parsers, which the statement list
-/// does not name, so a bare statement call of one is refused by the
-/// value list (`refuses_bare`) and covers this same pair.
-const REFUSED_BARE_EXPRESSION_ONLY: &[&str] = &["std::str::parse_float", "std::str::parse_int"];
-
-/// Allowance 1, refused by lowering. The `or` position's list
-/// (`REFUSED_UNDER_OR`, read by `lower_std_intrinsic_fallible`: ".. is
-/// not a fallible call — remove the `or` clause .."): an `or` over a
-/// path that returns its value directly is refused, so no program builds
-/// with one.
-const REFUSED_UNDER_OR: &[&str] = &[
-    "std::bytes::__is_alloc_fail",
-    "std::bytes::builder::__append",
-    "std::bytes::builder::__append_slice",
-    "std::bytes::builder::__append_str",
-    "std::bytes::builder::__clear",
-    "std::bytes::builder::__finish",
-    "std::bytes::builder::__free",
-    "std::bytes::builder::__len",
-    "std::bytes::builder::__new",
-    "std::bytes::builder::__shift_front",
-    "std::bytes::builder::__snapshot",
-    "std::bytes::builder::__text_view",
-    "std::bytes::builder::__view",
-    "std::bytes::clone",
-    "std::bytes::from_string",
-    "std::bytes::slice",
-    "std::env::arg",
-    "std::env::arg_or",
-    "std::env::args_count",
-    "std::env::var",
-    "std::env::var_exists",
-    "std::io::fs::file_exists",
-    "std::io::stdin::read_line",
-    "std::io::stdin::read_line_status",
-    "std::io::tcp::close_fd",
-    "std::math::acos",
-    "std::math::asin",
-    "std::math::atan",
-    "std::math::atan2",
-    "std::math::ceil",
-    "std::math::cos",
-    "std::math::exp",
-    "std::math::floor",
-    "std::math::inf",
-    "std::math::is_nan",
-    "std::math::log",
-    "std::math::nan",
-    "std::math::pow",
-    "std::math::sin",
-    "std::math::sqrt",
-    "std::math::tan",
-    "std::math::tanh",
-    "std::process::pid",
-    "std::str::builder_append",
-    "std::str::builder_finish",
-    "std::str::builder_len",
-    "std::str::builder_new",
-    "std::str::can_parse_float",
-    "std::str::can_parse_int",
-    "std::str::clone",
-    "std::str::from_bytes",
-    "std::str::index_of",
-    "std::str::lower",
-    "std::str::pad_left",
-    "std::str::pad_right",
-    "std::str::repeat",
-    "std::str::replace",
-    "std::str::substring",
-    "std::str::trim",
-    "std::str::upper",
-    "std::text::is_alnum",
-    "std::text::is_alpha",
-    "std::text::is_digit",
-    "std::text::is_whitespace",
-    "std::text::is_word_char",
-    "std::text::tokenize_words_into",
-    "std::time::monotonic",
-    "std::time::sleep",
-];
+/// The infallible row an `or` still lowers: `ecdsa_p256_sign`, whose bare
+/// call returns empty `Bytes` and whose `or` call can fail. Ruling 4 makes
+/// its row fallible.
+pub const OR_LOWERS_AN_INFALLIBLE_ROW: &[&str] = &["std::crypto::ecdsa_p256_sign"];
 
 /// Allowance 2, internal: paths the checker refuses from a user's
 /// program ("unknown stdlib function": they are in no registry row, and
@@ -1490,7 +1375,7 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
 /// into the expression arm, which a bare statement call of one reaches
 /// with its value dropped. The test derives the list from the rows and
 /// holds it equal.
-const DEAD_BARE_OF_FALLIBLE_ROWS: &[&str] = &[
+pub const DEAD_BARE_OF_FALLIBLE_ROWS: &[&str] = &[
     "std::bytes::at",
     "std::io::fs::file_size",
     "std::io::fs::list_dir_at",
@@ -1505,15 +1390,8 @@ const DEAD_BARE_OF_FALLIBLE_ROWS: &[&str] = &[
 /// Every allowed pair, with the kind it is allowed as.
 fn allowances() -> BTreeMap<(String, Position), &'static str> {
     let mut out = BTreeMap::new();
-    for p in REFUSED_BARE {
-        out.insert((p.to_string(), Position::Statement), "refused by lowering");
-        out.insert((p.to_string(), Position::Expression), "refused by lowering");
-    }
-    for p in REFUSED_BARE_EXPRESSION_ONLY {
-        out.insert((p.to_string(), Position::Expression), "refused by lowering");
-    }
-    for p in REFUSED_UNDER_OR {
-        out.insert((p.to_string(), Position::Fallible), "refused by lowering");
+    for pair in refused_by_the_rows() {
+        out.insert(pair, "refused by lowering");
     }
     for (p, position, _) in INTERNAL {
         out.insert((p.to_string(), *position), "internal");
@@ -1524,21 +1402,21 @@ fn allowances() -> BTreeMap<(String, Position), &'static str> {
     out
 }
 
-/// The allowance lists say what the code says: the refused pairs are
-/// exactly the refusal arms' pairs; each internal path is refused to a
-/// user's program and called, at its position, by the stdlib
-/// declarations named, all lowered in every build; the dead bare arms
-/// are exactly the lowering arms at a bare position of a path whose
-/// signature row is fallible.
+/// The allowances say what the code says: the refused pairs are exactly
+/// the refusal arms' pairs, which are the rows' fallibility; each internal
+/// path is refused to a user's program and called, at its position, by
+/// the stdlib declarations named, all lowered in every build; the dead
+/// bare arms are exactly the lowering arms at a bare position of a path
+/// whose signature row is fallible.
 #[test]
 fn the_allowances_are_what_the_code_says() {
     let all = pairs(&scrape());
     let allowed = allowances();
     let refused_scraped: BTreeSet<(String, Position)> =
         all.iter().filter(|(_, k)| k.0 == ArmKind::Refuses).map(|(p, _)| p.clone()).collect();
-    let refused_listed: BTreeSet<(String, Position)> =
+    let refused_rows: BTreeSet<(String, Position)> =
         allowed.iter().filter(|(_, why)| **why == "refused by lowering").map(|(p, _)| p.clone()).collect();
-    assert_eq!(refused_listed, refused_scraped, "the refusal allowances drifted from the refusal arms");
+    assert_eq!(refused_rows, refused_scraped, "the refusal arms drifted from the rows' fallibility");
 
     let dead_derived: BTreeSet<(String, Position)> = all
         .iter()

@@ -39,7 +39,14 @@ stdlib's own `File`, udp and `Child` wrappers call
 call of one is the located bare-fallible error from `hale check`
 (spec/semantics.md § "A bare fallible call is an error"), where
 lowering used to refuse it without a span or answer "not
-implemented". An ARGUMENT position names a stdlib type the same way
+implemented". Lowering keeps no list of its own: whether it refuses a
+stdlib call is that same row. The check refuses a bare call of a
+function whose row can fail, and an `or` over one whose row cannot;
+the one such call that still reaches the build is an `or` over a
+function with no signature row (the check types it permissively),
+which the build refuses for every such function with "is not a
+fallible call — remove the `or` clause" (some used to read "`or` over
+unknown path call"). An ARGUMENT position names a stdlib type the same way
 (GH #829): `recv_into`'s `buf` is a `std::bytes::BytesBuilder`,
 the one type its lowering accepts, so
 `std::io::tcp::recv_into(fd, 0, 64)` is a located error at the

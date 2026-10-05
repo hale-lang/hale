@@ -15,8 +15,9 @@
 //!    now lowers through the expression form's fallback to that body
 //!    (one that returns no value is still refused there, so
 //!    `std::process::adopt`, Unit, keeps its own statement arm);
-//! 3. `std::str::parse_int` and `parse_float`, bare, get the expression
-//!    form's fallibility refusal.
+//! 3. `std::str::parse_int` and `parse_float`, bare, got the expression
+//!    form's fallibility refusal; since S5 every bare call of a fallible
+//!    row gets one answer, read from the row.
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -79,58 +80,99 @@ fn a_hale_body_named_by_path_renames_lowers_at_statement_position() {
     assert_eq!(stdout, "after\n");
 }
 
-/// Kind 3: bare `std::str::parse_int` / `parse_float` at statement
-/// position were "not implemented" (the statement form's refusal list
-/// never named them). They now get the expression form's refusal, in
-/// its words. The checker refuses the bare call first (its signature
-/// row is fallible), so only an unchecked build reaches this.
-#[test]
-fn bare_parse_int_and_parse_float_get_the_expression_forms_refusal() {
-    for path in ["std::str::parse_int", "std::str::parse_float"] {
-        let program =
-            hale_syntax::parse_source(&format!("fn main() {{\n    {path}(\"1\");\n}}\n")).expect("parses");
-        let bin = harness::unique_bin("stmt_bare_parse");
-        let err = harness::build_ir_text(&program, &bin).expect_err("a bare parse is refused");
-        let _ = std::fs::remove_file(&bin);
-        let text = format!("{err}");
-        assert!(
-            text.contains(&format!(
-                "`{path}` returns a fallible value — address the error with \
-                 `or raise`, `or <substitute>`, or `or self.handle(err)`"
-            )),
-            "{path}: {text}"
-        );
-    }
+/// Build `source` without the check, and return lowering's refusal: its
+/// text and, when it is located, its span.
+fn lowering_error(source: &str, name: &str) -> (String, Option<hale_syntax::Span>) {
+    let program = hale_syntax::parse_source(source).expect("parses");
+    let bin = harness::unique_bin(name);
+    let err = harness::build_ir_text(&program, &bin).expect_err("lowering refuses it");
+    let _ = std::fs::remove_file(&bin);
+    let span = match &err {
+        hale_codegen::CodegenError::UnsupportedAt(_, span) => Some(*span),
+        _ => None,
+    };
+    (format!("{err}"), span)
 }
 
-/// A path no dispatcher lowers at statement position fails as it did
-/// before the fold, in the statement's words, and at a value position
-/// in the value position's: "not implemented" is worded where it is
-/// produced (S3), so a statement never gets "in expression position".
-/// The four paths the checker knows and only the `or` form lowers are
-/// the ones a checked program can reach this with.
+/// F.40 phase 4, S5 (a classified correction): which stdlib calls
+/// lowering refuses is the row's fallibility, and a call the check
+/// refuses gets an internal error naming the row, at the callee, where
+/// lowering used to refuse it in words of its own or answer "not
+/// implemented" (both only in a build that skipped the check):
+///
+/// - a bare call of a function whose row can fail: `parse_int` was in
+///   the lists ("returns a fallible value — address the error .."),
+///   `parse_decimal` was not ("not implemented");
+/// - an `or` over a function whose row cannot fail, with a signature:
+///   `sqrt` was in the list ("is not a fallible call"), `regex::valid`
+///   was not ("`or` over unknown path call").
+///
+/// An `or` over a function with no signature yet (S6 gives each one) is
+/// what a checked program can still reach, since the check types the call
+/// `Unknown`: all of them get the refusal only the list's ids got, in its
+/// words (`SOL_SOCKET` got "`or` over unknown path call").
+#[test]
+fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
+    for (path, err, line) in [
+        ("std::str::parse_int", "ParseError", "    std::str::parse_int(\"1\");\n"),
+        ("std::str::parse_decimal", "ParseError", "    let d = std::str::parse_decimal(\"1\");\n"),
+        ("std::io::tcp::set_nodelay", "IoError", "    std::io::tcp::set_nodelay(3, true);\n"),
+    ] {
+        let pos = if line.contains("let ") { "value" } else { "statement" };
+        let source = format!("fn main() {{\n{line}}}\n");
+        let (text, span) = lowering_error(&source, "stmt_bare_fallible_row");
+        assert_eq!(
+            text,
+            format!(
+                "unsupported in codegen v0: internal error: a bare call of `{path}` reached lowering at {pos} \
+                 position, but its row says it can fail ({err}), and `hale check` refuses that \
+                 call (GH #738): this build skipped the check"
+            ),
+        );
+        let at = source.find(path).unwrap() as u32;
+        assert_eq!(span.map(|s| (s.start.0, s.end.0)), Some((at, at + path.len() as u32)), "{path}");
+    }
+    for (path, call) in [("std::math::sqrt", "std::math::sqrt(2.0) or 0.0"), ("std::regex::valid", "std::regex::valid(\"a\") or false")] {
+        let source = format!("fn main() {{\n    let v = {call};\n    println(v);\n}}\n");
+        let (text, span) = lowering_error(&source, "or_over_infallible_row");
+        assert_eq!(
+            text,
+            format!(
+                "unsupported in codegen v0: internal error: an `or` over `{path}` reached lowering, but its row \
+                 says it cannot fail, and `hale check` refuses that `or`: this build skipped the check"
+            ),
+        );
+        let at = source.find(path).unwrap() as u32;
+        assert_eq!(span.map(|s| (s.start.0, s.end.0)), Some((at, at + path.len() as u32)), "{path}");
+    }
+    let source = "fn main() {\n    let v = std::io::sockopt::SOL_SOCKET() or 0;\n    println(v);\n}\n";
+    checks_clean(source);
+    let (text, span) = lowering_error(source, "or_over_unsigned_row");
+    assert_eq!(
+        text,
+        "unsupported in codegen v0: `std::io::sockopt::SOL_SOCKET` is not a fallible call \
+         — remove the `or` clause. Returns its value directly; failures (if any) use the \
+         sentinel-with-discriminator idiom or are infallible."
+    );
+    assert_eq!(span, None);
+}
+
+/// A path no arm lowers at statement position fails in the statement's
+/// words, and at a value position in the value position's: "not
+/// implemented" is worded where it is produced (S3), so a statement never
+/// gets "in expression position". Since S5 a function lowered only under
+/// `or` gets the bare-fallible answer instead (above), so this is a path
+/// with no row.
 #[test]
 fn a_statement_no_dispatcher_lowers_keeps_the_statement_wording() {
-    for path in [
-        "std::io::tcp::set_recv_timeout",
-        "std::io::tcp::set_send_timeout",
-        "std::io::tls::set_nodelay",
-        "std::io::tls::set_rx_timestamps",
-    ] {
-        let build = |source: String| {
-            let program = hale_syntax::parse_source(&source).expect("parses");
-            let bin = harness::unique_bin("stmt_not_implemented");
-            let err = harness::build_ir_text(&program, &bin).expect_err("no dispatcher lowers it bare");
-            let _ = std::fs::remove_file(&bin);
-            format!("{err}")
-        };
-        let text = build(format!("fn main() {{\n    {path}(3, 5);\n}}\n"));
-        assert!(text.contains(&format!("stdlib path `{path}` — not implemented")), "{path}: {text}");
-        assert!(!text.contains("in expression position"), "{path}: {text}");
-        let text = build(format!("fn main() {{\n    let x = {path}(3, 5);\n    println(x);\n}}\n"));
-        assert!(
-            text.contains(&format!("stdlib path `{path}` in expression position — not implemented")),
-            "{path}: {text}"
-        );
-    }
+    let path = "std::io::file::no_such_primitive";
+    let (text, _) = lowering_error(&format!("fn main() {{\n    {path}(3, 5);\n}}\n"), "stmt_not_implemented");
+    assert!(text.contains(&format!("stdlib path `{path}` — not implemented")), "{path}: {text}");
+    assert!(!text.contains("in expression position"), "{path}: {text}");
+    let (text, _) =
+        lowering_error(&format!("fn main() {{\n    let x = {path}(3, 5);\n    println(x);\n}}\n"), "stmt_not_implemented");
+    assert!(
+        text.contains(&format!("stdlib path `{path}` in expression position — not implemented")),
+        "{path}: {text}"
+    );
 }

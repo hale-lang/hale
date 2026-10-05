@@ -18,8 +18,9 @@
 //! arm can match it first). What is left here:
 //!
 //!   - every `Intrinsic` row is lowered at some position (an id whose
-//!     arms only answer "not implemented" at both bare positions and
-//!     "not a fallible call" under `or` would compile);
+//!     arms only refuse, at both bare positions and under `or`, would
+//!     compile);
+//!   - which calls lowering refuses is the rows' fallibility (S5);
 //!   - every `HaleBody` row names a function the stdlib declares;
 //!   - a `Renamed` row is in `PATH_RENAMES`; an `Unlowered` row has
 //!     neither an arm nor a rename, and is named in [`UNLOWERED`];
@@ -122,6 +123,68 @@ fn every_rows_lowering_is_where_the_column_says() {
         "the rows nothing lowers are named in `UNLOWERED` with their reason: a public name \
          the checker accepts and lowering cannot lower fails at the worst possible moment"
     );
+}
+
+/// F.40 phase 4, S5: which stdlib calls lowering refuses is the rows'
+/// fallibility, not a list of its own. Under `or`, every id whose row is
+/// fallible has a lowering arm in `lower_std_intrinsic_fallible` and no
+/// id whose row is not fallible has one: the rest are its last arm, which
+/// refuses (`or_over_an_infallible_row`). At a bare position the arm
+/// that refuses (`bare_call_of_a_fallible_row`) is every id whose row is
+/// fallible, and no other. The exceptions are the arms the rulings after
+/// this one remove, named in `stdlib_dispatch_coverage`; an id outside
+/// them that disagrees is a finding, not a repair.
+#[test]
+fn which_calls_lowering_refuses_is_the_rows_fallibility() {
+    use crate::stdlib_dispatch_coverage::{
+        fallible_id_arms, id_arms, Branch, DEAD_BARE_OF_FALLIBLE_ROWS, OR_LOWERS_AN_INFALLIBLE_ROW,
+    };
+    let mut fallible = BTreeSet::new();
+    let mut path_of = BTreeMap::new();
+    for (s, f) in surf::rows() {
+        if let Lower::Intrinsic(id) = f.lower {
+            let id = format!("{id:?}");
+            path_of.insert(id.clone(), format!("std::{}::{}", s.ns.join("::"), f.name));
+            if f.sig.is_some_and(|s| s.fallible.is_some()) {
+                fallible.insert(id);
+            }
+        }
+    }
+    let excepted = |list: &[&str], id: &String| list.contains(&path_of[id].as_str());
+
+    let mut or_lowers = BTreeSet::new();
+    let mut or_refuses = BTreeSet::new();
+    for (_, ids, lowers) in fallible_id_arms() {
+        (if lowers { &mut or_lowers } else { &mut or_refuses }).extend(ids);
+    }
+    let fallible_unarmed: Vec<&String> = fallible.difference(&or_lowers).collect();
+    assert!(fallible_unarmed.is_empty(), "fallible rows `or` does not lower: {fallible_unarmed:?}");
+    let infallible_armed: Vec<&String> =
+        or_lowers.difference(&fallible).filter(|id| !excepted(OR_LOWERS_AN_INFALLIBLE_ROW, id)).collect();
+    assert!(infallible_armed.is_empty(), "rows that cannot fail, lowered under `or`: {infallible_armed:?}");
+    assert!(or_refuses.is_disjoint(&fallible), "a fallible row refused under `or`");
+    assert_eq!(or_lowers.len() + or_refuses.len(), path_of.len(), "every id has one arm under `or`");
+
+    let mut bare_refuses = BTreeSet::new();
+    let mut bare_lowers = BTreeSet::new();
+    for a in id_arms() {
+        for id in a.ids {
+            match (a.value, a.statement) {
+                (Branch::Refuses, None) => bare_refuses.insert(id),
+                (Branch::Refuses, Some(_)) => panic!("`Id::{id}`: a bare refusal branches on the position"),
+                (Branch::Lowers, _) | (_, Some(Branch::Lowers)) => bare_lowers.insert(id),
+                _ => false,
+            };
+        }
+    }
+    let unrefused: Vec<&String> = fallible
+        .difference(&bare_refuses)
+        .filter(|id| !(excepted(DEAD_BARE_OF_FALLIBLE_ROWS, id) && bare_lowers.contains(*id)))
+        .collect();
+    assert!(unrefused.is_empty(), "fallible rows a bare call does not refuse: {unrefused:?}");
+    let wrongly: Vec<&String> = bare_refuses.difference(&fallible).collect();
+    assert!(wrongly.is_empty(), "rows that cannot fail, refused bare as fallible: {wrongly:?}");
+    assert!(bare_refuses.len() > 100 && or_refuses.len() > 200, "the scrape found the refusal arms");
 }
 
 /// The `["std", ..]` literals anywhere in codegen's source — the three

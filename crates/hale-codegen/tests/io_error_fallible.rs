@@ -204,19 +204,28 @@ fn bytes_at_fallible_returns_byte_on_ok_indexerror_on_oob() {
 fn or_over_non_fallible_path_call_has_clear_diagnostic() {
     // Friendly diagnostic when the agent wraps a non-fallible
     // stdlib path in `or`. Names the call and tells them to
-    // remove the `or` clause.
+    // remove the `or` clause. The check says so (its row says the
+    // call cannot fail); since F.40 phase 4, S5 lowering, meeting it
+    // in a build that skipped the check, answers with an internal error
+    // naming the row rather than a refusal of its own.
     let src = r#"
         fn main() {
             let _ = std::str::lower("HI") or raise;
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
+    let checked: Vec<String> =
+        hale_types::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(
+        checked.iter().any(|m| m.contains("`std::str::lower` is not fallible") && m.contains("drop the `or` clause")),
+        "got: {checked:?}"
+    );
     let bin = harness::unique_bin(&format!("hale_test_or_diag_{}", std::process::id()));
     let err = hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
-    let msg = format!("{:?}", err);
-    assert!(msg.contains("not a fallible call"), "got: {}", msg);
-    assert!(msg.contains("std::str::lower"), "got: {}", msg);
+    let msg = format!("{}", err);
+    assert!(msg.contains("internal error: an `or` over `std::str::lower`"), "got: {}", msg);
+    assert!(msg.contains("its row says it cannot fail"), "got: {}", msg);
 }
 
 #[test]

@@ -25666,7 +25666,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // of this match's catch-all.
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
-            return self.lower_stdlib_path_call(&segs, args, scope);
+            return self.lower_stdlib_path_call(&segs, qn.span, args, scope);
         }
         match segs.as_slice() {
             ["time", "sleep"] => self.lower_time_sleep(args, scope),
@@ -25736,7 +25736,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             qn.segments.iter().map(|s| s.name.as_str()).collect();
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
-            return self.lower_stdlib_path_call_expr(&segs, args, scope);
+            return self.lower_stdlib_path_call_expr(&segs, qn.span, args, scope);
         }
         match segs.as_slice() {
             ["time", "monotonic"] => self.lower_time_monotonic(args),
@@ -25944,20 +25944,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_stdlib_path_call(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
-        self.lower_std_call(segs, args, scope, StdCallPos::Statement).map(|_| ())
+        self.lower_std_call(segs, at, args, scope, StdCallPos::Statement).map(|_| ())
     }
 
     /// A `std::*` call at value position: [`Cx::lower_std_call`].
     fn lower_stdlib_path_call_expr(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        self.lower_std_call(segs, args, scope, StdCallPos::Value)
+        self.lower_std_call(segs, at, args, scope, StdCallPos::Value)
             .map(|v| v.expect("a value position lowers to a value or an error"))
     }
 
@@ -25967,16 +25969,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// and a path with neither answers as [`Cx::lower_std_unarmed`]
     /// does. A statement drops the value: `None` is a statement that
     /// produced none. The `or` position is [`Cx::lower_std_fallible_call`]'s.
+    /// `at` is the callee path's span, for an error the check should
+    /// have reported first.
     fn lower_std_call(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
         pos: StdCallPos,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         use hale_types::stdlib_surface::Lower;
         match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
-            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic(id, segs, args, scope, pos),
+            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic(id, segs, at, args, scope, pos),
             Some(Lower::HaleBody(body)) => self.lower_std_hale_body(body, segs, args, scope, pos),
             Some(Lower::Renamed) | Some(Lower::Unlowered) | None => {
                 self.lower_std_unarmed(segs, args, scope, pos)
@@ -26095,6 +26100,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         id: IntrinsicId,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
         pos: StdCallPos,
@@ -27080,12 +27086,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
             },
-            // No arm at either position: lowered only under `or`
-            // (`lower_std_intrinsic_fallible`). A bare call of
-            // one the position's list refuses (`refuses_bare`) is
-            // refused as fallible, in the words the parse_int family
-            // has always had; any other answers as a path no arm
-            // lowers.
+            // No arm at either bare position: the functions whose row
+            // says they can fail, lowered only under `or`
+            // (`lower_std_intrinsic_fallible`). The check refuses a bare
+            // call of one, so lowering meets it only in a build that
+            // skipped the check (`bare_call_of_a_fallible_row`).
+            // `stdlib_registry_parity` holds this arm to the rows: it is
+            // every id whose row is fallible.
             Id::BytesReadF32Le
             | Id::BytesReadF64Be
             | Id::BytesReadF64Le
@@ -27189,16 +27196,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrRangeParseDecimal
             | Id::StrRangeParseInt
             | Id::TimeParseIso8601
-            | Id::TimeParseTime => {
-                if refuses_bare(id, pos) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`{}` returns a fallible value — address the error with \
-                         `or raise`, `or <substitute>`, or `or self.handle(err)`",
-                        segs.join("::")
-                    )));
-                }
-                return self.lower_std_unarmed(segs, args, scope, pos);
-            }
+            | Id::TimeParseTime => return Err(bare_call_of_a_fallible_row(segs, at, pos)),
         };
         value.map(Some)
     }
@@ -27212,12 +27210,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn lower_std_fallible_call(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
         use hale_types::stdlib_surface::Lower;
         match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
-            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic_fallible(id, segs, args, scope),
+            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic_fallible(id, segs, at, args, scope),
             Some(Lower::HaleBody(_)) | Some(Lower::Renamed) | Some(Lower::Unlowered) | None => Ok(None),
         }
     }
@@ -27234,6 +27233,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         id: IntrinsicId,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
@@ -27513,10 +27513,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::ProcessSignalPidRaw => self.lower_std_process_signal_pid_fallible(args, scope),
             Id::ProcessPipeReadRaw => self.lower_std_process_pipe_read_fallible(args, scope),
             Id::ProcessPipeWriteRaw => self.lower_std_process_pipe_write_fallible(args, scope),
-            // No arm under `or`: not a stdlib fallible call. A call of one
-            // the not-fallible list names (`REFUSED_UNDER_OR`) is refused
-            // in the words it has always had; any other is `Ok(None)`, and
-            // the caller resolves the path as a function or refuses it.
+            // No arm under `or`: the functions whose row says they cannot
+            // fail (`or_over_an_infallible_row`). `stdlib_registry_parity`
+            // holds this arm to the rows: it is every id whose row is not
+            // fallible.
             Id::BusBindingFailRaw
             | Id::BusLocalDispatchRaw
             | Id::BusTransportRealizeRaw
@@ -27756,17 +27756,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TsNodeStartByte
             | Id::TsNodeText
             | Id::TsParseGo
-            | Id::TsRootNode => {
-                if REFUSED_UNDER_OR.contains(&id) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`{}` is not a fallible call — remove the `or` clause. \
-                         Returns its value directly; failures (if any) use the \
-                         sentinel-with-discriminator idiom or are infallible.",
-                        segs.join("::")
-                    )));
-                }
-                return Ok(None);
-            }
+            | Id::TsRootNode => return Err(or_over_an_infallible_row(segs, at)),
         };
         lowered.map(Some)
     }
@@ -34179,180 +34169,59 @@ pub(crate) enum StdCallPos {
     Value,
 }
 
-/// The bare statement calls lowering refuses as fallible ("returns a
-/// fallible value — address the error with `or raise` ..."): C9's
-/// fallible-only fs surfaces, C4's getrandom, C2's subprocess
-/// primitives, the file and udp primitives and two tls setters. Most
-/// have no signature row, so the checker does not refuse them first.
-/// S5 replaces this list with the row's fallibility.
-const REFUSED_BARE_STATEMENT: &[IntrinsicId] = &[
-    IntrinsicId::IoFsRename,
-    IntrinsicId::IoFsUnlink,
-    IntrinsicId::IoFsMktemp,
-    IntrinsicId::OsGetrandom,
-    IntrinsicId::ProcessRun,
-    IntrinsicId::ProcessSpawnRaw,
-    IntrinsicId::ProcessWaitPidRaw,
-    IntrinsicId::ProcessTryWaitPidRaw,
-    IntrinsicId::ProcessSignalPidRaw,
-    IntrinsicId::ProcessKillEscalateRaw,
-    IntrinsicId::ProcessPipeReadRaw,
-    IntrinsicId::ProcessPipeWriteRaw,
-    IntrinsicId::IoFileOpenRaw,
-    IntrinsicId::IoFileWriteBytesRaw,
-    IntrinsicId::IoFileSeekRaw,
-    IntrinsicId::IoUdpBindRaw,
-    IntrinsicId::IoUdpBind,
-    IntrinsicId::IoUdpSendRaw,
-    IntrinsicId::IoUdpSend,
-    IntrinsicId::IoUdpRecvRaw,
-    IntrinsicId::IoUdpRecv,
-    IntrinsicId::IoUdpJoinGroup,
-    IntrinsicId::IoUdpLeaveGroup,
-    IntrinsicId::IoUdpSetMulticastTtl,
-    IntrinsicId::IoUdpSetMulticastLoop,
-    IntrinsicId::IoUdpSetMulticastIface,
-    IntrinsicId::IoUdpSetOptionInt,
-    IntrinsicId::IoUdpSetOptionBool,
-    IntrinsicId::IoUdpGetOptionInt,
-    IntrinsicId::IoUdpRecvWithSource,
-    IntrinsicId::IoUdpSetRecvTimeout,
-    IntrinsicId::IoUdpSetSendTimeout,
-    IntrinsicId::IoTlsSetRecvTimeout,
-    IntrinsicId::IoTlsSetSendTimeout,
-];
-
-/// The bare value calls lowering refuses as fallible, in the same
-/// words: the statement list and 2026-05-17's parse_int / parse_float,
-/// which are fallible-only at the expression dispatch. S5 replaces this
-/// list with the row's fallibility.
-const REFUSED_BARE_VALUE: &[IntrinsicId] = &[
-    IntrinsicId::StrParseInt,
-    IntrinsicId::StrParseFloat,
-    IntrinsicId::IoFsRename,
-    IntrinsicId::IoFsUnlink,
-    IntrinsicId::IoFsMktemp,
-    IntrinsicId::OsGetrandom,
-    IntrinsicId::ProcessRun,
-    IntrinsicId::ProcessSpawnRaw,
-    IntrinsicId::ProcessWaitPidRaw,
-    IntrinsicId::ProcessTryWaitPidRaw,
-    IntrinsicId::ProcessSignalPidRaw,
-    IntrinsicId::ProcessKillEscalateRaw,
-    IntrinsicId::ProcessPipeReadRaw,
-    IntrinsicId::ProcessPipeWriteRaw,
-    IntrinsicId::IoFileOpenRaw,
-    IntrinsicId::IoFileWriteBytesRaw,
-    IntrinsicId::IoFileSeekRaw,
-    IntrinsicId::IoUdpBindRaw,
-    IntrinsicId::IoUdpBind,
-    IntrinsicId::IoUdpSendRaw,
-    IntrinsicId::IoUdpSend,
-    IntrinsicId::IoUdpRecvRaw,
-    IntrinsicId::IoUdpRecv,
-    IntrinsicId::IoUdpJoinGroup,
-    IntrinsicId::IoUdpLeaveGroup,
-    IntrinsicId::IoUdpSetMulticastTtl,
-    IntrinsicId::IoUdpSetMulticastLoop,
-    IntrinsicId::IoUdpSetMulticastIface,
-    IntrinsicId::IoUdpSetOptionInt,
-    IntrinsicId::IoUdpSetOptionBool,
-    IntrinsicId::IoUdpGetOptionInt,
-    IntrinsicId::IoUdpRecvWithSource,
-    IntrinsicId::IoUdpSetRecvTimeout,
-    IntrinsicId::IoUdpSetSendTimeout,
-    IntrinsicId::IoTlsSetRecvTimeout,
-    IntrinsicId::IoTlsSetSendTimeout,
-];
-
-/// Whether lowering refuses a bare call of `id` at `pos` as fallible.
-/// A statement the statement list does not name was the value
-/// position's call with its value dropped (S1), so the value list
-/// refuses it too: that is how a bare `parse_int` statement is refused.
-fn refuses_bare(id: IntrinsicId, pos: StdCallPos) -> bool {
-    match pos {
-        StdCallPos::Statement => {
-            REFUSED_BARE_STATEMENT.contains(&id) || REFUSED_BARE_VALUE.contains(&id)
-        }
-        StdCallPos::Value => REFUSED_BARE_VALUE.contains(&id),
-    }
+/// A bare call of a stdlib function whose row says it can fail. The check
+/// refuses it (a bare fallible call, GH #738), so lowering meets one only
+/// in a build that skipped the check, and its answer is an internal error
+/// naming the row, not a refusal of its own. Until F.40 phase 4, S5 two id
+/// lists said which bare calls lowering refused.
+fn bare_call_of_a_fallible_row(
+    segs: &[&str],
+    at: hale_syntax::Span,
+    pos: StdCallPos,
+) -> CodegenError {
+    let err = hale_types::stdlib_surface::signature_for(segs)
+        .and_then(|s| s.fallible)
+        .map(|e| format!(" ({e})"))
+        .unwrap_or_default();
+    let pos = match pos {
+        StdCallPos::Statement => "statement",
+        StdCallPos::Value => "value",
+    };
+    CodegenError::UnsupportedAt(
+        format!(
+            "internal error: a bare call of `{}` reached lowering at {pos} \
+             position, but its row says it can fail{err}, and `hale check` \
+             refuses that call (GH #738): this build skipped the check",
+            segs.join("::")
+        ),
+        at,
+    )
 }
 
-/// The calls lowering refuses under `or` ("is not a fallible call —
-/// remove the `or` clause"): stdlib functions that return their value
-/// directly, with no error channel, refused with that focused word
-/// rather than as an unknown path call. S5 replaces this list with the
-/// row's fallibility.
-const REFUSED_UNDER_OR: &[IntrinsicId] = &[
-    IntrinsicId::BytesSlice,
-    IntrinsicId::BytesFromString,
-    IntrinsicId::StrFromBytes,
-    IntrinsicId::StrLower,
-    IntrinsicId::StrUpper,
-    IntrinsicId::StrTrim,
-    IntrinsicId::StrSubstring,
-    IntrinsicId::StrReplace,
-    IntrinsicId::StrRepeat,
-    IntrinsicId::StrPadLeft,
-    IntrinsicId::StrPadRight,
-    IntrinsicId::StrIndexOf,
-    IntrinsicId::StrCanParseInt,
-    IntrinsicId::StrCanParseFloat,
-    IntrinsicId::StrBuilderNew,
-    IntrinsicId::StrBuilderAppend,
-    IntrinsicId::StrBuilderLen,
-    IntrinsicId::StrBuilderFinish,
-    IntrinsicId::BytesBuilderNewRaw,
-    IntrinsicId::BytesBuilderAppendRaw,
-    IntrinsicId::BytesBuilderAppendStrRaw,
-    IntrinsicId::BytesBuilderLenRaw,
-    IntrinsicId::BytesBuilderFinishRaw,
-    IntrinsicId::BytesBuilderShiftFrontRaw,
-    IntrinsicId::BytesBuilderClearRaw,
-    IntrinsicId::BytesBuilderSnapshotRaw,
-    IntrinsicId::BytesBuilderFreeRaw,
-    IntrinsicId::BytesBuilderViewRaw,
-    IntrinsicId::BytesBuilderTextViewRaw,
-    IntrinsicId::BytesBuilderAppendSliceRaw,
-    IntrinsicId::BytesIsAllocFailRaw,
-    IntrinsicId::BytesClone,
-    IntrinsicId::StrClone,
-    IntrinsicId::MathSqrt,
-    IntrinsicId::MathExp,
-    IntrinsicId::MathLog,
-    IntrinsicId::MathFloor,
-    IntrinsicId::MathCeil,
-    IntrinsicId::MathPow,
-    IntrinsicId::MathTanh,
-    IntrinsicId::MathNan,
-    IntrinsicId::MathInf,
-    IntrinsicId::MathIsNan,
-    IntrinsicId::MathSin,
-    IntrinsicId::MathCos,
-    IntrinsicId::MathTan,
-    IntrinsicId::MathAsin,
-    IntrinsicId::MathAcos,
-    IntrinsicId::MathAtan,
-    IntrinsicId::MathAtan2,
-    IntrinsicId::IoFsFileExists,
-    IntrinsicId::IoTcpCloseFd,
-    IntrinsicId::IoStdinReadLine,
-    IntrinsicId::IoStdinReadLineStatus,
-    IntrinsicId::EnvArgsCount,
-    IntrinsicId::EnvArg,
-    IntrinsicId::EnvArgOr,
-    IntrinsicId::EnvVar,
-    IntrinsicId::EnvVarExists,
-    IntrinsicId::ProcessPid,
-    IntrinsicId::TimeMonotonic,
-    IntrinsicId::TimeSleep,
-    IntrinsicId::TextIsAlpha,
-    IntrinsicId::TextIsDigit,
-    IntrinsicId::TextIsAlnum,
-    IntrinsicId::TextIsWhitespace,
-    IntrinsicId::TextIsWordChar,
-    IntrinsicId::TextTokenizeWordsInto,
-];
+/// An `or` over a stdlib function whose row says it cannot fail. With a
+/// signature, the check refuses the `or` ("is not fallible"), so this is
+/// an internal error naming the row. Without one (step S6 gives every
+/// dispatched function one) the check types the call `Unknown` and lets
+/// the `or` through, so this refusal is the one a checked program meets.
+/// Until F.40 phase 4, S5 an id list said which of them lowering refused.
+fn or_over_an_infallible_row(segs: &[&str], at: hale_syntax::Span) -> CodegenError {
+    let path = segs.join("::");
+    match hale_types::stdlib_surface::signature_for(segs) {
+        Some(_) => CodegenError::UnsupportedAt(
+            format!(
+                "internal error: an `or` over `{path}` reached lowering, but \
+                 its row says it cannot fail, and `hale check` refuses that \
+                 `or`: this build skipped the check"
+            ),
+            at,
+        ),
+        None => CodegenError::Unsupported(format!(
+            "`{path}` is not a fallible call — remove the `or` clause. \
+             Returns its value directly; failures (if any) use the \
+             sentinel-with-discriminator idiom or are infallible."
+        )),
+    }
+}
 
 /// 2026-05-26 — named socket-option constants exposed via
 /// `std::io::sockopt::<NAME>()`. Each value is fetched at runtime
