@@ -219,6 +219,7 @@ pub fn subjects_can_overlap(a: &str, b: &str) -> bool {
 
 pub mod application;
 pub mod capability;
+pub mod claim_form;
 pub mod claim_ir;
 pub mod dispatch_plan;
 pub mod entity;

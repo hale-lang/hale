@@ -11,6 +11,25 @@
 //! For each artifact:
 //!
 //! * admission accepts it;
+//! * every law payload decodes (`decode_law`), and the decoded law's
+//!   family is the row's — the model's (`family_of`);
+//! * every form the artifact states — a law row's fingerprint, its
+//!   certificates', each `claims` row's and each `lowered` row's —
+//!   re-renders from the decoded law byte for byte
+//!   (`render_claims_form`, `expected_cert_forms`,
+//!   `expected_legacy_form`).
+//!
+//! Admission reads the artifact schema with its own `Law`, not the
+//! model's `ClaimIr`: a payload carries each operand's spelling and
+//! whether it resolved, but not the model ids or provenance records
+//! `ClaimIr` holds, and the artifact's catalogs are sorted, so their
+//! positions are not those ids. The spelling of every form is the
+//! model's (`hale_model::claim_form`), called by both renderers; the
+//! decoder's mapping from payload to operands is what this file holds
+//! to the emitter.
+//!
+//! And the verdicts:
+//!
 //! * every certificate row's verdict is the model's aggregation over
 //!   its certificates (`hale_model::certificate_row_verdict`), and the
 //!   document's verdict is the model's over everything it states
@@ -207,6 +226,8 @@ fn stated(v: &Value, key: &str) -> Option<VerdictIr> {
 struct Totals {
     law_rows: usize,
     cert_rows: usize,
+    /// Stated forms compared with the decoded law's rendering.
+    forms: usize,
 }
 
 /// Hold one admitted artifact to the model's functions; each
@@ -218,12 +239,62 @@ fn differences_of(a: &Artifact, totals: &mut Totals) -> Vec<String> {
         .expect("admitted, so its catalogs read");
     let rows = v["law"]["rows"].as_array().cloned().unwrap_or_default();
     totals.law_rows += rows.len();
+    let mut laws = std::collections::BTreeMap::new();
     for row in &rows {
-        let law = topology_law::decode_law(&row["law"], &cx)
-            .expect("admitted, so every payload decodes");
+        let law = match topology_law::decode_law(&row["law"], &cx) {
+            Ok(law) => law,
+            Err(e) => {
+                out.push(format!(
+                    "{}: law row {}: the payload does not decode: {}",
+                    name, row["ordinal"], e
+                ));
+                continue;
+            }
+        };
+        // The decoded law's family is the one the emitter wrote,
+        // which is the model's (`ClaimRow::family`).
+        if row["family"].as_str() != Some(topology_law::family_of(&law).as_str())
+        {
+            out.push(format!(
+                "{}: law row {} states family `{}`, the decoded law's is \
+                 `{}`",
+                name,
+                row["ordinal"],
+                row["family"].as_str().unwrap_or("?"),
+                topology_law::family_of(&law).as_str()
+            ));
+        }
+        // Every form the row states re-renders from the decoded law,
+        // byte for byte: its legacy fingerprint and its certificates'.
+        let mut compare = |what: &str,
+                           stated: Option<&str>,
+                           rendered: Option<&str>| {
+            if stated.is_some() || rendered.is_some() {
+                totals.forms += 1;
+            }
+            if stated != rendered {
+                out.push(format!(
+                    "{}: law row {} {}: states {:?}, renders {:?}",
+                    name, row["ordinal"], what, stated, rendered
+                ));
+            }
+        };
+        compare(
+            "form",
+            row["form"].as_str(),
+            topology_law::expected_legacy_form(&law).as_deref(),
+        );
+        let certs = row["certs"].as_array().cloned().unwrap_or_default();
+        let cert_forms = topology_law::expected_cert_forms(&law).unwrap_or_default();
+        for (k, cert) in certs.iter().enumerate() {
+            compare(
+                &format!("certs[{}]", k),
+                cert["form"].as_str(),
+                cert_forms.get(k).map(String::as_str),
+            );
+        }
         // The row's verdict is the model's aggregation over the
         // certificates it states.
-        let certs = row["certs"].as_array().cloned().unwrap_or_default();
         if !certs.is_empty() {
             totals.cert_rows += 1;
             let statically_invalid = topology_law::has_unresolved(&law)
@@ -242,6 +313,46 @@ fn differences_of(a: &Artifact, totals: &mut Totals) -> Vec<String> {
                     expect.as_str()
                 ));
             }
+        }
+        if let Some(ord) = row["ordinal"].as_u64() {
+            laws.insert(ord, law);
+        }
+    }
+    // Every `claims` row's form re-renders from its law row, and every
+    // `lowered` row's from its certificate's.
+    for c in v["claims"].as_array().into_iter().flatten() {
+        totals.forms += 1;
+        let rendered = c["ordinal"]
+            .as_u64()
+            .and_then(|o| laws.get(&o))
+            .and_then(topology_law::render_claims_form);
+        if c["form"].as_str() != rendered.as_deref() {
+            out.push(format!(
+                "{}: claims row `{}` states {:?}, its law renders {:?}",
+                name,
+                c["name"].as_str().unwrap_or("?"),
+                c["form"].as_str(),
+                rendered
+            ));
+        }
+    }
+    for r in v["lowered"].as_array().into_iter().flatten() {
+        totals.forms += 1;
+        let rendered = r["ordinal"]
+            .as_u64()
+            .and_then(|o| laws.get(&o))
+            .and_then(topology_law::expected_cert_forms)
+            .and_then(|forms| {
+                forms.get(r["cert"].as_u64()? as usize).cloned()
+            });
+        if r["form"].as_str() != rendered.as_deref() {
+            out.push(format!(
+                "{}: lowered row {:?} states {:?}, its law renders {:?}",
+                name,
+                (r["ordinal"].as_u64(), r["cert"].as_u64()),
+                r["form"].as_str(),
+                rendered
+            ));
         }
     }
     // The document's verdict is the model's over everything it states.
@@ -327,17 +438,71 @@ fn every_emitted_law_account_round_trips_through_admission() {
     }
     eprintln!(
         "law account round trip: {} programs, {} artifacts ({} known \
-         open), {} law rows ({} with certificates), {} differences",
+         open), {} law rows ({} with certificates), {} stated forms, {} \
+         differences",
         programs.len(),
         artifacts.len(),
         known_open.iter().sum::<usize>(),
         totals.law_rows,
         totals.cert_rows,
+        totals.forms,
         differences.len()
     );
-    // Not vacuous: the corpus emits artifacts and they carry law.
+    // Not vacuous: the corpus emits artifacts and they carry law, and
+    // the comparisons fire — a stated form or verdict edited after
+    // the fact is a difference (the controls).
     assert!(artifacts.len() >= 100, "only {} artifacts", artifacts.len());
     assert!(totals.law_rows >= 100, "only {} law rows", totals.law_rows);
+    let control = |edit: &dyn Fn(&mut Value) -> bool| -> bool {
+        artifacts.iter().any(|a| {
+            let mut edited = Artifact {
+                class: a.class,
+                name: a.name.clone(),
+                checked: a.checked,
+                v: a.v.clone(),
+            };
+            edit(&mut edited.v)
+                && topology_law::validate_law_account(&a.v, &a.name).is_ok()
+                && !differences_of(&edited, &mut Totals::default())
+                    .is_empty()
+        })
+    };
+    assert!(
+        control(&|v| match v["claims"].get_mut(0) {
+            Some(c) => {
+                c["form"] = Value::from("forbid reaches(a, b)");
+                true
+            }
+            None => false,
+        }),
+        "an edited claims form is not a difference"
+    );
+    assert!(
+        control(&|v| {
+            let Some(rows) = v["law"]["rows"].as_array_mut() else {
+                return false;
+            };
+            let Some(row) = rows.iter_mut().find(|r| {
+                r["certs"].as_array().is_some_and(|c| !c.is_empty())
+            }) else {
+                return false;
+            };
+            row["certs"][0]["form"] = Value::from("no_panic");
+            true
+        }),
+        "an edited certificate form is not a difference"
+    );
+    assert!(
+        control(&|v| {
+            let flipped = match v["verdict"].as_str() {
+                Some("clean") => "law_failed",
+                _ => "clean",
+            };
+            v["verdict"] = Value::from(flipped);
+            true
+        }),
+        "an edited document verdict is not a difference"
+    );
     assert!(
         differences.is_empty(),
         "{} disagreement(s) between the emitter and admission:\n{}",

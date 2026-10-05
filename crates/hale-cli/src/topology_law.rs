@@ -13,7 +13,22 @@
 //! directions, recomputes per-row certificate verdicts and the
 //! document verdict, and recomputes adequacy from the positive
 //! capability account.
+//!
+//! Admission evaluates no law: it refuses an artifact whose sections
+//! disagree. It agrees with the emitter by using the model's own
+//! functions wherever the artifact lets it (F.40 phase 4, A5): the
+//! verdict aggregation (`hale_model::certificate_row_verdict`,
+//! `hale_model::document_verdict`), every form's spelling
+//! (`hale_model::claim_form`), and the families', verdicts',
+//! comparisons' and budget dimensions' names. [`Law`] stays its own:
+//! it is the artifact schema's reader, and the model's `ClaimIr`
+//! cannot be rebuilt from a payload, which carries each operand's
+//! spelling and resolution but not the model ids and provenance
+//! records `ClaimIr` holds. `tests/law_account_round_trip.rs` holds
+//! the reader to the emitter over every artifact the corpus emits.
 
+use hale_model::claim_form as form;
+use hale_model::JudgmentFamily;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -176,7 +191,7 @@ pub enum Law {
     Count {
         publishers: bool,
         topic: Ref,
-        cmp: &'static str,
+        cmp: hale_model::CountCmpIr,
         n: u64,
     },
     EffectForbid {
@@ -2016,14 +2031,15 @@ pub fn decode_law(
                 &["kind", "publishers", "topic", "cmp", "n"],
                 &[],
             )?;
-            let cmp = match law["cmp"].as_str() {
-                Some("==") => "==",
-                Some("<=") => "<=",
-                Some(">=") => ">=",
-                other => {
+            let cmp = match law["cmp"]
+                .as_str()
+                .and_then(hale_model::CountCmpIr::from_word)
+            {
+                Some(cmp) => cmp,
+                None => {
                     return Err(format!(
                         "cmp `{:?}` is not ==|<=|>=",
-                        other
+                        law["cmp"].as_str()
                     ))
                 }
             };
@@ -2147,18 +2163,16 @@ pub fn decode_law(
             let dimv = &law["dim"];
             let dim = if let Some(b) = dimv["builtin"].as_str() {
                 only_keys(dimv, "dim", &["builtin"], &[])?;
-                match b {
-                    "stack_bytes" => Dim::Builtin("stack_bytes"),
-                    "block_points" => {
-                        Dim::Builtin("block_points")
-                    }
-                    "publish" => Dim::Builtin("publish"),
-                    "fanout" => Dim::Builtin("fanout"),
-                    other => {
+                match hale_model::QuantDimIr::BUILTINS
+                    .iter()
+                    .find(|(name, _)| *name == b)
+                {
+                    Some((name, _)) => Dim::Builtin(*name),
+                    None => {
                         return Err(format!(
                             "dim `{}` is not a quantitative \
                              dimension",
-                            other
+                            b
                         ))
                     }
                 }
@@ -2199,33 +2213,38 @@ pub fn decode_law(
     }
 }
 
-pub fn family_of(law: &Law) -> &'static str {
+/// The judgment family a decoded law belongs to — the model's
+/// `JudgmentFamily`, whose spelling the row's `family` must carry.
+pub fn family_of(law: &Law) -> JudgmentFamily {
     match law {
-        Law::ForbidReaches { .. } => "reachability",
-        Law::OnlyEdges { .. } => "boundary",
+        Law::ForbidReaches { .. } => JudgmentFamily::Reachability,
+        Law::OnlyEdges { .. } => JudgmentFamily::Boundary,
         Law::RequireEndpoint { .. }
         | Law::RequireSealed { .. }
         | Law::RequireAttributed { .. }
         | Law::Cover { .. }
-        | Law::Count { .. } => "endpoint",
-        Law::Bound { .. } => "bound",
+        | Law::Count { .. } => JudgmentFamily::Endpoint,
+        Law::Bound { .. } => JudgmentFamily::Bound,
         Law::EffectForbid { .. }
         | Law::EffectOnly { .. }
         | Law::EffectPublishSet { .. }
         | Law::NoPanic { .. }
-        | Law::PhaseEffects { .. } => "certificate",
-        Law::EffectCauses { .. } => "causes",
-        Law::DependsSet { .. } => "depends",
-        Law::AllocBudget { .. } | Law::QuantBudget { .. } => "budget",
+        | Law::PhaseEffects { .. } => JudgmentFamily::Certificate,
+        Law::EffectCauses { .. } => JudgmentFamily::Causes,
+        Law::DependsSet { .. } => JudgmentFamily::Depends,
+        Law::AllocBudget { .. } | Law::QuantBudget { .. } => {
+            JudgmentFamily::Budget
+        }
     }
 }
 
-/// Canonically re-render the compatibility `claims` form.
+/// Canonically re-render the compatibility `claims` form, with the
+/// model's spelling (`hale_model::claim_form`).
 pub fn render_claims_form(law: &Law) -> Option<String> {
     let set = |s: &SetRef| -> String {
         match s {
             SetRef::Group(g) => g.display.clone(),
-            SetRef::Effects(c) => format!("effects({})", c.class),
+            SetRef::Effects(c) => form::effect_carriers(&c.class),
         }
     };
     Some(match law {
@@ -2236,88 +2255,42 @@ pub fn render_claims_form(law: &Law) -> Option<String> {
             via_bus,
             during,
             avoiding,
-        } => {
-            let mut out = format!(
-                "forbid reaches({}, {})",
-                set(src),
-                set(dst)
-            );
-            match (via_calls, via_bus) {
-                (true, true) => {}
-                (true, false) => out.push_str(" via { calls }"),
-                (false, true) => out.push_str(" via { bus }"),
-                (false, false) => {}
-            }
-            if let Some(p) = during {
-                out.push_str(&format!(" during {}", p.display));
-            }
-            if let Some(a) = avoiding {
-                out.push_str(&format!(" avoiding {}", a.display));
-            }
-            out
-        }
-        Law::OnlyEdges { src, dst, grants } => {
-            let gs: Vec<String> = grants
-                .iter()
-                .map(|g| {
-                    format!(
-                        "{} {}",
-                        if g.publish {
-                            "publish"
-                        } else {
-                            "subscribe"
-                        },
-                        g.topic.display
-                    )
-                })
-                .collect();
-            format!(
-                "only edges {} -> {} {{ {} }}",
-                src.display,
-                dst.display,
-                gs.join("; ")
-            )
-        }
-        Law::Bound { class, limit, from } => format!(
-            "bound {} <= {} on paths from {}",
-            class.class, limit, from.display
+        } => form::forbid_reaches(
+            &set(src),
+            &set(dst),
+            *via_calls,
+            *via_bus,
+            during.as_ref().map(|p| p.display.as_str()),
+            avoiding.as_ref().map(|a| a.display.as_str()),
         ),
+        Law::OnlyEdges { src, dst, grants } => form::only_edges(
+            &src.display,
+            &dst.display,
+            grants.iter().map(|g| (g.publish, g.topic.display.as_str())),
+        ),
+        Law::Bound { class, limit, from } => {
+            form::bound(&class.class, *limit, &from.display)
+        }
         Law::RequireEndpoint {
             publishers,
             group,
             topic,
-        } => format!(
-            "require {}(some {}, topic {})",
-            if *publishers { "publishes" } else { "subscribes" },
-            group.display,
-            topic.display
-        ),
-        Law::RequireSealed { group } => {
-            format!("require sealed(all {})", group.display)
+        } => {
+            form::require_endpoint(*publishers, &group.display, &topic.display)
         }
+        Law::RequireSealed { group } => form::require_sealed(&group.display),
         Law::RequireAttributed { class } => {
-            format!("require attributed(all {})", class.class)
+            form::require_attributed(&class.class)
         }
-        Law::Cover { seed, group } => format!(
-            "cover topic in seed({}): subscribed_by(some {})",
-            seed.display, group.display
-        ),
+        Law::Cover { seed, group } => {
+            form::cover(&seed.display, &group.display)
+        }
         Law::Count {
             publishers,
             topic,
             cmp,
             n,
-        } => format!(
-            "count {}(topic {}) {} {}",
-            if *publishers {
-                "publishers"
-            } else {
-                "subscribers"
-            },
-            topic.display,
-            cmp,
-            n
-        ),
+        } => form::count(*publishers, &topic.display, *cmp, *n),
         _ => return None,
     })
 }
@@ -2329,50 +2302,26 @@ pub fn expected_cert_forms(law: &Law) -> Option<Vec<String>> {
     Some(match law {
         Law::EffectForbid { at, classes } => classes
             .iter()
-            .map(|c| {
-                format!(
-                    "forbid reaches({{{}}}, effects({}))",
-                    at.display, c.class
-                )
-            })
+            .map(|c| form::forbid_effect(&at.display, &c.class))
             .collect(),
-        Law::EffectOnly { at, classes } => {
-            let s = classes
-                .iter()
-                .map(|c| c.class.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            vec![format!(
-                "only effects {{{}}} on {{{}}}",
-                s, at.display
-            )]
-        }
-        Law::EffectPublishSet { at, entries } => {
-            let s = entries
-                .iter()
-                .map(|e| e.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            vec![format!(
-                "only publishes {{{}}} from {{{}}}",
-                s, at.display
-            )]
-        }
-        Law::NoPanic { at } => vec![format!(
-            "forbid reaches({{{}}}, panic)",
-            at.display
+        Law::EffectOnly { at, classes } => vec![form::only_effects(
+            classes.iter().map(|c| c.class.as_str()),
+            &at.display,
         )],
+        Law::EffectPublishSet { at, entries } => {
+            vec![form::only_publishes(
+                entries.iter().map(|e| e.name.as_str()),
+                &at.display,
+            )]
+        }
+        Law::NoPanic { at } => vec![form::no_panic(&at.display)],
         Law::PhaseEffects { locus, phases } => phases
             .iter()
             .map(|(ph, allowed)| {
-                let s = allowed
-                    .iter()
-                    .map(|c| c.class.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "only effects {{{}}} on {{{}}} during {}",
-                    s, locus.display, ph
+                form::phase_effects(
+                    allowed.iter().map(|c| c.class.as_str()),
+                    &locus.display,
+                    ph,
                 )
             })
             .collect(),
@@ -2391,51 +2340,33 @@ pub fn expected_cert_forms(law: &Law) -> Option<Vec<String>> {
 /// legacy-engine evidence row.
 pub fn expected_budget_form(law: &Law) -> Option<String> {
     match law {
-        Law::AllocBudget { at, per_call } => Some(format!(
-            "bound alloc <= {} on paths from {{{}}}",
-            per_call, at.display
-        )),
+        Law::AllocBudget { at, per_call } => {
+            Some(form::budget("alloc", *per_call, &at.display))
+        }
         Law::QuantBudget { at, dim, limit } => {
             let d = match dim {
-                Dim::Builtin(b) => (*b).to_string(),
-                Dim::UserClass(c) => c.class.clone(),
+                Dim::Builtin(b) => b,
+                Dim::UserClass(c) => c.class.as_str(),
             };
-            Some(format!(
-                "bound {} <= {} on paths from {{{}}}",
-                d, limit, at.display
-            ))
+            Some(form::budget(d, *limit, &at.display))
         }
         _ => None,
     }
 }
 
 /// Round 6: the LEGACY-report fingerprint the unmigrated
-/// non-budget families generate — must byte-match
-/// `ClaimRow::legacy_form` (the emitter's spelling).
+/// non-budget families generate — `ClaimRow::legacy_form`'s
+/// spelling, the model's.
 pub fn expected_legacy_form(law: &Law) -> Option<String> {
     match law {
-        Law::EffectCauses { at, classes } => {
-            let cs: Vec<&str> = classes
-                .iter()
-                .map(|c| c.class.as_str())
-                .collect();
-            Some(format!(
-                "causes {{{}}} from {{{}}}",
-                cs.join(", "),
-                at.display
-            ))
-        }
-        Law::DependsSet { locus, entries } => {
-            let es: Vec<&str> = entries
-                .iter()
-                .map(|e| e.name.as_str())
-                .collect();
-            Some(format!(
-                "depends {{{}}} on {{{}}}",
-                es.join(", "),
-                locus.display
-            ))
-        }
+        Law::EffectCauses { at, classes } => Some(form::causes(
+            classes.iter().map(|c| c.class.as_str()),
+            &at.display,
+        )),
+        Law::DependsSet { locus, entries } => Some(form::depends(
+            entries.iter().map(|e| e.name.as_str()),
+            &locus.display,
+        )),
         _ => None,
     }
 }
@@ -2462,17 +2393,7 @@ pub fn validate_law_account(
     v: &Value,
     label: &str,
 ) -> Result<(), String> {
-    const FAMILIES: &[&str] = &[
-        "reachability",
-        "boundary",
-        "endpoint",
-        "bound",
-        "certificate",
-        "causes",
-        "depends",
-        "budget",
-        "unmigrated",
-    ];
+    use hale_model::JudgmentFamily as JF;
     use hale_model::VerdictIr;
     let is_verdict = |x: &str| VerdictIr::from_word(x).is_some();
     if !v["law"].is_object()
@@ -2537,13 +2458,16 @@ pub fn validate_law_account(
     }
     let cx = RefContext::from_artifact(v)
         .map_err(|e| format!("{}: {}", label, e))?;
-    let origin_ok = |origin: &str, family: &str| -> bool {
+    let origin_ok = |origin: &str, family: JF| -> bool {
         match family {
             // `depends:` is an annotation on a LOCUS, `causes:` one
             // on a function; neither can arrive from a claims block
             // or a constitution.
-            "certificate" | "causes" | "depends" | "budget"
-            | "unmigrated" => origin == "annotation",
+            JF::Certificate
+            | JF::Causes
+            | JF::Depends
+            | JF::Budget
+            | JF::Unmigrated => origin == "annotation",
             _ => {
                 origin == "main"
                     || origin == "library"
@@ -2675,7 +2599,8 @@ pub fn validate_law_account(
             && row["origin"].is_string()
             && row["family"]
                 .as_str()
-                .is_some_and(|f| FAMILIES.contains(&f))
+                .and_then(JF::from_word)
+                .is_some_and(|f| f != JF::Fleet)
             && row["verdict"].as_str().is_some_and(is_verdict);
         if !ok {
             return Err(format!(
@@ -2695,14 +2620,14 @@ pub fn validate_law_account(
             )
         })?;
         let fam = family_of(&decoded);
-        if row["family"] != fam {
+        if row["family"] != fam.as_str() {
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] declares \
                  family `{}` but its kind belongs to `{}`",
                 label,
                 i,
                 row["family"].as_str().unwrap_or("?"),
-                fam
+                fam.as_str()
             ));
         }
         let origin = row["origin"].as_str().unwrap_or_default();
@@ -2710,7 +2635,10 @@ pub fn validate_law_account(
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] origin \
                  `{}` does not fit family `{}`",
-                label, i, origin, fam
+                label,
+                i,
+                origin,
+                fam.as_str()
             ));
         }
         let verdict = row["verdict"].as_str().unwrap_or("?");
@@ -2995,7 +2923,7 @@ pub fn validate_law_account(
         // exact law by a `law.legacy` report entry whose
         // fingerprint re-renders from the typed operands.
         if let Some(form) = expected_legacy_form(&decoded)
-            .filter(|_| row["family"] == "unmigrated")
+            .filter(|_| fam == JF::Unmigrated)
         {
             // (Class validity is enforced above: static_invalid
             // forces the verdict to exactly `invalid`.)
@@ -3031,12 +2959,12 @@ pub fn validate_law_account(
         // would be asserting a violation with nothing behind it.
         if matches!(
             fam,
-            "reachability"
-                | "boundary"
-                | "endpoint"
-                | "bound"
-                | "causes"
-                | "depends"
+            JF::Reachability
+                | JF::Boundary
+                | JF::Endpoint
+                | JF::Bound
+                | JF::Causes
+                | JF::Depends
         ) && matches!(verdict, "violated" | "uncertified")
             && row_ev == 0
         {
@@ -3056,7 +2984,7 @@ pub fn validate_law_account(
         // class) needs no prose; a bare `invalid` with neither is
         // refused.
         if verdict == "invalid"
-            && !matches!(fam, "certificate")
+            && fam != JF::Certificate
             && !static_invalid
             && row_ev == 0
         {
@@ -3069,7 +2997,7 @@ pub fn validate_law_account(
         }
         // An unanalyzed certificate row's `uncertified` carries
         // its residue too.
-        if matches!(fam, "certificate")
+        if fam == JF::Certificate
             && verdict == "uncertified"
             && row_ev == 0
         {
@@ -3081,7 +3009,7 @@ pub fn validate_law_account(
         }
         if matches!(
             fam,
-            "reachability" | "boundary" | "endpoint" | "bound"
+            JF::Reachability | JF::Boundary | JF::Endpoint | JF::Bound
         ) {
             claims_tier_ordinals
                 .push(row["ordinal"].as_u64().unwrap_or(0));
@@ -3284,7 +3212,6 @@ pub fn validate_law_account(
             vouched |= bit;
         }
     }
-    use hale_model::JudgmentFamily as JF;
     // SCHEMA-SPECIFIC and exact (review round 2). Migrating a
     // family without extending this table left the artifact
     // internally contradictory: a row could declare
@@ -3293,43 +3220,43 @@ pub fn validate_law_account(
     // from saying whether that contract was met. Each schema
     // version names exactly the families it must account for, so a
     // corrected artifact is admitted and an under-stated one is
-    // not.
-    const MIGRATED_114: &[(&str, JF)] = &[
-        ("reachability", JF::Reachability),
-        ("boundary", JF::Boundary),
-        ("endpoint", JF::Endpoint),
-        ("bound", JF::Bound),
-        ("certificate", JF::Certificate),
+    // not. Each is keyed in `adequacy` by the family's own spelling.
+    const MIGRATED_114: &[JF] = &[
+        JF::Reachability,
+        JF::Boundary,
+        JF::Endpoint,
+        JF::Bound,
+        JF::Certificate,
     ];
-    const MIGRATED_115: &[(&str, JF)] = &[
-        ("reachability", JF::Reachability),
-        ("boundary", JF::Boundary),
-        ("endpoint", JF::Endpoint),
-        ("bound", JF::Bound),
-        ("certificate", JF::Certificate),
-        ("causes", JF::Causes),
+    const MIGRATED_115: &[JF] = &[
+        JF::Reachability,
+        JF::Boundary,
+        JF::Endpoint,
+        JF::Bound,
+        JF::Certificate,
+        JF::Causes,
     ];
-    const MIGRATED_116: &[(&str, JF)] = &[
-        ("reachability", JF::Reachability),
-        ("boundary", JF::Boundary),
-        ("endpoint", JF::Endpoint),
-        ("bound", JF::Bound),
-        ("certificate", JF::Certificate),
-        ("causes", JF::Causes),
-        ("depends", JF::Depends),
+    const MIGRATED_116: &[JF] = &[
+        JF::Reachability,
+        JF::Boundary,
+        JF::Endpoint,
+        JF::Bound,
+        JF::Certificate,
+        JF::Causes,
+        JF::Depends,
     ];
-    const MIGRATED_117: &[(&str, JF)] = &[
-        ("reachability", JF::Reachability),
-        ("boundary", JF::Boundary),
-        ("endpoint", JF::Endpoint),
-        ("bound", JF::Bound),
-        ("certificate", JF::Certificate),
-        ("causes", JF::Causes),
-        ("depends", JF::Depends),
-        ("budget", JF::Budget),
+    const MIGRATED_117: &[JF] = &[
+        JF::Reachability,
+        JF::Boundary,
+        JF::Endpoint,
+        JF::Bound,
+        JF::Certificate,
+        JF::Causes,
+        JF::Depends,
+        JF::Budget,
     ];
     let schema = v["schema"].as_str().unwrap_or_default();
-    let migrated: &[(&str, JF)] = match schema {
+    let migrated: &[JF] = match schema {
         // 1.18 added the per-locus `contracts` section (GH #527
         // B4), 1.19 the declared `bindings` (GH #528); the family
         // account is 1.17's.
@@ -3350,14 +3277,15 @@ pub fn validate_law_account(
             schema
         ));
     }
-    for (name, fam) in migrated {
+    for fam in migrated {
+        let name = fam.as_str();
         let required = fam.required_relations().0;
         let expect = if vouched & required == required {
             "exact"
         } else {
             "degraded"
         };
-        if adequacy.get(*name).and_then(|x| x.as_str())
+        if adequacy.get(name).and_then(|x| x.as_str())
             != Some(expect)
         {
             return Err(format!(
@@ -3440,10 +3368,15 @@ pub fn validate_law_account(
         let mut dup = None;
         for r in v["law"]["rows"].as_array().into_iter().flatten()
         {
-            let fam = r["family"].as_str().unwrap_or("");
+            let fam = r["family"].as_str().and_then(JF::from_word);
             if matches!(
                 fam,
-                "reachability" | "boundary" | "endpoint" | "bound"
+                Some(
+                    JF::Reachability
+                        | JF::Boundary
+                        | JF::Endpoint
+                        | JF::Bound
+                )
             ) {
                 let name = r["name"].as_str().unwrap_or("");
                 if !names.insert(name.to_string()) {
