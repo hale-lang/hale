@@ -2998,38 +2998,36 @@ pub fn derive_application_model_over(
             ThreadDomain, ThreadDomainId, TopicBinding,
             TransportKind,
         };
-        use hale_syntax::ast::{
-            LocusMember, TopDecl,
-        };
         // The arrangement is the placement table's rows, projected
-        // (F.40 phase 3, P1; `notes/f40-placement-correspondence.md`
-        // § 2.4): the instances of the root lowering deploys (one
-        // template per literal of it, or the entry's implicit
-        // construction of a root no literal builds), each where it
-        // runs. A held instance is arranged under its holder, as the
-        // source's actual rows the table projects there; the source
-        // template's own rows (`PlacementTable::handed_off`) answer
-        // where it was built, and are not arranged.
-        //
-        // A path is the fields from the root, the replica index after
-        // the replicated field (`App.f[2].k`). It has no construction
-        // component, so one path stands for the rows of every template
-        // and alternative that reach it: it is arranged when they agree
-        // on what they realize and where they run, and otherwise it is
-        // left out with everything under it, each declaration realized
-        // there a hole (contract 3).
-        //
-        // The projection is user-only (U-4): a row realizing a stdlib
-        // declaration (a field typed `std::io::tcp::Listener`, a stdlib
-        // locus nested under a user one) is left out with its subtree,
-        // since its declaration is no entity of this model and adding
-        // one would be shape (contract 1). The coverage is partial by
-        // design: the table, not the arrangement, answers every
-        // placement question. An adapter of the root's `bindings { }`
-        // is no instance of the arrangement, and a literal `fn main`
-        // builds besides the root stays outside it, a birth the holes
-        // below account for.
-        use crate::placement::{DomainKind, InstanceKey, InstanceRow, Origin, SiteRef};
+        // (`crate::arrangement`, which lowering's dispatch plan reads
+        // its domains from too). Each declaration realized under a path
+        // whose templates disagree is a hole (contract 3), and so is
+        // each declaration born outside the arrangement (below).
+        use crate::placement::DomainKind;
+        let table = inputs.placement;
+        let projected = crate::arrangement::project_arrangement(
+            &programs,
+            &bundle.snapshot,
+            table,
+            inputs.ownership,
+        );
+        let root_name: Option<&str> = projected.root.map(|l| l.name.name.as_str());
+        let domain_name = |d: crate::placement::DomainId| projected.domain_name(table, d);
+        for (a, d) in &projected.disagreeing {
+            let Some(decl) = locus_id.get(&a.decl.name.name).copied() else { continue };
+            let pid = intern_span(&mut records, a.span);
+            holes
+                .entry((
+                    EntityRef::LocusDecl(decl),
+                    HoleKind::RuntimeInheritedPlacement,
+                    format!(
+                        "the root's construction templates disagree at `{d}`: the arrangement names \
+                         no instance there"
+                    ),
+                ))
+                .or_insert((hale_model::RelationSet::OWNS.union(hale_model::RelationSet::PLACED), None, pid));
+        }
+        // The model's declaration of each arranged instance.
         struct Arranged {
             path: String,
             decl: LocusDeclId,
@@ -3038,146 +3036,20 @@ pub fn derive_application_model_over(
             parent: Option<String>,
             span: hale_syntax::Span,
         }
-        let table = inputs.placement;
-        // The user's locus declarations by their minted site: what a
-        // row's `realizes` names. A stdlib site is never here.
-        let mut decl_at: BTreeMap<SiteRef, &hale_syntax::ast::LocusDecl> = BTreeMap::new();
-        for pr in &programs {
-            for item in hale_syntax::ast::flat_decls(&pr.items) {
-                if let TopDecl::Locus(l) = item {
-                    if let Some(id) = bundle.snapshot.site_id(l.id) {
-                        decl_at.insert(SiteRef::user(id), l);
-                    }
-                }
-            }
-        }
-        let root_decl = table.root.as_ref().and_then(|r| decl_at.get(&r.realizes.site).copied());
-        let root_name: Option<&str> = root_decl.map(|l| l.name.name.as_str());
-        let root_template = |o: Origin| match o {
-            Origin::Entry(_) => true,
-            Origin::Construction(c) => {
-                table.root.as_ref().is_some_and(|r| r.constructions.iter().any(|x| x.literal == c))
-            }
-            Origin::Binding(_) => false,
-        };
-        let path_of = |k: &InstanceKey| -> String {
-            let mut p = root_name.unwrap_or_default().to_string();
-            for (i, step) in k.path.iter().enumerate() {
-                p.push('.');
-                p.push_str(&step.field);
-                if i == 0 {
-                    if let Some(r) = k.replica {
-                        p.push_str(&format!("[{r}]"));
-                    }
-                }
-            }
-            p
-        };
-        let domain_name = |d: crate::placement::DomainId| -> String {
-            match &table.domain(d).kind {
-                DomainKind::Main => "main".to_string(),
-                DomainKind::Pool { name, .. } => format!("pool:{name}"),
-                DomainKind::Pinned { anchor, .. } => format!("pinned:{}", path_of(anchor)),
-            }
-        };
-        // The model's declaration a row realizes: a user locus.
-        let model_decl = |r: &InstanceRow| -> Option<(LocusDeclId, &hale_syntax::ast::LocusDecl)> {
-            let l = *decl_at.get(&r.realizes.as_ref()?.site)?;
-            Some((*locus_id.get(&l.name.name)?, l))
-        };
-        let prefix = |k: &InstanceKey, i: usize| InstanceKey {
-            origin: k.origin,
-            path: k.path[..i].to_vec(),
-            replica: if i == 0 { None } else { k.replica },
-        };
-        let handed_off = table.handed_off();
-        // Keep coverage before projecting user declarations. A template
-        // or alternative whose subtree is unenumerable must not borrow
-        // a known descendant from another template or alternative.
-        let mut coverage: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
-        let mut parents: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
-        // Per path, every user row that reaches it.
-        let mut at_path: BTreeMap<String, Vec<Arranged>> = BTreeMap::new();
-        for (k, r) in &table.instances {
-            if !root_template(k.origin) || handed_off.contains(k) {
-                continue;
-            }
-            let path = path_of(k);
-            coverage.entry(path.clone()).or_default().insert(k);
-            // The row and every row above it realize a user locus.
-            if !(0..k.path.len()).all(|i| table.instances.get(&prefix(k, i)).and_then(model_decl).is_some()) {
-                continue;
-            }
-            let Some((decl, l)) = model_decl(r) else { continue };
-            // The field's name in its owner's params, as written; the
-            // root's own name for the root.
-            let span = match (k.path.last(), r.owner.as_ref().and_then(|o| table.instances.get(o)).and_then(model_decl)) {
-                (Some(step), Some((_, owner))) => owner
-                    .members
-                    .iter()
-                    .filter_map(|m| match m {
-                        LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == step.field),
-                        _ => None,
-                    })
-                    .map(|p| p.name.span)
-                    .next()
-                    .unwrap_or(l.name.span),
-                _ => l.name.span,
-            };
-            if let Some(owner) = &r.owner {
-                parents.entry(path.clone()).or_default().insert(owner);
-            }
-            at_path.entry(path.clone()).or_default().push(Arranged {
-                path,
-                decl,
-                // The instance's OWN replica index — what codegen bakes
-                // into replica `i` and what a keyed subscriber on this
-                // field registers under: the replica row's, never an
-                // ancestor's copied down (`validate` requires `None` on
-                // every path whose last component is not a replica).
-                replica: if k.path.len() == 1 { k.replica } else { None },
-                domain: domain_name(r.domain),
-                parent: r.owner.as_ref().map(path_of),
-                span,
-            });
-        }
-        let disagree: Vec<String> = at_path
+        let arranged: Vec<Arranged> = projected
+            .instances
             .iter()
-            .filter(|(path, rows)| {
-                rows.iter().any(|a| a.decl != rows[0].decl || a.domain != rows[0].domain)
-                    || rows.len() != coverage[*path].len()
-                    // Full instance keys retain construction and
-                    // alternative identity, which the model path omits.
-                    || rows[0].parent.as_ref().is_some_and(|parent| {
-                        parents.get(*path) != coverage.get(parent)
-                    })
+            .filter_map(|a| {
+                Some(Arranged {
+                    path: a.path.clone(),
+                    decl: *locus_id.get(&a.decl.name.name)?,
+                    replica: a.replica,
+                    domain: a.domain.clone(),
+                    parent: a.parent.clone(),
+                    span: a.span,
+                })
             })
-            .map(|(p, _)| p.clone())
             .collect();
-        let mut arranged: Vec<Arranged> = Vec::new();
-        for (path, rows) in at_path {
-            let under = disagree
-                .iter()
-                .find(|d| path == **d || path.starts_with(&format!("{d}.")) || path.starts_with(&format!("{d}[")));
-            match under {
-                None => arranged.extend(rows.into_iter().take(1)),
-                Some(d) => {
-                    for a in rows {
-                        let pid = intern_span(&mut records, a.span);
-                        holes
-                            .entry((
-                                EntityRef::LocusDecl(a.decl),
-                                HoleKind::RuntimeInheritedPlacement,
-                                format!(
-                                    "the root's construction templates disagree at `{d}`: the arrangement names \
-                                     no instance there"
-                                ),
-                            ))
-                            .or_insert((hale_model::RelationSet::OWNS.union(hale_model::RelationSet::PLACED), None, pid));
-                    }
-                }
-            }
-        }
         // Thread domains, canonical order: every domain any
         // instance landed in, plus a reader domain per binding
         // entry (#468: a binding's reader thread is a real
@@ -3269,8 +3141,7 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
-        // Instances in canonical (path-sorted) order.
-        arranged.sort_by(|a, b| a.path.cmp(&b.path));
+        // Instances in canonical (path-sorted) order: the projection's.
         let inst_id: BTreeMap<&String, LocusInstanceId> =
             arranged
                 .iter()
@@ -3439,29 +3310,12 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
-        // C3: the ownership graph evaluates defaults per construction,
-        // including explicit overrides and additional dynamic holders.
-        // Tell it which source literals this arrangement represents;
-        // a held row represents the literal of its construction source.
-        // Disagreeing template paths already have their own holes above.
-        let represented: BTreeSet<_> = table.instances.iter()
-            .filter(|(key, _)| root_template(key.origin))
-            .filter_map(|(_, row)| row.literal.or_else(|| row.built_by.as_ref()
-                .and_then(|key| table.instances.get(key)).and_then(|source| source.literal)))
-            .filter(|site| site.universe == crate::placement::SiteUniverse::User)
-            .map(|site| site.id).collect();
-        let og = inputs.ownership;
-        for birth in og.unarranged_births(table, &represented) {
-            let Some(decl) = birth.child_decl.map(|i| &og.declarations[i]) else { continue };
-            let span = birth.span;
-            // Minted declarations join by site; the legacy unminted
-            // bundle keeps its name fallback.
-            let lid = match decl.id {
-                Some(id) => locus_by_site.get(&id.index),
-                None => locus_id.get(&decl.name),
-            };
-            let Some(lid) = lid else { continue };
-            let pid = intern_span(&mut records, span);
+        // The births outside the arrangement (C3: the ownership graph
+        // evaluates defaults per construction, including explicit
+        // overrides and additional dynamic holders).
+        for (decl, span) in &projected.unarranged {
+            let Some(lid) = locus_id.get(&decl.name.name) else { continue };
+            let pid = intern_span(&mut records, *span);
             let at = EntityRef::LocusDecl(*lid);
             holes
                 .entry((
