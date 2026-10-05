@@ -282,7 +282,7 @@ phase 3, the `placement` family); the builder walks no declaration of
 its own for them.
 
 - **What is arranged.** The instances of the root lowering deploys
-  (the entry row's `lowering_root`, never an imported `main`): one
+  (the entry row's entry, never an imported `main`): one
   template per literal of the root, or the entry's implicit
   construction of a root no literal builds. Each instance is arranged
   where it runs: a held instance under its holder, as the rows its

@@ -1410,7 +1410,8 @@ impl Snapshot {
     /// literal that builds it, its domain and what decided it; and every
     /// locus literal outside the tower, with the domains its enclosing
     /// scope runs in and its bound ([`hale_types::placement`]). Seeded
-    /// from the entry row's lowering root, after the sequence and the
+    /// from the entry row's root (its entry, or a refused module-nested
+    /// `main` the check still judges), after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
     /// total over a program that does not typecheck. The check's F.31
@@ -1488,8 +1489,8 @@ impl Snapshot {
     /// completion edges, its terminals, what it retains and the progress
     /// it owes, each rule with its decision line's status; and the
     /// process's own. Over the placement table, the handler rows, the
-    /// flow rows of the checked programs and the bus graph, each
-    /// demanded. Blocked with the scope; like its inputs it reads
+    /// flow rows of the checked programs, the bus graph and the entry
+    /// row, each demanded. Blocked with the scope; like its inputs it reads
     /// declarations and bodies, not types. No check builds it; the
     /// lowering view carries it to the emitters (F.40 phase 3, L4).
     pub fn demand_lifecycle(&self) -> Result<&LifecyclePlan, &Blocked> {
@@ -1498,6 +1499,7 @@ impl Snapshot {
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("lifecycle_order");
                 let bundle = self.bundle();
                 let programs: Vec<&Program> = bundle.programs.values().copied().collect();
@@ -1508,6 +1510,7 @@ impl Snapshot {
                     handlers,
                     flows: &flows,
                     bus,
+                    entry,
                 }))
             })
             .as_ref()
@@ -2398,8 +2401,9 @@ mod tests {
     /// (no `main`, only an imported one, only a module-nested one), and
     /// a seed with an imported, a module-nested and a top-level one
     /// keeping the top-level one. Demanded twice, built once. Beside
-    /// each, the provisional lowering root: the first `main locus` that
-    /// is not a library's, nested or not, which is not always the entry.
+    /// each, the root the placement table is seeded from (the entry, or
+    /// the refused module-nested `main` of a seed with none) and the
+    /// seed's `fn main`, by its minted site.
     #[test]
     fn the_entry_row_is_the_seeds_own_top_level_main_locus() {
         use hale_types::entry::NoEntry;
@@ -2423,14 +2427,18 @@ mod tests {
                 assert_eq!(m.site, s.identities().site_id(decl.id), "{name}: by the minted site");
                 assert!(m.site.is_some(), "{name}: the load minted it");
             }
+            let f = row.fn_main.as_ref().expect("every seed here has a `fn main`");
+            let decl = f.decl(&s.bundle()).expect("the column names a declaration");
+            assert_eq!(decl.name.name, "main");
+            assert!(f.site.is_some() && f.site == s.identities().site_id(decl.id), "{name}: by the minted site");
             row
         };
 
         let none = row_of("none", "fn main() { }\n");
         assert_eq!(none.no_entry(), Some(NoEntry::NoMain));
         assert!(none.mains.is_empty());
-        assert!(none.lowering_root.is_none());
-        let root = |row: &hale_types::entry::EntryRow| row.lowering_root.as_ref().map(|m| m.name.clone());
+        assert!(none.root().is_none());
+        let root = |row: &hale_types::entry::EntryRow| row.root().map(|m| m.name.clone());
 
         let imported = row_of("imported", "import \"../lib\" as lib;\nfn main() { }\n");
         assert_eq!(imported.no_entry(), Some(NoEntry::OnlyImported), "decision 1: {imported:?}");
@@ -2442,7 +2450,8 @@ mod tests {
         let nested = row_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { }\n");
         assert_eq!(nested.no_entry(), Some(NoEntry::OnlyModuleNested), "decision 2: {nested:?}");
         assert!(nested.mains[0].module_nested && !nested.mains[0].imported);
-        assert_eq!(root(&nested).as_deref(), Some("App"), "no entry, and still lowering's root (until L4)");
+        assert_eq!(nested.refused().map(|m| m.name.as_str()), Some("App"), "refused");
+        assert_eq!(root(&nested).as_deref(), Some("App"), "no entry, and still the table's root, so it is judged");
 
         let all = row_of(
             "all",
@@ -2457,9 +2466,11 @@ mod tests {
         assert_eq!(all.mains.len(), 3, "the witness keeps every declaration: {all:?}");
         assert_eq!(all.candidates().count(), 1);
         assert_eq!(all.own().count(), 2, "rule 1 counts the module-nested one");
-        // Lowering takes the first in declaration order (rule 1 refuses
-        // the program before it builds).
-        assert_eq!(root(&all).as_deref(), Some("Other"), "{all:?}");
+        // The root is the entry, not the first `main` in declaration
+        // order (rule 1 refuses the program before it builds), and the
+        // module-nested one beside it is not refused for it.
+        assert_eq!(root(&all).as_deref(), Some("App"), "{all:?}");
+        assert!(all.refused().is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -764,11 +764,11 @@ fn default_expr<'l>(l: &'l LocusDecl, field: &str) -> &'l Expr {
         .unwrap_or_else(|| panic!("`{}.{field}` has no default", l.name.name))
 }
 
-/// Case 14: a library seed checked alone roots at its lowering root; with
-/// no `fn main`, the entry is the root's own site, and its entries place
-/// the tower under it.
+/// Case 14: a library seed checked alone roots at its own entry; with no
+/// `fn main`, the entry is the root's own site, and its entries place the
+/// tower under it.
 #[test]
-fn a_library_seed_alone_roots_at_its_lowering_root() {
+fn a_library_seed_alone_roots_at_its_entry() {
     let s = clean("library_alone.hl");
     let t = table(&s);
     let entry = Origin::Entry(root_site(t));

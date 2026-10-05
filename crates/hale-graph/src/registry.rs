@@ -645,7 +645,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["locus declarations (is_main, imported, the __lib_ prefix, module nesting)", "the minted sites"],
         producer: Some(site(ENTRY, "entry_row")),
         legacy: &[
-            legacy(ENTRY, "lowering_root", "the row's provisional column: the `main locus` lowering deploys (the first `is_main && !__lib_` over the flat declarations, module-nested ones included), the placement table's root and so the deployment plan's (`collect_main_placement` reads the table), and the root every comparison lowering makes against the main locus reads (`is_lowering_root`, through the lowering view); so the placement-safety rules (the F.31 rule, the blocking check and the pinned-in-a-loop rule) guard the threads lowering spawns while a seed whose only `main` is module-nested has no entry. Lowering reading the entry instead is a behaviour change for that seed (it deploys it today, `nested_main_transition` case (b)). Ruled (L4 5): lowering reads the entry and a seed whose only `main locus` is module-nested is refused at the declaration; stopped on its measurement, since three test files outside `nested_main_transition` and the entry-decision tests deploy such a `main` (`checks_inside_modules`'s GH #825 wrapper, 13 programs; `replay_cli`'s `modbind.hl`; `offthread_imported_main`'s `NESTED_BOUND_MAIN`, which pins that `binds_on_main` counts its binding), and no corpus, `tests/hale` or dna program does", "L4: lowering reads `entry`, and the column goes"),
             legacy(CG, "in_main", "whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn and a pinned init lowered from inside it); `return`-from-main's exit and the assertion-failure exit's routing key on it. It is a definition of `fn main`, which the row does not carry", "same"),
             // The checker's own readers of `main` that E0 did not switch.
             legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
@@ -682,7 +681,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("dna"),
             consumer_at("codegen (the deployment plan's root is the placement table's, the row's lowering root)", CG, "collect_main_placement"),
             consumer_at("the lowering view (the snapshot's row, carried to codegen)", SNAPSHOT, "view.entry = Some(entry)"),
-            consumer_at("codegen (every comparison against the main locus reads the row's lowering root, found in lowering's program by its site: instantiation's and the cascade's placement overrides, the deferred entry's pool join, the frame flush's main-locus head before its pinned joins, whether the root's literal hands it back so its pinned fields keep their join record (C52), the bindings prelude's loss handler, and `root_bindings`, which the shm-ring subjects and the binding codec thunks read)", CG, "is_lowering_root"),
+            consumer_at("codegen (every comparison against the main locus reads the row's entry, found in lowering's program by its site: instantiation's and the cascade's placement overrides, the deferred entry's pool join, the frame flush's main-locus head before its pinned joins, whether the root's literal hands it back so its pinned fields keep their join record (C52), the bindings prelude's loss handler, and `root_bindings`, which the shm-ring subjects and the binding codec thunks read)", CG, "is_entry_locus"),
         ],
         invariants: &[
             "the checker builds no row: the snapshot demands it before the check and hands it in (`CheckInputs::entry`); a bundle no snapshot holds (the test entries) builds it once, the form rows read the snapshot's (`demand_forms`), and the check matrix builds one over each seed's own files (no import holds the entry, and a seed whose import does not resolve is still an entrypoint)",
@@ -700,8 +699,8 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
         seams: &[
-            Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1)] },
-            Seam { symbol: "is_lowering_root(", allowed: &[(CG, 3), (CG_INST, 2), (CG_DISSOLVE, 2)] },
+            Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1), (LIFECYCLE_DERIVE, 1)] },
+            Seam { symbol: "is_entry_locus(", allowed: &[(CG, 3), (CG_INST, 2), (CG_DISSOLVE, 2)] },
         ],
     },
     Family {

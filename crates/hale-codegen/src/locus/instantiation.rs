@@ -574,7 +574,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             matches!(site_owner, crate::ownership::Owner::Caller);
         // C52: whether the literal this one is a field of hands its root
         // back (read before this literal sets its own, for its fields).
-        let hands_back_the_root = returns_this_locus && self.is_lowering_root(locus_name);
+        let hands_back_the_root = returns_this_locus && self.is_entry_locus(locus_name);
         let owner_handed_back = std::mem::replace(&mut self.anchor_owner_handed_back, hands_back_the_root);
         // A literal codegen builds for a program-lifetime slot — a
         // `bindings { }` transport, adapter or codec — needs the same
@@ -2231,7 +2231,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // inside the loop below (set immediately before
         // lower_expr, consumed by the recursive call to
         // lower_locus_instantiation).
-        let is_main_locus = self.is_lowering_root(locus_name);
+        let is_main_locus = self.is_entry_locus(locus_name);
         // F.31 Phase 3b (2026-05-23): during the params-init
         // loop, surface this locus as a "params-init parent"
         // context so children instantiated as field defaults

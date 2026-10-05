@@ -44,6 +44,9 @@ pub struct BindingRow {
     pub span: Span,
     /// The declaring locus, with the facts the consumers' filters read.
     pub locus: String,
+    /// The declaring locus's site, as the snapshot minted it: what
+    /// [`BindingRows::binds_on_main`] compares with the entry's.
+    pub locus_site: Option<SiteId>,
     pub is_main: bool,
     /// Merged from an imported seed: the entry binds nothing here.
     pub imported: bool,
@@ -159,16 +162,17 @@ impl BindingRows {
         out
     }
 
-    /// Whether the program's own `main locus` binds a transport: an
-    /// entry of a main that is not an imported one, a module-nested main
-    /// included, as lowering's prelude takes the root's entries. Every
-    /// role counts, connect included: a listen entry's reader and a
-    /// connect entry's loss supervision run beside the main drain, so
-    /// the bus queue they share takes the lock. Codegen's binding term
-    /// of "does a thread cross the bus boundary"; the `api` binding is
-    /// not an entry, and its synthesized pool is the placement table's.
-    pub fn binds_on_main(&self) -> bool {
-        self.rows.iter().any(|r| r.is_main && !r.imported)
+    /// Whether the entry binds a transport: an entry of the `main locus`
+    /// the entry row names (`entry`, by its site), whose entries
+    /// lowering's prelude takes. Every role counts, connect included: a
+    /// listen entry's reader and a connect entry's loss supervision run
+    /// beside the main drain, so the bus queue they share takes the
+    /// lock. Codegen's binding term of "does a thread cross the bus
+    /// boundary"; the `api` binding is not an entry, and its synthesized
+    /// pool is the placement table's. No row, or no entry, binds none.
+    pub fn binds_on_main(&self, entry: Option<&crate::entry::EntryRow>) -> bool {
+        let Some(site) = entry.and_then(|e| e.entry()).and_then(|m| m.site) else { return false };
+        self.rows.iter().any(|r| r.locus_site == Some(site))
     }
 }
 
@@ -258,6 +262,7 @@ pub fn derive_binding_rows(bundle: &Bundle<'_>, top: &TopScope) -> BindingRows {
                         site: bundle.snapshot.site_id(e.id),
                         span: e.span,
                         locus: l.name.name.clone(),
+                        locus_site: bundle.snapshot.site_id(l.id),
                         is_main: l.is_main,
                         imported: l.imported,
                         module_nested: path.len() > 1,

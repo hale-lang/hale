@@ -1714,7 +1714,6 @@ crates/hale-types/tests/placement.rs#6 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#61 520622987fb37156
 crates/hale-types/tests/placement.rs#63 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#64 520622987fb37156
-crates/hale-types/tests/placement.rs#67 6267f265ccca37f8
 crates/hale-types/tests/placement.rs#72 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#73 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#74 638b42602935f283

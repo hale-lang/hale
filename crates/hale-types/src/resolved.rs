@@ -161,12 +161,12 @@ pub struct LoweringView {
     /// has none.
     pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
-    /// program the view was resolved from: its entry, and the lowering
-    /// root, the `main locus` lowering deploys
-    /// ([`crate::entry::EntryRow::lowering_root`]), which every comparison
-    /// lowering makes against "the main locus" reads
-    /// ([`LoweringView::entry`]). The snapshot's view carries its row; a
-    /// view resolved from a bare program has none.
+    /// program the view was resolved from: its entry, the `main locus`
+    /// lowering deploys, which every comparison lowering makes against
+    /// "the main locus" reads, and its `fn main`
+    /// ([`crate::entry::EntryRow::fn_main`], [`LoweringView::entry`]). The
+    /// snapshot's view carries its row; a view resolved from a bare
+    /// program has none.
     pub entry: Option<crate::entry::EntryRow>,
     /// The pinned anchors whose nested tree holds a subscriber, by the
     /// name lowering declares them under, from the snapshot's placement
@@ -260,9 +260,9 @@ impl LoweringView {
         self.lifecycle.as_ref()
     }
 
-    /// The entry row lowering reads which `main locus` it deploys from:
-    /// its entry and its lowering root (`crate::entry`). `None` for a view
-    /// resolved from a bare program.
+    /// The entry row lowering reads which `main locus` it deploys and
+    /// which `fn main` it emits from: its entry and its `fn main` column
+    /// (`crate::entry`). `None` for a view resolved from a bare program.
     pub fn entry(&self) -> Option<&crate::entry::EntryRow> {
         self.entry.as_ref()
     }

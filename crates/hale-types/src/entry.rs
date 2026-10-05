@@ -22,16 +22,19 @@
 //! or is not the entry, and what the one-main rule (rule 1) counts,
 //! which a module-nested `main` still joins (GH #825).
 //!
-//! Lowering does not read the row yet (F.40 phase 3, L4): it picks its
-//! deployment root itself, nested `main`s included, and emits that
-//! root's placement. Until it reads the entry, the row carries that
-//! choice as a provisional column, [`EntryRow::lowering_root`], and
-//! the placement-safety rules read the column, so the checker guards
-//! the topology lowering emits; the decisions bind what reads the
-//! entry.
+//! Lowering reads the entry (F.40 phase 3, L4): the `main locus` it
+//! deploys and every comparison it makes against "the main locus" are
+//! the row's entry, by identity, and the row's `fn main` column
+//! ([`EntryRow::fn_main`]) is the body lowering emits as the process's
+//! entry point. A seed whose only `main locus` is module-nested has no
+//! entry, and the check refuses it ([`EntryRow::refused`],
+//! `lowering_laws`), so no program reaches lowering with a root that is
+//! not the entry. The checks still judge that refused `main`: the
+//! placement table is seeded from [`EntryRow::root`], the entry or,
+//! failing one, the refused `main` (GH #825).
 
 use hale_graph::ids::SiteId;
-use hale_syntax::ast::{LocusDecl, TopDecl};
+use hale_syntax::ast::{FnDecl, LocusDecl, TopDecl};
 use hale_syntax::Span;
 
 use crate::Bundle;
@@ -93,6 +96,39 @@ impl MainLocus {
     }
 }
 
+/// The seed's `fn main`: the top-level one, the process's entry point
+/// (GH #911: a `fn main` inside a module is not, and is refused).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnMain {
+    /// The declaration's site, as the snapshot minted it. `None` only on
+    /// a bundle nothing minted.
+    pub site: Option<SiteId>,
+    pub span: Span,
+    /// The bundle program that holds it, and its item index.
+    at: (String, usize),
+}
+
+impl FnMain {
+    /// The declaration this row names, in the bundle it was read from.
+    pub fn decl<'b>(&self, bundle: &Bundle<'b>) -> Option<&'b FnDecl> {
+        match bundle.programs.get(&self.at.0)?.items.get(self.at.1)? {
+            TopDecl::Fn(f) => Some(f),
+            _ => None,
+        }
+    }
+}
+
+/// The process's entry point among `items`, a program's top-level
+/// declarations: the first `fn main` at the top level. One definition,
+/// the producer's; lowering applies it itself only to a view that
+/// carries no row (a bare program's, which only tests lower).
+pub fn top_level_fn_main(items: &[TopDecl]) -> Option<(usize, &FnDecl)> {
+    items.iter().enumerate().find_map(|(i, item)| match item {
+        TopDecl::Fn(f) if f.name.name == "main" => Some((i, f)),
+        _ => None,
+    })
+}
+
 /// Why a bundle has no entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoEntry {
@@ -112,19 +148,12 @@ pub struct EntryRow {
     /// after the module): the witness.
     pub mains: Vec<MainLocus>,
     entry: Result<usize, NoEntry>,
-    /// PROVISIONAL: the `main locus` lowering deploys as its root today,
-    /// which is not always the entry. `collect_main_placement` takes the
-    /// first `main locus` over the flat declarations whose name does not
-    /// start with `__lib_`, module-nested ones included, and emits its
-    /// placement, so a seed whose only `main` is module-nested has no
-    /// entry and still a deployment root. The placement-safety rules
-    /// (the F.31 pool map, the pinned-in-a-loop rule) read this column,
-    /// not the entry, because they guard the threads lowering spawns.
-    /// It is lowering's choice copied exactly, its name test included
-    /// (the rename pass marks every `__lib_` name it gives `imported`,
-    /// but a program handed in already renamed carries the name alone).
-    /// The column goes when lowering reads the entry (F.40 phase 3, L4).
-    pub lowering_root: Option<MainLocus>,
+    /// The seed's top-level `fn main`, which lowering emits as the
+    /// process's entry point and whose body is where `return` exits the
+    /// process (lowering's `in_main`). `None` for a seed with none (a
+    /// library, an export-only wasm module). With more than one (the
+    /// duplicate-name error), the first in program order.
+    pub fn_main: Option<FnMain>,
 }
 
 impl EntryRow {
@@ -163,6 +192,15 @@ impl EntryRow {
             Err(NoEntry::OnlyModuleNested) => self.own().next(),
             _ => None,
         }
+    }
+
+    /// The `main locus` the placement table is seeded from: the entry,
+    /// else the refused module-nested one ([`EntryRow::refused`]), so the
+    /// rules that read the table still judge it as they judge a top-level
+    /// one (GH #825). A program that reaches lowering has no refused
+    /// `main`, so there it is the entry, which lowering deploys.
+    pub fn root(&self) -> Option<&MainLocus> {
+        self.entry().or_else(|| self.refused())
     }
 }
 
@@ -207,8 +245,14 @@ pub fn entry_row(bundle: &Bundle<'_>) -> EntryRow {
         None if mains.iter().any(|m| !m.imported) => Err(NoEntry::OnlyModuleNested),
         None => Err(NoEntry::OnlyImported),
     };
-    // The walk's order is `flat_decls`'s: a module's contents in its
-    // place, as lowering reads the program.
-    let lowering_root = mains.iter().find(|m| !m.name.starts_with("__lib_")).cloned();
-    EntryRow { mains, entry, lowering_root }
+    // An imported seed's `fn main` is renamed with its seed, so the name
+    // is the seed's own.
+    let fn_main = bundle.programs.iter().find_map(|(name, program)| {
+        top_level_fn_main(&program.items).map(|(i, f)| FnMain {
+            site: bundle.snapshot.site_id(f.id),
+            span: f.span,
+            at: (name.to_string(), i),
+        })
+    });
+    EntryRow { mains, entry, fn_main }
 }

@@ -43,7 +43,8 @@
 //! [`derive_placement`] runs once per snapshot (`Snapshot::demand_placement`,
 //! counted as `placement`), after the desugar sequence and the mint, so every
 //! site it names is one a mint numbered. It is seeded from the entry row's
-//! lowering root, never its entry: the table describes what lowering deploys.
+//! root (`EntryRow::root`): the entry, which lowering deploys, or, in a seed
+//! with none, the module-nested `main` the check refuses and still judges.
 //! Per construction literal of the root it walks the static tower (the
 //! root's params fields as that literal builds them, then their params
 //! fields, each with the literal that built it), with the adapters of the
@@ -368,15 +369,16 @@ pub struct InstanceRow {
     pub built_by: Option<InstanceKey>,
 }
 
-/// The root lowering deploys.
+/// The root lowering deploys: the entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootRow {
-    /// `EntryRow::lowering_root`, never `EntryRow::entry`.
+    /// `EntryRow::root`: the entry, or the module-nested `main` of a seed
+    /// with none, which the check refuses and still judges.
     pub decl: MainLocus,
     /// The declaration template, qualified as the user's. Each
     /// construction's instance row carries its own concrete arguments.
     pub realizes: DeclRef,
-    /// False when lowering deploys a module-nested `main`.
+    /// False for the refused module-nested `main`, which nothing deploys.
     pub is_entry: bool,
     /// Every literal of the root declaration in a scope's bodies, each a
     /// template. Empty when no such literal builds the root: its one
@@ -924,7 +926,7 @@ pub fn bundle_placement(bundle: &Bundle<'_>, top: &TopScope) -> PlacementTable {
 
 /// The `placement` family's producer: one table over the bundle's checked
 /// programs and the stdlib analysis copy, seeded from the entry row's
-/// lowering root. `bundle` must be minted (its identities hold the
+/// root. `bundle` must be minted (its identities hold the
 /// programs' sites); a bundle nothing minted names no site and gets an
 /// empty table.
 pub fn derive_placement(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow) -> PlacementTable {
@@ -950,7 +952,7 @@ fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> Pla
         static_literals: BTreeSet::new(),
         held: Vec::new(),
     };
-    if let Some(root) = entry.lowering_root.as_ref() {
+    if let Some(root) = entry.root() {
         b.root(bundle, entry, root, &scopes);
     }
     b.entry_literals(&scopes);

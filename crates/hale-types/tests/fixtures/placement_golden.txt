@@ -4168,7 +4168,11 @@ row	App@literal1.c	Clock	main	default
 row	App@literal1.w	Worker	main	default
 
 == crates/hale-types/tests/bus_graph.rs#130c4f61
+root	__lib_App	the entry
+domain	pinned:__lib_App@entry.w
+row	__lib_App@entry	__lib_App	main	default
 row	W@main1	W	main	default
+row	__lib_App@entry.w	W	pinned:__lib_App@entry.w	entry	off owner
 
 == crates/hale-types/tests/bus_graph.rs#589350b0
 root	App	the entry
@@ -5400,8 +5404,6 @@ root	App	the entry
 domain	pinned:App@literal1.a
 row	App@literal1	App	main	default
 row	App@literal1.a	Worker	pinned:App@literal1.a	entry	off owner
-
-== crates/hale-types/tests/placement.rs#a2d70f5a
 
 == crates/hale-types/tests/placement.rs#0345377d
 root	App	the entry

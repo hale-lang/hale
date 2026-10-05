@@ -146,7 +146,7 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
 /// literal builds the root, and the entry's template takes its defaults);
 /// both spellings are judged, and a default every literal overrides is
 /// dead text, not a dropped placement. Read off the placement table: the
-/// root is the lowering root, and its literals are every literal of the
+/// root is the entry row's root, and its literals are every literal of the
 /// root declaration as resolved (an imported seed's `main` is not the
 /// root, and a literal of another locus that shares its name is not one
 /// of them): the table's constructions, written in a scope's bodies, and
