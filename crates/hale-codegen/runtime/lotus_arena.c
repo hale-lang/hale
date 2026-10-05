@@ -1902,6 +1902,12 @@ void lotus_lc_run_shutdown(void *self, const char *cause, int admitted);
  * reclaim behind the handler (#1067), or to learn what the handler
  * decided (#1066) — for the whole time the failure is outstanding. */
 enum { LOTUS_HELD = 0, LOTUS_DELIVERING = 1, LOTUS_DELIVERED = 2 };
+
+/* A locus's reclaim claim (`__reclaim_claimed`): clear; owed (a reclaim
+ * deferred behind a failure delivery, `lotus_failure_defer_reclaim`, not
+ * started yet); claimed (the reclaim spine has been entered). Owed or
+ * claimed, the child's restart decision is refused. */
+enum { LOTUS_RECLAIM_CLEAR = 0, LOTUS_RECLAIM_CLAIMED = 1, LOTUS_RECLAIM_OWED = 2 };
 typedef struct lotus_held_failure {
     struct lotus_held_failure *next;
     void *parent;
@@ -2056,10 +2062,25 @@ static void lotus_held_unlink(lotus_held_failure_t *node) {
  * own handler, or from another handler on the thread the delivery is
  * still held for (an owner replacing a sibling whose failure is posted
  * to it): that delivery runs after the running handler returns, and the
- * reclaim right after its handler (`lotus_failure_reclaim_wait_locked`). */
-int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
+ * reclaim right after its handler (`lotus_failure_reclaim_wait_locked`).
+ *
+ * A reclaim asked for while a failure of the child is outstanding is
+ * owed, and the reclaim wins: `claimed`, the child's reclaim claim,
+ * turns `LOTUS_RECLAIM_OWED` before the handler can decide, whether the
+ * reclaim is deferred behind the delivery or waits for it. The child's
+ * restart decision reads the claim (a restart is performed only while it
+ * is clear), so a `restart` or `restart_in_place` the handler asks for is
+ * not performed and no `birth()` or `run()` of it starts again. The claim
+ * a started reclaim takes (`lotus_reclaim_try_claim`) refuses the
+ * decision the same way. */
+int64_t lotus_failure_defer_reclaim(void *child, void *reclaim, int64_t *claimed) {
     pthread_mutex_lock(&g_params_open_lock);
     lotus_held_failure_t *node = lotus_held_latest_for(child);
+    if (node) {
+        int64_t clear = LOTUS_RECLAIM_CLEAR;
+        __atomic_compare_exchange_n(claimed, &clear, LOTUS_RECLAIM_OWED, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    }
     int deferred = node != NULL;
     if (node && node->posted)
         deferred = lotus_failure_reclaim_wait_locked(node);
@@ -2184,13 +2205,14 @@ void lotus_params_settle(void *parent) {
             free(node);
         pthread_mutex_unlock(&g_params_open_lock);
         free(err);
-        /* The child's next step, now the handler has spoken: a resume
-         * (restart, or carry on / reclaim) for a child on this thread,
-         * else a teardown it deferred. */
-        if (resume)
-            resume(child, phase, pre);
-        else if (reclaim)
+        /* The child's next step, now the handler has spoken: a teardown
+         * it deferred (the reclaim wins: the handler replaced it, and
+         * neither a restart nor a run of it starts), else a resume
+         * (restart, or carry on) for a child on this thread. */
+        if (reclaim)
             reclaim(child);
+        else if (resume)
+            resume(child, phase, pre);
     }
 }
 
@@ -7490,17 +7512,24 @@ static void *lotus_reclaim_owner_for(void *child, void *owner) {
  * while this thread is waiting to release that same instance. The
  * loser returns without touching the arena or descendants; its run
  * hold still ends normally and wakes the winning release. The claim
- * stays set until a constructor initializes a new incarnation. */
+ * stays set until a constructor initializes a new incarnation. An owed
+ * reclaim (deferred behind a failure delivery) is not started yet: the
+ * first entrant takes it as it would a clear claim. */
 int64_t lotus_reclaim_try_claim(int64_t *claimed) {
-    int64_t expected = 0;
-    return __atomic_compare_exchange_n(claimed, &expected, 1, 0,
+    int64_t expected = LOTUS_RECLAIM_CLEAR;
+    if (__atomic_compare_exchange_n(claimed, &expected, LOTUS_RECLAIM_CLAIMED, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return 1;
+    expected = LOTUS_RECLAIM_OWED;
+    return __atomic_compare_exchange_n(claimed, &expected, LOTUS_RECLAIM_CLAIMED, 0,
                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
 /* A null claim pointer is reserved for the winning spine's final
  * storage step. Its TLS retirement guards still apply. */
 int64_t lotus_reclaim_pending(void *child, int64_t *claimed) {
-    if (claimed && __atomic_load_n(claimed, __ATOMIC_ACQUIRE)) return 1;
+    if (claimed && __atomic_load_n(claimed, __ATOMIC_ACQUIRE) == LOTUS_RECLAIM_CLAIMED)
+        return 1;
     for (lotus_retired_reclaim_t *r = t_reclaim_head; r; r = r->next)
         if (r->child == child) return 1;
     for (lotus_retired_reclaim_t *r = t_reclaim_active; r; r = r->next)
@@ -10076,7 +10105,8 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
  * the child's posted delivery (`lotus_failure_defer_reclaim`), the run
  * hold's twin, unless only the waiting thread could run it (a handler
  * replacing a sibling whose failure is posted to it): the reclaim is
- * then deferred behind that delivery.
+ * then deferred behind that delivery, and owed, so a restart its handler
+ * asks for is not performed (the reclaim wins).
  *
  * Every field below is under `g_params_open_lock`. wasm32 has one thread
  * and no domain: the in-place call is the only delivery there, and none

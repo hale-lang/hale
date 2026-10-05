@@ -623,7 +623,11 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         ],
     ),
     // The restart performed during teardown begins a second
-    // incarnation, born and run.
+    // incarnation, born and run. The reclaim-wins rule does not reach
+    // it: App's eager teardown joins the pool first, the delivery runs
+    // on main inside that join (join progress), and only after the join
+    // does the cascade enter Kid's drain and reclaim, so when Kid reads
+    // the decision its reclaim is neither owed nor claimed.
     (
         "rd_restart_during_teardown.hl",
         "C42",

@@ -29,6 +29,15 @@
 //!     cases the order the handlers read and the children dissolved in.
 //!     Each run is under [`DEADLINE`], so a hang is a `timeout` word, not
 //!     a stuck suite.
+//!   * `fd_restart*_replaced*.hl`: the reclaim wins. A handler asks for a
+//!     restart (`restart`, `restart_in_place`) of a child whose reclaim is
+//!     owed: the child its own delivery is about, after replacing it; a
+//!     sibling it replaced while that sibling's failure was posted; or a
+//!     child its owner replaced outside any handler while its failure was
+//!     posted, whose reclaim runs the delivery as it waits for it. The
+//!     decision is not performed. The word counts the old child's births,
+//!     runs and dissolves, whether its handler read its heap name before
+//!     it dissolved, and the new child's counts.
 //!
 //! [`KNOWN_OPEN`] gives each fixture's word today, with the row it
 //! departs at; the test asserts it, so the protocol that delivers on the
@@ -63,7 +72,17 @@ const ADOPTED: &[(&str, &str)] = &[
     ("fd_sibling_replace_heap.hl", "on-owner read-before-dissolve dissolved-once-each"),
     ("fd_sibling_replace_three.hl", "handled-0-1-2 reclaimed-after-own-handler dissolved-once-each"),
     ("fd_sibling_replace_method.hl", SIBLING_OUTPUT),
+    ("fd_restart_replaced.hl", RECLAIM_WINS),
+    ("fd_restart_in_place_replaced.hl", RECLAIM_WINS),
+    ("fd_restart_sibling_replaced.hl", RECLAIM_WINS),
+    ("fd_restart_replaced_by_owner.hl", RECLAIM_WINS),
 ];
+
+/// A restart asked for about a child whose reclaim is owed: the old child
+/// is born and run once and dissolved once, after its handler read it;
+/// the new child in its field is untouched.
+const RECLAIM_WINS: &str =
+    "old-born-1 old-ran-1 old-dissolved-1 read-before-dissolve new-born-1 new-ran-1 new-dissolved-1";
 
 /// The review's reproducer's output, with the replacement and without:
 /// the replaced sibling's failure is still delivered, after the handler
@@ -273,8 +292,36 @@ fn sibling_three(r: &Ran) -> String {
     format!("handled-{} {after} {once}", handled.join("-"))
 }
 
+/// `fd_restart*_replaced.hl`: the old child's and the new child's
+/// births, runs and dissolves, and whether the old child's handler read
+/// its heap name before it dissolved.
+fn reclaim_wins(file: &str, r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return format!("{w} after: {}", r.stdout.lines().collect::<Vec<_>>().join(" / "));
+    }
+    let (old, new) = if file == "fd_restart_sibling_replaced.hl" { (1, 2) } else { (0, 5) };
+    let lines = |prefix: String| r.stdout.lines().filter(|l| l.starts_with(&prefix)).count();
+    let counts = |who: &str, t: i32| {
+        format!(
+            "{who}-born-{} {who}-ran-{} {who}-dissolved-{}",
+            count(r, &format!("ev kid-birth {t}")),
+            lines(format!("ev kid-run {t} ")),
+            lines(format!("ev kid-dissolve {t} ")),
+        )
+    };
+    let name = format!("kid-{old}-name");
+    let read = match (pos(r, &format!("ev handler {name}")), pos(r, &format!("ev kid-dissolve {old} {name}"))) {
+        (Some(h), Some(d)) if h < d => "read-before-dissolve",
+        (Some(_), Some(_)) => "read-after-dissolve",
+        (None, _) => "never-read",
+        (Some(_), None) => "never-dissolved-whole",
+    };
+    format!("{} {read} {}", counts("old", old), counts("new", new))
+}
+
 fn judge(file: &str, r: &Ran) -> String {
     match file {
+        f if f.starts_with("fd_restart") => reclaim_wins(f, r),
         "fd_pinned_owner_state.hl" => owner_state(r),
         "fd_reclaim_under_delivery.hl" => reclaim_under_delivery(r),
         "fd_sibling_replace_heap.hl" => sibling_heap(r),
@@ -442,4 +489,48 @@ fn a_sibling_replaced_through_a_method_is_deferred_too() {
     for no_bus_devirt in [false, true] {
         assert_traced_in("fd_sibling_replace_method.hl", no_bus_devirt);
     }
+}
+
+/// The reclaim wins (PR #1348's review): the owner's handler replaces the
+/// child its delivery is about and then asks for its restart, plainly and
+/// in place. Before the rule `restart (c)` re-ran the replaced child's
+/// birth() and run() beside its dissolve, and `restart_in_place (c)` hung
+/// (the word was `timeout`).
+#[test]
+fn a_restart_of_the_child_its_handler_replaced_is_not_performed() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_restart_replaced.hl", no_bus_devirt);
+        assert_traced_in("fd_restart_in_place_replaced.hl", no_bus_devirt);
+    }
+}
+
+/// The sibling case: the old `b` was replaced from `a`'s handler while its
+/// failure was posted, and its own handler asks for its restart.
+#[test]
+fn a_restart_of_a_replaced_sibling_is_not_performed() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_restart_sibling_replaced.hl", no_bus_devirt);
+    }
+}
+
+/// The owner's own reclaim reached the child first: App's run() replaces
+/// `a` while `a`'s failure is posted to main, the reclaim runs the
+/// delivery while it waits for it, and the handler asks for a restart.
+/// The claim is owed before the handler runs, so the failing child, which
+/// reads the decision once the handler returns, never sees it clear.
+#[test]
+fn a_restart_of_a_child_its_owner_is_reclaiming_is_not_performed() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_restart_replaced_by_owner.hl", no_bus_devirt);
+    }
+}
+
+/// The refused restarts under AddressSanitizer, chunk pooling off: the
+/// handlers read the old child's heap name, and its dissolve prints it.
+#[test]
+fn a_refused_restart_holds_under_asan() {
+    assert_asan("fd_restart_replaced.hl");
+    assert_asan("fd_restart_in_place_replaced.hl");
+    assert_asan("fd_restart_sibling_replaced.hl");
+    assert_asan("fd_restart_replaced_by_owner.hl");
 }

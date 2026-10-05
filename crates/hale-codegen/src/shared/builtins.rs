@@ -726,11 +726,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .add_function("lotus_failure_hold", hold_ty, None);
         // ...and a child's reclaim asks whether one of its failures is
         // held (only when the exported count says any is), so the
-        // teardown runs after the handler that reads the child.
+        // teardown runs after the handler that reads the child: (child,
+        // reclaim fn, its reclaim claim, which a deferral marks owed).
         let defer_ty = self
             .context
             .i64_type()
-            .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+            .fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_failure_defer_reclaim", defer_ty, None);
         // GH #1066: where a failing child learns what its held

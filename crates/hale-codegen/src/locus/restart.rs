@@ -111,9 +111,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .into_int_value())
     }
 
+    /// i1: is this child's reclaim claim clear? Owed (a reclaim deferred
+    /// behind its failure's delivery: its handler replaced it, or its
+    /// owner tore it down meanwhile) or claimed (its reclaim has begun),
+    /// the reclaim wins and no restart is performed (spec/semantics.md §
+    /// "on_failure(c, err)"). The runtime writes the claim from the
+    /// deciding thread, so the load is atomic.
+    pub(crate) fn emit_reclaim_clear(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let claim_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.reclaim_claimed_field_idx, "restart.claim.ptr")
+            .map_err(e)?;
+        let claim = self.builder.build_load(i64_t, claim_ptr, "restart.claim").map_err(e)?.into_int_value();
+        if let Some(inst) = claim.as_instruction() {
+            inst.set_alignment(8).map_err(|m| CodegenError::LlvmEmit(m.to_string()))?;
+            inst.set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
+                .map_err(|m| CodegenError::LlvmEmit(m.to_string()))?;
+        }
+        self.builder
+            .build_int_compare(inkwell::IntPredicate::EQ, claim, i64_t.const_zero(), "restart.reclaim_clear")
+            .map_err(e)
+    }
+
     /// i1: did a handler ask to restart this child since its count was
     /// `pre`, and may it? Bumped, within `__restart_bound`, not
-    /// quarantined, the process not draining.
+    /// quarantined, its reclaim neither owed nor begun, the process not
+    /// draining.
     pub(crate) fn emit_restart_requested(
         &mut self,
         info: &LocusInfo<'ctx>,
@@ -166,6 +195,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?;
         let mut ok = self.builder.build_and(bumped, under, "restart.ok").map_err(e)?;
         ok = self.builder.build_and(ok, live, "restart.ok").map_err(e)?;
+        let clear = self.emit_reclaim_clear(info, self_ptr)?;
+        ok = self.builder.build_and(ok, clear, "restart.ok").map_err(e)?;
         if self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
             let draining = self.emit_process_draining_load("restart.process_draining")?;
             let not_draining = self

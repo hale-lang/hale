@@ -251,7 +251,10 @@
  *     a sibling replaced before its failure is posted, a handler that
  *     reclaims its own child (the reclaim deferred behind it,
  *     transcribed, not reached), a decision a handler makes about a
- *     child already replaced, a delivery posted to a domain that
+ *     child already replaced (the reclaim wins: the deferral marks the
+ *     child's reclaim claim owed, and the restart decision, compiled
+ *     code outside this model, reads it; the fd_restart*_replaced
+ *     fixtures carry it), a delivery posted to a domain that
  *     has ended (transcribed, not reached: the owner's domain outlives
  *     every post here), and a reclaim that no observation orders after
  *     the post (a handler cell has no hold before it fails; that the

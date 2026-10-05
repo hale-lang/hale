@@ -6650,6 +6650,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &[
                             self_arg.into(),
                             reclaim.as_global_value().as_pointer_value().into(),
+                            claim_ptr.into(),
                         ],
                         &format!("{}.reclaim.defer", locus_name),
                     )
