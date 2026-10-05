@@ -519,10 +519,15 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["io", "mirror"],
         fns: &[
             // Double-mmap setup and teardown: mmap/munmap.
-            row!("__new", SYSCALL, _, Intrinsic(IoMirrorNewRaw)),
+            // `__new` and `__recv_into` count their arguments. The other
+            // seven have no signature (F.40 phase 4, S6): their helper
+            // reads the arguments it needs without counting them and
+            // ignores any more, so a signature would refuse calls lowering
+            // builds.
+            row!("__new", SYSCALL, [Int] -> Int, Intrinsic(IoMirrorNewRaw)),
             row!("__free", SYSCALL, _, Intrinsic(IoMirrorFreeRaw)),
             // Datagram read straight into the ring.
-            row!("__recv_into", SYSCALL, _, Intrinsic(IoMirrorRecvIntoRaw)),
+            row!("__recv_into", SYSCALL, [Int, Int, Int] -> Int, Intrinsic(IoMirrorRecvIntoRaw)),
             // Cursor arithmetic over an already-mapped region.
             row!("__commit", PURE, _, Intrinsic(IoMirrorCommitRaw)),
             row!("__consume", PURE, _, Intrinsic(IoMirrorConsumeRaw)),

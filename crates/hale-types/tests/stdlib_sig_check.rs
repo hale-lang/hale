@@ -351,6 +351,25 @@ fn std_io_sockopt_calls_are_checked() {
 }
 
 #[test]
+fn std_io_mirror_calls_are_checked() {
+    refused(
+        "    let h = std::io::mirror::__new(4096, 1);\n    println(h);",
+        &[("`std::io::mirror::__new` takes 1 argument, got 2", "std::io::mirror::__new")],
+    );
+    refused(
+        "    let n = std::io::mirror::__recv_into(0, \"fd\", 64);\n    println(n);",
+        &[("`std::io::mirror::__recv_into` argument 2: expected `Int`, got `String`", "\"fd\"")],
+    );
+    refused(
+        "    let h = std::io::mirror::__new(4096) or 0;\n    println(h);",
+        &[(
+            "`std::io::mirror::__new` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::io::mirror::__new(4096)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
