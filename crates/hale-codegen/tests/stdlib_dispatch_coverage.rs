@@ -1394,8 +1394,8 @@ fn the_allowances_are_what_the_code_says() {
     assert_eq!(dead_listed, dead_derived, "the dead bare arms drifted from the signature rows");
 
     let seeds = stdlib_calls();
-    let ir = harness::build_ir_text(
-        &hale_syntax::parse_source("fn main() { }\n").unwrap(),
+    let ir = harness::build_source_ir_text(
+        "fn main() { }\n",
         &harness::unique_bin("stdlib_dispatch_coverage_empty_main"),
     )
     .expect("an empty main builds");

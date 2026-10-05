@@ -53,7 +53,7 @@ fn every_stdlib_call_fixture_checks_and_lowers() {
                         return Some(format!("{name}: the checker refuses it:\n  {}", errors.join("\n  ")));
                     }
                     let bin = harness::unique_bin(&format!("stdlib_calls_{}", name.trim_end_matches(".hl")));
-                    match harness::build_ir_text(&program, &bin) {
+                    match harness::build_source_ir_text(&source, &bin) {
                         Ok(_) => {
                             let _ = std::fs::remove_file(&bin);
                             None
