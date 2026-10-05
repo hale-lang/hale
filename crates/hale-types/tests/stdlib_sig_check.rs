@@ -394,6 +394,38 @@ fn std_bytes_calls_are_checked() {
     );
 }
 
+/// `__finish` and `__snapshot` are `(Int) -> Bytes`, signed after S7
+/// made the stdlib call fixture print their lengths instead of the
+/// Bytes, which do not print.
+#[test]
+fn std_bytes_builder_finish_and_snapshot_are_checked() {
+    refused(
+        "    let f = std::bytes::builder::__finish(1, 2);\n    println(len(f));",
+        &[("`std::bytes::builder::__finish` takes 1 argument, got 2", "std::bytes::builder::__finish")],
+    );
+    refused(
+        "    let s = std::bytes::builder::__snapshot(\"h\");\n    println(len(s));",
+        &[("`std::bytes::builder::__snapshot` argument 1: expected `Int`, got `String`", "\"h\"")],
+    );
+    refused(
+        "    let s = std::bytes::builder::__snapshot(1) or b\"\";\n    println(len(s));",
+        &[(
+            "`std::bytes::builder::__snapshot` is not fallible (it returns `Bytes`); drop the `or` clause",
+            "std::bytes::builder::__snapshot(1)",
+        )],
+    );
+    refused(
+        "    let f = std::bytes::builder::__finish(1);\n    println(f);",
+        &[(
+            "`println` cannot render a value of type `Bytes` — `Bytes` is binary — choose a rendering (hex, \
+             length, or a text decode)",
+            "f",
+        )],
+    );
+    // The value is the Bytes it always was.
+    refused("    let f: Bytes = std::bytes::builder::__finish(1);\n    println(len(f));", &[]);
+}
+
 #[test]
 fn std_ring_calls_are_checked() {
     refused(

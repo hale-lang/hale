@@ -599,9 +599,7 @@ pub const SURFACES: &[NsSurface] = &[
             // signatures their helpers enforce). The handle is the C
             // builder's pointer as an Int; `__text_view` and `__view`
             // return a StringView and a BytesView, which a signature cannot
-            // state, so their success is `Any`. `__finish` and `__snapshot`
-            // (`(Int) -> Bytes`) stay unsigned: the stdlib call fixture
-            // prints their value, which the check refuses for a `Bytes`.
+            // state, so their success is `Any`.
             row!("__append", PURE, [Int, Bytes] -> Int, Intrinsic(BytesBuilderAppendRaw)),
             row!("__append_f32", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF32Raw)),
             row!("__append_f64", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF64Raw)),
@@ -610,12 +608,12 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__append_slice", PURE, [Int, Bytes, Int, Int] -> Int, Intrinsic(BytesBuilderAppendSliceRaw)),
             row!("__append_str", PURE, [Int, Str] -> Int, Intrinsic(BytesBuilderAppendStrRaw)),
             row!("__clear", PURE, [Int] -> Int, Intrinsic(BytesBuilderClearRaw)),
-            row!("__finish", PURE, _, Intrinsic(BytesBuilderFinishRaw)),
+            row!("__finish", PURE, [Int] -> Bytes, Intrinsic(BytesBuilderFinishRaw)),
             row!("__free", PURE, [Int] -> Int, Intrinsic(BytesBuilderFreeRaw)),
             row!("__len", PURE, [Int] -> Int, Intrinsic(BytesBuilderLenRaw)),
             row!("__new", PURE, [Int] -> Int, Intrinsic(BytesBuilderNewRaw)),
             row!("__shift_front", PURE, [Int, Int] -> Int, Intrinsic(BytesBuilderShiftFrontRaw)),
-            row!("__snapshot", PURE, _, Intrinsic(BytesBuilderSnapshotRaw)),
+            row!("__snapshot", PURE, [Int] -> Bytes, Intrinsic(BytesBuilderSnapshotRaw)),
             row!("__text_view", PURE, [Int] -> Any, Intrinsic(BytesBuilderTextViewRaw)),
             row!("__view", PURE, [Int] -> Any, Intrinsic(BytesBuilderViewRaw)),
             row!("__xor_mask_into", PURE, [Int, Bytes, Int] -> Int, Intrinsic(BytesBuilderXorMaskIntoRaw)),

@@ -28,8 +28,7 @@ Hale body has one: the signature its lowering enforced (F.40 phase 4,
 S6; before, 118 had none, so any arguments passed `hale check`
 and a wrong count or type failed at build, without a location). The
 exceptions are the seven `std::io::mirror` cursor primitives, whose
-lowering does not count their arguments, and
-`std::bytes::builder::__finish` / `__snapshot`; a function the rename
+lowering does not count their arguments; a function the rename
 table maps onto a Hale body is checked against that body's own
 signature. The return may itself be a stdlib struct (GH #771): a
 `std::json::string_field(...)` is a `std::json::JsonString`, so a
