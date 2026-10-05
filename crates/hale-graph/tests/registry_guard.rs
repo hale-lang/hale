@@ -636,6 +636,25 @@ fn registry_is_well_formed() {
                 r.id, r.family
             ));
         }
+        if let hale_graph::Reads::Rows(families) = r.reads {
+            if families.is_empty() {
+                problems.push(format!("rule `{}` reads no family: say `Declaration`", r.id));
+            }
+            for f in families {
+                if !names.contains(f) {
+                    problems.push(format!("rule `{}` reads an unregistered family `{f}`", r.id));
+                }
+            }
+        }
+        if r.title.trim().is_empty() {
+            problems.push(format!("rule `{}` has no spec title", r.id));
+        }
+        if !hale_graph::RULE_LISTS
+            .iter()
+            .any(|l| r.id.starts_with(&format!("{}/", l.key)))
+        {
+            problems.push(format!("rule `{}` belongs to no list in `RULE_LISTS`", r.id));
+        }
         if r.evaluator.is_none() && !matches!(r.state, State::Reserved) {
             problems.push(format!(
                 "rule `{}` is registered without an evaluator: a registered rule with no evaluator fails the build",
