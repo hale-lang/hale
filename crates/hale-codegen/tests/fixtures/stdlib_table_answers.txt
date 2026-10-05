@@ -777,27 +777,27 @@ std::json::escape_string | lookup=json@2 | locus=false | effects=pure | sig=(Str
 std::json::find_bool_field | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=find_bool_field
 std::json::find_field_range_in | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str, Int, Int) -> Named(__JsonFieldRange) | ret_ty=__JsonFieldRange | or=- | parks=false | holds=false | unknown=- | suggest=find_field_range_in
 std::json::find_field_raw | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=find_field_raw
-std::json::find_field_raw_in | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=find_field_raw_in
+std::json::find_field_raw_in | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str, Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=find_field_raw_in
 std::json::find_int_field | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find_int_field
 std::json::find_string_field | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=find_string_field
-std::json::iter_find_bool_field | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_bool_field
+std::json::iter_find_bool_field | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_bool_field
 std::json::iter_find_field_range | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Named(__JsonFieldRange) | ret_ty=__JsonFieldRange | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_field_range
-std::json::iter_find_field_raw | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_field_raw
-std::json::iter_find_int_field | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_int_field
-std::json::iter_find_string_field | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_string_field
+std::json::iter_find_field_raw | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_field_raw
+std::json::iter_find_int_field | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_int_field
+std::json::iter_find_string_field | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_string_field
 std::json::iter_find_string_field_range | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Named(__JsonFieldRange) | ret_ty=__JsonFieldRange | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_string_field_range
-std::json::iter_substring | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_substring
-std::json::next_non_ws | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=next_non_ws
-std::json::next_quote_or_bs | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=next_quote_or_bs
-std::json::next_struct_or_quote | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=next_struct_or_quote
-std::json::obj_key_eq | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_key_eq
-std::json::obj_key_len | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_key_len
-std::json::obj_key_string | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_key_string
-std::json::obj_value_bool | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_bool
-std::json::obj_value_float | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_float
-std::json::obj_value_int | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_int
-std::json::obj_value_raw | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_raw
-std::json::obj_value_string | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_string
+std::json::iter_substring | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=iter_substring
+std::json::next_non_ws | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_non_ws
+std::json::next_quote_or_bs | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_quote_or_bs
+std::json::next_struct_or_quote | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_struct_or_quote
+std::json::obj_key_eq | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_eq
+std::json::obj_key_len | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan)) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_len
+std::json::obj_key_string | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_string
+std::json::obj_value_bool | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_bool
+std::json::obj_value_float | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Float | ret_ty=Float | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_float
+std::json::obj_value_int | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_int
+std::json::obj_value_raw | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_raw
+std::json::obj_value_string | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_string
 std::json::object_first | lookup=json@2 | locus=false | effects=pure | sig=(Str) -> Named(__JsonObjectIterSpan) | ret_ty=__JsonObjectIterSpan | or=- | parks=false | holds=false | unknown=- | suggest=object_first
 std::json::object_next | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Named(__JsonObjectIterSpan) | ret_ty=__JsonObjectIterSpan | or=- | parks=false | holds=false | unknown=- | suggest=object_next
 std::json::parse | lookup=json@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::json::parse` | suggest=-

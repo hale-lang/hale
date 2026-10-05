@@ -617,6 +617,30 @@ fn std_str_calls_are_checked() {
 }
 
 #[test]
+fn std_json_calls_are_checked() {
+    let json = "    let j = \"{\\\"a\\\": 1}\";\n    let it = std::json::object_first(j);\n";
+    refused(
+        &format!("{json}    let n = std::json::obj_value_int(it);\n    println(n);"),
+        &[("`std::json::obj_value_int` takes 2 arguments, got 1", "std::json::obj_value_int")],
+    );
+    // The iterator and the text swapped: the iterator's type is checked.
+    refused(
+        &format!("{json}    let n = std::json::obj_value_int(j, it);\n    println(n);"),
+        &[
+            ("`std::json::obj_value_int` argument 1: expected `std::json::ObjectIterSpan`, got `String`", "j"),
+            ("`std::json::obj_value_int` argument 2: expected `String`, got `std::json::ObjectIterSpan`", "it"),
+        ],
+    );
+    refused(
+        "    let p = std::json::next_non_ws(\"  x\", 0, 3) or 0;\n    println(p);",
+        &[(
+            "`std::json::next_non_ws` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::json::next_non_ws(\"  x\", 0, 3)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
