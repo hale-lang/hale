@@ -469,6 +469,8 @@ pub struct Scraped {
     /// Every path a pattern names (families expanded), with the kind of
     /// the FIRST arm matching it (the one `match` takes) and its line.
     pub paths: BTreeMap<String, (ArmKind, usize)>,
+    /// What that arm calls, for each path.
+    pub calls: BTreeMap<String, ArmCall>,
     /// Patterns whose every path an earlier arm already matched: dead.
     pub shadowed: Vec<(String, usize)>,
     pub patterns: usize,
@@ -476,6 +478,10 @@ pub struct Scraped {
     /// The line of the call that hands every other path to the
     /// expression dispatcher, when this dispatcher falls through to it.
     pub falls_through: Option<usize>,
+    /// The paths the row dispatch hands to the legacy statement
+    /// dispatcher, whose fall-through a statement call of one reaches
+    /// when that dispatcher has no arm for it.
+    pub handed_on: BTreeSet<String>,
 }
 
 /// The line of `fn name`'s call of the expression dispatcher, if it
@@ -488,14 +494,202 @@ fn fall_through_line(name: &str, file: &str) -> Option<usize> {
     Some(src[..open + at].matches('\n').count() + 1)
 }
 
+// ---------------------------------------------------------------------
+// The row dispatch (S3): `lower_std_call` looks the path's row up, and
+// an intrinsic's id picks its arm in `lower_std_intrinsic`'s `match id`
+// while a Hale body is called by the name the row gives
+// (`lower_std_hale_body`). Its arms are scraped as the legacy
+// dispatchers' are, and become arms of the statement and expression
+// positions.
+// ---------------------------------------------------------------------
+
+/// What an arm of `lower_std_intrinsic` does at one position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Branch {
+    /// It lowers the call.
+    Lowers,
+    /// It answers as a path no arm lowers (`lower_std_unarmed`).
+    Unarmed,
+    /// It hands the call to a legacy dispatcher (S3 in progress).
+    HandedOn,
+}
+
+fn branch(text: &str) -> Branch {
+    if text.contains("lower_stdlib_path_call") {
+        Branch::HandedOn
+    } else if text.contains("lower_std_unarmed(") {
+        Branch::Unarmed
+    } else {
+        Branch::Lowers
+    }
+}
+
+/// One arm of `lower_std_intrinsic`'s `match id`.
+struct IdArm {
+    line: usize,
+    ids: Vec<String>,
+    /// The statement branch, when the arm matches on `pos`; `None` when
+    /// a statement drops the value position's answer.
+    statement: Option<Branch>,
+    value: Branch,
+}
+
+/// The arms of `lower_std_intrinsic`'s `match id`, in source order. The
+/// match has no `_` arm: every id is named by exactly one arm.
+fn id_arms() -> Vec<IdArm> {
+    let src = crate_file("src/codegen.rs");
+    let no_comments = mask(&src, false);
+    let code = mask(&src, true);
+    let (open, close) = fn_body(&code, "lower_std_intrinsic");
+    let body = &no_comments[open..close];
+    let first_line = src[..open].matches('\n').count() + 1;
+    let m = body.find("match id {").expect("`lower_std_intrinsic` matches on `id`");
+    let arm_indent = line_indent(body, m) + 4;
+    let lines: Vec<&str> = body.lines().collect();
+    let ends_match = |l: &str| indent_of(l) < arm_indent && !l.trim().is_empty();
+    let is_head = |l: &str| indent_of(l) == arm_indent && l.trim_start().starts_with("Id::");
+    let mut arms = Vec::new();
+    let mut i = body[..m].matches('\n').count() + 1;
+    while i < lines.len() && !ends_match(lines[i]) {
+        let l = lines[i];
+        if indent_of(l) == arm_indent && l.trim_start().starts_with('_') {
+            panic!("`lower_std_intrinsic` has a `_` arm (line {}): an id without an arm would compile", first_line + i);
+        }
+        if !is_head(l) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut head = String::new();
+        while !lines[i].contains("=>") {
+            head.push_str(lines[i]);
+            head.push(' ');
+            i += 1;
+        }
+        let k = lines[i].find("=>").unwrap();
+        head.push_str(&lines[i][..k]);
+        let end = (i + 1..lines.len()).find(|&j| is_head(lines[j]) || ends_match(lines[j])).unwrap_or(lines.len());
+        let mut text = lines[i][k + 2..].to_string();
+        for l in &lines[i + 1..end] {
+            text.push('\n');
+            text.push_str(l);
+        }
+        let ids = head
+            .split('|')
+            .map(|p| p.trim().strip_prefix("Id::").unwrap_or_else(|| panic!("not an id pattern: {p}")).to_string())
+            .collect();
+        let (statement, value) = if text.contains("match pos") {
+            let s = text.find("StdCallPos::Statement =>").expect("a statement branch");
+            let v = text.find("StdCallPos::Value =>").expect("a value branch");
+            assert!(s < v, "line {}: the statement branch comes first", first_line + start);
+            (Some(branch(&text[s..v])), branch(&text[v..]))
+        } else {
+            (None, branch(&text))
+        };
+        arms.push(IdArm { line: first_line + start, ids, statement, value });
+        i = end;
+    }
+    arms
+}
+
+/// Each intrinsic's id, by its name, with its path.
+fn intrinsic_paths() -> BTreeMap<String, String> {
+    hale_types::stdlib_surface::rows()
+        .filter_map(|(s, f)| match f.lower {
+            hale_types::stdlib_surface::Lower::Intrinsic(id) => {
+                Some((format!("{id:?}"), format!("std::{}::{}", s.ns.join("::"), f.name)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The string list `const name: &[&str]` in `fn func`'s body, and the
+/// line `fn func` is on.
+fn const_list_in(func: &str, name: &str) -> (Vec<String>, usize) {
+    let src = crate_file("src/codegen.rs");
+    let no_comments = mask(&src, false);
+    let (open, close) = fn_body(&mask(&src, true), func);
+    let body = &no_comments[open..close];
+    let at = body.find(&format!("const {name}: &[&str]")).unwrap_or_else(|| panic!("no `{name}` in `{func}`"));
+    let end = at + body[at..].find("];").expect("the list closes");
+    let line = src[..src[..open].rfind(&format!("fn {func}(")).expect("the fn")].matches('\n').count() + 1;
+    (string_literals(&body[at..end]), line)
+}
+
+/// The row dispatch's arms at the statement and expression positions,
+/// and the paths it still hands to a legacy dispatcher.
+struct RowDispatch {
+    statement: Vec<Arm>,
+    expression: Vec<Arm>,
+    handed_on: BTreeSet<String>,
+}
+
+fn row_dispatch() -> RowDispatch {
+    let paths = intrinsic_paths();
+    let mut rd = RowDispatch { statement: Vec::new(), expression: Vec::new(), handed_on: BTreeSet::new() };
+    let mut named = BTreeSet::new();
+    let arm = |line: usize, paths: &[&String], calls: ArmCall| Arm {
+        line,
+        patterns: paths.iter().map(|p| p.split("::").map(|s| Seg::Lit(s.to_string())).collect()).collect(),
+        guard: None,
+        refuses: false,
+        calls,
+    };
+    for a in id_arms() {
+        for id in &a.ids {
+            assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic`");
+        }
+        let ps: Vec<&String> =
+            a.ids.iter().map(|id| paths.get(id).unwrap_or_else(|| panic!("`Id::{id}` has no row"))).collect();
+        if a.value == Branch::Lowers {
+            rd.expression.push(arm(a.line, &ps, ArmCall::Native));
+        }
+        if a.statement == Some(Branch::Lowers) {
+            rd.statement.push(arm(a.line, &ps, ArmCall::Native));
+        }
+        if a.value == Branch::HandedOn || a.statement == Some(Branch::HandedOn) {
+            rd.handed_on.extend(ps.iter().map(|p| p.to_string()));
+        }
+    }
+    let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
+    assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic` names: {unnamed:?}");
+    let (statement_bodies, line) = const_list_in("lower_std_hale_body", "STATEMENT_BODIES");
+    let (no_value_bodies, _) = const_list_in("lower_std_hale_body", "NO_VALUE_BODIES");
+    for (s, f) in hale_types::stdlib_surface::rows() {
+        let hale_types::stdlib_surface::Lower::HaleBody(body) = f.lower else { continue };
+        let path = format!("std::{}::{}", s.ns.join("::"), f.name);
+        let call = ArmCall::HaleBody(body.to_string());
+        if !no_value_bodies.iter().any(|b| b == body) {
+            rd.expression.push(arm(line, &[&path], call.clone()));
+        }
+        if statement_bodies.iter().any(|b| b == body) {
+            rd.statement.push(arm(line, &[&path], call));
+        }
+    }
+    rd
+}
+
 pub fn scrape() -> Vec<Scraped> {
     let fam = families();
-    DISPATCHERS
-        .iter()
-        .map(|&(name, file, position)| {
-            let arms = arms_of(name, file);
-            let falls_through = fall_through_line(name, file);
+    let rd = row_dispatch();
+    [Position::Statement, Position::Expression, Position::Fallible]
+        .into_iter()
+        .map(|position| {
+            // The row dispatch's arms first: `lower_std_call` reaches
+            // them before it hands a path to a legacy dispatcher.
+            let mut arms = match position {
+                Position::Statement => rd.statement.clone(),
+                Position::Expression => rd.expression.clone(),
+                Position::Fallible => Vec::new(),
+            };
+            let mut falls_through = None;
+            if let Some(&(name, file, _)) = DISPATCHERS.iter().find(|d| d.2 == position) {
+                arms.extend(arms_of(name, file));
+                falls_through = fall_through_line(name, file);
+            }
             let mut paths = BTreeMap::new();
+            let mut calls = BTreeMap::new();
             let mut shadowed = Vec::new();
             let (mut patterns, mut family_patterns) = (0, 0);
             for arm in &arms {
@@ -509,12 +703,14 @@ pub fn scrape() -> Vec<Scraped> {
                         if paths.contains_key(&path) {
                             shadowed.push((path, arm.line));
                         } else {
+                            calls.insert(path.clone(), arm.calls.clone());
                             paths.insert(path, (kind, arm.line));
                         }
                     }
                 }
             }
-            Scraped { position, arms, paths, shadowed, patterns, family_patterns, falls_through }
+            let handed_on = if position == Position::Statement { rd.handed_on.clone() } else { BTreeSet::new() };
+            Scraped { position, arms, paths, calls, shadowed, patterns, family_patterns, falls_through, handed_on }
         })
         .collect()
 }
@@ -536,24 +732,22 @@ pub fn pairs(scraped: &[Scraped]) -> BTreeMap<(String, Position), (ArmKind, usiz
     out
 }
 
-/// The statement dispatcher's own paths (its arms', not the ones it
-/// hands on).
-fn statement_paths(scraped: &[Scraped]) -> &BTreeMap<String, (ArmKind, usize)> {
-    &scraped.iter().find(|s| s.position == Position::Statement).expect("a statement dispatcher").paths
+/// The statement position as scraped: its own arms, and the paths the
+/// row dispatch hands to the legacy statement dispatcher.
+fn statement_scrape(scraped: &[Scraped]) -> &Scraped {
+    scraped.iter().find(|s| s.position == Position::Statement).expect("a statement position")
 }
 
 /// The pairs one walked call covers: the arm that lowers it, and the
-/// fall-through arm when it is a statement handed on.
-fn covers(
-    path: String,
-    position: Position,
-    statement_paths: &BTreeMap<String, (ArmKind, usize)>,
-) -> Vec<(String, Position)> {
-    let at = lowered_at(&path, position, statement_paths);
+/// legacy fall-through arm when it is a statement handed on to it.
+fn covers(path: String, position: Position, statement: &Scraped) -> Vec<(String, Position)> {
+    let at = lowered_at(&path, position, &statement.paths);
     if at == position {
         vec![(path, position)]
-    } else {
+    } else if statement.falls_through.is_some() && statement.handed_on.contains(&path) {
         vec![(FALL_THROUGH.to_string(), Position::Statement), (path, at)]
+    } else {
+        vec![(path, at)]
     }
 }
 
@@ -1183,7 +1377,7 @@ pub fn shadow_set() -> Vec<ShadowProgram> {
 /// the expression arm that lowers it, and the fall-through arm.
 pub fn coverage(set: &[ShadowProgram]) -> BTreeMap<(String, Position), BTreeSet<(Source, String)>> {
     let scraped = scrape();
-    let statement = statement_paths(&scraped);
+    let statement = statement_scrape(&scraped);
     let mut out: BTreeMap<(String, Position), BTreeSet<(Source, String)>> = BTreeMap::new();
     let mut walked = BTreeSet::new();
     for prog in set {
@@ -1211,7 +1405,7 @@ pub fn coverage(set: &[ShadowProgram]) -> BTreeMap<(String, Position), BTreeSet<
 /// by the pairs they cover, with the declarations that make them.
 pub fn stdlib_calls() -> BTreeMap<(String, Position), BTreeSet<String>> {
     let scraped = scrape();
-    let statement = statement_paths(&scraped);
+    let statement = statement_scrape(&scraped);
     let program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE).expect("the stdlib parses");
     let w = CallWalk::program(&program);
     assert_eq!(w.calls, site_calls(&program), "the stdlib: the coverage walk missed a call");
@@ -1235,10 +1429,12 @@ pub fn stdlib_calls() -> BTreeMap<(String, Position), BTreeSet<String>> {
 fn the_scrape_and_the_walk_are_not_vacuous() {
     let scraped = scrape();
     for s in &scraped {
-        // The statement dispatcher keeps only the arms a statement
-        // answers differently (21 after S1) and hands the rest on.
+        // The statement position has arms only where a statement
+        // answers differently (21 after S1) and drops the expression
+        // position's value everywhere else.
         let floor = if s.position == Position::Statement { 15 } else { 50 };
         assert!(s.arms.len() > floor, "{:?}: only {} arms scraped", s.position, s.arms.len());
+        assert!(s.shadowed.is_empty(), "{:?}: arms no call reaches: {:?}", s.position, s.shadowed);
     }
     let all = pairs(&scraped);
     assert!(all.contains_key(&("std::io::sockopt::SOL_SOCKET".to_string(), Position::Expression)));
@@ -1249,8 +1445,13 @@ fn the_scrape_and_the_walk_are_not_vacuous() {
         Some(ArmKind::Refuses)
     );
     assert!(all.contains_key(&(FALL_THROUGH.to_string(), Position::Statement)));
-    let statement = statement_paths(&scraped);
+    assert_eq!(all.get(&("std::json::valid".to_string(), Position::Expression)).map(|k| k.0), Some(ArmKind::Lowers));
+    assert_eq!(all.get(&("std::test::assert".to_string(), Position::Statement)).map(|k| k.0), Some(ArmKind::Lowers));
+    assert!(!all.contains_key(&("std::test::assert".to_string(), Position::Expression)));
+    assert!(!all.contains_key(&("std::tar::pack".to_string(), Position::Expression)));
+    let statement = &statement_scrape(&scraped).paths;
     assert_eq!(lowered_at("std::time::sleep", Position::Statement, statement), Position::Statement);
+    assert_eq!(lowered_at("std::ring::__spsc_emit", Position::Statement, statement), Position::Statement);
     assert_eq!(lowered_at("std::str::contains", Position::Statement, statement), Position::Expression);
     assert_eq!(lowered_at("std::str::contains", Position::Expression, statement), Position::Expression);
     let p = hale_syntax::parse_source(
@@ -1648,6 +1849,9 @@ fn report_the_dispatchers_and_the_coverage() {
             .filter(|k| cov.get(*k).is_some_and(|s| s.iter().all(|(x, _)| *x == src)))
             .count();
         eprintln!("  covered by {:<12} {:>3} (only by it: {})", src.word(), by, only);
+    }
+    for ((path, position), (kind, _)) in &all {
+        eprintln!("  pair {path} {} {kind:?}", position.word());
     }
     let seeds = stdlib_calls();
     for ((path, position), (kind, line)) in &all {

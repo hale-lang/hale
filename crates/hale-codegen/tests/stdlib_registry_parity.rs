@@ -58,11 +58,10 @@ struct Dispatched {
 fn dispatched() -> BTreeMap<String, Dispatched> {
     let mut out: BTreeMap<String, Dispatched> = BTreeMap::new();
     for s in scrape() {
-        for (path, (kind, line)) in &s.paths {
-            let arm = s.arms.iter().find(|a| a.line == *line).expect("the path's arm");
+        for (path, (kind, _)) in &s.paths {
             let d = out.entry(path.clone()).or_insert(Dispatched { lowering: Vec::new(), refused: false });
             match kind {
-                ArmKind::Lowers => d.lowering.push(arm.calls.clone()),
+                ArmKind::Lowers => d.lowering.push(s.calls[path].clone()),
                 ArmKind::Refuses => d.refused = true,
             }
         }
@@ -352,5 +351,7 @@ fn parity_check_is_not_vacuous() {
     // And the arm classification sees both kinds of arm.
     let hale_arms = dispatched.values().flat_map(|d| &d.lowering).filter(|c| matches!(c, ArmCall::HaleBody(_))).count();
     assert!(hale_arms > 40, "only {hale_arms} arms call a Hale body by name");
-    assert!(std_literals().len() > 300, "the literal scrape found only {}", std_literals().len());
+    // The statement and expression positions dispatch from the row
+    // (S3); the fallible dispatcher's 148 literal paths remain.
+    assert!(std_literals().len() > 140, "the literal scrape found only {}", std_literals().len());
 }
