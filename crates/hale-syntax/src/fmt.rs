@@ -484,6 +484,11 @@ impl<'a> SpaceCx<'a> {
             ) {
                 return false;
             }
+            // GH #1076: `d.in(s)` is a method call; `in` after `.` is
+            // a member name.
+            if matches!(p, In) && pi > 0 && matches!(self.tokens[pi - 1].kind, Dot) {
+                return false;
+            }
             return true;
         }
 
