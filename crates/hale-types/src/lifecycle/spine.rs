@@ -138,6 +138,36 @@ pub const CASCADE_STEPS: &[CascadeStep] = &[
     CascadeStep::Reclaim,
 ];
 
+/// A step of a main-locus entry's teardown, as a teardown spine places
+/// its process head around the pinned threads it joins and its cascade:
+/// the head first (line 7: a wait is aborted before the join it would
+/// block), then the joins, then the cascade.
+/// [`LifecyclePlan::entry_order`] reads it from the edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EntryStep {
+    /// The spine's process head: the ingress quiesce, the wait-abort, the
+    /// pool join.
+    Head,
+    /// The joins of the pinned threads the entry's teardown joins.
+    PinnedJoins,
+    /// The entry's dissolve cascade, its fields' drains first.
+    Cascade,
+}
+
+/// The producer's order of an entry's teardown steps, for a pair no row
+/// orders.
+pub const ENTRY_STEPS: &[EntryStep] = &[EntryStep::Head, EntryStep::PinnedJoins, EntryStep::Cascade];
+
+impl EntryStep {
+    pub fn name(self) -> &'static str {
+        match self {
+            EntryStep::Head => "Head",
+            EntryStep::PinnedJoins => "PinnedJoins",
+            EntryStep::Cascade => "Cascade",
+        }
+    }
+}
+
 impl CascadeStep {
     pub fn name(self) -> &'static str {
         match self {
@@ -233,6 +263,70 @@ impl LifecyclePlan {
         }
         let ordered = order_by(spine.name(), &kinds, &pairs, &BTreeSet::new(), &kinds, |k| k.name())?;
         Ok(ordered.into_iter().map(|kind| SpineStep { obligation: first[&kind], kind }).collect())
+    }
+
+    /// The order the plan places a main-locus entry's teardown in on
+    /// `spine` ([`EntryStep`]): its head (the spine's process rows before
+    /// the frame's pre-drain), the joins of the pinned threads its teardown
+    /// joins, and its cascade. A pair is ordered where some row of one
+    /// has an entry edge from some row of the other; a pair the
+    /// plan leaves unordered (the pinned joins against the cascade, line
+    /// 17) comes in the producer's order ([`ENTRY_STEPS`]). An error names
+    /// two steps the plan orders both ways.
+    pub fn entry_order(&self, spine: Spine) -> Result<Vec<EntryStep>, String> {
+        use EntryStep as E;
+        let head: BTreeSet<ObligationId> = self
+            .iter()
+            .filter(|(_, o)| {
+                o.site.is_none()
+                    && o.holder.spine == spine
+                    && o.guard == PathGuard::Normal
+                    && o.source.is_none()
+                    && matches!(o.kind, ObligationKind::IngressQuiesce | ObligationKind::WaitAbort | ObligationKind::PoolJoin)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let rows = |step: EntryStep| -> Vec<ObligationId> {
+            match step {
+                E::Head => head.iter().copied().collect(),
+                E::PinnedJoins => self
+                    .iter()
+                    .filter(|(_, o)| o.kind == ObligationKind::PinnedJoin && o.guard == PathGuard::Normal && o.source.is_none())
+                    .map(|(id, _)| id)
+                    .collect(),
+                E::Cascade => self
+                    .iter()
+                    .filter(|(_, o)| {
+                        o.kind == ObligationKind::Drain
+                            && o.holder.spine == Spine::Cascade
+                            && o.guard == PathGuard::Normal
+                            && o.source.is_none()
+                    })
+                    .map(|(id, _)| id)
+                    .collect(),
+            }
+        };
+        // Whether some row of `b` has an entry edge from some row of `a`.
+        // Only a direct edge is read: the head's rows of a spine held by
+        // `fn main`'s frame wait, through the exit's pre-drain, for every
+        // statement literal's teardown, its pinned join included, which is
+        // not a join this entry's teardown performs.
+        let reaches = |a: &[ObligationId], b: &[ObligationId]| -> bool {
+            b.iter().any(|&id| self.get(id).is_some_and(|o| o.edges.entry.iter().any(|p| a.contains(&p.event.obligation))))
+        };
+        let mut pairs = BTreeSet::new();
+        for (i, &a) in ENTRY_STEPS.iter().enumerate() {
+            for &b in &ENTRY_STEPS[i + 1..] {
+                let (ra, rb) = (rows(a), rows(b));
+                if reaches(&ra, &rb) {
+                    pairs.insert((a, b));
+                }
+                if reaches(&rb, &ra) {
+                    pairs.insert((b, a));
+                }
+            }
+        }
+        order_by(spine.name(), ENTRY_STEPS, &pairs, &BTreeSet::new(), ENTRY_STEPS, |s| s.name())
     }
 
     /// The template's birth spine: its rows of [`BIRTH_KINDS`] on the path

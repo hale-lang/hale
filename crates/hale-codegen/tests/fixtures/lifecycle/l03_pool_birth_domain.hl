@@ -1,39 +1,62 @@
 // Decision line 3, where lifecycle methods run for a pool-placed locus
-// (Accept, Birth, Run, Dissolve). Pending: no option is chosen for the
-// line.
+// (Birth, Run). A pool-placed root's own birth() runs on its pool's
+// worker, after its subtree's init and before its readiness, and the
+// instantiating thread waits for it (L4's fifth part); accept and
+// dissolve stay pending.
 //
-// `Slowborn` is placed on pool `side`, and its birth() takes 50ms. The
-// next param's default reads what birth() wrote. Today birth() runs on
-// the instantiating thread inside App's params loop, so the read sees
-// it; run() alone goes to the worker.
+// `Slowborn` is placed on pool `side`. Its birth() takes 50ms and its
+// handler touches the same field, `hits`, each recording the thread it
+// ran on. The next param's default reads what birth() wrote, so the
+// instantiating thread waited for the birth. Before, birth() ran on the
+// instantiating thread (main) while the handler and run() ran on the
+// worker, with nothing ordering the two writes to `hits`
+// (`birth-inline-run-posted`).
 //
-// Expected terminal outcome today: `outcome: birth-inline-run-posted`.
+// Adopted terminal outcome: `outcome: birth-on-worker-run-posted`.
+
+@ffi("c") fn pthread_self() -> Int;
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l03.pool_birth"; }
 
 locus Slowborn {
-    params { born: Int = 0; ran: Int = 0; }
+    params { main_on: Int = 0; born: Int = 0; born_on: Int = 0; heard_on: Int = 0; ran_on: Int = 0; hits: Int = 0; }
+    bus { subscribe Pings as on_ping; }
     birth() {
         std::time::sleep(50ms);
         self.born = 1;
+        self.born_on = pthread_self();
+        self.hits = self.hits + 1;
     }
-    run() { self.ran = 1; }
+    fn on_ping(p: Ping) {
+        self.heard_on = pthread_self();
+        self.hits = self.hits + 1;
+    }
+    run() { self.ran_on = pthread_self(); }
 }
 
 main locus App {
     params {
-        s: Slowborn = Slowborn { };
+        s: Slowborn = Slowborn { main_on: pthread_self() };
         seen: Int = self.s.born;
     }
     placement { s: cooperative(pool = side); }
+    bus { publish Pings; }
     run() {
+        Pings <- Ping { n: 1 };
         let mut i = 0;
-        while self.s.ran == 0 && i < 100 {
+        while (self.s.ran_on == 0 || self.s.heard_on == 0) && i < 100 {
             std::time::sleep(5ms);
             i = i + 1;
         }
-        if self.seen == 1 && self.s.ran == 1 {
+        let born_on = self.s.born_on;
+        let on_worker = born_on != self.s.main_on && born_on == self.s.heard_on && born_on == self.s.ran_on;
+        if self.seen == 1 && on_worker && self.s.hits == 2 {
+            println("outcome: birth-on-worker-run-posted");
+        } else if self.seen == 1 && born_on == self.s.main_on {
             println("outcome: birth-inline-run-posted");
         } else {
-            println("outcome: seen=" + to_string(self.seen) + " ran=" + to_string(self.s.ran));
+            println("outcome: seen=" + to_string(self.seen) + " on-worker=" + to_string(on_worker) + " hits=" + to_string(self.s.hits));
         }
     }
 }

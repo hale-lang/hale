@@ -1071,18 +1071,34 @@ fn compile_cached_runtime_object_with(
     }
 }
 
-/// The `main locus` lowering deploys: the entry row's lowering root
-/// (`hale_types::entry::EntryRow::lowering_root`), found in lowering's
-/// program by its site (a user site is the node of the same index in the
-/// merged program, as the placement table's root is). A view with no row
-/// (a bare program's) or a row with no root deploys none.
-fn lowering_root<'p>(
+/// The `main locus` lowering deploys: the entry row's entry
+/// (`hale_types::entry::EntryRow::entry`), found in lowering's program by
+/// its site (a user site is the node of the same index in the merged
+/// program, as the placement table's root is). A view with no row (a bare
+/// program's) or a row with no entry deploys none.
+fn entry_locus<'p>(
     entry: Option<&hale_types::entry::EntryRow>,
     program: &'p Program,
 ) -> Option<&'p hale_syntax::ast::LocusDecl> {
-    let site = entry?.lowering_root.as_ref()?.site?;
+    let site = entry?.entry()?.site?;
     hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
         TopDecl::Locus(l) if l.id.0 == site.index => Some(l),
+        _ => None,
+    })
+}
+
+/// The `fn main` lowering emits as the process's entry point: the entry
+/// row's column (`hale_types::entry::EntryRow::fn_main`), found among
+/// lowering's top-level declarations by its site. A view with no row (a
+/// bare program's) applies the row's own definition
+/// (`hale_types::entry::top_level_fn_main`) to the program.
+fn entry_fn<'p>(entry: Option<&hale_types::entry::EntryRow>, program: &'p Program) -> Option<&'p FnDecl> {
+    let Some(row) = entry else {
+        return hale_types::entry::top_level_fn_main(&program.items).map(|(_, f)| f);
+    };
+    let site = row.fn_main.as_ref()?.site?;
+    program.items.iter().find_map(|item| match item {
+        TopDecl::Fn(f) if f.id.0 == site.index => Some(f),
         _ => None,
     })
 }
@@ -1277,8 +1293,8 @@ pub fn build_resolved(
     //     table places what lowering deploys, so an imported library's
     //     `main locus`, which nothing builds, adds nothing however its
     //     `placement { }` block reads; and
-    //   * ANY binding row of the program's own main locus, a
-    //     module-nested one included, as `root_bindings` lowers it
+    //   * ANY binding row of the entry, the main locus the entry row
+    //     names, as `root_bindings` lowers it
     //     (`BindingRows::binds_on_main`). Adapter entries
     //     were always counted (a transport recv-loop on its own
     //     thread, "pinned-equivalent by construction") — but unix/udp
@@ -1298,7 +1314,7 @@ pub fn build_resolved(
     //     be un-baked at runtime — so the compile-time union here
     //     must stay the superset.
     let program_has_offthread =
-        resolved.placement.places_off_main() || resolved.bindings.binds_on_main();
+        resolved.placement.places_off_main() || resolved.bindings.binds_on_main(resolved.entry());
 
     // Static-bus-dispatch devirtualization plan (build #1b), derived in
     // the resolved program from the bus graph over the merged and
@@ -1484,7 +1500,8 @@ pub fn build_resolved(
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle: resolved.lifecycle(),
-        lowering_root: lowering_root(resolved.entry(), merged),
+        entry_locus: entry_locus(resolved.entry(), merged),
+        entry_fn: entry_fn(resolved.entry(), merged),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -1522,6 +1539,8 @@ pub fn build_resolved(
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
+        pinned_owner: Vec::new(),
+        hoisted_heads: Vec::new(),
         in_main: false,
         main_exit: None,
         dispatch_trace: options.dispatch_trace,
@@ -1546,6 +1565,7 @@ pub fn build_resolved(
         declared_owner: None,
         locus_cascade_path: Vec::new(),
         instantiating_into_payload_arena: false,
+        anchor_record_slot: None,
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         params_init_self: None,
@@ -3373,10 +3393,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
     pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
     /// The `main locus` lowering deploys, read from the view's entry row
-    /// (`LoweringView::entry`, its lowering root) and found in lowering's
-    /// program by identity: every comparison against "the main locus"
-    /// reads it (`is_lowering_root`). `None` with no root.
-    pub(crate) lowering_root: Option<&'p hale_syntax::ast::LocusDecl>,
+    /// (`LoweringView::entry`, its entry) and found in lowering's program
+    /// by identity: every comparison against "the main locus" reads it
+    /// (`is_entry_locus`). `None` with no entry.
+    pub(crate) entry_locus: Option<&'p hale_syntax::ast::LocusDecl>,
+    /// The `fn main` lowering emits as the process's entry point, read
+    /// from the view's entry row (its `fn_main` column) by identity: the
+    /// body `in_main` marks. `None` with none.
+    pub(crate) entry_fn: Option<&'p FnDecl>,
     /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
     /// User-defined `type` declarations indexed by name. Filled
@@ -3663,9 +3687,19 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// long-lived loci have None.
     pub(crate) deferred_dissolves:
         Vec<Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>>,
-    /// True while lowering the body of `main`. `return` is treated
-    /// as an exit-code return (truncated to i32) when this is set,
-    /// rather than the user-fn `current_user_fn_ret` path.
+    /// A deferred entry's own pinned entries, by their self slots: the
+    /// pinned threads its teardown joins (C14), each `(pinned slot, owner
+    /// slot)`. The frame flush reads it to place a main-locus entry's head
+    /// before the first of them (`emit_frame_teardown`, line 7).
+    pub(crate) pinned_owner: Vec<(PointerValue<'ctx>, PointerValue<'ctx>)>,
+    /// The main-locus entries whose head the flush being emitted has
+    /// already emitted ahead of their pinned joins: their own teardown
+    /// skips it (`emit_deferred_entry_teardown`).
+    hoisted_heads: Vec<PointerValue<'ctx>>,
+    /// True while lowering the body of the entry row's `fn main`
+    /// (`entry_fn`). `return` is treated as an exit-code return
+    /// (truncated to i32) when this is set, rather than the user-fn
+    /// `current_user_fn_ret` path.
     pub(crate) in_main: bool,
     /// The spine of the fn main exit tearing its frame down, set after its
     /// head and taken by its flush, which emits that spine's process rows
@@ -3864,6 +3898,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// them sees the flag still set as long as the parent's
     /// params-init loop holds it.
     pub(crate) instantiating_into_payload_arena: bool,
+    /// C52: set by the root's params init before each replica of a
+    /// pinned field, when that literal hands the root back to its caller
+    /// (`Owner::Caller`): the replica's join record in the root
+    /// (`LocusInfo::anchor_records`). Taken by the next locus literal,
+    /// which writes its thread id and instance pointer there and pushes
+    /// no entry on the building frame, which does not own the root at its
+    /// exit.
+    pub(crate) anchor_record_slot: Option<PointerValue<'ctx>>,
     /// F.31 (2026-05-23): the placement a `placement { }` entry
     /// gives one field, as `(entry, class)`.
     ///
@@ -3915,9 +3957,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// override is lowered in the CALLER's context (F.4), so without
     /// this `resolve_failure_route` answered with the caller — `fn
     /// main`, no handler — and a child passed into its parent's
-    /// literal was unsupervised. Keyed by the child's locus name;
-    /// saved and restored around every instantiation.
-    pub(crate) supervising_parent: Option<(String, SelfCx<'ctx>)>,
+    /// literal was unsupervised. Keyed by the child's identity as the
+    /// routing rows key it (`Cx::routing_key`: its declaration's site,
+    /// and a monomorph's specialization); saved and restored around
+    /// every instantiation.
+    pub(crate) supervising_parent:
+        Option<(hale_types::handler_routing::InstanceKey, SelfCx<'ctx>)>,
     /// downstream handoff 2026-07-14 (finding 4): true while lowering a
     /// params-DEFAULT expression (the text written inside the
     /// instantiated locus's own `params { }` block), false for
@@ -5230,6 +5275,14 @@ pub(crate) struct LocusInfo<'ctx> {
     /// queue; pinned loci without subscriptions don't need a
     /// mailbox at all). m28b stage 2.
     pub(crate) mailbox_field_idx: Option<u32>,
+    /// The root's join records for its pinned fields, when some literal
+    /// hands the root back to a caller (C52): field name → (index of a
+    /// synthetic `[K x {i64 thread, ptr instance}]`, K), one record per
+    /// declared replica, so the root's cascade joins every replica
+    /// (`emit_instance_pinned_join`). A record's thread is zero while the
+    /// frame that built the root keeps the join. Empty for every other
+    /// locus.
+    pub(crate) anchor_records: BTreeMap<String, (u32, u32)>,
     /// Per-spec projection class. Resolved at declare-locus-struct
     /// time from the `LocusAnnotation::Projection` annotation, or
     /// (per spec/memory.md) defaults to chunked if the locus
@@ -6218,18 +6271,170 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .get(name)
                         .map_or(false, |i| i.mailbox_field_idx.is_none())
             });
-        for (self_slot, locus_name, thread_id_alloca) in pinned_workers
-            .into_iter()
-            .rev()
-            .chain(rest.into_iter().rev())
-        {
+        let order: Vec<_> = pinned_workers.into_iter().rev().chain(rest.into_iter().rev()).collect();
+        // A main-locus entry's teardown in the plan's order (line 7, rule
+        // (b)): its head (the quiesce, the wait-abort, the pool join) before
+        // the joins of its own pinned entries, wherever the order above puts
+        // the first of them, so a pinned thread parked in an `or wait` is
+        // released before it is joined. The entry's own teardown then skips
+        // the head.
+        let head_first = self.head_before_pinned_joins(Spine::DeferredMainEntry)?;
+        let hoisted_outer = std::mem::take(&mut self.hoisted_heads);
+        for (self_slot, locus_name, thread_id_alloca) in &order {
+            if head_first && thread_id_alloca.is_some() {
+                let owner = self.pinned_owner.iter().find(|(p, _)| p == self_slot).map(|(_, o)| *o);
+                let main_owner = owner.and_then(|o| {
+                    order.iter().find(|(s, name, tid)| *s == o && tid.is_none() && self.is_entry_locus(name)).cloned()
+                });
+                if let Some((owner_slot, owner_name, _)) = main_owner {
+                    if !self.hoisted_heads.contains(&owner_slot) {
+                        self.emit_hoisted_head(owner_slot, &owner_name)?;
+                        self.hoisted_heads.push(owner_slot);
+                    }
+                }
+            }
             self.emit_deferred_entry_teardown(
-                self_slot,
-                &locus_name,
-                thread_id_alloca,
+                *self_slot,
+                locus_name,
+                *thread_id_alloca,
                 drain_queue,
             )?;
         }
+        self.hoisted_heads = hoisted_outer;
+        Ok(())
+    }
+
+    /// One join record of a handed-back root's pinned field replica
+    /// (C52): `{i64 thread, ptr instance}`.
+    pub(crate) fn anchor_record_ty(&self) -> inkwell::types::StructType<'ctx> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        self.context.struct_type(&[self.context.i64_type().into(), ptr_t.into()], false)
+    }
+
+    /// The join record of replica `replica` of the root's pinned field
+    /// `field` (`LocusInfo::anchor_records`), or None where the root keeps
+    /// no records for it.
+    pub(crate) fn anchor_record_at(
+        &self,
+        owner: &LocusInfo<'ctx>,
+        owner_self: PointerValue<'ctx>,
+        field: &str,
+        replica: u32,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        let Some(&(idx, replicas)) = owner.anchor_records.get(field) else { return Ok(None) };
+        let i32_t = self.context.i32_type();
+        let array_ty = self.anchor_record_ty().array_type(replicas);
+        let records = self
+            .builder
+            .build_struct_gep(owner.struct_ty, owner_self, idx, &format!("{field}.anchor_records"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // SAFETY: `replica` < the array's length, the field's declared
+        // replica count.
+        let record = unsafe {
+            self.builder.build_in_bounds_gep(
+                array_ty,
+                records,
+                &[i32_t.const_zero(), i32_t.const_int(replica as u64, false)],
+                &format!("{field}.anchor_record.{replica}"),
+            )
+        }
+        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(Some(record))
+    }
+
+    /// C52 (line 12): the replicas of a pinned field whose join records
+    /// the root keeps (`LocusInfo::anchor_records`, the root handed back
+    /// to a caller) are joined in the root's cascade, as the field's
+    /// drain, each with the frame entry's spine
+    /// (`emit_deferred_entry_teardown`) read through its record: the
+    /// mailbox shutdown and the join (its thread drains its fields, then
+    /// itself, and dissolves), then its fields' dissolves and its reclaim;
+    /// the record's thread is zeroed after. The order is the building
+    /// frame's flush order, which pops entries in reverse of their push:
+    /// replica 0 (built last, by the field's own path), then replicas
+    /// K-1 down to 1. A record whose thread is zero is skipped (the frame
+    /// that built the root keeps the join).
+    pub(crate) fn emit_instance_pinned_join(
+        &mut self,
+        owner: &LocusInfo<'ctx>,
+        owner_self: PointerValue<'ctx>,
+        field: &str,
+        inner_name: &str,
+    ) -> Result<(), CodegenError> {
+        let Some(&(_, replicas)) = owner.anchor_records.get(field) else { return Ok(()) };
+        let func = self.current_fn.expect("a cascade inside a fn body");
+        let i64_t = self.context.i64_type();
+        let record_ty = self.anchor_record_ty();
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        for replica in std::iter::once(0).chain((1..replicas).rev()) {
+            let record = self.anchor_record_at(owner, owner_self, field, replica)?.expect("checked above");
+            let tid_slot = self.builder.build_struct_gep(record_ty, record, 0, &format!("{inner_name}.instance_join.thread")).map_err(e)?;
+            let self_slot = self.builder.build_struct_gep(record_ty, record, 1, &format!("{inner_name}.instance_join.self")).map_err(e)?;
+            let tid = self.builder.build_load(i64_t, tid_slot, &format!("{inner_name}.instance_join.record")).map_err(e)?.into_int_value();
+            let join_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join"));
+            let after_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join.after"));
+            let kept = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, tid, i64_t.const_zero(), &format!("{inner_name}.instance_join.frame_keeps"))
+                .map_err(e)?;
+            self.builder.build_conditional_branch(kept, after_bb, join_bb).map_err(e)?;
+            self.builder.position_at_end(join_bb);
+            self.emit_deferred_entry_teardown(self_slot, inner_name, Some(tid_slot), false)?;
+            self.builder.build_store(tid_slot, i64_t.const_zero()).map_err(e)?;
+            self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+            self.builder.position_at_end(after_bb);
+        }
+        Ok(())
+    }
+
+    /// Whether the plan places a main-locus entry's head before the joins
+    /// of the pinned threads its teardown joins on `spine`
+    /// (`LifecyclePlan::entry_order`). The emitter refuses an order it
+    /// cannot emit: a cascade before the head or before the joins.
+    pub(crate) fn head_before_pinned_joins(&self, spine: Spine) -> Result<bool, CodegenError> {
+        use hale_types::lifecycle::spine::EntryStep;
+        let Some(plan) = self.lifecycle else { return Ok(true) };
+        let order = plan.entry_order(spine).map_err(CodegenError::Unsupported)?;
+        let at = |s: EntryStep| order.iter().position(|&x| x == s);
+        if at(EntryStep::Cascade) < at(EntryStep::Head) || at(EntryStep::Cascade) < at(EntryStep::PinnedJoins) {
+            return Err(CodegenError::Unsupported(format!(
+                "the lifecycle plan orders the {} spine's entry teardown {order:?}, and the emitter tears an entry's cascade down after its head and its pinned joins",
+                spine.name()
+            )));
+        }
+        Ok(at(EntryStep::Head) < at(EntryStep::PinnedJoins))
+    }
+
+    /// A main-locus entry's head (`Spine::DeferredMainEntry`'s process
+    /// rows), emitted by the frame flush ahead of the first of its own
+    /// pinned joins: guarded, as the entry's own teardown is, by its slot
+    /// and its arena (an instantiation this path never reached, or one
+    /// already torn down, owes none).
+    fn emit_hoisted_head(&mut self, self_slot: PointerValue<'ctx>, locus_name: &str) -> Result<(), CodegenError> {
+        let info = self.user_loci.get(locus_name).cloned().expect("deferred locus declared");
+        let func = self.current_fn.expect("flush called outside a fn body");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let self_ptr = self.builder.build_load(ptr_t, self_slot, &format!("{locus_name}.head.self")).map_err(e)?.into_pointer_value();
+        let arena_bb = self.context.append_basic_block(func, &format!("{locus_name}.head.arena_check"));
+        let head_bb = self.context.append_basic_block(func, &format!("{locus_name}.head"));
+        let after_bb = self.context.append_basic_block(func, &format!("{locus_name}.head.after"));
+        let self_null = self.builder.build_is_null(self_ptr, &format!("{locus_name}.head.self_null")).map_err(e)?;
+        self.builder.build_conditional_branch(self_null, after_bb, arena_bb).map_err(e)?;
+        self.builder.position_at_end(arena_bb);
+        let arena_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.arena_field_idx, &format!("{locus_name}.head.arena.gep"))
+            .map_err(e)?;
+        let arena = self.builder.build_load(ptr_t, arena_ptr, &format!("{locus_name}.head.arena")).map_err(e)?.into_pointer_value();
+        let arena_null = self.builder.build_is_null(arena, &format!("{locus_name}.head.arena_null")).map_err(e)?;
+        self.builder.build_conditional_branch(arena_null, after_bb, head_bb).map_err(e)?;
+        self.builder.position_at_end(head_bb);
+        let lc_outer = std::mem::replace(&mut self.lc_spine, "DeferredMainEntry");
+        self.emit_teardown_obligations(Spine::DeferredMainEntry)?;
+        self.lc_spine = lc_outer;
+        self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+        self.builder.position_at_end(after_bb);
         Ok(())
     }
 
@@ -6356,12 +6561,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // as it unwound, and the process died on every stop
             // (downstream handoff). Joining here is idempotent: the pools'
             // later join at main's exit finds no worker left.
-            let is_main_entry = self.is_lowering_root(&locus_name);
+            let is_main_entry = self.is_entry_locus(&locus_name);
             let lc_outer = std::mem::replace(
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
             );
-            if is_main_entry {
+            if is_main_entry && !self.hoisted_heads.contains(&self_slot) {
                 self.emit_teardown_obligations(Spine::DeferredMainEntry)?;
             }
             // m28a + m28b: pinned loci — pthread_join blocks until
@@ -6733,6 +6938,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &[
                             self_arg.into(),
                             reclaim.as_global_value().as_pointer_value().into(),
+                            claim_ptr.into(),
                         ],
                         &format!("{}.reclaim.defer", locus_name),
                     )
@@ -8120,29 +8326,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // are scratch-local, and per locus the arena and method-scratch
         // elision verdicts.
 
-        // Locate fn main.
+        // fn main is the entry row's column (`entry_fn`, F.40 phase 3,
+        // L4): lowering derives no entry point.
         //
-        // GH #884: this one stays TOP-LEVEL-ONLY, and is the only
-        // declaration lookup in codegen that does. `main` is not a
-        // symbol resolved by name from a use site — it is the
-        // seed's entry point, and every other layer reads it as a
-        // top-level property of the file: `desugar`'s auto-wrap
-        // splices the synthesized `main locus` at main's INDEX in
-        // `program.items` (a module-nested one has no such index),
-        // `hale bench` classifies a seed by it, and
-        // `check_build_divergences.txt` lists the library seeds
-        // that have none. A `fn main` inside `module { }` is an
-        // ordinary free fn named `main`; promoting it to the entry
-        // point here would make codegen the only layer that
-        // thinks so.
-        let main_found = self
-            .program
-            .items
-            .iter()
-            .find_map(|item| match item {
-                TopDecl::Fn(f) if f.name.name == "main" => Some(f.clone()),
-                _ => None,
-            });
+        // GH #884: it is TOP-LEVEL-ONLY. `main` is not a symbol
+        // resolved by name from a use site — it is the seed's entry
+        // point, and every other layer reads it as a top-level
+        // property of the file: `desugar`'s auto-wrap splices the
+        // synthesized `main locus` at main's INDEX in `program.items`
+        // (a module-nested one has no such index), `hale bench`
+        // classifies a seed by it, and `check_build_divergences.txt`
+        // lists the library seeds that have none. A `fn main` inside
+        // `module { }` is refused by the check (GH #911).
+        let main_found = self.entry_fn.cloned();
         let main_decl = match main_found {
             Some(m) => m,
             None => {
@@ -8266,8 +8462,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // F.31: main's deployment, read from the placement table.
         // Populates `main_placement_map` keyed by `params` field
         // name, which the params-init loop in
-        // `lower_locus_instantiation` reads for the lowering root
-        // (`is_lowering_root`) to override the per-field placement.
+        // `lower_locus_instantiation` reads for the entry
+        // (`is_entry_locus`) to override the per-field placement.
         self.collect_main_placement();
 
         // Pass A0: declare every user-defined `type` so locus
@@ -9594,8 +9790,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// F.31: main's deployment, read from the placement table (F.40
     /// phase 3, P1 5 of 6) before any lowering runs: for the root lowering
-    /// deploys (the table's, seeded from the entry row's lowering root,
-    /// which `is_lowering_root` reads), per root field a `placement { }`
+    /// deploys (the table's, seeded from the entry row's entry,
+    /// which `is_entry_locus` reads), per root field a `placement { }`
     /// entry decides, its schedule class, pool, NUMA node and replicas,
     /// keyed by field name for the params init of the root. The domains
     /// give the pools their `async_io` and affinity; the type sets are
@@ -9634,6 +9830,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .flatten()
             .map(|e| (e.id.0, e))
             .collect();
+        // C52: a root some literal hands back to its caller (the
+        // ownership table's `Owner::Caller`) is torn down by its owner,
+        // not by the frame that built it, so its pinned fields keep their
+        // join record in the instance.
+        let root_handed_back = self.entry_locus.is_some_and(|l| {
+            self.owner_table.rows().any(|(_, e)| {
+                e.owner == crate::ownership::Owner::Caller
+                    && e.what == hale_types::ownership::Produced::Literal
+                    && e.name == l.name.name
+            })
+        });
         // Per field an entry decides, the rows of the first template
         // that holds it, in replica order.
         let mut fields: BTreeMap<&str, (Origin, Vec<(&InstanceKey, &InstanceRow)>)> = BTreeMap::new();
@@ -9659,6 +9866,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 DomainKind::Pinned { affinity, numa_node, .. } => {
                     if let Some(node) = numa_node {
                         self.deployment.main_placement_node.insert(field.to_string(), *node);
+                    }
+                    if root_handed_back {
+                        self.deployment.instance_joined_anchor_fields.insert(field.to_string(), rows.len() as u32);
                     }
                     self.deployment.pinned_locus_types.extend(realized);
                     // Each replica's one core, from its own row's domain.
@@ -9992,7 +10202,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // dispatcher needed. The handler is main's routing row for
         // the locus the connect entry's row names as its transport.
         if let Some(transport) = connect_transport {
-            let main_handler = self.lowering_root.and_then(|l| self.failure_handler_for(&l.name.name, transport));
+            let main_handler = self.entry_locus.and_then(|l| self.failure_handler_for(&l.name.name, transport));
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler, transport)?;
             }
@@ -10001,21 +10211,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Whether `locus_name` is the `main locus` lowering deploys, the
-    /// entry row's lowering root (`lowering_root`).
-    pub(crate) fn is_lowering_root(&self, locus_name: &str) -> bool {
-        self.lowering_root.is_some_and(|l| l.name.name == locus_name)
+    /// entry row's entry (`entry_locus`).
+    pub(crate) fn is_entry_locus(&self, locus_name: &str) -> bool {
+        self.entry_locus.is_some_and(|l| l.name.name == locus_name)
     }
 
-    /// The lowering root's `bindings { }` entries, each with the row
-    /// that decides it (F.40 phase 3, P2): the root is the entry row's
-    /// (`lowering_root`). An entry the view holds no row for is a missing
+    /// The entry's `bindings { }` entries, each with the row that
+    /// decides it (F.40 phase 3, P2): the entry is the entry row's
+    /// (`entry_locus`). An entry the view holds no row for is a missing
     /// required row, an error, not a guess.
     fn root_bindings(
         &self,
     ) -> Result<Vec<(&'p hale_syntax::ast::BindingEntry, &'p hale_types::binding_rows::BindingRow)>, CodegenError>
     {
         let rows = self.bindings;
-        let Some(l) = self.lowering_root else { return Ok(Vec::new()) };
+        let Some(l) = self.entry_locus else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for m in &l.members {
             let LocusMember::Bindings(b) = m else { continue };

@@ -923,10 +923,6 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 
-== crates/hale-cli/tests/replay_cli.rs#a3e9a9f8
-root	App	not the entry
-row	App@literal1	App	main	default
-
 == crates/hale-cli/tests/replay_cli.rs#6c357bb0
 root	App	the entry
 row	App@literal1	App	main	default
@@ -3388,6 +3384,14 @@ domain	pool:io	async_io
 row	App@literal1	App	main	default
 row	App@literal1.s	Slow	pool:io	entry	off owner
 
+== crates/hale-codegen/tests/replay_canceled_run.rs#aeec1d92
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+-- App@literal1.spawner	Spawner
+row	~	Spawner	pool:side	entry	off owner
+row	~.probe	Probe	pool:side	inherited
+
 == crates/hale-codegen/tests/replay_canceled_run.rs#d5fb7b1b
 root	App	the entry
 domain	pool:side
@@ -3987,6 +3991,11 @@ row	Child@main1	Child	main	default
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
 
+== crates/hale-codegen/tests/wasm_import_backstop.rs#1ed1d7b4
+row	Receiver@main1	Receiver	main	default
+row	Sender@main2	Sender	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+
 == crates/hale-codegen/tests/wasm_target.rs#8cade88e
 
 == crates/hale-codegen/tests/wasm_target.rs#bf616e43
@@ -4187,7 +4196,11 @@ row	App@literal1.c	Clock	main	default
 row	App@literal1.w	Worker	main	default
 
 == crates/hale-types/tests/bus_graph.rs#130c4f61
+root	__lib_App	the entry
+domain	pinned:__lib_App@entry.w
+row	__lib_App@entry	__lib_App	main	default
 row	W@main1	W	main	default
+row	__lib_App@entry.w	W	pinned:__lib_App@entry.w	entry	off owner
 
 == crates/hale-types/tests/bus_graph.rs#589350b0
 root	App	the entry
@@ -4411,6 +4424,10 @@ row	App@literal1	App	main	default
 shared	App@literal1.workers[0]	Worker #f0ba3524
 shared	App@literal1.workers[1]	Worker #f0ba3524
 
+== crates/hale-types/tests/dispatch_plan.rs#d1cac425
+root	App	the entry
+row	App@literal1	App	main	default
+
 == crates/hale-types/tests/effect_assertions.rs#b335c4dc
 root	App	the entry
 domain	pool:web	async_io
@@ -4445,6 +4462,9 @@ dynamic	Pure	on main	in the seed
 -- Manifest@main1	Manifest
 row	~	Manifest	main	default
 row	~.sink	QuietEmitter	main	inherited
+
+== crates/hale-types/tests/fn_key_identity.rs#57279317
+row	W@main1	W	main	default
 
 == crates/hale-types/tests/frontier_items.rs#3f2630e2
 row	Api@main2	Api	main	default
@@ -5428,8 +5448,6 @@ root	App	the entry
 domain	pinned:App@literal1.a
 row	App@literal1	App	main	default
 row	App@literal1.a	Worker	pinned:App@literal1.a	entry	off owner
-
-== crates/hale-types/tests/placement.rs#a2d70f5a
 
 == crates/hale-types/tests/placement.rs#0345377d
 root	App	the entry
@@ -12732,12 +12750,6 @@ row	Lib@entry.idle	K	main	default
 -- Lib@entry.w	Worker
 row	~	Worker	pinned:~	entry	off owner
 row	~.k	K	pinned:~	inherited
-
-== crates/hale-types/tests/fixtures/placement/module_nested_main.hl
-root	App	not the entry
-domain	pinned:App@literal1.w
-row	App@literal1	App	main	default
-row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 
 == crates/hale-types/tests/fixtures/placement/module_qualified.hl
 root	App	the entry

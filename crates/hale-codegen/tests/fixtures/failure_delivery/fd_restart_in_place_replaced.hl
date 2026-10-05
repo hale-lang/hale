@@ -1,0 +1,55 @@
+// The reclaim wins over a handler's restart_in_place (PR #1348's
+// review). `a`, on pool `left`, fails in its first run(). The owner's
+// handler reads the old child's heap name, replaces it in its field, and
+// then asks for a restart in place of the child it replaced. That
+// child's reclaim is owed (it was deferred behind this very delivery),
+// so the restart is not performed: the old child is reclaimed after its
+// handler, exactly once, and its birth() and run() never start again.
+// The new child is untouched.
+// Expected outcome: `old-born-1 old-ran-1 old-dissolved-1
+// read-before-dissolve new-born-1 new-ran-1 new-dissolved-1`. Before the
+// rule the old child's re-run failed again and the program hung: the
+// deferred reclaim waited for the re-run, and the re-run's failure
+// waited for the owner's thread.
+
+fn gate(what: String) -> String { return "/tmp/hale-fd-restart-in-place-" + what + "-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; runs: Int = 0; name: String = ""; }
+    closure fuse { captures: tag; epoch inline; }
+    birth() {
+        self.name = "kid-" + to_string(self.tag) + "-name";
+        println("ev kid-birth " + to_string(self.tag));
+    }
+    run() {
+        self.runs = self.runs + 1;
+        println("ev kid-run " + to_string(self.tag) + " " + to_string(self.runs));
+        if self.tag == 0 && self.runs == 1 {
+            let until = std::time::monotonic_ns() + 5000000000;
+            while !std::io::fs::file_exists(gate("start")) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+            violate fuse;
+        }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag) + " " + self.name); }
+}
+
+main locus App {
+    params { a: Kid = Kid { tag: 0 }; heard: Int = 0; }
+    placement { a: cooperative(pool = left); }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("ev handler " + c.name);
+        self.a = Kid { tag: 5 };
+        restart_in_place (c);
+        self.heard = self.heard + 1;
+    }
+    run() {
+        std::io::fs::write_file(gate("start"), "go") or discard;
+        let until = std::time::monotonic_ns() + 5000000000;
+        while self.heard < 1 && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        std::time::sleep(300ms);
+        println("ev finished");
+    }
+    dissolve() { std::io::fs::unlink(gate("start")) or discard; }
+}
+
+fn main() { App { }; }

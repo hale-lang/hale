@@ -243,6 +243,13 @@ subject, transport and role; `Phase`, `Seed` and `ThreadDomain`
 carry a name with no separate display. Consumers should read the
 table's own definition rather than assume a common shape.
 
+A `functions` row's id is the rank of its `name`; the row also
+carries `decl`, the site its snapshot minted for the declaration. A
+join from an analysis row (an allocation-summary or effect row, keyed
+by that site) to its function reads `decl`, never the name. `decl`
+is never rendered and never hashed, so it moves no dump and no
+digest.
+
 | table | what a row is |
 |---|---|
 | `functions` | free fn, method, lifecycle hook, mode, failure handler |
@@ -282,7 +289,7 @@ phase 3, the `placement` family); the builder walks no declaration of
 its own for them.
 
 - **What is arranged.** The instances of the root lowering deploys
-  (the entry row's `lowering_root`, never an imported `main`): one
+  (the entry row's entry, never an imported `main`): one
   template per literal of the root, or the entry's implicit
   construction of a root no literal builds. Each instance is arranged
   where it runs: a held instance under its holder, as the rows its

@@ -333,6 +333,41 @@ fn a_held_failure_is_delivered_at_settle_before_the_owners_birth() {
     assert!(matches!(&site.template, Template::Static(k) if k.path.len() == 1 && k.path[0].field == "c"));
 }
 
+/// Decision L0-1 as L5's fourth part ships it: a failure raised off its
+/// owner's domain is posted there and awaited, so the delivery claims the
+/// owner's domain, shipped. A failure raised in a static field's teardown on main after the
+/// pool join has ended its pool-placed owner's worker runs where it is
+/// raised, the shutdown rule's claim (join progress), shipped; the
+/// joins' progress is shipped too (C18, R20).
+#[test]
+fn a_cross_domain_delivery_claims_the_owners_domain_or_the_shutdown_rules() {
+    let fails = "locus Subj {\n    params { n: Int = 0; }\n    closure fuse { captures: n; epoch inline; }\n    run() { violate fuse; }\n}\n";
+    let s = snapshot(&format!(
+        "{fails}main locus App {{\n    params {{ s: Subj = Subj {{ }}; }}\n    placement {{ s: pinned; }}\n    on_failure(c: Subj, err: ClosureViolation) {{ }}\n}}\nfn main() {{ App {{ }}; }}\n"
+    ));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let delivery = one(p, "Subj", K::FailureDelivery);
+    assert_eq!(claimed(p, delivery), labels(&["main"]), "posted to the owner's domain");
+    assert_eq!(delivery.runs_on.as_ref().map(|r| (r.rule.line, r.rule.status)), Some((Some("L0-1"), Status::Shipped)));
+    assert_eq!(delivery.progress.status, Status::Shipped);
+    for kind in [K::PinnedJoin, K::JoinProgress] {
+        assert_eq!(one(p, "Subj", kind).progress.status, Status::Shipped, "{}", kind.name());
+    }
+
+    let s = snapshot(&format!(
+        "{}locus Mid {{\n    params {{ s: Subj = Subj {{ }}; }}\n    on_failure(c: Subj, err: ClosureViolation) {{ }}\n}}\nmain locus App {{\n    params {{ m: Mid = Mid {{ }}; }}\n    placement {{ m: cooperative(pool = side); }}\n}}\nfn main() {{ App {{ }}; }}\n",
+        fails.replace("run() { violate fuse; }", "drain() { violate fuse; }")
+    ));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let delivery = one(p, "Subj", K::FailureDelivery);
+    assert_eq!(claimed(p, delivery), labels(&["main"]), "the owner's worker has ended: where it is raised");
+    assert_eq!(delivery.runs_on.as_ref().map(|r| (r.rule.line, r.rule.status)), Some((Some("JP"), Status::Shipped)));
+    let joins: Vec<&Obligation> = p.obligations.iter().filter(|o| o.kind == K::PoolJoin).collect();
+    assert!(!joins.is_empty() && joins.iter().all(|o| o.progress.status == Status::Shipped));
+}
+
 /// Lines 12 and 17: a pinned locus runs on its own thread, owes its
 /// join, and its own fields drain on that thread before it does (C9,
 /// shipped by L4's cascade).
@@ -351,6 +386,99 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert!(matches!(p.domains[on.0 as usize].kind, DomainKind::Pinned { .. }), "drained on the pinned thread");
     let outer_drain = one(p, "Outer", K::Drain);
     assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule == hale_types::lifecycle::Rule::line("12", Status::Shipped)));
+}
+
+/// Line 7 on every spine (L4's fifth part): the main locus's head comes
+/// before the join of its own pinned field and that field's drain, with
+/// no pool as with one, and the emitters' reader places the head first.
+#[test]
+fn the_main_locus_head_precedes_its_pinned_fields_join() {
+    use hale_types::lifecycle::spine::EntryStep as E;
+    for (src, spine, last) in [
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_deferred_pinned_field.hl"), Spine::DeferredMainEntry, K::WaitAbort),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l17_pinned_join_eager.hl"), Spine::EagerTeardown, K::WaitAbort),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        let head: Vec<ObligationId> = p
+            .iter()
+            .filter(|(_, o)| o.site.is_none() && o.holder.spine == spine && o.kind == last)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(head.len(), 1, "{}: one {} row", spine.name(), last.name());
+        let pinned = p
+            .iter()
+            .find(|(_, o)| o.kind == K::PinnedJoin)
+            .map(|(_, o)| o.site.as_ref().expect("a site").decl.lowered.clone())
+            .expect("a pinned join");
+        for kind in [K::PinnedJoin, K::Drain] {
+            let row = one(p, &pinned, kind);
+            assert!(
+                row.edges.entry.iter().any(|pr| pr.event.obligation == head[0] && pr.rule == Rule::line("7", Status::Shipped)),
+                "{}: {pinned}'s {} waits for the head's {}",
+                spine.name(),
+                kind.name(),
+                last.name()
+            );
+        }
+        assert_eq!(p.entry_order(spine).expect("ordered"), [E::Head, E::PinnedJoins, E::Cascade], "{}", spine.name());
+    }
+}
+
+/// Line 12, C52: a pinned field's lifetime is its owner's, so its join is
+/// part of its owner's teardown, before the owner drains, a root handed
+/// back to its caller included.
+#[test]
+fn a_pinned_fields_join_precedes_its_owners_drain() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_root_pinned_anchor.hl"));
+    let p = plan(&s);
+    let join = id_of(p, one(p, "Sink", K::PinnedJoin));
+    let drain = one(p, "App", K::Drain);
+    assert!(
+        drain.edges.entry.iter().any(|pr| pr.event.obligation == join
+            && pr.event.point == Point::Completed
+            && pr.rule == Rule::line("12", Status::Shipped)),
+        "App's drain waits for Sink's join"
+    );
+}
+
+/// C52, every replica (the review of #1354): a root handed back with a
+/// `pinned(replicas = 2)` field owes one pinned join per replica, each
+/// replica its own template (`InstanceKey::replica`), and the root's
+/// drain waits for every one, which is the order the root's cascade
+/// emits from its join records. Two roots of one type returned from two
+/// calls are the same templates: the plan states its rows per template,
+/// not per call, so that each root joins its own two replicas is the
+/// run's fact (the fixture's occurrences, App 2 and Sink 4, against
+/// which the trace oracle holds the run), not a row the plan carries.
+#[test]
+fn every_replica_of_a_returned_roots_pinned_field_is_joined_before_its_drain() {
+    for src in [
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_root_pinned_replicas.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_roots_pinned_replicas.hl"),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        let joins = rows(p, "Sink", K::PinnedJoin);
+        let replicas: BTreeSet<Option<u32>> = joins
+            .iter()
+            .map(|j| match &j.site.as_ref().expect("a sited row").template {
+                Template::Static(k) => k.replica,
+                Template::Dynamic { .. } => panic!("a field replica is a static template"),
+            })
+            .collect();
+        assert_eq!(replicas, BTreeSet::from([Some(0), Some(1)]), "one pinned join per replica");
+        let drain = one(p, "App", K::Drain);
+        for j in joins {
+            let join = id_of(p, j);
+            assert!(
+                drain.edges.entry.iter().any(|pr| pr.event.obligation == join
+                    && pr.event.point == Point::Completed
+                    && pr.rule == Rule::line("12", Status::Shipped)),
+                "App's drain waits for every replica's join"
+            );
+        }
+    }
 }
 
 /// Line 12 over the instance tree: an owner's fields drain in their
@@ -402,8 +530,10 @@ fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
 #[test]
 fn an_anchors_params_and_held_delivery_use_its_initialization_domain() {
     let source = include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_pool_owner_settle.hl");
+    // Line 3 (L4's fifth part): a pool-placed anchor's own birth runs on
+    // its pool's worker, as a pinned one's on its thread.
     for (placement, domain, birth_domain) in [
-        ("cooperative(pool = side)", "pool:side", "main"),
+        ("cooperative(pool = side)", "pool:side", "pool:side"),
         ("pinned", "pinned", "pinned"),
     ] {
         let s = snapshot(&source.replace("cooperative(pool = side)", placement));
@@ -909,9 +1039,38 @@ fn deferred_main_and_cross_pool_cancellation_name_their_spines() {
     assert_eq!(one(p, "App", K::Reclaim).holder.spine, Spine::DeferredMainEntry);
     let canceled = rows(p, "Kid", K::Cancellation);
     assert!(canceled.iter().any(|o| o.holder.spine == Spine::Cascade && o.guard == PathGuard::DrainInFlight));
-    // Its reclaim happens on main, so the child's worker must not be
-    // asserted as the cancellation's execution domain.
-    assert!(canceled.iter().filter(|o| o.holder.spine == Spine::Cascade).all(|o| o.runs_on.is_none()));
+    // Its reclaim happens on main, not on the child's worker: the
+    // cancellation claims main (R19a).
+    for o in canceled.iter().filter(|o| o.holder.spine == Spine::Cascade) {
+        assert_eq!(claimed(p, o), labels(&["main"]));
+        assert_eq!(o.runs_on.as_ref().map(|r| (r.rule.line, r.rule.status)), Some((Some("19"), Status::Shipped)));
+    }
+}
+
+/// A main locus built more than once enters its eager spine at each
+/// teardown: the spine's steps are owed per occurrence of the literal,
+/// and the first join, one construction's, owes no other construction's
+/// run (line 19: a later run is posted to shut-down pools and ends at its
+/// own child's reclaim, after its teardown's join).
+#[test]
+fn a_main_locus_built_twice_owes_its_eager_spine_per_construction() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_empty_ring_last_check.hl"));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let eager: Vec<&Obligation> =
+        p.obligations.iter().filter(|o| o.site.is_none() && o.holder.spine == Spine::EagerTeardown).collect();
+    assert!(eager.iter().any(|o| o.kind == K::PoolJoin));
+    for o in &eager {
+        assert_eq!(o.per_occurrence_of.as_ref().map(|s| s.decl.lowered.as_str()), Some("App"), "{}", o.kind.name());
+    }
+    let kid_runs: BTreeSet<ObligationId> = rows(p, "Kid", K::Run).into_iter().map(|o| id_of(p, o)).collect();
+    assert_eq!(kid_runs.len(), 2, "one template per App literal");
+    for join in eager.iter().filter(|o| o.kind == K::PoolJoin) {
+        assert!(
+            !join.edges.completion.iter().any(|pr| kid_runs.contains(&pr.event.obligation)),
+            "no construction's run is owed to a join"
+        );
+    }
 }
 
 /// L4's ruling on the empty run: a `Run` is owed exactly where lowering

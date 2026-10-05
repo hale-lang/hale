@@ -561,6 +561,35 @@ of the wasm32 loader, and this program is built for `<triple>`: … ```,
 where it used to become an undefined symbol at the native link, and only
 once something called it.
 
+### What a wasm32 module imports
+
+The link keeps every symbol nothing defines as an `env` import
+(`wasm-ld --allow-undefined`). The generated loader supplies an import
+from its writers (the libc output functions `println` lowers to,
+`console_log` and the libm set) or from the app's `run(glue)`, and
+stubs any other with `() => 0`. The runtime's thread, pool, mailbox and
+transport paths a wasm32 module cannot run (the target refuses
+`pinned`, every pool but `main` and every transport binding) are
+compiled out of it, so a module imports the loader's writers and the
+program's declared `@ffi("js")` names, and today these as well:
+
+- `dprintf`, `fflush`: the report of a violation no handler absorbs,
+  which the generated loader drops;
+- `fwrite`: the runtime's out-of-memory diagnostics;
+- `pthread_cond_broadcast`: the wake at a subscriber's readiness, which
+  has no waiter on wasm32;
+- `lotus_obs_locus_birth`, `lotus_obs_locus_dissolve`,
+  `lotus_obs_note_publisher`: observation probes, which do not run on
+  wasm32.
+
+An `@ffi("c")` name no `[ffi] csrc` defines is imported too, and runs as
+`() => 0` under the generated loader. A host that instantiates the
+module with its own imports object supplies every one of these names.
+`crates/hale-codegen/tests/wasm_import_backstop.rs` holds every module
+the wasm tests build to this list. It checks linkage only: an operation
+the runtime lowers to an inline stub imports nothing, so passing it does
+not show the operation does anything.
+
 ### `@export` — exports (Hale → callable by the host)
 
 Two forms; both are wasm-only (a **no-op on the native target**) and

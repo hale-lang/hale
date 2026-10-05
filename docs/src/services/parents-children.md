@@ -108,10 +108,20 @@ the child is created over on the owner's thread, so the spawning
 side can't hold onto it. There a cross-pool spawn is
 **fire-and-forget**: write it as a bare statement, not
 `let s = Ship { ... }`. `hale check` points at the literal if you
-try to keep the value in the spawning locus's own code. (A `Ship`
-built in another locus's `params` default, which that locus's
-instantiation carries across, is refused only by `hale build`, and
-without a location.)
+try to keep the value. That includes a `Ship` built in another
+locus's `params` default: the default is built wherever that locus
+is instantiated without the field, so when a worker builds a
+`Holder { }` whose `s: Ship = Ship { ... }` default it leaves
+alone, the default's `Ship` is a cross-pool spawn used as
+`Holder`'s field, and `hale check` points at it in the default.
+A function's or a method's argument default works the same way, one
+call at a time: `fn take(s: Ship = Ship { ... })` builds its `Ship`
+at each call that leaves `s` out, in the caller, so a worker's
+`take()` is refused at that call, while `take(ship)` and a `take()`
+made on the owner's own thread are fine. A `const` or a type's field
+default that builds a `Ship` is built wherever it is used, so it is
+refused where it is written as soon as some worker would spawn a
+`Ship` across pools.
 
 "A different thread" counts instances, not types. A worker nested
 inside a pinned or pool-placed locus runs on that locus's thread,

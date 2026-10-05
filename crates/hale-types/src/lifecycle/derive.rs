@@ -30,6 +30,8 @@
 //!   end of its `run()` (a flow) or by its owner's cascade (a resident).
 //! - the **bus graph**: which instances subscribe (registration,
 //!   readiness, the teardown delivery contract).
+//! - the **entry row**: which `main locus` is the entry, by identity,
+//!   whose deferred teardown is the main entry's spine.
 //!
 //! Each instance owes its rows in the order its domain performs them:
 //! params settle (when its declaration brackets), accept, subscribe and
@@ -43,14 +45,18 @@
 //! owner's handler can restart, the recovery decision and the restart,
 //! performed or refused under teardown. The process owes the spines'
 //! own steps: the pre-drain, the wait-abort and the pool join of the
-//! main locus's eager teardown and of `fn main`'s exit, and the signal
-//! path's cooperative drain.
+//! main locus's eager teardown, once per construction of the literal
+//! ([`super::Obligation::per_occurrence_of`]), and of `fn main`'s exit,
+//! and the signal path's cooperative drain.
 //!
 //! A row's status is its decision line's ([`super::DECISION_LINES`]):
 //! the line that makes it exist, the rule that places each edge and the
 //! rule behind each domain claim each carry their own, so a row whose
-//! existence is shipped can carry a claim that is known open (decision
-//! L0-1, inventory C36) or pending (line 3).
+//! existence is shipped can carry a claim that is known open or pending
+//! (line 3). A failure's delivery claims its owner's domain (decision
+//! L0-1: in place there, or posted there and awaited), or, where that
+//! domain has ended before the failure is raised, the raising thread
+//! (the shutdown rule, join progress).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,6 +71,7 @@ use super::{
     Rule, RunsOn, ShutdownCause, SourceSite, Spine, Status, Terminal,
 };
 use crate::bus_graph::BusGraph;
+use crate::entry::EntryRow;
 use crate::flows::{is_flow, FlowRows};
 use crate::handler_routing::HandlerRouting;
 use crate::placement::{
@@ -83,6 +90,9 @@ pub struct LifecycleInputs<'a> {
     pub handlers: &'a HandlerRouting,
     pub flows: &'a FlowRows,
     pub bus: &'a BusGraph,
+    /// The entry row: which `main locus` is the entry, whose deferred
+    /// teardown is the main entry's spine.
+    pub entry: &'a EntryRow,
 }
 
 /// The `lifecycle_order` family's producer: every obligation of every
@@ -1011,7 +1021,6 @@ const fn open(line: &'static str, row: &'static str) -> Rule {
     Rule::line(line, Status::KnownOpen { inventory_row: row })
 }
 
-const POOL_OWNER: &str = "the construction-time domain for an owner placed on a cooperative pool: decision L0-1 names the pool's worker, spec/semantics.md the settling thread";
 const NO_OPTION: &str = "the wave-2 decisions frame lines 1-3 as one protocol and choose no option for this line";
 
 fn local() -> Progress {
@@ -1126,8 +1135,39 @@ impl<'b, 'a> Builder<'b, 'a> {
 
     /// The domain the instance's birth runs on: its pinned thread, or
     /// the instantiating thread.
+    /// Where the instance's own `birth()` runs: a pinned anchor's thread, a
+    /// pool-placed root's worker (line 3, L4's fifth part), else the
+    /// instantiating thread. A pool-placed birth is one known domain only
+    /// where the main locus is built once ([`Self::join_once`]): a later
+    /// construction's posted birth finds the pools joined, and a pool with
+    /// no worker runs the job in place (`lotus_pool_start_post`), on the
+    /// instantiating thread.
     fn birth_domain(&self, i: usize, c: &Contribution) -> Option<DomainId> {
-        if self.is_pinned(i) { c.own } else { c.it }
+        if self.is_pinned(i) {
+            c.own
+        } else if self.pool_placed(c) {
+            c.own.filter(|_| self.join_once())
+        } else {
+            c.it
+        }
+    }
+
+    /// The first join joins every pool once: no main locus is torn down
+    /// where it stands, or one is, built once. A main locus built more
+    /// than once enters its eager spine's join at each teardown, and what
+    /// its later constructions post finds the pools shut down (line 19).
+    fn join_once(&self) -> bool {
+        let main_tops: Vec<usize> = (0..self.subjects.len())
+            .filter(|&i| {
+                matches!(self.subjects[i].how, How::Top { built: Built::Statement, main_locus: true, .. })
+                    && !self.facts[i].subscribes
+            })
+            .collect();
+        match main_tops[..] {
+            [] => true,
+            [i] => self.subjects[i].bound == Bound::Once,
+            _ => false,
+        }
     }
 
     fn site(&self, i: usize) -> Option<SourceSite> {
@@ -1137,6 +1177,7 @@ impl<'b, 'a> Builder<'b, 'a> {
     fn row(&self, i: usize, kind: super::ObligationKind, holder: Holder) -> Obligation {
         Obligation {
             site: self.site(i),
+            per_occurrence_of: None,
             kind,
             epoch: None,
             source: None,
@@ -1157,6 +1198,13 @@ impl<'b, 'a> Builder<'b, 'a> {
         domain.map(|domain| RunsOn { domains: BTreeSet::from([domain]), rule })
     }
 
+    /// Whether `decl` is the entry, the `main locus` lowering deploys:
+    /// the entry row's, by identity.
+    fn is_entry(&self, decl: &LocusDecl) -> bool {
+        let inputs = self.inputs;
+        inputs.entry.entry().and_then(|m| m.decl(inputs.bundle)).is_some_and(|e| std::ptr::eq(e, decl))
+    }
+
     /// The spine that tears the instance down, and the domain role it
     /// runs on there.
     fn teardown(&self, i: usize) -> (Spine, DomainRole) {
@@ -1171,7 +1219,9 @@ impl<'b, 'a> Builder<'b, 'a> {
                 if !self.facts[i].subscribes => {
                 (Spine::EagerTeardown, DomainRole::Instantiating)
             }
-            How::Top { .. } | How::Body { .. } if s.decl.is_main => (Spine::DeferredMainEntry, DomainRole::Teardown),
+            How::Top { .. } | How::Body { .. } if self.is_entry(s.decl) => {
+                (Spine::DeferredMainEntry, DomainRole::Teardown)
+            }
             How::Top { .. } | How::Body { .. } => (Spine::DeferredEntry, DomainRole::Teardown),
             How::Adapter => (Spine::Process, DomainRole::Main),
         }
@@ -1230,16 +1280,10 @@ impl<'b, 'a> Builder<'b, 'a> {
                 o.holder.domain = DomainRole::Own;
             }
             o.line = Some("1");
-            // Anchors settle on their initialization thread. The wider
-            // construction-delivery policy for pool owners is pending.
-            o.runs_on = self.claim(i, |c| {
-                let on = initialization_domain(self.inputs.placement, s.placed, c);
-                if self.pool_placed(c) {
-                    Self::on(on, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
-                } else {
-                    Self::on(on, shipped("1"))
-                }
-            });
+            // Anchors settle on their initialization thread: a pool-placed
+            // owner on its worker, the domain a later failure is posted to
+            // (`fd_pool_owner_worker.hl` holds the handler's thread).
+            o.runs_on = self.claim(i, |c| Self::on(initialization_domain(self.inputs.placement, s.placed, c), shipped("1")));
             r.params_settle = Some(self.push(o));
         }
         // Accept (line 5): after the params, before the birth; no rejection.
@@ -1263,22 +1307,23 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.runs_on = self.claim(i, |c| Self::on(c.it, shipped("6")));
             self.push(o)
         });
-        // Birth: on the pinned thread, else on the instantiating thread,
-        // a pool-placed locus's domain pending (line 3).
+        // Birth: on the pinned thread; a pool-placed root's on its pool's
+        // worker, as a job the instantiating thread waits for (line 3); else
+        // on the instantiating thread.
         let birth_holder = if pinned {
             Holder { spine: Spine::PinnedMain, domain: DomainRole::Own }
         } else {
             instantiation
         };
         let mut o = self.row(i, K::Birth, birth_holder);
+        if s.placed && on_pool {
+            o.holder.domain = DomainRole::Own;
+        }
         o.multiplicity = Multiplicity::OncePerIncarnation;
         o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
         o.runs_on = self.claim(i, |c| {
-            if self.pool_placed(c) {
-                Self::on(c.it, Rule::line("3", Status::Pending { condition: NO_OPTION }))
-            } else {
-                Self::on(self.birth_domain(i, c), Rule::SHIPPED)
-            }
+            let rule = if self.pool_placed(c) { shipped("3") } else { Rule::SHIPPED };
+            Self::on(self.birth_domain(i, c), rule)
         });
         if let Some(p) = r.params_settle {
             o.edges.entry.push(after(p, Point::Completed, Rule::SHIPPED));
@@ -1436,10 +1481,9 @@ impl<'b, 'a> Builder<'b, 'a> {
         if pinned {
             let mut o = self.row(i, K::PinnedJoin, Holder { spine: Spine::DeferredEntry, domain: DomainRole::Teardown });
             o.edges.completion.push(after(dissolve, Point::Completed, Rule::SHIPPED));
-            o.progress = Progress {
-                rule: ProgressRule::Join { pumps: K::FailureDelivery },
-                status: Status::KnownOpen { inventory_row: "C18" },
-            };
+            // The join runs the failures posted to the joining thread until
+            // the pinned thread's domain ends (C18, L5's fourth part).
+            o.progress = Progress { rule: ProgressRule::Join { pumps: K::FailureDelivery }, status: Status::Shipped };
             o.lifetime.push(Retention {
                 resource: Resource::Mailbox,
                 until: Event { obligation: ObligationId(0), point: Point::Completed },
@@ -1450,12 +1494,8 @@ impl<'b, 'a> Builder<'b, 'a> {
             r.pinned_join = Some(id);
             let mut o = self.row(i, K::JoinProgress, Holder { spine: Spine::DeferredEntry, domain: DomainRole::Teardown });
             o.line = Some("JP");
-            o.status = Status::KnownOpen { inventory_row: "C18" };
-            o.edges.entry.push(after(id, Point::Entered, open("JP", "C18")));
-            o.progress = Progress {
-                rule: ProgressRule::Join { pumps: K::FailureDelivery },
-                status: Status::KnownOpen { inventory_row: "C18" },
-            };
+            o.edges.entry.push(after(id, Point::Entered, shipped("JP")));
+            o.progress = Progress { rule: ProgressRule::Join { pumps: K::FailureDelivery }, status: Status::Shipped };
             self.push(o);
         }
         if subscribes {
@@ -1496,14 +1536,20 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         // Any posted run still queued at reclaim is canceled there,
         // including a static field reclaimed on main after its pool stops.
-        // Cancellation follows the reclaiming domain; claim the worker
-        // only when every occurrence's owner tears down on that worker.
+        // Cancellation follows the reclaiming domain (R19a): the worker
+        // where every occurrence's owner tears down on that worker, main
+        // for a static instance, which its root's cascade reclaims there.
         if r.run.is_some() && posted_run {
             let mut o = self.row(i, K::Cancellation, reclaim_holder);
             o.line = Some("19");
             o.guard = PathGuard::DrainInFlight;
+            let reclaimed_on_main = matches!(s.site.template, Template::Static(_));
             o.runs_on = combine(self.contributions(i).iter().filter(|c| self.is_pool(c.own)).map(|c| {
-                self.posted_to_its_owners_teardown(i, c).then(|| Self::on(c.own, shipped("19"))).flatten()
+                if reclaimed_on_main {
+                    Self::on(Some(PlacementTable::MAIN), shipped("19"))
+                } else {
+                    self.posted_to_its_owners_teardown(i, c).then(|| Self::on(c.own, shipped("19"))).flatten()
+                }
             }));
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
@@ -1565,42 +1611,42 @@ impl<'b, 'a> Builder<'b, 'a> {
                 FailureSource::Dissolve => ("10", Status::Shipped),
                 _ => ("9", Status::Shipped),
             };
-            // Decision L0-1: the handler runs on the owner's domain. In
-            // place on the raising thread is the same thing only when the
-            // two are one domain (inventory C36 otherwise). Each occurrence
-            // against the owner occurrence it is built under.
+            // Decision L0-1: the handler runs on the owner's domain, called
+            // in place where the child raises on it and posted there and
+            // awaited where it raises elsewhere (L5's fourth part, C36). An
+            // owner's domain that has ended runs nothing more: the delivery
+            // runs where it is raised, the shutdown rule (join progress).
+            // Each occurrence against the owner occurrence it is built under.
             let mut claims = Vec::new();
+            let mut in_place = !routed.is_empty();
             for c in &routed {
                 let raised_on = self.raised_on(i, c, source);
                 for oc in self.under(c) {
-                    claims.push(match (raised_on, oc.own) {
-                        (Some(a), Some(b)) if a == b => Self::on(oc.own, shipped("L0-1")),
-                        (_, Some(_)) => Self::on(oc.own, open("L0-1", "C36")),
-                        _ => None,
+                    in_place &= raised_on.is_some() && raised_on == oc.own;
+                    claims.push(if self.owner_ended(i, source, raised_on, oc) {
+                        Self::on(raised_on, shipped("JP"))
+                    } else {
+                        Self::on(oc.own, shipped("L0-1"))
                     });
                 }
             }
-            let claim = combine(claims);
-            let delivered_in_place = claim.as_ref().is_some_and(|c| c.rule.status == Status::Shipped);
             let mut o = self.row(i, K::FailureDelivery, Holder { spine: Spine::QueueDrain, domain: DomainRole::Owner });
             o.source = Some(source);
             o.epoch = epoch;
             o.guard = guard;
             o.line = Some(line);
             o.status = status;
-            o.runs_on = claim;
+            o.runs_on = combine(claims);
             o.multiplicity = Multiplicity::OncePerTrigger;
             o.terminals = vec![Terminal::Completed, Terminal::ClosureViolation];
+            // The owner completes the decision wherever it services its
+            // queue, its joins included (join progress).
             o.progress = Progress {
                 rule: ProgressRule::WaitsFor {
                     event: Event { obligation: ObligationId(0), point: Point::Completed },
                     owed_by: DomainRole::Owner,
                 },
-                status: if delivered_in_place {
-                    Status::Shipped
-                } else {
-                    Status::KnownOpen { inventory_row: "C36" }
-                },
+                status: Status::Shipped,
             };
             if let Some(e) = enclosing {
                 match source {
@@ -1631,9 +1677,12 @@ impl<'b, 'a> Builder<'b, 'a> {
                 },
             ];
             // Delivered at the failing epoch: a run's own failure, in place
-            // on its own domain, completes inside the run (line 9).
+            // on its own domain, completes inside the run (line 9). Not
+            // stated for a posted one: a pinned child can raise before its
+            // owner's params settle, where the failure is held to the
+            // settle and the failing step does not wait for it.
             if let Some(e) = enclosing {
-                if matches!(source, FailureSource::Run | FailureSource::Drain | FailureSource::Dissolve) && delivered_in_place {
+                if matches!(source, FailureSource::Run | FailureSource::Drain | FailureSource::Dissolve) && in_place {
                     self.get(e).edges.completion.push(after(id, Point::Completed, shipped("9")));
                 }
             }
@@ -1652,19 +1701,37 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     /// Where the occurrences of contribution `c` raise a failure of
-    /// `source`; `None` where it is not one known domain.
+    /// `source`; `None` where it is not one known domain. A static
+    /// instance is torn down by its root's cascade on main, a field under
+    /// a pinned anchor drained on that anchor's thread first (C9).
     fn raised_on(&self, i: usize, c: &Contribution, source: FailureSource) -> Option<DomainId> {
         match source {
             FailureSource::BirthClosure | FailureSource::BirthCheck => self.birth_domain(i, c),
             FailureSource::Run | FailureSource::Handler => c.own,
             FailureSource::Drain | FailureSource::Dissolve => {
-                if self.is_pinned(i) {
+                let under_pinned = c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { .. }));
+                if self.is_pinned(i) || (source == FailureSource::Drain && under_pinned) {
                     c.own
+                } else if matches!(self.subjects[i].site.template, Template::Static(_)) {
+                    Some(PlacementTable::MAIN)
                 } else {
                     None
                 }
             }
         }
+    }
+
+    /// The owner occurrence `oc`'s domain has ended when `i` raises a
+    /// failure of `source` on `raised_on`: a static instance's teardown on
+    /// main comes after the pool join and after its pinned anchor's join
+    /// (every teardown spine joins before its cascade), so a pool worker
+    /// or a pinned thread owning it there consumes nothing more.
+    fn owner_ended(&self, i: usize, source: FailureSource, raised_on: Option<DomainId>, oc: &Contribution) -> bool {
+        matches!(source, FailureSource::Drain | FailureSource::Dissolve)
+            && !self.is_pinned(i)
+            && matches!(self.subjects[i].site.template, Template::Static(_))
+            && raised_on == Some(PlacementTable::MAIN)
+            && oc.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pool { .. } | DomainKind::Pinned { .. }))
     }
 
     /// The held alternative of one failure source.
@@ -1678,8 +1745,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         restarts: bool,
         r: &mut Rows,
     ) {
-        // The hold and the delivery at settle are shipped for every owner;
-        // which domain a pool-placed owner's delivery owes is pending.
+        // The hold and the delivery at settle are shipped for every owner,
+        // a pool-placed one's on its worker, where its params settle.
         let mut o = self.row(i, K::FailureDelivery, Holder { spine: Spine::Settle, domain: DomainRole::Instantiating });
         o.source = Some(source);
         o.epoch = epoch;
@@ -1687,20 +1754,15 @@ impl<'b, 'a> Builder<'b, 'a> {
         o.line = Some("1");
         o.multiplicity = Multiplicity::OncePerTrigger;
         o.terminals = vec![Terminal::Completed];
-        // Raised and delivered on one thread only when the failing child
-        // raises on the thread settling the owner it is built under.
+        // Delivered at the settle, on the thread settling the owner it is
+        // built under, wherever the child raised it (L5's fourth part
+        // traces it there, where its handler runs).
         let mut claims = Vec::new();
         for c in routed {
-            let raised_on = self.raised_on(i, c, source);
             for oc in self.under(c) {
                 let owner = c.owner.expect("a routed contribution has an owner");
                 let settling = initialization_domain(self.inputs.placement, self.subjects[owner].placed, oc);
-                let rule = if self.pool_placed(oc) {
-                    Rule::line("1", Status::Pending { condition: POOL_OWNER })
-                } else {
-                    shipped("1")
-                };
-                claims.push(if raised_on == settling { Self::on(settling, rule) } else { None });
+                claims.push(Self::on(settling, shipped("1")));
             }
         }
         o.runs_on = combine(claims);
@@ -1847,6 +1909,12 @@ impl<'b, 'a> Builder<'b, 'a> {
             if let (Some(cd), Some(pd)) = (child.drain, parent.drain) {
                 self.get(pd).edges.entry.push(after(cd, Point::Completed, shipped("12")));
             }
+            // A pinned field's lifetime is its owner's (C52): its thread is
+            // joined in its owner's teardown, before the owner drains,
+            // whichever frame or caller tears the owner down.
+            if let (Some(cj), Some(pd)) = (child.pinned_join, parent.drain) {
+                self.get(pd).edges.entry.push(after(cj, Point::Completed, shipped("12")));
+            }
         }
         if matches!(self.subjects[i].how, How::Accepted { .. }) {
             // A resident accepted child is reclaimed by its owner's
@@ -1933,6 +2001,7 @@ impl<'b, 'a> Builder<'b, 'a> {
     fn process_row(kind: K, spine: Spine, line: Option<&'static str>, status: Status) -> Obligation {
         Obligation {
             site: None,
+            per_occurrence_of: None,
             kind,
             epoch: None,
             source: None,
@@ -1970,28 +2039,29 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     /// A teardown spine's pool join (R20), with the progress it owes (join
-    /// progress, R20 known open): after the quiesce (GH #468) and after
-    /// the wait-abort (line 7), so a worker parked in a wait only the abort
-    /// ends is released before the join waits for it.
+    /// progress, shipped: each worker's join runs the failures posted to
+    /// the joining thread until that worker's domain ends, L5's fourth
+    /// part): after the quiesce (GH #468) and after the wait-abort (line
+    /// 7), so a worker parked in a wait only the abort ends is released
+    /// before the join waits for it.
     fn join(&mut self, spine: Spine, prior: &[Prerequisite], quiesce: ObligationId, abort: ObligationId) -> ObligationId {
         let mut o = Self::process_row(K::PoolJoin, spine, None, Status::Shipped);
         o.edges.entry.extend_from_slice(prior);
         o.edges.entry.push(after(quiesce, Point::Completed, Rule::SHIPPED));
         o.edges.entry.push(after(abort, Point::Completed, shipped("7")));
-        o.progress = Progress {
-            rule: ProgressRule::Join { pumps: K::FailureDelivery },
-            status: Status::KnownOpen { inventory_row: "R20" },
-        };
+        o.progress = Progress { rule: ProgressRule::Join { pumps: K::FailureDelivery }, status: Status::Shipped };
         let join = self.push(o);
-        let mut o = Self::process_row(K::JoinProgress, spine, Some("JP"), Status::KnownOpen { inventory_row: "R20" });
-        o.edges.entry.push(after(join, Point::Entered, open("JP", "R20")));
+        let mut o = Self::process_row(K::JoinProgress, spine, Some("JP"), Status::Shipped);
+        o.edges.entry.push(after(join, Point::Entered, shipped("JP")));
         self.push(o);
         join
     }
 
     /// The head of the main locus's own teardown, eager or deferred: the
     /// quiesce, the wait-abort and, where the program has pools, the join,
-    /// all before its fields' teardown (rule (b)). Returns the join.
+    /// all before its fields' teardown (rule (b)), its pinned fields' joins
+    /// included (line 7: a pinned thread parked in a wait is joined only
+    /// once the wait is aborted). Returns the join.
     fn root_head(&mut self, spine: Spine, i: usize, pools: bool, prior: &[Prerequisite]) -> Option<ObligationId> {
         let mut prior = prior.to_vec();
         if let Some(run) = self.rows[i].run {
@@ -1999,10 +2069,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         let q = self.quiesce(spine, &prior);
         let a = self.abort(spine, &prior, q);
-        if !pools {
-            return None;
+        let join = pools.then(|| self.join(spine, &prior, q, a));
+        // Line 7, on every spine: the head before the joins of the pinned
+        // threads the root's teardown joins (its pinned fields, and those
+        // of its fields built on its instantiating thread), and before
+        // their drains, which the join's mailbox shutdown begins.
+        let last = join.unwrap_or(a);
+        for c in self.own_pinned(i) {
+            for row in [self.rows[c].pinned_join, self.rows[c].drain].into_iter().flatten() {
+                self.get(row).edges.entry.push(after(last, Point::Completed, shipped("7")));
+            }
         }
-        let join = self.join(spine, &prior, q, a);
+        let join = join?;
         // Rule (b): the main locus joins the pools before its fields'
         // teardown.
         let fields: Vec<usize> =
@@ -2013,6 +2091,30 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
         }
         Some(join)
+    }
+
+    /// The pinned anchors `i`'s own teardown joins: its pinned fields, and
+    /// those of its fields built on its instantiating thread (neither
+    /// pinned nor on a pool, whose subtrees initialize on their own
+    /// domain, C49/C50).
+    fn own_pinned(&self, i: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![i];
+        let mut seen = BTreeSet::from([i]);
+        while let Some(o) = stack.pop() {
+            for c in 0..self.subjects.len() {
+                if self.subjects[c].how != How::Field || !self.owners(c).contains(&o) || !seen.insert(c) {
+                    continue;
+                }
+                if self.is_pinned(c) {
+                    out.push(c);
+                } else if !self.any(c, |x| self.is_pool(x.own)) {
+                    stack.push(c);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
     }
 
     /// Whether the template builds the root lowering deploys (the
@@ -2061,11 +2163,19 @@ impl<'b, 'a> Builder<'b, 'a> {
         let eager: Vec<usize> = (0..self.subjects.len())
             .filter(|&i| matches!(self.subjects[i].how, How::Top { built: Built::Statement, .. }) && !self.facts[i].subscribes)
             .collect();
+        // The first join joins every pool once. A main locus built more
+        // than once enters its eager spine's join at each teardown, and a
+        // run its later constructions post finds the pools shut down and
+        // ends after that teardown's join, at its own child's reclaim
+        // (line 19). What every pool's run owes the first join is stated
+        // only where the main locus is built once.
+        let join_once = self.join_once();
         let statements_done: Vec<ObligationId> = eager.iter().filter_map(|&i| self.rows[i].reclaim).collect();
         for i in eager {
             let main_locus = matches!(self.subjects[i].how, How::Top { main_locus: true, .. });
             let fields: Vec<usize> =
                 (0..self.subjects.len()).filter(|&c| self.subjects[c].how == How::Field && self.owners(c).contains(&i)).collect();
+            let before = self.plan.obligations.len();
             // Every teardown spine pre-drains (line 18; not the eager one
             // yet, C13).
             let mut o = Self::process_row(K::PreDrain, Spine::EagerTeardown, Some("18"), Status::KnownOpen { inventory_row: "C13" });
@@ -2083,6 +2193,15 @@ impl<'b, 'a> Builder<'b, 'a> {
             if main_locus {
                 if let Some(join) = self.root_head(Spine::EagerTeardown, i, pools, &[]) {
                     first_join.get_or_insert(join);
+                }
+            }
+            // The eager spine's steps, its pre-drain and its head, are owed
+            // at each teardown of the statement literal, once per its
+            // occurrence.
+            let per = self.site(i);
+            for o in &mut self.plan.obligations[before..] {
+                if o.site.is_none() && o.holder.spine == Spine::EagerTeardown {
+                    o.per_occurrence_of = per.clone();
                 }
             }
         }
@@ -2192,15 +2311,15 @@ impl<'b, 'a> Builder<'b, 'a> {
             self.root_head(Spine::DeferredMainEntry, i, pools, &prior);
         }
         // A failure of a child the joins wait for completes before the join
-        // does (join progress): today because the handler runs in place on
-        // the child's thread (C36), once delivery follows L0-1 because the
-        // joining owner keeps completing its children's decisions. Stated
-        // for a template every occurrence of which is on a pool: the edge
-        // holds of each occurrence.
+        // does (join progress): the joining thread runs the failures posted
+        // to it until the joined domain ends, and one posted to a domain
+        // that has ended runs where it is raised. Stated for a template
+        // every occurrence of which is on a pool: the edge holds of each
+        // occurrence.
         for i in 0..self.subjects.len() {
             let join = if self.is_pinned(i) {
                 self.rows[i].pinned_join
-            } else if self.all(i, |c| self.is_pool(c.own)) {
+            } else if join_once && self.all(i, |c| self.is_pool(c.own)) {
                 first_join
             } else {
                 None
@@ -2228,7 +2347,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         // the join, so those cancellations impose no join prerequisite. A
         // run is held to the join where every occurrence is on a pool; a
         // cancellation exists only on one.
-        if let Some(join) = first_join {
+        if let Some(join) = first_join.filter(|_| join_once) {
             for i in 0..self.subjects.len() {
                 if !self.any(i, |c| self.is_pool(c.own)) {
                     continue;
@@ -2287,7 +2406,9 @@ mod tests {
             let bus = BusGraph::default();
             let programs: Vec<_> = bundle.programs.values().copied().collect();
             let flows = crate::flows::survey(&programs, &bundle.import_renames);
-            let inputs = LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus };
+            let entry = crate::entry::entry_row(bundle);
+            let inputs =
+                LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus, entry: &entry };
             let index = LocusIndex::of(bundle);
             let all = subjects(&inputs, &index, &literal_positions(bundle));
             assert_eq!(all.len(), 33, "one template per literal");
@@ -2301,12 +2422,13 @@ mod tests {
     /// row make no claim, not a set under either rule. No program reaches
     /// it through the producer today, so it is pinned here: a template
     /// with several contributions is dynamic, each of its occurrences is
-    /// built and run on its owner occurrence's domain, and every rule a
-    /// contribution states is the same function of domains that agree.
+    /// built and run on its owner occurrence's domain, and the one rule a
+    /// delivery states besides L0-1, the shutdown rule's, is a static
+    /// instance's, whose one contribution states one rule.
     #[test]
     fn contributions_stating_different_rules_claim_no_domain() {
         let delivered = shipped("L0-1");
-        let crossing = open("L0-1", "C36");
+        let crossing = shipped("JP");
         assert_eq!(
             combine([on(0, delivered), on(1, delivered)]),
             Some(RunsOn { domains: BTreeSet::from([DomainId(0), DomainId(1)]), rule: delivered }),

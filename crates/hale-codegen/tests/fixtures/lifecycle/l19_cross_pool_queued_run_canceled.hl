@@ -1,12 +1,15 @@
 // Decision line 19, a run queued on one pool for a child torn down on
 // another (RunAdmission, Run, Cancellation).
 //
-// Holder and Kid finish their worker initialization before Kid's birth()
-// asks Holder to occupy pool side. Holder acknowledges from its handler,
-// then waits for a gate file. Kid's birth returns and its run is queued
-// behind that handler. App replaces Kid on main, canceling the old run
-// before reclaiming its arena, then opens the gate. The worker drops the
-// canceled cell without touching the reclaimed struct.
+// Holder and Kid finish their worker initialization before Kid's birth(),
+// on pool side's worker (line 3), asks Holder to occupy that worker: the
+// handler's cell is queued ahead of Kid's run, which the instantiating
+// thread posts once the birth returns. Holder's handler waits for a gate
+// file. App replaces Kid on main, canceling the old run before reclaiming
+// its arena, then opens the gate. The worker drops the canceled cell
+// without touching the reclaimed struct. (While birth() ran on main, it
+// waited for the handler to start; on the worker it cannot, and needs
+// not: the queue orders the two.)
 //
 // Expected terminal outcome: tag 0's run never starts and is named not
 // started with an acknowledgement on main, tag 1's runs, and both
@@ -35,9 +38,6 @@ locus Kid {
     birth() {
         if self.tag == 0 {
             Hold <- HoldMsg { n: 0 };
-            while !std::io::fs::file_exists(gate() + ".ready") {
-                std::time::sleep(1ms);
-            }
         }
     }
     run() { println("ev kid-run " + to_string(self.tag)); }

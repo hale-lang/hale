@@ -97,28 +97,29 @@ const PLACED_ON_WEB: &str = "\
 const ADVISORY: &str = "`Worker::on_e` is placed on the async_io pool `web`, whose single worker it shares";
 
 /// The placement-implied advisory reads the pools of the `main locus`
-/// lowering deploys (the row's lowering root): with two, the first.
-/// Before the row, every top-level `main locus`'s placement counted, so
-/// the second's pool, which nothing spawns, was advised on.
+/// lowering deploys (the row's root, the entry since L4): with two
+/// (rule 1's error), the last, as the row takes the entry. Before the
+/// row, every top-level `main locus`'s placement counted, so the other
+/// one's pool, which nothing spawns, was advised on.
 #[test]
 fn the_async_io_advisory_reads_the_deployed_root_only() {
     let root = scratch("implied_two");
     // The control: the deployed main places the pool.
-    let first = check(&seed(
+    let deployed = check(&seed(
         &root,
-        "first",
-        &format!("{BLOCKING_WORKER}\nmain locus App {{\n{PLACED_ON_WEB}}}\n\nmain locus Other {{ }}\n\nfn main() {{ App {{ }}; }}\n"),
+        "deployed",
+        &format!("{BLOCKING_WORKER}\nmain locus Other {{ }}\n\nmain locus App {{\n{PLACED_ON_WEB}}}\n\nfn main() {{ App {{ }}; }}\n"),
     ));
-    assert!(first.contains(ADVISORY), "{first}");
-    // The second main places it: lowering deploys the first, which
+    assert!(deployed.contains(ADVISORY), "{deployed}");
+    // The other main places it: lowering deploys the entry, which
     // spawns no `web`.
-    let second = check(&seed(
+    let other = check(&seed(
         &root,
-        "second",
-        &format!("{BLOCKING_WORKER}\nmain locus App {{ }}\n\nmain locus Other {{\n{PLACED_ON_WEB}}}\n\nfn main() {{ App {{ }}; }}\n"),
+        "other",
+        &format!("{BLOCKING_WORKER}\nmain locus Other {{\n{PLACED_ON_WEB}}}\n\nmain locus App {{ }}\n\nfn main() {{ App {{ }}; }}\n"),
     ));
-    assert!(second.contains("more than one `main` locus declared"), "{second}");
-    assert!(!second.contains(ADVISORY), "the second main's pool is not spawned: {second}");
+    assert!(other.contains("more than one `main` locus declared"), "{other}");
+    assert!(!other.contains(ADVISORY), "the other main's pool is not spawned: {other}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -184,8 +185,9 @@ const OWNER_UNMAPPED: &str = "role(s) `owner` are not mapped";
 
 /// `owner` joins the roles `--matrix` asks an environment to map when
 /// the program has an api binding, and the binding is the one generated
-/// into the `main locus` lowering deploys (the first of the seed's
-/// own): with two, the second one's `api:` entry binds nothing and gates
+/// into the `main locus` lowering deploys (the row's root, the entry
+/// since L4): with two (rule 1's error), the last, as the row takes the
+/// entry, and the other one's `api:` entry binds nothing and gates
 /// nothing. Before the row, any `main locus` of the seed's own carrying
 /// one declared `owner`.
 #[test]
@@ -202,11 +204,11 @@ fn the_matrix_roles_read_the_deployed_roots_binding() {
         out
     };
     // The control: the deployed root carries the entry.
-    let first = matrix("roles_first", format!("main locus App {{\n{api}}}\nmain locus Other {{ }}\nfn main() {{ App {{ }}; }}\n"));
-    assert!(first.contains(OWNER_UNMAPPED), "{first}");
-    let second = matrix("roles_second", format!("main locus App {{ }}\nmain locus Other {{\n{api}}}\nfn main() {{ App {{ }}; }}\n"));
-    assert!(second.contains("more than one `main` locus declared"), "{second}");
-    assert!(!second.contains(OWNER_UNMAPPED), "the second main's entry binds nothing: {second}");
+    let deployed = matrix("roles_deployed", format!("main locus Other {{ }}\nmain locus App {{\n{api}}}\nfn main() {{ App {{ }}; }}\n"));
+    assert!(deployed.contains(OWNER_UNMAPPED), "{deployed}");
+    let other = matrix("roles_other", format!("main locus Other {{\n{api}}}\nmain locus App {{ }}\nfn main() {{ App {{ }}; }}\n"));
+    assert!(other.contains("more than one `main` locus declared"), "{other}");
+    assert!(!other.contains(OWNER_UNMAPPED), "the other main's entry binds nothing: {other}");
 }
 
 // ---------------------------------------------------------------- 3 of 4

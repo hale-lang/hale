@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::{
     BusMember, CapacitySlotKind, ClosureAssertion,
     ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind,
-    Literal, LocusAnnotation, LocusDecl, LocusMember, ModeKind,
+    LocusAnnotation, LocusDecl, LocusMember, ModeKind,
     ParamInit, ProjectionClass, ScheduleClass,
     TypeExpr,
 };
@@ -470,6 +470,22 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         } else {
             None
         };
+        // C52 (line 12): a root some literal hands back to its caller keeps
+        // the join record of every replica of each of its pinned fields,
+        // `[K x {i64 thread, ptr instance}]` per field in field-name order
+        // (K the field's declared replica count), so its cascade joins
+        // them wherever it is torn down. A record's thread is zero where
+        // the frame that built the root keeps the join (its flush entries'
+        // allocas hold the ids).
+        let mut anchor_records: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+        if self.is_entry_locus(&l.name.name) {
+            let record_ty = self.anchor_record_ty();
+            for (field, &replicas) in &self.deployment.instance_joined_anchor_fields {
+                anchor_records.insert(field.clone(), (idx, replicas));
+                llvm_field_tys.push(record_ty.array_type(replicas).into());
+                idx += 1;
+            }
+        }
 
         // m40: synthetic `__restart_count: i64` field, always
         // appended to every locus struct. Zero-initialized at
@@ -1008,23 +1024,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     form,
                     Some(SlotForm::RingBuffer) | Some(SlotForm::LruCache)
                 ) {
-                    // Extract `cap = N` from the form annotation
-                    // args. Typecheck guarantees presence + valid
-                    // form on @form(ring_buffer) / @form(lru_cache);
-                    // codegen reads the int literal directly. (The
+                    // The form row's `cap` (F.40 phase 3, C3 rest).
+                    // Typecheck guarantees presence + valid form on
+                    // @form(ring_buffer) / @form(lru_cache). (The
                     // `ring_buffer_cap` field name predates lru but
-                    // carries the same fixed-cap-literal role.)
-                    l.form
-                        .as_ref()
-                        .and_then(|f| {
-                            f.args.iter().find(|a| a.name.name == "cap")
-                        })
-                        .and_then(|a| match &a.value {
-                            Expr::Literal(Literal::Int(n), _) if *n > 0 => {
-                                Some(*n as u64)
-                            }
-                            _ => None,
-                        })
+                    // carries the same fixed-cap role.)
+                    self.forms.cap(l)
                 } else {
                     None
                 };
@@ -1042,20 +1047,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         Discipline::Striped => SyncMode::Striped,
                         Discipline::Lockfree => {
                             // F.32-1γ-v1: lockfree requires
-                            // `cap = N` (validated by typecheck;
-                            // codegen reads the int literal).
-                            let cap = l.form
-                                .as_ref()
-                                .and_then(|f| {
-                                    f.args.iter().find(|a| a.name.name == "cap")
-                                })
-                                .and_then(|a| match &a.value {
-                                    Expr::Literal(Literal::Int(n), _) if *n > 0 => {
-                                        Some(*n as u64)
-                                    }
-                                    _ => None,
-                                })
-                                .unwrap_or(0);
+                            // `cap = N` (validated by typecheck);
+                            // the form row's `cap`.
+                            let cap = self.forms.cap(l).unwrap_or(0);
                             SyncMode::Lockfree { fixed_cap: cap }
                         }
                     }
@@ -1305,6 +1299,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 owner_forward_field_idxs,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
+                anchor_records,
                 projection_class,
                 schedule_class,
                 capacity_slots,

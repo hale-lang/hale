@@ -34,7 +34,7 @@ use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
 use crate::verdict::Verdict;
-use crate::alloc_summary::{self, AllocSummary, Callee, FnKey};
+use crate::alloc_summary::{self, AllocSummary, Callee, DeclId, FnKey};
 use crate::callgraph;
 
 /// How many subscriber DELIVERIES one publish site can cause.
@@ -210,7 +210,7 @@ pub(crate) fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
             match item {
                 TopDecl::Fn(fd) => {
                     out.insert(
-                        FnKey::free_fn(fd.name.name.clone()),
+                        FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()),
                         frame_bytes(fd),
                     );
                 }
@@ -219,7 +219,7 @@ pub(crate) fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
                         if let LocusMember::Fn(fd) = m {
                             out.insert(
                                 FnKey::method(
-                                    l.name.name.clone(),
+                                    DeclId::user(fd.id), l.name.name.clone(),
                                     fd.name.name.clone(),
                                 ),
                                 frame_bytes(fd),
@@ -458,7 +458,7 @@ fn quantitative_report(
         for item in &program.items {
             match item {
                 TopDecl::Fn(fd) if !fd.quantities.is_empty() => roots.push((
-                    FnKey::free_fn(fd.name.name.clone()),
+                    FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()),
                     fd.quantities.clone(),
                     fd.name.span,
                 )),
@@ -468,7 +468,7 @@ fn quantitative_report(
                             if !fd.quantities.is_empty() {
                                 roots.push((
                                     FnKey::method(
-                                        l.name.name.clone(),
+                                        DeclId::user(fd.id), l.name.name.clone(),
                                         fd.name.name.clone(),
                                     ),
                                     fd.quantities.clone(),

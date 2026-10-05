@@ -224,10 +224,15 @@ impl DependencyIndex {
         let named = |map: &BTreeMap<String, BTreeSet<usize>>, name: &str| -> Vec<usize> {
             map.get(name).map(|s| s.iter().copied().collect()).unwrap_or_default()
         };
+        // A row is its declaration's: the program's by its site, a
+        // stdlib copy's none of them; a row no mint numbered joins by
+        // its name.
         let of_key = |k: &FnKey| -> Vec<usize> {
-            match &k.locus {
-                Some(l) => named(&loci, l),
-                None => named(&fns, &k.fn_name),
+            match (k.decl, &k.locus) {
+                (Some(d), _) if d.universe == SiteUniverse::User => owner_of.get(&d.index).copied().into_iter().collect(),
+                (Some(_), _) => Vec::new(),
+                (None, Some(l)) => named(&loci, l),
+                (None, None) => named(&fns, &k.fn_name),
             }
         };
         let user_site = |s: &SiteRef| -> Option<usize> {

@@ -172,6 +172,15 @@ Only the wasm32 loader can supply a `js` import, so a native build of a
 program that declares one is refused at the declaration — even if
 nothing calls it. Keep browser imports in the browser build.
 
+If you instantiate the module yourself instead of through the generated
+loader, your imports object has to supply every `env` import the module
+declares (`WebAssembly.Module.imports(mod)` lists them): the console
+writers and libm set the loader ships, your `@ffi("js")` functions, and
+a few runtime names the generated loader stubs with `() => 0` (`dprintf`,
+`fflush`, `fwrite`, `pthread_cond_broadcast` and the `lotus_obs_*`
+probes). The runtime's thread and socket calls are not linked into a
+wasm32 module, so they are not among them.
+
 ## Letting the host call you: `@export` + the app locus
 
 To run a game loop or react to network messages, the *host* needs

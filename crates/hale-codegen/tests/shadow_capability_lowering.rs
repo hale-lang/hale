@@ -57,6 +57,8 @@ use hale_types::capability::{
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/wasm_module.rs"]
+mod wasm_module;
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shadow_capability_lowering.txt")
@@ -97,55 +99,17 @@ fn uses(ir: &str, sym: &str) -> bool {
     })
 }
 
-/// A wasm module's export names, from its export section (id 7).
-fn wasm_exports(bytes: &[u8]) -> Option<Vec<String>> {
-    fn leb(b: &[u8], at: &mut usize) -> Option<u32> {
-        let (mut v, mut shift) = (0u32, 0);
-        loop {
-            let byte = *b.get(*at)?;
-            *at += 1;
-            v |= u32::from(byte & 0x7f) << shift;
-            if byte & 0x80 == 0 {
-                return Some(v);
-            }
-            shift += 7;
-        }
-    }
-    if bytes.get(..4)? != b"\0asm" {
-        return None;
-    }
-    let mut at = 8;
-    while at < bytes.len() {
-        let id = bytes[at];
-        at += 1;
-        let size = leb(bytes, &mut at)? as usize;
-        let end = at + size;
-        if id == 7 {
-            let n = leb(bytes, &mut at)?;
-            let mut out = Vec::new();
-            for _ in 0..n {
-                let len = leb(bytes, &mut at)? as usize;
-                out.push(String::from_utf8_lossy(bytes.get(at..at + len)?).into_owned());
-                at += len;
-                at += 1; // kind
-                leb(bytes, &mut at)?;
-            }
-            return Some(out);
-        }
-        at = end;
-    }
-    Some(Vec::new())
-}
-
 /// One build: its pre-optimization IR, the module's exports (wasm32),
 /// or the refusal codegen returned.
 struct Built {
     ir: String,
     exports: Option<Vec<String>>,
     err: Option<CodegenError>,
+    /// What the import backstop said of a wasm32 module that built.
+    backstop: Option<String>,
 }
 
-fn build(program: &Program, target: CompileTarget, link: &[&str], name: &str) -> Built {
+fn build(program: &Program, target: CompileTarget, link: &[&str], name: &str, origin: &str) -> Built {
     let bin = harness::unique_bin(name);
     let out = if target == CompileTarget::Wasm32 { bin.with_extension("wasm") } else { bin.clone() };
     let ll = bin.with_extension("ll");
@@ -157,13 +121,13 @@ fn build(program: &Program, target: CompileTarget, link: &[&str], name: &str) ->
     };
     let err = build_executable_with_options(program, &out, &[], &options).err();
     let ir = std::fs::read_to_string(&ll).unwrap_or_default();
-    let exports = (target == CompileTarget::Wasm32 && err.is_none())
-        .then(|| std::fs::read(&out).ok().and_then(|b| wasm_exports(&b)))
-        .flatten();
+    let built_wasm = target == CompileTarget::Wasm32 && err.is_none();
+    let exports = built_wasm.then(|| std::fs::read(&out).ok().and_then(|b| wasm_module::exports(&b))).flatten();
+    let backstop = if built_wasm { wasm_module::backstop(origin, program, &out).err() } else { None };
     for p in [&out, &ll, &out.with_extension("mjs")] {
         let _ = std::fs::remove_file(p);
     }
-    Built { ir, exports, err }
+    Built { ir, exports, err, backstop }
 }
 
 /// A codegen refusal's own text: what a cell's wording is held to.
@@ -546,9 +510,9 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
                     chunk
                         .iter()
                         .enumerate()
-                        .map(|(i, (_, _, p))| {
+                        .map(|(i, (o, _, p))| {
                             let name = format!("hale_shadow_cap_{c}_{i}");
-                            (build(p, CompileTarget::Native, &[], &name), build(p, CompileTarget::Wasm32, &[], &name))
+                            (build(p, CompileTarget::Native, &[], &name, o), build(p, CompileTarget::Wasm32, &[], &name, o))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -567,12 +531,14 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
     for ((origin, src, program), (host, wasm)) in parsed.iter().zip(&built) {
         shadow.one(origin, src, host, wasm, program);
     }
+    let backstop: Vec<&String> = built.iter().filter_map(|(_, w)| w.backstop.as_ref()).collect();
+    assert!(backstop.is_empty(), "the import backstop:\n{}", backstop.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"));
 
     // `[ffi] link`: one program, with a link library, on each target.
     let link_probe = hale_syntax::parse_source(LINK_PROBE).unwrap();
     let id = program_id("crates/hale-codegen/tests/shadow_capability_lowering.rs#link-probe", LINK_PROBE);
     for (class, target) in [(TargetClass::PosixAsync, CompileTarget::Native), (TargetClass::Wasm32, CompileTarget::Wasm32)] {
-        let b = build(&link_probe, target, &["m"], "hale_shadow_cap_link");
+        let b = build(&link_probe, target, &["m"], "hale_shadow_cap_link", "shadow_capability_lowering#link-probe");
         let old = b.err.as_ref().map(refusal_text).unwrap_or_else(|| "lower".to_string());
         let new = shadow.behaviour_fact(class, Capability::LinkLibrary, &[("libs", "[\"m\"]")]);
         shadow.compare("link_wasm (refusal)", class, &id, vec![("[ffi] link".to_string(), old)], vec![("[ffi] link".to_string(), new)]);

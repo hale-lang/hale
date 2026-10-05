@@ -604,3 +604,74 @@ fn main() { App { }; }
         "a leaf runs on its owner's thread"
     );
 }
+
+/// F.40 phase 3, C5 2 of 2 (a classified correction): a locus of an
+/// imported seed has its domains in the model's plan. The gates name a
+/// locus by its raw post-merge symbol; the plan used to find domains by
+/// the model's demangled `display`, which never meets that spelling for
+/// an imported locus, so a subject published and subscribed on one
+/// domain by an imported seed's loci rendered `pub[] sub[]`, not
+/// same-domain.
+#[test]
+fn an_imported_seeds_loci_have_their_domains() {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_frontend::source::Disk;
+    let dir = std::env::temp_dir().join(format!("hale-c5-2-imported-domains-{}", std::process::id()));
+    let seed = dir.join("seed");
+    let lib = dir.join("lib");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join("lib.hl"),
+        r#"
+type Ping { seq: Int = 0; }
+topic Tick { payload: Ping; subject: "relay.tick"; }
+locus Sink {
+    params { hits: Int = 0; }
+    bus { subscribe Tick as on_tick; }
+    fn on_tick(p: Ping) { self.hits = self.hits + p.seq; }
+}
+locus Relay {
+    params { sink: Sink = Sink { }; }
+    bus { publish Tick; }
+    fn go() { Tick <- Ping { seq: 1 }; }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        seed.join("main.hl"),
+        r#"
+import "../lib" as lib;
+main locus App {
+    params { relay: lib::Relay = lib::Relay { }; }
+    run() { self.relay.go(); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let s = Snapshot::load(&seed, LoadMode::WholeSeed, &Disk, Config::check(true, false))
+        .unwrap_or_else(|_| panic!("load the two-seed fixture"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    let m = s.demand_model().unwrap_or_else(|b| panic!("the model is blocked: {:?}", b.because));
+    m.validate().expect("lawful");
+    // The fixture is what it claims: the publisher and the subscriber
+    // are an imported seed's, so their canonical name is not their
+    // display.
+    for written in ["Relay", "Sink"] {
+        let decl = m
+            .entities
+            .loci
+            .iter()
+            .find(|l| l.name.ends_with(written) && l.name != written)
+            .unwrap_or_else(|| panic!("an imported `{written}`: {:?}", m.entities.loci));
+        assert_ne!(decl.name, decl.display, "`{written}` is an imported seed's locus");
+    }
+    let plan = DispatchPlan::derive(m);
+    let row = plan.subjects.iter().find(|p| p.subject == "relay.tick").expect("the subject's row");
+    assert_eq!(row.publisher_domains, ["main"], "{row:?}");
+    assert_eq!(row.subscriber_domains, ["main"], "{row:?}");
+    assert!(row.same_domain, "one domain publishes and subscribes: {row:?}");
+}

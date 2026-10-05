@@ -127,6 +127,12 @@ impl Model {
                             },
                         );
                         for m in &l.members {
+                            let id = match m {
+                                LocusMember::Fn(fd) => fd.id,
+                                LocusMember::Lifecycle(lc) => lc.id,
+                                LocusMember::Mode(md) => md.id,
+                                _ => continue,
+                            };
                             let (name, hook): (String, bool) = match m
                             {
                                 LocusMember::Fn(fd) => {
@@ -169,6 +175,7 @@ impl Model {
                             };
                             phases.insert(
                                 FnKey::method(
+                                    crate::alloc_summary::DeclId::user(id),
                                     locus.clone(),
                                     name.clone(),
                                 ),

@@ -772,6 +772,28 @@ pub fn check_bundle_by_declaration(
             }
         }
     }
+    // The fns and locus methods the bundle's own programs declare: the
+    // `omitted_args` column names a callee by its id, which only the
+    // checked program's mint makes unique (the bundled stdlib is minted
+    // apart), so it records a call to one of these only.
+    let mut user_fns: BTreeSet<*const FnDecl> = BTreeSet::new();
+    for program in bundle.programs.values() {
+        for decl in hale_syntax::ast::flat_decls(&program.items) {
+            match decl {
+                TopDecl::Fn(f) => {
+                    user_fns.insert(f as *const FnDecl);
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(f) = m {
+                            user_fns.insert(f as *const FnDecl);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     let mut cx = Checker {
         top,
         target_class,
@@ -791,6 +813,7 @@ pub fn check_bundle_by_declaration(
         generic_fns,
         fn_decls,
         locus_decls,
+        user_fns,
         default_invocations: Vec::new(),
         generic_types,
         generic_loci,
@@ -855,13 +878,17 @@ pub fn check_bundle_by_declaration(
     // pins a field is not built in a loop), rule 18 (GH #890, every
     // placement entry is consumed by a locus literal), the cross-pool
     // spawn, which is fire-and-forget, and GH #813 (a locus that builds
-    // itself through its own param defaults).
+    // itself through its own param defaults); and, before them, decision
+    // 2's refusal (F.40 phase 3, L4): a seed whose only `main locus` is
+    // module-nested has no entry for lowering to deploy.
     diags.extend(crate::lowering_laws::lowering_laws(
         bundle,
         &crate::lowering_laws::LoweringLawInputs {
             placement: inputs.placement,
             bindings: inputs.bindings,
+            entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
+            omitted: &typed.omitted_args,
         },
     ));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
@@ -940,7 +967,7 @@ pub fn check_bundle_by_declaration(
         // for the certificate evidence.
         let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
-            inputs.entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)),
+            inputs.entry.root().and_then(|m| m.decl(bundle)),
             inputs.alloc_summary,
             inputs.forms,
         );
@@ -3753,11 +3780,11 @@ fn check_binding_codec<'e>(
     // consumer pools) concurrently with no coordination in scope
     // to serialize mutations to self. They MUST be pure.
     for method_name in &["encode", "decode"] {
-        let key = crate::purity::PurityKey::method(
-            codec.locus.name.clone(),
-            (*method_name).to_string(),
-        );
-        match effects().and_then(|rows| rows.purity(&key)) {
+        // The method's row, as a call `codec.encode(..)` resolves.
+        let purity = effects().and_then(|rows| {
+            rows.purity(rows.summary.resolve(Some(&codec.locus.name), method_name)?)
+        });
+        match purity {
             Some(crate::purity::Purity::Pure) => {}
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);
@@ -4581,7 +4608,7 @@ fn check_main_and_bindings<'e>(
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    check_api_binding(&programs_vec, entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)), diags);
+    check_api_binding(&programs_vec, entry.root().and_then(|m| m.decl(bundle)), diags);
     check_api_roles(&programs_vec, &top.topics, bindings, diags);
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
@@ -6259,6 +6286,9 @@ struct Checker<'a> {
     /// Declarations whose omitted defaults are evaluated in the caller.
     fn_decls: BTreeMap<String, &'a FnDecl>,
     locus_decls: BTreeMap<String, &'a LocusDecl>,
+    /// The fns and locus methods the bundle's programs declare (not the
+    /// bundled stdlib's): the callees the `omitted_args` column records.
+    user_fns: BTreeSet<*const FnDecl>,
     default_invocations: Vec<u32>,
     /// GH #877: the generic parameters of the declaration being
     /// checked — a fn's `<T>`, a generic `type`'s. They name no
@@ -6501,6 +6531,26 @@ impl<'a> Checker<'a> {
                     TypeDeclBody::Struct(fields) => {
                         for f in fields {
                             self.check_type_annotation(&f.ty);
+                        }
+                        // A field default is not typed here, but lowering
+                        // emits it at every literal of the type that
+                        // leaves the field, so the defaults its calls
+                        // leave are expanded there: the `omitted_args`
+                        // column records them (C3 rest, the review of
+                        // #1351).
+                        let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
+                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
+                            if let Expr::Call { callee, args, id, .. } = e {
+                                calls.push((*id, callee.as_ref(), args.len()));
+                            }
+                        });
+                        for f in fields {
+                            if let Some(d) = &f.default {
+                                walk.expr(d);
+                            }
+                        }
+                        for (id, callee, supplied) in calls {
+                            self.record_omitted_defaults(id, callee, supplied);
                         }
                     }
                     TypeDeclBody::Enum(variants) => {
@@ -13034,6 +13084,12 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         let Some(decl) = decl else { return };
+        // The `omitted_args` column: which defaults this call expands, in
+        // whichever caller lowering lowers it under (the cross-pool value
+        // law composes the two, C3 rest).
+        if decl.params.len() > supplied && self.user_fns.contains(&(decl as *const FnDecl)) {
+            self.typed.omitted_args(invocation, decl.id, supplied);
+        }
         let defaults: Vec<&Expr> = decl.params.iter().skip(supplied)
             .filter_map(|p| p.default.as_ref()).collect();
         if defaults.is_empty() {

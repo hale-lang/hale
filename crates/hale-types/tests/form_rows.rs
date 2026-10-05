@@ -376,3 +376,68 @@ locus Plain { capacity { pool entries of Entry indexed_by k; } }
     assert_eq!(merged.effective(decl(&pinned, "Registry")), Discipline::Striped, "the held row wins");
 }
 
+
+/// The allocation summary reads rows for `sync_forms`, never a `sync =`
+/// argument (C3 rest): the stdlib analysis copy's from that universe's
+/// own rows (`stdlib_bodies::forms`), found by the identities the copy
+/// was minted with; a program's own form is not the summary's, and the
+/// effects engine adds it from the program's rows.
+#[test]
+fn the_summary_reads_the_copys_rows_and_the_engine_adds_the_programs() {
+    let copy = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    let copy_forms = hale_types::stdlib_bodies::forms().expect("the copy's rows");
+    let map = decl(copy, "__StdMetricsMap");
+    assert!(!map.id.is_none(), "the copy is minted");
+    let row = copy_forms.of(map).expect("the copy's form has a row");
+    assert_eq!(row.id.0, map.id.0, "found by the copy's identity");
+    assert_eq!(row.effective, Discipline::Serialized);
+
+    let mut program = hale_syntax::parse_source(
+        r#"
+type Entry { k: Int; v: Int; }
+@form(hashmap, sync = serialized)
+locus Store { capacity { pool entries of Entry indexed_by k; } }
+"#,
+    )
+    .expect("parse");
+    let ids = hale_types::snapshot::mint([("", &mut program)], &[]);
+    let mut programs = BTreeMap::new();
+    programs.insert(String::new(), &program);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
+    let summary = hale_types::alloc_summary::derive_alloc_summary(&bundle);
+    assert!(summary.sync_forms.contains("__StdMetricsMap"), "{:?}", summary.sync_forms);
+    assert!(!summary.sync_forms.contains("Store"), "the summary reads no written argument");
+    let engine = summary.with_sync_forms(&[&program], &rows_of(&program));
+    assert!(engine.sync_forms.contains("Store"), "the engine adds the program's row");
+}
+
+/// The form row carries the form's fixed capacity (C3 rest): a ring
+/// buffer's, an LRU cache's and a lockfree map's written `cap = N`, the
+/// column lowering lays each slot out by. A form with no positive
+/// literal `cap` has none.
+#[test]
+fn the_row_carries_the_forms_fixed_capacity() {
+    let program = hale_syntax::parse_source(
+        r#"
+type Entry { k: Int; v: Int; }
+@form(ring_buffer, cap = 16)
+locus Ring { capacity { pool items of Int; } }
+@form(lru_cache, cap = 8)
+locus Recent { capacity { pool entries of Entry indexed_by k; } }
+@form(hashmap, sync = lockfree, cap = 64)
+locus Fixed { capacity { pool entries of Entry indexed_by k; } }
+@form(hashmap)
+locus Plain { capacity { pool entries of Entry indexed_by k; } }
+@form(ring_buffer, cap = 0)
+locus Empty { capacity { pool items of Int; } }
+"#,
+    )
+    .expect("parse");
+    let r = FormRows::configured(&program.items);
+    for (locus, cap) in [("Ring", Some(16)), ("Recent", Some(8)), ("Fixed", Some(64)), ("Plain", None), ("Empty", None)] {
+        assert_eq!(r.named(locus).unwrap().cap, cap, "{locus}");
+        assert_eq!(r.cap(decl(&program, locus)), cap, "{locus}");
+    }
+    assert_eq!(FormRows::default().cap(decl(&program, "Ring")), Some(16), "no row: the written argument");
+}

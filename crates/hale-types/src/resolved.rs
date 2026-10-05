@@ -177,12 +177,12 @@ pub struct LoweringView {
     /// has none.
     pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
-    /// program the view was resolved from: its entry, and the lowering
-    /// root, the `main locus` lowering deploys
-    /// ([`crate::entry::EntryRow::lowering_root`]), which every comparison
-    /// lowering makes against "the main locus" reads
-    /// ([`LoweringView::entry`]). The snapshot's view carries its row; a
-    /// view resolved from a bare program has none.
+    /// program the view was resolved from: its entry, the `main locus`
+    /// lowering deploys, which every comparison lowering makes against
+    /// "the main locus" reads, and its `fn main`
+    /// ([`crate::entry::EntryRow::fn_main`], [`LoweringView::entry`]). The
+    /// snapshot's view carries its row; a view resolved from a bare
+    /// program has none.
     pub entry: Option<crate::entry::EntryRow>,
     /// The pinned anchors whose nested tree holds a subscriber, by the
     /// name lowering declares them under, from the snapshot's placement
@@ -276,9 +276,9 @@ impl LoweringView {
         self.lifecycle.as_ref()
     }
 
-    /// The entry row lowering reads which `main locus` it deploys from:
-    /// its entry and its lowering root (`crate::entry`). `None` for a view
-    /// resolved from a bare program.
+    /// The entry row lowering reads which `main locus` it deploys and
+    /// which `fn main` it emits from: its entry and its `fn main` column
+    /// (`crate::entry`). `None` for a view resolved from a bare program.
     pub fn entry(&self) -> Option<&crate::entry::EntryRow> {
         self.entry.as_ref()
     }
@@ -373,6 +373,7 @@ pub fn resolve_program(
         let ownership = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement, &entry);
         (top, bus, ownership)
     };
+    let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
         &checked,
@@ -387,6 +388,7 @@ pub fn resolve_program(
         &top,
         &bus,
         &ownership,
+        &arrangement.domains(),
         host,
     )
 }
@@ -433,7 +435,11 @@ pub fn resolve_program(
 /// over the checked programs: lowering's graph is its rows, read through
 /// the correspondence (`bus_graph::lowering_bus_graph`); `ownership` the
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
-/// the same way (`ownership_graph::lowering_ownership_graph`). `class` is the
+/// the same way (`ownership_graph::lowering_ownership_graph`). `domains`
+/// is the dispatch plan's domain map, the arrangement's
+/// ([`crate::arrangement::Arrangement::domains`] over the snapshot's
+/// programs, placement table and ownership graph): the map the model's
+/// plan is derived with. `class` is the
 /// effective target's column of the capability matrix, the cells the
 /// view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
@@ -453,6 +459,7 @@ pub fn resolve_rewritten(
     top: &TopScope,
     bus: &BusGraph,
     ownership: &OwnershipGraph,
+    domains: &BTreeMap<&str, Vec<String>>,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
@@ -640,15 +647,12 @@ pub fn resolve_rewritten(
         // The gates are the ones the rewritten program was judged by,
         // as before: the relation is recorded, not yet read.
         //
-        // The flavor is a function of the gates alone; the domain map
-        // only fills the `same_domain` survey column, and lowering's
-        // is empty on purpose (#464's widening is its own optimization
-        // with its own bench gate). The model derives its plan with
-        // the arrangement's domains.
-        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(
-            &bus.dispatch_gates(),
-            &BTreeMap::new(),
-        );
+        // The flavor is a function of the gates alone; the domains are
+        // the arrangement's, the map the model's plan is derived with
+        // too (F.40 phase 3, C5), and fill the `same_domain` survey
+        // column. No lowering reads it until #464's flavors, so the
+        // plan's digest does not cover it.
+        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(&bus.dispatch_gates(), domains);
         (graph, bubble, bus, plan)
     };
 

@@ -820,7 +820,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
     }
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );
@@ -871,7 +871,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
     }
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );
@@ -938,7 +938,7 @@ fn interior_dispatch_alternatives_take_the_max() {
     );
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );
@@ -997,7 +997,7 @@ fn an_interior_edge_is_followed() {
     );
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );
@@ -1047,7 +1047,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
     );
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );
@@ -1276,7 +1276,7 @@ fn main() { App { }; }
     }
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "k",
     );
@@ -1343,7 +1343,7 @@ fn main() { App { }; }
     }
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "k",
     );
@@ -1397,7 +1397,7 @@ fn main() { App { }; }
     m.capabilities.exact_placement = false;
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "k",
     );
@@ -1445,7 +1445,7 @@ fn main() { App { }; }
     m.capabilities.exact_cardinality = false;
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );
@@ -1515,7 +1515,7 @@ fn main() { App { }; }
     m.capabilities.exact_cardinality = false;
     let f = hale_types::evidence::model_fanout(&m);
     let n = f(
-        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        &hale_types::alloc_summary::FnKey::method(None, "App", "fire"),
         0,
         "a",
     );

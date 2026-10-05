@@ -226,7 +226,7 @@ fn non_secret_params_are_unaffected() {
 /// The manifest can carry INFERRED sets (it's a report, not a type).
 #[test]
 fn manifest_and_cost_are_available() {
-    use hale_types::alloc_summary::{self, FnKey};
+    use hale_types::alloc_summary;
     use hale_types::frontier;
     let src = r#"
         fn helper(n: Int) -> Int {
@@ -246,7 +246,7 @@ fn manifest_and_cost_are_available() {
     let ffi = std::collections::BTreeSet::new();
     let eff = frontier::infer_effects(
         &summary,
-        &FnKey::free_fn("caller"),
+        &summary.resolve(None, "caller").unwrap().clone(),
         &ffi,
     );
     let names = frontier::render_effects(eff);
@@ -255,7 +255,7 @@ fn manifest_and_cost_are_available() {
         "inference must propagate the callee's syscall: {:?}",
         names
     );
-    let cost = frontier::cost_expression(&summary, &FnKey::free_fn("caller"));
+    let cost = frontier::cost_expression(&summary, &summary.resolve(None, "caller").unwrap().clone());
     assert!(
         cost.contains("O(n^1)"),
         "a single loop yields a linear structural cost: {}",

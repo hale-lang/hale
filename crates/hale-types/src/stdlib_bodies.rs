@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 
 use hale_syntax::ast::Program;
 
+use crate::form_rows::FormRows;
 use crate::snapshot::Snapshot;
 
 /// The stdlib the analyses read, and its own identities: a copy of
@@ -62,6 +63,15 @@ pub fn program() -> Option<&'static Program> {
 /// names, for a walk over a stdlib body.
 pub fn identities() -> Option<&'static Snapshot> {
     analysis().map(|(_, ids)| ids)
+}
+
+/// The form rows of [`program`], once per process: the stdlib analysis
+/// universe's own, found by the identities [`identities`] minted. Each is
+/// its written configuration ([`FormRows::configured`]): nothing infers
+/// over the copy, which no user call site reaches as a form's accessor.
+pub fn forms() -> Option<&'static FormRows> {
+    static FORMS: OnceLock<Option<FormRows>> = OnceLock::new();
+    FORMS.get_or_init(|| program().map(|p| FormRows::configured(&p.items))).as_ref()
 }
 
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled

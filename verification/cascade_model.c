@@ -251,7 +251,10 @@
  *     a sibling replaced before its failure is posted, a handler that
  *     reclaims its own child (the reclaim deferred behind it,
  *     transcribed, not reached), a decision a handler makes about a
- *     child already replaced, a delivery posted to a domain that
+ *     child already replaced (the reclaim wins: the deferral marks the
+ *     child's reclaim claim owed, and the restart decision, compiled
+ *     code outside this model, reads it; the fd_restart*_replaced
+ *     fixtures carry it), a delivery posted to a domain that
  *     has ended (transcribed, not reached: the owner's domain outlives
  *     every post here), and a reclaim that no observation orders after
  *     the post (a handler cell has no hold before it fails; that the
@@ -919,7 +922,11 @@ static void lotus_params_settle(void *parent, int self_tid) {
 #endif
         pthread_mutex_unlock(&g_params_open_lock);
 
+        /* Under the posted delivery's guard: handlers do not nest. */
+        int was_servicing = g_servicing[self_tid];
+        g_servicing[self_tid] = 1;
         node->fn(node->parent, node->child, node->err, self_tid);
+        g_servicing[self_tid] = was_servicing;
 
         pthread_mutex_lock(&g_params_open_lock);
         void *child = node->child;

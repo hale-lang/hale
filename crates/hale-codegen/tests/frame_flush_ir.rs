@@ -12,10 +12,12 @@
 //!
 //! The entries follow, subscription-less pinned ones first in reverse,
 //! then the rest in reverse push order, a locus's own pinned fields pushed
-//! after its own entry (C14), so they are torn down before it. That order
-//! is the code's, not yet the plan's: the plan states rule (b)'s edge from
-//! the main locus's pool join to every field's drain, which a pinned field
-//! torn down before its deferred owner's head does not keep.
+//! after its own entry (C14), so they are joined before its cascade. A
+//! main-locus entry's head (the quiesce, the wait-abort, the pool join)
+//! comes before the first of its own pinned joins, wherever the order puts
+//! it, as the plan places it (`LifecyclePlan::entry_order`; line 7: a
+//! pinned thread parked in a wait is joined only once the wait is
+//! aborted), and the entry's own teardown does not run it again.
 //!
 //! The order is read from the control flow: a step comes before another
 //! when the other's block is reachable from its block and not the reverse
@@ -260,6 +262,128 @@ fn fn_main_test_failure_flushes_as_the_fall_through_does() {
     ];
     let pooled = ir("test_failure_pool", &program(true, main));
     assert_eq!(exits(&function(&pooled, "main"), &want), 2, "with a pool: each exit a block calling {want:?}");
+}
+
+/// The deferred main entry's head, hoisted ahead of its own pinned joins
+/// (L4's fifth part): in `want`'s order in one block, `App.head`, before
+/// the first pinned entry the flush joins and before the other, and not
+/// emitted again by App's own teardown. Before, App's entry ran it after
+/// both joins, so a pinned field parked in an `or wait` hung the join
+/// (`l07_or_wait_deferred_pinned_field.hl`).
+fn assert_head_before_pinned_joins(f: &Func, want: &[&str], what: &str) {
+    let head: Vec<usize> = (0..f.blocks.len()).filter(|&b| f.blocks[b].0 == "App.head").collect();
+    assert_eq!(head.len(), 1, "{what}: one hoisted head block");
+    assert_eq!(f.sequence(head[0], PROCESS), want, "{what}: the head's rows in the plan's order");
+    for pinned in ["Spinner", "Sink"] {
+        let entry = f.block(&format!("{pinned}.dissolve.arena_check"));
+        assert!(f.before((head[0], 0), entry), "{what}: the head comes before {pinned}'s join");
+    }
+    let own = f.block("App.dissolve.process");
+    let rows = ["lotus_bus_ingress_quiesce", "lotus_bus_wait_abort_all", "lotus_coop_pool_shutdown_all"];
+    assert!(f.sequence(own.0, &rows).is_empty(), "{what}: App's own teardown runs no second head");
+}
+
+#[test]
+fn a_deferred_main_entrys_head_comes_before_its_pinned_joins() {
+    let main = "fn start() {\n    let app = App { };\n}\n\nfn main() {\n    start();\n}\n";
+    let bare = ir("hoisted_head", &program(false, main));
+    let f = function(&bare, "start");
+    assert_head_before_pinned_joins(&f, &["lotus_bus_ingress_quiesce", "lotus_bus_wait_abort_all"], "start");
+    let pooled = ir("hoisted_head_pool", &program(true, main));
+    let f = function(&pooled, "start");
+    let want = ["lotus_bus_ingress_quiesce", "lotus_bus_wait_abort_all", "lotus_coop_pool_shutdown_all"];
+    assert_head_before_pinned_joins(&f, &want, "start with a pool");
+    // Held by fn main's frame, after the exit's own head and pre-drain.
+    let in_main = ir("hoisted_head_main", &program(true, "fn main() {\n    App { };\n    let kid = Kid { };\n}\n"));
+    assert_head_before_pinned_joins(&function(&in_main, "main"), &want, "fn main");
+}
+
+/// A root with a pinned subscriber field of `replicas` replicas, built by
+/// `make`: `{returns}` says whether `make` hands it back, or tears it
+/// down at its own exit.
+fn anchor_program(returns: bool, replicas: u32) -> String {
+    let (sig, body, main) = if returns {
+        (" -> App", "    return App { };\n", "fn main() {\n    let app = make();\n}\n")
+    } else {
+        ("", "    let app = App { };\n", "fn main() {\n    make();\n}\n")
+    };
+    let placement = if replicas == 1 { "pinned".to_string() } else { format!("pinned(replicas = {replicas})") };
+    format!(
+        "type Ping {{ n: Int; }}\ntopic Pings {{ payload: Ping; subject: \"frame.flush.ir.anchor\"; }}\n\n\
+         locus Sink {{\n    bus {{ subscribe Pings as on_ping; }}\n    fn on_ping(p: Ping) {{ }}\n}}\n\n\
+         main locus App {{\n    params {{ sink: Sink = Sink {{ }}; }}\n    placement {{ sink: {placement}; }}\n}}\n\n\
+         fn make(){sig} {{\n{body}}}\n\n{main}"
+    )
+}
+
+/// The replica index each of `f`'s `sink.anchor_record.*` addresses
+/// names (`getelementptr inbounds [K x { i64, ptr }], ptr …, i32 0, i32
+/// <replica>`), with its (block, line), in block order.
+fn record_reads(f: &Func) -> Vec<(u32, (usize, usize))> {
+    let mut out = Vec::new();
+    for (b, (_, lines, _)) in f.blocks.iter().enumerate() {
+        for (i, l) in lines.iter().enumerate() {
+            if l.trim_start().starts_with("%sink.anchor_record.") {
+                let replica = l.rsplit("i32 ").next().and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).unwrap();
+                out.push((replica.parse().unwrap(), (b, i)));
+            }
+        }
+    }
+    out
+}
+
+/// The stores of a function into `{name}` slots (`store …, ptr %{name}`).
+fn stores_into(f: &Func, name: &str) -> usize {
+    let pat = format!("ptr %{name}");
+    f.blocks.iter().flat_map(|b| &b.1).filter(|l| l.trim_start().starts_with("store ") && l.contains(&pat)).count()
+}
+
+/// C52 (line 12): a root handed back to its caller keeps, per instance,
+/// the join record of every replica of its pinned field (`[K x {i64
+/// thread, ptr instance}]`), and its cascade, where the caller tears it
+/// down, shuts down, joins and reclaims every one; the frame that built
+/// it pushes no entry for any. The order is the building frame's flush
+/// order: replica 0 (pushed last, by the field's own path), then K-1 down
+/// to 1. Before the review of #1354 the record was a `__thread` in the
+/// field's instance, so only replica 0 was reachable from the root and
+/// the others were never joined (`l12_returned_root_pinned_replicas.hl`).
+/// The control, a root `make` keeps, is the frame flush's as before: no
+/// record, no cascade join, `make`'s flush joins every replica.
+#[test]
+fn a_returned_roots_pinned_field_is_joined_by_its_owners_teardown() {
+    for k in [1u32, 3] {
+        let returned = ir(&format!("anchor_returned_{k}"), &anchor_program(true, k));
+        assert!(returned.contains(&format!("[{k} x {{ i64, ptr }}]")), "K = {k}: App keeps one record per replica");
+        assert!(!returned.contains("__thread"), "K = {k}: no record in the field's own instance");
+        let make = function(&returned, "make");
+        assert!(make.calls("lotus_pinned_join").is_empty(), "K = {k}: make joins no thread");
+        assert!(!make.blocks.iter().any(|b| b.0.starts_with("Sink.dissolve")), "K = {k}: make's flush has no entry for any Sink");
+        assert_eq!(stores_into(&make, "Sink.record.thread"), k as usize, "K = {k}: every replica writes its thread");
+        assert_eq!(stores_into(&make, "Sink.record.self"), k as usize, "K = {k}: every replica writes its instance");
+
+        let main = function(&returned, "main");
+        let joins = main.calls("lotus_pinned_join");
+        assert_eq!(joins.len(), k as usize, "K = {k}: fn main's App teardown joins every replica");
+        let app = main.block("App.dissolve.process");
+        assert!(joins.iter().all(|&j| main.before(app, j)), "K = {k}: inside App's teardown");
+        let reads = record_reads(&main);
+        let order: Vec<u32> = reads.iter().map(|r| r.0).collect();
+        let want: Vec<u32> = std::iter::once(0).chain((1..k).rev()).collect();
+        assert_eq!(order, want, "K = {k}: the records are joined in the frame flush's order");
+        for (w, j) in reads.windows(2).zip(joins.windows(2)) {
+            assert!(main.before(w[0].1, w[1].1) && main.before(j[0], j[1]), "K = {k}: one replica's join before the next's");
+        }
+        for (r, j) in reads.iter().zip(&joins) {
+            assert!(main.before(r.1, *j), "K = {k}: replica {}'s record is read before its join", r.0);
+        }
+    }
+
+    for k in [1u32, 2] {
+        let kept = ir(&format!("anchor_kept_{k}"), &anchor_program(false, k));
+        assert!(!kept.contains("anchor_record") && !kept.contains("instance_join"), "K = {k}: a root the frame keeps carries no record");
+        let make = function(&kept, "make");
+        assert_eq!(make.calls("lotus_pinned_join").len(), k as usize, "K = {k}: make's flush joins every replica");
+    }
 }
 
 #[test]

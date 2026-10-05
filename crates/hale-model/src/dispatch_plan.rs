@@ -112,9 +112,11 @@ pub struct DispatchPlan {
 }
 
 impl DispatchPlan {
-    /// Derive the plan from the model: gate facts × arrangement.
+    /// Derive the plan from the model: gate facts × arrangement. The
+    /// domains are [`domain_map`]'s, over the model's arrangement rows
+    /// (`realizes` × `placed_in`) and its placement holes, keyed by
+    /// each locus's canonical `name`.
     pub fn derive(m: &ApplicationModel) -> DispatchPlan {
-        // locus display → the domains of its arranged instances.
         let domain_name = |id: crate::ids::ThreadDomainId| {
             m.entities
                 .thread_domains
@@ -122,66 +124,55 @@ impl DispatchPlan {
                 .map(|d| d.name.clone())
                 .unwrap_or_default()
         };
-        let mut domains_of: std::collections::BTreeMap<
-            &str,
-            Vec<String>,
-        > = std::collections::BTreeMap::new();
-        for re in &m.relations.realizes {
-            let Some(decl) = m.entities.loci.get(re.decl.index())
-            else {
-                continue;
-            };
+        let placed = m.relations.realizes.iter().filter_map(|re| {
+            let decl = m.entities.loci.get(re.decl.index())?;
             let domain = m
                 .relations
                 .placed_in
                 .iter()
                 .find(|p| p.instance == re.instance)
-                .map(|p| domain_name(p.domain));
-            if let Some(d) = domain {
-                domains_of
-                    .entry(decl.display.as_str())
-                    .or_default()
-                    .push(d);
-            }
-        }
-        // …minus every locus the model admits it does not fully
-        // place. A locus can have an arranged instance AND a
-        // placement hole at the same time: one `Sub` under `App` on
-        // main, another born dynamically inside a pinned locus. The
-        // arranged instance would answer "main" for the whole
-        // population and manufacture a same-domain claim about a
-        // process that has a `Sub` on another thread. A hole hiding
-        // OWNS or PLACED at a locus decl therefore DELETES that
-        // locus's domain answer — incomplete, not partially known.
-        for h in &m.holes {
+                .map(|p| domain_name(p.domain))?;
+            Some((decl.name.as_str(), domain))
+        });
+        // A hole hiding OWNS or PLACED at a locus decl is the model
+        // admitting it does not place that locus's whole population.
+        let unplaced = m.holes.iter().filter_map(|h| {
             if !h.hides.intersects(
                 crate::hole::RelationSet::OWNS
                     .union(crate::hole::RelationSet::PLACED),
             ) {
-                continue;
+                return None;
             }
-            if let crate::ids::EntityRef::LocusDecl(id) = h.at {
-                if let Some(decl) = m.entities.loci.get(id.index()) {
-                    domains_of.remove(decl.display.as_str());
+            match h.at {
+                crate::ids::EntityRef::LocusDecl(id) => {
+                    m.entities.loci.get(id.index()).map(|d| d.name.as_str())
                 }
+                _ => None,
             }
-        }
-        DispatchPlan::from_gates(&m.analyses.dispatch_gates, &domains_of)
+        });
+        DispatchPlan::from_gates(
+            &m.analyses.dispatch_gates,
+            &domain_map(placed, unplaced),
+        )
     }
 
-    /// The plan over raw gate facts plus a locus-display → thread
-    /// domains map. `derive` supplies the model's arrangement for
-    /// the map; the resolved program (`hale_types::resolved`), which
-    /// holds the merged (user + stdlib, desugared) bus graph lowering
-    /// must agree with, supplies its gates and an empty map for the
-    /// plan codegen reads — flavors depend only on
-    /// the gates, so an absent arrangement costs the `same_domain`
-    /// survey field and nothing else.
+    /// The plan over raw gate facts plus a locus → thread domains map,
+    /// keyed by the gates' spelling of a locus (the raw post-merge
+    /// symbol a gate's `publisher_loci` and `subscribers` carry).
+    /// Both plans are derived here, from two gate sets and one
+    /// [`domain_map`]: `derive` passes the model's gates (the checked
+    /// graph's), the resolved program (`hale_types::resolved`) the
+    /// lowering graph's (the same rows re-keyed, and the stdlib's,
+    /// which exist only inside the lowering view), with the domains
+    /// of the arrangement projection the model's rows are made from.
+    /// The flavor depends only on the gates; the domains fill the
+    /// `same_domain` survey column. A locus the map does not hold (a
+    /// stdlib locus among lowering's gates) forfeits it.
     /// `domains_of` is a COMPLETE account per key: a locus present
     /// in the map has every one of its instances represented, and a
-    /// locus the model cannot fully place must be ABSENT (that is
-    /// what `derive` does with placement holes). A partial entry
-    /// would silently become a same-domain claim.
+    /// locus the arrangement cannot fully place must be ABSENT (that
+    /// is what [`domain_map`] does with the unplaced). A partial
+    /// entry would silently become a same-domain claim.
     pub fn from_gates(
         gates: &[crate::application::DispatchGate],
         domains_of: &std::collections::BTreeMap<&str, Vec<String>>,
@@ -263,7 +254,9 @@ impl DispatchPlan {
     }
 
     /// The plan's identity — folded into the execution digest, so
-    /// dispatch decisions are part of what a recording pins.
+    /// dispatch decisions are part of what a recording pins. It
+    /// covers what lowering reads: each subject, its flavor and its
+    /// subscribers.
     pub fn digest(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         let mut eat = |bytes: &[u8]| {
@@ -274,7 +267,14 @@ impl DispatchPlan {
         };
         for s in &self.subjects {
             eat(s.subject.as_bytes());
-            eat(&[0, s.flavor as u8, u8::from(s.same_domain)]);
+            // The third byte is where `same_domain` sat, reserved and
+            // always 0: no lowering reads the column, so it is no part
+            // of what a build is. GH #464 (the same-domain flavors,
+            // which lower by it) is the change that makes it the
+            // column again. Lowering's plan carried no domains until
+            // F.40 phase 3 (C5), so 0 is the byte every digest already
+            // framed.
+            eat(&[0, s.flavor as u8, 0]);
             for (l, f) in &s.subscribers {
                 eat(l.as_bytes());
                 eat(&[1]);
@@ -282,5 +282,66 @@ impl DispatchPlan {
             }
         }
         h
+    }
+}
+
+/// THE domain map both dispatch plans read (F.40 phase 3, C5): each
+/// locus → the thread domains of its arranged instances, from the
+/// arrangement's `(locus, domain)` pairs, minus every locus the
+/// arrangement does not fully place. A locus can have an arranged
+/// instance AND an instance the arrangement cannot see (one `Sub` under
+/// `App` on main, another born dynamically inside a pinned locus): the
+/// arranged one would answer "main" for the whole population and
+/// manufacture a same-domain claim about a process that has a `Sub` on
+/// another thread, so an unplaced locus has no answer at all —
+/// incomplete, not partially known.
+///
+/// Keys are the gates' spelling of a locus, the raw post-merge symbol,
+/// never a display name. The model feeds it its arrangement rows and
+/// placement holes ([`DispatchPlan::derive`]); lowering feeds it the
+/// arrangement projection those rows are made from
+/// (`hale_types::arrangement`).
+pub fn domain_map<'a>(
+    placed: impl IntoIterator<Item = (&'a str, String)>,
+    unplaced: impl IntoIterator<Item = &'a str>,
+) -> std::collections::BTreeMap<&'a str, Vec<String>> {
+    let mut domains_of: std::collections::BTreeMap<&'a str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (locus, domain) in placed {
+        domains_of.entry(locus).or_default().push(domain);
+    }
+    for locus in unplaced {
+        domains_of.remove(locus);
+    }
+    domains_of
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(same_domain: bool) -> DispatchPlan {
+        DispatchPlan {
+            subjects: vec![SubjectPlan {
+                subject: "evt".to_string(),
+                flavor: DispatchFlavor::StaticBucket,
+                ineligible_reason: None,
+                payload_flat: false,
+                subscribers: vec![("Sub".to_string(), "on_evt".to_string())],
+                publisher_domains: vec!["main".to_string()],
+                subscriber_domains: vec!["main".to_string()],
+                same_domain,
+            }],
+        }
+    }
+
+    /// The digest covers what lowering reads; `same_domain` is the
+    /// reserved byte until GH #464 lowers by it.
+    #[test]
+    fn same_domain_is_no_part_of_the_digest() {
+        assert_eq!(plan(true).digest(), plan(false).digest());
+        let mut other = plan(true);
+        other.subjects[0].flavor = DispatchFlavor::Dynamic;
+        assert_ne!(other.digest(), plan(true).digest(), "the flavor is");
     }
 }

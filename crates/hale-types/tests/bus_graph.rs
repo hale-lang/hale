@@ -1073,9 +1073,10 @@ fn a_nested_subscriber_under_a_placed_owner_is_not_same_thread() {
     );
 }
 
-/// B-4: an imported `__lib_` root is never deployed, so its entries
-/// label nothing (the legacy label read every `placement { }` block,
-/// first wins, and called `W` pinned).
+/// B-4: an imported root (renamed `__lib_App` and marked `imported`, as
+/// the cross-seed rename pass leaves it, GH #1104 piece 5) is never
+/// deployed, so its entries label nothing (the legacy label read every
+/// `placement { }` block, first wins, and called `W` pinned).
 #[test]
 fn an_imported_roots_placement_labels_nothing() {
     let src = r#"
@@ -1095,7 +1096,18 @@ main locus __lib_App {
 
 fn main() { W { }; }
 "#;
-    assert_eq!(label(&snapshot_of(src), "T", "W"), (Placement::SameThread, true));
+    use hale_frontend::snapshot::{Config, Snapshot};
+    let mut program = parse_source(src).expect("parse failed");
+    for item in &mut program.items {
+        if let hale_syntax::ast::TopDecl::Locus(l) = item {
+            l.imported = l.name.name.starts_with("__lib_");
+        }
+    }
+    let s = Snapshot::from_program(program, Vec::new(), Config::check(false, false))
+        .unwrap_or_else(|_| panic!("the program does not load"));
+    let checked = s.demand_check().unwrap_or_else(|_| panic!("the check is blocked"));
+    assert!(checked.diags.iter().all(|d| !d.is_error()), "the program must check clean: {:?}", checked.diags);
+    assert_eq!(label(&s, "T", "W"), (Placement::SameThread, true));
 }
 
 /// B-3 and B-5: a root field typed by a qualified stdlib path is placed

@@ -89,6 +89,7 @@ fn tiny_model() -> ApplicationModel {
                     attribution: Vec::new(),
                     opaque_call: false,
                     carries_user_class: false,
+                    decl: None,
                     provenance: p,
                 },
                 Function {
@@ -105,6 +106,7 @@ fn tiny_model() -> ApplicationModel {
                     attribution: Vec::new(),
                     opaque_call: false,
                     carries_user_class: false,
+                    decl: None,
                     provenance: p,
                 },
             ],

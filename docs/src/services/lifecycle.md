@@ -515,6 +515,10 @@ so nothing tears it down twice. The rules that order gives you:
   are declared, each after its own fields; a pinned locus's on its
   thread, and a field typed by an interface or a perspective like
   any other. Each is dissolved after its owner's `dissolve()`.
+  A field lives as long as its owner: a pinned field of a `main`
+  that a function builds and returns keeps its threads, one per
+  replica, until the caller is done with that `main`, not until the
+  function returns.
 - **Dissolve-epoch closures run before `dissolve()`.** A violation
   there reaches the parent before your cleanup runs.
 - **Replacing a field dissolves the old child before creating the new
@@ -525,6 +529,13 @@ so nothing tears it down twice. The rules that order gives you:
   in `dissolve()`, including closing handles, still happens before the
   replacement's birth, except for a failed child its parent has not
   heard yet: that one is torn down right after its handler runs.
+- **A waiting publisher does not hold the exit.** A publisher on a
+  pool or on a pinned thread waiting in `or wait` for room on a
+  queue only `main` drains is woken when the program tears down,
+  before its thread is joined, and its publish fails with
+  `BusWaitAborted`; it is not counted as sent. This holds however
+  `main` is torn down, a `main` built and torn down in a function
+  other than `fn main` included.
 - **Ctrl-C raises a flag.** The signal calls none of your methods;
   the `run()`s that watch `self.draining` return, and the ordinary
   teardown follows.
@@ -539,8 +550,6 @@ behaviour until it changes:
 
 - a restart asked for while `main`'s exit is already joining the
   pools still runs;
-- a pool-placed publisher waiting in `or wait` on a queue only
-  `main` drains holds the exit forever;
 - a dissolve-epoch violation of a flow child, or of a field torn
   down from `fn main`, ends the process instead of reaching the
   parent's handler;

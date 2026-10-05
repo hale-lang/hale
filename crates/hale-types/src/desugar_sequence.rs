@@ -87,7 +87,7 @@ pub fn desugar_before_check(
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         crate::entry::entry_row_in(&ro)
     };
-    let root = row.lowering_root.as_ref().and_then(|m| m.index_in());
+    let root = row.root().and_then(|m| m.index_in());
     if let Some(path) = seq.api {
         let (at, item) = root.ok_or_else(|| api_refusal(row.no_entry()))?;
         let l = hale_syntax::ast::locus_at_mut(&mut programs[at].items, item)

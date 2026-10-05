@@ -1,0 +1,53 @@
+// Decision line 7, abort unsatisfiable waits before the join
+// (WaitAbort, PinnedJoin), in the deferred main-locus entry's teardown
+// (C14, C19), for the main locus's own pinned field.
+//
+// App is let-bound in a fn that is not `main`, so it is torn down at
+// `start`'s exit by the deferred main entry, while its pinned field
+// `pusher` is still in its run(). `pusher` publishes a burst with `or
+// wait` into a topic App subscribes to on main, and main is in that
+// teardown, so the third publish waits for space that only the
+// wait-abort would end. The join of `pusher`'s thread waits for that
+// publish, so the main entry's head (its wait-abort) has to come before
+// the join. Before L4's fifth part the deferred spine joined `pusher`
+// first and hung there.
+//
+// Expected terminal outcome: the wait is aborted before the join, and
+// the aborted publish is not a success: `wait-aborted`. The pinned
+// thread exits the process while main is inside the join.
+
+type E { n: Int = 0; }
+topic Evt {
+    payload: E;
+    subject: "lifecycle.l07.deferred_pinned";
+    bounded(2);
+    on_full: fail;
+}
+
+locus Pusher {
+    bus { publish Evt; }
+    run() {
+        std::time::sleep(100ms);
+        let mut i = 0;
+        while i < 10 {
+            Evt <- E { n: i } or wait;
+            i = i + 1;
+        }
+        println("outcome: published");
+    }
+}
+
+main locus App {
+    params {
+        seen: Int = 0;
+        pusher: Pusher = Pusher { };
+    }
+    placement { pusher: pinned; }
+    bus { subscribe Evt as on_e; }
+    fn on_e(e: E) { self.seen = self.seen + 1; }
+    run() { std::time::sleep(10ms); }
+}
+
+fn start() { let app = App { }; }
+
+fn main() { start(); }
