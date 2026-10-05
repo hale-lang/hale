@@ -234,6 +234,7 @@ pub use application::{
     ApplicationModel, Entities, CertificateEvidence, EvidenceRow, EvidenceTable, LabelRow,
     Analyses, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
+    certificate_row_verdict, document_verdict, DocumentVerdict,
     Relations, WeightRow, MODEL_SEMANTICS_V1, DispatchGate,
 };
 pub use capability::Capabilities;

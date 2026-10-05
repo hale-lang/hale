@@ -347,6 +347,104 @@ pub enum VerdictIr {
     Invalid,
 }
 
+impl VerdictIr {
+    /// The artifact's spelling of the verdict.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VerdictIr::Holds => "holds",
+            VerdictIr::Violated => "violated",
+            VerdictIr::Uncertified => "uncertified",
+            VerdictIr::Invalid => "invalid",
+        }
+    }
+
+    /// The verdict a stated word names; `None` outside the four.
+    pub fn from_word(word: &str) -> Option<VerdictIr> {
+        [
+            VerdictIr::Holds,
+            VerdictIr::Violated,
+            VerdictIr::Uncertified,
+            VerdictIr::Invalid,
+        ]
+        .into_iter()
+        .find(|v| v.as_str() == word)
+    }
+
+    /// Only `Holds` passes: a law that could not be checked has not
+    /// been satisfied.
+    pub fn passed(self) -> bool {
+        matches!(self, VerdictIr::Holds)
+    }
+
+    /// The order aggregation keeps: holds < uncertified < violated <
+    /// invalid.
+    fn severity(self) -> u8 {
+        match self {
+            VerdictIr::Holds => 0,
+            VerdictIr::Uncertified => 1,
+            VerdictIr::Violated => 2,
+            VerdictIr::Invalid => 3,
+        }
+    }
+}
+
+/// A certificate-judged law row's verdict: the most severe of its
+/// certificates' results (`Holds` over none), unless the law is
+/// statically invalid — an unresolved operand, an undeclared or
+/// cyclic class — which dominates every replayed result.
+///
+/// One rule for both sides of the artifact: the judgment computes a
+/// row's verdict with it from the evidence sidecar, and admission
+/// recomputes it from the certificates an artifact states.
+pub fn certificate_row_verdict(
+    results: impl IntoIterator<Item = VerdictIr>,
+    statically_invalid: bool,
+) -> VerdictIr {
+    if statically_invalid {
+        return VerdictIr::Invalid;
+    }
+    results
+        .into_iter()
+        .max_by_key(|v| v.severity())
+        .unwrap_or(VerdictIr::Holds)
+}
+
+/// The topology artifact's document verdict.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DocumentVerdict {
+    /// Every law holds and law selection raised nothing.
+    Clean,
+    /// Anything else.
+    LawFailed,
+}
+
+impl DocumentVerdict {
+    /// The artifact's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DocumentVerdict::Clean => "clean",
+            DocumentVerdict::LawFailed => "law_failed",
+        }
+    }
+}
+
+/// The document verdict over every verdict the document states (its
+/// `claims` rows, `lowered` rows and application-tier law rows) and
+/// its law-selection issues: `Clean` only when every one passed and
+/// there are no issues. The emitter writes it and admission
+/// recomputes it, both with this.
+pub fn document_verdict(
+    verdicts: impl IntoIterator<Item = VerdictIr>,
+    issues: usize,
+) -> DocumentVerdict {
+    let mut verdicts = verdicts.into_iter();
+    if issues == 0 && verdicts.all(VerdictIr::passed) {
+        DocumentVerdict::Clean
+    } else {
+        DocumentVerdict::LawFailed
+    }
+}
+
 /// GH #476 Change 5e: one pointwise certificate's EVIDENCE — the
 /// fn-grained outcome the existing certificate engines produce
 /// (the artifact has carried these as lowered claim rows since
@@ -2431,4 +2529,52 @@ where
         prev = Some(k);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The row's verdict is the most severe certificate result, and
+    /// static invalidity dominates even a row that would hold.
+    #[test]
+    fn a_certificate_row_takes_its_most_severe_result() {
+        use VerdictIr::*;
+        assert_eq!(certificate_row_verdict([], false), Holds);
+        assert_eq!(certificate_row_verdict([Holds, Holds], false), Holds);
+        assert_eq!(
+            certificate_row_verdict([Holds, Uncertified], false),
+            Uncertified
+        );
+        assert_eq!(
+            certificate_row_verdict([Violated, Uncertified, Holds], false),
+            Violated
+        );
+        assert_eq!(
+            certificate_row_verdict([Violated, Invalid], false),
+            Invalid
+        );
+        assert_eq!(certificate_row_verdict([Holds], true), Invalid);
+        assert_eq!(certificate_row_verdict([], true), Invalid);
+    }
+
+    /// Only an all-`holds` document with no selection issue is clean.
+    #[test]
+    fn the_document_is_clean_only_when_everything_holds() {
+        use VerdictIr::*;
+        assert_eq!(document_verdict([], 0), DocumentVerdict::Clean);
+        assert_eq!(
+            document_verdict([Holds, Holds], 0),
+            DocumentVerdict::Clean
+        );
+        assert_eq!(document_verdict([Holds], 1), DocumentVerdict::LawFailed);
+        assert_eq!(
+            document_verdict([Holds, Uncertified], 0),
+            DocumentVerdict::LawFailed
+        );
+        for v in [Holds, Violated, Uncertified, Invalid] {
+            assert_eq!(VerdictIr::from_word(v.as_str()), Some(v));
+        }
+        assert_eq!(VerdictIr::from_word("clean"), None);
+    }
 }

@@ -2456,15 +2456,6 @@ fn expected_subject(law: &Law) -> Option<String> {
     }
 }
 
-fn sev(v: &str) -> u8 {
-    match v {
-        "holds" => 0,
-        "uncertified" => 1,
-        "violated" => 2,
-        _ => 3,
-    }
-}
-
 /// THE schema-1.11 law-account admission — shared by Track A and
 /// fleet composition; `label` names the artifact in errors.
 pub fn validate_law_account(
@@ -2482,8 +2473,8 @@ pub fn validate_law_account(
         "budget",
         "unmigrated",
     ];
-    const VERDICTS: &[&str] =
-        &["holds", "violated", "uncertified", "invalid"];
+    use hale_model::VerdictIr;
+    let is_verdict = |x: &str| VerdictIr::from_word(x).is_some();
     if !v["law"].is_object()
         || !v["law"]["law_digest"].is_string()
         || !v["law"]["inputs_digest"].is_string()
@@ -2627,7 +2618,8 @@ pub fn validate_law_account(
         check_evidence(&v["law"]["issues"], "law issue")
             .map_err(|e| format!("{}: {}", label, e))?;
     let mut prev_ordinal: Option<u64> = None;
-    let mut law_all_pass = true;
+    // Every row's stated verdict, for the document verdict.
+    let mut law_verdicts: Vec<VerdictIr> = Vec::new();
     let mut claims_tier_ordinals: Vec<u64> = Vec::new();
     // Round 6: the exact multiset of `lowered` evidence rows the
     // typed law account generates — keyed (law ordinal, cert
@@ -2684,9 +2676,7 @@ pub fn validate_law_account(
             && row["family"]
                 .as_str()
                 .is_some_and(|f| FAMILIES.contains(&f))
-            && row["verdict"]
-                .as_str()
-                .is_some_and(|x| VERDICTS.contains(&x));
+            && row["verdict"].as_str().is_some_and(is_verdict);
         if !ok {
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] must carry \
@@ -2819,7 +2809,7 @@ pub fn validate_law_account(
                         expected.len()
                     ));
                 }
-                let mut recomputed = "holds";
+                let mut results: Vec<VerdictIr> = Vec::new();
                 for (k, (cert, form)) in
                     certs.iter().zip(expected.iter()).enumerate()
                 {
@@ -2862,9 +2852,7 @@ pub fn validate_law_account(
                         || cert["form"].as_str() != Some(form)
                         || !cert["result"]
                             .as_str()
-                            .is_some_and(|r| {
-                                VERDICTS.contains(&r)
-                            })
+                            .is_some_and(is_verdict)
                     {
                         return Err(format!(
                             "{}: malformed artifact — \
@@ -2908,9 +2896,7 @@ pub fn validate_law_account(
                             }
                         }
                     }
-                    if sev(r) > sev(recomputed) {
-                        recomputed = r;
-                    }
+                    results.extend(VerdictIr::from_word(r));
                     expected_lowered.insert(
                         (
                             row["ordinal"].as_u64().unwrap_or(0),
@@ -2930,12 +2916,13 @@ pub fn validate_law_account(
                 // says a named class is undeclared or cyclic, the
                 // old engine's vacuous `holds` is not an
                 // alternative; otherwise the verdict is EXACTLY
-                // the recomputed evidence result.
-                let expect = if static_invalid {
-                    "invalid"
-                } else {
-                    recomputed
-                };
+                // the recomputed evidence result. The rule is the
+                // model's, the one the judgment wrote it with.
+                let expect = hale_model::certificate_row_verdict(
+                    results,
+                    static_invalid,
+                )
+                .as_str();
                 if verdict != expect {
                     return Err(format!(
                         "{}: malformed artifact — law.rows[{}] \
@@ -3099,9 +3086,7 @@ pub fn validate_law_account(
             claims_tier_ordinals
                 .push(row["ordinal"].as_u64().unwrap_or(0));
         }
-        if row["verdict"] != "holds" {
-            law_all_pass = false;
-        }
+        law_verdicts.extend(VerdictIr::from_word(verdict));
         let ord = row["ordinal"].as_u64().unwrap_or(0);
         let expect = prev_ordinal.map_or(0, |o| o + 1);
         if ord != expect {
@@ -3488,26 +3473,29 @@ pub fn validate_law_account(
             label, claimed_ordinals, tier
         ));
     }
-    // The document verdict is RECOMPUTED, never trusted.
-    let claims_pass = v["claims"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .all(|c| c["result"] == "holds");
-    let lowered_pass = v["lowered"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .all(|r| r["result"] == "holds");
-    let expect_verdict = if claims_pass
-        && lowered_pass
-        && law_all_pass
-        && issue_count == 0
-    {
-        "clean"
-    } else {
-        "law_failed"
+    // The document verdict is RECOMPUTED, never trusted — with the
+    // model's rule, the one the emitter wrote it with. A word outside
+    // the vocabulary is read as `invalid`, which does not pass.
+    let stated = |rows: &Value| -> Vec<VerdictIr> {
+        rows.as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| {
+                r["result"]
+                    .as_str()
+                    .and_then(VerdictIr::from_word)
+                    .unwrap_or(VerdictIr::Invalid)
+            })
+            .collect()
     };
+    let expect_verdict = hale_model::document_verdict(
+        stated(&v["claims"])
+            .into_iter()
+            .chain(stated(&v["lowered"]))
+            .chain(law_verdicts),
+        issue_count,
+    )
+    .as_str();
     if v["verdict"] != expect_verdict {
         return Err(format!(
             "{}: malformed artifact — document verdict `{}` \

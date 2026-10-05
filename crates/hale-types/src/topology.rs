@@ -1439,17 +1439,31 @@ pub fn dump_topology_over(
     // family imports an outside verdict any more — so no
     // non-passing law row can coexist with a `clean` document
     // verdict (round 1).
-    let law_pass = law_rows.iter().all(|r| {
-        matches!(r.family, hale_model::JudgmentFamily::Fleet)
-            || r.verdict.passed()
-    });
-    let all_pass = outcomes.iter().all(|o| o.result.passed())
-        && lowered.iter().all(|r| r.result.passed())
-        && law_pass
-        && law_issues.is_empty();
+    //
+    // The rule is the model's (`hale_model::document_verdict`), the
+    // one admission recomputes the field with.
+    let document = hale_model::document_verdict(
+        outcomes
+            .iter()
+            .map(|o| o.result)
+            .chain(lowered.iter().map(|r| r.result))
+            .chain(
+                law_rows
+                    .iter()
+                    .filter(|r| {
+                        !matches!(
+                            r.family,
+                            hale_model::JudgmentFamily::Fleet
+                        )
+                    })
+                    .map(|r| r.verdict),
+            )
+            .map(hale_model::VerdictIr::from),
+        law_issues.len(),
+    );
     out.push_str(&format!(
         ",\n  \"verdict\": {}",
-        quote(if all_pass { "clean" } else { "law_failed" })
+        quote(document.as_str())
     ));
 
     // Integrity (schema 1.3). `shape_hash` is an IDENTITY, not an
