@@ -2102,13 +2102,17 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let rows: Vec<hale_types::handler_routing::HandlerRow> =
             self.handlers.handlers_of_instance(l.id, &l.name.name).cloned().collect();
         if rows.len() != failure_decls {
-            return Err(CodegenError::Unsupported(format!(
-                "locus `{}` declares {} on_failure handler(s) but the \
-                 handler routing has {} row(s) for its declaration",
-                l.name.name,
-                failure_decls,
-                rows.len(),
-            )));
+            return Err(CodegenError::missing_row(
+                "handler_routing",
+                format!(
+                    "locus `{}` declares {} on_failure handler(s) but the \
+                     handler routing has {} row(s) for its declaration",
+                    l.name.name,
+                    failure_decls,
+                    rows.len(),
+                ),
+                Some(l.name.span),
+            ));
         }
         let mut failure_handlers: BTreeMap<
             hale_types::handler_routing::SiteId,
@@ -2123,11 +2127,15 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 .find(|r| r.is_row_of(fd))
                 .and_then(|r| Some((r, r.id?)))
             else {
-                return Err(CodegenError::Unsupported(format!(
-                    "locus `{}` declares an on_failure handler the handler \
-                     routing has no minted row for",
-                    l.name.name
-                )));
+                return Err(CodegenError::missing_row(
+                    "handler_routing",
+                    format!(
+                        "locus `{}` declares an on_failure handler the handler \
+                         routing has no minted row for",
+                        l.name.name
+                    ),
+                    Some(fd.span),
+                ));
             };
             let child_locus_name = match &row.child {
                 ChildRef::Locus(n) => n.clone(),

@@ -310,7 +310,7 @@ pub struct Entry {
 // ===================================================================
 
 /// The side table [`resolve_owners`] produces.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct OwnerTable {
     entries: BTreeMap<ExprId, Entry>,
     /// `(owner locus, field)` -> the row for a field initialised from

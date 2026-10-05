@@ -29,20 +29,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus: &str,
         kinds: &[ObligationKind],
     ) -> Result<Vec<ObligationKind>, CodegenError> {
-        let plan = self.lifecycle.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "`{locus}`: the lowering view carries no lifecycle plan, and the birth spine is read from it"
-            ))
-        })?;
-        plan.birth_order(locus, kinds).map_err(CodegenError::Unsupported)
+        self.lifecycle.birth_order(locus, kinds).map_err(CodegenError::Unsupported)
     }
 
     /// Whether the plan owes an instance of `locus` readiness (line 6):
-    /// delivery to it eligible once its `birth()` has completed.
+    /// delivery to it eligible once its `birth()` has completed. Total: no
+    /// template of `locus` in the plan means none of its spines owes
+    /// readiness.
     pub(crate) fn owes_readiness(&self, locus: &str) -> bool {
-        self.lifecycle.is_some_and(|p| {
-            p.templates(locus).any(|s| p.birth_spine(s).iter().any(|st| st.kind == ObligationKind::Readiness))
-        })
+        let p = self.lifecycle;
+        p.templates(locus).any(|s| p.birth_spine(s).iter().any(|st| st.kind == ObligationKind::Readiness))
     }
 
     /// Open `self_ptr`'s readiness window before its first

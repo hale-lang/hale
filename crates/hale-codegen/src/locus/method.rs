@@ -181,11 +181,15 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 .handlers_of_instance(info.decl, &l.name.name)
                 .find(|r| r.is_row_of(failure_decl))
                 .ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "locus `{}` declares an on_failure handler the \
-                         handler routing has no row for",
-                        l.name.name
-                    ))
+                    CodegenError::missing_row(
+                        "handler_routing",
+                        format!(
+                            "locus `{}` declares an on_failure handler the \
+                             handler routing has no row for",
+                            l.name.name
+                        ),
+                        Some(failure_decl.span),
+                    )
                 })?;
             let (child_locus_name, ff) = row
                 .id

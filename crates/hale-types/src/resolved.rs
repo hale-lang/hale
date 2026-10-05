@@ -71,6 +71,7 @@ use crate::symbol::{Bundle, SourceFile};
 
 /// The program codegen lowers, and the tables the frontend derives over
 /// it: the snapshot's `lowering_view` family.
+#[derive(Clone)]
 pub struct LoweringView {
     /// The user's program after the codegen-shape desugars, with the
     /// bundled stdlib's declarations appended: what lowering walks.
@@ -174,7 +175,7 @@ pub struct LoweringView {
     /// read a spine's obligations, in order, from it
     /// ([`LoweringView::lifecycle`]). The snapshot's view carries its
     /// plan; a view resolved from a bare program ([`resolve_program`])
-    /// has none.
+    /// has none, and lowering refuses it (a required row).
     pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
     /// program the view was resolved from: its entry, the `main locus`

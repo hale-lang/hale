@@ -570,6 +570,22 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+impl CodegenError {
+    /// A row lowering requires, absent from the lowering view (F.40 phase
+    /// 3's exit). The snapshot provides the row for every program that
+    /// reaches lowering, so its absence is a compiler defect: refused here,
+    /// naming the family (`hale_graph::registry`'s name) and the row, and
+    /// never answered by a default or a second derivation. `at` is the
+    /// site, where the read has one.
+    pub(crate) fn missing_row(family: &str, row: impl std::fmt::Display, at: Option<hale_syntax::Span>) -> Self {
+        let msg = format!("the lowering view holds no required `{family}` row: {row}");
+        match at {
+            Some(span) => CodegenError::UnsupportedAt(msg, span),
+            None => CodegenError::Unsupported(msg),
+        }
+    }
+}
+
 /// Stage-1 FFI (2026-05-22): per-build link surface declared by
 /// `@ffi("c")` consumers. `link_libs` accumulate as `-l<name>` on
 /// the clang link line; `csrc_files` compile alongside the C
@@ -1242,6 +1258,13 @@ pub fn build_resolved(
         import_renames,
         ..
     } = resolved;
+    // The snapshot hands every view it lowers its lifecycle plan
+    // (`demand_lifecycle`), which every spine's emitter reads: a view
+    // without one is a compiler defect, refused before anything is
+    // lowered.
+    let lifecycle = resolved.lifecycle().ok_or_else(|| {
+        CodegenError::missing_row("lifecycle_order", "the program's lifecycle plan, which every spine is emitted from", None)
+    })?;
 
     // Every platform question below asks the TARGET, not the host. These
     // agree today (Native == host) and the answers are unchanged; the
@@ -1499,7 +1522,7 @@ pub fn build_resolved(
         specialized_locus_decls: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
-        lifecycle: resolved.lifecycle(),
+        lifecycle,
         entry_locus: entry_locus(resolved.entry(), merged),
         entry_fn: entry_fn(resolved.entry(), merged),
         current_user_fn_scratch_local: false,
@@ -3394,8 +3417,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
     /// The view's lifecycle plan (`LoweringView::lifecycle`): the
     /// emitters read each spine's obligations, in order, from it
-    /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
-    pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
+    /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4). A required
+    /// row: a view without one is refused before lowering starts.
+    pub(crate) lifecycle: &'p hale_types::lifecycle::LifecyclePlan,
     /// The `main locus` lowering deploys, read from the view's entry row
     /// (`LoweringView::entry`, its entry) and found in lowering's program
     /// by identity: every comparison against "the main locus" reads it
@@ -4109,7 +4133,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
     /// GH #383: fn name -> (locus it freshly returns, the let-binding
-    /// it returns if any). See `fresh_factories`.
+    /// it returns if any). See `fresh_factories`. Total: a fn with no
+    /// row is no fresh factory, so its call hands back no fresh locus.
     pub(crate) fresh_locus_factories:
         &'p std::collections::BTreeMap<String, (String, Option<String>)>,
     /// GH #767: fn name -> stack bytes already handed to array
@@ -6029,12 +6054,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// before the frame's pre-drain) or the flush's (the pre-drain and
     /// those after it), each where the target's cells select it.
     fn emit_process_rows(&mut self, spine: Spine, flush: bool, pre_drain: bool) -> Result<(), CodegenError> {
-        let plan = self.lifecycle.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "the lowering view carries no lifecycle plan, and the {} spine's process obligations are read from it",
-                spine.name()
-            ))
-        })?;
+        let plan = self.lifecycle;
         let mut in_flush = false;
         for step in plan.process_order(spine).map_err(CodegenError::Unsupported)? {
             // A known-open row (the eager spine's pre-drain, C13) is not
@@ -6405,8 +6425,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// cannot emit: a cascade before the head or before the joins.
     pub(crate) fn head_before_pinned_joins(&self, spine: Spine) -> Result<bool, CodegenError> {
         use hale_types::lifecycle::spine::EntryStep;
-        let Some(plan) = self.lifecycle else { return Ok(true) };
-        let order = plan.entry_order(spine).map_err(CodegenError::Unsupported)?;
+        let order = self.lifecycle.entry_order(spine).map_err(CodegenError::Unsupported)?;
         let at = |s: EntryStep| order.iter().position(|&x| x == s);
         if at(EntryStep::Cascade) < at(EntryStep::Head) || at(EntryStep::Cascade) < at(EntryStep::PinnedJoins) {
             return Err(CodegenError::Unsupported(format!(
@@ -10243,10 +10262,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let LocusMember::Bindings(b) = m else { continue };
             for entry in &b.entries {
                 let row = rows.for_entry(entry).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "binding for topic `{}`: the lowering view holds no binding row for this entry",
-                        entry.topic.name
-                    ))
+                    CodegenError::missing_row(
+                        "bindings",
+                        format!("the binding for topic `{}` has no row", entry.topic.name),
+                        Some(entry.topic.span),
+                    )
                 })?;
                 out.push((entry, row));
             }
@@ -12360,12 +12380,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(Typed::Known(row)) => row,
             Some(Typed::Hole(h)) => return Err(CodegenError::UnsupportedAt(h.reason.clone(), h.span)),
             None => {
-                return Err(CodegenError::UnsupportedAt(
+                return Err(CodegenError::missing_row(
+                    "generics",
                     format!(
                         "generic fn `{}`: this call has no typed-body row: the checker did not walk it",
                         name
                     ),
-                    call_span,
+                    Some(call_span),
                 ))
             }
         };
@@ -12375,13 +12396,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map(|t| self.generic_type_arg(t))
             .collect::<Result<Vec<TypeExpr>, CodegenError>>()?;
         let mono = self.typed.monomorphs().of(row.template, &row.type_args).ok_or_else(|| {
-            CodegenError::UnsupportedAt(
+            CodegenError::missing_row(
+                "generics",
                 format!(
                     "generic fn `{}`: the monomorph table names no specialization for this call's \
                      type arguments",
                     name
                 ),
-                call_span,
+                Some(call_span),
             )
         })?;
         Ok((args, mono.name.clone(), (row.template, row.type_args.clone())))
@@ -17138,12 +17160,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // defaults, it would answer "not returned, not moved",
                 // the answers that dissolve the value.
                 let facts = *self.owner_table.binding_facts(*id).ok_or_else(|| {
-                    CodegenError::UnsupportedAt(
+                    CodegenError::missing_row(
+                        "ownership",
                         format!(
                             "no binding-facts row for `{}`: the resolved program did not mint this site",
                             name.name
                         ),
-                        *span,
+                        Some(*span),
                     )
                 })?;
                 let saved_override_for_returned = self.current_arena_override;
@@ -18078,10 +18101,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         RecoveryOp::Restart
                         | RecoveryOp::RestartInPlace => {
                             let row = self.handlers.retry_bound_at(*span).ok_or_else(|| {
-                                CodegenError::Unsupported(
-                                    "`for N`: the restart rows state no bound for this \
-                                     statement"
-                                        .into(),
+                                CodegenError::missing_row(
+                                    "restart",
+                                    "`for N`: the restart rows state no bound for this statement",
+                                    Some(*span),
                                 )
                             })?;
                             Some((row, e))
@@ -23013,17 +23036,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             crate::ownership::TempVerdict::Nobody
                         )
                     {
-                        return Err(CodegenError::Unsupported(format!(
-                            "the call to `{}` produces locus `{}` and the \
-                             ownership pre-pass gave it no owner. Every \
-                             locus-producing expression is decided before \
-                             lowering — see spec/decisions.md F.39 — so \
-                             this is a compiler defect, not a program \
-                             error.",
-                            self.callee_fn_name(callee)
-                                .unwrap_or_else(|| "?".to_string()),
-                            lname
-                        )));
+                        return Err(CodegenError::missing_row(
+                            "ownership",
+                            format!(
+                                "the call to `{}` produces locus `{}` and the \
+                                 ownership pre-pass gave it no owner. Every \
+                                 locus-producing expression is decided before \
+                                 lowering — see spec/decisions.md F.39 — so \
+                                 this is a compiler defect, not a program \
+                                 error.",
+                                self.callee_fn_name(callee)
+                                    .unwrap_or_else(|| "?".to_string()),
+                                lname
+                            ),
+                            None,
+                        ));
                     }
                     if wants_temp
                         && ty == CodegenTy::LocusRef(lname.clone())

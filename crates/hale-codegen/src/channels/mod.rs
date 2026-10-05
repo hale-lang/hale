@@ -48,6 +48,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         child: &str,
     ) -> Option<FunctionValue<'ctx>> {
         let info = self.user_loci.get(parent)?;
+        // Total: no routing row means `parent` declares no handler for
+        // `child`, and the failure takes the unhandled route.
         let row = self.handlers.route_instance(info.decl, parent, child)?;
         info.failure_handlers.get(&row.id?).map(|(_, f)| *f)
     }

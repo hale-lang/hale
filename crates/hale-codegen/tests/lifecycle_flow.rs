@@ -1,4 +1,4 @@
-//! The `lifecycle_flow` integration-test binary: 27 test files of this area, kept
+//! The `lifecycle_flow` integration-test binary: 28 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -33,6 +33,8 @@ mod interface_in_form_vec;
 mod interface_return;
 #[path = "lifecycle_fixtures.rs"]
 mod lifecycle_fixtures;
+#[path = "missing_rows.rs"]
+mod missing_rows;
 #[path = "nested_long_lived_child.rs"]
 mod nested_long_lived_child;
 #[path = "nested_long_running_child.rs"]
