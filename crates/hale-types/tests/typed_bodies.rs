@@ -506,3 +506,92 @@ fn main() {
         assert!(matches!(table.default_generic_call(&evaluation.invocations, Some(&args), NodeId(source.unwrap())), Some(Typed::Known(row)) if row.type_args == args));
     }
 }
+
+/// The `param_accesses` column (F.40 phase 4, W4): every read and write
+/// of a locus's `params` through a receiver typed as that locus, sealed
+/// or not, by body, in walk order, with the reader and the receiver by
+/// declaration. An access through `self` is a row from inside; a free
+/// fn's has no reader; a method named on a locus is no row; a generic
+/// body has the template walk's rows only, and a receiver typed as a
+/// type parameter is none.
+#[test]
+fn the_param_access_column_records_each_access_through_a_locus() {
+    use hale_types::placement::SiteUniverse;
+    use hale_types::typed_bodies::AccessKind::{Read, Write};
+    let src = r#"
+@sealed locus Signer {
+    params { key: Int = 7; }
+    fn sign(m: Int) -> Int { return m + self.key; }
+}
+locus Plain { params { n: Int = 1; } fn get() -> Int { return self.n; } }
+locus Holder<T> {
+    params { inner: T; }
+    fn read() -> Int { let x = self.inner; return 0; }
+}
+locus Gateway {
+    params { s: Signer = Signer { }; p: Plain = Plain { }; }
+    fn look() -> Int { self.p.n = 2; return self.p.n + self.s.sign(1) + self.p.get(); }
+}
+fn free(p: Plain) -> Int { return p.n; }
+main locus App { params { g: Gateway = Gateway { }; h: Holder<Plain> = Holder { inner: Plain { } }; } }
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else { panic!("snapshot") };
+    let table = s.demand_typed_bodies().expect("the table");
+    let p = s.program().unwrap();
+    let name_of = |r: &hale_types::typed_bodies::LocusRef| {
+        assert_eq!(r.universe, SiteUniverse::User);
+        ["Signer", "Plain", "Holder", "Gateway", "App"]
+            .into_iter()
+            .find(|n| id_of(decl(p, n)).0 == r.decl.0)
+            .unwrap_or_else(|| panic!("{r:?} is a declared locus"))
+    };
+    let method = |locus: &str, f: &str| {
+        let TopDecl::Locus(l) = decl(p, locus) else { unreachable!() };
+        l.members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Fn(fd) if fd.name.name == f => Some(fd.id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let rows = |body: NodeId| {
+        table
+            .body(body)
+            .map(|b| b.param_accesses.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|a| {
+                (a.reader.as_ref().map(name_of), name_of(&a.receiver), a.locus.clone(), a.param.clone(), a.kind, a.from_inside())
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |reader: Option<&'static str>, receiver: &'static str, param: &str, kind, inside| {
+        (reader, receiver, receiver.to_string(), param.to_string(), kind, inside)
+    };
+    assert_eq!(rows(method("Signer", "sign")), [row(Some("Signer"), "Signer", "key", Read, true)]);
+    assert_eq!(
+        rows(method("Gateway", "look")),
+        [
+            row(Some("Gateway"), "Gateway", "p", Write, true),
+            row(Some("Gateway"), "Plain", "n", Write, false),
+            row(Some("Gateway"), "Gateway", "p", Read, true),
+            row(Some("Gateway"), "Plain", "n", Read, false),
+            // `self.s.sign(1)` and `self.p.get()`: the receivers are
+            // params; a method named on them is no row.
+            row(Some("Gateway"), "Gateway", "s", Read, true),
+            row(Some("Gateway"), "Gateway", "p", Read, true),
+        ]
+    );
+    assert_eq!(rows(id_of(decl(p, "free"))), [row(None, "Plain", "n", Read, false)]);
+    // `self.inner` is `Holder`'s own; the template's `inner` is a `T`,
+    // and the walk for `Holder_Plain` records nothing.
+    assert_eq!(rows(method("Holder", "read")), [row(Some("Holder"), "Holder", "inner", Read, true)]);
+    // The read's span is the whole `receiver.param`; a write's the param.
+    let look = table.body(method("Gateway", "look")).unwrap();
+    let text = |sp: hale_syntax::Span| src[sp.start.as_usize()..sp.end.as_usize()].to_string();
+    assert_eq!(text(look.param_accesses[1].span), "n");
+    assert_eq!(text(look.param_accesses[3].span), "self.p.n");
+}

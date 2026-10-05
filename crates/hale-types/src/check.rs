@@ -806,6 +806,9 @@ pub fn check_bundle_by_declaration(
     // checked program's mint makes unique (the bundled stdlib is minted
     // apart), so it records a call to one of these only.
     let mut user_fns: BTreeSet<*const FnDecl> = BTreeSet::new();
+    // And the loci: a `param_accesses` row names its loci by the store
+    // that minted them.
+    let mut user_loci: BTreeSet<*const LocusDecl> = BTreeSet::new();
     for program in bundle.programs.values() {
         for decl in hale_syntax::ast::flat_decls(&program.items) {
             match decl {
@@ -813,6 +816,7 @@ pub fn check_bundle_by_declaration(
                     user_fns.insert(f as *const FnDecl);
                 }
                 TopDecl::Locus(l) => {
+                    user_loci.insert(l as *const LocusDecl);
                     for m in &l.members {
                         if let LocusMember::Fn(f) = m {
                             user_fns.insert(f as *const FnDecl);
@@ -843,6 +847,7 @@ pub fn check_bundle_by_declaration(
         fn_decls,
         locus_decls,
         user_fns,
+        user_loci,
         default_invocations: Vec::new(),
         generic_types,
         generic_loci,
@@ -5898,6 +5903,9 @@ struct Checker<'a> {
     /// The fns and locus methods the bundle's programs declare (not the
     /// bundled stdlib's): the callees the `omitted_args` column records.
     user_fns: BTreeSet<*const FnDecl>,
+    /// The loci the bundle's programs declare: a declaration in
+    /// `locus_decls` that is not one is the bundled stdlib's.
+    user_loci: BTreeSet<*const LocusDecl>,
     default_invocations: Vec<u32>,
     /// GH #877: the generic parameters of the declaration being
     /// checked — a fn's `<T>`, a generic `type`'s. They name no
@@ -11140,6 +11148,7 @@ impl<'a> Checker<'a> {
                     // a write is not confinement — for `std::secret` it
                     // let outside code CHOOSE the signing key, which is
                     // worse than reading it.
+                    self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
                     self.check_sealed_access(
                         &ty,
                         f,
@@ -11643,6 +11652,61 @@ impl<'a> Checker<'a> {
         let body = self.typed.body(self.body);
         body.accumulators = rows;
         body.specialized_accumulators = specialized;
+    }
+
+    /// The `param_accesses` row of an access to `name` through a
+    /// receiver typed `rt` (F.40 phase 4, W4): when `rt` is a locus the
+    /// scope declares and `name` one of its `params`, the row names the
+    /// locus whose member is being walked (the reader), the receiver's
+    /// locus, both by declaration, and the access. Recorded whether or
+    /// not the locus is sealed, and on the ordinary walk only: the walk
+    /// of a generic body per monomorph keeps no diagnostic, and records
+    /// no row either.
+    fn record_param_access(
+        &mut self,
+        rt: &Ty,
+        name: &Ident,
+        span: Span,
+        kind: crate::typed_bodies::AccessKind,
+    ) {
+        if self.specializing.is_some() {
+            return;
+        }
+        let Ty::Named(locus_name) = rt else { return };
+        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name) else {
+            return;
+        };
+        if !li.params.iter().any(|p| p.name == name.name) {
+            return;
+        }
+        let Some(receiver) = self.locus_ref(&li.name) else { return };
+        let reader = self.current_locus.and_then(|cur| self.locus_ref(&cur.name));
+        let row = crate::typed_bodies::ParamAccess {
+            reader,
+            receiver,
+            locus: li.name.clone(),
+            param: name.name.clone(),
+            kind,
+            span,
+        };
+        // A receiver the walk types twice (a method call's) is one
+        // access.
+        let rows = &mut self.typed.body(self.body).param_accesses;
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
+    }
+
+    /// The declaration the scope's locus `name` is, by its site.
+    fn locus_ref(&self, name: &str) -> Option<crate::typed_bodies::LocusRef> {
+        use crate::placement::SiteUniverse;
+        let decl = self.locus_decls.get(name)?;
+        let universe = if self.user_loci.contains(&(*decl as *const LocusDecl)) {
+            SiteUniverse::User
+        } else {
+            SiteUniverse::StdlibAnalysis
+        };
+        Some(crate::typed_bodies::LocusRef { universe, decl: decl.id })
     }
 
     /// GH #436: `@sealed` — a sealed locus's `params` are reachable
@@ -13944,6 +14008,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let rt = self.check_expr(receiver);
+                self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
                 self.check_sealed_access(
                     &rt,
                     name,
