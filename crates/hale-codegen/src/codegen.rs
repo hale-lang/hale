@@ -5000,14 +5000,12 @@ pub(crate) struct LocusInfo<'ctx> {
     /// a counter. Slot fields live on the locus struct after
     /// the user fields, before the synthetic flags.
     pub(crate) accumulators_per_closure: BTreeMap<String, Vec<AccumulatorSlot>>,
-    /// m46: per-closure list of recovery-event names listed in
-    /// `persists_through(...)`. Default is reset (zero the
-    /// accumulators on the event); a name in this list opts that
-    /// closure's accumulators out of reset for that event.
-    /// Recognized event names: `restart`, `restart_in_place`,
-    /// `quarantine`, `dissolve`. (`replace` from the spec example
-    /// awaits perspective hot-load.)
-    pub(crate) persists_through_per_closure: BTreeMap<String, Vec<String>>,
+    /// m46: per-closure list of the recovery events its
+    /// `persists_through(...)` clauses name, typed by the parser
+    /// (F.40 phase 4, W3). Default is reset (zero the accumulators
+    /// on the event); an event in this list opts that closure's
+    /// accumulators out of reset for that event.
+    pub(crate) persists_through_per_closure: BTreeMap<String, Vec<RecoveryEvent>>,
     /// F.34 (v1.x-WINDOWED): per-closure list of locus field names
     /// to zero AFTER the assertion fires at a `duration(N)` epoch
     /// boundary. Only populated for closures that pair `epoch
@@ -29856,7 +29854,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
-        event: &str,
+        event: RecoveryEvent,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
         let groups: Vec<(String, Vec<AccumulatorSlot>)> = info
@@ -29868,8 +29866,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let persists = info
                 .persists_through_per_closure
                 .get(&closure_name)
-                .map(|v| v.iter().any(|e| e == event))
-                .unwrap_or(false);
+                .is_some_and(|v| v.contains(&event));
             if persists {
                 continue;
             }
@@ -29880,7 +29877,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     slot,
                     &format!(
                         "{}.{}.acc[{}].reset.{}",
-                        locus_name, closure_name, i, event
+                        locus_name, closure_name, i, event.name()
                     ),
                 )?;
             }
@@ -30382,7 +30379,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
         in_place: bool,
     ) -> Result<BlockEnd, CodegenError> {
-        let kind = if in_place { "restart_in_place" } else { "restart" };
+        let event = if in_place { RecoveryEvent::RestartInPlace } else { RecoveryEvent::Restart };
+        let kind = event.name();
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "{}() takes exactly one argument, got {}",
@@ -30552,7 +30550,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `persists_through(...)` clause names this recovery
         // event. Default = reset.
         self.emit_accumulator_reset_for_event(
-            &info, child_ptr, kind, &locus_name,
+            &info, child_ptr, event, &locus_name,
         )?;
         // Rejoin the quarantine branch when a bound was declared, so
         // whatever follows the recovery statement sees one successor.
@@ -30651,9 +30649,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         // m46: zero each closure's accumulators unless its
-        // `persists_through(...)` clause names "quarantine".
+        // `persists_through(...)` clause names `quarantine`.
         self.emit_accumulator_reset_for_event(
-            info, child_ptr, "quarantine", locus_name,
+            info, child_ptr, RecoveryEvent::Quarantine, locus_name,
         )?;
         Ok(())
     }
