@@ -114,7 +114,11 @@ pub struct DispatchPlan {
 impl DispatchPlan {
     /// Derive the plan from the model: gate facts × arrangement.
     pub fn derive(m: &ApplicationModel) -> DispatchPlan {
-        // locus display → the domains of its arranged instances.
+        // locus → the domains of its arranged instances, keyed by the
+        // locus's canonical `name`: the gates' own spelling of it (the
+        // raw post-merge symbol). Never by `display`, which demangles a
+        // locus of an imported seed and so never meets the gates'
+        // spelling of it.
         let domain_name = |id: crate::ids::ThreadDomainId| {
             m.entities
                 .thread_domains
@@ -139,7 +143,7 @@ impl DispatchPlan {
                 .map(|p| domain_name(p.domain));
             if let Some(d) = domain {
                 domains_of
-                    .entry(decl.display.as_str())
+                    .entry(decl.name.as_str())
                     .or_default()
                     .push(d);
             }
@@ -162,21 +166,23 @@ impl DispatchPlan {
             }
             if let crate::ids::EntityRef::LocusDecl(id) = h.at {
                 if let Some(decl) = m.entities.loci.get(id.index()) {
-                    domains_of.remove(decl.display.as_str());
+                    domains_of.remove(decl.name.as_str());
                 }
             }
         }
         DispatchPlan::from_gates(&m.analyses.dispatch_gates, &domains_of)
     }
 
-    /// The plan over raw gate facts plus a locus-display → thread
-    /// domains map. `derive` supplies the model's arrangement for
-    /// the map; the resolved program (`hale_types::resolved`), which
-    /// holds the merged (user + stdlib, desugared) bus graph lowering
-    /// must agree with, supplies its gates and an empty map for the
-    /// plan codegen reads — flavors depend only on
-    /// the gates, so an absent arrangement costs the `same_domain`
-    /// survey field and nothing else.
+    /// The plan over raw gate facts plus a locus → thread domains map,
+    /// keyed by the gates' spelling of a locus (the raw post-merge
+    /// symbol a gate's `publisher_loci` and `subscribers` carry).
+    /// `derive` supplies the model's arrangement for the map; the
+    /// resolved program (`hale_types::resolved`), which holds the
+    /// merged (user + stdlib, desugared) bus graph lowering must agree
+    /// with, supplies its gates and an empty map for the plan codegen
+    /// reads — flavors depend only on the gates, so an absent
+    /// arrangement costs the `same_domain` survey field and nothing
+    /// else.
     /// `domains_of` is a COMPLETE account per key: a locus present
     /// in the map has every one of its instances represented, and a
     /// locus the model cannot fully place must be ABSENT (that is

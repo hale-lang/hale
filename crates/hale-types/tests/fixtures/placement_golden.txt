@@ -4411,6 +4411,10 @@ row	App@literal1	App	main	default
 shared	App@literal1.workers[0]	Worker #f0ba3524
 shared	App@literal1.workers[1]	Worker #f0ba3524
 
+== crates/hale-types/tests/dispatch_plan.rs#d1cac425
+root	App	the entry
+row	App@literal1	App	main	default
+
 == crates/hale-types/tests/effect_assertions.rs#b335c4dc
 root	App	the entry
 domain	pool:web	async_io

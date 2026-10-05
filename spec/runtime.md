@@ -467,8 +467,14 @@ domain", the precondition the future placement-driven flavors
 cannot place a locus's WHOLE population — a locus with both an
 arranged instance and a dynamic birth is incomplete, and its
 arranged instance does not answer for the instances the model
-admits it cannot see. Plan subjects are WIRE subjects; `hale
-model dump` prints the plan and the same-domain count.
+admits it cannot see. A locus's domains are found by the gates'
+own spelling of it, the canonical post-merge name, never the
+display name, so a locus of an imported seed has its domains like
+any other (before F.40 phase 3's C5 they were found by the display
+name, which demangles an imported locus and never met the gates'
+spelling, and every such row printed no domain). Plan subjects are
+WIRE subjects; `hale model dump` prints the plan and the
+same-domain count.
 
 The gates' placement leg reads the placement table (F.40 phase 3,
 P1): a type is same-thread only when every instance of it runs on
