@@ -1294,6 +1294,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Invariants.**
 
 - a law is judged once, with a span
+- each law here is a registered rule (rules 6, 17 and 18, and the structural table's module-nested entry, cross-pool spawn as a value and self-containing locus), run as a `law::Law` whose finding is a `law::Violation`; a related location a finding carried before is a witness step, in its order, so the rendering is unchanged (phase 4, W5)
 - lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)
 - rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1); its finding is a `law::Violation` whose witness is the walk's chain, each step located: the entry that runs the instance pinned (the placement entry, or the binding entry), the declaration the instance realizes, and the conflicting member (the `accept`, or the closure's assertion), a stdlib declaration's steps in the stdlib's space (phase 4, W2)
 - rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)
@@ -1537,7 +1538,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 13 |
+| `spec/verification.md` § Structural & design rules | 16 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1577,6 +1578,9 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/unreached-recovery-event | `spec/verification.md` § Structural & design rules | Unreached recovery event | an event a closure of the program's own seed names that no handler or recovery statement of the closed world applies to its locus (warning, at the name, the witness each handler and statement that names the locus and the events it applies); a spent `restart(c) for N` is `quarantine`; not judged in an open world, for an imported locus, or for an event a recovery applies to a child the rows cannot name | `closures` | `crates/hale-types/src/closure_events.rs` · `unreached_events` | `handler_routing`, `entrypoint` | Canonical |
 | verification/structural/persistence-without-accumulator | `spec/verification.md` § Structural & design rules | Persistence with no accumulator | `persists_through(...)` on a closure whose assertion accumulates nothing, so the clause keeps nothing (warning, at the clause, the witness the assertion) | `closures` | `crates/hale-types/src/closure_events.rs` · `nothing_to_keep` | the declaration | Canonical |
 | verification/structural/sealed-confinement | `spec/verification.md` § Structural & design rules | Sealed confinement | a read or write of a `@sealed` locus's `params` from outside its own members (error, at the access, naming the methods to call instead) | `sealability` | `crates/hale-types/src/sealed_access.rs` · `outside_access` | `expression_typing`, `top_scope` | Canonical |
+| verification/structural/module-nested-main | `spec/verification.md` § Structural & design rules | Module-nested entry | a seed whose only `main locus` is module-nested has no entry (error, once, at that locus's name) | `law_backstops` | `crates/hale-types/src/lowering_laws.rs` · `module_nested_main_is_not_the_entry` | `entrypoint` | Canonical |
+| verification/structural/cross-pool-spawn-as-a-value | `spec/verification.md` § Structural & design rules | Cross-pool spawn as a value | a locus literal the bubble plan posts to an owner on another thread, used as a value rather than a bare statement (error, at the literal, or at the call or literal whose default expands it) | `law_backstops` | `crates/hale-types/src/lowering_laws.rs` · `cross_pool_spawn_used_as_a_value` | `ownership`, `placement`, `expression_typing` | Canonical |
+| verification/structural/self-containing-locus | `spec/verification.md` § Structural & design rules | Self-containing locus | a locus whose params defaults construct one of its own kind by value, by a literal or a fresh-factory call (error, at the param that closes the cycle) | `law_backstops` | `crates/hale-types/src/lowering_laws.rs` · `self_containing_locus` | `ownership` | Canonical |
 
 ## The shadow facility's allowance
 

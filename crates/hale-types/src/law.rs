@@ -104,6 +104,22 @@ pub struct Violation {
 }
 
 impl Violation {
+    /// An error of `rule` at `span`, with no witness yet.
+    pub fn error(rule: RuleId, span: Span, message: impl Into<String>) -> Violation {
+        Violation { rule, severity: Severity::Error, span, message: message.into(), witness: Vec::new() }
+    }
+
+    /// A warning of `rule` at `span`, with no witness yet.
+    pub fn warning(rule: RuleId, span: Span, message: impl Into<String>) -> Violation {
+        Violation { severity: Severity::Warning, ..Violation::error(rule, span, message) }
+    }
+
+    /// The violation with one more witness step, in the seed's space.
+    pub fn step(mut self, span: Span, note: impl Into<String>) -> Violation {
+        self.witness.push(WitnessStep { span, origin: SpanOrigin::Seed, note: note.into() });
+        self
+    }
+
     /// The diagnostic: the message unchanged, at the span, and each step
     /// of the witness a related location with its note, in order.
     pub fn into_diag(self) -> Diag {
@@ -116,6 +132,14 @@ impl Violation {
         );
         diag
     }
+}
+
+/// The diagnostics of violations found in one walk, in the order found: a
+/// walk that judges several rules at once (the role rules) reports them
+/// interleaved, as the walk reaches them, which a [`Law`] per rule would
+/// reorder.
+pub fn diags(found: Vec<Violation>) -> Vec<Diag> {
+    found.into_iter().map(Violation::into_diag).collect()
 }
 
 /// A structural law: a registered rule, and the function from family rows
@@ -188,6 +212,22 @@ mod tests {
         let second = rendered.find("note: second (in the standard library)").expect(&rendered);
         let third = rendered.find("note: third").expect(&rendered);
         assert!(first < second && second < third, "{rendered}");
+    }
+
+    #[test]
+    fn the_constructors_build_the_violation_and_its_steps_in_order() {
+        let v = Violation::error(RULE_6, Span::new(10, 14), "placement entry `w`: it is so (rule 6)")
+            .step(Span::new(20, 21), "first")
+            .step(Span::new(40, 41), "third");
+        assert_eq!(
+            v,
+            violation(vec![step(20, SpanOrigin::Seed, "first"), step(40, SpanOrigin::Seed, "third")])
+        );
+        let w = Violation::warning(RULE_6, v.span, v.message.clone());
+        assert_eq!(w.severity, Severity::Warning);
+        assert!(w.witness.is_empty());
+        let found = diags(vec![w.clone(), v.clone()]);
+        assert_eq!(found, [w.into_diag(), v.into_diag()]);
     }
 
     #[test]

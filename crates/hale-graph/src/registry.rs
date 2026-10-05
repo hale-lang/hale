@@ -1675,6 +1675,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("the check (every verb and the LSP)", CHECK, "lowering_laws"), consumer_at("the harness's lowering view (`Config::harness`), which is not gated on the check", SNAPSHOT, "lowering_laws"), consumer_at("codegen (the backstop: a value use of a literal the plan posts to another thread, which the cross-pool value law judges, refused as its missing judgment)", CG_INST, "emit_crosspool_bubble_spawn")],
         invariants: &[
             "a law is judged once, with a span",
+            "each law here is a registered rule (rules 6, 17 and 18, and the structural table's module-nested entry, cross-pool spawn as a value and self-containing locus), run as a `law::Law` whose finding is a `law::Violation`; a related location a finding carried before is a witness step, in its order, so the rendering is unchanged (phase 4, W5)",
             "lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)",
             "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1); its finding is a `law::Violation` whose witness is the walk's chain, each step located: the entry that runs the instance pinned (the placement entry, or the binding entry), the declaration the instance realizes, and the conflicting member (the `accept`, or the closure's assertion), a stdlib declaration's steps in the stdlib's space (phase 4, W2)",
             "rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)",
@@ -2310,6 +2311,36 @@ pub const RULES: &[Rule] = &[
         gist: "a read or write of a `@sealed` locus's `params` from outside its own members (error, at the access, naming the methods to call instead)",
         family: "sealability",
         evaluator: Some(site(SEALED_ACCESS, "outside_access")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/module-nested-main",
+        title: "Module-nested entry",
+        // The entry row's refused `main locus` (`EntryRow::refused`), and that declaration's name and modules for the message.
+        reads: Reads::Rows(&["entrypoint"]),
+        gist: "a seed whose only `main locus` is module-nested has no entry (error, once, at that locus's name)",
+        family: "law_backstops",
+        evaluator: Some(site(LOWERING_LAWS, "module_nested_main_is_not_the_entry")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/cross-pool-spawn-as-a-value",
+        title: "Cross-pool spawn as a value",
+        // The ownership graph's sites, other sites, bubble plan and default expansions; the placement table's domain count (whether any locus runs off the main thread); the typed bodies' `omitted_args` column, which the expansions read.
+        reads: Reads::Rows(&["ownership", "placement", "expression_typing"]),
+        gist: "a locus literal the bubble plan posts to an owner on another thread, used as a value rather than a bare statement (error, at the literal, or at the call or literal whose default expands it)",
+        family: "law_backstops",
+        evaluator: Some(site(LOWERING_LAWS, "cross_pool_spawn_used_as_a_value")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/self-containing-locus",
+        title: "Self-containing locus",
+        // The ownership family's fresh-factory rows (`extended_factory_rows`, their products); the params defaults the containment walk expands are still read off the locus declarations.
+        reads: Reads::Rows(&["ownership"]),
+        gist: "a locus whose params defaults construct one of its own kind by value, by a literal or a fresh-factory call (error, at the param that closes the cycle)",
+        family: "law_backstops",
+        evaluator: Some(site(LOWERING_LAWS, "self_containing_locus")),
         state: State::Canonical,
     },
 ];
