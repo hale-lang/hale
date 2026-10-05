@@ -104,6 +104,8 @@
 //! Hundreds of synthetic permutations are not a corpus — so this
 //! file contains no raw-literal opener at all, not even in prose.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
@@ -1001,7 +1003,7 @@ fn run_cell(c: Cell) -> Outcome {
     // honest: a program `check` refuses is not a measurement of
     // ownership.
     ran.push(Oracle::Check);
-    let check_errors: Vec<String> = hale_types::check_program(&program)
+    let check_errors: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())

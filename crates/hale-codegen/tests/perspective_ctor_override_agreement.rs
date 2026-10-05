@@ -8,10 +8,12 @@
 //! a program that checks and then fails to build is the worst
 //! failure mode the toolchain has (see corpus_check_build_agreement).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 #[path = "support/harness.rs"]
 mod harness;

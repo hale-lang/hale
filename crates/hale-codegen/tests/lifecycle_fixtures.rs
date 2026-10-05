@@ -46,6 +46,8 @@
 //! a rule not yet shipped), each asserted to make the oracle fail, and
 //! with the violation that says why.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -977,7 +979,7 @@ fn source(file: &str) -> String {
 /// Check one fixture and build it with the lifecycle trace.
 fn build_fixture(f: &Fixture) -> PathBuf {
     let program = hale_syntax::parse_source(&source(f.file)).unwrap_or_else(|e| panic!("{}: parse: {e:?}", f.file));
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
