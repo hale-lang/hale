@@ -229,8 +229,7 @@ impl EntryRow {
 /// what lands in the entry, or in the root lowering deploys, before the
 /// mint writes there (an environment's constitutions, `--api`'s entry,
 /// GH #1106's generated binding), and a reader handed programs and no
-/// bundle (the roles `--matrix` maps for a pair whose load is refused,
-/// which has no snapshot) reads there. An injection adds
+/// bundle reads there. An injection adds
 /// members to a locus and top-level items after
 /// the existing ones, never a `main locus` or a module, so what it finds
 /// is what the snapshot's row names after the mint.

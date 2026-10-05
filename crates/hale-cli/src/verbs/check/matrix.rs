@@ -3,12 +3,10 @@ use std::process::ExitCode;
 use std::path::Path;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
-use crate::shared::frontend::collect_checkable;
 use crate::shared::options::env_roles;
-use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
-use hale_frontend::snapshot::{adopt_into_root, Snapshot};
+use hale_frontend::snapshot::Snapshot;
 use super::run_impl::run_check_impl;
 use super::run_impl::{check_loaded, load_for_check};
 /// GH #409: check every (entrypoint, environment) pair declared in
@@ -127,27 +125,27 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             // One snapshot per pair (F.40 phase 4, A3): the check reads
             // it, and so do the role coverage and the identity
             // comparison below, so a pair loads its seed once. A load
-            // that fails has printed why and leaves no snapshot; such a
-            // pair (a listed seed the load refuses for having no entry:
-            // a library, an imported or a module-nested `main`) is still
-            // judged by the loader's programs, as before the snapshot.
-            let snap = load_for_check(&target, &adopt, Some(env), Some(&roles));
-            let code = match &snap {
-                Ok(s) => check_loaded(&target, verify, s),
-                Err(code) => *code,
+            // that fails has printed why and leaves no snapshot, and the
+            // pair is reported by that refusal alone: a seed the check
+            // refuses (a library, an imported or a module-nested `main`)
+            // has no entrypoint for an environment's roles to map, and a
+            // constitution it can never deploy under takes no part in
+            // the comparison.
+            let snap = match load_for_check(&target, &adopt, Some(env), Some(&roles)) {
+                Ok(s) => s,
+                Err(_) => {
+                    failed.push(format!("{} @ {}", ep, env));
+                    continue;
+                }
             };
-            let snap = snap.ok();
-            if code != 0 {
+            if check_loaded(&target, verify, &snap) != 0 {
                 failed.push(format!("{} @ {}", ep, env));
             }
             // GH #1109: every role the entrypoint declares is mapped
             // here (a `[]` is explicitly nobody), and nothing is
             // mapped that it does not declare: the role rows'
             // projection, not gated on the typing.
-            let declared = match &snap {
-                Some(s) => s.demand_role_rows().map(|rows| rows.declared_roles()).unwrap_or_default(),
-                None => refused_pair_roles(&target),
-            };
+            let declared = snap.demand_role_rows().map(|rows| rows.declared_roles()).unwrap_or_default();
             for msg in role_coverage(&target, env, &spec.roles, &declared) {
                 eprintln!("{}", msg);
                 failed.push(format!("{} @ {} (roles)", ep, env));
@@ -158,11 +156,7 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             // so two seeds can each declare `Core` with different
             // clauses and both would satisfy the binding. The digest
             // covers the normalized closure, so agreement is real.
-            let adopted = match &snap {
-                Some(s) => adopted_roots(s),
-                None => constitution_identities(&target, &adopt),
-            };
-            for (name, digest) in adopted {
+            for (name, digest) in adopted_roots(&snap) {
                 // The `[claims] base` is ONE constitution carried by
                 // every environment, so it must agree workspace-wide.
                 // Keying it per-environment meant two environments
@@ -282,54 +276,6 @@ fn adopted_roots(snap: &Snapshot) -> Vec<(String, String)> {
     laws.identities(&programs).roots.into_iter().map(|i| (i.name, i.digest)).collect()
 }
 
-/// The roles a pair with no snapshot declares: a listed seed the load
-/// refuses for having no entry, read from the loader's programs before
-/// the sequence, as the matrix read every pair's before A3. Dropping
-/// the judgment of such a pair would change what the matrix prints, so
-/// it is not done here.
-fn refused_pair_roles(target: &Path) -> Vec<String> {
-    let Ok((programs, _, _, _, _, _)) = collect_checkable(target, &Disk) else {
-        return Vec::new();
-    };
-    let refs: Vec<&Program> = programs.values().collect();
-    hale_syntax::api_gen::declared_roles(&refs, hale_types::entry::root_decl(&refs))
-}
-
-/// The `(name, digest)` of each constitution adopted when `target`
-/// is checked with `adopt`, for a pair with no snapshot (as
-/// [`refused_pair_roles`]).
-pub(crate) fn constitution_identities(
-    target: &Path,
-    adopt: &[String],
-) -> Vec<(String, String)> {
-    let (programs, _s, _fb, renames, _own, _imports) = match collect_checkable(target, &Disk)
-    {
-        Ok(x) => x,
-        Err(_) => return Vec::new(),
-    };
-    let mut programs = programs;
-    let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-    adopt_into_root(&mut refs, adopt);
-    let bundle_programs: BTreeMap<String, &Program> = programs
-        .iter()
-        .map(|(p, prog)| (p.display().to_string(), prog))
-        .collect();
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = renames;
-    let progs: Vec<&Program> =
-        bundle.programs.values().copied().collect();
-    // The projection the artifact reads, over the programs loaded
-    // here: one definition of the identities. No environment is
-    // bound: the label only words a diagnostic, which is discarded.
-    let ids = hale_types::claims::select_laws(
-        &progs,
-        &bundle.import_renames,
-        &hale_types::claims::EnvBinding::default(),
-    )
-    .identities(&progs);
-    ids.roots.into_iter().map(|i| (i.name, i.digest)).collect()
-}
-
 /// Is this seed an entrypoint? Its entry row says (F.40 phase 3, E0):
 /// the seed's own top-level `main locus`. Declarations only — an
 /// entrypoint is a structural fact, and a seed that fails to TYPECHECK
@@ -443,6 +389,11 @@ mod tests {
     /// check built; the last two used to load the seed again each, three
     /// loads a pair. The entrypoint declares a role and both environments
     /// adopt a constitution, so both readers have something to read.
+    ///
+    /// A pair the check refuses loads its seed once too: the load the
+    /// check refused, and none past the refusal. `lab` lists the library
+    /// that declares the constitution; the matrix used to load it twice
+    /// more, for the roles and the identities it no longer reports.
     #[test]
     fn a_pair_loads_its_seed_once() {
         let root = std::env::temp_dir().join(format!("hale_matrix_loads_{}", std::process::id()));
@@ -465,19 +416,24 @@ mod tests {
             "import \"../lib\" as lb;\nrole support;\n\
              main locus A { params { r: lb::Research = lb::Research { }; } }\nfn main() { A { }; }\n",
         );
-        write(
-            "hale.toml",
-            "[claims]\nno_base = true\n\n\
+        let healthy = "[claims]\nno_base = true\n\n\
              [environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
              [environments.dev.roles]\nsupport = []\nowner = []\n\n\
              [environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
-             [environments.prod.roles]\nsupport = []\nowner = []\n",
-        );
-        let before = seed_loads_on_this_thread();
-        let code = super::run_matrix(&root, false);
-        let loads = seed_loads_on_this_thread() - before;
+             [environments.prod.roles]\nsupport = []\nowner = []\n";
+        let loads_of = |manifest: &str| {
+            write("hale.toml", manifest);
+            let before = seed_loads_on_this_thread();
+            let code = super::run_matrix(&root, false);
+            (code, seed_loads_on_this_thread() - before)
+        };
+        let (code, loads) = loads_of(healthy);
+        let (refused_code, refused_loads) =
+            loads_of(&format!("{healthy}\n[environments.lab]\nconstitution = \"Core\"\nentrypoints = [\"lib\"]\n"));
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(code, std::process::ExitCode::SUCCESS, "both pairs hold");
         assert_eq!(loads, 2, "two pairs, one load each");
+        assert_eq!(refused_code, std::process::ExitCode::from(1), "the library's pair is refused");
+        assert_eq!(refused_loads, 3, "and loads its seed once, the load the check refused");
     }
 }

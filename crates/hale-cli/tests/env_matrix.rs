@@ -856,6 +856,165 @@ fn a_seed_whose_import_does_not_resolve_is_still_an_entrypoint() {
     assert!(out.contains("dangling") && out.contains("in no environment"), "{out}");
 }
 
+/// `hale check --matrix .` run in `root`: stdout, stderr and the exit
+/// code apart, the targets named relative to the workspace.
+fn matrix_in(root: &Path) -> (String, String, i32) {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check", "--matrix", "."])
+        .current_dir(root)
+        .output()
+        .expect("run hale");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+/// F.40 phase 4, A3: a pair whose seed the check refuses is reported by
+/// its refusal alone. The listed seed here is a library declaring a
+/// role; its pair fails with the refusal, and no role-coverage line
+/// follows it, since there is no entrypoint for the environment's roles
+/// to map. Before, the matrix re-loaded the library, reported its roles
+/// `ops` and `owner` as not mapped, and added a `lib @ dev (roles)`
+/// failure. The healthy pair beside it is untouched.
+#[test]
+fn a_listed_library_is_reported_by_its_refusal_alone() {
+    let r = root("refusedlib");
+    write(&r, "lib/lib.hl", "role ops;\nlocus Research { params { n: Int = 0; } }\n");
+    write(&r, "app/main.hl", "main locus A { params { n: Int = 0; } }\nfn main() { A { }; }\n");
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"lib\"]\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./app @ dev ===\n=== ./lib @ dev ===\n\n");
+    assert_eq!(
+        err,
+        "ok: 1 file(s) typechecked\n\
+         ./lib: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
+         1 pair(s) failed:\n  lib @ dev\n"
+    );
+    assert_eq!(code, 1);
+}
+
+/// As above, for a seed whose only `main locus` is the one it imports.
+/// The imported head declares a role, which the importer's environment
+/// does not map; before, the importer's pair printed that as a
+/// role-coverage failure besides its refusal.
+#[test]
+fn a_seed_whose_only_main_is_imported_is_reported_by_its_refusal_alone() {
+    let r = root("refusedimporter");
+    write(&r, "head/main.hl", &format!("role ops;\n{HEAD}"));
+    write(&r, "importer/main.hl", "import \"../head\" as h;\nfn main() { }\n");
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n\
+         [environments.dev]\nsource_only = true\nentrypoints = [\"head\"]\n\n\
+         [environments.dev.roles]\nops = []\nowner = []\n\n\
+         [environments.stage]\nsource_only = true\nentrypoints = [\"importer\"]\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./head @ dev ===\n=== ./importer @ stage ===\n\n");
+    assert_eq!(
+        err,
+        "ok: 1 file(s) typechecked\n\
+         ./importer: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
+         1 pair(s) failed:\n  importer @ stage\n"
+    );
+    assert_eq!(code, 1);
+}
+
+/// As above, for a seed whose only `main locus` is nested in a module.
+/// It declares `audit` where the table, which the entrypoint beside it
+/// matches, maps `ops`; before, both directions of that mismatch were
+/// printed for the refused pair, each with a `(roles)` failure.
+#[test]
+fn a_seed_whose_only_main_is_module_nested_is_reported_by_its_refusal_alone() {
+    let r = root("refusednested");
+    write(&r, "app/main.hl", &format!("role ops;\n{HEAD}"));
+    write(
+        &r,
+        "nested/main.hl",
+        "role audit;\nmodule inner {\n    main locus Head { params { n: Int = 0; } }\n}\nfn main() { }\n",
+    );
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n\
+         [environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"nested\"]\n\n\
+         [environments.dev.roles]\nops = []\nowner = []\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./app @ dev ===\n=== ./nested @ dev ===\n\n");
+    assert_eq!(
+        err,
+        "ok: 1 file(s) typechecked\n\
+         ./nested: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
+         1 pair(s) failed:\n  nested @ dev\n"
+    );
+    assert_eq!(code, 1);
+}
+
+/// A refused pair's constitution takes no part in the identity
+/// comparison, and the comparison between the healthy pairs stands. The
+/// refused pair is listed first, and its module-nested `main` imports a
+/// third `Core`; before, the matrix adopted that `Core` into the nested
+/// `main` and made it the reference both entrypoints were measured
+/// against, so each was reported as differing from the seed that cannot
+/// deploy. They are measured against each other.
+#[test]
+fn a_refused_pair_leaves_the_identity_comparison_to_the_healthy_pairs() {
+    let r = root("refusedidentity");
+    let core_with = |extra: &str| {
+        LIB.replace(
+            "constitution Core { tenant_iso: forbid reaches(billing, research); }",
+            &format!("constitution Core {{ tenant_iso: forbid reaches(billing, research); {extra} }}"),
+        )
+    };
+    write(&r, "p1/p.hl", LIB);
+    write(&r, "p2/p.hl", &core_with("extra: count subscribers(topic Settled) == 0;"));
+    write(&r, "p3/p.hl", &core_with("extra: count subscribers(topic Settled) == 3;"));
+    write(&r, "app-a/main.hl", &APP.replace("../lib", "../p1"));
+    write(&r, "app-b/main.hl", &APP.replace("../lib", "../p2"));
+    write(
+        &r,
+        "nested/main.hl",
+        "import \"../p3\" as lb;\nmodule inner {\n    main locus Head { params { r: lb::Research = lb::Research { }; } }\n}\nfn main() { }\n",
+    );
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"nested\", \"app-a\", \"app-b\"]\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./nested @ prod ===\n=== ./app-a @ prod ===\n=== ./app-b @ prod ===\n\n");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 7, "{err}");
+    assert_eq!(
+        lines[0],
+        "./nested: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`"
+    );
+    assert_eq!(lines[1], "ok: 1 file(s) typechecked");
+    assert_eq!(lines[2], "ok: 1 file(s) typechecked");
+    assert!(
+        lines[3].starts_with("environment `prod` resolves `Core` to two different claimsets: app-a sees ")
+            && lines[3].contains(", app-b sees ")
+            && lines[3].ends_with(
+                ". One name must mean one law — the entrypoints are importing different declarations that happen to share it"
+            ),
+        "{err}"
+    );
+    assert_eq!(&lines[4..], ["2 pair(s) failed:", "  nested @ prod", "  app-b @ prod (constitution identity)"]);
+    assert_eq!(code, 1);
+}
+
 /// The artifact must say WHICH deployment it certifies, not only
 /// which law applied — two environment labels can select identical
 /// law and would otherwise produce indistinguishable certificates.
