@@ -1,4 +1,4 @@
-//! The `ownership_owners` integration-test binary: 16 test files of this area, kept
+//! The `ownership_owners` integration-test binary: 17 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -23,6 +23,8 @@ mod factory_returned_binding;
 mod fresh_temp_attribution;
 #[path = "gh967_contract_field_borrow.rs"]
 mod gh967_contract_field_borrow;
+#[path = "header_before_params.rs"]
+mod header_before_params;
 #[path = "owned_child_arena_reclaim.rs"]
 mod owned_child_arena_reclaim;
 #[path = "owner_table.rs"]

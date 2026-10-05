@@ -1091,8 +1091,9 @@ on a pinned thread that thread's mailbox (a yield on a pool
 worker drains neither, and neither does this wait). So a nested
 body that waits during the initialization for a reply from a
 subscriber on the instantiating thread gets it. Then it finishes the instantiation (the
-synthetic fields, the failure route, the locus's own
-subscriptions) and releases the thread (`lotus_pinned_start_go`)
+locus's own subscriptions; its synthetic fields and failure
+route were stored before the thread was created, so the
+initialization never reads one unset) and releases the thread (`lotus_pinned_start_go`)
 into `birth()` and the rest of its lifecycle, and continues. An
 override written at the literal (`Worker { started:
 pthread_self() }`) is the instantiating code's: it is evaluated
@@ -1131,13 +1132,14 @@ subscriptions (routed to X), its `birth()` and a cooperative
 child's inline `run()`, and the params bracket and its settle, so
 a failure a nested child raises during the initialization is
 delivered on the worker at settle. The instantiating thread then
-finishes the instantiation (the synthetic fields and the field's
-own subscriptions), posts the field's own birth step (its
-`birth()`, birth-epoch closures and `birth_check`, lowered into
-`__pool_birth_<LocusName>`) to X as a second job and waits for it
-the same way (§ "Lifecycle obligations", line 3), and posts the
-field's `run()` to X behind both, as before. The three are X's
-jobs in that order: init, birth, run. An override written at the literal is evaluated on the
+finishes the instantiation (the field's own subscriptions; its
+synthetic fields were stored before the post), posts the field's
+own birth step (its `birth()`, birth-epoch closures and
+`birth_check`, lowered into `__pool_birth_<LocusName>`) to X as a
+second job and waits for it the same way (§ "Lifecycle
+obligations", line 3), and posts the field's `run()` to X behind
+both, as before. The three are X's jobs in that order: init,
+birth, run. An override written at the literal is evaluated on the
 instantiating thread before the post, as for a pinned locus. A
 delivery to the subtree during the initialization is X's own: it
 runs on the worker, at a yield of the initialization or after it.

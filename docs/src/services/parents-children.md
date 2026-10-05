@@ -101,6 +101,16 @@ A few rules keep it predictable:
   lives inside its owner's, so the whole "[flow is vertical
   only](#flow-is-vertical-only)" cleanup story holds — the owner is
   just possibly a grandparent, not always the direct parent.
+- **Even while the owner is being built.** If `World`'s own params
+  hold a `Fleet` whose `run()` spawns ships, those ships reach
+  `World` before `World`'s literal has finished. That's fine:
+  `self.children` and the rest of `World`'s own state exist before
+  its first param is built, so the ships are accepted, stay
+  accepted, and are torn down with `World` like any others. Only
+  the params themselves still come one at a time, in order: a
+  counter param that `accept` bumps should be declared before the
+  field whose child gets accepted, or its default resets it when
+  its turn comes.
 
 When the owner lives on a **different thread** — a `main locus`
 registry collecting entities that workers spawn on their own pools —
