@@ -58,17 +58,26 @@ struct LawRows<'r, 'b, 'i> {
 
 /// Rule 6, the locus-pinning compatibility rule.
 const RULE_6: RuleId = RuleId::registered("semantics/placement", "6");
+/// Rule 17, a `pinned` placement forbids a loop.
+const RULE_17: RuleId = RuleId::registered("semantics/placement", "17");
+/// Rule 18, every placement entry is consumed by a locus literal.
+const RULE_18: RuleId = RuleId::registered("semantics/placement", "18");
+/// Decision 2: the entry is top-level.
+const TOP_LEVEL_ENTRY: RuleId = RuleId::registered("verification/structural", "module-nested-main");
+/// A cross-pool spawn is fire-and-forget.
+const CROSS_POOL_VALUE: RuleId = RuleId::registered("verification/structural", "cross-pool-spawn-as-a-value");
+/// GH #813, #870: a locus cannot contain itself by value.
+const SELF_CONTAINING: RuleId = RuleId::registered("verification/structural", "self-containing-locus");
 
 /// Every law that replaced a lowering backstop, over `bundle`.
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
     let rows = LawRows { bundle, inputs };
-    let mut diags = Vec::new();
-    module_nested_main_is_not_the_entry(bundle, inputs, &mut diags);
+    let mut diags = Law { rule: TOP_LEVEL_ENTRY, eval: module_nested_main_is_not_the_entry }.diags(&rows);
     diags.extend(Law { rule: RULE_6, eval: pinned_features }.diags(&rows));
-    pinned_root_in_a_loop(bundle, inputs, &mut diags);
-    placement_entry_consumed(bundle, inputs, &mut diags);
-    cross_pool_spawn_used_as_a_value(inputs, &mut diags);
-    self_containing_locus(bundle, &mut diags);
+    diags.extend(Law { rule: RULE_17, eval: pinned_root_in_a_loop }.diags(&rows));
+    diags.extend(Law { rule: RULE_18, eval: placement_entry_consumed }.diags(&rows));
+    diags.extend(Law { rule: CROSS_POOL_VALUE, eval: cross_pool_spawn_used_as_a_value }.diags(&rows));
+    diags.extend(Law { rule: SELF_CONTAINING, eval: self_containing_locus }.diags(&rows));
     diags
 }
 
@@ -83,10 +92,12 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
 /// so a program refused today for another reason is refused for both.
 /// A module-nested `main` beside an entry is not refused here (rule 1
 /// counts it).
-fn module_nested_main_is_not_the_entry(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn module_nested_main_is_not_the_entry(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let Some(main) = inputs.entry.refused() else { return };
     let Some(decl) = main.decl(bundle) else { return };
-    diags.push(Diag::ty(
+    out.push(Violation::error(
+        TOP_LEVEL_ENTRY,
         decl.name.span,
         format!(
             "the entry must be top-level: `main locus {}` inside `module {}` is not the program's \
@@ -124,7 +135,8 @@ fn module_nested_main_is_not_the_entry(bundle: &Bundle<'_>, inputs: &LoweringLaw
 /// thread is not refused (the review of #1351; lowering passed a null
 /// pointer for it, after its own refusal was taken out). Lowering keeps
 /// an error for a value use that reaches it, as a judgment missing here.
-fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let inputs = rows.inputs;
     // A cross-pool edge needs a locus placed off the main thread; a
     // table whose one domain is main has none, and the graph is not
     // built.
@@ -147,7 +159,8 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
         }
         let child = &site.child_ty;
         let Some(owner) = crosspool.get(&(site.enclosing_locus.clone(), child.clone())) else { continue };
-        diags.push(Diag::ty(
+        out.push(Violation::error(
+            CROSS_POOL_VALUE,
             site.span,
             format!(
                 "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
@@ -179,7 +192,8 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
         match (other.position, other.enclosing_decl) {
             (OtherPosition::Closure, Some(decl)) => {
                 let Some(owner) = crosspool.get(&(decl_names[decl].clone(), child.clone())) else { continue };
-                diags.push(Diag::ty(
+                out.push(Violation::error(
+                    CROSS_POOL_VALUE,
                     site.span,
                     format!(
                         "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
@@ -191,7 +205,11 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
             (OtherPosition::PerUse(position), _) => {
                 let crossing = decl_names.iter().find_map(|d| crosspool.get(&((*d).clone(), child.clone())).map(|o| (d, o)));
                 let Some((context, owner)) = crossing else { continue };
-                diags.push(Diag::ty(site.span, per_use_message(child, owner, context, position, "here, ")));
+                out.push(Violation::error(
+                    CROSS_POOL_VALUE,
+                    site.span,
+                    per_use_message(child, owner, context, position, "here, "),
+                ));
             }
             (OtherPosition::Closure, None) => {}
         }
@@ -218,16 +236,21 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
             {
                 continue;
             }
-            diags.push(
-                Diag::ty(root, per_use_message(child, owner, context, position, "through the defaults this leaves, "))
-                    .with_related(span, format!("the default builds `{child}` here")),
+            out.push(
+                Violation::error(
+                    CROSS_POOL_VALUE,
+                    root,
+                    per_use_message(child, owner, context, position, "through the defaults this leaves, "),
+                )
+                .step(span, format!("the default builds `{child}` here")),
             );
         } else if let (Some(field), Some(holder)) = (params_field, holder) {
             if !params_reported.insert((expansion.literal, expansion.context)) {
                 continue;
             }
             let holder = &ownership.declarations[holder].name;
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                CROSS_POOL_VALUE,
                 span,
                 format!(
                     "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{holder}`'s param \
@@ -242,8 +265,9 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
                 continue;
             }
             let (callee, param) = (&arg.fn_name, &arg.param);
-            diags.push(
-                Diag::ty(
+            out.push(
+                Violation::error(
+                    CROSS_POOL_VALUE,
                     root,
                     format!(
                         "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{callee}`'s \
@@ -254,7 +278,7 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
                          not a value."
                     ),
                 )
-                .with_related(span, format!("the default of `{callee}`'s argument `{param}` builds `{child}` here")),
+                .step(span, format!("the default of `{callee}`'s argument `{param}` builds `{child}` here")),
             );
         }
     }
@@ -292,7 +316,8 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
 /// literal some lowered literal expands builds it as a construction
 /// does, so `App { w: Worker { } }` in `Holder`'s default, with `Holder {
 /// }` built, leaves `App`'s own default dead.
-fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn placement_entry_consumed(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let Some(root) = &inputs.placement.root else { return };
     let decls = declarations(bundle);
     let Some(main) = decls.get(&root.realizes.site).copied() else { return };
@@ -354,7 +379,7 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
         }
         for init in overrides {
             if !matches!(init, Expr::Struct { .. }) {
-                diags.push(placement_unconsumed_diag(field, &ty_name, init, entry.span, true));
+                out.push(placement_unconsumed(field, &ty_name, init, entry.span, true));
             }
         }
         // The default is live when some literal of the root omits the
@@ -370,14 +395,14 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
         // owns that program, not this one.
         let ParamInit::Value(default) = &param.init else { continue };
         if !matches!(default, Expr::Struct { .. }) {
-            diags.push(placement_unconsumed_diag(field, &ty_name, default, entry.span, false));
+            out.push(placement_unconsumed(field, &ty_name, default, entry.span, false));
         }
     }
 }
 
-/// The rule 18 diagnostic, for an initialiser written at a root literal
+/// The rule 18 finding, for an initialiser written at a root literal
 /// (`at_site`) or in the params default.
-fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span: Span, at_site: bool) -> Diag {
+fn placement_unconsumed(field: &str, ty_name: &str, init: &Expr, entry_span: Span, at_site: bool) -> Violation {
     let shape = match init {
         Expr::Call { .. } => "a call",
         Expr::Or { .. } => "a fallible call",
@@ -390,7 +415,8 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
         | Expr::KwSelf(_) => "a reference to an instance built elsewhere",
         _ => "an expression that is not a locus literal",
     };
-    Diag::ty(
+    Violation::error(
+        RULE_18,
         init.span(),
         format!(
             "placement entry `{}` names a field no locus literal initialises: {} is {}. A placement \
@@ -410,7 +436,7 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
             },
         ),
     )
-    .with_related(entry_span, format!("`{}` is placed here", field))
+    .step(entry_span, format!("`{}` is placed here", field))
 }
 
 /// Every expression written in a body, handed to `f` once, outermost
@@ -722,7 +748,8 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
 /// construction the table records, so no bound shows the root built
 /// once: it is refused outright at that position's literal, loop or no
 /// loop, naming the hoist.
-fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn pinned_root_in_a_loop(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let placement = inputs.placement;
     let Some(root) = &placement.root else { return };
     let span_of = |site: SiteRef| match site.universe {
@@ -776,8 +803,9 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
                 continue;
             }
             let Some(span) = span_of(literal) else { continue };
-            diags.push(
-                Diag::ty(
+            out.push(
+                Violation::error(
+                    RULE_17,
                     span,
                     format!(
                         "locus `{}` is built by this literal, written in {}, but its `placement {{ }}` \
@@ -792,14 +820,15 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
                         locus
                     ),
                 )
-                .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+                .step(entry_span, format!("field `{}` is placed `pinned` here", field)),
             );
         }
     }
     for (literal, (entry_span, field)) in sites {
         let Some(span) = span_of(literal) else { continue };
-        diags.push(
-            Diag::ty(
+        out.push(
+            Violation::error(
+                RULE_17,
                 span,
                 format!(
                     "locus `{}` is instantiated inside a loop, but its `placement {{ }}` block pins \
@@ -812,7 +841,7 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
                     locus, field, locus
                 ),
             )
-            .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+            .step(entry_span, format!("field `{}` is placed `pinned` here", field)),
         );
     }
 }
@@ -1080,7 +1109,8 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// refused as a duplicate top-level name), and a literal through a
 /// module or import path names a locus the seed's own check refuses or
 /// one whose own seed's check judges it.
-fn self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+fn self_containing_locus(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let bundle = rows.bundle;
     fn collect<'a>(
         items: &'a [TopDecl],
         out: &mut BTreeMap<&'a str, &'a LocusDecl>,
@@ -1131,7 +1161,7 @@ fn self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             &mut path,
             &mut finished,
             &mut reported,
-            diags,
+            out,
         );
     }
 }
@@ -1149,7 +1179,7 @@ fn walk_param_default_containment(
     path: &mut Vec<ContainmentState>,
     finished: &mut BTreeSet<ContainmentState>,
     reported: &mut BTreeSet<(u32, String)>,
-    diags: &mut Vec<Diag>,
+    out: &mut Vec<Violation>,
 ) {
     let state: ContainmentState = (locus.to_string(), supplied.to_vec());
     if finished.contains(&state) {
@@ -1178,7 +1208,7 @@ fn walk_param_default_containment(
                 let Some(at) = path.iter().position(|s| *s == child) else {
                     walk_param_default_containment(
                         &child.0, &child.1, loci, factories, path,
-                        finished, reported, diags,
+                        finished, reported, out,
                     );
                     continue;
                 };
@@ -1231,7 +1261,7 @@ fn walk_param_default_containment(
                     child.0,
                 );
                 if reported.insert((pd.span.start.0, message.clone())) {
-                    diags.push(Diag::ty(pd.span, message));
+                    out.push(Violation::error(SELF_CONTAINING, pd.span, message));
                 }
             }
         }

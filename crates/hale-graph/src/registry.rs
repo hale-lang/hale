@@ -782,6 +782,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("codegen (a monomorph's accept rows: its template's, specialized at synthesis)", CG, "specialized_accepts"), consumer_at("codegen (whether the enclosing locus accepts the child it births)", CG_INST, "parent_accepts_us"), consumer_at("borrow_lifetime (a bare literal's enclosing locus accepts its child: `accepts_ancestor`, over the snapshot's graph's rows)", "crates/hale-types/src/borrow_lifetime.rs", "accepts_ancestor"), consumer_at("lowering view (its graph: the snapshot's rows through the correspondence, then the stdlib's; the bubble plans, `accepts` and the accept rows lowering reads)", TY_RESOLVED, "lowering_ownership_graph"), consumer_at("model (dynamic births: the snapshot's graph)", SNAPSHOT, "demand_ownership_graph"), consumer_at("a declaration's dependents (X2: a locus's births, accepts and instantiations make its neighbours through the ownership graph, the snapshot's graph)", SNAPSHOT, "declaration_dependents"), consumer_at("check (type-check rule 20, the unowned-subscriber rule: `owner_of_site` over the snapshot's graph, handed in through `CheckInputs`)", CHECK, "check_unowned_subscriber_locus"), consumer("alloc_summary (eager-only accept sets)"), consumer_at("check and the harness (the cross-pool spawn law reads the bubble plan)", LOWERING_LAWS, "cross_pool_spawn_used_as_a_value"), consumer_at("codegen (the handed-back column: a root some literal hands back keeps its pinned fields' join records in their instances, C52)", CG, "collect_main_placement")],
         invariants: &[
             "a locus instantiation with no row is a CodegenError (F.39)",
+            "rule 20 is a `law::Law` over the graph and the placement table its construction paths come from (`UnownedSubscriberRows`); its finding is a `law::Violation` whose witness steps are the declaration judged when two share the child's name and the construction path no accepting ancestor lies on (phase 4, W5)",
             "ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files",
             "the ownership matrix stays green with an empty KNOWN_OPEN",
             "the model's `Owns` edges are the placement table's `owner` column projected with the arrangement (P1 4 of 6, C3): an arranged instance is owned by the arranged instance its row names as owner; `owns.push(` has that one writer",
@@ -846,6 +847,7 @@ pub const FAMILIES: &[Family] = &[
         ],
         invariants: &[
             "one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it (`cycle_from`)",
+            "rules 9 and 10 are `law::Law`s over the graph (`BusLawRows`: the graph, the entry row, the scope's declared topics, the intra-locus rewrite relation), their findings `law::Violation`s with no witness steps, rule 10 naming its cycle in its message (phase 4, W5)",
             "lowering derives no graph of the user's program: its graph is the snapshot's rows (`BusRows`), each user site found in the merged program through the view's correspondence and keyed by the wire the topic rewrite gave it, followed by the stdlib's rows over the merged program's tail (`stdlib_bus_rows`), the one part no snapshot holds; the subjects and their gates are assembled from the rows by one procedure (`BusRows::subjects`) on both sides",
             "the dispatch gates (`derive_dispatch_gates`, the `dispatch` family's) are the same rows keyed by wire with the stdlib's after them, the stdlib's derived once per process over its analysis copy (`stdlib_bodies::bus_rows`, by the same `stdlib_bus_rows`) rather than over a merged program: equal to lowering's graph's gates, column for column and in registration order, over the corpus examples, the lifecycle fixtures, tests/hale and the DNA mains, build and harness snapshots (`dispatch_gates.rs`)",
             "a bundle no snapshot holds builds its graph through the snapshot's producer (`build_bus_graph`), never through a wrapper of its own",
@@ -922,6 +924,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("api_surface"),
         ],
         invariants: &[
+            "the check's per-binding walk (`check_main_and_bindings`) runs over these rows; of the rules it judges, the two the registry lists over rows (codec purity, the foreign-ring payload shape) find `law::Violation`s, rendered where the walk reaches them, so the walk's order holds; the rest (topic existence, duplicates, role inference, adapter conformance, the ring-layout rules, the `where` constraint rules, the codec signatures) are checks of the entry as written (phase 4, W5)",
             "the transport-loss handler is named by the row: a `unix` entry's row carries the stdlib locus its transport instantiates (`loss_locus`, by role), lowering instantiates that locus, and a connect entry's is the locus whose failure the main locus's `on_failure` handles, so the handler is main's routing row for the locus the bindings row names, not one picked by a spelled name",
             "lowering holds the rows (`LoweringView::bindings`, the snapshot's) and finds an entry's by the id the mint kept (`BindingRows::for_entry`); it decides no transport, role, codec or producer-versus-attach itself, and an entry with no row is a `CodegenError`, not a guess",
             "F.36 and F.37: binding failure is structural; codec purity is a law over rows",
@@ -1032,6 +1035,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies)", CG, "specialize("),
         ],
         invariants: &[
+            "pool starvation and the birth-order trap are registered rules run as `law::Law`s over the run rows' columns and the placement table's rows for the deployed root (`RootRunRows`), their findings `law::Violation`s (phase 4, W5)",
             "a release clause's child is resolved once, by `child_locus_name` (handler_routing's resolver: aliases, generic instantiations, qualified paths), into the row (`FlowClause::locus`); lowering's flow-ness is a row read (`flows::is_flow`), never a comparison of its own",
             "the flow facts cover the specializations lowering creates: a clause whose type mentions its owner's type parameters names no locus by itself and carries its template (`FlowClause::template`: the owner's identity, its parameters in order, the type as written); `FlowRows::specialize` answers for one specialization by resolving the template's type under the substitution lowering's synthesis applied, so `Manager<Worker>`'s `release(c: T)` makes `Worker` a flow exactly as a concrete `release(c: Worker)` does",
             "the checker's accept/release rule judges over the rows: the release clauses a locus declares are the rows' clauses inside its declaration",
@@ -1130,6 +1134,7 @@ pub const FAMILIES: &[Family] = &[
             "form, not params (I1): the description names what the program is, never where one copy listens",
             "perspective-invariant (I5)",
             "the role rows have one producer (F.40 phase 4, A4: `roles::role_rows`), over the programs after the sequence, with or without an `api:` entry, demanded once per snapshot (`Snapshot::demand_role_rows`, the `api_surface` count), not gated on the typing; a bundle no snapshot holds builds its own. Their columns: each `role` declaration (`RoleDeclRow`: the name and its span, each `includes` with its span, the declaration's span and site), two declarations of one name kept as two rows; each `@gated` site (`GateRow`: its kind, a free fn, a locus fn, a perspective fn, a contract member with its direction or a `publish` member by its identity, the declaration it sits on, the locus with its ordinal among the bundle's locus declarations, the bus graph's `decls` index, and whether it is imported, the member, the role and its span, the site's span); the role source (`RoleSource`: the last `roles:` clause, the entry it is named in, what it names and that locus's `fn holds` as written); and whether the row's root is served",
+            "the ten role rules are registered rules (rows of `spec/verification.md`'s structural table) whose findings are `law::Violation`s, one walk judging the ten and reporting them in the order it reaches them (`law::diags`), a related location a finding carried being its witness step (phase 4, W5)",
             "the role rules are a law over the rows (`roles::role_laws`), one function per rule, reading what another family owns from its owner: which handler of which declaration subscribes to which topic and which sites publish it from the bus graph, the bound topics from the binding rows, a topic's wire key from the topic rows; the role source's `fn holds` is read as written, since the rule is stated over the written signature and the scope holds resolved types",
             "the roles an environment maps are a projection of the rows (`RoleRows::declared_roles`, `vocabulary`); the binding is generated inside the sequence, before the rows exist, so the surface computes its list with the one function in `hale-syntax` (`api_gen::role_vocabulary`, which `declared_roles` reads too), held equal to the rows' projection over the corpus, `tests/hale` and the DNA seeds",
         ],
@@ -1247,6 +1252,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer("check (rules 7, 8)"), consumer("effects (@no_block)"), consumer_at("codegen (mark_pinned, no_pinned dispatch: `program_has_offthread` over the view's placement table and binding rows)", CG, "program_has_offthread")],
         invariants: &[
             "one leaf set (GH #830) and one propagation",
+            "rules 7 and 8 are judged by one walk over the deployed root's placed fields (`check_cooperative_pool_blocking`), which reports each finding as a `law::Violation` of its rule in the order it reaches them and hands the starvation law the pools rule 7 fired on (phase 4, W5)",
             "whether a thread crosses the bus boundary is read off rows, once, in lowering (`program_has_offthread`): a domain of the placement table that is not main (`PlacementTable::places_off_main`: a pinned anchor, a non-main pool, an adapter binding's thread, the api binding's synthesized pool) or an entry of the entry's `bindings { }` (`BindingRows::binds_on_main`: the rows of the locus the entry row names, by its site, as lowering's prelude lowers them); the `lotus_bus_mark_pinned` call and every static dispatch's `no_pinned` flag are that one value and its negation",
             "an imported library's `main locus` is never deployed, so its `placement { }` block places nothing and its `bindings { }` bind nothing: a program importing one is not off-thread for it (a classified correction, pinned in `offthread_imported_main.rs`); the entry's binding makes its program off-thread, and a module-nested `main`, which the old binding term (top-level items only) missed, is no longer deployed: as a seed's only `main locus` it is refused (L4)",
             "the helpers that block are the effect rows' (`worker_holding_fns`, demanded through `CheckInputs::effects` only once a placed field has a `run()` to walk): a fn whose `direct` BLOCK comes from a leaf `holds_cooperative_worker` names (the BLOCK class includes `std::time::sleep`, which yields the worker, so the leaf test stays beside the row), closed over the rows' resolved targets; the check folds no call graph of its own",
@@ -1283,7 +1289,7 @@ pub const FAMILIES: &[Family] = &[
             "the run-to-exit rule (a `main` and no long-lived entry: no leak sites) reads the program's own entries, never the stdlib's analysis copy's (`AllocSummary::analysis_copy` names the copy's fns, `is_own` the program's), since the copy always carries `run` hooks (a classified correction, pinned per target in `alloc_summary_construction_correction.rs`)",
             "a program's declaration is the row where the stdlib's analysis copy declares the same name: the copy's top-level free fn, locus or interface of a name a checked program declares stays out of the summary, so a stdlib source file checked as itself keeps its own rows (its bodies, its spans, resolved in its own scope); only stdlib source shares such a name (a classified correction, pinned in `alloc_summary_construction_correction.rs`)",
             "the rows carry what the hot-path lint reads: a fn's `@hot` and whether it is a mode (`FnSummary::hot`, `mode`), the order of the declarations (`decl_index`), where a site or a call is written (`in_loop`, which a `return` / `fail` payload does not reset as it resets `loop_depth`), a struct literal written as a whole statement (`AllocSite::bare_stmt`) or as the whole right side of a `self.<field> =` replace (`self_replace`, the statement's span; an in-place replace, which allocates nothing, is in `FnSummary::in_place_sites`, not `sites`), the `let` a call is the value of (`CallEdge::let_span`), how a call is spelled (`CallSpelling`), and the allocating receives (`CallEdge::allocating_recv`, the one list, which `@budget` reads too)",
-            "the hot-path lint is a law over the rows (`check_hot_path_alloc`, over the summary the check is handed): the program's own fns, a mode aside, in declaration order, each finding where its site or call is written, a bus handler's at any depth, `@hot` an error and `@unbounded` silencing the advisory; no reader walks bodies for it, so it sees what the summary's walk sees (a publish, a bare block, `violate`, a recovery and `shm_write` included, which the lint's own walk skipped; an index expression's subscript included, walked as any operand is, as the lint's walk walked it, so a `@hot` fn keeps that rejection (a classified correction, pinned in `hot_path_alloc.rs`); a callee that is an expression of its own excluded, which it reached) and its diagnostics over the corpus, the targets and the lint's pins are the lint's, in order (pinned in `hot_path_alloc.rs`)",
+            "the hot-path lint is a law over the rows (`check_hot_path_alloc`, over the summary the check is handed): the program's own fns, a mode aside, in declaration order, each finding where its site or call is written, a bus handler's at any depth, `@hot` an error and `@unbounded` silencing the advisory; no reader walks bodies for it, so it sees what the summary's walk sees (a publish, a bare block, `violate`, a recovery and `shm_write` included, which the lint's own walk skipped; an index expression's subscript included, walked as any operand is, as the lint's walk walked it, so a `@hot` fn keeps that rejection (a classified correction, pinned in `hot_path_alloc.rs`); a callee that is an expression of its own excluded, which it reached) and its diagnostics over the corpus, the targets and the lint's pins are the lint's, in order (pinned in `hot_path_alloc.rs`); it is a registered rule (the structural table's \"Hot-path allocation\") run as a `law::Law`, its finding a `law::Violation`, an error under `@hot` and a warning otherwise (phase 4, W5)",
             "a module-nested declaration is summarized like a top-level one: every declaration pass walks `module { … }` nesting (`flat_decls`; a module is a namespace, not an analysis boundary, GH #764), so a module-nested fn or locus member has a row and a call into it resolves, and the model holes out no module-nested body; the one body with no row is an `on_failure` handler, summarized as a declaration body (a classified correction, pinned in `alloc_summary_construction_correction.rs`)",
             "the advisory, `--dump-alloc-summary` and the editor's hale/allocSummary read the snapshot's summary and report the program's own rows judged over the whole of it (the stdlib's analysis copy and the renames included: a classified correction, pinned per target in `alloc_summary_correction.rs`); a leak site is the program's own (`AllocSummary::is_own`) and is left out of the advisory only when it has no author position (`AuthorPositions::has`: its span at or beyond `API_SYNTH_BASE`, or in a declaration the origin rows mark synthesized whose offset no source file owns), never by its owner's name; the check's warnings, the editor's diagnostics and the editor's hale/allocSummary decide with one function (`advisory_leak_sites`)",
             "a call through a function value resolves to the program's function values (F.40 E5): the summary marks a call through a function-typed parameter, a local its walk does not follow to a fn, or a computed callee `CallEdge::indirect`, and `resolve_function_values` rewrites it into one alternative per fn some expression of the bundle reads as a value (`fn_values`: every expression the identity walk reaches, a callee written as a name or a path and a name a binding in scope spells excluded; resolved as a `let` of it resolves) whose arity is the call's and whose declared signature can be the parameter's or the bound field's declared type, sharing a dispatch group (`CallEdge::via_value` the callee as written); a call no such value can be stays indirect, and so does every call of a bundle that reads a locus's method as a value, which this does not follow",
@@ -1301,7 +1307,8 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "scratch_local_free_fns(", allowed: &[(ALLOC, 1)] },
             Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 4)] },
             Seam { symbol: "allocating_recv(", allowed: &[(ALLOC, 2)] },
-            Seam { symbol: "check_hot_path_alloc(", allowed: &[(CHECK, 2)] },
+            // Its definition: the check runs it as a `law::Law`, by name.
+            Seam { symbol: "check_hot_path_alloc(", allowed: &[(CHECK, 1)] },
             Seam { symbol: "derive_alloc_summary(", allowed: &[(ALLOC, 1), (SNAPSHOT, 1), (CHECK, 1), (EVIDENCE, 1), ("crates/hale-types/src/resource_budget.rs", 1)] },
             Seam { symbol: "own_rows(", allowed: &[(ALLOC, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/budget_check.rs", 1), ("crates/hale-types/src/quantitative.rs", 1), (FRONTIER, 1), ("crates/hale-types/src/resource_budget.rs", 2)] },
             Seam { symbol: "derive_alloc_routing(", allowed: &[(ALLOC_ROUTING, 1), (TY_RESOLVED, 1)] },
@@ -1678,6 +1685,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("the check (every verb and the LSP)", CHECK, "lowering_laws"), consumer_at("the harness's lowering view (`Config::harness`), which is not gated on the check", SNAPSHOT, "lowering_laws"), consumer_at("codegen (the backstop: a value use of a literal the plan posts to another thread, which the cross-pool value law judges, refused as its missing judgment)", CG_INST, "emit_crosspool_bubble_spawn")],
         invariants: &[
             "a law is judged once, with a span",
+            "each law here is a registered rule (rules 6, 17 and 18, and the structural table's module-nested entry, cross-pool spawn as a value and self-containing locus), run as a `law::Law` whose finding is a `law::Violation`; a related location a finding carried before is a witness step, in its order, so the rendering is unchanged (phase 4, W5)",
             "lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)",
             "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1); its finding is a `law::Violation` whose witness is the walk's chain, each step located: the entry that runs the instance pinned (the placement entry, or the binding entry), the declaration the instance realizes, and the conflicting member (the `accept`, or the closure's assertion), a stdlib declaration's steps in the stdlib's space (phase 4, W2)",
             "rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)",
@@ -2009,8 +2017,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/6",
         title: "Locus-pinning compatibility.",
-        // The instances are the placement table's rows (the entry's, each replica, the adapter binding's); the two features (an `accept` of any arity, a closure whose epoch is `birth` or `dissolve`) are still read off the declaration the instance realizes.
-        reads: Reads::Rows(&["placement"]),
+        // The instances are the placement table's rows (the entry's, each replica, the adapter binding's); an adapter's topic is its binding row's; the two features (an `accept` of any arity, a closure whose epoch is `birth` or `dissolve`) are still read off the declaration the instance realizes.
+        reads: Reads::Rows(&["placement", "bindings"]),
         gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
@@ -2039,7 +2047,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/9",
         title: "Orphan bus topic (warning).",
-        // The graph's subjects, wiring columns and canonical keys, and the entry row's closed world; the symbol table for a qualified subject.
+        // The graph's subjects, wiring columns and canonical keys, and the entry row's closed world; the scope's declared topics and their wire subjects; whether the entry declares an `api:` binding is still read off its declaration.
         reads: Reads::Rows(&["bus_graph", "entrypoint", "top_scope"]),
         gist: "orphan bus topic (closed world)",
         family: "bus_graph",
@@ -2209,8 +2217,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/codec-purity",
         title: "Codec purity",
-        // The binding's codec locus and its `encode` / `decode` methods are named by the declaration; whether each is pure is the effect rows' purity column.
-        reads: Reads::Rows(&["effects"]),
+        // The walk is over the binding rows; the entry's `codec(L { })` clause names the locus; whether its `encode` / `decode` is pure is the effect rows' purity column.
+        reads: Reads::Rows(&["bindings", "effects"]),
         gist: "a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows",
         family: "bindings",
         evaluator: Some(site(CHECK, "check_main_and_bindings")),
@@ -2239,8 +2247,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/foreign-ring-payload-shape",
         title: "Foreign-ring payload shape",
-        // The topic's payload type is read through the symbol table (`is_flat_shapeable` over the top scope); the binding is read off the declaration.
-        reads: Reads::Rows(&["top_scope"]),
+        // The walk is over the binding rows; the entry's `layout:` is read off it; the topic's payload type through the symbol table (`is_flat_shapeable` over the top scope).
+        reads: Reads::Rows(&["bindings", "top_scope"]),
         gist: "a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error)",
         family: "bindings",
         evaluator: Some(site(CHECK, "check_main_and_bindings")),
@@ -2314,6 +2322,166 @@ pub const RULES: &[Rule] = &[
         gist: "a read or write of a `@sealed` locus's `params` from outside its own members (error, at the access, naming the methods to call instead)",
         family: "sealability",
         evaluator: Some(site(SEALED_ACCESS, "outside_access")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/module-nested-main",
+        title: "Module-nested entry",
+        // The entry row's refused `main locus` (`EntryRow::refused`), and that declaration's name and modules for the message.
+        reads: Reads::Rows(&["entrypoint"]),
+        gist: "a seed whose only `main locus` is module-nested has no entry (error, once, at that locus's name)",
+        family: "law_backstops",
+        evaluator: Some(site(LOWERING_LAWS, "module_nested_main_is_not_the_entry")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/cross-pool-spawn-as-a-value",
+        title: "Cross-pool spawn as a value",
+        // The ownership graph's sites, other sites, bubble plan and default expansions; the placement table's domain count (whether any locus runs off the main thread); the typed bodies' `omitted_args` column, which the expansions read.
+        reads: Reads::Rows(&["ownership", "placement", "expression_typing"]),
+        gist: "a locus literal the bubble plan posts to an owner on another thread, used as a value rather than a bare statement (error, at the literal, or at the call or literal whose default expands it)",
+        family: "law_backstops",
+        evaluator: Some(site(LOWERING_LAWS, "cross_pool_spawn_used_as_a_value")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/self-containing-locus",
+        title: "Self-containing locus",
+        // The ownership family's fresh-factory rows (`extended_factory_rows`, their products); the params defaults the containment walk expands are still read off the locus declarations.
+        reads: Reads::Rows(&["ownership"]),
+        gist: "a locus whose params defaults construct one of its own kind by value, by a literal or a fresh-factory call (error, at the param that closes the cycle)",
+        family: "law_backstops",
+        evaluator: Some(site(LOWERING_LAWS, "self_containing_locus")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-declared-once",
+        title: "Role declared once",
+        // The role rows' declarations, in walk order.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a `role` declared twice (error, at the second, the witness the first)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "declared_twice")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-declared",
+        title: "Declared role",
+        // The role rows' declarations, `includes` and gates; a `publish`'s gate is joined to the bus graph's publish rows by the declaration and the publish's identity.
+        reads: Reads::Rows(&["api_surface", "bus_graph"]),
+        gist: "a role a site names that nothing declares, `owner` aside (error, at the name)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "undeclared")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-includes-acyclic",
+        title: "Acyclic role includes",
+        // The role rows' declarations and their `includes`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a role reachable from its own `includes` chain (error, at the role's name)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "role_cycle")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gate-on-a-free-fn",
+        title: "Gate on a free fn",
+        // The role rows' gates of kind `FreeFn`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "`@gated(role:)` on a free fn (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_free_fn")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gate-on-a-plain-method",
+        title: "Gate on a plain method",
+        // The role rows' method gates, against the bus graph's subscriptions of the same declaration.
+        reads: Reads::Rows(&["api_surface", "bus_graph"]),
+        gist: "`@gated(role:)` on a locus fn no `subscribe` line of its locus names (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_plain_method")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gate-on-a-bound-topic",
+        title: "Gate on a bound topic",
+        // The role rows' method gates, the bus graph's subscriptions, the binding rows' bound topics, joined on the topic rows' wire subject.
+        reads: Reads::Rows(&["api_surface", "bus_graph", "bindings", "topics"]),
+        gist: "a gated handler whose topic is bound to a transport in `bindings { }` (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_bound_topic")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gates-agree-per-topic",
+        title: "Gates agree per topic",
+        // The role rows' gates, the bus graph's subscriptions and publishes, grouped by the topic rows' wire subject.
+        reads: Reads::Rows(&["api_surface", "bus_graph", "topics"]),
+        gist: "subscribers or publishers of one topic stating different gates (error, at the first gated site, listing every site)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gates_disagree")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-source-is-a-locus",
+        title: "Role source is a locus",
+        // The role rows' source: the locus its `roles:` names, and whether the bundle declares one.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "an api entry's `roles:` naming no locus of the bundle (error, at the clause)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "source_is_no_locus")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-source-has-holds",
+        title: "Role source has holds",
+        // The role rows' source locus and its first `fn holds`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a role source's locus with no `fn holds` (error, at the clause)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "source_has_no_holds")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-source-signature",
+        title: "Role source signature",
+        // The role rows' source `fn holds`, its parameter and return types as written (the rule is stated over the written signature).
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a role source's `fn holds` that is not `std::api::RoleSource`'s (error, at the fn's name, the witness the api entry)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "holds_is_not_a_role_source")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/pool-starvation",
+        title: "Pool starvation",
+        // Where each root field runs (the placement table's rows, `root_field_placements`), the flow rows' "never returns" column, and the pools rule 7 fired on; the root's params, in order and with the type each names (the stdlib's long-running list is by path), are still read off its declaration.
+        reads: Reads::Rows(&["placement", "flows"]),
+        gist: "two or more never-returning `run()` bodies on one cooperative pool of the deployed root (warning, at the first)",
+        family: "flows",
+        evaluator: Some(site(CHECK, "check_pool_starvation")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/birth-order-trap",
+        title: "Birth-order trap",
+        // As pool starvation: the placement table's rows and the flow rows' "never returns" column; the root's params, in order, off its declaration.
+        reads: Reads::Rows(&["placement", "flows"]),
+        gist: "a root params field whose never-returning `run()` runs inline on main, so the params after it are never born (warning, at the first such field)",
+        family: "flows",
+        evaluator: Some(site(CHECK, "check_birth_order")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/hot-path-allocation",
+        title: "Hot-path allocation",
+        // The allocation summary's rows (each own fn's sites and calls, where they are written, `@hot`, `@unbounded`), and the scope, for which literal names a locus and which call a factory.
+        reads: Reads::Rows(&["alloc_summary", "top_scope"]),
+        gist: "an allocation per loop iteration or per bus message (warning; an error under `@hot`, where it also flags `snapshot()` / `finish()` and a whole-struct self-field replace)",
+        family: "alloc_summary",
+        evaluator: Some(site(CHECK, "check_hot_path_alloc")),
         state: State::Canonical,
     },
 ];

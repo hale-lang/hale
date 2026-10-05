@@ -23,8 +23,30 @@ use hale_syntax::{Diag, Span};
 use crate::binding_rows::BindingRows;
 use crate::bus_graph::BusGraph;
 use crate::entry::EntryRow;
+use crate::law::{RuleId, Violation};
 use crate::topic_identity::TopicRows;
 use crate::Bundle;
+
+/// A role is declared once.
+const DECLARED_ONCE: RuleId = RuleId::registered("verification/structural", "role-declared-once");
+/// Every role a site names is declared, or is `owner`.
+const DECLARED: RuleId = RuleId::registered("verification/structural", "role-declared");
+/// `includes` is acyclic.
+const ACYCLIC: RuleId = RuleId::registered("verification/structural", "role-includes-acyclic");
+/// No gate on a free fn.
+const FREE_FN: RuleId = RuleId::registered("verification/structural", "gate-on-a-free-fn");
+/// A gated locus fn is a subscribed handler.
+const PLAIN_METHOD: RuleId = RuleId::registered("verification/structural", "gate-on-a-plain-method");
+/// A gated handler's topic is not bound to a transport.
+const BOUND_TOPIC: RuleId = RuleId::registered("verification/structural", "gate-on-a-bound-topic");
+/// Every subscriber (or publisher) of one topic states the same gate.
+const GATES_AGREE: RuleId = RuleId::registered("verification/structural", "gates-agree-per-topic");
+/// The role source names a locus of the bundle.
+const SOURCE_LOCUS: RuleId = RuleId::registered("verification/structural", "role-source-is-a-locus");
+/// The role source's locus has a `fn holds`.
+const SOURCE_HOLDS: RuleId = RuleId::registered("verification/structural", "role-source-has-holds");
+/// The role source's `holds` is `std::api::RoleSource`'s.
+const SOURCE_SIGNATURE: RuleId = RuleId::registered("verification/structural", "role-source-signature");
 
 /// One `role` declaration, as written. Two declarations of one name are
 /// two rows: the vocabulary's own rule reads them.
@@ -348,18 +370,26 @@ pub fn role_rows(bundle: &Bundle<'_>, entry: &EntryRow) -> RoleRows {
 /// a generated `__Api` locus or an imported one is not judged: the
 /// binding does not reach it as the entrypoint's.
 ///
-/// The ten rules are the ten functions below, one message each; this
-/// walks the rows in the order the diagnostics are reported: the
+/// The ten rules are the ten functions below, one message each, each a
+/// registered rule whose finding is a [`Violation`] (F.40 phase 4, W5);
+/// this walks the rows in the order the diagnostics are reported: the
 /// vocabulary, the free fns, each locus declaration's gates, the topics'
-/// agreement, then the role source.
+/// agreement, then the role source. One walk judges the ten, so the
+/// findings keep the order the walk reaches them in.
 pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: &BindingRows) -> Vec<Diag> {
-    let mut diags = Vec::new();
+    let mut found = Vec::new();
+    role_walk(rows, bus, topics, bindings, &mut found);
+    crate::law::diags(found)
+}
+
+/// The walk [`role_laws`] reports, in its order.
+fn role_walk(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: &BindingRows, found: &mut Vec<Violation>) {
 
     // The vocabulary: the first declaration of a name is the role.
     let mut decls: BTreeMap<&str, &RoleDeclRow> = BTreeMap::new();
     for r in &rows.roles {
         match decls.get(r.name.name.as_str()) {
-            Some(first) => diags.push(declared_twice(r, first)),
+            Some(first) => found.push(declared_twice(r, first)),
             None => {
                 decls.insert(&r.name.name, r);
             }
@@ -369,20 +399,20 @@ pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: 
     for (name, r) in &decls {
         for inc in &r.includes {
             if !declared(&inc.name) {
-                diags.push(undeclared(inc, &format!("`role {} includes …`", name)));
+                found.push(undeclared(inc, &format!("`role {} includes …`", name)));
             }
         }
         if includes_itself(name, &decls) {
-            diags.push(role_cycle(name, r.name.span));
+            found.push(role_cycle(name, r.name.span));
         }
     }
 
     // Review F3: a gate on a free fn is an error — nothing there is
     // reached from the binding — and its role is checked all the same.
     for g in rows.gates.iter().filter(|g| g.kind == GateKind::FreeFn) {
-        diags.push(gate_on_a_free_fn(g));
+        found.push(gate_on_a_free_fn(g));
         if !declared(&g.role.name) {
-            diags.push(undeclared(&g.role, &format!("`@gated` on `{}`", g.member)));
+            found.push(undeclared(&g.role, &format!("`@gated` on `{}`", g.member)));
         }
     }
 
@@ -416,7 +446,7 @@ pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: 
             let gate = gates_here().find(|g| g.kind == GateKind::Publish(p.id) && g.span == p.span);
             if let Some(g) = gate {
                 if !declared(&g.role.name) {
-                    diags.push(undeclared(&g.role, &format!("`@gated` on `{}`'s publish", locus)));
+                    found.push(undeclared(&g.role, &format!("`@gated` on `{}`'s publish", locus)));
                 }
             }
             if let Some(t) = &p.topic {
@@ -428,16 +458,16 @@ pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: 
             match g.kind {
                 GateKind::Method => {
                     if !declared(&g.role.name) {
-                        diags.push(undeclared(&g.role, &format!("`@gated` on `{}.{}`", locus, g.member)));
+                        found.push(undeclared(&g.role, &format!("`@gated` on `{}.{}`", locus, g.member)));
                     }
                     let mine: Vec<&Option<(String, &str)>> =
                         subscribed.iter().filter(|(h, _, _)| *h == g.member).map(|(_, t, _)| t).collect();
                     if mine.is_empty() {
-                        diags.push(gate_on_a_plain_method(g, locus));
+                        found.push(gate_on_a_plain_method(g, locus));
                     }
                     for (key, topic) in mine.into_iter().flatten() {
                         if bound.contains(key) {
-                            diags.push(gate_on_a_bound_topic(g, locus, topic));
+                            found.push(gate_on_a_bound_topic(g, locus, topic));
                         }
                         let entry = sub_gates.entry(key.clone()).or_insert_with(|| (topic.to_string(), Vec::new()));
                         entry.1.push((format!("{}.{}", locus, g.member), Some(g.role.name.clone()), g.role.span));
@@ -445,7 +475,7 @@ pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: 
                 }
                 GateKind::Contract(ContractDirection::Expose) => {
                     if !declared(&g.role.name) {
-                        diags.push(undeclared(&g.role, &format!("`@gated` on an `expose` of `{}`", locus)));
+                        found.push(undeclared(&g.role, &format!("`@gated` on an `expose` of `{}`", locus)));
                     }
                 }
                 _ => {}
@@ -469,7 +499,7 @@ pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: 
         for (topic, sites) in groups {
             let distinct: BTreeSet<&Option<String>> = sites.iter().map(|(_, r, _)| r).collect();
             if distinct.len() >= 2 {
-                diags.push(gates_disagree(topic, sites, kind));
+                found.push(gates_disagree(topic, sites, kind));
             }
         }
     }
@@ -478,29 +508,28 @@ pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: 
     // (review F6): a locus literal or `self.<param>` of the main locus
     // is checked structurally here, with the fn's span; any other
     // expression is typed against the interface at the generated init.
-    let Some(src) = &rows.source else { return diags };
-    let Some(locus_name) = src.names.as_deref() else { return diags };
+    let Some(src) = &rows.source else { return };
+    let Some(locus_name) = src.names.as_deref() else { return };
     if locus_name.starts_with("__Std") || locus_name.starts_with("std::") {
-        return diags;
+        return;
     }
     // A qualified path (`lib::TableRoles`) is renamed to the imported
     // locus's mangled name only on the build path; here the generated
     // init is typed against the interface, which is check enough.
     if locus_name.contains("::") && src.locus.is_none() {
-        return diags;
+        return;
     }
     let Some(l) = &src.locus else {
-        diags.push(source_is_no_locus(src, locus_name));
-        return diags;
+        found.push(source_is_no_locus(src, locus_name));
+        return;
     };
     let Some(f) = &l.holds else {
-        diags.push(source_has_no_holds(src, locus_name));
-        return diags;
+        found.push(source_has_no_holds(src, locus_name));
+        return;
     };
     if let Some(d) = holds_is_not_a_role_source(src, locus_name, f) {
-        diags.push(d);
+        found.push(d);
     }
-    diags
 }
 
 /// A site that states (or does not state) a gate on a topic: the site as
@@ -527,8 +556,9 @@ fn includes_itself(name: &str, decls: &BTreeMap<&str, &RoleDeclRow>) -> bool {
 }
 
 /// Rule: a role is declared once.
-fn declared_twice(r: &RoleDeclRow, first: &RoleDeclRow) -> Diag {
-    Diag::ty(
+fn declared_twice(r: &RoleDeclRow, first: &RoleDeclRow) -> Violation {
+    Violation::error(
+        DECLARED_ONCE,
         r.name.span,
         format!(
             "role `{}` is declared twice; a role is one name the \
@@ -537,14 +567,15 @@ fn declared_twice(r: &RoleDeclRow, first: &RoleDeclRow) -> Diag {
             r.name.name
         ),
     )
-    .with_related(first.name.span, "the first declaration")
+    .step(first.name.span, "the first declaration")
 }
 
 /// Rule: every role a site names is declared (or is `owner`). `at` says
 /// which site: an `includes`, a free fn's gate, a publish's, a
 /// handler's or an `expose`'s.
-fn undeclared(n: &Ident, at: &str) -> Diag {
-    Diag::ty(
+fn undeclared(n: &Ident, at: &str) -> Violation {
+    Violation::error(
+        DECLARED,
         n.span,
         format!(
             "{} names role `{}`, which nothing declares — roles are declared \
@@ -555,8 +586,9 @@ fn undeclared(n: &Ident, at: &str) -> Diag {
 }
 
 /// Rule: `includes` is acyclic.
-fn role_cycle(name: &str, span: Span) -> Diag {
-    Diag::ty(
+fn role_cycle(name: &str, span: Span) -> Violation {
+    Violation::error(
+        ACYCLIC,
         span,
         format!(
             "role `{}` includes itself through its `includes` chain; \
@@ -567,8 +599,9 @@ fn role_cycle(name: &str, span: Span) -> Diag {
 }
 
 /// Rule: no gate on a free fn.
-fn gate_on_a_free_fn(g: &GateRow) -> Diag {
-    Diag::ty(
+fn gate_on_a_free_fn(g: &GateRow) -> Violation {
+    Violation::error(
+        FREE_FN,
         g.role.span,
         format!(
             "`@gated(role: {})` on the free fn `{}`: a gate goes on a subscribed \
@@ -580,8 +613,9 @@ fn gate_on_a_free_fn(g: &GateRow) -> Diag {
 }
 
 /// Rule: a gated locus fn is a subscribed handler.
-fn gate_on_a_plain_method(g: &GateRow, locus: &str) -> Diag {
-    Diag::ty(
+fn gate_on_a_plain_method(g: &GateRow, locus: &str) -> Violation {
+    Violation::error(
+        PLAIN_METHOD,
         g.role.span,
         format!(
             "`@gated(role: {})` on `{}.{}`, which no `subscribe` line of \
@@ -594,8 +628,9 @@ fn gate_on_a_plain_method(g: &GateRow, locus: &str) -> Diag {
 }
 
 /// Rule: a gated handler's topic is not bound to a transport.
-fn gate_on_a_bound_topic(g: &GateRow, locus: &str, topic: &str) -> Diag {
-    Diag::ty(
+fn gate_on_a_bound_topic(g: &GateRow, locus: &str, topic: &str) -> Violation {
+    Violation::error(
+        BOUND_TOPIC,
         g.role.span,
         format!(
             "`@gated(role: {})` on `{}.{}`, but its topic `{}` is \
@@ -610,7 +645,7 @@ fn gate_on_a_bound_topic(g: &GateRow, locus: &str, topic: &str) -> Diag {
 
 /// Rule: every subscriber (or publisher) of one topic states the same
 /// gate. Named at the first gated site.
-fn gates_disagree(topic: &str, sites: &[GateSite], kind: &str) -> Diag {
+fn gates_disagree(topic: &str, sites: &[GateSite], kind: &str) -> Violation {
     let listed: Vec<String> = sites
         .iter()
         .map(|(site, r, _)| match r {
@@ -619,7 +654,8 @@ fn gates_disagree(topic: &str, sites: &[GateSite], kind: &str) -> Diag {
         })
         .collect();
     let (_, _, span) = sites.iter().find(|(_, r, _)| r.is_some()).unwrap_or(&sites[0]);
-    Diag::ty(
+    Violation::error(
+        GATES_AGREE,
         *span,
         format!(
             "topic `{}`: {} — every locus that {} one topic states the same gate, \
@@ -632,8 +668,9 @@ fn gates_disagree(topic: &str, sites: &[GateSite], kind: &str) -> Diag {
 }
 
 /// Rule: the role source names a locus of the bundle.
-fn source_is_no_locus(src: &RoleSource, locus_name: &str) -> Diag {
-    Diag::ty(
+fn source_is_no_locus(src: &RoleSource, locus_name: &str) -> Violation {
+    Violation::error(
+        SOURCE_LOCUS,
         src.span,
         format!(
             "api binding: `roles:` names `{}`, which is no locus of this bundle; a role \
@@ -645,8 +682,9 @@ fn source_is_no_locus(src: &RoleSource, locus_name: &str) -> Diag {
 }
 
 /// Rule: the role source's locus has a `fn holds`.
-fn source_has_no_holds(src: &RoleSource, locus_name: &str) -> Diag {
-    Diag::ty(
+fn source_has_no_holds(src: &RoleSource, locus_name: &str) -> Violation {
+    Violation::error(
+        SOURCE_HOLDS,
         src.span,
         format!(
             "api binding: `roles:` names `{}`, which has no `fn holds`: a role source \
@@ -661,7 +699,7 @@ fn source_has_no_holds(src: &RoleSource, locus_name: &str) -> Diag {
 /// Rule: the role source's `holds` is `std::api::RoleSource`'s, as
 /// written: two parameters, a `std::api::Principal` and a `String`,
 /// returning `Bool`, not fallible. Every way it is not is listed.
-fn holds_is_not_a_role_source(src: &RoleSource, locus_name: &str, f: &HoldsFn) -> Option<Diag> {
+fn holds_is_not_a_role_source(src: &RoleSource, locus_name: &str, f: &HoldsFn) -> Option<Violation> {
     let is_principal = |t: &TypeExpr| match t {
         TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
             let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
@@ -690,7 +728,8 @@ fn holds_is_not_a_role_source(src: &RoleSource, locus_name: &str, f: &HoldsFn) -
         return None;
     }
     Some(
-        Diag::ty(
+        Violation::error(
+            SOURCE_SIGNATURE,
             f.name.span,
             format!(
                 "`{}.holds` does not satisfy std::api::RoleSource: {} — a role source \
@@ -701,6 +740,6 @@ fn holds_is_not_a_role_source(src: &RoleSource, locus_name: &str, f: &HoldsFn) -
                 why.join("; ")
             ),
         )
-        .with_related(src.entry, "the api entry that names it"),
+        .step(src.entry, "the api entry that names it"),
     )
 }

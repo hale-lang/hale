@@ -31,6 +31,7 @@ use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
 use crate::handler_routing::ChildRef;
+use crate::law::{Law, RuleId, Violation};
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
@@ -961,16 +962,21 @@ pub fn check_bundle_by_declaration(
     // pool the dead-receiver error already reported.
     if let Some(main) = inputs.placement.root.as_ref().and_then(|r| r.decl.decl(bundle)) {
         let fields = root_field_placements(bundle, inputs.placement);
+        // Rules 7 and 8 report as one walk reaches them (F.40 phase 4, W5).
+        let mut found = Vec::new();
         let errored_pools =
-            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut diags);
-        check_pool_starvation(main, &fields, flows, &errored_pools, &mut diags);
-        check_birth_order(main, &fields, flows, &mut diags);
+            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut found);
+        diags.extend(crate::law::diags(found));
+        let rows = RootRunRows { main, fields: &fields, flows, errored_pools: &errored_pools };
+        diags.extend(Law { rule: STARVATION, eval: check_pool_starvation }.diags(&rows));
+        diags.extend(Law { rule: BIRTH_ORDER, eval: check_birth_order }.diags(&rows));
     }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    check_hot_path_alloc(inputs.alloc_summary, top, &mut diags);
+    let rows = HotPathRows { summary: inputs.alloc_summary, top };
+    diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
@@ -1055,18 +1061,24 @@ pub fn check_bundle_by_declaration(
     // returns, so its subscription can never fire. Judged over the
     // ownership graph (F.40 phase 3, C4). Hard error unless
     // `--allow-unowned-subscriber` is set.
-    check_unowned_subscriber_locus(bundle, inputs, allow_unowned_subscriber, &mut diags);
+    // Rule 20 is a law over those rows (F.40 phase 4, W5).
+    if !allow_unowned_subscriber {
+        let rows = UnownedSubscriberRows { bundle, ownership: inputs.ownership, placement: inputs.placement };
+        diags.extend(Law { rule: RULE_20, eval: check_unowned_subscriber_locus }.diags(&rows));
+    }
     // GH #18 #4: bus-graph property checks over the typed topic
     // topology. v1 (PR A): orphan topics — declared/used subjects
     // wired to only one end. Gated on a closed-world program (one
     // with an entry), so library seeds whose consumers are external
     // aren't falsely flagged.
-    check_bus_graph(bundle, top, inputs.entry, inputs.bus, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
     // an intra-locus loop lowering turns into direct calls is
     // synchronous self-dispatch that recurses without bound (error).
-    check_bus_cycles(inputs.bus, inputs.intra_locus, &mut diags);
+    // Rules 9 and 10 are laws over the bus graph (F.40 phase 4, W5).
+    let bus_rows =
+        BusLawRows { bundle, top, entry: inputs.entry, bus: inputs.bus, intra_locus: inputs.intra_locus };
+    bus_graph_laws(&bus_rows, &mut diags);
     // GH #18 #4: backpressure. An unbounded publish loop with no
     // yield/throttle floods the bus — the producer has no
     // backpressure. Structural heuristic (warning).
@@ -1370,21 +1382,18 @@ fn locus_accepts(parent: &LocusDecl, child_name: &str) -> bool {
 /// handler's locus, which the placement table records
 /// (`OwnershipGraph::construction_paths`); the diagnostic names a path
 /// with none.
-fn check_unowned_subscriber_locus(
-    bundle: &Bundle<'_>,
-    inputs: &CheckInputs<'_>,
-    allow: bool,
-    diags: &mut Vec<Diag>,
-) {
+///
+/// Its finding is a [`Violation`] (F.40 phase 4, W5) whose witness steps
+/// are the two related locations the diagnostic always carried: the
+/// declaration judged when two share the child's name, and the
+/// construction path no accepting ancestor lies on.
+fn check_unowned_subscriber_locus(rows: &UnownedSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::ownership_graph::{ConstructionPath, OwnerResolution};
-    if allow {
-        return;
-    }
-    let graph = inputs.ownership;
+    let (bundle, graph) = (rows.bundle, rows.ownership);
     // The construction paths are derived from the table once, by the
     // first birth its own locus does not accept.
     let paths = std::cell::OnceCell::new();
-    let paths = || paths.get_or_init(|| graph.construction_paths(inputs.placement, bundle));
+    let paths = || paths.get_or_init(|| graph.construction_paths(rows.placement, bundle));
     // In declaration order of the enclosing locus, as the program reads;
     // the graph lists its sites by locus name.
     let mut sites: Vec<&crate::ownership_graph::OwnedSite> = graph.sites.iter().collect();
@@ -1407,7 +1416,8 @@ fn check_unowned_subscriber_locus(
             continue;
         }
         let (name, p_name) = (&child.name, &p.name);
-        let mut diag = Diag::ty(
+        let mut found = Violation::error(
+            RULE_20,
             site.span,
             format!(
                 "locus `{}` declares `bus subscribe` but is \
@@ -1430,7 +1440,7 @@ fn check_unowned_subscriber_locus(
         // A name two declarations share: the graph judged the first.
         let same_name = graph.declarations.iter().filter(|d| d.name == *name).count();
         if same_name > 1 {
-            diag = diag.with_related(
+            found = found.step(
                 child.span,
                 format!(
                     "the declaration judged: the first, in declaration order, of the \
@@ -1465,10 +1475,21 @@ fn check_unowned_subscriber_locus(
                     format!("{within}no construction of `{top}` has an ancestor that accepts `{name}`"),
                 ),
             };
-            diag = diag.with_related(at, note);
+            found = found.step(at, note);
         }
-        diags.push(diag);
+        out.push(found);
     }
+}
+
+/// Rule 20, the unowned subscriber.
+const RULE_20: RuleId = RuleId::registered("semantics/placement", "20");
+
+/// What rule 20 reads: the ownership graph, and the placement table its
+/// construction paths are derived from.
+struct UnownedSubscriberRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    ownership: &'r crate::ownership_graph::OwnershipGraph,
+    placement: &'r crate::placement::PlacementTable,
 }
 
 /// Known stdlib loci whose `run()` body is structurally non-
@@ -2076,8 +2097,12 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 /// a recovery, `shm_write`): a locus instantiated there in a loop is a
 /// finding now. It does not walk a callee that is an expression of its
 /// own, which the lint's walk did, so nothing written there is.
-fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopScope, diags: &mut Vec<Diag>) {
+///
+/// Its finding is a [`Violation`] (F.40 phase 4, W5): an error under
+/// `@hot`, else a warning.
+fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
+    let (summary, top) = (rows.summary, rows.top);
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =
         summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
     rows.sort_by_key(|f| f.decl_index);
@@ -2125,12 +2150,22 @@ fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopS
         found.dedup();
         for (span, msg) in found {
             if f.hot {
-                diags.push(Diag::ty(span, format!("@hot: {}", msg)));
+                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
             } else if !summary.unbounded_fns.contains(&f.key) {
-                diags.push(Diag::warn(span, msg));
+                out.push(Violation::warning(HOT_PATH, span, msg));
             }
         }
     }
+}
+
+/// The hot-path allocation lint.
+const HOT_PATH: RuleId = RuleId::registered("verification/structural", "hot-path-allocation");
+
+/// What the hot-path lint reads: the allocation summary's rows, and the
+/// scope, for which literal is a locus and which call is a factory.
+struct HotPathRows<'r> {
+    summary: &'r crate::alloc_summary::AllocSummary,
+    top: &'r TopScope,
 }
 
 // === GH #723: decorator stacks =====================================
@@ -2390,12 +2425,16 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
 ///
 /// The helpers that block are the effect rows' ([`worker_holding_fns`]),
 /// demanded only once a placed field has a `run()` to walk.
+///
+/// One walk judges both rules, field by field, so its findings, each a
+/// [`Violation`] of rule 7 or rule 8 (F.40 phase 4, W5), are reported in
+/// the order it reaches them.
 fn check_cooperative_pool_blocking<'r>(
     bundle: &Bundle<'_>,
     bus: &crate::bus_graph::BusGraph,
     effects: &dyn Fn() -> Option<&'r crate::effect_rows::EffectRows>,
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    diags: &mut Vec<Diag>,
+    found: &mut Vec<Violation>,
 ) -> BTreeSet<String> {
     // GH #825: the rows key a module's fns by their bare names, as the
     // resolver does, so a module-nested helper that blocks is in the
@@ -2490,7 +2529,8 @@ fn check_cooperative_pool_blocking<'r>(
                 // placement-only rule, which over-fired on
                 // event-driven subscribers — `Reader`/`Dispatcher`
                 // received fine for 16h+ in production.)
-                diags.push(Diag::ty(
+                found.push(Violation::error(
+                    RULE_7,
                     span,
                     format!(
                         "locus `{}` (field `{}`) subscribes to bus topics \
@@ -2518,7 +2558,8 @@ fn check_cooperative_pool_blocking<'r>(
                 // locus isn't itself a subscriber. Interprocedural:
                 // `deep_call` may name a helper fn / self-method that
                 // blocks transitively, not just a literal stdlib op.
-                diags.push(Diag::warn(
+                found.push(Violation::warning(
+                    RULE_8,
                     deep_span,
                     format!(
                         "locus `{}` (field `{}`) is placed `cooperative(pool \
@@ -2544,6 +2585,11 @@ fn check_cooperative_pool_blocking<'r>(
     errored_pools
 }
 
+/// Rule 7, the dead bus receiver.
+const RULE_7: RuleId = RuleId::registered("semantics/placement", "7");
+/// Rule 8, a blocking syscall on a cooperative pool.
+const RULE_8: RuleId = RuleId::registered("semantics/placement", "8");
+
 /// Pool starvation, a law over the deployed root's placement rows: two
 /// (or more) statically non-returning `run()` bodies on one cooperative
 /// pool. The pool runs each `run()` cell to completion in birth order,
@@ -2554,13 +2600,8 @@ fn check_cooperative_pool_blocking<'r>(
 /// both warnings (blocking AND starving a sibling); they name different
 /// defects. Not reported on a pool where the dead-receiver error fired
 /// (`errored_pools`): that error already says the thread is monopolized.
-fn check_pool_starvation(
-    main: &LocusDecl,
-    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    flows: &crate::flows::FlowRows,
-    errored_pools: &BTreeSet<String>,
-    diags: &mut Vec<Diag>,
-) {
+fn check_pool_starvation(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
+    let RootRunRows { main, fields, flows, errored_pools } = *rows;
     let mut by_pool: BTreeMap<String, Vec<(String, Span)>> =
         BTreeMap::new();
     for m in &main.members {
@@ -2641,7 +2682,8 @@ fn check_pool_starvation(
         } else {
             String::new()
         };
-        diags.push(Diag::warn(
+        out.push(Violation::warning(
+            STARVATION,
             *first_span,
             format!(
                 "cooperative pool `{}` is shared by {}, whose `run()` \
@@ -2691,12 +2733,8 @@ fn check_pool_starvation(
 /// mis-filed as a cooperative-child handler-cadence question. It is
 /// neither: the drain is fine and the cadence is fine; the publisher
 /// simply had not been born yet.
-fn check_birth_order(
-    main: &LocusDecl,
-    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    flows: &crate::flows::FlowRows,
-    diags: &mut Vec<Diag>,
-) {
+fn check_birth_order(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
+    let RootRunRows { main, fields, flows, .. } = *rows;
     // Params in declaration order, tagged with whether
     // each one blocks the births that follow it.
     let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
@@ -2750,7 +2788,8 @@ fn check_birth_order(
         return;
     }
     let (field, span, _, _) = &ordered[i];
-    diags.push(Diag::warn(
+    out.push(Violation::warning(
+        BIRTH_ORDER,
         *span,
         format!(
             "params field `{}` runs inline on the main \
@@ -2776,6 +2815,25 @@ fn check_birth_order(
             field,
         ),
     ));
+}
+
+/// Pool starvation.
+const STARVATION: RuleId = RuleId::registered("verification/structural", "pool-starvation");
+/// The birth-order trap.
+const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
+
+/// What the starvation and birth-order laws read: where each params
+/// field of the deployed root runs (the placement table's rows,
+/// [`root_field_placements`]), the flow rows' run columns, and the pools
+/// where rule 7 fired; the root's params, in the order written and with
+/// the type each names (the stdlib's long-running list is by path), are
+/// read off its declaration.
+#[derive(Clone, Copy)]
+struct RootRunRows<'r, 'a> {
+    main: &'r LocusDecl,
+    fields: &'r BTreeMap<&'a str, RootFieldPlacement<'a>>,
+    flows: &'r crate::flows::FlowRows,
+    errored_pools: &'r BTreeSet<String>,
 }
 
 /// Where a root params field runs, as the blocking check reads it.
@@ -3828,7 +3886,10 @@ fn check_binding_codec<'e>(
             Some(crate::purity::Purity::Pure) => {}
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);
-                diags.push(Diag::ty(
+                // The codec-purity rule's finding (F.40 phase 4, W5),
+                // where the walk reaches it among the codec's checks.
+                diags.push(Violation::error(
+                    CODEC_PURITY,
                     codec.locus.span,
                     format!(
                         "codec `{}.{}` is not safe to dispatch from \
@@ -3842,7 +3903,7 @@ fn check_binding_codec<'e>(
                          help: {}",
                         codec.locus.name, method_name, line, hint,
                     ),
-                ));
+                ).into_diag());
             }
             None => {
                 // Method should have been in the map if the
@@ -3855,6 +3916,12 @@ fn check_binding_codec<'e>(
         }
     }
 }
+
+/// Codec purity, a registered rule over the effect rows' purity column.
+const CODEC_PURITY: RuleId = RuleId::registered("verification/structural", "codec-purity");
+/// The foreign-ring payload shape, a registered rule over the scope's
+/// payload types.
+const FOREIGN_RING_PAYLOAD: RuleId = RuleId::registered("verification/structural", "foreign-ring-payload-shape");
 
 /// Render an [`Impurity`] as `(note_line, fix_hint)` strings for
 /// embedding in a codec binding-site diagnostic.
@@ -4574,7 +4641,10 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                         if !is_raw_view
                             && !is_flat_shapeable(&topic.payload, top)
                         {
-                            diags.push(Diag::ty(
+                            // The foreign-ring payload rule's finding
+                            // (F.40 phase 4, W5), in the walk's place.
+                            diags.push(Violation::error(
+                                FOREIGN_RING_PAYLOAD,
                                 entry.span,
                                 format!(
                                     "shm_ring binding for topic \
@@ -4589,7 +4659,7 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                                     lid.name,
                                     topic.payload.display()
                                 ),
-                            ));
+                            ).into_diag());
                         }
                     }
                 }
@@ -4849,13 +4919,36 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
 // cross-seed (`alias::Foo`) references (the other seed owns the other
 // half). A site the graph cannot resolve is a hole, judged by no rule.
 
-fn check_bus_graph(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-    bus: &crate::bus_graph::BusGraph,
-    diags: &mut Vec<Diag>,
-) {
+/// Rule 9, the orphan bus topic.
+const RULE_9: RuleId = RuleId::registered("semantics/placement", "9");
+/// Rule 10, bus cycles.
+const RULE_10: RuleId = RuleId::registered("semantics/placement", "10");
+
+/// What rules 9 and 10 read: the bus graph, the entry row (the closed
+/// world, and the entry's `api:` binding, read off its declaration), the
+/// scope's declared topics, and the intra-locus rewrite relation.
+struct BusLawRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    top: &'r TopScope,
+    entry: &'r crate::entry::EntryRow,
+    bus: &'r crate::bus_graph::BusGraph,
+    intra_locus: &'r [hale_syntax::desugar::IntraLocusRewrite],
+}
+
+/// Rules 9 and 10 over the bus graph, and between them the wildcard
+/// payload warning (`spec/semantics.md` § "Computed publish subjects are
+/// confined to their declaration"), which no list registers: it reads the
+/// scope's declarations and judges a closed world, as rule 9 does.
+fn bus_graph_laws(rows: &BusLawRows<'_, '_>, diags: &mut Vec<Diag>) {
+    diags.extend(Law { rule: RULE_9, eval: check_bus_graph }.diags(rows));
+    if rows.entry.entry().is_some() {
+        check_wildcard_publish_payloads(rows.top, diags);
+    }
+    diags.extend(Law { rule: RULE_10, eval: check_bus_cycles }.diags(rows));
+}
+
+fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
+    let BusLawRows { bundle, top, entry, bus, .. } = *rows;
     // Closed-world gate: only a complete program (one with an entry,
     // F.40 phase 3, E0) has both ends of every channel in-bundle. A
     // seed whose only `main locus` is imported or module-nested has
@@ -4904,7 +4997,8 @@ fn check_bus_graph(
         let s = has_sub(row);
         if p && !s {
             let span = row.and_then(|r| r.published).unwrap_or(info.span);
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus topic `{}` is published but has no subscriber — \
@@ -4915,7 +5009,8 @@ fn check_bus_graph(
             ));
         } else if s && !p {
             let span = row.and_then(|r| r.subscribed).unwrap_or(info.span);
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus topic `{}` is subscribed but never published — its \
@@ -4925,7 +5020,8 @@ fn check_bus_graph(
                 ),
             ));
         } else if !p && !s {
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 info.span,
                 format!(
                     "bus topic `{}` is declared but neither published nor \
@@ -4946,7 +5042,8 @@ fn check_bus_graph(
         let s = has_sub(Some(row));
         if p && !s {
             let Some(span) = row.published else { continue };
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus subject `\"{}\"` is published but has no subscriber — \
@@ -4957,7 +5054,8 @@ fn check_bus_graph(
             ));
         } else if s && !p {
             let Some(span) = row.subscribed else { continue };
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus subject `\"{}\"` is subscribed but never published — \
@@ -4968,8 +5066,6 @@ fn check_bus_graph(
             ));
         }
     }
-
-    check_wildcard_publish_payloads(top, diags);
 }
 
 /// A wildcard publish declaration authorizes its locus to publish any
@@ -5119,12 +5215,9 @@ fn cycle_path(cycle: &[&crate::bus_graph::BusEdge]) -> String {
 /// declarations, not names. Whether a hop is a direct call is the
 /// intra-locus rewrite's relation (`intra_locus`, by the send's id),
 /// never re-derived here.
-fn check_bus_cycles(
-    bus: &crate::bus_graph::BusGraph,
-    intra_locus: &[hale_syntax::desugar::IntraLocusRewrite],
-    diags: &mut Vec<Diag>,
-) {
+fn check_bus_cycles(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::bus_graph::BusEdge;
+    let (bus, intra_locus) = (rows.bus, rows.intra_locus);
     let roots = |keep: &dyn Fn(&BusEdge) -> bool| -> BTreeSet<&str> {
         bus.edges.iter().filter(|e| keep(e)).map(|e| e.from.as_str()).collect()
     };
@@ -5151,7 +5244,8 @@ fn check_bus_cycles(
         // the queue carries, so it is refused here rather than judged.
         // Every entry numbers before it checks; this is the invariant.
         if let Some(e) = bus.edges.iter().find(|e| keep(e) && e.send.is_none()) {
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                RULE_10,
                 e.span,
                 format!(
                     "internal: the send to `{}` in handler `{}` of locus `{}` \
@@ -5167,7 +5261,8 @@ fn check_bus_cycles(
             ));
             intra.insert(d);
         } else if let Some(cycle) = first_cycle(&called) {
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                RULE_10,
                 cycle[0].span,
                 format!(
                     "locus `{}` has a re-entrant synchronous bus cycle \
@@ -5182,7 +5277,8 @@ fn check_bus_cycles(
             ));
             intra.insert(d);
         } else {
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_10,
                 queued[0].span,
                 format!(
                     "bus cycle `{}` in locus `{}`: a cell can re-trigger \
@@ -5226,7 +5322,8 @@ fn check_bus_cycles(
             })
             .collect();
         loci.sort();
-        diags.push(Diag::warn(
+        out.push(Violation::warning(
+            RULE_10,
             cycle[0].span,
             format!(
                 "bus cycle `{}` across loci ({}): a cell can re-trigger \
