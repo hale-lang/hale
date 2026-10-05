@@ -28,7 +28,9 @@
 
 use std::collections::BTreeMap;
 
-use hale_types::model_builder::derive_application_model;
+#[path = "support/entries.rs"]
+mod entries;
+use entries::derive_application_model;
 use hale_types::topology_projection::{
     project_model_half, project_shape_hash,
 };
@@ -91,7 +93,7 @@ fn baseline_row(
             let mut programs = BTreeMap::new();
             programs.insert("app.hl".to_string(), program);
             let bundle = Bundle::new(programs);
-            let art = hale_types::topology::dump_topology_parts(&bundle);
+            let art = entries::dump_topology_parts(&bundle);
             let model = derive_application_model(&bundle);
             (art, model)
         },
@@ -102,7 +104,7 @@ fn baseline_row(
     };
     // A property of CHECKED programs only: the corpus's negative
     // fixtures are refused before an artifact exists.
-    if hale_types::check_program(program).iter().any(|d| d.is_error()) {
+    if entries::check_program(program).iter().any(|d| d.is_error()) {
         return None;
     }
     // The emitter and the projection are one authority now, so this
@@ -292,7 +294,7 @@ fn main() { App { }; }
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let art = hale_types::topology::dump_topology_parts(&bundle);
+    let art = entries::dump_topology_parts(&bundle);
     for needle in [
         "\"sealed\": [\"Vault\"]",
         "\"supervision\": [\n    {\"locus\": \"Worker\"",
@@ -353,7 +355,7 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology_parts(&bundle);
+    let art = entries::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let projected = project_model_half(&model);
     assert_eq!(
@@ -383,7 +385,7 @@ fn assert_projection_matches(src: &str, label: &str) -> String {
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let art = hale_types::topology::dump_topology_parts(&bundle);
+    let art = entries::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     // The emitted half IS the projection (Change 9: there is no
     // other producer). Assert that, then hand the bytes back so the
@@ -490,7 +492,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     assert!(
-        hale_types::check_program(&program).iter().all(|d| !d.is_error()),
+        entries::check_program(&program).iter().all(|d| !d.is_error()),
         "the fixture checks clean"
     );
     let legacy =
@@ -535,7 +537,7 @@ fn main() { App { }; }
         vec!["kv".to_string(), "Item".to_string()],
         "__lib_x_kv_Item".to_string(),
     )];
-    let art = hale_types::topology::dump_topology_parts(&bundle);
+    let art = entries::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let projected = project_model_half(&model);
     assert_eq!(
@@ -593,7 +595,7 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology_parts(&bundle);
+    let art = entries::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let projected = project_model_half(&model);
     assert_eq!(
@@ -744,7 +746,7 @@ fn main() { App { }; }
             "__lib_b_pack_A".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology_parts(&bundle);
+    let art = entries::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let projected = project_model_half(&model);
     assert_eq!(
@@ -821,7 +823,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let errors: Vec<String> = hale_types::check_program(&program)
+    let errors: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)
@@ -870,8 +872,8 @@ fn the_omitted_run_moves_no_artifact_and_no_diagnostic() {
         let mut programs = BTreeMap::new();
         programs.insert("app.hl".to_string(), program);
         let bundle = Bundle::new(programs);
-        let art = hale_types::topology::dump_topology_parts(&bundle);
-        let diags = hale_types::check_bundle_opts_whole_program(&bundle, false)
+        let art = entries::dump_topology_parts(&bundle);
+        let diags = entries::check_bundle_opts_whole_program(&bundle, false)
             .into_iter()
             .map(|d| format!("{:?} {:?} {}", d.kind, d.span, d.message))
             .collect();
