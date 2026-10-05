@@ -18,7 +18,7 @@
 #[path = "support/harness.rs"]
 mod harness;
 
-fn checks_clean(source: &str) -> hale_syntax::ast::Program {
+fn checks_clean(source: &str) -> &str {
     let program = hale_syntax::parse_source(source).expect("parses");
     let errors: Vec<String> = hale_types::check_program(&program)
         .iter()
@@ -26,13 +26,13 @@ fn checks_clean(source: &str) -> hale_syntax::ast::Program {
         .map(|d| format!("{d:?}"))
         .collect();
     assert!(errors.is_empty(), "the checker refuses it:\n  {}", errors.join("\n  "));
-    program
+    source
 }
 
-/// Build `program` and run it, returning its IR and its stdout.
-fn build_and_run(program: &hale_syntax::ast::Program, name: &str) -> (String, String) {
+/// Build the program text and run it, returning its IR and its stdout.
+fn build_and_run(program: &str, name: &str) -> (String, String) {
     let bin = harness::unique_bin(name);
-    let ir = harness::build_ir_text(program, &bin).unwrap_or_else(|e| panic!("does not lower: {e:?}"));
+    let ir = harness::build_source_ir_text(program, &bin).unwrap_or_else(|e| panic!("does not lower: {e:?}"));
     let out = std::process::Command::new(&bin).output().expect("runs");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit {:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
@@ -84,10 +84,9 @@ fn a_hale_body_named_by_path_renames_lowers_at_statement_position() {
 #[test]
 fn bare_parse_int_and_parse_float_get_the_expression_forms_refusal() {
     for path in ["std::str::parse_int", "std::str::parse_float"] {
-        let program =
-            hale_syntax::parse_source(&format!("fn main() {{\n    {path}(\"1\");\n}}\n")).expect("parses");
+        let program = format!("fn main() {{\n    {path}(\"1\");\n}}\n");
         let bin = harness::unique_bin("stmt_bare_parse");
-        let err = harness::build_ir_text(&program, &bin).expect_err("a bare parse is refused");
+        let err = harness::build_source_ir_text(&program, &bin).expect_err("a bare parse is refused");
         let _ = std::fs::remove_file(&bin);
         let text = format!("{err}");
         assert!(
@@ -113,10 +112,9 @@ fn a_statement_no_dispatcher_lowers_keeps_the_statement_wording() {
         "std::io::tls::set_nodelay",
         "std::io::tls::set_rx_timestamps",
     ] {
-        let program =
-            hale_syntax::parse_source(&format!("fn main() {{\n    {path}(3, 5);\n}}\n")).expect("parses");
+        let program = format!("fn main() {{\n    {path}(3, 5);\n}}\n");
         let bin = harness::unique_bin("stmt_not_implemented");
-        let err = harness::build_ir_text(&program, &bin).expect_err("no dispatcher lowers it bare");
+        let err = harness::build_source_ir_text(&program, &bin).expect_err("no dispatcher lowers it bare");
         let _ = std::fs::remove_file(&bin);
         let text = format!("{err}");
         assert!(text.contains(&format!("stdlib path `{path}` — not implemented")), "{path}: {text}");

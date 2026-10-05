@@ -167,9 +167,7 @@ pub fn claim_law_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
         return Vec::new();
     }
     let model = model_of(&snap, &bundle.sources);
-    snap.with_env(|| {
-        hale_types::judgment::claim_law_diags_over(&view, &model, certificates(&snap), summary(&snap))
-    })
+    hale_types::judgment::claim_law_diags_over(&view, &model, certificates(&snap), summary(&snap), laws(&snap))
 }
 
 /// `hale_types::topology::model_shape_hash`, through the snapshot.
@@ -182,7 +180,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     let snap = bundle_snapshot(bundle, Config::check(true, false));
     let model = model_of(&snap, &bundle.sources);
     let view = view_of(&snap, &bundle.sources);
-    snap.with_env(|| hale_types::topology::dump_topology_over(&view, &model, certificates(&snap), summary(&snap)))
+    hale_types::topology::dump_topology_over(&view, &model, certificates(&snap), summary(&snap), laws(&snap))
 }
 
 /// `hale_types::topology::dump_topology_parts`, through the snapshot.
@@ -257,19 +255,18 @@ pub fn checked(snap: &Snapshot) -> Vec<Diag> {
 pub fn model_of(snap: &Snapshot, sources: &[SourceFile]) -> ApplicationModel {
     let blocked = |b: &hale_frontend::snapshot::Blocked| -> ! { panic!("the model's inputs are blocked: {}", render_blocked(b)) };
     let view = view_of(snap, sources);
-    snap.with_env(|| {
-        let inputs = hale_types::model_builder::ModelInputs {
-            top: snap.demand_scope().unwrap_or_else(|b| blocked(b)),
-            bus_graph: snap.demand_bus_graph().unwrap_or_else(|b| blocked(b)),
-            ownership: snap.demand_ownership_graph().unwrap_or_else(|b| blocked(b)),
-            handlers: snap.demand_handlers().unwrap_or_else(|b| blocked(b)),
-            effects: snap.demand_effects().unwrap_or_else(|b| blocked(b)),
-            forms: snap.demand_forms().unwrap_or_else(|b| blocked(b)),
-            bindings: snap.demand_bindings().unwrap_or_else(|b| blocked(b)),
-            placement: snap.demand_placement().unwrap_or_else(|b| blocked(b)),
-        };
-        hale_types::model_builder::derive_application_model_over(&view, &inputs)
-    })
+    let inputs = hale_types::model_builder::ModelInputs {
+        top: snap.demand_scope().unwrap_or_else(|b| blocked(b)),
+        bus_graph: snap.demand_bus_graph().unwrap_or_else(|b| blocked(b)),
+        ownership: snap.demand_ownership_graph().unwrap_or_else(|b| blocked(b)),
+        handlers: snap.demand_handlers().unwrap_or_else(|b| blocked(b)),
+        effects: snap.demand_effects().unwrap_or_else(|b| blocked(b)),
+        forms: snap.demand_forms().unwrap_or_else(|b| blocked(b)),
+        bindings: snap.demand_bindings().unwrap_or_else(|b| blocked(b)),
+        placement: snap.demand_placement().unwrap_or_else(|b| blocked(b)),
+        arrangement: snap.demand_arrangement().unwrap_or_else(|b| blocked(b)),
+    };
+    hale_types::model_builder::derive_application_model_over(&view, &inputs)
 }
 
 fn from_program(program: Program, import_renames: Vec<(Vec<String>, String)>, config: Config) -> Snapshot {
@@ -305,6 +302,15 @@ fn certificates(snap: &Snapshot) -> &EffectCertificates {
     match snap.demand_effect_certificates() {
         Ok(c) => c,
         Err(blocked) => panic!("the certificate report is blocked: {}", render_blocked(blocked)),
+    }
+}
+
+/// The snapshot's law selection (F.40 phase 4, A2): the clauses, the
+/// adoption and the environment label the judgment and the artifact read.
+fn laws(snap: &Snapshot) -> &hale_types::claims::LawSelection {
+    match snap.demand_law_selection() {
+        Ok(l) => l,
+        Err(blocked) => panic!("law selection is blocked: {}", render_blocked(blocked)),
     }
 }
 
