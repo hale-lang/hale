@@ -497,10 +497,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // A value use is judged before lowering at every entry point,
             // located (`hale_types::lowering_laws`, F.40 phase 3, C7): a
             // literal in the enclosing locus's own member bodies, and one
-            // in a params default under each locus that expands it here
-            // as `current_self` (`OwnershipGraph::default_contexts`, C3
-            // rest). So only a bare statement reaches this post.
-            debug_assert!(is_bare_stmt, "a cross-pool value use of `{locus_name}` reached lowering");
+            // in a params or argument default under each locus that
+            // expands it here as `current_self`
+            // (`OwnershipGraph::expansions`, C3 rest and its review). The
+            // post returns no instance (the child is born on the owner's
+            // thread), so a value use that reaches it anyway is a missing
+            // judgment, refused in every build profile, never lowered as
+            // a null value.
+            if !is_bare_stmt {
+                let enclosing = self.current_self.as_ref().map(|cs| cs.locus_name.clone()).unwrap_or_default();
+                let msg = format!(
+                    "cross-pool spawn `{locus_name}{{ }}` reached lowering as a value under `{enclosing}`: the \
+                     instance is created on `{owner_name}`'s thread, so there is no value to use here. The \
+                     cross-pool value law (`hale_types::lowering_laws`, the `law_backstops` family) refuses \
+                     this shape before lowering and did not judge this expansion: a compiler defect, not a \
+                     decision of lowering's."
+                );
+                let span = own_site_id.and_then(|id| self.owner_table.entry(id)).map(|e| e.span);
+                return Err(match span {
+                    Some(span) => CodegenError::UnsupportedAt(msg, span),
+                    None => CodegenError::Unsupported(msg),
+                });
+            }
             // Restore the cooperative-pool context we swapped in above
             // (the normal path restores it at fn exit; we early-return).
             self.current_cooperative_pool = prev_current_coop_pool;

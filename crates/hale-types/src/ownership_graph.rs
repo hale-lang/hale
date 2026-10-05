@@ -39,7 +39,7 @@ use hale_syntax::ast::*;
 use hale_syntax::Span;
 
 use crate::handler_routing::{child_locus_name, resolve_locus_type, ChildRef, DeclAt, DeclaredNames};
-use crate::placement::{Enclosing, HoleAt, HoleKind, Origin, PlacementTable, SiteRef, SiteUniverse};
+use crate::placement::{Enclosing, HoleAt, HoleKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::resolve::TopScope;
 use crate::symbol::Bundle;
 
@@ -188,6 +188,28 @@ pub struct OwnedSite {
     pub supplied: BTreeSet<String>,
     /// For a `params_default` site, the param whose default holds it.
     pub params_field: Option<String>,
+    /// The literal sits in the default of a method's argument: lowering
+    /// never lowers it in this locus's body, only at a call that leaves
+    /// the argument to its default, under the caller's locus.
+    pub arg_default: Option<ArgDefault>,
+}
+
+/// A position in the default of a fn's or a locus method's argument
+/// (`fn take(s: Ship = Ship { })`). Lowering expands the default at each
+/// call that leaves the argument out, in the caller's scope and under
+/// the caller's locus (C3 rest, the review of #1351).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgDefault {
+    /// The declaring fn's id (`FnDecl::id`), as the typed-body table's
+    /// `omitted_args` column names a call's callee.
+    pub callee: u32,
+    /// The argument's index.
+    pub index: usize,
+    /// The fn as a diagnostic names it: `take`, or `Holder.take` for a
+    /// method.
+    pub fn_name: String,
+    /// The argument's name.
+    pub param: String,
 }
 
 /// A locus birth in a free function. Collected by the same walk as
@@ -200,6 +222,85 @@ pub struct FreeFnSite {
     /// table, using the same resolver as [`OwnedSite::child_decl`].
     pub child_decl: Option<usize>,
     pub child_key: Option<String>,
+    /// See [`OwnedSite::supplied`].
+    pub supplied: BTreeSet<String>,
+    /// See [`OwnedSite::bare_statement`].
+    pub bare_statement: bool,
+    /// See [`OwnedSite::arg_default`]: a literal in a free fn's argument
+    /// default is lowered at the calls that leave it out, under their
+    /// locus, not in the free fn.
+    pub arg_default: Option<ArgDefault>,
+}
+
+/// A call written where default expansion reads it: in a locus's member
+/// body (lowered under that locus), in a locus's params default, or in an
+/// argument's default. Calls in a free fn's body or a binding entry are
+/// lowered under no locus and are not kept.
+#[derive(Debug, Clone)]
+pub struct CallSite {
+    /// The call's id (`Expr::Call`'s), the typed-body table's key.
+    pub id: u32,
+    pub span: Span,
+    /// The locus declaration whose member or params default holds the
+    /// call; `None` for one in a free fn's argument default.
+    pub enclosing_decl: Option<usize>,
+    /// The call sits in this param's default of `enclosing_decl`.
+    pub params_field: Option<String>,
+    /// The call sits in this argument's default.
+    pub arg_default: Option<ArgDefault>,
+    /// The call sits in a position lowering emits at every use, under
+    /// whichever locus uses it (`enclosing_decl` is then `None`).
+    pub per_use: Option<PerUsePosition>,
+}
+
+/// Where a literal or a call outside the member-body walk is lowered
+/// (C3 rest, the review of #1351).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OtherPosition {
+    /// A closure's assertion, evaluated under its locus: a member body
+    /// of that locus, as default expansion reads one.
+    Closure,
+    /// A `const`'s value or a type's field default, emitted at every use
+    /// under the locus of that use, which no row relates to the position.
+    PerUse(PerUsePosition),
+}
+
+/// A locus literal at an [`OtherPosition`].
+#[derive(Debug, Clone)]
+pub struct OtherSite {
+    /// The literal: its resolved child, the fields it supplies, its span.
+    pub site: FreeFnSite,
+    /// The locus declaration whose member holds it, `None` for a
+    /// top-level `const` or `type`.
+    pub enclosing_decl: Option<usize>,
+    pub position: OtherPosition,
+}
+
+/// One literal lowering builds from a default, in a context
+/// ([`OwnershipGraph::expansions`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Expansion {
+    pub literal: ExpandedLiteral,
+    /// The locus lowering expands it under: an index into
+    /// [`OwnershipGraph::declarations`].
+    pub context: usize,
+    /// Where the context's own body starts the expansion: the literal
+    /// that leaves a param to its default, or the call that leaves an
+    /// argument to its default, through any chain of defaults.
+    pub root: Span,
+    /// The root sits in a position lowering emits at every use: the
+    /// context is every locus, since none is known to be the one.
+    pub per_use: Option<PerUsePosition>,
+}
+
+/// A literal default expansion visits, in [`OwnershipGraph::sites`],
+/// [`OwnershipGraph::free_fn_sites`] or [`OwnershipGraph::other_sites`]
+/// (the last only as a root, never in a default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExpandedLiteral {
+    Owned(usize),
+    Free(usize),
+    Other(usize),
 }
 
 /// One locus declaration, in the bundle's declaration order (programs
@@ -225,6 +326,12 @@ pub struct OwnershipGraph {
     pub sites: Vec<OwnedSite>,
     /// Free-function births from the graph's one walk, in source order.
     pub free_fn_sites: Vec<FreeFnSite>,
+    /// The calls default expansion reads, in walk order.
+    pub calls: Vec<CallSite>,
+    /// The locus literals at the other positions default expansion reads
+    /// (a closure's assertion, a const's value, a type's field default),
+    /// apart from the births: their ownership is not this graph's.
+    pub other_sites: Vec<OtherSite>,
     /// Construction context, from the same walk and child resolution.
     /// This includes binding adapters, whose births do not participate
     /// in the legacy body-bubbling relation.
@@ -679,54 +786,162 @@ impl OwnershipGraph {
         }
     }
 
-    /// The locus each params-default literal is lowered under (F.40
-    /// phase 3, C3 rest). Lowering expands a default where the literal
-    /// that leaves its field unsupplied is lowered, under that scope's
-    /// locus, not under the locus that declares the default; so a
-    /// default's context is a locus whose own member bodies hold a
-    /// literal reaching it, through any chain of defaults each literal
-    /// on the way leaves unsupplied. Each (index into [`Self::sites`],
-    /// context locus) pair once, in site order.
+    /// Every literal lowering builds from a default, with the locus it
+    /// is lowered under (F.40 phase 3, C3 rest, and its review). A
+    /// default is not lowered where it is written: a params default where
+    /// a literal leaves its field unsupplied, an argument default at each
+    /// call that leaves the argument out (`omitted`, the typed-body
+    /// table's `omitted_args`; a call that supplies it expands nothing),
+    /// each in the scope that holds that literal or call and under that
+    /// scope's locus. So a default's context is a locus whose own member
+    /// bodies hold a literal or a call reaching it, through any chain of
+    /// defaults of either kind: a default that leaves a param of the
+    /// locus it builds to that param's default, or calls a fn that leaves
+    /// an argument to its own. Each (literal, context, root) once, where
+    /// the root is the literal or call in the context's body that starts
+    /// the chain; the default's literals only, never a body's own.
     ///
-    /// A literal in a free fn (`fn main` included) or a binding entry is
-    /// lowered under no locus, so what it reaches has no context here.
-    /// `posted` is the cross-pool plan: a literal it holds for its
-    /// context is posted to its owner's thread before its params are
-    /// built, so no default beneath it is expanded under that context.
-    pub fn default_contexts(&self, posted: &BTreeMap<(String, String), String>) -> Vec<(usize, String)> {
-        let mut defaults: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    /// A closure's assertion is one of its locus's member bodies here. A
+    /// `const`'s value and a type's field default are lowered at every use,
+    /// under the locus of the use, which no row relates to the position, so
+    /// what they hold is expanded under every locus, with the position
+    /// recorded ([`Expansion::per_use`]). A literal or call in a free fn's
+    /// body (`fn main` included) or a binding entry is lowered under no
+    /// locus, so what it reaches has no context here. `posted` is the
+    /// cross-pool plan: a literal it holds
+    /// for its context is posted to its owner's thread before its params
+    /// are built, so no params default beneath it is expanded under that
+    /// context.
+    pub fn expansions(
+        &self,
+        posted: &BTreeMap<(String, String), String>,
+        omitted: &crate::typed_bodies::OmittedArgsByCall,
+    ) -> Vec<Expansion> {
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Node {
+            Literal(ExpandedLiteral),
+            Call(usize),
+        }
+        // What each default holds: a params default by (declaration,
+        // field), an argument default by (callee, index).
+        let mut params: BTreeMap<(usize, &str), Vec<Node>> = BTreeMap::new();
+        let mut args: BTreeMap<u32, Vec<(usize, Node)>> = BTreeMap::new();
         for (i, site) in self.sites.iter().enumerate() {
-            if site.params_default {
-                defaults.entry(site.enclosing_decl).or_default().push(i);
+            let node = Node::Literal(ExpandedLiteral::Owned(i));
+            match (&site.params_field, &site.arg_default) {
+                (Some(field), _) if site.params_default => {
+                    params.entry((site.enclosing_decl, field.as_str())).or_default().push(node)
+                }
+                (_, Some(arg)) => args.entry(arg.callee).or_default().push((arg.index, node)),
+                _ => {}
             }
         }
-        // (site, context declaration): the defaults site `i`'s literal
-        // expands, lowered under `context`.
-        let reach = |i: usize, context: usize, pending: &mut Vec<(usize, usize)>| {
-            let site = &self.sites[i];
-            if posted.contains_key(&(self.declarations[context].name.clone(), site.child_ty.clone())) {
-                return;
+        for (i, site) in self.free_fn_sites.iter().enumerate() {
+            if let Some(arg) = &site.arg_default {
+                args.entry(arg.callee).or_default().push((arg.index, Node::Literal(ExpandedLiteral::Free(i))));
             }
-            let Some(child) = site.child_decl else { return };
-            for &d in defaults.get(&child).into_iter().flatten() {
-                if self.sites[d].params_field.as_ref().is_some_and(|f| !site.supplied.contains(f)) {
-                    pending.push((d, context));
+        }
+        for (c, call) in self.calls.iter().enumerate() {
+            match (call.enclosing_decl, &call.params_field, &call.arg_default) {
+                (Some(decl), Some(field), _) => params.entry((decl, field.as_str())).or_default().push(Node::Call(c)),
+                (_, _, Some(arg)) => args.entry(arg.callee).or_default().push((arg.index, Node::Call(c))),
+                _ => {}
+            }
+        }
+        // The roots: what a locus's own member bodies lower (a closure's
+        // assertion among them), each under that locus; and what a
+        // position lowering emits at every use lowers, under every locus,
+        // since no row says which uses it.
+        let mut pending: Vec<(Node, usize, Span, Option<PerUsePosition>)> = Vec::new();
+        for (i, site) in self.sites.iter().enumerate() {
+            if !site.params_default && site.arg_default.is_none() {
+                pending.push((Node::Literal(ExpandedLiteral::Owned(i)), site.enclosing_decl, site.span, None));
+            }
+        }
+        let every = 0..self.declarations.len();
+        for (i, other) in self.other_sites.iter().enumerate() {
+            let node = Node::Literal(ExpandedLiteral::Other(i));
+            match (other.position, other.enclosing_decl) {
+                (OtherPosition::Closure, Some(decl)) => pending.push((node, decl, other.site.span, None)),
+                (OtherPosition::Closure, None) => {}
+                (OtherPosition::PerUse(p), _) => {
+                    pending.extend(every.clone().map(|d| (node, d, other.site.span, Some(p))))
                 }
             }
-        };
-        let mut pending = Vec::new();
-        for (i, site) in self.sites.iter().enumerate() {
-            if !site.params_default {
-                reach(i, site.enclosing_decl, &mut pending);
+        }
+        for (c, call) in self.calls.iter().enumerate() {
+            match (call.enclosing_decl, &call.params_field, &call.arg_default, call.per_use) {
+                (Some(decl), None, None, None) => pending.push((Node::Call(c), decl, call.span, None)),
+                (None, None, None, Some(p)) => pending.extend(every.clone().map(|d| (Node::Call(c), d, call.span, Some(p)))),
+                _ => {}
             }
         }
-        let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
-        while let Some((i, context)) = pending.pop() {
-            if seen.insert((i, context)) {
-                reach(i, context, &mut pending);
+        // Every node reached from a root is in a default: a root's own
+        // literal is never reported, only what it expands.
+        let mut seen: BTreeSet<(Node, usize, u32, u32)> = BTreeSet::new();
+        let mut out = Vec::new();
+        while let Some((node, context, root, per_use)) = pending.pop() {
+            if !seen.insert((node, context, root.start.0, root.end.0)) {
+                continue;
+            }
+            let reached: Vec<Node> = match node {
+                Node::Literal(literal) => {
+                    let s = self.literal(literal);
+                    let (child_ty, child_decl, supplied) = (&s.child_ty, s.child_decl, &s.supplied);
+                    if posted.contains_key(&(self.declarations[context].name.clone(), child_ty.clone())) {
+                        Vec::new()
+                    } else if let Some(child) = child_decl {
+                        params
+                            .range((child, "")..)
+                            .take_while(|((d, _), _)| *d == child)
+                            .filter(|((_, field), _)| !supplied.contains(*field))
+                            .flat_map(|(_, nodes)| nodes.iter().copied())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Node::Call(c) => omitted
+                    .get(&self.calls[c].id)
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|o| {
+                        args.get(&o.callee).into_iter().flatten().filter(move |(i, _)| *i >= o.from).map(|(_, n)| *n)
+                    })
+                    .collect(),
+            };
+            for next in reached {
+                if let Node::Literal(literal) = next {
+                    out.push(Expansion { literal, context, root, per_use });
+                }
+                pending.push((next, context, root, per_use));
             }
         }
-        seen.into_iter().map(|(i, context)| (i, self.declarations[context].name.clone())).collect()
+        out.sort_by_key(|e| (e.literal, e.context, e.root.start.0, e.root.end.0));
+        out.dedup();
+        out
+    }
+
+    /// The literal an [`ExpandedLiteral`] names, as a free-standing site
+    /// (an owned site's child, supplied fields, bareness, span and
+    /// argument default).
+    pub fn literal(&self, literal: ExpandedLiteral) -> FreeFnSite {
+        match literal {
+            ExpandedLiteral::Owned(i) => {
+                let s = &self.sites[i];
+                FreeFnSite {
+                    child_ty: s.child_ty.clone(),
+                    span: s.span,
+                    child_decl: s.child_decl,
+                    child_key: s.child_key.clone(),
+                    supplied: s.supplied.clone(),
+                    bare_statement: s.bare_statement,
+                    arg_default: s.arg_default.clone(),
+                }
+            }
+            ExpandedLiteral::Free(i) => self.free_fn_sites[i].clone(),
+            ExpandedLiteral::Other(i) => self.other_sites[i].site.clone(),
+        }
     }
 }
 
@@ -987,6 +1202,13 @@ struct RawSite {
     member: Option<String>,
     params_default: bool,
     bare_statement: bool,
+    /// See [`OwnedSite::arg_default`].
+    arg_default: Option<ArgDefault>,
+    /// The position is a call, not a literal: kept for default
+    /// expansion ([`CallSite`]), never resolved as a birth.
+    call: bool,
+    /// A position outside the member-body walk ([`OtherPosition`]).
+    other: Option<OtherPosition>,
 }
 
 /// The product of one structural walk and shared child resolution:
@@ -998,6 +1220,34 @@ struct OwnershipWalk {
     accept_rows: AcceptRows,
     free_fn_sites: Vec<RawSite>,
     binding_sites: Vec<RawSite>,
+    /// The calls default expansion reads: a locus's (in its member
+    /// bodies and params defaults) and any argument default's.
+    calls: Vec<RawSite>,
+    /// The literals of the other positions ([`OtherPosition`]).
+    other: Vec<RawSite>,
+}
+
+/// Collect `e`'s literals and calls into `other`, at `position`, under
+/// the locus declaration `decl` (`usize::MAX` for none).
+fn collect_other(e: &Expr, decl: usize, position: OtherPosition, other: &mut Vec<RawSite>) {
+    let at = other.len();
+    collect_sites_expr(e, other);
+    for s in &mut other[at..] {
+        s.other = Some(position);
+        s.enclosing_decl = decl;
+    }
+}
+
+/// A type's field defaults, each lowered at every literal of the type
+/// that leaves the field.
+fn collect_type_defaults(td: &TypeDecl, decl: usize, other: &mut Vec<RawSite>) {
+    if let TypeDeclBody::Struct(fields) = &td.body {
+        for f in fields {
+            if let Some(d) = &f.default {
+                collect_other(d, decl, OtherPosition::PerUse(PerUsePosition::TypeFieldDefault), other);
+            }
+        }
+    }
 }
 
 /// Walk every locus and free function once, collecting accepts,
@@ -1029,11 +1279,13 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
     let mut accept_rows: Vec<AcceptRow> = Vec::new();
     let mut free_fn_sites: Vec<RawSite> = Vec::new();
     let mut binding_sites: Vec<RawSite> = Vec::new();
+    let mut other: Vec<RawSite> = Vec::new();
     struct WalkCx<'a> {
         declared: &'a DeclaredNames,
         renames: &'a [(Vec<String>, String)],
         snapshot: &'a crate::snapshot::Snapshot,
     }
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         items: &[TopDecl],
         cx: &WalkCx<'_>,
@@ -1042,6 +1294,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         accept_rows: &mut Vec<AcceptRow>,
         free_fn_sites: &mut Vec<RawSite>,
         binding_sites: &mut Vec<RawSite>,
+        other: &mut Vec<RawSite>,
     ) {
         let (declared, renames) = (cx.declared, cx.renames);
         for item in items {
@@ -1105,6 +1358,9 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                 collect_sites_fn(fd, &mut entry.instantiates);
                                 for s in &mut entry.instantiates[from..] {
                                     s.member = Some(fd.name.name.clone());
+                                    if let Some(arg) = &mut s.arg_default {
+                                        arg.fn_name = format!("{}.{}", l.name.name, fd.name.name);
+                                    }
                                 }
                             }
                             LocusMember::Mode(md) => collect_sites_block(
@@ -1121,6 +1377,22 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                     collect_sites_expr(payload, &mut entry.instantiates);
                                 }
                             }
+                            // The positions default expansion reads apart
+                            // from the birth walk (C3 rest, the review of
+                            // #1351): a closure's assertion, evaluated
+                            // under this locus, and the positions lowering
+                            // emits at every use.
+                            LocusMember::Closure(c) => {
+                                if let Some(a) = &c.assertion {
+                                    for e in [&a.left, &a.right, &a.tolerance] {
+                                        collect_other(e, decl, OtherPosition::Closure, other);
+                                    }
+                                }
+                            }
+                            LocusMember::Const(c) => {
+                                collect_other(&c.value, decl, OtherPosition::PerUse(PerUsePosition::Const), other)
+                            }
+                            LocusMember::Type(td) => collect_type_defaults(td, decl, other),
                             // A params default `child: C = C { ... }` is
                             // a real ownership edge (this locus gives
                             // birth to `C` as its own initial state) —
@@ -1163,6 +1435,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                         child_ty: String::new(), child_decl: None, child_key: None,
                                         span: binding.span, path: vec![locus.name.clone()], declared: None,
                                         enclosing_decl: decl, member: None, params_default: false, bare_statement: false,
+                                        arg_default: None, call: false, other: None,
                                     });
                                     for init in inits { collect_sites_expr(&init.value, binding_sites); }
                                     for site in &mut binding_sites[at..] {
@@ -1178,24 +1451,60 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                     }
                 }
                 TopDecl::Fn(f) => collect_sites_fn(f, free_fn_sites),
-                TopDecl::Module(m) => walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites, binding_sites),
+                TopDecl::Const(c) => {
+                    collect_other(&c.value, usize::MAX, OtherPosition::PerUse(PerUsePosition::Const), other)
+                }
+                TopDecl::Type(td) => collect_type_defaults(td, usize::MAX, other),
+                TopDecl::Module(m) => {
+                    walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites, binding_sites, other)
+                }
                 _ => {}
             }
         }
     }
     let cx = WalkCx { declared: &declared, renames, snapshot: &bundle.snapshot };
     for program in &programs {
-        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites, &mut binding_sites);
+        walk(
+            &program.items,
+            &cx,
+            &mut facts,
+            &mut declarations,
+            &mut accept_rows,
+            &mut free_fn_sites,
+            &mut binding_sites,
+            &mut other,
+        );
     }
 
+    // The calls leave the literal positions here: a locus's, with its
+    // declaration, a free fn's argument defaults', and the other
+    // positions' (the rest of a free fn's, and a binding entry's, are
+    // lowered under no locus). `usize::MAX` marks a position no locus
+    // declaration holds.
+    let mut calls: Vec<RawSite> = Vec::new();
+    for facts in facts.values_mut() {
+        let (c, literals): (Vec<RawSite>, Vec<RawSite>) =
+            std::mem::take(&mut facts.instantiates).into_iter().partition(|s| s.call);
+        calls.extend(c);
+        facts.instantiates = literals;
+    }
+    let (c, literals): (Vec<RawSite>, Vec<RawSite>) = free_fn_sites.into_iter().partition(|s| s.call);
+    calls.extend(c.into_iter().filter(|s| s.arg_default.is_some()).map(|s| RawSite { enclosing_decl: usize::MAX, ..s }));
+    let mut free_fn_sites = literals;
+    let (c, mut other): (Vec<RawSite>, Vec<RawSite>) = other.into_iter().partition(|s| s.call);
+    calls.extend(c);
+    binding_sites.retain(|s| !s.call);
     for facts in facts.values_mut() {
         facts.instantiates.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     }
     free_fn_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     binding_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
+    other.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     OwnershipWalk {
         free_fn_sites,
         binding_sites,
+        calls,
+        other,
         facts,
         declarations,
         has_entry_point,
@@ -1360,6 +1669,7 @@ pub fn build_ownership_graph(
                     bare_statement: site.bare_statement,
                     supplied: site.supplied.clone(),
                     params_field: site.params_field.clone(),
+                    arg_default: site.arg_default.clone(),
                 });
                 continue;
             }
@@ -1397,20 +1707,47 @@ pub fn build_ownership_graph(
                 bare_statement: site.bare_statement,
                 supplied: site.supplied.clone(),
                 params_field: site.params_field.clone(),
+                arg_default: site.arg_default.clone(),
             });
         }
     }
 
-    let free_fn_sites = walk.free_fn_sites.iter().map(|site| {
-        FreeFnSite {
-            child_ty: site.child_ty.clone(), span: site.span,
-            child_decl: site.child_decl, child_key: site.child_key.clone(),
+    let free_site = |site: &RawSite| FreeFnSite {
+        child_ty: site.child_ty.clone(), span: site.span,
+        child_decl: site.child_decl, child_key: site.child_key.clone(),
+        supplied: site.supplied.clone(), bare_statement: site.bare_statement,
+        arg_default: site.arg_default.clone(),
+    };
+    let free_fn_sites = walk.free_fn_sites.iter().map(free_site).collect();
+    // A position no locus declaration holds (a free fn's argument
+    // default, a top-level const or type) is marked `usize::MAX` by the
+    // walk, and a position lowered at every use has no locus either.
+    let decl_of = |site: &RawSite| (site.enclosing_decl != usize::MAX).then_some(site.enclosing_decl);
+    let calls = walk.calls.iter().map(|site| {
+        let per_use = match site.other {
+            Some(OtherPosition::PerUse(p)) => Some(p),
+            _ => None,
+        };
+        CallSite {
+            id: site.id.0,
+            span: site.span,
+            enclosing_decl: decl_of(site).filter(|_| per_use.is_none()),
+            params_field: site.params_field.clone(),
+            arg_default: site.arg_default.clone(),
+            per_use,
         }
     }).collect();
+    let other_sites = walk.other.iter().filter_map(|site| Some(OtherSite {
+        site: free_site(site),
+        enclosing_decl: decl_of(site),
+        position: site.other?,
+    })).collect();
     OwnershipGraph {
         sites,
         births,
         free_fn_sites,
+        calls,
+        other_sites,
         declarations: walk.declarations,
         accepts,
         instantiated_by,
@@ -1635,13 +1972,24 @@ fn relate(
 
 /// Collect every literal candidate in fn defaults and bodies. The shared
 /// resolver later retains the locus births; the walk itself makes no
-/// name-based classification.
+/// name-based classification. What an argument's default holds is marked
+/// with the argument ([`ArgDefault`]): it is lowered at the calls that
+/// leave the argument out, not here.
 fn collect_sites_fn(f: &FnDecl, out: &mut Vec<RawSite>) {
-    for param in &f.params {
+    for (index, param) in f.params.iter().enumerate() {
         if let Some(value) = &param.default {
             let at = out.len();
             collect_sites_expr(value, out);
             declare_site(out, at, value, Some(&param.ty));
+            let arg = ArgDefault {
+                callee: f.id.0,
+                index,
+                fn_name: f.name.name.clone(),
+                param: param.name.name.clone(),
+            };
+            for site in &mut out[at..] {
+                site.arg_default = Some(arg.clone());
+            }
         }
     }
     collect_sites_block(&f.body, out);
@@ -1785,6 +2133,9 @@ fn collect_sites_expr(
                 member: None,
                 params_default: false,
                 bare_statement: false,
+                arg_default: None,
+                call: false,
+                other: None,
             });
             for init in inits {
                 collect_sites_expr(&init.value, out);
@@ -1797,7 +2148,28 @@ fn collect_sites_expr(
         Expr::Unary { operand, .. } => {
             collect_sites_expr(operand, out)
         }
-        Expr::Call { callee, args, .. } => {
+        Expr::Call { callee, args, span, id } => {
+            // A call's position, for default expansion: the defaults it
+            // leaves are lowered where it is (`CallSite`).
+            out.push(RawSite {
+                id: *id,
+                supplied: BTreeSet::new(),
+                params_field: None,
+                binding: None,
+                child_ty: String::new(),
+                child_decl: None,
+                child_key: None,
+                span: *span,
+                path: Vec::new(),
+                declared: None,
+                enclosing_decl: 0,
+                member: None,
+                params_default: false,
+                bare_statement: false,
+                arg_default: None,
+                call: true,
+                other: None,
+            });
             collect_sites_expr(callee, out);
             for a in args {
                 collect_sites_expr(a, out);
