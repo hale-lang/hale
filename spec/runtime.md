@@ -3046,7 +3046,23 @@ the build options are the ones the compiling command was GIVEN
 2026-09-20, GH #904; `run` compiled with the defaults and
 fingerprinted the defaults), so a recording made under `hale run
 --dev` is admitted by `hale replay --dev` and by no default
-replay. The build options include the environment's build knobs that
+replay. `hale build`, `hale run` and `hale replay` compute the
+options one way (F.40 phase 4, I2): the command's flags, `--env`'s
+role table (`replay --env` resolves the environment as `run --env`
+does, so a recording made under `--env prod` is admitted by `hale
+replay --env prod` and refused under another environment's roles or
+none), and the `[ffi]` link libraries and C sources each imported
+package's `hale.toml` declares, which every one of the three folds
+in (`run` and `replay` still BUILD with their flags alone, so a
+program that needs a package's `[ffi] csrc` builds under `hale build`
+only). Debug information is not part of it: the DWARF line tables
+`hale build` adds by default change no behaviour, so a recording made
+by a binary from `hale build` of a file is admitted by `hale replay`
+of that file, and a built binary and `hale run` of one program carry
+one identity. A recording of a DIRECTORY build is refused: replay
+takes the entry file, whose sources are framed relative to its own
+directory, while the directory build framed them relative to the
+directory's parent. The build options include the environment's build knobs that
 change the binary (see *Build-time and toolchain environment*:
 `LOTUS_ASAN`, `LOTUS_TSAN`, `LOTUS_UBSAN`, `LOTUS_LTO`,
 `LOTUS_DISABLE_PREFETCH`, `LOTUS_NO_BUS_DEVIRT`,

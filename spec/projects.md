@@ -815,7 +815,12 @@ wasm { }` declaration selects wasm32 — ffi.md § *The effective
 target*), since it compiles in order to execute. The options are part of the execution identity
 (runtime.md § *Replay*): a recording made under `hale run --dev`
 is admitted by `hale replay --dev` and refused by a default
-`hale replay`, with the identity message.
+`hale replay`, with the identity message. The three commands compute
+that identity's options one way — their flags, `--env`'s role table,
+which `replay --env` resolves as `run --env` does, and the `[ffi]`
+surface of the imported packages — and debug information is not
+among them, so a recording made by a binary `hale build` emitted from
+a file replays against that file.
 
 | Surface | Effect |
 |---|---|

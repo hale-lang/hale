@@ -6,8 +6,10 @@ use crate::shared::options::VALUE_FLAGS;
 use crate::build_env;
 use crate::shared::options::build_config;
 use crate::shared::options::exec_digest;
+use crate::shared::options::identity_options;
 use crate::shared::options::model_identity;
 use crate::shared::options::parse_exec_build_options;
+use crate::shared::options::resolve_build_env;
 use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::shared::diag::render_blocked;
@@ -133,7 +135,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // GH #904: one `BuildOptions`, from `hale build`'s parser, for
     // the fingerprint AND the compile below — a replay recompiles
     // the program, so it admits against what IT builds.
-    let build_options =
+    let mut build_options =
         match parse_exec_build_options("replay", &build_flags) {
             Ok(o) => o,
             Err(msg) => {
@@ -150,7 +152,8 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
                  [--at <n> | --at <consumer-id>:<ordinal>] \
                  [--allow-live-effects] [--allow-unverified-model] \
                  [--allow-truncated] [--feed] [--allow-unmatched-feed] \
-                 [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <f.c>]"
+                 [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <f.c>] \
+                 [--env <name>]"
             );
             return ExitCode::from(2);
         }
@@ -210,10 +213,22 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
+    // `--env` as `hale run --env` resolves it (I2): its role table is
+    // part of the binary and of the identity, and its constitution is
+    // adopted by the load. `replay` accepted the flag and bound nothing,
+    // so a recording made under an environment was refused by the
+    // replay that named it.
+    let env_spec = match resolve_build_env(&prog, &mut build_options) {
+        Ok(e) => e,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
     // The snapshot `hale run` loads (parse → check → model hash), so a
-    // recording is admitted against exactly what runs. `replay` binds
-    // no environment and has no `--allow-unowned-subscriber`.
-    let mut config = build_config(&build_options, &None, false);
+    // recording is admitted against exactly what runs. `replay` has no
+    // `--allow-unowned-subscriber`.
+    let mut config = build_config(&build_options, &env_spec, false);
     config.allow_unowned_subscriber = false;
     let snap = match Snapshot::load(&prog, LoadMode::WholeSeed, &Disk, config) {
         Ok(s) => s,
@@ -258,7 +273,9 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let options_fp = build_env::options_fingerprint(&build_options);
+    // The identity's options are `build`'s and `run`'s (I2); the replay
+    // builds, as `run` does, with its flags alone.
+    let options_fp = build_env::options_fingerprint(&identity_options(&build_options, &snap, &prog));
     let identity = match model_identity(&snap, resolved, &build_options) {
         Ok(x) => x,
         Err(b) => {

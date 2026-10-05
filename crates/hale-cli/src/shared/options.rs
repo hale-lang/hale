@@ -601,6 +601,39 @@ pub(crate) fn resolve_build_env(
     Ok(Some((spec, base)))
 }
 
+/// The options the execution identity is computed from (F.40 phase 4,
+/// I2): one function for `hale build`, `run` and `replay`, each passing
+/// the options its own flags parsed with its `--env` resolved onto them
+/// ([`resolve_build_env`], before the load). It appends what the flags
+/// do not say, the `[ffi]` link libraries and C sources each imported
+/// package's `hale.toml` declares ([`collect_ffi_from_imports`]), so a
+/// program importing such a package has one identity whichever verb
+/// computes it. `build` builds with what this returns; `run` and
+/// `replay` fingerprint it and build with their flags alone, as they
+/// always have.
+pub(crate) fn identity_options(
+    options: &hale_codegen::BuildOptions,
+    snap: &hale_frontend::snapshot::Snapshot,
+    target: &Path,
+) -> hale_codegen::BuildOptions {
+    // The imports are the target's own, resolved against the directory
+    // they were written in.
+    let entry_dir = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+    let toml_opts = collect_ffi_from_imports(
+        snap.entry_imports(),
+        &entry_dir,
+        super::workspace::find_workspace_root(target).as_deref(),
+    );
+    let mut o = options.clone();
+    o.link_libs.extend(toml_opts.link_libs);
+    o.csrc_files.extend(toml_opts.csrc_files);
+    o
+}
+
 /// GH #1109: the config a build's snapshot is loaded with, from its
 /// flags: the target it compiles for (`explicit` when `--target` named
 /// it, so it overrides a source declaration), `--api`, and `--env`'s
