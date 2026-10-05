@@ -19,7 +19,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Canonical | law | `check_form_shape` | 0 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
-| `stdlib_surface` | Layer 2 | Migrating | capability | `SURFACES` | 4 | What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as. |
+| `stdlib_surface` | Layer 2 | Migrating | capability | `SURFACES` | 3 | What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Canonical | derivation | `entry_row` | 0 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Canonical | derivation | `resolve_owners` | 0 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Canonical | derivation | `build_bus_graph` | 0 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
@@ -384,7 +384,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/channels/mod.rs` · `try_lower_fallible_stdlib_path_call` — the `or` position's dispatch, which still matches 150 `["std", ..]` literals, a second copy of the stdlib call shapes; the statement and value positions dispatch from the row (`lower_std_call`). *Removed when:* codegen dispatches from the registry row.
 - `crates/hale-codegen/src/codegen.rs` · `value_to_string_supports` — the printable set, kept in lockstep by hand with the checker's `ty_is_printable`. *Removed when:* one predicate.
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.
 - `crates/hale-codegen/src/codegen.rs` · `declare_builtin_closure_violation_type` — a hand-maintained mirror of the checker's injected builtin types. *Removed when:* one declaration.
@@ -394,12 +393,13 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Invariants.**
 
 - one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature
-- codegen dispatches a stdlib call at statement or value position from its row, the position a parameter (`lower_std_call`): an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; the fallible dispatcher's arms agree with the rows, every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)
+- codegen dispatches every stdlib call from its row, at all three positions: at statement or value position the position is a parameter (`lower_std_call`), an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; under `or` (`lower_std_fallible_call`) the id picks its arm in an exhaustive match of its own beside it (`lower_std_intrinsic_fallible`), because what it produces is the call's success value and its error path, and any other row is not a stdlib fallible call; the three refusal lists (a bare call of a fallible function at statement and at value position, an `or` over one that is not fallible) are id lists until the row's fallibility replaces them; every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)
+- no `["std",` path literal in `crates/hale-codegen/src` outside `CODEGEN_STD_PATH_LITERALS`, the registry's allowance with its reason per file (registry_guard.rs: `std_path_literals_in_codegen_are_the_registry_allowance`): a stdlib call's lowering is an arm of a match on its row's id, never a match on its path
 - the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/stdlib_registry_parity.rs; crates/hale-codegen/tests/stdlib_table_answers.rs; crates/hale-codegen/tests/corpus_check_build_agreement.rs; crates/hale-cli/tests/doc_effects_catalogue.rs
+**Focused tests.** crates/hale-codegen/tests/stdlib_registry_parity.rs; crates/hale-codegen/tests/stdlib_table_answers.rs; crates/hale-codegen/tests/corpus_check_build_agreement.rs; crates/hale-cli/tests/doc_effects_catalogue.rs; crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)
 
 **Spec.** spec/stdlib.md
 
@@ -1564,6 +1564,14 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 ## The shadow facility's allowance
 
 The shadow facility (`hale-graph`'s `shadow` module) runs a new derivation beside the old one while a family migrates. Its call sites outside tests are this allowance only: a source file under `crates/*/src` that references the facility, other than the facility's own module, is listed here with its count, or fails `registry_guard.rs`. None today: F.40 phase 3 deleted every shadow, and the facility's users are tests.
+
+## Stdlib path literals in codegen
+
+Every stdlib call lowers from its row: an intrinsic's id picks its arm in an exhaustive match, at statement, value and `or` position. A `["std",` path literal in `crates/hale-codegen/src` is a lowering that decides on a path instead, so the ones that remain are this allowance, each with its reason, or fail `registry_guard.rs`.
+
+| path | literals | reason |
+|---|---|---|
+| `crates/hale-codegen/src/stdlib/sockopt.rs` | 2 | its unit test's probes of `unknown_fn_error`, a path built around a variable name to ask the checker's question; neither dispatches |
 
 ## Frozen Debug renderings
 
