@@ -358,9 +358,8 @@ pub fn outside_the_set(program: &Program, wasm: &Path) -> Result<Vec<Import>, St
 }
 
 /// An import outside the set that a module may still carry, and why:
-/// each is reached by a path that can run on wasm32, or is emitted by
-/// codegen rather than the runtime's C, and so waits on a ruling
-/// instead of being compiled out. `callers` names the only functions
+/// each is reached by a path that can run on wasm32 and cannot be
+/// compiled out until what it needs exists. `callers` names the only functions
 /// allowed to reference it (the runtime's, which are fixed), or `None`
 /// when the callers are the program's own generated functions. Each
 /// entry is asserted to be still imported
@@ -373,8 +372,11 @@ pub struct KnownOpen {
 }
 
 const UNABSORBED_REPORT: &str = "generated code: the report of a violation no handler absorbs \
-     (`fflush(stdout)`, `dprintf(2, ...)`, `exit(1)`) calls libc directly; it runs on wasm32 whenever \
-     such a violation happens, and the loader's `() => 0` drops the message";
+     (`fflush(stdout)`, `dprintf(2, ...)`, `exit(1)`) calls libc directly, and runs on wasm32 whenever \
+     such a violation happens. The ruling routes it through the path `eprintln` takes to the loader's \
+     stderr writer, and there is none: `eprintln` lowers to `dprintf` too, the loader stubs it with \
+     `() => 0`, so on wasm32 both print nothing (the report's `exit(1)` then traps the module). Open \
+     until the loader has a stderr writer";
 
 pub const KNOWN_OPEN: &[KnownOpen] = &[
     KnownOpen { name: "dprintf", callers: None, why: UNABSORBED_REPORT },
