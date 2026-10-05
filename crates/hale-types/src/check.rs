@@ -538,6 +538,12 @@ pub struct CheckInputs<'a> {
     /// text, adoption and membership, never types, so it is total over a
     /// program that does not typecheck.
     pub laws: &'a crate::claims::LawSelection,
+    /// The role rows (the snapshot's `api_surface` cell, F.40 phase 4,
+    /// A4): every `role` declaration, `@gated` site and the api entry's
+    /// role source, which the role rules read. Like law selection they
+    /// read declarations only, so they are total over a program that does
+    /// not typecheck.
+    pub roles: &'a crate::roles::RoleRows,
     /// The use rows (the `target_capability` family's): every way the
     /// program asks its target for a capability, which the admission law
     /// holds to the effective target's cells.
@@ -549,7 +555,7 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
-/// [`crate::bundle_law_selection`],
+/// [`crate::bundle_law_selection`], [`crate::roles::role_rows`],
 /// the bus and ownership graphs, by the snapshot's producers; the effect rows when
 /// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
 /// is read beside the numbered copy: a scope names declarations, not
@@ -587,6 +593,7 @@ fn check_numbered_bundle(
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = crate::bundle_law_selection(bundle);
+    let roles = crate::roles::role_rows(bundle, &entry);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -603,6 +610,7 @@ fn check_numbered_bundle(
         target: &target,
         uses: &uses,
         laws: &laws,
+        roles: &roles,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }

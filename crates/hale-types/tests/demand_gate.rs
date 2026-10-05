@@ -324,6 +324,8 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 // The check reads it, and the laws stage the same one
                 // (F.40 phase 4, A2).
                 "law_selection",
+                // The role rows the check's role rules read (A4).
+                "api_surface",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -552,6 +554,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "handler_routing",
         "flows",
         "law_selection",
+        "api_surface",
         "ownership",
         "bus_graph",
         "alloc_summary",

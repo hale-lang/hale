@@ -69,6 +69,7 @@ pub mod purity;
 pub mod quantitative;
 pub mod resolve;
 pub mod resolved;
+pub mod roles;
 pub mod unit_graph;
 mod qualified_subjects;
 pub mod snapshot;
@@ -363,6 +364,7 @@ fn check_numbered_bundle(
     let target = capability::target_row(bundle);
     let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = bundle_law_selection(bundle);
+    let roles = roles::role_rows(bundle, &entry);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -381,6 +383,7 @@ fn check_numbered_bundle(
             target: &target,
             uses: &uses,
             laws: &laws,
+            roles: &roles,
         },
         allow_unowned_subscriber,
         strict_callees,

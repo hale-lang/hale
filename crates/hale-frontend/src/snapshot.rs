@@ -24,6 +24,9 @@
 //!   after the sequence, for the configuration's environment: the check
 //!   reports its diagnostics, the laws stage lowers its clauses, and the
 //!   artifact projects its adoption to the constitution identities.
+//! - [`Snapshot::demand_role_rows`]: the role declarations, `@gated`
+//!   sites and role source over the programs after the sequence, which
+//!   the check's role rules read.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
 //!   over the checked programs and the stdlib's analysis copy, which
 //!   the check's effects certificate engine and the effect rows read.
@@ -99,6 +102,7 @@ use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
 use hale_types::resolved::{IntraLocusStage, LoweringView};
+use hale_types::roles::RoleRows;
 use hale_types::symbol::SourceFile;
 use hale_types::typed_bodies::{TypedBodies, TypingRecord};
 use hale_types::Bundle;
@@ -118,7 +122,9 @@ use crate::source::SourceProvider;
 /// the model's inputs; `flows` the flow rows, which the check, the
 /// lifecycle plan and the lowering view read; `law_selection` law
 /// selection, which the check, the laws stage and the artifact read
-/// ([`Snapshot::demand_law_selection`]); `arrangement` the
+/// ([`Snapshot::demand_law_selection`]); `api_surface` the role rows,
+/// which the check reads ([`Snapshot::demand_role_rows`]: the surface
+/// itself is the desugar sequence's product); `arrangement` the
 /// placement table's projection onto the user's declarations, which the
 /// model and the lowering view read ([`Snapshot::demand_arrangement`]);
 /// `intra_locus` is the intra-locus rewrite, whose
@@ -133,7 +139,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 24] = [
+pub const FAMILIES: [&str; 25] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -149,6 +155,7 @@ pub const FAMILIES: [&str; 24] = [
     "handler_routing",
     "flows",
     "law_selection",
+    "api_surface",
     "alloc_summary",
     "effects",
     "placement",
@@ -487,6 +494,7 @@ pub struct Snapshot {
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     law_selection: OnceCell<Result<LawSelection, Blocked>>,
+    role_rows: OnceCell<Result<RoleRows, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
     arrangement: OnceCell<Result<Arrangement, Blocked>>,
@@ -665,6 +673,7 @@ impl Snapshot {
             flows: OnceCell::new(),
             alloc_summary: OnceCell::new(),
             law_selection: OnceCell::new(),
+            role_rows: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
             arrangement: OnceCell::new(),
@@ -1175,6 +1184,7 @@ impl Snapshot {
             target: self.demand_target().map_err(Clone::clone)?,
             uses: self.demand_capability_uses().map_err(Clone::clone)?,
             laws: self.demand_law_selection().map_err(Clone::clone)?,
+            roles: self.demand_role_rows().map_err(Clone::clone)?,
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered
@@ -1410,6 +1420,28 @@ impl Snapshot {
                 let bundle = self.bundle();
                 let programs: Vec<&Program> = bundle.programs.values().copied().collect();
                 Ok(hale_types::claims::select_laws(&programs, &bundle.import_renames, &env))
+            })
+            .as_ref()
+    }
+
+    /// The role rows ([`hale_types::roles::role_rows`], F.40 phase 4, A4):
+    /// every `role` declaration (duplicates kept), every `@gated` site by
+    /// kind and the api entry's role source, over the programs after the
+    /// sequence, with or without an `api:` entry. Counted as the
+    /// `api_surface` family, whose rows they are; the surface itself is
+    /// the sequence's ([`Snapshot::api_surface`]). The check's role rules
+    /// read them (`CheckInputs::roles`). Not gated on the typing: they
+    /// read declarations only. A seed with a hole is not a program, and
+    /// its rows are blocked with its scope.
+    pub fn demand_role_rows(&self) -> Result<&RoleRows, &Blocked> {
+        self.role_rows
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "api_surface", ..self.hole_blocked() });
+                }
+                let entry = self.demand_entry().map_err(Clone::clone)?;
+                self.count("api_surface");
+                Ok(hale_types::roles::role_rows(&self.bundle(), entry))
             })
             .as_ref()
     }

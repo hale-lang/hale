@@ -327,7 +327,6 @@ pub fn api_surface(programs: &[&Program], root: Option<&LocusDecl>) -> Option<Ap
     let mut topics: BTreeMap<String, &TopicDecl> = BTreeMap::new();
     let mut loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
     let mut types: BTreeMap<String, &[StructField]> = BTreeMap::new();
-    let mut role_decls: Vec<ApiRole> = Vec::new();
     let mut type_display: BTreeMap<String, String> = BTreeMap::new();
     for p in programs {
         walk_items(&p.items, &mut |item| match item {
@@ -336,12 +335,6 @@ pub fn api_surface(programs: &[&Program], root: Option<&LocusDecl>) -> Option<Ap
             }
             TopDecl::Topic(t) => {
                 topics.insert(t.name.name.clone(), t);
-            }
-            TopDecl::Role(r) => {
-                role_decls.push(ApiRole {
-                    name: r.name.name.clone(),
-                    includes: r.includes.iter().map(|i| i.name.clone()).collect(),
-                });
             }
             TopDecl::Type(t) => {
                 if let TypeDeclBody::Struct(fs) = &t.body {
@@ -752,15 +745,7 @@ pub fn api_surface(programs: &[&Program], root: Option<&LocusDecl>) -> Option<Ap
         .collect();
     // The roles: declared ones plus `owner`, which needs no
     // declaration (a program declares it only to give it `includes`).
-    let mut roles = role_decls;
-    if !roles.iter().any(|r| r.name == "owner") {
-        roles.push(ApiRole {
-            name: "owner".to_string(),
-            includes: Vec::new(),
-        });
-    }
-    roles.sort_by(|a, b| a.name.cmp(&b.name));
-    roles.dedup_by(|a, b| a.name == b.name);
+    let roles = role_vocabulary(programs, true);
     Some(ApiSurface {
         main_locus: main_locus.name.name.clone(),
         binding,
@@ -807,24 +792,41 @@ pub fn grants(surface: &ApiSurface, role: &str) -> Vec<String> {
 /// to map. `owner` is included when the program has an api binding or
 /// declares a role, because that is when something is gated on it. The
 /// binding is `root`'s, the `main locus` it is generated into (see
-/// [`api_surface`]).
+/// [`api_surface`]). The names of [`role_vocabulary`].
 pub fn declared_roles(programs: &[&Program], root: Option<&LocusDecl>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
     let has_api = root
         .is_some_and(|l| l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())));
+    role_vocabulary(programs, has_api).into_iter().map(|r| r.name).collect()
+}
+
+/// GH #1109: the role vocabulary, bundle-wide, in name order: each
+/// declared role once, with the `includes` of its first declaration,
+/// and `owner` — which needs no declaration — when `served` (the
+/// program has an api binding) or any role is declared. The surface's
+/// `roles` ([`api_surface`], `served`) and [`declared_roles`] are this
+/// list; the checker's role rows project the same one over the program
+/// after the desugar sequence (`hale_types::roles::RoleRows::vocabulary`),
+/// held equal to it by a test, since the binding is generated inside the
+/// sequence, before those rows exist.
+pub fn role_vocabulary(programs: &[&Program], served: bool) -> Vec<ApiRole> {
+    let mut roles: Vec<ApiRole> = Vec::new();
     for p in programs {
-        walk_items(&p.items, &mut |i| {
-            if let TopDecl::Role(r) = i {
-                out.push(r.name.name.clone());
+        walk_items(&p.items, &mut |item| {
+            if let TopDecl::Role(r) = item {
+                roles.push(ApiRole {
+                    name: r.name.name.clone(),
+                    includes: r.includes.iter().map(|i| i.name.clone()).collect(),
+                });
             }
         });
     }
-    if (has_api || !out.is_empty()) && !out.iter().any(|r| r == "owner") {
-        out.push("owner".to_string());
+    if (served || !roles.is_empty()) && !roles.iter().any(|r| r.name == "owner") {
+        roles.push(ApiRole { name: "owner".to_string(), includes: Vec::new() });
     }
-    out.sort();
-    out.dedup();
-    out
+    // Stable: of two declarations of one name, the first is kept.
+    roles.sort_by(|a, b| a.name.cmp(&b.name));
+    roles.dedup_by(|a, b| a.name == b.name);
+    roles
 }
 
 // ---- the description ----------------------------------------------------
