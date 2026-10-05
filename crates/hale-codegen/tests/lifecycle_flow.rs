@@ -1,4 +1,4 @@
-//! The `lifecycle_flow` integration-test binary: 23 test files of this area, kept
+//! The `lifecycle_flow` integration-test binary: 24 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -9,6 +9,8 @@
 mod birth_spine_ir;
 #[path = "drain_grace_names_the_wait.rs"]
 mod drain_grace_names_the_wait;
+#[path = "frame_flush_ir.rs"]
+mod frame_flush_ir;
 #[path = "generic_monomorph_agreement.rs"]
 mod generic_monomorph_agreement;
 #[path = "generics.rs"]
@@ -51,3 +53,5 @@ mod typed_body_rows;
 mod reclaim_cancel_ir;
 #[path = "reclaim_spine_ir.rs"]
 mod reclaim_spine_ir;
+#[path = "restart_spine_ir.rs"]
+mod restart_spine_ir;

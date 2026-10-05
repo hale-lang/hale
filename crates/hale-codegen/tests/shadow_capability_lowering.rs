@@ -642,11 +642,11 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     (CG, "Obligation::ObservationIdentity", 2),
     (CG, "Obligation::BindingConfig", 2),
     (CG, "Obligation::DrainObserver", 1),
-    // The five spines' heads, through `emit_teardown_obligations`, and
-    // the frame teardown's wait-abort.
+    // The five spines' heads and the frame teardown's wait-abort, all
+    // through the plan's steps in `emit_teardown_obligations`.
     (CG, "Obligation::IngressQuiesce", 1),
     (CG, "Obligation::PoolJoin", 1),
-    (CG, "Obligation::WaitAbort", 2),
+    (CG, "Obligation::WaitAbort", 1),
     (INST, "Obligation::ReplayIngress", 1),
     (INST, "Capability::PoolThreads", 1),
     ("crates/hale-codegen/src/locus/dissolve.rs", "Obligation::DrainTerm", 1),

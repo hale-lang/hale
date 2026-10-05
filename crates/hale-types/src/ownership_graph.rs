@@ -236,6 +236,8 @@ pub struct OwnershipGraph {
     /// its param type as written: what a specialization of a generic
     /// template accepts ([`AcceptRows::specialize`]).
     pub accept_rows: AcceptRows,
+    /// The rows the graph is assembled from ([`OwnershipRows`]).
+    pub rows: OwnershipRows,
 }
 
 /// A resolved construction and the defaults it overrides. The model
@@ -420,7 +422,7 @@ impl OwnershipGraph {
         }
         let key = site.child_key.as_deref()?;
         let enclosing = &self.declarations[site.enclosing_decl].name;
-        if self.accepts.get(enclosing).is_some_and(|a| a.contains(key)) {
+        if self.rows.accepts_ancestor(enclosing, key) {
             return Some(SiteOwnership { resolution: OwnerResolution::SelfOwned(enclosing.clone()), unowned: None });
         }
         let mut climb = PathClimb { graph: self, paths: paths(), child: key, owners: BTreeSet::new(), unowned: None };
@@ -785,7 +787,7 @@ struct PathClimb<'g> {
 
 impl PathClimb<'_> {
     fn accepts(&self, decl: usize) -> bool {
-        self.graph.accepts.get(&self.graph.declarations[decl].name).is_some_and(|a| a.contains(self.child))
+        self.graph.rows.accepts_ancestor(&self.graph.declarations[decl].name, self.child)
     }
 
     /// `chain` is the path climbed so far, its last entry the declaration
@@ -895,7 +897,7 @@ fn collect_forwarding(
 // === Shared walk ==================================================
 
 /// One locus's ownership-relevant facts, collected in a single walk.
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 struct LocusFacts {
     /// Child types this locus declares `accept(_: T)` for, resolved by
     /// `child_locus_name` (a type that names no locus is accepted by
@@ -910,6 +912,7 @@ struct LocusFacts {
 }
 
 /// A single instantiation literal captured during the walk.
+#[derive(Debug, Clone)]
 struct RawSite {
     id: NodeId,
     supplied: BTreeSet<String>,
@@ -933,9 +936,14 @@ struct RawSite {
     bare_statement: bool,
 }
 
-/// The product of one structural walk and shared child resolution:
-/// per-locus facts, declaration identities and the closed-world entry flag.
-struct OwnershipWalk {
+/// The rows a graph is assembled from (F.40 phase 3, C5): the product of
+/// one structural walk and shared child resolution, per-locus facts,
+/// declaration identities and the closed-world entry flag. Rows over two
+/// programs concatenate into rows over both ([`OwnershipRows::then`]):
+/// lowering's graph is the snapshot's rows followed by the stdlib's
+/// ([`lowering_ownership_graph`]).
+#[derive(Debug, Clone, Default)]
+pub struct OwnershipRows {
     facts: BTreeMap<String, LocusFacts>,
     declarations: Vec<LocusDeclRow>,
     has_entry_point: bool,
@@ -944,20 +952,93 @@ struct OwnershipWalk {
     binding_sites: Vec<RawSite>,
 }
 
+impl OwnershipRows {
+    /// The rows of a bundle: the walk its graph is assembled from
+    /// ([`build_ownership_graph`]). What a bundle no snapshot holds reads
+    /// the accept relation from ([`crate::build_rule_diags`]'s caller);
+    /// every verb reads its snapshot's graph's.
+    pub fn of(bundle: &Bundle<'_>) -> OwnershipRows {
+        collect_ownership_walk(bundle, None, Some(&crate::entry::entry_row(bundle)))
+    }
+
+    /// `accepts_ancestor`: whether the locus `ancestor` declares an
+    /// `accept` for `child`, the child named as the graph resolves it
+    /// (`child_locus_name`). The relation the climb finds an owner by
+    /// ([`OwnershipGraph::owner_of_site`]) and the borrow-lifetime law
+    /// asks of a bare literal's enclosing locus.
+    pub fn accepts_ancestor(&self, ancestor: &str, child: &str) -> bool {
+        self.facts.get(ancestor).is_some_and(|f| f.accepts.contains(child))
+    }
+
+    /// These rows followed by `next`'s, as one walk over both programs
+    /// would collect them: `next`'s declarations after these, its sites'
+    /// declaration indices shifted past them, a locus both declare
+    /// merged as the walk merges two declarations of one name (this
+    /// one's projection first), and `next`'s name table, which is
+    /// `next`'s program's whole (the stdlib's rows answer over the merged
+    /// program's). A literal of these rows that names a locus they do not
+    /// declare (a stdlib locus, from a checked program) names `next`'s
+    /// one declaration of that name, as the walk over both resolves it.
+    fn then(mut self, next: OwnershipRows) -> OwnershipRows {
+        let shift = self.declarations.len();
+        let moved = |mut s: RawSite| {
+            s.enclosing_decl += shift;
+            s.child_decl = s.child_decl.map(|d| d + shift);
+            s
+        };
+        let declared_next = |s: &mut RawSite| {
+            let mut named = next.declarations.iter().enumerate().filter(|(_, d)| !d.generic && d.name == s.child_ty);
+            if let (None, Some((i, _)), None) = (s.child_decl, named.next(), named.next()) {
+                s.child_decl = Some(shift + i);
+            }
+        };
+        for s in self.facts.values_mut().flat_map(|f| f.instantiates.iter_mut()) {
+            declared_next(s);
+        }
+        for s in self.free_fn_sites.iter_mut().chain(self.binding_sites.iter_mut()) {
+            declared_next(s);
+        }
+        for (name, f) in next.facts {
+            let entry = self.facts.entry(name).or_default();
+            entry.accepts.extend(f.accepts);
+            entry.instantiates.extend(f.instantiates.into_iter().map(moved));
+            entry.projection = entry.projection.or(f.projection);
+            entry.singleton |= f.singleton;
+        }
+        self.declarations.extend(next.declarations);
+        self.has_entry_point |= next.has_entry_point;
+        self.accept_rows.rows.extend(next.accept_rows.rows);
+        self.accept_rows.declared = next.accept_rows.declared;
+        self.free_fn_sites.extend(next.free_fn_sites.into_iter().map(moved));
+        self.binding_sites.extend(next.binding_sites.into_iter().map(moved));
+        self
+    }
+}
+
 /// Walk every locus and free function once, collecting accepts,
 /// instantiations and their birth context, projection and singleton
 /// facts, plus declaration identities and the closed-world entry flag.
 /// This is the single source of truth `build_ownership_graph` consumes.
-fn collect_ownership_walk(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow) -> OwnershipWalk {
+///
+/// `tail` walks only those items of the bundle's program, the stdlib's
+/// in a merged program ([`stdlib_ownership_rows`]): names still resolve against
+/// the whole bundle, and the rows have no entry point (`entry` is `None`).
+fn collect_ownership_walk(
+    bundle: &Bundle<'_>,
+    tail: Option<&[TopDecl]>,
+    entry: Option<&crate::entry::EntryRow>,
+) -> OwnershipRows {
     // Closed-world gate, mirroring `build_bus_graph`'s
     // `has_entry_point`: a bare top-level `fn main` OR an entry (the
     // entry row's) makes the ownership DAG complete (no dynamic attach
     // construct).
-    let has_entry_point = entry.entry().is_some()
-        || bundle
-            .programs
-            .values()
-            .any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main")));
+    let has_entry_point = entry.is_some_and(|entry| {
+        entry.entry().is_some()
+            || bundle
+                .programs
+                .values()
+                .any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main")))
+    });
 
     // The child an `accept` names is resolved by the one resolver the
     // handler rows use, so an alias, generic arguments or a `std::` path
@@ -1128,8 +1209,12 @@ fn collect_ownership_walk(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow) -
         }
     }
     let cx = WalkCx { declared: &declared, renames, snapshot: &bundle.snapshot };
-    for program in &programs {
-        walk(&program.items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites, &mut binding_sites);
+    let walked: Vec<&[TopDecl]> = match tail {
+        Some(items) => vec![items],
+        None => programs.iter().map(|p| p.items.as_slice()).collect(),
+    };
+    for items in walked {
+        walk(items, &cx, &mut facts, &mut declarations, &mut accept_rows, &mut free_fn_sites, &mut binding_sites);
     }
 
     for facts in facts.values_mut() {
@@ -1137,7 +1222,7 @@ fn collect_ownership_walk(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow) -
     }
     free_fn_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     binding_sites.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
-    OwnershipWalk {
+    OwnershipRows {
         free_fn_sites,
         binding_sites,
         facts,
@@ -1230,17 +1315,63 @@ pub fn build_ownership_graph(
     placement: &crate::placement::PlacementTable,
     entry: &crate::entry::EntryRow,
 ) -> OwnershipGraph {
-    let walk = collect_ownership_walk(bundle, entry);
+    assemble(collect_ownership_walk(bundle, None, Some(entry)), &bundle.snapshot, placement)
+}
+
+/// The rows of the stdlib's loci and free fns in a merged program:
+/// `stdlib` is the stdlib's items, the tail of the program `bundle`
+/// holds. The snapshot's rows are derived over the checked programs,
+/// which hold no stdlib, so the stdlib's are the one part of lowering's
+/// graph the merged program answers itself ([`lowering_ownership_graph`]); their
+/// names resolve against the whole merged program, as they did when the
+/// graph was built over it.
+pub fn stdlib_ownership_rows(bundle: &Bundle<'_>, stdlib: &[TopDecl]) -> OwnershipRows {
+    collect_ownership_walk(bundle, Some(stdlib), None)
+}
+
+/// Lowering's ownership graph (F.40 phase 3, C5): the snapshot's rows,
+/// read for the program lowering walks through the view's
+/// correspondence, followed by the stdlib's ([`stdlib_ownership_rows`]), assembled
+/// with the placement table as the snapshot's graph is.
+///
+/// Every user site the rows name keeps its identity in the merged
+/// program ([`crate::correspondence::Image::Checked`]): a literal, a
+/// binding entry, a locus declaring an `accept`. Neither rewrite touches
+/// a locus literal or an `accept`, so each row answers for the merged
+/// program as for the checked one. `ids` is the merged program's
+/// identities, which the births' literals are read under.
+pub fn lowering_ownership_graph(
+    snapshot: &OwnershipGraph,
+    stdlib: OwnershipRows,
+    ids: &crate::snapshot::Snapshot,
+    correspondence: &crate::correspondence::Correspondence,
+    placement: &crate::placement::PlacementTable,
+) -> Result<OwnershipGraph, String> {
+    use crate::correspondence::Image;
+    let rows = &snapshot.rows;
+    let sites = rows.facts.values().flat_map(|f| &f.instantiates).chain(&rows.free_fn_sites).chain(&rows.binding_sites);
+    let ids_named = sites.map(|s| s.id).chain(rows.accept_rows.rows.iter().map(|r| r.owner_id));
+    for id in ids_named.filter(|id| !id.is_none()) {
+        if !matches!(correspondence.image(id), Some(Image::Checked(_))) {
+            return Err(format!("the ownership row's site {} has no checked image in the merged program", id.0));
+        }
+    }
+    Ok(assemble(rows.clone().then(stdlib), ids, placement))
+}
+
+/// The graph its rows assemble into: per-site owner resolution and edge
+/// classification, with the placement table.
+fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &crate::placement::PlacementTable) -> OwnershipGraph {
     let domains = placement.domains_by_type();
     let births = walk.facts.values().flat_map(|f| &f.instantiates)
         .chain(&walk.free_fn_sites).chain(&walk.binding_sites).map(|site| BirthRow {
             child_decl: site.child_decl,
             span: site.span,
-            literal: bundle.snapshot.site_id(site.id),
+            literal: ids.site_id(site.id),
             supplied: site.supplied.clone(),
             context: match (&site.params_field, site.binding) {
                 (Some(field), _) => BirthContext::Default { owner: site.enclosing_decl, field: field.clone() },
-                (_, Some(entry)) => BirthContext::Binding(bundle.snapshot.site_id(entry)),
+                (_, Some(entry)) => BirthContext::Binding(ids.site_id(entry)),
                 _ => BirthContext::Body,
             },
         }).collect();
@@ -1352,10 +1483,11 @@ pub fn build_ownership_graph(
         sites,
         births,
         free_fn_sites,
-        declarations: walk.declarations,
+        declarations: walk.declarations.clone(),
         accepts,
         instantiated_by,
-        accept_rows: walk.accept_rows,
+        accept_rows: walk.accept_rows.clone(),
+        rows: walk,
     }
 }
 

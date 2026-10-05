@@ -1541,7 +1541,7 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
         }
 
         let bundle = s.bundle();
-        let tail: Vec<hale_syntax::Diag> = hale_types::build_rule_diags(&bundle)
+        let tail: Vec<hale_syntax::Diag> = hale_types::build_rule_diags(&bundle, &s.demand_ownership_graph().expect("the graph").rows)
             .into_iter()
             .chain(hale_types::unbounded_alloc_warnings(&bundle, s.demand_alloc_summary().expect("the summary"), true))
             .collect();
@@ -1588,7 +1588,7 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
             .iter()
             .cloned()
             .chain(hale_types::unbounded_alloc_warnings(&c_bundle, c.demand_alloc_summary().expect("the summary"), true))
-            .chain(hale_types::build_rule_diags(&c_bundle))
+            .chain(hale_types::build_rule_diags(&c_bundle, &c.demand_ownership_graph().expect("the graph").rows))
             .collect();
         assert_eq!(sorted(diag_keys(&cli)), sorted(diag_keys(&check)), "{tag}: hale check's findings are the editor's");
         let _ = std::fs::remove_dir_all(&root);

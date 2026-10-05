@@ -1117,6 +1117,7 @@ crates/hale-codegen/tests/replica_keys.rs#1 27ea505efcac4821
 crates/hale-codegen/tests/resident_transfer.rs#0 f65ea8b646548722
 crates/hale-codegen/tests/resident_transfer.rs#9 685315f5000dbc75
 crates/hale-codegen/tests/restart_bound.rs#1 d4dabe7a57f79bfa
+crates/hale-codegen/tests/restart_bound.rs#2 e2835ba0ea5af51a
 crates/hale-codegen/tests/restart_in_place_params.rs#0 914e1d7f83215468
 crates/hale-codegen/tests/self_containing_locus.rs#2 b9b48c565ea0f322
 crates/hale-codegen/tests/self_containing_locus.rs#3 e5e2c21efda8f602
@@ -1450,10 +1451,11 @@ crates/hale-types/tests/bus_graph.rs#2 a5b806976b754c77
 crates/hale-types/tests/bus_graph.rs#20 46b94d56a5a94fcf
 crates/hale-types/tests/bus_graph.rs#21 96cddb6a7bae345f
 crates/hale-types/tests/bus_graph.rs#22 c5f2312e3d13f331
-crates/hale-types/tests/bus_graph.rs#24 f6996036277e3dc6
-crates/hale-types/tests/bus_graph.rs#25 281d80ed07f0b426
-crates/hale-types/tests/bus_graph.rs#26 b3eb1f6426125e12
-crates/hale-types/tests/bus_graph.rs#27 cda5aadb3cb74996
+crates/hale-types/tests/bus_graph.rs#23 5000630202ba9abc
+crates/hale-types/tests/bus_graph.rs#25 f6996036277e3dc6
+crates/hale-types/tests/bus_graph.rs#26 281d80ed07f0b426
+crates/hale-types/tests/bus_graph.rs#27 b3eb1f6426125e12
+crates/hale-types/tests/bus_graph.rs#28 cda5aadb3cb74996
 crates/hale-types/tests/bus_graph.rs#3 69161ab43c42fd49
 crates/hale-types/tests/bus_graph.rs#4 759965f77f282f63
 crates/hale-types/tests/bus_graph.rs#5 b67c7512d736b6ec
@@ -1609,6 +1611,8 @@ crates/hale-types/tests/locus_field_store.rs#6 fb576285cf6c267e
 crates/hale-types/tests/locus_member_const.rs#3 36c5f94439f06042
 crates/hale-types/tests/locus_member_const.rs#4 36c5f94439f06042
 crates/hale-types/tests/locus_member_type.rs#2 7c7d6de5bd37c6a5
+crates/hale-types/tests/lowering_correspondence.rs#0 aa3a60247800a99a
+crates/hale-types/tests/lowering_correspondence.rs#1 3333ba4c91d7d47d
 crates/hale-types/tests/model_arrangement.rs#0 f9d60755d77ddbcb
 crates/hale-types/tests/model_arrangement.rs#1 59a01f7667f8dbf9
 crates/hale-types/tests/model_arrangement.rs#10 ae10f3fd07e51814
@@ -1735,7 +1739,8 @@ crates/hale-types/tests/reserved_locus_members.rs#3 f2c1228edb650960
 crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/self_containing_locus.rs#12 99f6a1d57c1a8668
 crates/hale-types/tests/self_containing_locus.rs#14 7fcd9d3c87565eae
-crates/hale-types/tests/self_containing_locus.rs#15 1d9bb2dd607e1c91
+crates/hale-types/tests/self_containing_locus.rs#16 7fcd9d3c87565eae
+crates/hale-types/tests/self_containing_locus.rs#17 1d9bb2dd607e1c91
 crates/hale-types/tests/self_containing_locus.rs#4 ef994cf13a5419f6
 crates/hale-types/tests/snapshot.rs#0 36036aa68555ae99
 crates/hale-types/tests/snapshot.rs#1 79c6c4f8b494f43b

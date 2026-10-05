@@ -2225,11 +2225,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // inside the loop below (set immediately before
         // lower_expr, consumed by the recursive call to
         // lower_locus_instantiation).
-        let is_main_locus = self
-            .deployment.main_locus_name
-            .as_ref()
-            .map(|n| n == locus_name)
-            .unwrap_or(false);
+        let is_main_locus = self.is_lowering_root(locus_name);
         // F.31 Phase 3b (2026-05-23): during the params-init
         // loop, surface this locus as a "params-init parent"
         // context so children instantiated as field defaults
@@ -4278,7 +4274,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // A check's failure is decided before run() starts.
             if let (false, Some(rf)) = (checks.is_empty(), restart) {
                 let pre = self.emit_restart_count(&info, thread_self)?;
-                self.emit_pinned_birth_gate(&info, thread_self, rf.restart, pre)?;
+                self.emit_pinned_birth_gate(&info, thread_self, rf.restart, pre, locus_name)?;
             }
             if let Some(method) = info.methods.get("run") {
                 let loop_bb = self
@@ -4349,9 +4345,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_conditional_branch(req, restart_bb, done_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(restart_bb);
-                    self.builder
-                        .build_call(rf.restart, &[thread_self.into()], "pinned.restart")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_restart_call(rf.restart, thread_self, locus_name, "PinnedMain", "pinned.restart")?;
                     self.builder
                         .build_unconditional_branch(loop_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -4604,9 +4598,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, go_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(restart_bb);
-                self.builder
-                    .build_call(rf.restart, &[self_ptr.into()], "gate.restart.call")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let spine = self.lc_spine;
+                self.emit_restart_call(rf.restart, self_ptr, locus_name, spine, "gate.restart.call")?;
                 self.builder
                     .build_unconditional_branch(go_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -4626,14 +4619,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // run block / skip posting even when run() is empty: the
             // wrapper still has to fire to run the reclaim.
             let is_flow = self.is_flow(locus_name);
-            // Whole-block elide when run() body is empty AND no
-            // tick/duration closures need to fire after run AND it's
-            // not a flow. The quarantine guard would otherwise stand
-            // around a single unconditional jump.
-            let skip_run_block = info.empty_lifecycle.contains("run")
+            // Whether run() is called: the one test the lifecycle plan
+            // owes its `Run` by (`hale_types::lifecycle::run_is_called`).
+            let run_called = hale_types::lifecycle::run_is_called(info.empty_lifecycle.contains("run"), is_flow);
+            // Whole-block elide when run() is not called AND no
+            // tick/duration closures need to fire after run. The
+            // quarantine guard would otherwise stand around a single
+            // unconditional jump.
+            let skip_run_block = !run_called
                 && info.tick_closures_fn.is_none()
-                && info.duration_closures_fn.is_none()
-                && !is_flow;
+                && info.duration_closures_fn.is_none();
             if skip_run_block {
                 // No-op block elided.
             } else {
@@ -4686,7 +4681,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_call(start_fn, &[], "replay.start_ingress")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            if !info.empty_lifecycle.contains("run") || is_flow {
+            if run_called {
                 // F.31 Phase 4b + pool-inheritance fix (2026-05-29):
                 // a non-empty run() either runs synchronously here
                 // (main thread / non-pool context) or is posted to
@@ -4965,7 +4960,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the raise path before the pool join and the pinned
                 // joins below. Which of the three the target owes is its
                 // cells', their order the plan's.
-                self.emit_teardown_obligations(false)?;
+                self.emit_teardown_obligations(hale_types::lifecycle::Spine::EagerTeardown)?;
             }
             // GH #253: join this locus's own pinned children (the
             // frame entries pushed during param init above) BEFORE

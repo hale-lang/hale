@@ -9,9 +9,10 @@
 //! queued runs a teardown cancels before they start, how
 //! many occurrences a body literal has (a literal in a body is
 //! unbounded, and owed by none until the path counts it), whether the
-//! run ends inside an obligation (the structural exit, or a hang), and
-//! which declarations it holds (the subject under test, not what places
-//! it). Those are facts of the run, not of the program: the producer
+//! run ends inside an obligation (the structural exit, or a hang), which
+//! declarations it holds (the subject under test, not what places it),
+//! and which of `fn main`'s exits it takes (the plan states all three).
+//! Those are facts of the run, not of the program: the producer
 //! cannot know that a closure's assertion fails or that a failure lands
 //! while the owner joins its pools.
 //!
@@ -76,7 +77,13 @@ pub struct RunPath {
     /// every one. The others are on the path, unchecked: what places
     /// the subject under test, not what it tests.
     pub scope: Option<BTreeSet<String>>,
+    /// Which of `fn main`'s exits the run takes (C21–C23): its rows are on
+    /// the path, the other two's are not. `None` for the fall-through.
+    pub exit: Option<Spine>,
 }
+
+/// `fn main`'s three exits; a run takes one.
+const MAIN_EXITS: &[Spine] = &[Spine::MainFallThrough, Spine::MainReturn, Spine::MainTestFailure];
 
 /// One failure of a run.
 #[derive(Debug, Clone)]
@@ -142,6 +149,7 @@ pub const TRACED: &[super::ObligationKind] = &[
     K::Run,
     K::FailureDelivery,
     K::Restart,
+    K::Resume,
     K::Drain,
     K::PreDrain,
     K::WaitAbort,
@@ -186,7 +194,10 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
     let mut selected: BTreeSet<(String, FailureSource)> = BTreeSet::new();
     for (id, o) in plan.iter() {
         on[id.0 as usize] = match &o.site {
-            None => o.guard == PathGuard::Normal,
+            None => {
+                o.guard == PathGuard::Normal
+                    && (!MAIN_EXITS.contains(&o.holder.spine) || o.holder.spine == path.exit.unwrap_or(Spine::MainFallThrough))
+            }
             Some(site) => {
                 let l = &site.decl.lowered;
                 let failure = |src: FailureSource| path.failures.iter().find(|f| &f.decl == l && f.source == src);

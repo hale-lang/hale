@@ -16,8 +16,9 @@
 //!   trace, and the spine under test owes exactly what the host's cells
 //!   select for the program: the wait-abort always, the pool join where
 //!   the program has a pool. The order checked is the plan's
-//!   (`lifecycle::TEARDOWN_EDGES`), read from the plan, never spelled
-//!   here, and both come before the main locus's cascade. No reclaim
+//!   (`LifecyclePlan::process_order` over the five spines' process
+//!   rows), read from the program's plan, never spelled here, and both
+//!   come before the main locus's cascade. No reclaim
 //!   spine and no dissolve cascade owes a process-wide obligation.
 //! - **wasm32**: the pool and bound variants are refused at their
 //!   placement entry and binding. The local and bare ones build, call
@@ -35,10 +36,13 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeSet;
+
 use hale_codegen::{build_executable_with_options, BuildOptions, CodegenError, CompileTarget};
+use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_types::capability::{LoweringCells, Obligation, TargetClass};
 use hale_types::lifecycle::trace::{self, Trace};
-use hale_types::lifecycle::{ObligationKind, Point, Spine, TEARDOWN_EDGES};
+use hale_types::lifecycle::{ObligationKind, Point, Spine};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -250,15 +254,42 @@ fn counts(ir: &str) -> (usize, usize, usize) {
     (n(Obligation::IngressQuiesce), n(Obligation::WaitAbort), n(Obligation::PoolJoin))
 }
 
-/// A block's calls respect every plan edge between two of them: the
-/// first `before` comes ahead of the first `after`.
-fn respects_the_plan(seq: &[Obligation]) -> Result<(), String> {
-    for e in TEARDOWN_EDGES {
-        let b = seq.iter().position(|o| *o == e.before);
-        let a = seq.iter().position(|o| *o == e.after);
+/// The five teardown spines.
+const TEARDOWN_SPINES: &[Spine] =
+    &[Spine::EagerTeardown, Spine::DeferredMainEntry, Spine::MainFallThrough, Spine::MainReturn, Spine::MainTestFailure];
+
+/// The order the program's plan places the three obligations in, per
+/// teardown spine (`LifecyclePlan::process_order`), as pairs: `(a, b)`
+/// where some spine owes `a` before `b`. No two spines disagree.
+fn plan_pairs(src: &str) -> BTreeSet<(Obligation, Obligation)> {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let snap = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())).unwrap_or_else(|_| panic!("no snapshot"));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("the lifecycle plan is blocked"));
+    let mut pairs = BTreeSet::new();
+    for &spine in TEARDOWN_SPINES {
+        let order: Vec<Obligation> =
+            plan.process_order(spine).expect("one order").iter().filter_map(|s| s.kind.capability()).collect();
+        for (i, a) in order.iter().enumerate() {
+            for b in &order[i + 1..] {
+                pairs.insert((*a, *b));
+            }
+        }
+    }
+    for (a, b) in &pairs {
+        assert!(!pairs.contains(&(*b, *a)), "the plan orders {} and {} both ways", a.name(), b.name());
+    }
+    pairs
+}
+
+/// A block's calls respect every order the plan states between two of
+/// them: the first `a` comes ahead of the first `b`.
+fn respects_the_plan(seq: &[Obligation], pairs: &BTreeSet<(Obligation, Obligation)>) -> Result<(), String> {
+    for (before, after) in pairs {
+        let b = seq.iter().position(|o| o == before);
+        let a = seq.iter().position(|o| o == after);
         if let (Some(b), Some(a)) = (b, a) {
             if b > a {
-                return Err(format!("{} before {} (line {}: {})", e.after.name(), e.before.name(), e.line, e.why));
+                return Err(format!("{} before {}, which the plan orders after it", after.name(), before.name()));
             }
         }
     }
@@ -335,7 +366,7 @@ fn seq_of(t: &Trace, kind: ObligationKind, spine: Spine, point: Point) -> Option
 /// The host: the trace's spine owes what the cells select, in the
 /// plan's order, before the main locus's cascade; no reclaim spine or
 /// cascade owes a process-wide obligation.
-fn check_host_trace(shape: Shape, variant: Variant, t: &Trace) -> Result<(), String> {
+fn check_host_trace(shape: Shape, variant: Variant, t: &Trace, pairs: &BTreeSet<(Obligation, Obligation)>) -> Result<(), String> {
     let cells = LoweringCells::of(TargetClass::of(&hale_types::target::TargetSpec::host()).expect("a host column"));
     let spine = shape.spine();
     let abort = seq_of(t, ObligationKind::WaitAbort, spine, Point::Completed);
@@ -348,16 +379,16 @@ fn check_host_trace(shape: Shape, variant: Variant, t: &Trace) -> Result<(), Str
     if join_done.is_some() != owes_join {
         return Err(format!("PoolJoin@{}: {join_done:?}, owed {owes_join}", spine.name()));
     }
-    // The plan's traced edge: the abort completes before the join is
+    // The plan's traced order: the abort completes before the join is
     // entered.
-    for e in TEARDOWN_EDGES {
-        if e.before == Obligation::WaitAbort && e.after == Obligation::PoolJoin {
-            if let (Some(a), Some(j)) = (abort, join_entered) {
-                if a > j {
-                    return Err(format!("PoolJoin@{} entered before WaitAbort completed", spine.name()));
-                }
+    if pairs.contains(&(Obligation::WaitAbort, Obligation::PoolJoin)) {
+        if let (Some(a), Some(j)) = (abort, join_entered) {
+            if a > j {
+                return Err(format!("PoolJoin@{} entered before WaitAbort completed", spine.name()));
             }
         }
+    } else if variant.pools() {
+        return Err(format!("the plan does not order WaitAbort before PoolJoin on {}", spine.name()));
     }
     // Both before the main locus's dissolve.
     let app_dissolve = t
@@ -398,6 +429,7 @@ fn every_spine_owes_what_its_target_selects_in_the_plans_order() {
         for &variant in VARIANTS {
             let src = source(shape, variant);
             let id = format!("{}/{}", shape.name(), variant.name());
+            let pairs = plan_pairs(&src);
             for (target, tname) in [(CompileTarget::Native, "host"), (CompileTarget::Wasm32, "wasm32")] {
                 let name = format!("hale_cells_{}_{}_{}", shape.name(), variant.name(), tname);
                 let b = build(&src, target, false, &name);
@@ -428,7 +460,7 @@ fn every_spine_owes_what_its_target_selects_in_the_plans_order() {
                     continue;
                 }
                 for seq in block_sequences(&b.ir) {
-                    if let Err(why) = respects_the_plan(&seq) {
+                    if let Err(why) = respects_the_plan(&seq, &pairs) {
                         failures.push(format!("{id} {tname}: a block emits {seq:?}: {why}"));
                     }
                 }
@@ -477,7 +509,7 @@ fn every_spine_owes_what_its_target_selects_in_the_plans_order() {
                 }
                 match trace::parse(&r.stderr) {
                     Ok(t) => {
-                        if let Err(why) = check_host_trace(shape, variant, &t) {
+                        if let Err(why) = check_host_trace(shape, variant, &t, &pairs) {
                             failures.push(format!("{id} host trace: {why}"));
                         }
                     }

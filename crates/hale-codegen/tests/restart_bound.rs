@@ -149,6 +149,42 @@ fn main() { let c = Coordinator { }; }
     assert!(stdout.contains("RUN"), "the closure passed: {:?}", stdout);
 }
 
+/// A bound only known when the statement runs is the restart row's
+/// too: the row names the site of the expression the statement writes
+/// (`RetryBound::Expr`), and lowering lowers that expression once, as
+/// the handler runs. `self.max + 1` is 3 here: three restarts, then
+/// the fourth failure quarantines.
+#[test]
+fn a_runtime_bound_is_the_expression_the_row_names() {
+    let src = r#"
+locus Worker {
+    params { attempts: Int = 0; target: Int = 99; }
+    closure reached { self.attempts ~~ self.target within 0; epoch birth; }
+    birth() {
+        self.attempts = self.attempts + 1;
+        println("birth ", self.attempts);
+    }
+    run() { println("RUN"); }
+}
+locus Coordinator {
+    params { max: Int = 2; }
+    on_failure(c: Worker, err: ClosureViolation) {
+        println("fail");
+        restart(c) for self.max + 1;
+    }
+    run() { Worker { target: 99 }; }
+}
+fn main() { let c = Coordinator { }; }
+"#;
+    let bin = build_hale("expr", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(count(&stdout, "birth "), 4, "3 restarts + the first birth: {:?}", stdout);
+    assert_eq!(count(&stdout, "fail"), 4, "{:?}", stdout);
+    assert!(!stdout.contains("RUN"), "the bound is spent: {:?}", stdout);
+}
+
 /// An unbounded `restart(c)` keeps the behaviour it had before the
 /// modifier lowered: it stops re-running at the default cap, and the
 /// child is NOT quarantined. Pinned because the bound is carried in

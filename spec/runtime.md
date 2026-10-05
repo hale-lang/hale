@@ -1999,7 +1999,8 @@ its `KNOWN_OPEN` table.
   the workers they block, and an aborted publish is not a success:
   it raises `BusWaitAborted`. Shipped in all five spines: each runs
   the ingress quiesce, then the wait-abort, then the pool join (the
-  plan's edges, `lifecycle::TEARDOWN_EDGES`), so a pool-placed
+  edges between the process rows the lifecycle plan states for every
+  teardown spine, which emission reads), so a pool-placed
   publisher waiting for space on a queue only `main` drains takes the
   raise path and the join returns (`l07_pool_or_wait_teardown.hl`,
   and one fixture per other spine: `l07_or_wait_deferred_main_entry`,
@@ -2050,6 +2051,14 @@ its `KNOWN_OPEN` table.
   perspective-slot cells). Before, a pinned locus's fields were
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
+  An owned field's lifetime is its owner's, so a pinned field's
+  thread is joined in its owner's teardown. Not yet true for a root
+  returned from the fn that built it (inventory row C52,
+  `l12_returned_root_pinned_anchor.hl`): its pinned field is joined
+  when that fn returns, while the caller still holds the root, so a
+  publish to the field afterwards is dropped. Where such an anchor is
+  joined, and where its thread id lives once the building fn's frame
+  is gone, is undecided.
 
   Lines 12 and 19 are an instance's own teardown, the dissolve
   cascade and the reclaim, and the compiler emits both from the
@@ -2081,9 +2090,37 @@ its `KNOWN_OPEN` table.
   shipped (inventory row C43): the resume calls `run()` inline on
   the settling thread (`l13_resume_pool_child.hl`). A locus that
   declares no `run()` owes none on any incarnation, and the trace
-  shows none. Not yet shipped (inventory row C48): its resumed
-  incarnation enters a `Run`, the empty one the desugar gives it,
-  where its first never does (`l01_neg_same_pool_held.hl`).
+  shows none. A `Run` is owed exactly where the compiler calls
+  `run()`, by one test both read (inventory row C53): a `run()` with
+  a body, a flow's even when empty (its run wrapper reclaims it when
+  it returns), and a pinned locus's on its thread whatever the body;
+  an empty `run() { }`, written or not, is not called and owes none.
+  Shipped, and so is the resume's half (inventory row C48, L4): the
+  resume starts the resumed incarnation's `run()` only where the
+  plan owes it one, so a locus owed none enters no `Run` when
+  resumed, as its first incarnation enters none
+  (`l01_neg_same_pool_held.hl`); a flow's run
+  end, which is its reclaim, is entered as its first incarnation
+  enters it.
+
+  Line 13 and restart during drain (below) are a failure's recovery,
+  and the compiler emits it from the lifecycle plan (F.40 phase 3,
+  L4): a restart's steps come in the order the plan's rows and edges
+  give its declaration. The recovery decision is read once the
+  handler has returned; the restart follows it, putting back the
+  params as built for a `restart_in_place` and lowering the latch
+  the failure raised, and begins the next incarnation, which owes
+  again what is owed once per incarnation: `birth()` with its
+  birth-epoch closures, then `run()` where the locus declares one.
+  Nothing is torn down between them; the instance is the same one.
+  The decision is carried out on the spine that reads it: the run
+  gate of the instantiation, the posted run's loop, a pinned locus's
+  thread, or the resume at settle. The trace build holds the resume
+  and the restart to the plan over every fixture, with three
+  departures named: a held `run()` failure's resume, which the plan
+  does not yet state (C43); a held failure's restart performed by
+  the resume at settle where the plan places it on the posted run
+  (C42); and the restart under an owner's teardown (below).
 - **Line 14, order.** Order follows the steps the compiler emits;
   latches and pending-release records keep teardown from running
   twice (§ "Lifecycle", "Order by construction"). Shipped
@@ -2109,7 +2146,12 @@ its `KNOWN_OPEN` table.
   shows no waiter is live at teardown; the host owes all three
   (`l16_eager_spine_pool_join.hl` for the native half,
   `crates/hale-codegen/tests/target_lifecycle_cells.rs` per spine on
-  both targets).
+  both targets). The compiler emits them from the plan: each spine's
+  process rows, in the plan's order, its head before the frame and,
+  at `fn main`'s three exits (one emitter for the fall-through, the
+  test failure and `return`), the frame's pre-drain and the rows the
+  plan places after it in the frame's flush
+  (`crates/hale-codegen/tests/frame_flush_ir.rs`).
 - **Line 17, the pinned join set and order.** **Pending,
   conditionally:** the deferred spine's rule (subscription-less
   pinned children first, pinned subscribers in their slots) is the
@@ -2122,7 +2164,15 @@ its `KNOWN_OPEN` table.
   cooperative sibling field's `dissolve()` publishes to it under
   both spines, because a locus's own pinned entries are moved after
   its frame entry (`l17_pinned_join_eager.hl`,
-  `l17_pinned_join_deferred.hl`).
+  `l17_pinned_join_deferred.hl`). The join order is the compiler's,
+  not yet the plan's, and the plan and the two spines disagree on one
+  shape: for a main locus with a pinned field in a program with
+  pools, the plan places the main locus's head (the ingress quiesce,
+  the wait-abort, the pool join) before every field's drain, the
+  eager spine emits it so, and the deferred spine joins the pinned
+  field first (inventory row C14), at the exit of `fn main` or of
+  whichever fn built the main locus. The line's settlement decides
+  which.
 - **Line 18, the pre-drain.** Every teardown spine drains the bus
   before its first step. The pre-drain is a delivery point, not a
   witness that anything has quiesced. Not yet emitted by the eager
@@ -2321,7 +2371,11 @@ lc <seq> <Kind> <Point> spine=<Spine> dom=<domain> type=<T> inst=<n> inc=<n>
 `Kind` is an `ObligationKind`, `Point` is `Entered`, `Completed` or
 `Terminal(<terminal>)`, and `Spine` is the spine that emitted the
 step (`-` where the site cannot name it: a failure delivered in
-place, a restart). The domain is the thread the event ran on: `main`,
+place, a restart's re-birth). A `Restart` carries the spine of the
+step that decided it (the posted run's loop, `PoolRun`; a pinned
+locus's thread, `PinnedMain`; the run gate of an instantiation,
+`Instantiation`; the resume at settle, `Settle`), and a `Resume` the
+settle's. The domain is the thread the event ran on: `main`,
 `pool:<name>` for a cooperative pool's worker, `pinned:<n>` for a
 pinned locus's thread, `thread:<n>` for any other. `type`, `inst` and
 `inc` name the subject; a process-level obligation (the pool join, a
@@ -2343,7 +2397,9 @@ the posting thread; `Shutdown(PoolTeardown)`, with a
 `Cancellation`, when the pools' teardown frees its cell), `FailureDelivery` (entered
 where the failure is raised, completed when the handler returns,
 in place or at settle), `ConstructionDelivery` (a held failure,
-from the hold to its handler's return at settle), `Restart`, `Drain`,
+from the hold to its handler's return at settle), `Restart`,
+`Resume` (a held failure's resume at settle: its decision to restart,
+start `run()` or end, each traced as its own step after it), `Drain`,
 `Dissolve` (the dissolve-epoch closures and `dissolve()`),
 `Reclaim` (past the `__arena` latch: the queued runs' cancellation,
 then the arena's release), `PreDrain`,

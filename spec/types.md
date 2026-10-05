@@ -935,11 +935,13 @@ which calls `make` again. A fn counts when every value it hands
 back is freshly built: a literal of its declared locus, a call to
 another such fn, or a local binding of either — the binding the
 returned name resolves to, so an inner `let` that reuses the name
-does not hide it (GH #1140). A call the compiler
+does not hide it (GH #1140) — including through an `if`, a `match`
+or a block whose every arm is one of those (`return if c { Node { }
+} else { make() };`), the set lowering reads too. A call the compiler
 cannot see as fresh is **not** an edge and stays accepted — an
 accessor handing back a locus somebody else owns
 (`next: Node = registry.head()`), a method, a `std::` or cross-seed
-path, a carrier arm. That program may still recurse at run time;
+path, a carrier with an arm that is none of those. That program may still recurse at run time;
 `@no_recursion` is the contract for unbounded recursion, and this
 rule only reports the rings it can prove.
 

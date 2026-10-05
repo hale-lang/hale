@@ -1435,7 +1435,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 None,
                             );
                             methods.insert(kind, func);
-                            if lc.body.stmts.is_empty() && lc.body.tail.is_none() {
+                            if hale_types::lifecycle::body_is_empty(&lc.body) {
                                 empty_lifecycle.insert(kind);
                             }
                         }
@@ -1472,7 +1472,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             methods.insert("accept", func);
                             accept_param =
                                 Some((p.name.name.clone(), child_locus));
-                            if lc.body.stmts.is_empty() && lc.body.tail.is_none() {
+                            if hale_types::lifecycle::body_is_empty(&lc.body) {
                                 empty_lifecycle.insert("accept");
                             }
                         }
@@ -1513,7 +1513,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             methods.insert("release", func);
                             release_param =
                                 Some((p.name.name.clone(), child_locus));
-                            if lc.body.stmts.is_empty() && lc.body.tail.is_none() {
+                            if hale_types::lifecycle::body_is_empty(&lc.body) {
                                 empty_lifecycle.insert("release");
                             }
                         }

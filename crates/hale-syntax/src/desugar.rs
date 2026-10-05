@@ -67,6 +67,13 @@ pub struct TopicRewrite {
     /// subject, or the name itself for a reference to no declared topic
     /// (the checker has reported that one already).
     pub wire: String,
+    /// The identity the rewrite erased: a send's subject is an
+    /// identifier expression, a `Use` site, and the literal that
+    /// replaces it is no site (`NodeId::NONE` for a `subscribe` or a
+    /// `publish`, whose subject is no site either). The lowering view's
+    /// correspondence (`hale_types::correspondence`) reads it: the one
+    /// checked site the rewritten program no longer holds.
+    pub erased: NodeId,
 }
 
 /// Walk `program` and rewrite topic references into literal
@@ -446,7 +453,7 @@ fn rewrite_bus_member(bm: &mut BusMember, topics: &Topics, out: &mut Vec<TopicRe
             name.clone()
         };
         *subject = BusSubject::Literal { subject: wire.clone(), span };
-        out.push(TopicRewrite { site: id, written: name, wire });
+        out.push(TopicRewrite { site: id, written: name, wire, erased: NodeId::NONE });
     }
 }
 
@@ -473,6 +480,7 @@ fn rewrite_stmt(s: &mut Stmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
                         site: *id,
                         written: ident.name.clone(),
                         wire: entry.wire_subject.clone(),
+                        erased: ident.id,
                     });
                     *subject = Expr::Literal(
                         Literal::String(entry.wire_subject.clone()),
@@ -967,6 +975,17 @@ pub struct IntraLocusRewrite {
     /// subscriber, on the publisher itself or on its one field of the
     /// subscriber's type.
     pub handler: String,
+    /// The identity of the send's subject, the `Use` the rewrite erased
+    /// with the send: the call that replaces the send names no topic.
+    /// The lowering view's correspondence reads it
+    /// (`hale_types::correspondence`).
+    pub erased: crate::ast::NodeId,
+    /// The handler takes a second `std::api::Context` (GH #1108), so the
+    /// direct call passes `std::api::local_context()`: a call the rewrite
+    /// generates, at the send's span, unnumbered until the next mint. It
+    /// is the one site the rewrite makes, and the correspondence places
+    /// it by this flag.
+    pub context: bool,
 }
 
 /// Intra-locus / intra-tower closed-world optimization entry
@@ -1348,6 +1367,8 @@ fn intra_rewrite_stmt(
                             .last()
                             .expect("eligible access chain is never empty")
                             .clone(),
+                        erased: id.id,
+                        context: rw.takes_context,
                     });
                     let call_expr = build_chained_call(&rw.access_chain, value_expr, rw.takes_context, send_id, span);
                     *s = Stmt::Expr(call_expr);

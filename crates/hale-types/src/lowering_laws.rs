@@ -834,9 +834,11 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// ownership pre-pass reads too, F.40 phase 1.2c): the rule reads each
 /// row's `products`, the (locus, supplied fields) a call constructs.
 /// The rows are computed over the bundle's files together, with the
-/// bundle's import renames, as lowering computes them (lowering then
-/// widens its set with the carrier fold, which this rule does not
-/// read). The products do not depend on the escape walk: a factory
+/// bundle's import renames, as lowering computes them, and widened by
+/// the carrier fold lowering reads too (F.40 phase 3, C5:
+/// [`crate::ownership::extended_factory_rows`]), so a fn whose every
+/// returned arm is fresh through an `if`, a `match` or a block is a
+/// factory here as it is to lowering. The products do not depend on the escape walk: a factory
 /// whose returned binding escapes into a call still constructs it, and
 /// still takes its edge. A call it cannot see as constructing — an
 /// accessor, a method, a `std::` path — takes no edge and stays
@@ -889,7 +891,7 @@ fn self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     // renames, for the loci this bundle declares.
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let factories: BTreeMap<String, Vec<ContainmentState>> =
-        crate::ownership::fresh_factories(&programs, &bundle.snapshot, &bundle.import_renames)
+        crate::ownership::extended_factory_rows(&programs, &bundle.snapshot, &bundle.import_renames)
             .into_iter()
             .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
             .map(|(name, row)| (name, row.products))
