@@ -1,0 +1,47 @@
+// A bus handler's cell takes no hold on its subscriber (inventory row
+// R52, known open). No failure is involved. `b`, on pool `right`, runs
+// a bus handler that opens a gate, sleeps 300 ms, and reads its heap
+// name. App's run() waits for the gate and replaces `b` in its field
+// while that handler is still running. The old `b`'s reclaim does not
+// wait for the handler, as it waits for a started run (decision line
+// 19's run hold), so the handler reads freed storage.
+// Expected outcome: `read-whole`, the handler printing the old child's
+// name. Today under ASan: `heap-use-after-free` (a plain build reads
+// whatever reused the bytes, such as the new child's name).
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.cell.go"; }
+
+fn gate() -> String { return "/tmp/hale-fd-cell-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            std::io::fs::write_file(gate(), "go") or discard;
+            std::time::sleep(300ms);
+            println("ev handler-read " + self.name);
+        }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { b: Kid = Kid { tag: 1 }; }
+    placement { b: cooperative(pool = right); }
+    bus { publish Gos; }
+    run() {
+        Gos <- Go { k: 1 };
+        let until = std::time::monotonic_ns() + 5000000000;
+        while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        self.b = Kid { tag: 2 };
+        println("ev replaced");
+        std::time::sleep(500ms);
+        println("ev finished");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

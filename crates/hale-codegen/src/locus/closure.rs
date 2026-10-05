@@ -425,6 +425,13 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
                 .builder
                 .build_and(bumped, under_cap, "restart.should_rerun")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // The reclaim wins: a child whose reclaim is owed or begun
+            // is not re-born.
+            let clear = self.emit_reclaim_clear(&info, child_self)?;
+            let should_rerun = self
+                .builder
+                .build_and(should_rerun, clear, "restart.should_rerun")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let func = self
                 .current_fn
                 .expect("current_fn set in __birth_closures body");

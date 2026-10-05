@@ -16,7 +16,9 @@
 //! child (whose resumed `run()` is still called inline on the settling
 //! thread: C43, known open), and `restart_in_place` under a generic
 //! supervisor. A locus that declares no `run()` is resumed without one
-//! (line 13, C48).
+//! (line 13, C48). Every decision reads the child's reclaim claim, one
+//! acquire load (`clear`): a child whose reclaim is owed or begun is not
+//! restarted (the reclaim wins, L5).
 
 use std::path::PathBuf;
 
@@ -66,6 +68,11 @@ fn steps(body: &str, locus: &str) -> Vec<&'static str> {
             // A second value of one name carries LLVM's numeric suffix.
             if l.trim_start().starts_with("%restart.bumped") {
                 Some("decide")
+            } else if l.trim_start().starts_with("%restart.claim") && l.contains("load atomic") && l.contains("acquire")
+            {
+                // The reclaim wins: the decision reads the child's
+                // reclaim claim, an acquire load.
+                Some("clear")
             } else if l.contains(&format!("call void @__restart_{locus}(")) {
                 Some("restart")
             } else if l.starts_with("restart.reset:") {
@@ -112,9 +119,10 @@ const PINNED_WORKER: &str = "locus Worker {
 /// its closures, the order every caller shares.
 const RESTART_BODY: [&str; 4] = ["restore", "unlatch", "birth", "closures"];
 
-/// `__resume_Worker`: the decision; the restart and the run it decides;
-/// the run end of a run that had returned; the run of one that had not.
-const RESUME_BODY: [&str; 4] = ["decide", "restart", "end", "run"];
+/// `__resume_Worker`: the decision, which a reclaim owed or begun
+/// refuses (`clear`); the restart and the run it decides; the run end of
+/// a run that had returned; the run of one that had not.
+const RESUME_BODY: [&str; 5] = ["decide", "clear", "restart", "end", "run"];
 
 /// `func`'s steps of `Worker`'s restart are `want`.
 fn check(ir: &str, func: &str, want: &[&str]) {
@@ -135,10 +143,10 @@ fn a_root_child_is_decided_restarted_reborn_then_run() {
     check(&ir, "__resume_Worker", &RESUME_BODY);
     // The run gate of the instantiation: the first birth, then the
     // decision and the restart, before the run.
-    check(&ir, "main", &["birth", "closures", "decide", "restart", "run"]);
+    check(&ir, "main", &["birth", "closures", "decide", "clear", "restart", "run"]);
     // The posted run's loop: the run, then the decision, the restart and
     // the run again; or the run end.
-    check(&ir, "__coop_pool_run_Worker", &["run", "decide", "restart", "end"]);
+    check(&ir, "__coop_pool_run_Worker", &["run", "decide", "clear", "restart", "end"]);
 }
 
 #[test]
@@ -149,7 +157,7 @@ fn a_nested_child_reads_the_same_order() {
     let ir = ir("nested_child", &src);
     check(&ir, "__restart_Worker", &RESTART_BODY);
     check(&ir, "__resume_Worker", &RESUME_BODY);
-    check(&ir, "main", &["birth", "closures", "decide", "restart", "run"]);
+    check(&ir, "main", &["birth", "closures", "decide", "clear", "restart", "run"]);
 }
 
 /// A pinned child decides on its own thread: at the gate after its
@@ -159,7 +167,7 @@ fn a_nested_child_reads_the_same_order() {
 fn a_pinned_child_decides_on_its_thread() {
     let ir = ir("pinned_child", &supervised(PINNED_WORKER, "w: Worker = Worker { };", "    placement { w: pinned; }\n"));
     check(&ir, "__restart_Worker", &RESTART_BODY[..3]);
-    check(&ir, "__pinned_main_Worker", &["birth", "decide", "restart", "run", "decide", "restart"]);
+    check(&ir, "__pinned_main_Worker", &["birth", "decide", "clear", "restart", "run", "decide", "clear", "restart"]);
 }
 
 /// `replicas = K`: each replica's thread runs the one thread function,
@@ -171,7 +179,7 @@ fn each_replica_reads_the_same_order() {
         &supervised(PINNED_WORKER, "w: Worker = Worker { };", "    placement { w: pinned(replicas = 2); }\n"),
     );
     check(&ir, "__restart_Worker", &RESTART_BODY[..3]);
-    check(&ir, "__pinned_main_Worker", &["birth", "decide", "restart", "run", "decide", "restart"]);
+    check(&ir, "__pinned_main_Worker", &["birth", "decide", "clear", "restart", "run", "decide", "clear", "restart"]);
 }
 
 /// A pool-placed child: its run is posted, and the posted run's loop
@@ -185,7 +193,7 @@ fn a_pool_placed_child_decides_in_its_posted_run() {
     );
     check(&ir, "__restart_Worker", &RESTART_BODY);
     check(&ir, "__resume_Worker", &RESUME_BODY);
-    check(&ir, "__coop_pool_run_Worker", &["run", "decide", "restart", "end"]);
+    check(&ir, "__coop_pool_run_Worker", &["run", "decide", "clear", "restart", "end"]);
 }
 
 /// `restart_in_place` under a generic supervisor: each specialization's
@@ -219,5 +227,5 @@ fn main() { App { }; }
 ";
     let ir = ir("no_run", src);
     check(&ir, "__restart_Worker", &RESTART_BODY);
-    check(&ir, "__resume_Worker", &["decide", "restart", "end"]);
+    check(&ir, "__resume_Worker", &["decide", "clear", "restart", "end"]);
 }

@@ -133,6 +133,13 @@ child at once, and the replaced one is kept until its own failure
 has been heard, after the current handler returns (handlers never
 run inside each other), then torn down.
 
+Once a child has been replaced, its teardown wins over any recovery.
+A `restart(c)` or `restart_in_place(c)` about a child the handler has
+already swapped out of its field, or one whose own teardown its parent
+had already begun, is not carried out: the old
+child is torn down once, after its handler, and never born or run
+again, and the new child in the field is left alone.
+
 The recovery primitives:
 
 - **absorb** — just return; the failure is noted and contained.

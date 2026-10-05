@@ -1,0 +1,57 @@
+// Handlers do not nest, at settle either (PR #1348's review). App's
+// run() builds a Holder whose child `Early` fails its birth closure while
+// Holder's params are open, so that failure is held and delivered at
+// Holder's settle, on main. Its handler opens a gate and sleeps. `Kid`,
+// on pool `right`, waits for the gate and fails; its failure is posted to
+// App's domain, main, which is inside the held handler. The posted
+// delivery runs after the held handler returns, never inside its sleep.
+// Expected outcome: `ev held-enter`, `ev held-exit`, `ev posted-enter`,
+// `ev posted-exit`, `ev finished`, exit 0. Before the guard the posted
+// handler ran inside the held one's sleep: `held-enter`, `posted-enter`,
+// `posted-exit`, `held-exit`.
+
+fn gate() -> String { return "/tmp/hale-fd-settle-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; }
+    closure fuse { captures: tag; epoch inline; }
+    run() {
+        let until = std::time::monotonic_ns() + 5000000000;
+        while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        violate fuse;
+    }
+}
+
+locus Early {
+    params { n: Int = 0; }
+    closure ready { self.n ~~ 1 within 0; epoch birth; }
+}
+
+locus Holder {
+    params { e: Early = Early { }; }
+    on_failure(c: Early, err: ClosureViolation) {
+        println("ev held-enter");
+        std::io::fs::write_file(gate(), "go") or discard;
+        std::time::sleep(300ms);
+        println("ev held-exit");
+    }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 1 }; heard: Int = 0; }
+    placement { k: cooperative(pool = right); }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("ev posted-enter");
+        self.heard = self.heard + 1;
+        println("ev posted-exit");
+    }
+    run() {
+        Holder { };
+        let until = std::time::monotonic_ns() + 5000000000;
+        while self.heard < 1 && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        println("ev finished");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }
