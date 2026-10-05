@@ -41,7 +41,7 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -123,9 +123,8 @@ struct Run {
 }
 
 fn run(opts: &BuildOptions, tag: &str) -> Run {
-    let program = hale_syntax::parse_source(MIXED).expect("parse");
     let bin = harness::unique_bin(&format!("ownership_bubble_mixed_{tag}"));
-    build_executable_with_options(&program, &bin, &[], opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+    build_opts::build_source(MIXED, &bin, opts).unwrap_or_else(|e| panic!("build: {e:?}"));
     // The ASan arm checks memory safety, not leaks: a child born by a
     // cross-pool post leaks its arena record at teardown (216 bytes, in
     // the post's dispatcher, `__xpool_dispatch_<I>_<A>`), with or without
@@ -252,9 +251,8 @@ fn without_the_bubble_both_children_are_transient() {
 #[test]
 fn a_value_use_at_a_mixed_site_is_refused_at_the_literal() {
     let src = MIXED.replace("            I { n: self.k };", "            let c = I { n: self.k };");
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("ownership_bubble_mixed_value_use");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(&src, &bin, &build_opts::options())
         .expect_err("a value use at a mixed site must not build");
     let _ = std::fs::remove_file(&bin);
     let hale_codegen::CodegenError::UnsupportedAt(msg, span) = &err else {

@@ -65,7 +65,7 @@ fn check_build_run(tag: &str, src: &str) -> String {
     assert!(errors.is_empty(), "check refused it: {:?}", errors);
 
     let bin = harness::unique_bin(tag);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    build_opts::build_source(src, &bin, &build_opts::options())
         .unwrap_or_else(|e| panic!("build refused a check-clean program: {:?}", e));
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

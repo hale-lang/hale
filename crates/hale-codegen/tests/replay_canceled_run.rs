@@ -43,7 +43,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -90,14 +90,13 @@ fn build(name: &str, src: &str, trace: bool) -> PathBuf {
 }
 
 fn build_with(name: &str, src: &str, trace: bool, asan: bool) -> PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_replay_canceled_{}", name));
     let options = BuildOptions {
         lifecycle_trace: trace,
         asan,
         ..build_opts::options()
     };
-    build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    build_opts::build_source(src, &bin, &options).expect("build");
     bin
 }
 

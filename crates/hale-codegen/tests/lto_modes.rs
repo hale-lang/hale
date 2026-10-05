@@ -5,8 +5,7 @@
 //! under a sanitizer or the wasm target, where the LTO link either
 //! conflicts with the sanitizer runtime or is meaningless.
 
-use hale_codegen::{build_executable_with_options, BuildOptions, LtoMode};
-use hale_syntax::parse_source;
+use hale_codegen::{BuildOptions, LtoMode};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -30,14 +29,13 @@ const SRC: &str = r#"
 /// to the flavor it names, and that each flavor produces a working
 /// binary — without a global write.
 fn builds_under(var: Option<&str>, name: &str) -> bool {
-    let program = parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(name);
     let options = BuildOptions {
         lto: Some(LtoMode::parse(var.unwrap_or(""))),
         ..build_opts::options()
     };
     let ok =
-        build_executable_with_options(&program, &bin, &[], &options).is_ok();
+        build_opts::build_source(SRC, &bin, &options).is_ok();
     let _ = std::fs::remove_file(&bin);
     ok
 }

@@ -7,8 +7,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -22,9 +20,8 @@ fn pick_free_port() -> u16 {
 }
 
 fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_recv_into_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     bin
 }
 

@@ -50,7 +50,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
@@ -73,7 +72,7 @@ fn check_build_run(name: &str, src: &str) -> String {
         .collect();
     assert!(errs.is_empty(), "`hale check` refuses it: {:?}", errs);
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "non-zero: {:?}", out.status);

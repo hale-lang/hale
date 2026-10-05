@@ -28,8 +28,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -51,9 +49,8 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
 }
 
 fn build_binary(src: &str, tag: &str) -> PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path(tag, "bin");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

@@ -34,8 +34,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -66,9 +64,8 @@ const SRC: &str = r#"
 "#;
 
 fn build(name: &str) -> PathBuf {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_process_child_adopt_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(SRC, &bin, &build_opts::options()).expect("build");
     bin
 }
 

@@ -11,8 +11,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 /// Build, run, and read `final_rss_mb=` from stdout (MB). Panics if the
 /// program crashes or never prints the line — which also asserts the flood
 /// ran to completion (the line is only printed once the count reaches N).
@@ -30,9 +28,8 @@ mod build_opts;
 /// builds running) — two thirds of the 200 MB bound below, before
 /// this program allocated anything. See GH #772.
 fn build_and_rss(name: &str, src: &str) -> i64 {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bus_bp_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);

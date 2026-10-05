@@ -23,9 +23,8 @@ mod harness;
 mod build_opts;
 
 fn build_and_run(name: &str, source: &str) -> (String, String, bool) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -280,7 +279,7 @@ fn assert_generic_handler_output(src: &str, expected: &str) {
         let bin = harness::unique_bin("hale_generic_failure_children");
         let mut options = build_opts::options();
         options.asan = asan;
-        build_executable_with_options(&program, &bin, &[], &options).expect("build");
+        build_opts::build_source(src, &bin, &options).expect("build");
         let output = Command::new(&bin).output().expect("run");
         let _ = std::fs::remove_file(&bin);
         let stdout = String::from_utf8_lossy(&output.stdout);

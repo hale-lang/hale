@@ -32,8 +32,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -41,11 +39,10 @@ mod build_opts;
 
 /// Build `src` with its IR dumped; the IR.
 fn ir(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("{name}: parse: {e:?}"));
     let bin = harness::unique_bin(&format!("hale_reclaim_spine_{name}"));
     let ll: PathBuf = bin.with_extension("ll");
     let opts = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("{name}: build: {e:?}"));
+    build_opts::build_source(src, &bin, &opts).unwrap_or_else(|e| panic!("{name}: build: {e:?}"));
     let text = std::fs::read_to_string(&ll).unwrap_or_else(|e| panic!("{name}: read the IR: {e}"));
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&ll);

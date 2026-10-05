@@ -37,8 +37,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -52,9 +50,8 @@ mod build_opts;
 const DEADLINE: Duration = Duration::from_secs(60);
 
 fn build_and_run(tag: &str, src: &str) -> (String, String) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("unowned_lit_{}", tag));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

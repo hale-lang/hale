@@ -43,7 +43,7 @@ fn run(tag: &str, src: &str, asan: bool) -> Output {
     if asan {
         harness::build_asan(&program, &bin);
     } else {
-        hale_codegen::build_executable_with_options(&program, &bin, &[], &harness_build::options()).expect("build");
+        harness_build::build_source(src, &bin, &harness_build::options()).expect("build");
     }
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")

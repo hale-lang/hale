@@ -35,9 +35,8 @@ struct Ran {
 /// Build `src`, wait for its first stdout line ("up"), send SIGTERM and
 /// collect how it ended.
 fn term_after_up(tag: &str, src: &str) -> Ran {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .env("LOTUS_DRAIN_GRACE_MS", GRACE_MS.to_string())
         .stdout(Stdio::piped())

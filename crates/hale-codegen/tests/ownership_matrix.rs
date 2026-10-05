@@ -111,8 +111,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -1018,7 +1016,7 @@ fn run_cell(c: Cell) -> Outcome {
     // --- oracle 0b: it builds --------------------------------
     ran.push(Oracle::Build);
     let bin = harness::unique_bin(&["ownmatrix_", &slug(&id)].concat());
-    if let Err(e) = build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
+    if let Err(e) = build_opts::build_source(&src, &bin, &build_opts::options()) {
         failures.push((Oracle::Build, format!("build refused it: {e:?}")));
         return Outcome { ran, failures };
     }
@@ -1099,12 +1097,9 @@ fn run_cell(c: Cell) -> Outcome {
     if position.twin_stmts.is_some() {
         ran.push(Oracle::Differential);
         let tsrc = program_source(c, true);
-        let tprogram = hale_syntax::parse_source(&tsrc).unwrap_or_else(|e| {
-            panic!("{id}: the generator emitted an unparsable twin: {e:?}\n{tsrc}")
-        });
         let tbin =
             harness::unique_bin(&["ownmatrix_twin_", &slug(&id)].concat());
-        match build_executable_with_options(&tprogram, &tbin, &[], &build_opts::options()) {
+        match build_opts::build_source(&tsrc, &tbin, &build_opts::options()) {
             Err(e) => failures.push((
                 Oracle::Differential,
                 format!("the `let`-named twin does not build: {e:?}"),

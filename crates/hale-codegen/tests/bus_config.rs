@@ -19,8 +19,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -140,9 +138,8 @@ fn deployment_config_routes_publisher_to_remote_listener() {
         .spawn()
         .expect("spawn listener");
 
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("m58_publisher");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build publisher");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build publisher");
 
     let pub_out = Command::new(&bin)
         .env("LOTUS_BUS_CONFIG", &cfg)
@@ -235,9 +232,8 @@ fn no_config_set_behaves_as_pre_m58() {
             Pub { };
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("m58_publisher");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
 
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

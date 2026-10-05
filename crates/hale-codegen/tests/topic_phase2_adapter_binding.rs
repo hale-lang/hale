@@ -22,13 +22,12 @@ mod harness;
 mod build_opts;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_adapter_binding_{}_{}",
         name,
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -556,12 +555,11 @@ fn adapter_publish_leaves_the_payload_arena_flat() {
 
         fn main() { App { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_adapter_binding_payload_flat_{}",
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_ARENA_RESIDENCY", "1")
         .output()
@@ -744,12 +742,11 @@ fn a_parking_send_under_overlapping_publishes_stays_flat() {
 
         fn main() { App { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_adapter_binding_call_arena_{}",
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_BUS_CALL_ARENA_STATS", "1")
         .output()

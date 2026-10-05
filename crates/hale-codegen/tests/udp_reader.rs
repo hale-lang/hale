@@ -17,8 +17,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -86,9 +84,8 @@ fn reader_receives_datagrams_via_zero_copy_view() {
         "#,
     );
 
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = unique_path("recv");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -169,9 +166,8 @@ fn reader_recv_loop_is_rss_flat() {
     // program inherits from its parent through fork+exec, so under
     // the test harness rss0 and rss1 both clamped to the harness's
     // footprint and the growth was always 0 (GH #772).
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = unique_path("rss");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);

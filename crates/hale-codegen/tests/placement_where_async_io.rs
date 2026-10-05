@@ -13,8 +13,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -200,9 +198,8 @@ fn placement_where_async_io_builds_and_runs() {
     // emit is gated on the async_io_pools set, which stays empty
     // here. The "with async_io" path needs an actual long-running
     // sibling shape — covered by the standalone smoke below.
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_placement_where_no_async");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -246,9 +243,8 @@ fn placement_where_async_io_emits_enable_call() {
             println("after");
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_placement_where_async_io_e2e");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new("timeout")
         .arg("3")
         .arg(&bin)

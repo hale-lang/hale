@@ -10,8 +10,6 @@
 //! refuses is refused before lowering, with the law's wording, and
 //! lowering judges none of them.
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -19,9 +17,8 @@ mod build_opts;
 
 /// The harness's refusal of `src`, rendered.
 fn refusal(tag: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(src, &bin, &build_opts::options())
         .expect_err("a program a lowering law refuses must not build");
     let _ = std::fs::remove_file(&bin);
     err.to_string()
@@ -114,9 +111,8 @@ fn crosspool_src(body: &str) -> String {
 }
 
 fn build_err(tag: &str, src: &str) -> hale_codegen::CodegenError {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(src, &bin, &build_opts::options())
         .expect_err("the program must not build");
     let _ = std::fs::remove_file(&bin);
     err

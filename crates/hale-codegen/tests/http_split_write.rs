@@ -13,8 +13,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
-
 // Echo server: responds 200 with the request body it parsed, so the
 // client can observe exactly what the server-side reassembly saw.
 #[path = "support/harness.rs"]
@@ -48,9 +46,8 @@ fn pick_free_port() -> u16 {
 }
 
 fn build_echo(name: &str) -> PathBuf {
-    let program = hale_syntax::parse_source(ECHO_SERVER).expect("parse");
     let bin = harness::unique_bin(&format!("hale_http_split_write_{}_{}", name, std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(ECHO_SERVER, &bin, &build_opts::options()).expect("build");
     bin
 }
 

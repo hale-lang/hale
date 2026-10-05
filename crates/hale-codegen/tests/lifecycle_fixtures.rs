@@ -2184,13 +2184,12 @@ fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
         "l19_started_run_publishes_back_async.hl",
     ] {
         let f = fixture(file);
-        let program = hale_syntax::parse_source(&source(file)).expect("parse the fixture");
         for no_bus_devirt in [false, true] {
             let bin = harness::unique_bin("hale_handler_reclaim_asan");
             let options = hale_codegen::BuildOptions {
                 asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
             };
-            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("read ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
             let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
@@ -2232,7 +2231,7 @@ fn retired_run_self_reclaim_has_one_owner_under_asan() {
                 let options = hale_codegen::BuildOptions {
                     asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
                 };
-                build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+                build_opts::build_source(&src, &bin, &options).expect("ASan build");
                 let image = std::fs::read(&bin).expect("ASan binary");
                 assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
                 let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
@@ -2280,7 +2279,7 @@ locus Kid {"#)
             let options = hale_codegen::BuildOptions {
                 asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
             };
-            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            build_opts::build_source(&src, &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
             let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
@@ -2313,10 +2312,9 @@ locus Kid {"#)
 /// reply cannot run. The ASan cases above are its completing controls.
 #[test]
 fn synchronous_handler_storage_wait_restores_the_deadlock() {
-    let program = hale_syntax::parse_source(&source("l19_handler_replaces_started_run.hl")).expect("parse");
     let bin = harness::unique_bin("hale_handler_storage_negative");
     let options = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    build_opts::build_source(&source("l19_handler_replaces_started_run.hl"), &bin, &options).expect("build");
     let ran = run_bin(&bin, RunMode::Plain, &[("LOTUS_LIFECYCLE_SKIP", "HandlerStorage")]);
     let _ = std::fs::remove_file(&bin);
     assert!(ran.timed_out, "synchronous handler wait unexpectedly completed: {} {}", ran.stdout, ran.stderr);

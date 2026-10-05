@@ -34,8 +34,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -46,9 +44,8 @@ mod sanitize;
 /// Compile `src`, run it, return its stdout. Asserts a clean exit —
 /// which under `LOTUS_ASAN=1` is also the leak oracle.
 fn run(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("gh815_{}", name));
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
+    build_opts::build_source(src, &bin, &sanitize::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -397,9 +394,8 @@ fn pinned_in_loop_src(loop_body: &str) -> String {
 #[test]
 fn the_harness_refuses_a_pinned_root_inside_a_loop_by_the_law() {
     let src = pinned_in_loop_src("App { };");
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("gh826_pinned_loop");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    let err = build_opts::build_source(&src, &bin, &build_opts::options())
         .expect_err("a pinned locus in a loop must not build");
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();

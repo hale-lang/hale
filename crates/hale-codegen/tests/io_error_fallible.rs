@@ -9,17 +9,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build_and_run(name: &str, src: &str) -> (String, String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_io_err_{}_{}", name, std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -210,9 +207,8 @@ fn or_over_non_fallible_path_call_has_clear_diagnostic() {
             let _ = std::str::lower("HI") or raise;
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_or_diag_{}", std::process::id()));
-    let err = hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("should reject");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
     assert!(msg.contains("not a fallible call"), "got: {}", msg);
@@ -227,9 +223,8 @@ fn str_bytes_mismatch_diagnostic_suggests_converter() {
             let _ = std::str::lower(b);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_str_diag_{}", std::process::id()));
-    let err = hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("should reject");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
     assert!(msg.contains("from_bytes"), "got: {}", msg);
@@ -243,9 +238,8 @@ fn bytes_str_mismatch_diagnostic_suggests_converter() {
             println(n);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_bytes_diag_{}", std::process::id()));
-    let err = hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("should reject");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
     assert!(msg.contains("from_string"), "got: {}", msg);
@@ -261,9 +255,8 @@ fn missing_std_prefix_diagnostic_suggests_correction() {
             println(n);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_typo_{}", std::process::id()));
-    let err = hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("should reject");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
     assert!(msg.contains("did you mean"), "got: {}", msg);

@@ -9,21 +9,18 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_test_str_esc_{}_{}",
         name,
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -122,12 +119,11 @@ fn unresolved_callee_ident_suggests_close_match() {
             println(x);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_test_typo_diag_{}",
         std::process::id()
     ));
-    let err = hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("should reject");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
     assert!(msg.contains("`fallback`"), "got: {}", msg);

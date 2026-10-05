@@ -296,13 +296,12 @@ fn direct_dispatch_records_its_payload_inside_the_obs_gate() {
 fn no_bus_devirt_forces_the_all_dynamic_lowering() {
     let bin = unique_path("nodevirt", "bin");
     let ll = bin.with_extension("ll");
-    let program = hale_syntax::parse_source(QUIET_FLAT).expect("parse");
     let options = hale_codegen::BuildOptions {
         no_bus_devirt: true,
         dump_ir: Some(ll.clone()),
         ..build_opts::options()
     };
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(QUIET_FLAT, &bin, &options)
         .expect("build");
     let ir = std::fs::read_to_string(&ll).expect("read IR");
     let _ = std::fs::remove_file(&bin);

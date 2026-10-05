@@ -13,8 +13,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -73,9 +71,8 @@ impl Demo {
         src_path.push("io-demo");
         src_path.push("main.hl");
         let source = std::fs::read_to_string(&src_path).expect("read source");
-        let program = hale_syntax::parse_source(&source).expect("parse");
         let bin = harness::unique_bin(&format!("hale_io_demo_bin_{}_{}", std::process::id(), tag));
-        build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+        build_opts::build_source(&source, &bin, &build_opts::options()).expect("build");
         Self {
             port: pick_free_port(),
             config_path: unique_path(&format!("{}_config", tag)),
@@ -196,9 +193,8 @@ fn io_demo_falls_back_to_default_port_on_garbage_argv() {
     src_path.push("io-demo");
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = hale_syntax::parse_source(&source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_io_demo_bin_garbage_{}", std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&source, &bin, &build_opts::options()).expect("build");
 
     let log_path = unique_path("garbage_log");
 

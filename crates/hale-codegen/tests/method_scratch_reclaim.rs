@@ -29,8 +29,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -60,9 +58,8 @@ fn dump_ir(src: &str, tag: &str) -> String {
 }
 
 fn build_and_run(src: &str, tag: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path(tag, "bin");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -268,9 +265,8 @@ fn run_loop_allocates_per_iter_without_unbounded_growth() {
         }
         fn main() { Driver { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path("loop-no-leak", "bin");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     // bash -c 'ulimit -v 65536; ./bin' — virtual-memory ceiling
     // of 64 MiB. Pre-fix leak: 256B × 1M = 256 MB → instant
     // ENOMEM. Post-fix steady-state: a single chunk in the

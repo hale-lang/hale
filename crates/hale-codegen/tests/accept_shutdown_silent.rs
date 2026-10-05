@@ -13,8 +13,6 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -36,9 +34,8 @@ main locus App {{
 fn main() {{ App {{ srv: std::http::Server {{ host: "127.0.0.1", port: {port}, ready_signal: "up", handler: Hello {{ }} }} }}; }}
 "#
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_1081_accept_shutdown");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let child = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -68,12 +65,8 @@ fn main() {{ App {{ srv: std::http::Server {{ host: "127.0.0.1", port: {port}, r
 
 #[test]
 fn an_accept_failure_nobody_asked_for_is_still_reported() {
-    let program = hale_syntax::parse_source(
-        "fn main() { let c = std::io::tcp::accept_one(-1) or - 1; println(to_string(c)); }\n",
-    )
-    .expect("parse");
     let bin = harness::unique_bin("hale_1081_accept_bad_fd");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source("fn main() { let c = std::io::tcp::accept_one(-1) or - 1; println(to_string(c)); }\n", &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);
