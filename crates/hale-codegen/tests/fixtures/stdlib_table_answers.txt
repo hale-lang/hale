@@ -595,7 +595,7 @@ std::http::Server | lookup=http@2 | locus=true | effects=- | sig=- | parks=false
 std::http::Url | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::build_context | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=build_context
 std::http::get | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=-
-std::http::header | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=header
+std::http::header | lookup=http@2 | locus=false | effects=pure | sig=(Any, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=header
 std::http::is_route | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=is_route
 std::http::parse_request | lookup=http@2 | locus=false | effects=pure | sig=(Str) -> Named(__StdHttpRequest) | ret_ty=__StdHttpRequest | or=- | parks=false | holds=false | unknown=- | suggest=parse_request
 std::http::parse_url | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse_url
@@ -603,7 +603,7 @@ std::http::path_param | lookup=http@2 | locus=false | effects=pure | sig=- | par
 std::http::post | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=post
 std::http::query_param | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=query_param
 std::http::request | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=request
-std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=write_response
+std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block | sig=(Named(__StdIoTcpStream), Named(__StdHttpResponse)) -> Unit | ret_ty=() | or=- | parks=false | holds=true | unknown=- | suggest=write_response
 std::io | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-

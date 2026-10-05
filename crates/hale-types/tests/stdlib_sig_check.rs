@@ -682,6 +682,35 @@ fn std_text_calls_are_checked() {
 }
 
 #[test]
+fn std_http_calls_are_checked() {
+    let req = "    let r = std::http::parse_request(\"GET / HTTP/1.1\\r\\n\\r\\n\");\n";
+    refused(
+        &format!("{req}    let h = std::http::header(r);\n    println(h);"),
+        &[("`std::http::header` takes 2 arguments, got 1", "std::http::header")],
+    );
+    refused(
+        &format!("{req}    let h = std::http::header(r, 7);\n    println(h);"),
+        &[("`std::http::header` argument 2: expected `String`, got `Int`", "7")],
+    );
+    refused(
+        &format!("{req}    let h = std::http::header(r, \"Host\") or \"\";\n    println(h);"),
+        &[(
+            "`std::http::header` is not fallible (it returns `String`); drop the `or` clause",
+            "std::http::header(r, \"Host\")",
+        )],
+    );
+    // The response writer's two handles are typed: a Request is not a
+    // Response.
+    refused(
+        &format!("{req}    std::http::write_response(r, r);"),
+        &[
+            ("`std::http::write_response` argument 1: expected `std::io::tcp::Stream`, got `std::http::Request`", "r"),
+            ("`std::http::write_response` argument 2: expected `std::http::Response`, got `std::http::Request`", "r"),
+        ],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

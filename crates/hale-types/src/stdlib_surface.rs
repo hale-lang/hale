@@ -712,8 +712,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("get", SYSCALL | BLOCK, _, Renamed),
             // The header of a Request or of a Response: the receiver's type
             // picks the body (F.40 phase 4, S5; an arm chose it from the
-            // receiver's lowered type until then, lowering it twice).
-            row!("header", PURE, _, HaleBodyByReceiver([
+            // receiver's lowered type until then, lowering it twice). The
+            // receiver is either type, which one SigTy cannot say: `Any`
+            // (F.40 phase 4, S6).
+            row!("header", PURE, [Any, Str] -> Str, HaleBodyByReceiver([
                 ("__StdHttpRequest", "__http_request_header"),
                 ("__StdHttpResponse", "__http_response_header"),
             ])),
@@ -726,7 +728,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("post", SYSCALL | BLOCK, _, Renamed),
             row!("query_param", PURE, _, Renamed),
             row!("request", SYSCALL | BLOCK, _, Renamed),
-            row!("write_response", SYSCALL | BLOCK, _, HaleBody("__write_http_response")),
+            row!("write_response", SYSCALL | BLOCK, [Named("__StdIoTcpStream"), Named("__StdHttpResponse")] -> Unit, HaleBody("__write_http_response")),
         ],
         open_prefixes: &[],
     },
