@@ -12911,51 +12911,65 @@ int64_t lotus_bus_subject_authorized(const char *subject,
  * it never sees this pair. Recorded here at registration and checked
  * at the computed publish site, where the subject is finally known.
  * Literal publishes never consult it — the checker already bound
- * them. */
+ * them.
+ *
+ * A row is recorded wherever a subscription registers, on any thread
+ * (a pinned anchor's or a pool root's initialization, C49/C50), and
+ * read at every computed publish, on any thread. So the table has the
+ * registration table's publication scheme (R50, above): rows that never
+ * move, appended under `g_bus_reg_lock` to an array of row pointers
+ * whose (pointer, count) pair is published with release stores, read
+ * with acquire loads and no lock, the array growth replaced retired
+ * until `lotus_bus_router_destroy`. Before, the rows lived in one array
+ * grown by `realloc` with no lock: a computed publish on another thread
+ * read the freed array, and two concurrent records could lose one. */
 typedef struct {
     const char *subject;        /* borrowed: codegen global string */
     uint64_t    payload_id;
 } lotus_subject_payload_t;
 
-static lotus_subject_payload_t *g_subj_pay = NULL;
-static size_t g_subj_pay_count = 0;
-static size_t g_subj_pay_cap = 0;
+static lotus_pub_array_t g_subj_pay = { NULL, 0, 0 };
 
 void lotus_bus_declare_subject_payload(const char *subject,
                                        uint64_t payload_id) {
     if (!subject) return;
-    for (size_t i = 0; i < g_subj_pay_count; i++) {
-        if (g_subj_pay[i].payload_id == payload_id &&
-            strcmp(g_subj_pay[i].subject, subject) == 0) {
+    pthread_mutex_lock(&g_bus_reg_lock);
+    for (size_t i = 0; i < g_subj_pay.count; i++) {
+        const lotus_subject_payload_t *r =
+            (const lotus_subject_payload_t *)g_subj_pay.items[i];
+        if (r->payload_id == payload_id && strcmp(r->subject, subject) == 0) {
+            pthread_mutex_unlock(&g_bus_reg_lock);
             return;                     /* already recorded */
         }
     }
-    if (g_subj_pay_count == g_subj_pay_cap) {
-        size_t new_cap = g_subj_pay_cap ? g_subj_pay_cap * 2 : 8;
-        lotus_subject_payload_t *grown = (lotus_subject_payload_t *)
-            realloc(g_subj_pay, new_cap * sizeof(*grown));
-        if (!grown) return;             /* graceful degrade */
-        g_subj_pay = grown;
-        g_subj_pay_cap = new_cap;
+    lotus_subject_payload_t *row =
+        (lotus_subject_payload_t *)malloc(sizeof *row);
+    if (row) {                          /* graceful degrade on OOM */
+        row->subject = subject;
+        row->payload_id = payload_id;
+        if (!lotus_pub_append_locked(&g_subj_pay, row)) free(row);
     }
-    g_subj_pay[g_subj_pay_count].subject = subject;
-    g_subj_pay[g_subj_pay_count].payload_id = payload_id;
-    g_subj_pay_count++;
+    pthread_mutex_unlock(&g_bus_reg_lock);
 }
 
 /* 1 when some registered subscription that would RECEIVE `subject`
  * expects a payload other than `payload_id`. A subscription matches
  * either exactly or through its own wildcard pattern, mirroring
- * dispatch. */
+ * dispatch. Reads one view of the table and takes no lock; a row
+ * recorded meanwhile is not in this read. */
 int64_t lotus_bus_subject_payload_conflicts(const char *subject,
                                             uint64_t payload_id) {
     if (!subject) return 0;
-    for (size_t i = 0; i < g_subj_pay_count; i++) {
-        const char *s = g_subj_pay[i].subject;
+    void *const *items;
+    size_t n = lotus_pub_view(&g_subj_pay, &items);
+    for (size_t i = 0; i < n; i++) {
+        const lotus_subject_payload_t *r =
+            (const lotus_subject_payload_t *)items[i];
+        const char *s = r->subject;
         int reaches = strstr(s, "**")
             ? (lotus_wildcard_match(s, subject) != 0)
             : (strcmp(s, subject) == 0);
-        if (reaches && g_subj_pay[i].payload_id != payload_id) {
+        if (reaches && r->payload_id != payload_id) {
             return 1;
         }
     }
@@ -14373,7 +14387,12 @@ void lotus_bus_router_destroy(void) {
     }
     free(g_bus_static_buckets.items);
     g_bus_static_buckets = (lotus_pub_array_t){ NULL, 0, 0 };
-    /* The arrays growth replaced, and the entries' chunks. */
+    /* The subject-to-payload rows, and their live array. */
+    for (size_t i = 0; i < g_subj_pay.count; i++) free(g_subj_pay.items[i]);
+    free(g_subj_pay.items);
+    g_subj_pay = (lotus_pub_array_t){ NULL, 0, 0 };
+    /* The arrays growth replaced (the subject-to-payload table's too),
+     * and the entries' chunks. */
     lotus_bus_retired_t *lists[2] = { g_bus_retired, g_bus_chunks };
     for (int l = 0; l < 2; l++) {
         for (lotus_bus_retired_t *r = lists[l]; r;) {
