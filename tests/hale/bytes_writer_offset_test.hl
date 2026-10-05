@@ -1,0 +1,30 @@
+// F.40 phase 4: the `std::bytes::write_*` writers return the offset past
+// the write, as `spec/stdlib.md` documents (`(buf, off, val) -> Int
+// fallible(IndexError)`). The rows and the checker always said `Int`,
+// but lowering produced no value, so `let next = write_u32_le(..) or 0`
+// passed `hale check` and failed `hale build`. Three writes chained by
+// the returned offset, then read back.
+
+fn main() {
+    let ring = std::io::MirrorRing { cap: 4096 };
+    let w = ring.writable();
+
+    let a = std::bytes::write_u8(w, 0, 7) or 0;
+    std::test::assert_eq_int(a, 1, "write_u8 returns the offset past one byte");
+    let b = std::bytes::write_u32_le(w, a, 305419896) or 0;
+    std::test::assert_eq_int(b, 5, "write_u32_le returns the offset past four bytes");
+    let c = std::bytes::write_f64_be(w, b, 2.5) or 0;
+    std::test::assert_eq_int(c, 13, "write_f64_be returns the offset past eight bytes");
+    ring.commit(c);
+
+    let r = ring.readable();
+    std::test::assert_eq_int(std::bytes::read_u8(r, 0) or 0, 7, "the byte reads back");
+    std::test::assert_eq_int(std::bytes::read_u32_le(r, a) or 0, 305419896, "the u32 reads back at the returned offset");
+    let f = std::bytes::read_f64_be(r, b) or 0.0;
+    std::test::assert(f == 2.5, "the f64 reads back at the returned offset");
+    std::test::assert_eq_int(ring.len(), 13, "the three writes fill thirteen bytes");
+
+    // Past the window: the error path, and the substitute.
+    let past = std::bytes::write_u64_le(w, 4092, 1) or 99;
+    std::test::assert_eq_int(past, 99, "a write past the window takes the `or`");
+}

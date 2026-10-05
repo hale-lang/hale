@@ -378,7 +378,10 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
 // filled from the per-function lowering verification (each lowering
 // fn's arg-count checks + type coercions read directly, cross-checked
 // against spec/stdlib.md); UNCERTAIN signatures are EXCLUDED, not
-// guessed (M3 stage 2, 2026-07-02).
+// guessed (M3 stage 2, 2026-07-02). Since F.40 phase 4, S6 every public
+// row has the signature its lowering enforces, save a rename (the check
+// types its call against the Hale body's own signature) and the few
+// whose comment says why they have none.
 //
 // GH #771: a type slot is a bare `SigTy` variant (`Str`, `Int`) OR
 // `Named("__JsonString")` — the tuple variant, written the way the
@@ -498,7 +501,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bus"],
         fns: &[
-            row!("__local_dispatch", PUBLISH, _, Intrinsic(BusLocalDispatchRaw)),
+            row!("__local_dispatch", PUBLISH, [Str, Bytes] -> Int, Intrinsic(BusLocalDispatchRaw)),
             // GH #233: the unix transports' lifecycle primitives, called
             // by `__StdBusUnixConnectTransport` / `__StdBusUnixListenTransport`.
             internal!("__binding_fail", _, Intrinsic(BusBindingFailRaw)),
@@ -519,10 +522,15 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["io", "mirror"],
         fns: &[
             // Double-mmap setup and teardown: mmap/munmap.
-            row!("__new", SYSCALL, _, Intrinsic(IoMirrorNewRaw)),
+            // `__new` and `__recv_into` count their arguments. The other
+            // seven have no signature (F.40 phase 4, S6): their helper
+            // reads the arguments it needs without counting them and
+            // ignores any more, so a signature would refuse calls lowering
+            // builds.
+            row!("__new", SYSCALL, [Int] -> Int, Intrinsic(IoMirrorNewRaw)),
             row!("__free", SYSCALL, _, Intrinsic(IoMirrorFreeRaw)),
             // Datagram read straight into the ring.
-            row!("__recv_into", SYSCALL, _, Intrinsic(IoMirrorRecvIntoRaw)),
+            row!("__recv_into", SYSCALL, [Int, Int, Int] -> Int, Intrinsic(IoMirrorRecvIntoRaw)),
             // Cursor arithmetic over an already-mapped region.
             row!("__commit", PURE, _, Intrinsic(IoMirrorCommitRaw)),
             row!("__consume", PURE, _, Intrinsic(IoMirrorConsumeRaw)),
@@ -536,7 +544,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bytes"],
         fns: &[
-            row!("__is_alloc_fail", PURE, _, Intrinsic(BytesIsAllocFailRaw)),
+            row!("__is_alloc_fail", PURE, [Bytes] -> Int, Intrinsic(BytesIsAllocFailRaw)),
             // std::bytes — reads accept Bytes/BytesView/BytesMut; writes
             // require a BytesMut window (accepts() stays permissive on the
             // family, favoring no-false-error over full strictness).
@@ -587,23 +595,30 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bytes", "builder"],
         fns: &[
-            row!("__append", PURE, _, Intrinsic(BytesBuilderAppendRaw)),
-            row!("__append_f32", PURE, _, Intrinsic(BytesBuilderAppendF32Raw)),
-            row!("__append_f64", PURE, _, Intrinsic(BytesBuilderAppendF64Raw)),
-            row!("__append_pad", PURE, _, Intrinsic(BytesBuilderAppendPadRaw)),
-            row!("__append_scalar", PURE, _, Intrinsic(BytesBuilderAppendScalarRaw)),
-            row!("__append_slice", PURE, _, Intrinsic(BytesBuilderAppendSliceRaw)),
-            row!("__append_str", PURE, _, Intrinsic(BytesBuilderAppendStrRaw)),
-            row!("__clear", PURE, _, Intrinsic(BytesBuilderClearRaw)),
+            // The `BytesBuilder` locus's primitives (F.40 phase 4, S6: the
+            // signatures their helpers enforce). The handle is the C
+            // builder's pointer as an Int; `__text_view` and `__view`
+            // return a StringView and a BytesView, which a signature cannot
+            // state, so their success is `Any`. `__finish` and `__snapshot`
+            // (`(Int) -> Bytes`) stay unsigned: the stdlib call fixture
+            // prints their value, which the check refuses for a `Bytes`.
+            row!("__append", PURE, [Int, Bytes] -> Int, Intrinsic(BytesBuilderAppendRaw)),
+            row!("__append_f32", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF32Raw)),
+            row!("__append_f64", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF64Raw)),
+            row!("__append_pad", PURE, [Int, Int] -> Int, Intrinsic(BytesBuilderAppendPadRaw)),
+            row!("__append_scalar", PURE, [Int, Int, Int, Int] -> Int, Intrinsic(BytesBuilderAppendScalarRaw)),
+            row!("__append_slice", PURE, [Int, Bytes, Int, Int] -> Int, Intrinsic(BytesBuilderAppendSliceRaw)),
+            row!("__append_str", PURE, [Int, Str] -> Int, Intrinsic(BytesBuilderAppendStrRaw)),
+            row!("__clear", PURE, [Int] -> Int, Intrinsic(BytesBuilderClearRaw)),
             row!("__finish", PURE, _, Intrinsic(BytesBuilderFinishRaw)),
-            row!("__free", PURE, _, Intrinsic(BytesBuilderFreeRaw)),
-            row!("__len", PURE, _, Intrinsic(BytesBuilderLenRaw)),
-            row!("__new", PURE, _, Intrinsic(BytesBuilderNewRaw)),
-            row!("__shift_front", PURE, _, Intrinsic(BytesBuilderShiftFrontRaw)),
+            row!("__free", PURE, [Int] -> Int, Intrinsic(BytesBuilderFreeRaw)),
+            row!("__len", PURE, [Int] -> Int, Intrinsic(BytesBuilderLenRaw)),
+            row!("__new", PURE, [Int] -> Int, Intrinsic(BytesBuilderNewRaw)),
+            row!("__shift_front", PURE, [Int, Int] -> Int, Intrinsic(BytesBuilderShiftFrontRaw)),
             row!("__snapshot", PURE, _, Intrinsic(BytesBuilderSnapshotRaw)),
-            row!("__text_view", PURE, _, Intrinsic(BytesBuilderTextViewRaw)),
-            row!("__view", PURE, _, Intrinsic(BytesBuilderViewRaw)),
-            row!("__xor_mask_into", PURE, _, Intrinsic(BytesBuilderXorMaskIntoRaw)),
+            row!("__text_view", PURE, [Int] -> Any, Intrinsic(BytesBuilderTextViewRaw)),
+            row!("__view", PURE, [Int] -> Any, Intrinsic(BytesBuilderViewRaw)),
+            row!("__xor_mask_into", PURE, [Int, Bytes, Int] -> Int, Intrinsic(BytesBuilderXorMaskIntoRaw)),
         ],
         open_prefixes: &[],
     },
@@ -646,7 +661,7 @@ pub const SURFACES: &[NsSurface] = &[
             // One mode, fallible (F.40 phase 4, S5): the bare form that
             // answered an empty Bytes on a bad key is gone.
             row!("ecdsa_p256_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEcdsaP256Sign)),
-            row!("ecdsa_p256_verify", PURE, _, Intrinsic(CryptoEcdsaP256Verify)),
+            row!("ecdsa_p256_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoEcdsaP256Verify)),
             row!("hmac_sha256", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha256)),
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
             row!("sha1", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha1)),
@@ -658,18 +673,18 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["ring"],
         fns: &[
-            row!("__spsc_emit", SYSCALL, _, Intrinsic(RingSpscEmitRaw)),
-            row!("__spsc_init", SYSCALL, _, Intrinsic(RingSpscInitRaw)),
-            row!("__spsc_note_drop", SYSCALL, _, Intrinsic(RingSpscNoteDropRaw)),
-            row!("__spsc_read", SYSCALL, _, Intrinsic(RingSpscReadRaw)),
-            row!("__spsc_set_tag_b", SYSCALL, _, Intrinsic(RingSpscSetTagBRaw)),
+            row!("__spsc_emit", SYSCALL, [Int, Int, Int, Int, Int] -> Unit, Intrinsic(RingSpscEmitRaw)),
+            row!("__spsc_init", SYSCALL, [Int, Int, Int, Int] -> Unit, Intrinsic(RingSpscInitRaw)),
+            row!("__spsc_note_drop", SYSCALL, [Int] -> Unit, Intrinsic(RingSpscNoteDropRaw)),
+            row!("__spsc_read", SYSCALL, [Int, Int, Int, Int, Int, Int, Int] -> Int, Intrinsic(RingSpscReadRaw)),
+            row!("__spsc_set_tag_b", SYSCALL, [Int, Int] -> Unit, Intrinsic(RingSpscSetTagBRaw)),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["decimal"],
         fns: &[
-            row!("format", PURE, _, Intrinsic(DecimalFormat)),
+            row!("format", PURE, [Decimal, Int] -> Str, Intrinsic(DecimalFormat)),
             row!("to_float", PURE, [Decimal] -> Float, Intrinsic(DecimalToFloat)),
         ],
         open_prefixes: &[],
@@ -700,8 +715,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("get", SYSCALL | BLOCK, _, Renamed),
             // The header of a Request or of a Response: the receiver's type
             // picks the body (F.40 phase 4, S5; an arm chose it from the
-            // receiver's lowered type until then, lowering it twice).
-            row!("header", PURE, _, HaleBodyByReceiver([
+            // receiver's lowered type until then, lowering it twice). The
+            // receiver is either type, which one SigTy cannot say: `Any`
+            // (F.40 phase 4, S6).
+            row!("header", PURE, [Any, Str] -> Str, HaleBodyByReceiver([
                 ("__StdHttpRequest", "__http_request_header"),
                 ("__StdHttpResponse", "__http_response_header"),
             ])),
@@ -714,20 +731,20 @@ pub const SURFACES: &[NsSurface] = &[
             row!("post", SYSCALL | BLOCK, _, Renamed),
             row!("query_param", PURE, _, Renamed),
             row!("request", SYSCALL | BLOCK, _, Renamed),
-            row!("write_response", SYSCALL | BLOCK, _, HaleBody("__write_http_response")),
+            row!("write_response", SYSCALL | BLOCK, [Named("__StdIoTcpStream"), Named("__StdHttpResponse")] -> Unit, HaleBody("__write_http_response")),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "file"],
         fns: &[
-            row!("__at_eof", SYSCALL, _, Intrinsic(IoFileAtEofRaw)),
-            row!("__close", SYSCALL, _, Intrinsic(IoFileCloseRaw)),
+            row!("__at_eof", SYSCALL, [Int] -> Bool, Intrinsic(IoFileAtEofRaw)),
+            row!("__close", SYSCALL, [Int] -> Int, Intrinsic(IoFileCloseRaw)),
             // The three primitives `file.hl`'s `File` wraps lower only under
             // an `or`, so their rows say they can fail and a bare call is
             // the checker's (F.40 phase 4, S5).
             row!("__open", SYSCALL, [Str, Str] -> Int ! "IoError", Intrinsic(IoFileOpenRaw)),
-            row!("__read_line", SYSCALL | BLOCK, _, Intrinsic(IoFileReadLineRaw)),
+            row!("__read_line", SYSCALL | BLOCK, [Int] -> Str, Intrinsic(IoFileReadLineRaw)),
             row!("__seek", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoFileSeekRaw)),
             row!("__write_bytes", SYSCALL, [Int, Bytes] -> Unit ! "IoError", Intrinsic(IoFileWriteBytesRaw)),
             row!("at_eof", SYSCALL, [Int] -> Bool, Renamed),
@@ -758,8 +775,9 @@ pub const SURFACES: &[NsSurface] = &[
             // io::file::write_line (lowering ambiguous; the tcp timeout
             // setters, once here too, have their rows since F.40 phase 4,
             // S5); io::fs::list_dir (spec-only); the 7 spec'd
-            // std::io::tls fns with NO lowering (recv_stamped_into,
-            // last_recv_*, set_*) — names-only keeps them permissive.
+            // std::io::tls fns with NO lowering then (recv_stamped_into,
+            // last_recv_*, set_*), all lowered and signed since (the last
+            // two at F.40 phase 4, S6).
             // Handle args are plain Int FDs at the path-call level (the
             // File/Stream locus wrappers live in stdlib .hl seeds).
             row!("read_file", SYSCALL, [Str] -> Str ! "IoError", Intrinsic(IoFsReadFile)),
@@ -823,18 +841,18 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "tcp"],
         fns: &[
-            row!("__accept_one", SYSCALL | BLOCK, _, Intrinsic(IoTcpAcceptOneRaw)),
-            row!("__close_fd", SYSCALL, _, Intrinsic(IoTcpCloseFdRaw)),
-            row!("__connect", SYSCALL | BLOCK, _, Intrinsic(IoTcpConnectRaw)),
-            row!("__io_error_kind", PURE, _, Intrinsic(IoTcpIoErrorKindRaw)),
-            row!("__last_io_status", PURE, _, Intrinsic(IoTcpLastIoStatusRaw)),
-            row!("__listen_socket", SYSCALL, _, Intrinsic(IoTcpListenSocketRaw)),
-            row!("__recv", SYSCALL | BLOCK, _, Intrinsic(IoTcpRecvRaw)),
-            row!("__recv_bytes", SYSCALL | BLOCK, _, Intrinsic(IoTcpRecvBytesRaw)),
-            row!("__send", SYSCALL, _, Intrinsic(IoTcpSendRaw)),
-            row!("__send_bytes", SYSCALL, _, Intrinsic(IoTcpSendBytesRaw)),
-            row!("__set_recv_timeout_ns", SYSCALL, _, Intrinsic(IoTcpSetRecvTimeoutNsRaw)),
-            row!("__shutdown_listen_socket", SYSCALL, _, Intrinsic(IoTcpShutdownListenSocketRaw)),
+            row!("__accept_one", SYSCALL | BLOCK, [Int] -> Int, Intrinsic(IoTcpAcceptOneRaw)),
+            row!("__close_fd", SYSCALL, [Int] -> Int, Intrinsic(IoTcpCloseFdRaw)),
+            row!("__connect", SYSCALL | BLOCK, [Str, Int] -> Int, Intrinsic(IoTcpConnectRaw)),
+            row!("__io_error_kind", PURE, [Int] -> Str, Intrinsic(IoTcpIoErrorKindRaw)),
+            row!("__last_io_status", PURE, [] -> Int, Intrinsic(IoTcpLastIoStatusRaw)),
+            row!("__listen_socket", SYSCALL, [Str, Int] -> Int, Intrinsic(IoTcpListenSocketRaw)),
+            row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Str, Intrinsic(IoTcpRecvRaw)),
+            row!("__recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTcpRecvBytesRaw)),
+            row!("__send", SYSCALL, [Int, Str] -> Int, Intrinsic(IoTcpSendRaw)),
+            row!("__send_bytes", SYSCALL, [Int, Bytes] -> Int, Intrinsic(IoTcpSendBytesRaw)),
+            row!("__set_recv_timeout_ns", SYSCALL, [Int, Int] -> Int, Intrinsic(IoTcpSetRecvTimeoutNsRaw)),
+            row!("__shutdown_listen_socket", SYSCALL, [Int] -> Int, Intrinsic(IoTcpShutdownListenSocketRaw)),
             row!("accept_one", SYSCALL | BLOCK, [Int] -> Int ! "IoError", Intrinsic(IoTcpAcceptOne)),
             row!("close_fd", SYSCALL, [Int] -> Int, Intrinsic(IoTcpCloseFd)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTcpConnect)),
@@ -869,36 +887,36 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "sockopt"],
         fns: &[
-            row!("IPPROTO_IP", PURE, _, Intrinsic(IoSockoptIpprotoIp)),
-            row!("IPPROTO_IPV6", PURE, _, Intrinsic(IoSockoptIpprotoIpv6)),
-            row!("IPPROTO_TCP", PURE, _, Intrinsic(IoSockoptIpprotoTcp)),
-            row!("IPPROTO_UDP", PURE, _, Intrinsic(IoSockoptIpprotoUdp)),
-            row!("IP_ADD_MEMBERSHIP", PURE, _, Intrinsic(IoSockoptIpAddMembership)),
-            row!("IP_DROP_MEMBERSHIP", PURE, _, Intrinsic(IoSockoptIpDropMembership)),
-            row!("IP_MTU_DISCOVER", PURE, _, Intrinsic(IoSockoptIpMtuDiscover)),
-            row!("IP_MULTICAST_IF", PURE, _, Intrinsic(IoSockoptIpMulticastIf)),
-            row!("IP_MULTICAST_LOOP", PURE, _, Intrinsic(IoSockoptIpMulticastLoop)),
-            row!("IP_MULTICAST_TTL", PURE, _, Intrinsic(IoSockoptIpMulticastTtl)),
-            row!("IP_PKTINFO", PURE, _, Intrinsic(IoSockoptIpPktinfo)),
-            row!("IP_PMTUDISC_DO", PURE, _, Intrinsic(IoSockoptIpPmtudiscDo)),
-            row!("IP_PMTUDISC_DONT", PURE, _, Intrinsic(IoSockoptIpPmtudiscDont)),
-            row!("IP_PMTUDISC_PROBE", PURE, _, Intrinsic(IoSockoptIpPmtudiscProbe)),
-            row!("IP_PMTUDISC_WANT", PURE, _, Intrinsic(IoSockoptIpPmtudiscWant)),
-            row!("IP_TOS", PURE, _, Intrinsic(IoSockoptIpTos)),
-            row!("IP_TTL", PURE, _, Intrinsic(IoSockoptIpTtl)),
-            row!("SOL_SOCKET", PURE, _, Intrinsic(IoSockoptSolSocket)),
-            row!("SO_BINDTODEVICE", PURE, _, Intrinsic(IoSockoptSoBindtodevice)),
-            row!("SO_BROADCAST", PURE, _, Intrinsic(IoSockoptSoBroadcast)),
-            row!("SO_KEEPALIVE", PURE, _, Intrinsic(IoSockoptSoKeepalive)),
-            row!("SO_LINGER", PURE, _, Intrinsic(IoSockoptSoLinger)),
-            row!("SO_PRIORITY", PURE, _, Intrinsic(IoSockoptSoPriority)),
-            row!("SO_RCVBUF", PURE, _, Intrinsic(IoSockoptSoRcvbuf)),
-            row!("SO_RCVTIMEO", PURE, _, Intrinsic(IoSockoptSoRcvtimeo)),
-            row!("SO_REUSEADDR", PURE, _, Intrinsic(IoSockoptSoReuseaddr)),
-            row!("SO_REUSEPORT", PURE, _, Intrinsic(IoSockoptSoReuseport)),
-            row!("SO_SNDBUF", PURE, _, Intrinsic(IoSockoptSoSndbuf)),
-            row!("SO_SNDTIMEO", PURE, _, Intrinsic(IoSockoptSoSndtimeo)),
-            row!("TCP_NODELAY", PURE, _, Intrinsic(IoSockoptTcpNodelay)),
+            row!("IPPROTO_IP", PURE, [] -> Int, Intrinsic(IoSockoptIpprotoIp)),
+            row!("IPPROTO_IPV6", PURE, [] -> Int, Intrinsic(IoSockoptIpprotoIpv6)),
+            row!("IPPROTO_TCP", PURE, [] -> Int, Intrinsic(IoSockoptIpprotoTcp)),
+            row!("IPPROTO_UDP", PURE, [] -> Int, Intrinsic(IoSockoptIpprotoUdp)),
+            row!("IP_ADD_MEMBERSHIP", PURE, [] -> Int, Intrinsic(IoSockoptIpAddMembership)),
+            row!("IP_DROP_MEMBERSHIP", PURE, [] -> Int, Intrinsic(IoSockoptIpDropMembership)),
+            row!("IP_MTU_DISCOVER", PURE, [] -> Int, Intrinsic(IoSockoptIpMtuDiscover)),
+            row!("IP_MULTICAST_IF", PURE, [] -> Int, Intrinsic(IoSockoptIpMulticastIf)),
+            row!("IP_MULTICAST_LOOP", PURE, [] -> Int, Intrinsic(IoSockoptIpMulticastLoop)),
+            row!("IP_MULTICAST_TTL", PURE, [] -> Int, Intrinsic(IoSockoptIpMulticastTtl)),
+            row!("IP_PKTINFO", PURE, [] -> Int, Intrinsic(IoSockoptIpPktinfo)),
+            row!("IP_PMTUDISC_DO", PURE, [] -> Int, Intrinsic(IoSockoptIpPmtudiscDo)),
+            row!("IP_PMTUDISC_DONT", PURE, [] -> Int, Intrinsic(IoSockoptIpPmtudiscDont)),
+            row!("IP_PMTUDISC_PROBE", PURE, [] -> Int, Intrinsic(IoSockoptIpPmtudiscProbe)),
+            row!("IP_PMTUDISC_WANT", PURE, [] -> Int, Intrinsic(IoSockoptIpPmtudiscWant)),
+            row!("IP_TOS", PURE, [] -> Int, Intrinsic(IoSockoptIpTos)),
+            row!("IP_TTL", PURE, [] -> Int, Intrinsic(IoSockoptIpTtl)),
+            row!("SOL_SOCKET", PURE, [] -> Int, Intrinsic(IoSockoptSolSocket)),
+            row!("SO_BINDTODEVICE", PURE, [] -> Int, Intrinsic(IoSockoptSoBindtodevice)),
+            row!("SO_BROADCAST", PURE, [] -> Int, Intrinsic(IoSockoptSoBroadcast)),
+            row!("SO_KEEPALIVE", PURE, [] -> Int, Intrinsic(IoSockoptSoKeepalive)),
+            row!("SO_LINGER", PURE, [] -> Int, Intrinsic(IoSockoptSoLinger)),
+            row!("SO_PRIORITY", PURE, [] -> Int, Intrinsic(IoSockoptSoPriority)),
+            row!("SO_RCVBUF", PURE, [] -> Int, Intrinsic(IoSockoptSoRcvbuf)),
+            row!("SO_RCVTIMEO", PURE, [] -> Int, Intrinsic(IoSockoptSoRcvtimeo)),
+            row!("SO_REUSEADDR", PURE, [] -> Int, Intrinsic(IoSockoptSoReuseaddr)),
+            row!("SO_REUSEPORT", PURE, [] -> Int, Intrinsic(IoSockoptSoReuseport)),
+            row!("SO_SNDBUF", PURE, [] -> Int, Intrinsic(IoSockoptSoSndbuf)),
+            row!("SO_SNDTIMEO", PURE, [] -> Int, Intrinsic(IoSockoptSoSndtimeo)),
+            row!("TCP_NODELAY", PURE, [] -> Int, Intrinsic(IoSockoptTcpNodelay)),
         ],
         open_prefixes: &[],
     },
@@ -907,8 +925,8 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("close", SYSCALL, [Int] -> Int, Intrinsic(IoTlsClose)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTlsConnect)),
-            row!("last_recv_kernel_ns", PURE, _, Intrinsic(IoTlsLastRecvKernelNs)),
-            row!("last_recv_user_ns", PURE, _, Intrinsic(IoTlsLastRecvUserNs)),
+            row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvKernelNs)),
+            row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvUserNs)),
             row!("recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytes)),
             row!("recv_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvInto)),
             // GH #829: `tls::recv_stamped_into` is dispatched by codegen
@@ -930,7 +948,7 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["io", "udp"],
         fns: &[
             row!("__bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBindRaw)),
-            row!("__close", SYSCALL, _, Intrinsic(IoUdpCloseRaw)),
+            row!("__close", SYSCALL, [Int] -> Int, Intrinsic(IoUdpCloseRaw)),
             row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvRaw)),
             row!("__send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSendRaw)),
             row!("bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBind)),
@@ -943,7 +961,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("recv", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecv)),
             row!("recv_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoUdpRecvInto)),
             row!("recv_with_source", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvWithSource)),
-            row!("send", SYSCALL, [Int, Str, Int, Any] -> Unit ! "IoError", Intrinsic(IoUdpSend)),
+            row!("send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSend)),
             row!("set_multicast_iface", SYSCALL, [Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastIface)),
             row!("set_multicast_loop", SYSCALL, [Int, Any] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastLoop)),
             row!("set_multicast_ttl", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastTtl)),
@@ -965,31 +983,31 @@ pub const SURFACES: &[NsSurface] = &[
             row!("find_bool_field", PURE, [Str, Str] -> Bool, HaleBody("__json_find_bool_field")),
             row!("find_field_range_in", PURE, [Str, Str, Int, Int] -> Named("__JsonFieldRange"), HaleBody("__json_find_field_range_in")),
             row!("find_field_raw", PURE, [Str, Str] -> Str, HaleBody("__json_find_field_raw")),
-            row!("find_field_raw_in", PURE, _, HaleBody("__json_find_field_raw_in")),
+            row!("find_field_raw_in", PURE, [Str, Str, Int, Int] -> Str, HaleBody("__json_find_field_raw_in")),
             row!("find_int_field", PURE, [Str, Str] -> Int, HaleBody("__json_find_int_field")),
             // GH #535 (DNA F.8): the flat-object json readers are Hale-source
             // stdlib fns with no rename entry, so a call typed Unknown and an
             // `or` on one slid through the checker to fail at build. Tabled,
             // they type precisely and an `or` is refused where it is written.
             row!("find_string_field", PURE, [Str, Str] -> Str, HaleBody("__json_find_string_field")),
-            row!("iter_find_bool_field", PURE, _, HaleBody("__json_iter_find_bool_field")),
+            row!("iter_find_bool_field", PURE, [Named("__JsonArrayIterSpan"), Str, Str] -> Bool, HaleBody("__json_iter_find_bool_field")),
             row!("iter_find_field_range", PURE, [Named("__JsonArrayIterSpan"), Str, Str] -> Named("__JsonFieldRange"), HaleBody("__json_iter_find_field_range")),
-            row!("iter_find_field_raw", PURE, _, HaleBody("__json_iter_find_field_raw")),
-            row!("iter_find_int_field", PURE, _, HaleBody("__json_iter_find_int_field")),
-            row!("iter_find_string_field", PURE, _, HaleBody("__json_iter_find_string_field")),
+            row!("iter_find_field_raw", PURE, [Named("__JsonArrayIterSpan"), Str, Str] -> Str, HaleBody("__json_iter_find_field_raw")),
+            row!("iter_find_int_field", PURE, [Named("__JsonArrayIterSpan"), Str, Str] -> Int, HaleBody("__json_iter_find_int_field")),
+            row!("iter_find_string_field", PURE, [Named("__JsonArrayIterSpan"), Str, Str] -> Str, HaleBody("__json_iter_find_string_field")),
             row!("iter_find_string_field_range", PURE, [Named("__JsonArrayIterSpan"), Str, Str] -> Named("__JsonFieldRange"), HaleBody("__json_iter_find_string_field_range")),
-            row!("iter_substring", PURE, _, HaleBody("__json_iter_substring")),
-            row!("next_non_ws", PURE, _, Intrinsic(JsonNextNonWs)),
-            row!("next_quote_or_bs", PURE, _, Intrinsic(JsonNextQuoteOrBs)),
-            row!("next_struct_or_quote", PURE, _, Intrinsic(JsonNextStructOrQuote)),
-            row!("obj_key_eq", PURE, _, HaleBody("__json_obj_key_eq")),
-            row!("obj_key_len", PURE, _, HaleBody("__json_obj_key_len")),
-            row!("obj_key_string", PURE, _, HaleBody("__json_obj_key_string")),
-            row!("obj_value_bool", PURE, _, HaleBody("__json_obj_value_bool")),
-            row!("obj_value_float", PURE, _, HaleBody("__json_obj_value_float")),
-            row!("obj_value_int", PURE, _, HaleBody("__json_obj_value_int")),
-            row!("obj_value_raw", PURE, _, HaleBody("__json_obj_value_raw")),
-            row!("obj_value_string", PURE, _, HaleBody("__json_obj_value_string")),
+            row!("iter_substring", PURE, [Named("__JsonArrayIterSpan"), Str] -> Str, HaleBody("__json_iter_substring")),
+            row!("next_non_ws", PURE, [Str, Int, Int] -> Int, Intrinsic(JsonNextNonWs)),
+            row!("next_quote_or_bs", PURE, [Str, Int, Int] -> Int, Intrinsic(JsonNextQuoteOrBs)),
+            row!("next_struct_or_quote", PURE, [Str, Int, Int] -> Int, Intrinsic(JsonNextStructOrQuote)),
+            row!("obj_key_eq", PURE, [Named("__JsonObjectIterSpan"), Str, Str] -> Bool, HaleBody("__json_obj_key_eq")),
+            row!("obj_key_len", PURE, [Named("__JsonObjectIterSpan")] -> Int, HaleBody("__json_obj_key_len")),
+            row!("obj_key_string", PURE, [Named("__JsonObjectIterSpan"), Str] -> Str, HaleBody("__json_obj_key_string")),
+            row!("obj_value_bool", PURE, [Named("__JsonObjectIterSpan"), Str] -> Bool, HaleBody("__json_obj_value_bool")),
+            row!("obj_value_float", PURE, [Named("__JsonObjectIterSpan"), Str] -> Float, HaleBody("__json_obj_value_float")),
+            row!("obj_value_int", PURE, [Named("__JsonObjectIterSpan"), Str] -> Int, HaleBody("__json_obj_value_int")),
+            row!("obj_value_raw", PURE, [Named("__JsonObjectIterSpan"), Str] -> Str, HaleBody("__json_obj_value_raw")),
+            row!("obj_value_string", PURE, [Named("__JsonObjectIterSpan"), Str] -> Str, HaleBody("__json_obj_value_string")),
             row!("object_first", PURE, [Str] -> Named("__JsonObjectIterSpan"), HaleBody("__json_obj_first_span")),
             row!("object_next", PURE, [Named("__JsonObjectIterSpan"), Str] -> Named("__JsonObjectIterSpan"), HaleBody("__json_obj_next_span")),
             // GH #719: the typed field read — a byte scan over the
@@ -1028,26 +1046,26 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["ts"],
         fns: &[
-            row!("node_child", PURE, _, Intrinsic(TsNodeChild)),
-            row!("node_child_count", PURE, _, Intrinsic(TsNodeChildCount)),
-            row!("node_end_byte", PURE, _, Intrinsic(TsNodeEndByte)),
-            row!("node_is_named", PURE, _, Intrinsic(TsNodeIsNamed)),
-            row!("node_kind", PURE, _, Intrinsic(TsNodeKind)),
-            row!("node_named_child", PURE, _, Intrinsic(TsNodeNamedChild)),
-            row!("node_named_child_count", PURE, _, Intrinsic(TsNodeNamedChildCount)),
-            row!("node_start_byte", PURE, _, Intrinsic(TsNodeStartByte)),
-            row!("node_text", PURE, _, Intrinsic(TsNodeText)),
-            row!("parse_go", ALLOC, _, Intrinsic(TsParseGo)),
-            row!("root_node", PURE, _, Intrinsic(TsRootNode)),
+            row!("node_child", PURE, [Int, Int] -> Int, Intrinsic(TsNodeChild)),
+            row!("node_child_count", PURE, [Int] -> Int, Intrinsic(TsNodeChildCount)),
+            row!("node_end_byte", PURE, [Int] -> Int, Intrinsic(TsNodeEndByte)),
+            row!("node_is_named", PURE, [Int] -> Int, Intrinsic(TsNodeIsNamed)),
+            row!("node_kind", PURE, [Int] -> Str, Intrinsic(TsNodeKind)),
+            row!("node_named_child", PURE, [Int, Int] -> Int, Intrinsic(TsNodeNamedChild)),
+            row!("node_named_child_count", PURE, [Int] -> Int, Intrinsic(TsNodeNamedChildCount)),
+            row!("node_start_byte", PURE, [Int] -> Int, Intrinsic(TsNodeStartByte)),
+            row!("node_text", PURE, [Int] -> Str, Intrinsic(TsNodeText)),
+            row!("parse_go", ALLOC, [Str] -> Int, Intrinsic(TsParseGo)),
+            row!("root_node", PURE, [Int] -> Int, Intrinsic(TsRootNode)),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["shm"],
         fns: &[
-            row!("last_record_kernel_ns", PURE, _, Intrinsic(ShmLastRecordKernelNs)),
-            row!("last_record_seq", PURE, _, Intrinsic(ShmLastRecordSeq)),
-            row!("last_record_user_ns", PURE, _, Intrinsic(ShmLastRecordUserNs)),
+            row!("last_record_kernel_ns", PURE, [] -> Int, Intrinsic(ShmLastRecordKernelNs)),
+            row!("last_record_seq", PURE, [] -> Int, Intrinsic(ShmLastRecordSeq)),
+            row!("last_record_user_ns", PURE, [] -> Int, Intrinsic(ShmLastRecordUserNs)),
         ],
         open_prefixes: &[],
     },
@@ -1178,10 +1196,10 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["str"],
         fns: &[
-            row!("builder_append", PURE, _, Intrinsic(StrBuilderAppend)),
-            row!("builder_finish", PURE, _, Intrinsic(StrBuilderFinish)),
-            row!("builder_len", PURE, _, Intrinsic(StrBuilderLen)),
-            row!("builder_new", PURE, _, Intrinsic(StrBuilderNew)),
+            row!("builder_append", PURE, [Bytes, Str] -> Bytes, Intrinsic(StrBuilderAppend)),
+            row!("builder_finish", PURE, [Bytes] -> Str, Intrinsic(StrBuilderFinish)),
+            row!("builder_len", PURE, [Bytes] -> Int, Intrinsic(StrBuilderLen)),
+            row!("builder_new", PURE, [] -> Bytes, Intrinsic(StrBuilderNew)),
             row!("byte_at_unchecked", PURE, [Str, Int] -> Int, Intrinsic(StrByteAtUnchecked)),
             row!("can_parse_float", PURE, [Str] -> Bool, Intrinsic(StrCanParseFloat)),
             row!("can_parse_int", PURE, [Str] -> Bool, Intrinsic(StrCanParseInt)),
@@ -1236,9 +1254,9 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["term"],
         fns: &[
-            row!("__raw_disable", SYSCALL, _, Intrinsic(TermRawDisableRaw)),
-            row!("__raw_enable", SYSCALL, _, Intrinsic(TermRawEnableRaw)),
-            row!("__size_packed", SYSCALL, _, Intrinsic(TermSizePackedRaw)),
+            row!("__raw_disable", SYSCALL, [] -> Int, Intrinsic(TermRawDisableRaw)),
+            row!("__raw_enable", SYSCALL, [] -> Int, Intrinsic(TermRawEnableRaw)),
+            row!("__size_packed", SYSCALL, [] -> Int, Intrinsic(TermSizePackedRaw)),
             row!("is_tty", SYSCALL, [Int] -> Bool, Intrinsic(TermIsTty)),
             row!("size", SYSCALL, _, Renamed),
         ],
@@ -1247,9 +1265,9 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["test"],
         fns: &[
-            row!("assert", PURE, _, HaleBody("__test_assert")),
-            row!("assert_eq_int", PURE, _, HaleBody("__test_assert_eq_int")),
-            row!("assert_eq_str", PURE, _, HaleBody("__test_assert_eq_str")),
+            row!("assert", PURE, [Bool, Str] -> Unit, HaleBody("__test_assert")),
+            row!("assert_eq_int", PURE, [Int, Int, Str] -> Unit, HaleBody("__test_assert_eq_int")),
+            row!("assert_eq_str", PURE, [Str, Str, Str] -> Unit, HaleBody("__test_assert_eq_str")),
             // GH #230 / #717: the pass counter and the recorded-failure
             // latch, called by the `__test_assert*` bodies and
             // `__test_fail_trailer`.
@@ -1270,7 +1288,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("is_digit", PURE, [Int] -> Bool, Intrinsic(TextIsDigit)),
             row!("is_whitespace", PURE, [Int] -> Bool, Intrinsic(TextIsWhitespace)),
             row!("is_word_char", PURE, [Int] -> Bool, Intrinsic(TextIsWordChar)),
-            row!("md_to_html", PURE, _, HaleBody("__md_to_html")),
+            row!("md_to_html", PURE, [Str] -> Str, HaleBody("__md_to_html")),
             row!("tokenize_words_into", PURE, [Str, Any] -> Unit, Intrinsic(TextTokenizeWordsInto)),
         ],
         open_prefixes: &[],

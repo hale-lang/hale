@@ -484,31 +484,31 @@ std::bus::Adapter | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false 
 std::bus::UnixTransport | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::__binding_fai | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fai` | suggest=-
 std::bus::__binding_fail | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fail` | suggest=-
-std::bus::__local_dispatch | lookup=bus@2 | locus=false | effects=publish | sig=- | parks=false | holds=false | unknown=- | suggest=__local_dispatch
+std::bus::__local_dispatch | lookup=bus@2 | locus=false | effects=publish | sig=(Str, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__local_dispatch
 std::bus::__transport_realize | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_realize` | suggest=-
 std::bus::__transport_reclaim | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_reclaim` | suggest=-
 std::bus::__transport_spawn_server | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_spawn_server` | suggest=-
 std::bytes::BytesBuilder | lookup=bytes@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::bytes::__is_alloc_fail | lookup=bytes@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__is_alloc_fail
+std::bytes::__is_alloc_fail | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__is_alloc_fail
 std::bytes::at | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Int) -> Int ! IndexError | ret_ty=? | or=(Int, IndexError) | parks=false | holds=false | unknown=- | suggest=-
 std::bytes::builder::__apend | lookup=bytes::builder@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bytes::builder::__apend` — did you mean `std::bytes::builder::__append`? | suggest=__append
-std::bytes::builder::__append | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append
-std::bytes::builder::__append_f32 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_f32
-std::bytes::builder::__append_f64 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_f64
-std::bytes::builder::__append_pad | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_pad
-std::bytes::builder::__append_scalar | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_scalar
-std::bytes::builder::__append_slice | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_slice
-std::bytes::builder::__append_str | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_str
-std::bytes::builder::__clear | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__clear
+std::bytes::builder::__append | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append
+std::bytes::builder::__append_f32 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Float, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_f32
+std::bytes::builder::__append_f64 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Float, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_f64
+std::bytes::builder::__append_pad | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_pad
+std::bytes::builder::__append_scalar | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_scalar
+std::bytes::builder::__append_slice | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_slice
+std::bytes::builder::__append_str | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_str
+std::bytes::builder::__clear | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__clear
 std::bytes::builder::__finish | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__finish
-std::bytes::builder::__free | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__free
-std::bytes::builder::__len | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__len
-std::bytes::builder::__new | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__new
-std::bytes::builder::__shift_front | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__shift_front
+std::bytes::builder::__free | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__free
+std::bytes::builder::__len | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__len
+std::bytes::builder::__new | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__new
+std::bytes::builder::__shift_front | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__shift_front
 std::bytes::builder::__snapshot | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__snapshot
-std::bytes::builder::__text_view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__text_view
-std::bytes::builder::__view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__view
-std::bytes::builder::__xor_mask_into | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__xor_mask_into
+std::bytes::builder::__text_view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Any | ret_ty=? | or=- | parks=false | holds=false | unknown=- | suggest=__text_view
+std::bytes::builder::__view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Any | ret_ty=? | or=- | parks=false | holds=false | unknown=- | suggest=__view
+std::bytes::builder::__xor_mask_into | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__xor_mask_into
 std::bytes::clone | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=clone
 std::bytes::concat | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=concat
 std::bytes::find_byte | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find_byte
@@ -560,13 +560,13 @@ std::compress::unzstd | lookup=compress@2 | locus=false | effects=pure | sig=(By
 std::compress::zstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=zstd
 std::crypto::crc32 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=crc32
 std::crypto::ecdsa_p256_sign | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes ! CryptoError | ret_ty=? | or=(Bytes, CryptoError) | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_sign
-std::crypto::ecdsa_p256_verify | lookup=crypto@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_verify
+std::crypto::ecdsa_p256_verify | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes, Bytes) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_verify
 std::crypto::hmac_sha256 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=hmac_sha256
 std::crypto::hmac_sha512 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=hmac_sha512
 std::crypto::sha1 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha1
 std::crypto::sha256 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha256
 std::crypto::sha512 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha512
-std::decimal::format | lookup=decimal@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=format
+std::decimal::format | lookup=decimal@2 | locus=false | effects=pure | sig=(Decimal, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=format
 std::decimal::to_float | lookup=decimal@2 | locus=false | effects=pure | sig=(Decimal) -> Float | ret_ty=Float | or=- | parks=false | holds=false | unknown=- | suggest=to_float
 std::diag::heap_alloc_count | lookup=diag@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=heap_alloc_count
 std::diag::syscall_count | lookup=diag@2 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=syscall_count
@@ -595,7 +595,7 @@ std::http::Server | lookup=http@2 | locus=true | effects=- | sig=- | parks=false
 std::http::Url | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::build_context | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=build_context
 std::http::get | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=-
-std::http::header | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=header
+std::http::header | lookup=http@2 | locus=false | effects=pure | sig=(Any, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=header
 std::http::is_route | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=is_route
 std::http::parse_request | lookup=http@2 | locus=false | effects=pure | sig=(Str) -> Named(__StdHttpRequest) | ret_ty=__StdHttpRequest | or=- | parks=false | holds=false | unknown=- | suggest=parse_request
 std::http::parse_url | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse_url
@@ -603,14 +603,14 @@ std::http::path_param | lookup=http@2 | locus=false | effects=pure | sig=- | par
 std::http::post | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=post
 std::http::query_param | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=query_param
 std::http::request | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=request
-std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=write_response
+std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block | sig=(Named(__StdIoTcpStream), Named(__StdHttpResponse)) -> Unit | ret_ty=() | or=- | parks=false | holds=true | unknown=- | suggest=write_response
 std::io | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__at_eof
-std::io::file::__close | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close
+std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__at_eof
+std::io::file::__close | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close
 std::io::file::__open | lookup=io::file@3 | locus=false | effects=syscall | sig=(Str, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__open
-std::io::file::__read_line | lookup=io::file@3 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__read_line
+std::io::file::__read_line | lookup=io::file@3 | locus=false | effects=syscall|block | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=__read_line
 std::io::file::__seek | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__seek
 std::io::file::__write_bytes | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__write_bytes
 std::io::file::at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=at_eof
@@ -643,43 +643,43 @@ std::io::mirror::__commit | lookup=io::mirror@3 | locus=false | effects=pure | s
 std::io::mirror::__consume | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__consume
 std::io::mirror::__free | lookup=io::mirror@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__free
 std::io::mirror::__len | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__len
-std::io::mirror::__new | lookup=io::mirror@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__new
+std::io::mirror::__new | lookup=io::mirror@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__new
 std::io::mirror::__readable | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__readable
-std::io::mirror::__recv_into | lookup=io::mirror@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__recv_into
+std::io::mirror::__recv_into | lookup=io::mirror@3 | locus=false | effects=syscall | sig=(Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__recv_into
 std::io::mirror::__writable | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__writable
 std::io::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::io::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
-std::io::sockopt::IPPROTO_IP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IP
-std::io::sockopt::IPPROTO_IPV6 | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IPV6
-std::io::sockopt::IPPROTO_TCP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_TCP
-std::io::sockopt::IPPROTO_UDP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_UDP
-std::io::sockopt::IP_ADD_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_ADD_MEMBERSHIP
-std::io::sockopt::IP_DROP_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_DROP_MEMBERSHIP
-std::io::sockopt::IP_MTU_DISCOVER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MTU_DISCOVER
-std::io::sockopt::IP_MULTICAST_IF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_IF
-std::io::sockopt::IP_MULTICAST_LOOP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_LOOP
-std::io::sockopt::IP_MULTICAST_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_TTL
-std::io::sockopt::IP_PKTINFO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PKTINFO
-std::io::sockopt::IP_PMTUDISC_DO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DO
-std::io::sockopt::IP_PMTUDISC_DONT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DONT
-std::io::sockopt::IP_PMTUDISC_PROBE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_PROBE
-std::io::sockopt::IP_PMTUDISC_WANT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_WANT
-std::io::sockopt::IP_TOS | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_TOS
-std::io::sockopt::IP_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=IP_TTL
-std::io::sockopt::SOL_SOCKET | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SOL_SOCKET
-std::io::sockopt::SO_BINDTODEVICE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_BINDTODEVICE
-std::io::sockopt::SO_BROADCAST | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_BROADCAST
-std::io::sockopt::SO_KEEPALIVE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_KEEPALIVE
-std::io::sockopt::SO_LINGER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_LINGER
-std::io::sockopt::SO_PRIORITY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_PRIORITY
-std::io::sockopt::SO_RCVBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_RCVBUF
-std::io::sockopt::SO_RCVTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_RCVTIMEO
-std::io::sockopt::SO_REUSEADDR | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEADDR
+std::io::sockopt::IPPROTO_IP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IP
+std::io::sockopt::IPPROTO_IPV6 | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IPV6
+std::io::sockopt::IPPROTO_TCP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_TCP
+std::io::sockopt::IPPROTO_UDP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_UDP
+std::io::sockopt::IP_ADD_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_ADD_MEMBERSHIP
+std::io::sockopt::IP_DROP_MEMBERSHIP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_DROP_MEMBERSHIP
+std::io::sockopt::IP_MTU_DISCOVER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MTU_DISCOVER
+std::io::sockopt::IP_MULTICAST_IF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_IF
+std::io::sockopt::IP_MULTICAST_LOOP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_LOOP
+std::io::sockopt::IP_MULTICAST_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_MULTICAST_TTL
+std::io::sockopt::IP_PKTINFO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PKTINFO
+std::io::sockopt::IP_PMTUDISC_DO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DO
+std::io::sockopt::IP_PMTUDISC_DONT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_DONT
+std::io::sockopt::IP_PMTUDISC_PROBE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_PROBE
+std::io::sockopt::IP_PMTUDISC_WANT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_PMTUDISC_WANT
+std::io::sockopt::IP_TOS | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_TOS
+std::io::sockopt::IP_TTL | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IP_TTL
+std::io::sockopt::SOL_SOCKET | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SOL_SOCKET
+std::io::sockopt::SO_BINDTODEVICE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_BINDTODEVICE
+std::io::sockopt::SO_BROADCAST | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_BROADCAST
+std::io::sockopt::SO_KEEPALIVE | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_KEEPALIVE
+std::io::sockopt::SO_LINGER | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_LINGER
+std::io::sockopt::SO_PRIORITY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_PRIORITY
+std::io::sockopt::SO_RCVBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_RCVBUF
+std::io::sockopt::SO_RCVTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_RCVTIMEO
+std::io::sockopt::SO_REUSEADDR | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEADDR
 std::io::sockopt::SO_REUSEADR | lookup=io::sockopt@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::sockopt::SO_REUSEADR` — did you mean `std::io::sockopt::SO_REUSEADDR`? | suggest=SO_REUSEADDR
-std::io::sockopt::SO_REUSEPORT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEPORT
-std::io::sockopt::SO_SNDBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_SNDBUF
-std::io::sockopt::SO_SNDTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=SO_SNDTIMEO
-std::io::sockopt::TCP_NODELAY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=TCP_NODELAY
+std::io::sockopt::SO_REUSEPORT | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_REUSEPORT
+std::io::sockopt::SO_SNDBUF | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_SNDBUF
+std::io::sockopt::SO_SNDTIMEO | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=SO_SNDTIMEO
+std::io::sockopt::TCP_NODELAY | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=TCP_NODELAY
 std::io::stdin::read_byte | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=read_byte
 std::io::stdin::read_line | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=() -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=read_line
 std::io::stdin::read_line_status | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=read_line_status
@@ -689,18 +689,18 @@ std::io::stdout::write_bytes | lookup=io::stdout@3 | locus=false | effects=sysca
 std::io::tcp::Listener | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::LogEvent | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::Stream | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__accept_one
-std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close_fd
-std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__connect
-std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
-std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
-std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
-std::io::tcp::__recv | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__recv
-std::io::tcp::__recv_bytes | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes
-std::io::tcp::__send | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__send
-std::io::tcp::__send_bytes | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__send_bytes
-std::io::tcp::__set_recv_timeout_ns | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__set_recv_timeout_ns
-std::io::tcp::__shutdown_listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__shutdown_listen_socket
+std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__accept_one
+std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close_fd
+std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=__connect
+std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
+std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
+std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
+std::io::tcp::__recv | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Str | ret_ty=String | or=- | parks=true | holds=true | unknown=- | suggest=__recv
+std::io::tcp::__recv_bytes | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes
+std::io::tcp::__send | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send
+std::io::tcp::__send_bytes | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send_bytes
+std::io::tcp::__set_recv_timeout_ns | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__set_recv_timeout_ns
+std::io::tcp::__shutdown_listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__shutdown_listen_socket
 std::io::tcp::accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=accept_one
 std::io::tcp::close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close_fd
 std::io::tcp::conect | lookup=io::tcp@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::tcp::conect` — did you mean `std::io::tcp::connect`? | suggest=connect
@@ -718,8 +718,8 @@ std::io::tcp::set_rx_timestamps | lookup=io::tcp@3 | locus=false | effects=sysca
 std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
 std::io::tls::close | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::tls::connect | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
-std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
-std::io::tls::last_recv_user_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_recv_user_ns
+std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
+std::io::tls::last_recv_user_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_user_ns
 std::io::tls::recv_bytes | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=true | unknown=- | suggest=recv_bytes
 std::io::tls::recv_into | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_into
 std::io::tls::recv_stamped_into | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_stamped_into
@@ -731,7 +731,7 @@ std::io::tls::set_send_timeout | lookup=io::tls@3 | locus=false | effects=syscal
 std::io::tls::upgrade | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Str, Bool) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=upgrade
 std::io::udp::Reader | lookup=io::udp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::udp::__bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__bind
-std::io::udp::__close | lookup=io::udp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close
+std::io::udp::__close | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close
 std::io::udp::__recv | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=__recv
 std::io::udp::__send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__send
 std::io::udp::bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=bind
@@ -744,7 +744,7 @@ std::io::udp::leave_group | lookup=io::udp@3 | locus=false | effects=syscall | s
 std::io::udp::recv | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=recv
 std::io::udp::recv_into | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_into
 std::io::udp::recv_with_source | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=recv_with_source
-std::io::udp::send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Any) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=send
+std::io::udp::send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=send
 std::io::udp::set_multicast_iface | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_multicast_iface
 std::io::udp::set_multicast_loop | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Any) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_multicast_loop
 std::io::udp::set_multicast_ttl | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_multicast_ttl
@@ -777,27 +777,27 @@ std::json::escape_string | lookup=json@2 | locus=false | effects=pure | sig=(Str
 std::json::find_bool_field | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=find_bool_field
 std::json::find_field_range_in | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str, Int, Int) -> Named(__JsonFieldRange) | ret_ty=__JsonFieldRange | or=- | parks=false | holds=false | unknown=- | suggest=find_field_range_in
 std::json::find_field_raw | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=find_field_raw
-std::json::find_field_raw_in | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=find_field_raw_in
+std::json::find_field_raw_in | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str, Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=find_field_raw_in
 std::json::find_int_field | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find_int_field
 std::json::find_string_field | lookup=json@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=find_string_field
-std::json::iter_find_bool_field | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_bool_field
+std::json::iter_find_bool_field | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_bool_field
 std::json::iter_find_field_range | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Named(__JsonFieldRange) | ret_ty=__JsonFieldRange | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_field_range
-std::json::iter_find_field_raw | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_field_raw
-std::json::iter_find_int_field | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_int_field
-std::json::iter_find_string_field | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_find_string_field
+std::json::iter_find_field_raw | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_field_raw
+std::json::iter_find_int_field | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_int_field
+std::json::iter_find_string_field | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_string_field
 std::json::iter_find_string_field_range | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str, Str) -> Named(__JsonFieldRange) | ret_ty=__JsonFieldRange | or=- | parks=false | holds=false | unknown=- | suggest=iter_find_string_field_range
-std::json::iter_substring | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=iter_substring
-std::json::next_non_ws | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=next_non_ws
-std::json::next_quote_or_bs | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=next_quote_or_bs
-std::json::next_struct_or_quote | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=next_struct_or_quote
-std::json::obj_key_eq | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_key_eq
-std::json::obj_key_len | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_key_len
-std::json::obj_key_string | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_key_string
-std::json::obj_value_bool | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_bool
-std::json::obj_value_float | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_float
-std::json::obj_value_int | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_int
-std::json::obj_value_raw | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_raw
-std::json::obj_value_string | lookup=json@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=obj_value_string
+std::json::iter_substring | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=iter_substring
+std::json::next_non_ws | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_non_ws
+std::json::next_quote_or_bs | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_quote_or_bs
+std::json::next_struct_or_quote | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_struct_or_quote
+std::json::obj_key_eq | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_eq
+std::json::obj_key_len | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan)) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_len
+std::json::obj_key_string | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_string
+std::json::obj_value_bool | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_bool
+std::json::obj_value_float | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Float | ret_ty=Float | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_float
+std::json::obj_value_int | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_int
+std::json::obj_value_raw | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_raw
+std::json::obj_value_string | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_value_string
 std::json::object_first | lookup=json@2 | locus=false | effects=pure | sig=(Str) -> Named(__JsonObjectIterSpan) | ret_ty=__JsonObjectIterSpan | or=- | parks=false | holds=false | unknown=- | suggest=object_first
 std::json::object_next | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Named(__JsonObjectIterSpan) | ret_ty=__JsonObjectIterSpan | or=- | parks=false | holds=false | unknown=- | suggest=object_next
 std::json::parse | lookup=json@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::json::parse` | suggest=-
@@ -888,25 +888,25 @@ std::rand::seed_from_time | lookup=rand@2 | locus=false | effects=time|entropy |
 std::regex::find | lookup=regex@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find
 std::regex::matches | lookup=regex@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=matches
 std::regex::valid | lookup=regex@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=valid
-std::ring::__spsc_emit | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_emit
-std::ring::__spsc_init | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_init
-std::ring::__spsc_note_drop | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_note_drop
-std::ring::__spsc_read | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_read
-std::ring::__spsc_set_tag_b | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_set_tag_b
+std::ring::__spsc_emit | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int, Int, Int, Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_emit
+std::ring::__spsc_init | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int, Int, Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_init
+std::ring::__spsc_note_drop | lookup=ring@2 | locus=false | effects=syscall | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_note_drop
+std::ring::__spsc_read | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int, Int, Int, Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_read
+std::ring::__spsc_set_tag_b | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_set_tag_b
 std::secret::Credential | lookup=secret@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::secret::Signer | lookup=secret@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::secret::vault_local_dir | lookup=secret@2 | locus=false | effects=env | sig=- | parks=false | holds=false | unknown=- | suggest=vault_local_dir
 std::secret::vault_name_is_safe | lookup=secret@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=vault_name_is_safe
-std::shm::last_record_kernel_ns | lookup=shm@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_record_kernel_ns
-std::shm::last_record_seq | lookup=shm@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_record_seq
-std::shm::last_record_user_ns | lookup=shm@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_record_user_ns
+std::shm::last_record_kernel_ns | lookup=shm@2 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_record_kernel_ns
+std::shm::last_record_seq | lookup=shm@2 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_record_seq
+std::shm::last_record_user_ns | lookup=shm@2 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_record_user_ns
 std::source::Walk | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::str::ByteView | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::str::ParseError | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::str::builder_append | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_append
-std::str::builder_finish | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_finish
-std::str::builder_len | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_len
-std::str::builder_new | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_new
+std::str::builder_append | lookup=str@2 | locus=false | effects=pure | sig=(Bytes, Str) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=builder_append
+std::str::builder_finish | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=builder_finish
+std::str::builder_len | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=builder_len
+std::str::builder_new | lookup=str@2 | locus=false | effects=pure | sig=() -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=builder_new
 std::str::byte_at | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=byte_at
 std::str::byte_at_unchecked | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=byte_at_unchecked
 std::str::bytes_view | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Named(__StrByteView) | ret_ty=__StrByteView | or=- | parks=false | holds=false | unknown=- | suggest=bytes_view
@@ -958,9 +958,9 @@ std::tar::pack | lookup=tar@2 | locus=false | effects=pure | sig=(Bytes, Str, By
 std::tar::pack_dir | lookup=tar@2 | locus=false | effects=pure | sig=(Bytes, Str) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=pack_dir
 std::term::RawMode | lookup=term@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::term::TermSize | lookup=term@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::term::__raw_disable | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__raw_disable
-std::term::__raw_enable | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__raw_enable
-std::term::__size_packed | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__size_packed
+std::term::__raw_disable | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__raw_disable
+std::term::__raw_enable | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__raw_enable
+std::term::__size_packed | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__size_packed
 std::term::is_tty | lookup=term@2 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_tty
 std::term::size | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=size
 std::test::__failed | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__failed` | suggest=-
@@ -968,9 +968,9 @@ std::test::__note_fail | lookup=test@2 | locus=false | effects=- | sig=- | parks
 std::test::__note_pas | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pas` | suggest=-
 std::test::__note_pass | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pass` | suggest=-
 std::test::__passes | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__passes` | suggest=-
-std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=assert
-std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
-std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str
+std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=(Bool, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert
+std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=(Int, Int, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
+std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str
 std::text::FileSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::Sink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::StdoutSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -983,7 +983,7 @@ std::text::is_alpha | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> 
 std::text::is_digit | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_digit
 std::text::is_whitespace | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_whitespace
 std::text::is_word_char | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_word_char
-std::text::md_to_html | lookup=text@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=md_to_html
+std::text::md_to_html | lookup=text@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=md_to_html
 std::text::tokenize_words_into | lookup=text@2 | locus=false | effects=pure | sig=(Str, Any) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=tokenize_words_into
 std::time::can_parse_iso8601 | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=can_parse_iso8601
 std::time::current | lookup=time@2 | locus=false | effects=time | sig=() -> Time | ret_ty=Time | or=- | parks=false | holds=false | unknown=- | suggest=current
@@ -1000,17 +1000,17 @@ std::time::slep | lookup=time@2 | locus=false | effects=- | sig=- | parks=false 
 std::time::time_from_unix | lookup=time@2 | locus=false | effects=pure | sig=(Int) -> Time | ret_ty=Time | or=- | parks=false | holds=false | unknown=- | suggest=time_from_unix
 std::time::unix | lookup=time@2 | locus=false | effects=pure | sig=(Time) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=unix
 std::totally::fake | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::totally`
-std::ts::node_child | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_child
-std::ts::node_child_count | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_child_count
-std::ts::node_end_byte | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_end_byte
-std::ts::node_is_named | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_is_named
-std::ts::node_kind | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_kind
-std::ts::node_named_child | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_named_child
-std::ts::node_named_child_count | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_named_child_count
-std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_start_byte
-std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_text
-std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=- | parks=false | holds=false | unknown=- | suggest=parse_go
-std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=root_node
+std::ts::node_child | lookup=ts@2 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_child
+std::ts::node_child_count | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_child_count
+std::ts::node_end_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_end_byte
+std::ts::node_is_named | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_is_named
+std::ts::node_kind | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_kind
+std::ts::node_named_child | lookup=ts@2 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_named_child
+std::ts::node_named_child_count | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_named_child_count
+std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_start_byte
+std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_text
+std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=parse_go
+std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=root_node
 std::vec::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::vec::len` is not a stdlib function; the length of an array is the builtin `len(a)`
 std::x | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::yaml::Builder | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
