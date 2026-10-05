@@ -525,6 +525,30 @@ fn std_io_tls_calls_are_checked() {
 }
 
 #[test]
+fn std_io_udp_calls_are_checked() {
+    refused(
+        "    let r = std::io::udp::__close();\n    println(r);",
+        &[("`std::io::udp::__close` takes 1 argument, got 0", "std::io::udp::__close")],
+    );
+    refused(
+        "    let r = std::io::udp::__close(3) or 0;\n    println(r);",
+        &[(
+            "`std::io::udp::__close` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::io::udp::__close(3)",
+        )],
+    );
+    // `send`'s message was `Any` in its row while its helper takes only a
+    // String (or a view of one): a Bytes message is refused by the check.
+    refused(
+        "    std::io::udp::send(3, \"127.0.0.1\", 9, std::bytes::from_string(\"x\")) or raise;",
+        &[(
+            "`std::io::udp::send` argument 4: expected `String`, got `Bytes`",
+            "std::bytes::from_string(\"x\")",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

@@ -731,7 +731,7 @@ std::io::tls::set_send_timeout | lookup=io::tls@3 | locus=false | effects=syscal
 std::io::tls::upgrade | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Str, Bool) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=upgrade
 std::io::udp::Reader | lookup=io::udp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::udp::__bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__bind
-std::io::udp::__close | lookup=io::udp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close
+std::io::udp::__close | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close
 std::io::udp::__recv | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=__recv
 std::io::udp::__send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__send
 std::io::udp::bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=bind
@@ -744,7 +744,7 @@ std::io::udp::leave_group | lookup=io::udp@3 | locus=false | effects=syscall | s
 std::io::udp::recv | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=recv
 std::io::udp::recv_into | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_into
 std::io::udp::recv_with_source | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=recv_with_source
-std::io::udp::send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Any) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=send
+std::io::udp::send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=send
 std::io::udp::set_multicast_iface | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_multicast_iface
 std::io::udp::set_multicast_loop | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Any) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_multicast_loop
 std::io::udp::set_multicast_ttl | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_multicast_ttl

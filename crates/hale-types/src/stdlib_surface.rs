@@ -943,7 +943,7 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["io", "udp"],
         fns: &[
             row!("__bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBindRaw)),
-            row!("__close", SYSCALL, _, Intrinsic(IoUdpCloseRaw)),
+            row!("__close", SYSCALL, [Int] -> Int, Intrinsic(IoUdpCloseRaw)),
             row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvRaw)),
             row!("__send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSendRaw)),
             row!("bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBind)),
@@ -956,7 +956,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("recv", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecv)),
             row!("recv_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoUdpRecvInto)),
             row!("recv_with_source", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvWithSource)),
-            row!("send", SYSCALL, [Int, Str, Int, Any] -> Unit ! "IoError", Intrinsic(IoUdpSend)),
+            row!("send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSend)),
             row!("set_multicast_iface", SYSCALL, [Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastIface)),
             row!("set_multicast_loop", SYSCALL, [Int, Any] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastLoop)),
             row!("set_multicast_ttl", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastTtl)),
