@@ -598,6 +598,25 @@ fn std_ts_calls_are_checked() {
 }
 
 #[test]
+fn std_str_calls_are_checked() {
+    refused(
+        "    let b = std::str::builder_new(16);\n    println(std::str::builder_len(b));",
+        &[("`std::str::builder_new` takes 0 arguments, got 1", "std::str::builder_new")],
+    );
+    refused(
+        "    let b = std::str::builder_new();\n    std::str::builder_append(b, 7);",
+        &[("`std::str::builder_append` argument 2: expected `String`, got `Int`", "7")],
+    );
+    refused(
+        "    let b = std::str::builder_new();\n    let n = std::str::builder_len(b) or 0;\n    println(n);",
+        &[(
+            "`std::str::builder_len` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::str::builder_len(b)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

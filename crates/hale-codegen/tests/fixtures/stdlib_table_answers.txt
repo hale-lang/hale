@@ -903,10 +903,10 @@ std::shm::last_record_user_ns | lookup=shm@2 | locus=false | effects=pure | sig=
 std::source::Walk | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::str::ByteView | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::str::ParseError | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::str::builder_append | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_append
-std::str::builder_finish | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_finish
-std::str::builder_len | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_len
-std::str::builder_new | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=builder_new
+std::str::builder_append | lookup=str@2 | locus=false | effects=pure | sig=(Bytes, Str) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=builder_append
+std::str::builder_finish | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=builder_finish
+std::str::builder_len | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=builder_len
+std::str::builder_new | lookup=str@2 | locus=false | effects=pure | sig=() -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=builder_new
 std::str::byte_at | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=byte_at
 std::str::byte_at_unchecked | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=byte_at_unchecked
 std::str::bytes_view | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Named(__StrByteView) | ret_ty=__StrByteView | or=- | parks=false | holds=false | unknown=- | suggest=bytes_view

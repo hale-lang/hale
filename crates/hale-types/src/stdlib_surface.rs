@@ -1191,10 +1191,10 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["str"],
         fns: &[
-            row!("builder_append", PURE, _, Intrinsic(StrBuilderAppend)),
-            row!("builder_finish", PURE, _, Intrinsic(StrBuilderFinish)),
-            row!("builder_len", PURE, _, Intrinsic(StrBuilderLen)),
-            row!("builder_new", PURE, _, Intrinsic(StrBuilderNew)),
+            row!("builder_append", PURE, [Bytes, Str] -> Bytes, Intrinsic(StrBuilderAppend)),
+            row!("builder_finish", PURE, [Bytes] -> Str, Intrinsic(StrBuilderFinish)),
+            row!("builder_len", PURE, [Bytes] -> Int, Intrinsic(StrBuilderLen)),
+            row!("builder_new", PURE, [] -> Bytes, Intrinsic(StrBuilderNew)),
             row!("byte_at_unchecked", PURE, [Str, Int] -> Int, Intrinsic(StrByteAtUnchecked)),
             row!("can_parse_float", PURE, [Str] -> Bool, Intrinsic(StrCanParseFloat)),
             row!("can_parse_int", PURE, [Str] -> Bool, Intrinsic(StrCanParseInt)),
