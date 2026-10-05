@@ -171,7 +171,7 @@ pub struct Relations {
 /// from the model alone (no summary/AST side channel). Deleted when
 /// One subject's dispatch-gate facts (GH #476 Change 8) — copied
 /// verbatim from the BusGraph's soundness gates.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DispatchGate {
     /// The BusGraph's subject key (site spelling).
     pub subject: String,
@@ -194,11 +194,14 @@ pub struct DispatchGate {
 /// the legacy artifact schema is versioned past.
 #[derive(Clone, Debug, Default)]
 pub struct Analyses {
-    /// The BusGraph's per-subject dispatch gates — the trusted
-    /// devirtualization analysis. `DispatchPlan::derive` combines
-    /// these facts with the arrangement into the typed lowering
-    /// plan (GH #476 Change 8).
-    pub dispatch_gates: Vec<DispatchGate>,
+    /// The program's dispatch plan (GH #476 Change 8), as the model
+    /// holds it (F.40 phase 4, S9): the one plan lowering lowers,
+    /// derived once per snapshot from the bus graph's gates and the
+    /// arrangement's domains, projected onto the subjects the model's
+    /// bus sites name and the loci it declares
+    /// ([`crate::dispatch_plan::DispatchPlan::projected`]). A conclusion,
+    /// not a model row: no table of the model hashes it.
+    pub dispatch_plan: crate::dispatch_plan::DispatchPlan,
     /// What a merged-summary walk sees INSIDE stdlib bodies
     /// reachable from a user fn: interior fail-closed holes (with
     /// the stdlib fn's display for the diagnostic), and user→user

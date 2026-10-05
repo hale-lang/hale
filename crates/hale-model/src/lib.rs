@@ -17,7 +17,7 @@
 //! Bundle + Model + ClaimIrTable      -->  EvidenceTable
 //! Model + ClaimIrTable [+ Evidence]  -->  Judged verdicts
 //! ApplicationModel                   -->  artifact model half
-//! ApplicationModel                   -->  DispatchPlan
+//! dispatch gates + arrangement       -->  DispatchPlan (the model holds it projected)
 //! admitted Artifact                  -->  ComponentModel (fleet)
 //! ```
 //!
@@ -117,9 +117,9 @@
 //!
 //! - **#464 (placement-aware devirtualization)** is Change 8's first
 //!   customer: its corpus domain survey becomes a model query and
-//!   `DispatchPlan::derive(&ApplicationModel)` owns the decision,
-//!   recorded in the execution digest — never as an authored
-//!   semantic row.
+//!   `DispatchPlan::from_gates` owns the decision, the plan the model
+//!   holds (`Analyses::dispatch_plan`) and lowering lowers, recorded
+//!   in the execution digest — never as an authored semantic row.
 //! - **iris**: obs registration/events gain canonical model entity
 //!   IDs stamped at codegen time, so runtime events join model rows
 //!   by ID instead of heuristic string matching, and holes give iris

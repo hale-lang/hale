@@ -227,6 +227,10 @@ pub struct ModelInputs<'a> {
     /// (`Snapshot::demand_arrangement`), which lowering's dispatch plans
     /// read their domains from too (F.40 phase 4, Q1).
     pub arrangement: &'a crate::arrangement::Arrangement,
+    /// The program's dispatch plan (F.40 phase 4, S9): the snapshot's
+    /// (`Snapshot::demand_dispatch_plan`), the one lowering lowers. The
+    /// model holds it projected onto its own subjects and loci.
+    pub dispatch_plan: &'a hale_model::dispatch_plan::DispatchPlan,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -2533,94 +2537,26 @@ pub fn derive_application_model_over(
         }
     }
 
-    // GH #476 Change 8: the BusGraph's per-subject dispatch gates,
-    // bridged verbatim — DispatchPlan::derive combines them with
-    // the arrangement into the typed lowering plan.
-    //
-    // Keyed at WIRE grain, not at `BusSubject::canonical()` grain.
-    // The graph this builder runs over sees the AUTHORED program, so
-    // a topic-addressed site keys by the topic's declaration name
-    // (`Evt`); the resolved program desugars topics to their wire
-    // subject before building lowering's graph, so the very same
-    // dispatch keys by `evt` there — and the wire string is the identity the runtime, the
-    // artifact (Change 7's route grain), and the static bucket all
-    // use. Mapping here is what makes the two plans comparable at
-    // all.
-    //
-    // A program that addresses one topic BOTH ways (`Evt <- x` in
-    // one locus, `"evt" <- x` in another) has two authored subjects
-    // collapsing onto one wire subject — codegen computes ONE
-    // eligibility over the union of those sites, so the merge is
-    // conjunctive (a subject is static/direct here only if every
-    // authored view of it was) with the site sets unioned. That is
-    // the conservative side: the plan can under-promote relative to
-    // codegen, never over-promote.
-    //
-    // Known wrong (the F.40 phase 1.5 shadow's one divergence): a
-    // LITERAL subject spelled like a topic's name (`"Evt" <- x` beside
-    // `topic Evt { subject: "evt"; }`) shares the topic's key in the
-    // authored graph, so it is merged onto the topic's wire here. The
-    // model's plan then has no row for the literal subject and the
-    // topic's row carries the literal's subscribers; lowering's graph,
-    // over wire literals, keeps the two apart.
-    //
-    // The wire is the scope's topic row's (F.40 phase 2.3): the one
-    // table the checker reads a subject through.
-    let mut gate_by_wire: BTreeMap<String, hale_model::DispatchGate> =
-        BTreeMap::new();
-    for (subject, info) in &graph.subjects {
-        let wire = inputs
-            .top
-            .topics
-            .named(subject)
-            .map(|row| row.wire.clone())
-            .unwrap_or_else(|| subject.clone());
-        let publisher_loci: Vec<String> =
-            info.publishers.iter().map(|p| p.locus.clone()).collect();
-        let subscribers: Vec<(String, String)> = info
-            .subscribers
-            .iter()
-            .map(|s2| (s2.locus.clone(), s2.handler.clone()))
+    // GH #476 Change 8: the dispatch plan, the program's one (F.40
+    // phase 4, S9: derived once per snapshot, lowered by lowering), as
+    // the model holds it: the rows of the subjects its own bus sites
+    // name, at WIRE grain, the identity the runtime, the artifact
+    // (Change 7's route grain) and the static bucket use. The graph
+    // this builder runs over sees the AUTHORED program, so a
+    // topic-addressed site keys by the topic's declaration name (`Evt`)
+    // and names its topic row's wire (`evt`), the scope's (F.40 phase
+    // 2.3). Each row's subscribers are restricted to the loci the model
+    // declares, sorted: the stdlib's `log.**` row and the stdlib's
+    // sinks are lowering's, never a model row's.
+    let dispatch_plan = {
+        let subjects: BTreeSet<&str> = graph
+            .subjects
+            .keys()
+            .map(|subject| inputs.top.topics.named(subject).map_or(subject.as_str(), |row| row.wire.as_str()))
             .collect();
-        let reason =
-            info.ineligible_reason.as_ref().map(|r| r.tag().to_string());
-        match gate_by_wire.get_mut(&wire) {
-            Some(g) => {
-                g.static_eligible &= info.eligible;
-                g.direct_eligible &= info.direct_call_eligible;
-                g.payload_flat &= info.payload_flat;
-                if g.ineligible_reason.is_none() {
-                    g.ineligible_reason = reason;
-                }
-                g.publisher_loci.extend(publisher_loci);
-                g.subscribers.extend(subscribers);
-            }
-            None => {
-                gate_by_wire.insert(
-                    wire.clone(),
-                    hale_model::DispatchGate {
-                        subject: wire,
-                        static_eligible: info.eligible,
-                        direct_eligible: info.direct_call_eligible,
-                        payload_flat: info.payload_flat,
-                        ineligible_reason: reason,
-                        publisher_loci,
-                        subscribers,
-                    },
-                );
-            }
-        }
-    }
-    let dispatch_gates: Vec<hale_model::DispatchGate> = gate_by_wire
-        .into_values()
-        .map(|mut g| {
-            g.publisher_loci.sort();
-            g.publisher_loci.dedup();
-            g.subscribers.sort();
-            g.subscribers.dedup();
-            g
-        })
-        .collect();
+        let loci: BTreeSet<&str> = e.loci.iter().map(|l| l.name.as_str()).collect();
+        inputs.dispatch_plan.projected(&subjects, &loci)
+    };
 
     // The Change-3 bridge: the legacy artifact's fn sort, recorded
     // so TopologyShapeV1 projects from the model alone.
@@ -3523,7 +3459,7 @@ pub fn derive_application_model_over(
     prov.records = records;
     let model = ApplicationModel {
         analyses: hale_model::Analyses {
-            dispatch_gates,
+            dispatch_plan,
             stdlib_absorption,
         },
         header: ModelHeader {
@@ -3787,11 +3723,11 @@ pub fn render_internal(m: &ApplicationModel) -> String {
             ));
         }
     }
-    // GH #476 Change 8: the derived lowering plan. Not model rows —
-    // a CONCLUSION, printed here because this dump is the survey
-    // surface #464's stage 0 asks its question of ("how much queued
-    // bus traffic is same-thread-domain?").
-    let plan = hale_model::dispatch_plan::DispatchPlan::derive(m);
+    // GH #476 Change 8: the lowering plan, as the model holds it. Not
+    // model rows — a CONCLUSION, printed here because this dump is the
+    // survey surface #464's stage 0 asks its question of ("how much
+    // queued bus traffic is same-thread-domain?").
+    let plan = &m.analyses.dispatch_plan;
     let (same, total) = plan.same_domain_queued();
     s.push_str(&format!(
         "dispatch_plan ({} subjects, {} same-domain queued):\n",

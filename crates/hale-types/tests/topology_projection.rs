@@ -673,7 +673,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
-            dispatch_gates: Vec::new(),
+            dispatch_plan: Default::default(),
             stdlib_absorption: Vec::new(),
         },
     };

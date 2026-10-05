@@ -1311,15 +1311,15 @@ pub fn build_resolved(
     let program_has_offthread =
         resolved.placement.places_off_main() || resolved.bindings.binds_on_main(Some(entry));
 
-    // Static-bus-dispatch devirtualization plan (build #1b), derived in
-    // the resolved program from the bus graph over the merged and
-    // topic-desugared program (F.40 phase 1.5): every subject is the
-    // wire string the register/publish sites see, and the stdlib's
-    // wildcard subscribers (`log.**`) are in the graph the gates were
-    // judged over. The flavor ladder is `DispatchPlan`'s — the same
-    // procedure the model's `DispatchPlan::derive` runs, and whose
-    // digest the execution identity folds in. A build with no entry
-    // point is open world and its plan all dynamic.
+    // Static-bus-dispatch devirtualization plan (build #1b): the
+    // snapshot's one plan (F.40 phase 4, S9), derived once from the bus
+    // graph's gates keyed by wire subject, the string the
+    // register/publish sites see, with the stdlib's wildcard
+    // subscribers (`log.**`) among the sites the gates were judged
+    // over. The flavor ladder is `DispatchPlan`'s; the model holds the
+    // same plan, projected, and the execution identity folds in its
+    // digest. A build with no entry point is open world and its plan
+    // all dynamic.
     // `LOTUS_NO_BUS_DEVIRT=1` forces the empty plan — the
     // differential-test control arm.
     let plan = if options.no_bus_devirt {

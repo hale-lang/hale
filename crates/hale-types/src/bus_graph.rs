@@ -1207,6 +1207,46 @@ pub fn lowering_bus_graph(
     Ok(BusGraph { subjects, rows, ..BusGraph::default() })
 }
 
+/// The dispatch gates (F.40 phase 4, S9): the one gate set the dispatch
+/// plan is derived from, the snapshot's `dispatch` family
+/// (`Snapshot::demand_dispatch_gates`). They are the gates of lowering's
+/// graph ([`lowering_bus_graph`]) without the merge it is read through:
+/// the snapshot's rows, each keyed by the wire subject the program
+/// lowering walks spells it with (a plain topic reference by the scope's
+/// topic row's wire, which the topic rewrite writes there; any other
+/// subject as written), in the snapshot's walk order, followed by the
+/// stdlib's rows ([`crate::stdlib_bodies::bus_rows`], once per process),
+/// assembled into subjects with the placement table's labels. A
+/// subject's subscribers are in registration order, the order the direct
+/// lowering bakes and the plan's digest frames.
+pub fn derive_dispatch_gates(
+    snapshot: &BusGraph,
+    top: &TopScope,
+    placement: &crate::placement::PlacementTable,
+) -> Vec<hale_model::DispatchGate> {
+    let mut rows = snapshot.rows.clone();
+    let rekey = |topic: &Option<String>, key: &mut String| {
+        if let Some(topic) = topic {
+            *key = top.topics.named(topic).map_or_else(|| topic.clone(), |row| row.wire.clone());
+        }
+    };
+    for p in &mut rows.publishes {
+        rekey(&p.topic, &mut p.key);
+    }
+    for s in &mut rows.subscribes {
+        rekey(&s.topic, &mut s.key);
+    }
+    if let Some(stdlib) = crate::stdlib_bodies::bus_rows() {
+        rows.closed_world |= stdlib.closed_world;
+        rows.bound.extend(stdlib.bound.iter().cloned());
+        rows.cross_seed.extend(stdlib.cross_seed.iter().cloned());
+        rows.publishes.extend(stdlib.publishes.iter().cloned());
+        rows.subscribes.extend(stdlib.subscribes.iter().cloned());
+    }
+    let subjects = rows.subjects(placement);
+    BusGraph { subjects, rows, ..BusGraph::default() }.dispatch_gates()
+}
+
 /// The resolved payload type of a site on `key`: the declared topic's,
 /// else the locus's publish or subscribe declaration on that subject.
 fn resolve_payload_ty<'t>(top: &'t TopScope, locus: &str, key: &str) -> Option<&'t crate::ty::Ty> {
