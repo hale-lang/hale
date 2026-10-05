@@ -212,3 +212,46 @@ fn law_backstops_a_value_use_the_law_did_not_judge_is_refused_at_the_literal() {
     assert!(msg.contains("cross-pool value law"), "{msg}");
     assert_eq!(at(src, span.expect("located")), "Ship { hull: 7 }");
 }
+
+/// `entrypoint`: the `main locus` lowering deploys and the `fn main` it
+/// emits are the entry row's; a view without the row is refused before
+/// anything is lowered, never given a `fn main` found by name.
+#[test]
+fn entrypoint_a_view_without_the_entry_row_is_refused() {
+    let src = "main locus App {\n    run() { println(\"hi\"); }\n}\nfn main() { App { }; }\n";
+    let (msg, _) = refused_without("entrypoint", src, "entrypoint", |v| v.entry = None);
+    assert!(msg.contains("entry row"), "{msg}");
+}
+
+/// `forms`: a ring buffer's slot is laid out by its form row's `cap`;
+/// a declaration with no row is refused at its name, never laid out from
+/// its written `cap =`.
+#[test]
+fn forms_a_form_without_its_row_is_refused_at_its_declaration() {
+    let src = "type Frame { seq: Int; }\n\
+               @form(ring_buffer, cap = 16)\n\
+               locus FrameBuffer {\n    capacity { pool history of Frame; }\n}\n\
+               fn main() { let _ = FrameBuffer { }; }\n";
+    let (msg, span) = refused_without("forms", src, "forms", |v| {
+        v.forms = hale_types::form_rows::FormRows::default()
+    });
+    assert!(msg.contains("has no form row"), "{msg}");
+    assert_eq!(at(src, span.expect("located")), "FrameBuffer");
+}
+
+/// `sync_inference`: a hashmap's slot is laid out by its form row's
+/// effective discipline, inference's pick included; a declaration with
+/// no row is refused at its name, never laid out from its written
+/// `sync =` (which would drop an inferred discipline).
+#[test]
+fn sync_inference_a_hashmap_without_its_row_is_refused_at_its_declaration() {
+    let src = "type Entry { name: String; v: Int; }\n\
+               @form(hashmap)\n\
+               locus RegistryL {\n    capacity { pool entries of Entry indexed_by name; }\n}\n\
+               fn main() { let _ = RegistryL { }; }\n";
+    let (msg, span) = refused_without("sync_inference", src, "sync_inference", |v| {
+        v.forms = hale_types::form_rows::FormRows::default()
+    });
+    assert!(msg.contains("has no form row"), "{msg}");
+    assert_eq!(at(src, span.expect("located")), "RegistryL");
+}

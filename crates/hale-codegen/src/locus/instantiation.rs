@@ -2341,7 +2341,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // run on the thread its nested handlers run on. A target without
         // threads runs its pools' cells on the one thread it has.
         let on_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
-        let pool_init = if on_pinned || !self.cells.behaviour(hale_types::capability::Capability::PoolThreads).is_lower() {
+        let pool_init = if on_pinned || !self.cells.behaviour(hale_types::capability::Capability::PoolThreads)?.is_lower() {
             None
         } else {
             pool_anchor.clone()
@@ -4300,7 +4300,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // registered, run() not yet entered) is exactly the
             // boot/run boundary the runtime snapshot needs. Runs on
             // the main thread; no-op outside replay/feed.
-            if is_main_locus && self.cells.emits(hale_types::capability::Obligation::ReplayIngress) {
+            if is_main_locus && self.cells.emits(hale_types::capability::Obligation::ReplayIngress)? {
                 let start_fn = self
                     .module
                     .get_function("lotus_replay_start_ingress")

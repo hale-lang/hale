@@ -717,27 +717,40 @@ pub struct LoweringCells {
     pub class: TargetClass,
 }
 
+/// A cell the column was asked for and does not hold. The matrix writes
+/// one for every (class, capability) and (class, obligation) pair
+/// (`laws::every_pair_has_exactly_one_cell`), so a lookup that finds none
+/// is a compiler defect: lowering reports it as a missing required row of
+/// the `target_capability` family, never a panic or a default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingCell(pub String);
+
 impl LoweringCells {
     pub fn of(class: TargetClass) -> LoweringCells {
         LoweringCells { class }
     }
 
     /// Whether a spine or prelude emits the obligation's runtime call.
-    pub fn emits(&self, o: Obligation) -> bool {
-        derive_capability_matrix().obligation(self.class, o).expect("every obligation has a row").emits()
+    pub fn emits(&self, o: Obligation) -> Result<bool, MissingCell> {
+        derive_capability_matrix()
+            .obligation(self.class, o)
+            .map(|cell| cell.emits())
+            .ok_or_else(|| MissingCell(format!("the {} column holds no cell for the obligation {o:?}", self.class.name())))
     }
 
-    pub fn behaviour(&self, c: Capability) -> &'static Behaviour {
-        derive_capability_matrix().behaviour(self.class, c).expect("every capability a lowering reads has a row")
+    pub fn behaviour(&self, c: Capability) -> Result<&'static Behaviour, MissingCell> {
+        derive_capability_matrix()
+            .behaviour(self.class, c)
+            .ok_or_else(|| MissingCell(format!("the {} column holds no cell for the capability {c:?}", self.class.name())))
     }
 
     /// The behaviour's lowering data, or `None` when the target rejects
     /// it.
-    pub fn lowering(&self, c: Capability) -> Option<Lowering> {
-        match self.behaviour(c).verdict {
+    pub fn lowering(&self, c: Capability) -> Result<Option<Lowering>, MissingCell> {
+        Ok(match self.behaviour(c)?.verdict {
             BehaviourVerdict::Lower(l) => Some(l),
             BehaviourVerdict::Reject(_) => None,
-        }
+        })
     }
 }
 

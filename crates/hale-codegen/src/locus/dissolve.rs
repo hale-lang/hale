@@ -237,7 +237,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // handler's `if !self.draining` stays a load, not a call.
         // Where no signal reaches the program the flag is always 0, and
         // the term is the `DrainTerm` obligation's omission.
-        let raw = if !self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
+        let raw = if !self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
             raw
         } else {
             self.reads_draining = true;

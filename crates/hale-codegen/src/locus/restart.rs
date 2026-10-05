@@ -213,7 +213,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ok = self.builder.build_and(ok, live, "restart.ok").map_err(e)?;
         let clear = self.emit_reclaim_clear(info, self_ptr)?;
         ok = self.builder.build_and(ok, clear, "restart.ok").map_err(e)?;
-        if self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
+        if self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
             let draining = self.emit_process_draining_load("restart.process_draining")?;
             let not_draining = self
                 .builder

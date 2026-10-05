@@ -372,10 +372,10 @@ fn check_host_trace(shape: Shape, variant: Variant, t: &Trace, pairs: &BTreeSet<
     let abort = seq_of(t, ObligationKind::WaitAbort, spine, Point::Completed);
     let join_entered = seq_of(t, ObligationKind::PoolJoin, spine, Point::Entered);
     let join_done = seq_of(t, ObligationKind::PoolJoin, spine, Point::Completed);
-    if abort.is_some() != cells.emits(Obligation::WaitAbort) {
+    if abort.is_some() != cells.emits(Obligation::WaitAbort).expect("every obligation has a cell") {
         return Err(format!("WaitAbort@{}: {abort:?}", spine.name()));
     }
-    let owes_join = cells.emits(Obligation::PoolJoin) && variant.pools();
+    let owes_join = cells.emits(Obligation::PoolJoin).expect("every obligation has a cell") && variant.pools();
     if join_done.is_some() != owes_join {
         return Err(format!("PoolJoin@{}: {join_done:?}, owed {owes_join}", spine.name()));
     }
