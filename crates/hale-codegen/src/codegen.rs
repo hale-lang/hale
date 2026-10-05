@@ -1124,68 +1124,6 @@ fn entry_fn<'p>(entry: &hale_types::entry::EntryRow, program: &'p Program) -> Op
     })
 }
 
-/// Compile `program` to an executable at `output_path`, linking it with
-/// `clang`. The one entry point: what to build with (the cache directory
-/// the caller chose, the link surface for `@ffi("c")` consumers the CLI's
-/// `--link` and `--csrc` flags carry, every other knob) is in `options`,
-/// and `BuildOptions::new` takes the cache directory, so there is no way
-/// to build without choosing one.
-///
-/// `import_renames` is the per-build path-rename table for cross-seed
-/// imports (v1.x-IMPORT). The caller (the CLI) resolves any
-/// `import "lib/X" as foo;` declarations, mangles each imported
-/// sub-program, merges the mangled decls into `program`, and passes the
-/// table here. Each entry maps a segment vector (`["foo", "Bar"]`) to the
-/// mangled symbol name (`"__lib_<lib_id>__<stem>__Bar"`). The codegen consults
-/// this table after the static stdlib table when resolving
-/// qualified-name paths. A caller with no imports passes `&[]`.
-///
-/// This is the adapter for callers that hold a bare program (the test
-/// harness): it builds the harness's snapshot of the program
-/// (`hale_frontend::snapshot::Snapshot::from_program`, shaped as every
-/// verb's load shapes a seed, with no source map) and demands the
-/// lowering view from it, as the verbs demand theirs, then lowers it
-/// with [`build_resolved`]. The harness's snapshot does not gate
-/// lowering on a check (`Config::harness`): a test that wants the check
-/// runs it itself.
-pub fn build_executable_with_options(
-    program: &Program,
-    output_path: &Path,
-    import_renames: &[(Vec<String>, String)],
-    options: &BuildOptions,
-) -> Result<(), CodegenError> {
-    use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
-    let spec = options.target.spec();
-    // A harness build names its target, the host included: the view's
-    // effective target is the one lowering emits for, so its cells are
-    // the ones the build reads (a harness native build of a program
-    // that declares `target wasm` lowers natively, as it always has).
-    let target = Target {
-        name: match options.target {
-            CompileTarget::Native => "host".to_string(),
-            _ => spec.triple.to_string(),
-        },
-        spec,
-        explicit: true,
-    };
-    let mut config = Config::harness(target);
-    config.api = options.api.clone();
-    config.api_roles = options.api_roles.clone();
-    let snap = match Snapshot::from_program(program.clone(), import_renames.to_vec(), config) {
-        Ok(s) => s,
-        Err(LoadError::Refused(msg)) => return Err(CodegenError::Unsupported(msg)),
-        // A bare program is not read from anywhere; kept for totality.
-        Err(LoadError::Load(f)) => return Err(CodegenError::Unsupported(f.text())),
-    };
-    let view = snap.demand_lowering().map_err(|b| match (b.family, b.because.first()) {
-        ("target_capability", Some(d)) => CodegenError::CapabilityRefused(d.message.clone(), Some(d.span)),
-        _ => CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
-            b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
-        })),
-    })?;
-    build_resolved(view, output_path, options)
-}
-
 /// Lower the view the frontend produced
 /// (`hale_types::resolved::LoweringView`, a snapshot's `lowering_view`
 /// family) to an executable at `output_path`. The view is read, never
@@ -1193,8 +1131,11 @@ pub fn build_executable_with_options(
 /// rename table is the one the view was resolved with; `options` has to
 /// carry the view's `--api` path and roles, or the build is refused (the
 /// api surface was shaped by the view's, and lowering it under another
-/// would describe a program nobody resolved). See
-/// [`build_executable_with_options`].
+/// would describe a program nobody resolved). What to build with (the
+/// cache directory the caller chose, the link surface for `@ffi("c")`
+/// consumers the CLI's `--link` and `--csrc` flags carry, every other
+/// knob) is in `options`, and `BuildOptions::new` takes the cache
+/// directory, so there is no way to build without choosing one.
 pub fn build_resolved(
     resolved: &LoweringView,
     output_path: &Path,
@@ -3575,7 +3516,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// statically-ELIGIBLE subject's wire string → its stable
     /// compile-time bucket id. Eligibility comes from the authoritative
     /// `hale_types::bus_graph::BusGraph` gate, computed once over the
-    /// merged+desugared program in `build_executable_with_options`.
+    /// merged+desugared program the lowering view carries.
     /// A subject present here gets `lotus_bus_register_static` at each
     /// subscriber registration and `lotus_bus_dispatch_static` at each
     /// compile-time-literal publish; subjects absent here are
@@ -4213,8 +4154,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// blocks, no bindings, no accepts, no perspectives) — every
     /// emitted drain would be a no-op, so `emit_bus_drain` /
     /// `emit_pinned_mailbox_drain_pending` emit nothing. Computed
-    /// once in `build_executable_with_options`; see the comment
-    /// there for the producer enumeration.
+    /// once by the frontend (`hale_types::bus_inert`, on the lowering
+    /// view) and read in `build_resolved`, where the comment has the
+    /// producer enumeration.
     pub(crate) bus_inert: bool,
     pub(crate) di: Option<DiState<'ctx>>,
     /// Per-statement debug-location stack: (function the location

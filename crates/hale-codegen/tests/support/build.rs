@@ -45,10 +45,9 @@ pub fn options() -> BuildOptions {
 #[allow(dead_code)]
 pub const SEED_ENTRY: &str = "/hale-test-seed/main.hl";
 
-/// The harness's configuration for `options`, as
-/// the bare-program adapter made it: `Config::harness` (lowering
-/// not gated on the check) for the target the options name, the host
-/// included, with the options' api and roles.
+/// The harness's configuration for `options`: `Config::harness`
+/// (lowering not gated on the check) for the target the options name,
+/// the host included, with the options' api and roles.
 #[allow(dead_code)]
 pub fn harness_config(options: &BuildOptions) -> Config {
     let spec = options.target.spec();
@@ -82,11 +81,11 @@ pub fn load_seed(source: &str, config: Config) -> Result<Snapshot, LoadError> {
 
 /// Build `source` to an executable at `output_path`: [`load_seed`] with
 /// [`harness_config`], the lowering view demanded from the snapshot, then
-/// `build_resolved`. What the bare-program adapter did for a
-/// parsed program, from the text a verb would read, with its errors
-/// mapped as it maps them. A program that does not parse is refused as
-/// the adapter refuses a load that fails, `CodegenError::Unsupported`
-/// with the load's rendering, which names the line and column.
+/// `build_resolved`, from the text a verb would read. A failed load or
+/// a refused lowering view is a `CodegenError` (`Unsupported`, or
+/// `CapabilityRefused` for a target-capability refusal). A program that
+/// does not parse is refused as `CodegenError::Unsupported` with the
+/// load's rendering, which names the line and column.
 #[allow(dead_code)]
 pub fn build_source(source: &str, output_path: &Path, options: &BuildOptions) -> Result<(), CodegenError> {
     build_loaded(load_seed(source, harness_config(options)), output_path, options)

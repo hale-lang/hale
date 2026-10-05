@@ -1,7 +1,7 @@
 //! F.40 phase 3, C7: the laws that replaced lowering's backstops hold
 //! at the harness too.
 //!
-//! `build_executable_with_options` builds through a snapshot whose
+//! `build_opts::build_source` builds through a snapshot whose
 //! lowering is not gated on the check (`Config::harness`). Lowering
 //! used to keep a spanless refusal of its own for each rule below,
 //! because a harness build reached it unchecked; the refusals are

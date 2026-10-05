@@ -137,8 +137,9 @@ hale test tests/hale        # or: cargo test -p hale-cli --test hale_native_suit
 Prefer a `*_test.hl` there for "run a program, check what it
 computed" — the assertion sits next to the code instead of being
 transcribed into a Rust substring match, and it gets typechecked
-(`build_executable`, which the Rust codegen tests use, does not run
-the checker). Keep assertions about *compiler output* — diagnostics,
+(`build_opts::build_source`, the codegen tests' harness build in
+`support/build.rs`, loads the program as a seed but does not gate
+lowering on the check). Keep assertions about *compiler output* — diagnostics,
 IR shape, leak counts — in Rust.
 
 Memory bugs have their own gate. The compiled-corpus oracle

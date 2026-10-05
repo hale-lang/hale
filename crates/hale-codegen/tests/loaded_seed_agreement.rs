@@ -1,10 +1,13 @@
 //! The loaded-seed harness agrees with the bare-program harness (F.40
 //! phase 4, T1).
 //!
-//! A codegen test builds through `build_executable_with_options`, the
-//! adapter that hands a parsed `Program` to `Snapshot::from_program`: a
+//! A codegen test used to build through a bare-program adapter in
+//! codegen that handed a parsed `Program` to `Snapshot::from_program`: a
 //! pipeline of its own beside the one every verb runs, which loads a
-//! seed. `build_opts::build_source` builds from the text instead, as a
+//! seed. That adapter is gone (T2); `build_opts::build_program` is the
+//! same two steps, `Snapshot::from_program` then `build_resolved`, for the
+//! tests whose subject is a `Program` they made. `build_opts::build_source`
+//! builds from the text instead, as a
 //! verb builds a seed of one file: an overlay buffer at a virtual
 //! `main.hl`, `Snapshot::load`, the harness's configuration (lowering not
 //! gated on the check), the lowering view, `build_resolved`.
@@ -14,9 +17,9 @@
 //! fixtures and every program a test embeds): the same pre-optimization
 //! IR, and a program one path refuses is refused by the other with the
 //! same error. A program that does not parse is refused by the parser on
-//! the bare path (the test's own `parse_source`, before the adapter) and
+//! the bare path (the test's own `parse_source`, before the build) and
 //! by the load on the other: the same diagnostics, with the same spans
-//! (one file loads at base 0), carried in the adapter's load-failure
+//! (one file loads at base 0), carried in the load-failure
 //! error.
 //!
 //! The IR is compared verbatim. Neither path stamps an identity into it:
@@ -115,20 +118,20 @@ fn finish(result: Result<(), CodegenError>, bin: &std::path::Path, ll: &std::pat
     }
 }
 
-/// The bare-program path, as a test drives it today.
+/// The bare-program path: the parsed `Program` handed to `Snapshot::from_program`.
 fn bare(source: &str, bin: &std::path::Path) -> Outcome {
     let program = match hale_syntax::parse_source(source) {
         Ok(p) => p,
         Err(diags) => return Outcome::Unparsed(diags.into_iter().map(|d| (d.message, d.span)).collect()),
     };
     let ll = bin.with_extension("ll");
-    let result = hale_codegen::build_executable_with_options(&program, bin, &[], &options(&ll));
+    let result = build_opts::build_program(&program, bin, &[], &options(&ll));
     finish(result, bin, &ll)
 }
 
 /// The loaded-seed path. A load that fails on a parse is read back
 /// through `load_seed` for its diagnostics, after checking the helper
-/// refused it with the load's rendering, as the adapter maps a load
+/// refused it with the load's rendering, as the bare path maps a load
 /// failure.
 fn seeded(source: &str, bin: &std::path::Path) -> Outcome {
     let ll = bin.with_extension("ll");

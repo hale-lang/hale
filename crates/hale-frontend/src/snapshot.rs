@@ -235,8 +235,8 @@ impl Config {
         }
     }
 
-    /// The test harness's (codegen's `build_executable_with_options`,
-    /// over [`Snapshot::from_program`]): a build's config whose
+    /// The test harness's (codegen's `tests/support/build.rs`, over
+    /// [`Snapshot::load`] or [`Snapshot::from_program`]): a build's config whose
     /// lowering is not gated on a check. The harness runs no checker —
     /// a test that wants the check calls it itself, and the agreement
     /// sweep (`corpus_check_build_agreement`) compares the two — so its
@@ -560,10 +560,11 @@ impl Snapshot {
         Snapshot::shape(entry, Some(mode), key, config, loaded)
     }
 
-    /// A snapshot of a program a caller already holds: the test
-    /// harness's (codegen's `build_executable_with_options`), whose
-    /// program was parsed from a string and carries its imports
-    /// already merged under `import_renames`. It is shaped as
+    /// A snapshot of a program a caller already holds: the frontend's
+    /// entry for the tests that construct a view directly (codegen's
+    /// `tests/support/build.rs` `build_program` is one), whose
+    /// program was parsed from a string or built by the test and carries
+    /// its imports already merged under `import_renames`. It is shaped as
     /// [`Snapshot::load`] shapes a loaded seed; it has no files, so no
     /// source map, and its sites are seeded by ordinal.
     pub fn from_program(
