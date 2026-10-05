@@ -13,59 +13,7 @@ fn check(src: &str) -> Vec<String> {
     hale_syntax::json_gen::generate_json_parsers(&mut prog);
     let row = hale_types::entry::entry_row_in(&[&prog]);
     hale_syntax::api_gen::generate_api(&mut [&mut prog], row.root().and_then(|m| m.index_in()), None);
-    // The program, and three mutations of it that reach the rules no
-    // test program does: no `fn holds`, every role undeclared, every
-    // gate naming a role nothing declares.
-    let undeclared: String = src.lines().filter(|l| !l.trim_start().starts_with("role ")).collect::<Vec<_>>().join("\n");
-    for variant in [src.to_string(), src.replace("fn holds(", "fn holdz("), undeclared, src.replace("@gated(role: ", "@gated(role: x_")] {
-        let Ok(mut p) = parse_source(&variant) else { continue };
-        hale_syntax::json_gen::generate_json_parsers(&mut p);
-        let row = hale_types::entry::entry_row_in(&[&p]);
-        hale_syntax::api_gen::generate_api(&mut [&mut p], row.root().and_then(|m| m.index_in()), None);
-        role_differential(&p);
-        surface_differential(&variant);
-    }
     check_program(&prog).into_iter().map(|d| d.message).collect()
-}
-
-/// F.40 phase 4, A4, deleted with the old function: the api entry's
-/// rules over the surface a snapshot's sequence generated the binding
-/// from judge the program as they do over the surface re-derived from
-/// the programs after the sequence.
-fn surface_differential(src: &str) {
-    use hale_frontend::snapshot::{Config, Snapshot};
-    let program = parse_source(src).expect("parse failed");
-    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(false, false)) else {
-        panic!("a bare program's snapshot is not refused")
-    };
-    let bundle = s.bundle();
-    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let root = s.demand_entry().expect("the entry row").root().and_then(|m| m.decl(&bundle));
-    let old = hale_syntax::api_gen::api_surface(&programs, root).map(|surface| hale_types::check::api_binding_rules(&surface));
-    let new = s.api_surface().map(hale_types::check::api_binding_rules);
-    assert_eq!(old, new);
-    eprintln!("surface differential: {:?} diagnostics equal", old.map(|d| d.len()));
-}
-
-/// F.40 phase 4, A4, deleted with the old function: the law over the
-/// role rows judges the program, as `check_program` checks it, exactly
-/// as the role rules over the AST did.
-fn role_differential(prog: &hale_syntax::ast::Program) {
-    let mut program = prog.clone();
-    let seq = hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None };
-    hale_types::desugar_sequence::desugar_before_check(&mut [&mut program], &seq).expect("no --api");
-    hale_types::snapshot::mint([("", &mut program)], &[]);
-    let bundle = hale_types::Bundle::new(std::collections::BTreeMap::from([(String::new(), &program)]));
-    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let bindings = hale_types::binding_rows::derive_binding_rows(&bundle, &top);
-    let entry = hale_types::entry::entry_row(&bundle);
-    let placement = hale_types::placement::derive_placement(&bundle, &top, &entry);
-    let bus = hale_types::bus_graph::build_bus_graph(&bundle, &top, &bindings, &placement, &entry);
-    let rows = hale_types::roles::role_rows(&bundle, &entry);
-    let mut old = Vec::new();
-    hale_types::check::check_api_roles(&[&program], &top.topics, &bindings, &mut old);
-    assert_eq!(old, hale_types::roles::role_laws(&rows, &bus, &top.topics, &bindings));
-    eprintln!("role differential: {} diagnostics equal", old.len());
 }
 
 fn program(entry: &str, extra: &str) -> String {

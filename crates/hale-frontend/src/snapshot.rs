@@ -1185,6 +1185,7 @@ impl Snapshot {
             uses: self.demand_capability_uses().map_err(Clone::clone)?,
             laws: self.demand_law_selection().map_err(Clone::clone)?,
             roles: self.demand_role_rows().map_err(Clone::clone)?,
+            api_surface: self.api_surface(),
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered

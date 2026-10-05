@@ -530,6 +530,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         uses: &uses,
         laws: &laws,
         roles: &roles,
+        api_surface: None,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags
