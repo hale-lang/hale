@@ -936,6 +936,14 @@ pub struct AllocSummary {
     /// member of its declaration ([`DeclarationBody`]). No judgment reads
     /// them; the declaration dependents relation reads their call edges.
     pub declaration_bodies: Vec<DeclarationBody>,
+    /// The scratch-local free fns (GH #1148, `alloc_routing`'s
+    /// classifier), by name: classified once, here, over the
+    /// declarations lowering lowers (the programs, their imported seeds
+    /// under their mangled names, and the stdlib), whether or not the
+    /// summary holds the analysis copy's rows. Each free fn's frame
+    /// (`FnSummary::frame`) reads it, and so does the lowering view's
+    /// `alloc_routing` (F.40 phase 4, Q1).
+    pub scratch_local: BTreeSet<String>,
 }
 
 /// A body of the program the reveal rule reads (`secret_reveal`) that is
@@ -1149,6 +1157,9 @@ impl AllocSummary {
             analysis_copy_interfaces: BTreeSet::new(),
             declaration_bodies: self.declaration_bodies.clone(),
             analysis_copy_values: BTreeSet::new(),
+            // Classified over the stdlib's declarations whether or not
+            // the copy's rows are beside: the program's set either way.
+            scratch_local: self.scratch_local.clone(),
         }
     }
 }
@@ -2718,13 +2729,14 @@ pub fn summarize_identified(
     resolve_function_values(&mut summary, &value_scopes, &known, next_group);
     summary.by_name = known.clone();
     // The reclaim boundary of a scratch-local fn (GH #1208). The
-    // classification is lowering's (`alloc_routing`), run over the
-    // declarations lowering runs it over (`merged`: the program, its
+    // classification is lowering's (`alloc_routing`), run once, here,
+    // over the declarations lowering lowers (`merged`: the program, its
     // imported seeds under their mangled names, and the stdlib) with the
-    // same renames: the stdlib's declarations are beside the program's
-    // whether or not the summary holds the analysis copy's rows, so a
-    // program summarized alone has its own rows' frames. A recursive fn
-    // keeps the locus boundary: the hole's conservative answer.
+    // same renames, and kept for lowering's rows: the stdlib's
+    // declarations are beside the program's whether or not the summary
+    // holds the analysis copy's rows, so a program summarized alone has
+    // its own rows' frames. A recursive fn keeps the locus boundary: the
+    // hole's conservative answer.
     {
         let imports: BTreeMap<Vec<String>, String> = import_renames.iter().cloned().collect();
         let copy_beside = identified.iter().any(|(_, ids)| is_stdlib_copy(ids));
@@ -2759,6 +2771,9 @@ pub fn summarize_identified(
                 }
             }
         }
+        // Kept: lowering's rows read this set, not a classification of
+        // their own (F.40 phase 4, Q1).
+        summary.scratch_local = scratch_local;
     }
     // What the program reaches, when the stdlib's analysis copy is
     // beside it: its own fns, what their calls reach (the interface

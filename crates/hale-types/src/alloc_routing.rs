@@ -28,8 +28,8 @@
 //! The rows are the classifications codegen computed while it lowered,
 //! moved as they were. The checker's reclaim model
 //! (`crate::alloc_summary::ReclaimScope`) reads the scratch-local one:
-//! the summary runs [`scratch_local_free_fns`] over the declarations it
-//! holds, the same producer over the same declarations.
+//! the summary runs [`scratch_local_free_fns`] once, over the
+//! declarations lowering lowers, and the rows are handed its set.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -482,10 +482,13 @@ fn type_class(t: &TypeExpr, types: &TypeFacts, seen: &mut Vec<String>) -> Option
 
 /// The rows of `program` (the view's `merged`), cross-seed calls
 /// resolved through `import_renames`, the rename table the view was
-/// resolved with.
+/// resolved with. `scratch_local` is the allocation summary's set
+/// ([`crate::alloc_summary::AllocSummary::scratch_local`]): the same
+/// classifier, run once over the declarations `program` holds.
 pub fn derive_alloc_routing(
     program: &Program,
     import_renames: &[(Vec<String>, String)],
+    scratch_local: &BTreeSet<String>,
 ) -> AllocRouting {
     let imports: BTreeMap<Vec<String>, String> = import_renames
         .iter()
@@ -509,7 +512,7 @@ pub fn derive_alloc_routing(
         structs: struct_numeric_field_map(&program.items),
     };
     let mut rows = AllocRouting {
-        scratch_local: scratch_local_free_fns(hale_syntax::ast::flat_decls(&program.items), &imports),
+        scratch_local: scratch_local.clone(),
         nonalloc,
         nonalloc_numeric_ret,
         elidable_methods: elidable,
@@ -625,15 +628,18 @@ impl ScratchPaths<'_> {
     }
 }
 
-/// The checker's reclaim model reads the same classification
-/// ([`crate::alloc_summary::ReclaimScope::FnReturn`]): the summary runs
-/// this over the declarations it holds, as lowering runs it over
-/// `merged`, so the two never disagree about which fn frees its own
-/// allocations at return.
+/// The checker's reclaim model reads this classification
+/// ([`crate::alloc_summary::ReclaimScope::FnReturn`]) and lowering the
+/// same one: the summary runs it once, over the declarations lowering
+/// lowers (the program's and the stdlib's), and keeps the set
+/// ([`crate::alloc_summary::AllocSummary::scratch_local`]), which
+/// [`derive_alloc_routing`] is handed (F.40 phase 4, Q1). The two never
+/// disagree about which fn frees its own allocations at return.
 pub(crate) fn scratch_local_free_fns<'a>(
     items: impl Iterator<Item = &'a TopDecl>,
     imports: &BTreeMap<Vec<String>, String>,
 ) -> BTreeSet<String> {
+    SCRATCH_LOCAL_DERIVATIONS.with(|n| n.set(n.get() + 1));
     let paths = ScratchPaths { imports };
     let fns: Vec<&FnDecl> = items
         .filter_map(|it| match it {
@@ -666,6 +672,17 @@ pub(crate) fn scratch_local_free_fns<'a>(
             set.remove(&n);
         }
     }
+}
+
+thread_local! {
+    static SCRATCH_LOCAL_DERIVATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread classified the scratch-local free fns: the
+/// accounting a test reads to pin that a build derives the set once, in
+/// the allocation summary, and lowering reads it there.
+pub fn scratch_local_derivations_on_this_thread() -> u64 {
+    SCRATCH_LOCAL_DERIVATIONS.with(|n| n.get())
 }
 
 fn scratch_local_block(b: &Block, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {

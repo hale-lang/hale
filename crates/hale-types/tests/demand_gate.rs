@@ -443,6 +443,44 @@ fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+const WITH_SCRATCH: &str = r#"
+fn shout(s: String) -> Int { let t = s + "!"; return len(t); }
+locus App {
+    params { n: Int = 0; }
+    run() { self.n = shout("a"); }
+}
+fn main() { App { }; }
+"#;
+
+/// F.40 phase 4, Q1: the scratch-local free fns are classified once on
+/// a build path, in the allocation summary, and lowering's routing rows
+/// read that set; the harness's lowering too. The count is this
+/// thread's, so the tests of this binary do not share it.
+#[test]
+fn a_build_classifies_the_scratch_local_fns_once() {
+    let classified = hale_types::alloc_routing::scratch_local_derivations_on_this_thread;
+    let d = seed("one-scratch", WITH_SCRATCH);
+    let before = classified();
+    let s = build(&d.join("app.hl"));
+    assert_clean(&s);
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    assert_eq!(classified() - before, 1, "the summary classifies, and lowering reads its set");
+    let summary = s.demand_alloc_summary().expect("the summary");
+    assert!(summary.scratch_local.contains("shout"), "{:?}", summary.scratch_local);
+    assert_eq!(view.alloc_routing.scratch_local, summary.scratch_local, "the routing's set is the summary's");
+    let _ = std::fs::remove_dir_all(&d);
+
+    let program = hale_syntax::parse_source(WITH_SCRATCH).expect("the fixture parses");
+    let before = classified();
+    let s = match Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program's snapshot is not refused"),
+    };
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("the harness lowers what it is handed"));
+    assert_eq!(classified() - before, 1, "harness: one classification");
+    assert!(view.alloc_routing.is_scratch_local("shout"));
+}
+
 /// F.40 phase 2, use-site identity: which declaration each use names is
 /// resolved once per snapshot, by its mint — the load's, and the
 /// lowering view's over the merged program — and nothing the check, the

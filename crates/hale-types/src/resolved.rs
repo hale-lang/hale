@@ -349,7 +349,9 @@ pub fn rewrite_intra_locus(
 /// so they are built here over the minted program, by the snapshot's own
 /// producers (`bus_graph::build_bus_graph`,
 /// `ownership_graph::build_ownership_graph`), with `bindings` and
-/// `placement`, and its flow rows surveyed (`flows::survey`).
+/// `placement`, its flow rows surveyed (`flows::survey`) and its
+/// allocation summary derived (`alloc_summary::derive_alloc_summary`),
+/// whose scratch-local set the view's routing rows are handed.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -365,14 +367,15 @@ pub fn resolve_program(
         .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     let mut minted = program.clone();
     let checked = crate::snapshot::mint([("program", &mut minted)], sources);
-    let (top, bus, ownership) = {
+    let (top, bus, ownership, summary) = {
         let bundle = merged_bundle(&minted, import_renames, &checked);
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         // The closed world is the entry row's, over the minted program.
         let entry = crate::entry::entry_row(&bundle);
         let bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement, &entry);
         let ownership = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement, &entry);
-        (top, bus, ownership)
+        let summary = crate::alloc_summary::derive_alloc_summary(&bundle);
+        (top, bus, ownership, summary)
     };
     let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
     let flows = crate::flows::survey(&[&minted], import_renames);
@@ -391,6 +394,7 @@ pub fn resolve_program(
         &bus,
         &ownership,
         &flows,
+        &summary.scratch_local,
         &arrangement.domains(),
         host,
     )
@@ -440,7 +444,10 @@ pub fn resolve_program(
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
 /// the same way (`ownership_graph::lowering_ownership_graph`). `flows` is
 /// the snapshot's flow rows (`Snapshot::demand_flows`), which lowering
-/// reads by locus name, so they need no correspondence. `domains`
+/// reads by locus name, so they need no correspondence. `scratch_local`
+/// is the snapshot's allocation summary's scratch-local set
+/// (`AllocSummary::scratch_local`), classified over the declarations the
+/// merged program holds; the routing rows read it. `domains`
 /// is the dispatch plan's domain map, the arrangement's
 /// ([`crate::arrangement::Arrangement::domains`] over the snapshot's
 /// programs, placement table and ownership graph): the map the model's
@@ -465,6 +472,7 @@ pub fn resolve_rewritten(
     bus: &BusGraph,
     ownership: &OwnershipGraph,
     flows: &crate::flows::FlowRows,
+    scratch_local: &std::collections::BTreeSet<String>,
     domains: &BTreeMap<&str, Vec<String>>,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
@@ -672,8 +680,9 @@ pub fn resolve_rewritten(
     // is the checked one's in every row lowering reads.
     let flows = flows.clone();
     // The allocation-routing rows over the same merged program, cross-seed
-    // calls resolved through the same renames: lowering reads them.
-    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames);
+    // calls resolved through the same renames: lowering reads them. Their
+    // scratch-local set is the allocation summary's (F.40 phase 4, Q1).
+    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames, scratch_local);
     // The snapshot's form rows, found by the identities the merge kept,
     // and a written-configuration row for every declaration they do not
     // hold (the stdlib's).

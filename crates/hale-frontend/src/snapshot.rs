@@ -1763,8 +1763,12 @@ impl Snapshot {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
-                // And its flow rows these ones (F.40 phase 4, Q1).
+                // And its flow rows these ones, and its scratch-local set
+                // the allocation summary's (F.40 phase 4, Q1): the check
+                // demanded the summary on the gated path, the target
+                // admission on the harness's.
                 let flows = self.demand_flows().map_err(Clone::clone)?;
+                let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
                 // target with no column (Windows) never reaches a snapshot.
@@ -1801,6 +1805,7 @@ impl Snapshot {
                     bus,
                     ownership,
                     flows,
+                    &summary.scratch_local,
                     &arrangement.domains(),
                     class,
                 )
