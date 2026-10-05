@@ -4656,6 +4656,16 @@ fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mu
     let Some(surface) = hale_syntax::api_gen::api_surface(programs, root) else {
         return;
     };
+    diags.extend(api_binding_rules(&surface));
+}
+
+/// The api entry's rules over `surface` (F.40 phase 4, A4: public for
+/// the differential that holds the snapshot's surface to the one
+/// [`check_api_binding`] re-derives; it goes with that function).
+#[doc(hidden)]
+pub fn api_binding_rules(surface: &hale_syntax::api_gen::ApiSurface) -> Vec<Diag> {
+    let mut out = Vec::new();
+    let diags = &mut out;
     let b = &surface.binding;
     if b.bound.is_none() || b.on_full.is_none() {
         diags.push(Diag::ty(
@@ -4719,6 +4729,7 @@ fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mu
             ),
         ));
     }
+    out
 }
 
 /// GH #1109: the role vocabulary and the `@gated(role:)` sites.
@@ -4835,7 +4846,12 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
     }
 }
 
-fn check_api_roles(
+/// The role rules over the AST, as the check judged them before the law
+/// over the role rows ([`crate::roles::role_laws`]); public for the
+/// differential that holds the two equal (F.40 phase 4, A4), and deleted
+/// with it.
+#[doc(hidden)]
+pub fn check_api_roles(
     programs: &[&Program],
     topics: &crate::topic_identity::TopicRows,
     bindings: &crate::binding_rows::BindingRows,
