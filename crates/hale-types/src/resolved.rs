@@ -1,7 +1,8 @@
 //! The lowering view (F.40 phase 1.2a-ii, a demanded family since
 //! phase 2.2b): what codegen lowers.
 //!
-//! [`resolve_program`] takes the program a verb checked and produces
+//! [`rewrite_intra_locus`] and then [`resolve_rewritten`] take the
+//! program a verb checked and produce
 //! what lowering walks — the user program after the two lowering
 //! rewrites, the same program merged with the bundled stdlib —
 //! together with the snapshot minted over the merged program and the
@@ -11,8 +12,8 @@
 //! The view is a family of the frontend's snapshot
 //! (`hale_frontend::snapshot::Snapshot::demand_lowering`), which runs
 //! this function once, after the check it is gated on, over the
-//! snapshot's programs, source map, renames and config. The only other
-//! caller is codegen's harness adapter, for a bare program.
+//! snapshot's programs, source map, renames and config. Nothing else
+//! calls it (the bare-program entry left with F.40 phase 4, T3).
 //!
 //! The two lowering rewrites are the intra-locus rewrite (a publish to
 //! a subscriber in the same tree becomes a direct call) and the topic
@@ -46,8 +47,7 @@
 //! `Struct` or `Call` it finds unnumbered is an error.
 //!
 //! Before the intra-locus rewrite the user program is minted once
-//! more, so every send the relation records is minted on every path,
-//! the harness adapter's included.
+//! more, so every send the relation records is minted.
 //!
 //! The passes that shape a declaration are not run here: every caller
 //! ran the desugar sequence
@@ -177,8 +177,9 @@ pub struct LoweringView {
     /// family) of the program the view was resolved from: the emitters
     /// read a spine's obligations, in order, from it
     /// ([`LoweringView::lifecycle`]). The snapshot's view carries its
-    /// plan; a view resolved from a bare program ([`resolve_program`])
-    /// has none, and lowering refuses it (a required row).
+    /// plan; a view without one (as [`resolve_rewritten`] returns it,
+    /// before the snapshot sets it) is refused by lowering (a required
+    /// row).
     pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
     /// program the view was resolved from: its entry, the `main locus`
@@ -340,81 +341,9 @@ pub fn rewrite_intra_locus(
     IntraLocusStage { program: program_owned, intra_locus, rewritten_in: t_start.elapsed() }
 }
 
-/// Resolve `program` into the view codegen lowers: the intra-locus
-/// rewrite ([`rewrite_intra_locus`]), then [`resolve_rewritten`]. The
-/// snapshot runs the two halves as its `intra_locus` and
-/// `lowering_view` families; this is the bare program's entry, and a
-/// bare program is the host's.
-/// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
-/// The program is minted first, as an entry point's load mints it, and
-/// those identities are the checked ones the view corresponds to. A bare
-/// program has no snapshot to hand the view its bus and ownership graphs,
-/// so they are built here over the minted program, by the snapshot's own
-/// producers (`bus_graph::build_bus_graph`,
-/// `ownership_graph::build_ownership_graph`), with `bindings` and
-/// `placement`, its handler rows derived (`handler_routing::handler_rows`),
-/// its flow rows surveyed (`flows::survey`), its
-/// allocation summary derived (`alloc_summary::derive_alloc_summary`),
-/// whose scratch-local set the view's routing rows are handed, and its
-/// dispatch plan derived as the snapshot's `dispatch` family derives it
-/// (`bus_graph::derive_dispatch_gates`, `DispatchPlan::from_gates`).
-pub fn resolve_program(
-    program: &Program,
-    sources: &[SourceFile],
-    import_renames: &[(Vec<String>, String)],
-    api: Option<&str>,
-    api_roles: Option<&str>,
-    forms: &crate::form_rows::FormRows,
-    bindings: &crate::binding_rows::BindingRows,
-    placement: &crate::placement::PlacementTable,
-    typed: &crate::typed_bodies::TypedBodies,
-) -> Result<LoweringView, String> {
-    let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
-        .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
-    let mut minted = program.clone();
-    let checked = crate::snapshot::mint([("program", &mut minted)], sources);
-    let (top, bus, ownership, summary) = {
-        let bundle = merged_bundle(&minted, import_renames, &checked);
-        let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        // The closed world is the entry row's, over the minted program.
-        let entry = crate::entry::entry_row(&bundle);
-        let bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement, &entry);
-        let ownership = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement, &entry);
-        let summary = crate::alloc_summary::derive_alloc_summary(&bundle);
-        (top, bus, ownership, summary)
-    };
-    let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
-    let plan = DispatchPlan::from_gates(
-        &crate::bus_graph::derive_dispatch_gates(&bus, &top, placement),
-        &arrangement.domains(),
-    );
-    let flows = crate::flows::survey(&[&minted], import_renames);
-    let handlers = crate::handler_routing::handler_rows(&[&minted], import_renames, &checked);
-    resolve_rewritten(
-        &rewrite_intra_locus(&minted, placement),
-        &checked,
-        sources,
-        import_renames,
-        api,
-        api_roles,
-        forms,
-        bindings,
-        placement,
-        typed,
-        &top,
-        &bus,
-        &ownership,
-        &handlers,
-        &flows,
-        &summary.scratch_local,
-        &plan,
-        host,
-    )
-}
-
 /// Resolve the intra-locus rewrite's program into the view codegen
 /// lowers: the producer of the snapshot's `lowering_view` family, run by
-/// the snapshot and by [`resolve_program`] and by nothing else.
+/// the snapshot and by nothing else.
 ///
 /// The stage's program is the one the verb checked, rewritten: it has
 /// been through [`crate::desugar_sequence::desugar_before_check`], and

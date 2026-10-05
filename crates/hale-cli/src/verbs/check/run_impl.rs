@@ -769,7 +769,7 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // dispatch or the binding that owns it must last longer than the
     // holder. Errors, with the witness call site where a parameter carries
     // the handle in. Beside it the GH #737 notice. `build`, `run` and
-    // `test` refuse the same through `check_bundle_for_build`.
+    // `test` refuse the same through their snapshot (`Config::build_rules`).
     // Which locus accepts which child is the snapshot's ownership graph's
     // (its rows; the bundle's own walk where the graph is blocked).
     {

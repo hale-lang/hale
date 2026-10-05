@@ -198,38 +198,6 @@ pub const TOPOLOGY_SCHEMA: &str = "1.19";
 /// `holds`).
 pub const MODEL_SEMANTICS: u32 = 2;
 
-/// The model identity alone (downstream handoff P26, 2026-08-12):
-/// the same `shape_hash` `dump_topology` stamps, for embedding in
-/// the built binary's observation segment, for a bundle no snapshot
-/// holds. It is the model half's digest read from the model
-/// ([`crate::topology_projection::project_shape_hash`], the function
-/// the artifact's own stamp is asserted equal to), not scraped out of a
-/// rendered artifact. A verb reads its snapshot's model instead
-/// (`model_identity` in the CLI).
-pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
-    crate::topology_projection::project_shape_hash(&crate::derive_application_model(bundle))
-}
-
-/// Serialize the bundle's model + claim results as the topology
-/// artifact (JSON), for a bundle no snapshot holds: the model is
-/// derived here ([`crate::derive_application_model`]). `hale check`
-/// renders its snapshot's model instead ([`dump_topology_over`]).
-pub fn dump_topology(bundle: &Bundle<'_>) -> String {
-    dump_topology_over(
-        bundle,
-        &crate::derive_application_model(bundle),
-        &crate::effects::effect_certificates(bundle),
-        &alloc_summary::derive_alloc_summary(bundle),
-        &crate::bundle_law_selection(bundle),
-    )
-}
-
-/// [`dump_topology`], under its Change-6 name (the projection tests').
-#[doc(hidden)]
-pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
-    dump_topology(bundle)
-}
-
 /// The artifact of `bundle`, projected from `app_model`, the model the
 /// caller holds (F.40 phase 2.3: `hale check`'s snapshot's, the one its
 /// laws were judged over, so a check of a program with claims derives

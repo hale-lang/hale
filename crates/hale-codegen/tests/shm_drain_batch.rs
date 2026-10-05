@@ -28,6 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 fn unique_tag(label: &str) -> String {
     let nanos = SystemTime::now()
@@ -47,7 +49,7 @@ fn build_binary(src: &str, label: &str) -> PathBuf {
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), &prog);
     let bundle = hale_types::Bundle::new(programs);
-    let errors: Vec<String> = hale_types::check_bundle_for_build(&bundle, false)
+    let errors: Vec<String> = entries::check_bundle_for_build(&bundle, false)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())

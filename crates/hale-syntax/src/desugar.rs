@@ -997,7 +997,7 @@ pub struct IntraLocusRewrite {
 /// `placed_off_owner_thread` is the set of `(owner_locus, field)`
 /// pairs the placement table runs off their owner's thread (F.40
 /// phase 3, P1: `PlacementTable::off_owner_fields`, handed in by
-/// `resolve_program`). A caller with no placement passes an empty set.
+/// `rewrite_intra_locus`). A caller with no placement passes an empty set.
 pub fn desugar_intra_locus_topics(
     program: &mut Program,
     placed_off_owner_thread: &BTreeSet<(String, String)>,

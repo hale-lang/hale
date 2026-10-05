@@ -1000,7 +1000,7 @@ pub fn check_bundle_by_declaration(
         // GH #476 Change 5h: `@budget` is judged over the model
         // through the evidence sidecar — the counting engines
         // measure, `judge_certificates` decides. See
-        // `check_bundle_opts`.
+        // `Snapshot::demand_laws`.
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
         // @budget, over the shared callgraph witness engine. The flat
@@ -1019,7 +1019,7 @@ pub fn check_bundle_by_declaration(
         // (cross-actor causality is judged over the model).
         // GH #476 Change 5f/5g: `causes:` and its backward dual
         // `depends:` (RFC #330) are judged over the model with
-        // the other migrated families — see `check_bundle_opts`.
+        // the other migrated families — see `Snapshot::demand_laws`.
         // GH #382 phase 1: bundle-level claims — group
         // resolution (unknown name = error, vacuity) and
         // `forbid reaches` evaluation with countermodel
@@ -1037,7 +1037,7 @@ pub fn check_bundle_by_declaration(
         // The selection is the snapshot's (`law_selection`, F.40
         // phase 4, A2), the one the laws stage and the artifact read.
         diags.extend(inputs.laws.diags.iter().cloned());
-        // The VERDICTS are appended by `check_bundle_opts`,
+        // The VERDICTS are appended by `Snapshot::demand_laws`,
         // after this whole pass establishes that the program
         // denotes a valid model — see the note there. Selection
         // stays here: it reads the claim surface directly and is

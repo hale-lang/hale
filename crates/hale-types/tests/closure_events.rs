@@ -6,7 +6,9 @@
 //! and its witness.
 
 use hale_syntax::{parse_source, Diag, DiagKind};
-use hale_types::check_program;
+#[path = "support/entries.rs"]
+mod entries;
+use entries::check_program;
 
 fn diags(src: &str) -> Vec<Diag> {
     check_program(&parse_source(src).expect("parses"))

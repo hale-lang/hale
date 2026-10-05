@@ -1,19 +1,19 @@
 //! GH #1106: the `api:` entry's checker rules. The entry is lowered by
-//! `hale_syntax::api_gen` before the checker runs (the CLI does that);
-//! these tests run the pass the way the CLI does and read what the
-//! checker says about the result, so they cover both halves: the
+//! `hale_syntax::api_gen` before the checker runs (the load's desugar
+//! sequence does that); these tests load the program as `hale check`
+//! loads a seed and read what the checker says about the result, so
+//! they cover both halves: the
 //! diagnostics the entry itself earns, and that the synthesized code
 //! typechecks like the author's.
 
 use hale_syntax::parse_source;
-use hale_types::check_program;
+
+#[path = "support/entries.rs"]
+mod entries;
+use entries::check_files;
 
 fn check(src: &str) -> Vec<String> {
-    let mut prog = parse_source(src).expect("parse failed");
-    hale_syntax::json_gen::generate_json_parsers(&mut prog);
-    let row = hale_types::entry::entry_row_in(&[&prog]);
-    hale_syntax::api_gen::generate_api(&mut [&mut prog], row.root().and_then(|m| m.index_in()), None);
-    check_program(&prog).into_iter().map(|d| d.message).collect()
+    check_files(&[("main.hl", src)]).into_iter().map(|d| d.message).collect()
 }
 
 fn program(entry: &str, extra: &str) -> String {

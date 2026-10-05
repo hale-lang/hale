@@ -153,9 +153,9 @@ It builds none of the families it reads beside the program:
 `ModelInputs` hands it the top scope with its topic rows, the bus
 graph, the ownership graph and the handler rows, each built once
 over the checked programs. Every verb demands them, and the model,
-from its snapshot (`Snapshot::demand_model`, F.40 phase 2.3);
-`hale_types::derive_application_model(&Bundle)` builds them for a
-bundle no snapshot holds (the test entry's) and derives over them.
+from its snapshot (`Snapshot::demand_model`, F.40 phase 2.3), and
+so does every test: no entry builds them for a bundle no snapshot
+holds.
 
 **There is no other way in.** In particular:
 

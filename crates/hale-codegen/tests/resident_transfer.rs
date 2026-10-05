@@ -34,6 +34,8 @@ use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 const PRELUDE: &str = r#"
 type Row { name: String; n: Int; }
@@ -80,7 +82,7 @@ fn build_diags(program: &hale_syntax::ast::Program) -> Vec<hale_syntax::error::D
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), program);
     let bundle = hale_types::Bundle::new(programs);
-    hale_types::check_bundle_for_build(&bundle, false)
+    entries::check_bundle_for_build(&bundle, false)
 }
 
 fn errors(src: &str) -> Vec<(String, usize, usize)> {

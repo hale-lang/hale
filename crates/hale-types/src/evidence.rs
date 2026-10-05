@@ -826,8 +826,8 @@ pub fn model_fanout<'a>(
 
 /// The evidence for `table`'s certificates over `model`. The effects
 /// certificates are the report the caller holds (`effects`: the
-/// check's run on a snapshot, [`crate::effects::effect_certificates`]
-/// for a bundle no check ran over), never a second run of the engine;
+/// check's run on a snapshot, `Snapshot::demand_effect_certificates`),
+/// never a second run of the engine;
 /// the counting engines (`@budget`) measure here, over the bundle's
 /// allocation summary, derived here for a bundle no snapshot holds.
 pub fn derive_certificate_evidence(

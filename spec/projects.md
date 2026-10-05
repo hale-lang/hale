@@ -770,7 +770,7 @@ The project / import surface lives in three places:
   stands for its seed). The frontend does file resolution +
   mangling + merging once per snapshot; the snapshot's lowering
   view carries the per-build path-rename table into
-  `hale_types::resolved::resolve_program`, which lowering reads
+  `hale_types::resolved::resolve_rewritten`, which lowering reads
   through `hale_codegen::build_resolved`.
 - `crates/hale-types/src/mangle.rs` — `mangle_program`,
   `build_seed_renames`, `mangle_with_renames`. The AST walker
