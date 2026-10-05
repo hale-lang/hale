@@ -200,7 +200,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 18] = [
+const CALL_LINES_ONLY: [(&str, usize); 19] = [
     ("dna/core", 1248),
     ("dna/oidc", 34),
     ("dna/organism", 1315),
@@ -213,6 +213,9 @@ const CALL_LINES_ONLY: [(&str, usize); 18] = [
     ("tests/hale/api_roles_test.hl", 2),
     ("tests/hale/api_roles_xseed_test.hl", 2),
     ("tests/hale/api_serve_test.hl", 2),
+    // 4: the new test (S6) calls the writers and the readers, whose
+    // stdlib bodies only the renames name.
+    ("tests/hale/bytes_writer_offset_test.hl", 4),
     // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
     // f()` to the fn the local names, which only the renames reach; 3
     // more: E5 resolves the calls through a function value to the
