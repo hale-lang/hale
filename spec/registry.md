@@ -385,7 +385,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call_expr` — 271 `["std", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`. *Removed when:* codegen dispatches from the registry row.
-- `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call` — the statement-form twin of the expression dispatch: 191 more `["std", ..]` literals. *Removed when:* same.
+- `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call` — the statement form: the expression dispatch with the value dropped, except for 54 more `["std", ..]` literals, in the arms a statement answers differently (Unit-only primitives, the assertions, two Hale bodies) and its fallibility refusal (34 paths). *Removed when:* same.
 - `crates/hale-codegen/src/channels/mod.rs` · `try_lower_fallible_stdlib_path_call` — the fallible-call dispatch (`path or raise` on a stdlib path), a third copy of the stdlib call shapes: 150 more `["std", ..]` literals. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `value_to_string_supports` — the printable set, kept in lockstep by hand with the checker's `ty_is_printable`. *Removed when:* one predicate.
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.

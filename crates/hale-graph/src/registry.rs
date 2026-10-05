@@ -654,7 +654,7 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(STDLIB_SURFACE, "signature_for")),
         legacy: &[
             legacy(CG, "lower_stdlib_path_call_expr", "271 `[\"std\", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`", "codegen dispatches from the registry row"),
-            legacy(CG, "lower_stdlib_path_call", "the statement-form twin of the expression dispatch: 191 more `[\"std\", ..]` literals", "same"),
+            legacy(CG, "lower_stdlib_path_call", "the statement form: the expression dispatch with the value dropped, except for 54 more `[\"std\", ..]` literals, in the arms a statement answers differently (Unit-only primitives, the assertions, two Hale bodies) and its fallibility refusal (34 paths)", "same"),
             legacy(CG_CHANNELS, "try_lower_fallible_stdlib_path_call", "the fallible-call dispatch (`path or raise` on a stdlib path), a third copy of the stdlib call shapes: 150 more `[\"std\", ..]` literals", "same"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
