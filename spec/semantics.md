@@ -4319,8 +4319,9 @@ closure synchronously at the call site:
      effects (and to detect typecheck errors on the payload
      type) but no `payload` field is materialized on the
      `ClosureViolation`.
-   - The assertion-shape fields (`left`, `right`, `tolerance`,
-     `diff`) are NOT populated for inline violations.
+   - The assertion-shape fields (`left`, `right`, `tolerance`) are
+     not fields of the struct, and `diff` is 0 for an inline
+     violation.
 2. The locus's exploded flag is set (same as the auto-epoch
    path; downstream observers can't tell from the flag whether
    the fire was auto-epoch or inline).
@@ -4349,12 +4350,15 @@ do not execute, so the child's locus state is frozen at the
 violate moment. `c.last_error` reads exactly the value the
 violate site observed.
 
-The `ClosureViolation` value carries only `err.locus` and
-`err.closure`; it does not materialize the captured fields.
-Source that reads `err.last_error` will typecheck
-(`ClosureViolation` admits unknown fields permissively at
-field-access time) but will fail to link / run — read captured
-state through the child handle (`c.last_error`) instead.
+The `ClosureViolation` value carries `err.locus` and
+`err.closure` (Strings) and `err.diff` (an Int: `left - right`
+for an Int or Duration assertion, 0 otherwise); it does not
+materialize the captured fields. Source that reads
+`err.last_error` is a type error at the read ("no field
+`last_error` on `ClosureViolation`"): read captured state through
+the child handle (`c.last_error`) instead. (Until F.40 phase 4,
+S8 the checker left `ClosureViolation` unresolved, so such a read
+passed `hale check` and failed at build without a location.)
 
 The `violate` statement is divergent: the typechecker treats it
 as `Never`, the same as `fail` in fallible fn bodies and

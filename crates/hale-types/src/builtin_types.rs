@@ -24,9 +24,6 @@ pub enum Injected {
     /// Only in a bundle with a topic that declares `on_unmatched: fail`,
     /// whose publishes carry the type through an `or`.
     WhenAFailTopic,
-    /// Never: the checker leaves the name unresolved, so a value of the
-    /// type is `Unknown` to it. Lowering declares it all the same.
-    NotByTheChecker,
 }
 
 /// One builtin type: its name, its fields in declaration order (each a
@@ -59,7 +56,7 @@ pub const BUILTIN_TYPES: &[BuiltinType] = &[
     BuiltinType {
         name: "ClosureViolation",
         fields: &[("locus", Str), ("closure", Str), ("diff", Int)],
-        injected: Injected::NotByTheChecker,
+        injected: Injected::Always,
     },
     // The fallible `std::crypto::*` calls: `kind` names the operation,
     // `detail` the failure.

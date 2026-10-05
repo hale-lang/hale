@@ -12437,7 +12437,7 @@ impl<'a> Checker<'a> {
             || self.known.alias_target(name).is_some()
             // GH #877: a builtin type names something even where the
             // resolver injects nothing (`BusUnmatchedKey` without a fail
-            // topic, `ClosureViolation`): lowering declares every one
+            // topic): lowering declares every one
             // unconditionally, so a signature naming one lowers.
             || crate::builtin_types::builtin_type(name).is_some()
             || self.generic_params.iter().any(|g| g == name)

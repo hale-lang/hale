@@ -2135,7 +2135,6 @@ pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool) {
         let injected = match t.injected {
             Injected::Always => true,
             Injected::WhenAFailTopic => fail_topics,
-            Injected::NotByTheChecker => false,
         };
         if !injected || scope.symbols.contains_key(t.name) {
             continue;
