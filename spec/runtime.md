@@ -2228,7 +2228,9 @@ its `KNOWN_OPEN` table, which is empty today.
   compiled reclaim reads the same words, with the same acquire loads,
   in front of each call, and skips a call whose answer they settle;
   the retirement check then reads the instance's claim itself, as the
-  function would.
+  function would. A cascade that tears no field down enters no scope:
+  nothing runs between its enter and its leave for the scope to
+  collect.
   The guarantees are the protocol's: a guard reads exactly its
   function's first test, so where it skips the call, the call would
   have returned the same answer having done nothing. The trace build

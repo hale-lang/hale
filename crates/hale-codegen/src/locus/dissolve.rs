@@ -369,7 +369,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // F.31 Phase 3b: when this locus IS the main locus, skip
         // the cascade for fields whose placement is `pinned`. The
@@ -378,17 +377,27 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // pthread_join + arena_destroy happen via the
         // deferred-dissolve frame's flush at fn-scope exit.
         let is_main_locus = self.is_entry_locus(locus_name);
+        let pinned_on_main = |cx: &Self, fname: &str| {
+            is_main_locus && matches!(cx.deployment.main_placement_map.get(fname), Some(ScheduleClass::Pinned(_)))
+        };
         // The fields in the order the plan places their teardowns (line
         // 12: declaration order). Physical release can remain deferred.
         let field_entries = self.cascade_field_entries(info, locus_name)?;
+        // The scope collects the releases the fields' teardowns defer
+        // under this owner; a cascade that tears no field down runs
+        // nothing between its enter and its leave, and has none.
+        let tears_down = field_entries.iter().any(|(fname, _, ty)| {
+            !pinned_on_main(self, fname)
+                && match ty {
+                    CodegenTy::Interface(_) | CodegenTy::Perspective(_) => true,
+                    CodegenTy::LocusRef(n) => self.user_loci.contains_key(n),
+                    _ => false,
+                }
+        });
+        let retain = if tears_down { Some(self.emit_reclaim_scope_enter(self_ptr)?) } else { None };
         for (fname, field_idx, field_ty) in field_entries {
             // F.31 Phase 3b: skip cascade for pinned-placed fields.
-            if is_main_locus
-                && matches!(
-                    self.deployment.main_placement_map.get(&fname),
-                    Some(ScheduleClass::Pinned(_))
-                )
-            {
+            if pinned_on_main(self, &fname) {
                 continue;
             }
             // GH #871: a field typed by a CONTRACT — an `interface`
@@ -558,7 +567,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 self.builder.position_at_end(after_bb);
             }
         }
-        self.emit_reclaim_scope_leave(retain)?;
+        if let Some(retain) = retain {
+            self.emit_reclaim_scope_leave(retain)?;
+        }
         Ok(())
     }
 

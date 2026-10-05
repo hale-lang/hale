@@ -360,6 +360,19 @@ fn the_reclaim_scope_is_entered_and_left_behind_its_guards() {
     }
 }
 
+/// A cascade that tears no field down runs nothing a scope could
+/// collect, and enters none; the let-bound and the spine reclaim of a
+/// fieldless locus make no scope call at all.
+#[test]
+fn a_cascade_that_tears_no_field_down_enters_no_scope() {
+    let ir = ir_of("no_scope", "fn work() {\n    let k = Kid { tag: 1 };\n    println(\"ev v \" + to_string(k.v()));\n}\n\nfn main() { work(); }\n");
+    for name in ["work", "__reclaim_Kid"] {
+        let f = function(&ir, name);
+        assert!(!f.contains("@lotus_reclaim_scope_enter(") && !f.contains("@lotus_reclaim_scope_leave("),
+            "no_scope: `{name}` reclaims a Kid, which has no field to tear down:\n{f}");
+    }
+}
+
 /// The dissolve cascade: an owner's field is reclaimed inside the
 /// owner's teardown, before the owner's own arena.
 #[test]
