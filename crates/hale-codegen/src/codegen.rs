@@ -27335,8 +27335,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::BytesReadU64Be
             | Id::BytesReadU64Le
             | Id::BytesReadU8 => self.lower_std_bytes_read(segs[2], args, scope),
-            // A1 zero-copy write: `write_<type>_<endian>(w, off, val) -> ()
-            // fallible(IndexError)`, the name read the same way.
+            // A1 zero-copy write: `write_<type>_<endian>(w, off, val) -> Int
+            // fallible(IndexError)`, the offset past the write, the name read
+            // the same way.
             Id::BytesWriteF32Le
             | Id::BytesWriteF64Be
             | Id::BytesWriteF64Le

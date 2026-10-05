@@ -5737,6 +5737,9 @@ dynamic	Mx	on main	in the seed
 row	Printer@main1	Printer	main	default
 row	Producer@main2	Producer	main	default
 
+== tests/hale/bytes_writer_offset_test.hl
+row	__StdIoMirrorRing@main1	__StdIoMirrorRing	main	default
+
 == tests/hale/chains_hashmap_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
