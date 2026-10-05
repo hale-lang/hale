@@ -4640,7 +4640,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // it). Step over the spine then, as the owner cascades do
             // (GH #1036): its dissolve() ran once and its arena is gone.
             let eager_skip_bb = self.emit_reclaimed_child_skip(
-                &info, self_ptr, locus_name, "self", "eager", false,
+                &info, self_ptr, locus_name, locus_name, "self", "eager",
             )?;
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()

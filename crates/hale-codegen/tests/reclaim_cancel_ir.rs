@@ -16,6 +16,15 @@
 //! with nothing to do, so a path through it has canceled (or waited)
 //! as surely as one through the call; the guard's words are pinned
 //! here, so a guard that reads less than its function cannot pass.
+//!
+//! The guarded sequence is emitted once per locus type, not at each
+//! site: a site outside the type's own spine function calls the type's
+//! `__reclaim_site_<L>_<spine>` (or, for a field under its owner,
+//! `__reclaim_field_<L>_<spine>`), a cascade's skip calls
+//! `__reclaim_live_<L>`, and a cascade's reclaim scope is entered and
+//! left through the shared `__reclaim_scope_enter` / `_leave`. A site
+//! holds the call and no protocol call of its own; the checks follow
+//! the call into the function that holds the guards.
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -73,6 +82,14 @@ fn guard_words(f: &str, cond: &str) -> Vec<String> {
     vec![read.to_string()]
 }
 
+/// The conditional branch whose second edge is `label`, without its
+/// metadata (a guard's branch weighs its idle edge: `, !prof !<n>`).
+fn branch_to<'a>(f: &'a str, label: &str) -> Option<&'a str> {
+    f.lines()
+        .map(|l| l.trim().split(", !").next().unwrap_or(""))
+        .find(|l| l.starts_with("br i1 %") && l.ends_with(&format!("label %{label}")))
+}
+
 /// The guard in front of the block `call_label` (`<tag>.call`, LLVM
 /// numbering repeats): its idle test, and the words that reads. Its
 /// idle edge goes to `<tag>.after`.
@@ -81,11 +98,8 @@ fn guard_of(f: &str, call_label: &str) -> (String, Vec<String>) {
         .trim_end_matches(|c: char| c.is_ascii_digit())
         .strip_suffix(".call")
         .unwrap_or_else(|| panic!("`{call_label}` is not a guarded call block"));
-    let br = f
-        .lines()
-        .find(|l| l.trim_start().starts_with("br i1 %") && l.trim_end().ends_with(&format!("label %{call_label}")))
-        .unwrap_or_else(|| panic!("nothing branches to `{call_label}`"));
-    let cond = br.trim_start()["br i1 %".len()..].split(',').next().expect("condition");
+    let br = branch_to(f, call_label).unwrap_or_else(|| panic!("nothing branches to `{call_label}`"));
+    let cond = br["br i1 %".len()..].split(',').next().expect("condition");
     assert!(cond.starts_with(&format!("{tag}.idle")), "`{call_label}` is entered on `{cond}`, not its idle test: {br}");
     let after = br.split("label %").nth(1).expect("the idle edge").trim_end_matches(", ");
     assert!(after.starts_with(&format!("{tag}.after")), "the idle edge of `{call_label}` goes to `{after}`: {br}");
@@ -214,7 +228,55 @@ fn assert_wait_dominates_release(tag: &str, f: &str) {
     assert!(waits > 0 && releases > 0, "{tag}: no wait/release path: {f}");
 }
 
+/// The functions `f` calls whose names begin with `prefix`, one entry
+/// per call.
+fn calls_of<'a>(f: &'a str, prefix: &str) -> Vec<&'a str> {
+    let needle = format!("@{prefix}");
+    f.lines()
+        .filter(|l| l.contains(" call "))
+        .filter_map(|l| {
+            let at = l.find(&needle)?;
+            let name = &l[at + 1..];
+            Some(&name[..name.find('(').expect("an argument list")])
+        })
+        .collect()
+}
+
+/// The protocol's runtime calls, each of which a site leaves to its
+/// type's functions.
+const PROTOCOL: &[&str] = &[
+    "@lotus_reclaim_pending(", "@lotus_run_cancel_only(", "@lotus_run_cancel_queued(",
+    "@lotus_reclaim_flush_owned(", "@lotus_reclaim_defer(", "@lotus_reclaim_release_enter(",
+    "@lotus_reclaim_release_leave(", "@lotus_reclaim_scope_enter(", "@lotus_reclaim_scope_leave(",
+];
+
+/// `func`'s reclaims of `l`, each held to the cancellation before its
+/// storage callback and the wait before every release: in place in the
+/// type's own spine function `__reclaim_<l>`; elsewhere, `func` calls
+/// the type's site (or field) function, which holds the sequence, and
+/// makes no protocol call itself. The number of reclaims.
 fn assert_spine(tag: &str, ir: &str, func: &str, l: &str) -> usize {
+    if func == format!("__reclaim_{l}") {
+        return assert_spine_in(tag, ir, func, l);
+    }
+    let f = function(ir, func);
+    for call in PROTOCOL {
+        assert!(!f.contains(call), "{tag}: `{func}` makes a protocol call its type's function holds: {call}");
+    }
+    let mut sites = calls_of(f, &format!("__reclaim_site_{l}_"));
+    sites.extend(calls_of(f, &format!("__reclaim_field_{l}_")));
+    assert!(!sites.is_empty(), "{tag}: `{func}` calls no site function of {l}:\n{f}");
+    let mut seen = Vec::new();
+    for site in &sites {
+        if !seen.contains(site) {
+            seen.push(*site);
+            assert_eq!(assert_spine_in(tag, ir, site, l), 1, "{tag}: `{site}` is one reclaim of {l}");
+        }
+    }
+    sites.len()
+}
+
+fn assert_spine_in(tag: &str, ir: &str, func: &str, l: &str) -> usize {
     let f = function(ir, func);
     let cancels_idle = assert_guarded(tag, f, "lotus_run_cancel_only", CANCEL_ONLY_WORDS);
     let bs = blocks(f);
@@ -308,10 +370,8 @@ fn assert_pending_guarded(tag: &str, f: &str) -> usize {
     for b in bs.iter().filter(|b| b.body.contains("@lotus_reclaim_pending(")) {
         let call_tag = b.label.trim_end_matches(|c: char| c.is_ascii_digit()).strip_suffix(".call")
             .unwrap_or_else(|| panic!("{tag}: `{}` calls lotus_reclaim_pending unguarded", b.label));
-        let br = f.lines()
-            .find(|l| l.trim_start().starts_with("br i1 %") && l.trim_end().ends_with(&format!("label %{}", b.label)))
-            .unwrap_or_else(|| panic!("{tag}: nothing branches to `{}`", b.label));
-        let cond = br.trim_start()["br i1 %".len()..].split(',').next().expect("condition");
+        let br = branch_to(f, b.label).unwrap_or_else(|| panic!("{tag}: nothing branches to `{}`", b.label));
+        let cond = br["br i1 %".len()..].split(',').next().expect("condition");
         assert!(cond.starts_with(&format!("{call_tag}.idle")), "{tag}: `{}` entered on `{cond}`", b.label);
         assert_eq!(guard_words(f, cond), ["lotus_reclaim_records_live"], "{tag}: the pending guard's words");
         let claim_label = br.split("label %").nth(1).expect("the idle edge").trim_end_matches(", ");
@@ -335,28 +395,53 @@ fn assert_pending_guarded(tag: &str, f: &str) -> usize {
 }
 
 /// The retirement check every reclaim begins with reads the claim
-/// inline when nothing is retired, on each spine.
+/// inline when nothing is retired, on each spine: in the type's spine
+/// function, in its site function (the let-bound reclaim's), and in its
+/// live test (an eager literal's skip and an owner's cascade over its
+/// field), which the sites call instead of checking for themselves.
 #[test]
 fn the_pending_check_reads_the_claim_when_nothing_is_retired() {
     let ir = ir_of("pending", "fn work() {\n    let k = Kid { tag: 1 };\n    println(\"ev v \" + to_string(k.v()));\n}\n\nfn main() { work(); }\n");
-    assert!(assert_pending_guarded("pending", function(&ir, "work")) >= 1, "pending: work's reclaim of Kid checks its claim");
+    let work = function(&ir, "work");
+    assert!(!work.contains("@lotus_reclaim_pending("), "pending: work checks Kid's claim in Kid's site function:\n{work}");
+    let sites = calls_of(work, "__reclaim_site_Kid_");
+    assert_eq!(sites.len(), 1, "pending: work reclaims its Kid through one site call:\n{work}");
+    assert_eq!(assert_pending_guarded("pending", function(&ir, sites[0])), 1, "pending: `{}` checks Kid's claim", sites[0]);
     assert!(assert_pending_guarded("pending", function(&ir, "__reclaim_Kid")) >= 1, "pending: __reclaim_Kid checks its claim");
+
+    let ir = ir_of("pending_live", "locus Box {\n    params { k: Kid = Kid { tag: 1 }; }\n}\n\nfn main() { Box { }; }\n");
+    let main = function(&ir, "main");
+    assert!(!main.contains("@lotus_reclaim_pending("), "pending_live: main checks no claim itself:\n{main}");
+    for l in ["Box", "Kid"] {
+        let live = format!("__reclaim_live_{l}");
+        assert!(!calls_of(main, &live).is_empty(), "pending_live: main skips a reclaimed {l} through `{live}`:\n{main}");
+        assert_eq!(assert_pending_guarded("pending_live", function(&ir, &live)), 1, "pending_live: `{live}` checks the claim");
+    }
 }
 
-/// An owner's cascade enters its reclaim scope behind the quiet guard
-/// and leaves it behind the scope's own null test.
+/// An owner's cascade enters its reclaim scope through the shared
+/// `__reclaim_scope_enter`, whose call is behind the quiet guard, and
+/// leaves it through `__reclaim_scope_leave`, whose call is behind the
+/// scope's own null test.
 #[test]
 fn the_reclaim_scope_is_entered_and_left_behind_its_guards() {
     let ir = ir_of("scope", "locus Box {\n    params { k: Kid = Kid { tag: 1 }; }\n}\n\nfn main() { Box { }; }\n");
-    let boxed = function(&ir, "__reclaim_Box");
-    assert_guarded("scope", boxed, "lotus_reclaim_scope_enter", QUIET_WORDS);
-    for b in blocks(boxed).iter().filter(|b| b.body.contains("@lotus_reclaim_scope_leave(")) {
+    for name in ["__reclaim_Box", "main"] {
+        let f = function(&ir, name);
+        assert_eq!(calls_of(f, "__reclaim_scope_enter").len(), 1, "scope: `{name}` enters Box's cascade scope once:\n{f}");
+        assert_eq!(calls_of(f, "__reclaim_scope_leave").len(), 1, "scope: `{name}` leaves it once:\n{f}");
+        assert!(!f.contains("@lotus_reclaim_scope_enter(") && !f.contains("@lotus_reclaim_scope_leave("),
+            "scope: `{name}` calls the runtime's scope itself:\n{f}");
+    }
+    assert_guarded("scope", function(&ir, "__reclaim_scope_enter"), "lotus_reclaim_scope_enter", QUIET_WORDS);
+    let leave = function(&ir, "__reclaim_scope_leave");
+    let left = blocks(leave).into_iter().filter(|b| b.body.contains("@lotus_reclaim_scope_leave(")).collect::<Vec<_>>();
+    assert_eq!(left.len(), 1, "scope: one leave call:\n{leave}");
+    for b in left {
         assert!(b.label.starts_with("reclaim.scope.leave.call"), "scope: the leave in `{}` is unguarded", b.label);
-        let br = boxed.lines()
-            .find(|l| l.trim_start().starts_with("br i1 %") && l.trim_end().ends_with(&format!("label %{}", b.label)))
-            .expect("the leave's guard");
-        let cond = br.trim_start()["br i1 %".len()..].split(',').next().expect("condition");
-        assert!(definition(boxed, cond).starts_with("icmp eq ptr %reclaim.scope.answer"), "scope: the leave's guard: {br}");
+        let br = branch_to(leave, b.label).expect("the leave's guard");
+        let cond = br["br i1 %".len()..].split(',').next().expect("condition");
+        assert_eq!(definition(leave, cond), "icmp eq ptr %0, null", "scope: the leave's guard tests its scope: {br}");
     }
 }
 
@@ -366,10 +451,13 @@ fn the_reclaim_scope_is_entered_and_left_behind_its_guards() {
 #[test]
 fn a_cascade_that_tears_no_field_down_enters_no_scope() {
     let ir = ir_of("no_scope", "fn work() {\n    let k = Kid { tag: 1 };\n    println(\"ev v \" + to_string(k.v()));\n}\n\nfn main() { work(); }\n");
-    for name in ["work", "__reclaim_Kid"] {
+    let mut names = vec!["work", "__reclaim_Kid"];
+    names.extend(calls_of(function(&ir, "work"), "__reclaim_site_Kid_"));
+    for name in names {
         let f = function(&ir, name);
-        assert!(!f.contains("@lotus_reclaim_scope_enter(") && !f.contains("@lotus_reclaim_scope_leave("),
-            "no_scope: `{name}` reclaims a Kid, which has no field to tear down:\n{f}");
+        for scope in ["@lotus_reclaim_scope_enter(", "@lotus_reclaim_scope_leave(", "@__reclaim_scope_enter(", "@__reclaim_scope_leave("] {
+            assert!(!f.contains(scope), "no_scope: `{name}` reclaims a Kid, which has no field to tear down:\n{f}");
+        }
     }
 }
 

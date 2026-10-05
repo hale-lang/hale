@@ -9671,6 +9671,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
+        // Every reclaim site has lowered: a reclaim function two or more
+        // of them call keeps its body out of line.
+        self.settle_reclaim_fn_inlining();
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
         // GH #1077: the loci that can answer a drain, now every body
