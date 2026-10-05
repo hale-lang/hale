@@ -888,11 +888,11 @@ std::rand::seed_from_time | lookup=rand@2 | locus=false | effects=time|entropy |
 std::regex::find | lookup=regex@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find
 std::regex::matches | lookup=regex@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=matches
 std::regex::valid | lookup=regex@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=valid
-std::ring::__spsc_emit | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_emit
-std::ring::__spsc_init | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_init
-std::ring::__spsc_note_drop | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_note_drop
-std::ring::__spsc_read | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_read
-std::ring::__spsc_set_tag_b | lookup=ring@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spsc_set_tag_b
+std::ring::__spsc_emit | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int, Int, Int, Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_emit
+std::ring::__spsc_init | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int, Int, Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_init
+std::ring::__spsc_note_drop | lookup=ring@2 | locus=false | effects=syscall | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_note_drop
+std::ring::__spsc_read | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int, Int, Int, Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_read
+std::ring::__spsc_set_tag_b | lookup=ring@2 | locus=false | effects=syscall | sig=(Int, Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=__spsc_set_tag_b
 std::secret::Credential | lookup=secret@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::secret::Signer | lookup=secret@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::secret::vault_local_dir | lookup=secret@2 | locus=false | effects=env | sig=- | parks=false | holds=false | unknown=- | suggest=vault_local_dir

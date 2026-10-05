@@ -670,11 +670,11 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["ring"],
         fns: &[
-            row!("__spsc_emit", SYSCALL, _, Intrinsic(RingSpscEmitRaw)),
-            row!("__spsc_init", SYSCALL, _, Intrinsic(RingSpscInitRaw)),
-            row!("__spsc_note_drop", SYSCALL, _, Intrinsic(RingSpscNoteDropRaw)),
-            row!("__spsc_read", SYSCALL, _, Intrinsic(RingSpscReadRaw)),
-            row!("__spsc_set_tag_b", SYSCALL, _, Intrinsic(RingSpscSetTagBRaw)),
+            row!("__spsc_emit", SYSCALL, [Int, Int, Int, Int, Int] -> Unit, Intrinsic(RingSpscEmitRaw)),
+            row!("__spsc_init", SYSCALL, [Int, Int, Int, Int] -> Unit, Intrinsic(RingSpscInitRaw)),
+            row!("__spsc_note_drop", SYSCALL, [Int] -> Unit, Intrinsic(RingSpscNoteDropRaw)),
+            row!("__spsc_read", SYSCALL, [Int, Int, Int, Int, Int, Int, Int] -> Int, Intrinsic(RingSpscReadRaw)),
+            row!("__spsc_set_tag_b", SYSCALL, [Int, Int] -> Unit, Intrinsic(RingSpscSetTagBRaw)),
         ],
         open_prefixes: &[],
     },

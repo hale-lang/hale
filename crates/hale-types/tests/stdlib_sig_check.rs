@@ -393,6 +393,25 @@ fn std_bytes_calls_are_checked() {
 }
 
 #[test]
+fn std_ring_calls_are_checked() {
+    refused(
+        "    std::ring::__spsc_note_drop(1, 2);",
+        &[("`std::ring::__spsc_note_drop` takes 1 argument, got 2", "std::ring::__spsc_note_drop")],
+    );
+    refused(
+        "    std::ring::__spsc_set_tag_b(1, true);",
+        &[("`std::ring::__spsc_set_tag_b` argument 2: expected `Int`, got `Bool`", "true")],
+    );
+    refused(
+        "    let n = std::ring::__spsc_read(1, 2, 3, 4, 5, 6, 7) or 0;\n    println(n);",
+        &[(
+            "`std::ring::__spsc_read` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::ring::__spsc_read(1, 2, 3, 4, 5, 6, 7)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
