@@ -165,7 +165,10 @@ pub struct Owed {
     pub spine: Option<Spine>,
     /// [`Multiplicity::OncePerIncarnation`] counts incarnations; any
     /// other counts instances (a process-level obligation counts its
-    /// entries).
+    /// entries). [`Multiplicity::OncePerTrigger`] (a bus handler) holds
+    /// any number of occurrences per instance, each ended, and an edge
+    /// out of it is a retention: every occurrence begun before the later
+    /// event has ended before it.
     pub multiplicity: Multiplicity,
     pub count: Count,
     /// The end it reaches: `Completed`, a named terminal, or `Ended`
@@ -314,7 +317,7 @@ impl Expected {
         for (owed, gs) in self.owed.iter().zip(&all) {
             let label = owed.label();
             if gs.is_empty() {
-                if owed.count != Count::Exactly(0) {
+                if !owed.count.holds(0) {
                     out.push(Violation::Missing { owed: label });
                 }
                 continue;
@@ -322,24 +325,37 @@ impl Expected {
             if !owed.count.holds(gs.len()) {
                 out.push(Violation::Count { owed: label.clone(), want: owed.count.to_string(), got: gs.len() });
             }
+            // Owed per trigger (a bus handler, once per delivered cell): a
+            // subject's group holds every occurrence, each entry with an
+            // end of its own.
+            let per_trigger = owed.multiplicity == Multiplicity::OncePerTrigger && owed.decl.is_some();
             for g in gs {
                 let subject = subject_label(g.subject);
-                if g.entered.len() > 1 {
-                    out.push(Violation::Duplicate { owed: label.clone(), subject: subject.clone(), point: "Entered".into() });
-                }
-                if g.ends.len() > 1 {
-                    out.push(Violation::Duplicate { owed: label.clone(), subject: subject.clone(), point: "end".into() });
-                }
-                match g.ends.first() {
-                    None if complete && !g.entered.is_empty() => {
-                        out.push(Violation::Unended { owed: label.clone(), subject: subject.clone() })
+                if per_trigger {
+                    if complete && g.ends.len() < g.entered.len() {
+                        out.push(Violation::Unended { owed: label.clone(), subject: subject.clone() });
                     }
-                    Some(end) if !end.point.satisfies(owed.ends) => out.push(Violation::WrongEnd {
-                        owed: label.clone(),
-                        subject: subject.clone(),
-                        got: end.point.name(),
-                    }),
-                    _ => {}
+                    if let Some(end) = g.ends.iter().find(|e| !e.point.satisfies(owed.ends)) {
+                        out.push(Violation::WrongEnd { owed: label.clone(), subject: subject.clone(), got: end.point.name() });
+                    }
+                } else {
+                    if g.entered.len() > 1 {
+                        out.push(Violation::Duplicate { owed: label.clone(), subject: subject.clone(), point: "Entered".into() });
+                    }
+                    if g.ends.len() > 1 {
+                        out.push(Violation::Duplicate { owed: label.clone(), subject: subject.clone(), point: "end".into() });
+                    }
+                    match g.ends.first() {
+                        None if complete && !g.entered.is_empty() => {
+                            out.push(Violation::Unended { owed: label.clone(), subject: subject.clone() })
+                        }
+                        Some(end) if !end.point.satisfies(owed.ends) => out.push(Violation::WrongEnd {
+                            owed: label.clone(),
+                            subject: subject.clone(),
+                            got: end.point.name(),
+                        }),
+                        _ => {}
+                    }
                 }
                 if let Some(claim) = &owed.domain {
                     // A step that never started ran nowhere: its not-started
@@ -407,7 +423,17 @@ impl Expected {
                 let reached = |ga: &Group| {
                     ga.entered.iter().chain(&ga.ends).any(|e| e.point.satisfies(before.point) && e.seq < eb.seq)
                 };
-                let ok = if same_decl {
+                let ok = if same_decl && oa.multiplicity == Multiplicity::OncePerTrigger {
+                    // A retention: every occurrence of the subject's that
+                    // began before b has reached its end before b (none
+                    // began: nothing to wait for).
+                    let key = subject_key(gb.subject, false);
+                    all[a].iter().filter(|ga| subject_key(ga.subject, false) == key).all(|ga| {
+                        let began = ga.entered.iter().filter(|e| e.seq < eb.seq).count();
+                        let ended = ga.ends.iter().filter(|e| e.point.satisfies(before.point) && e.seq < eb.seq).count();
+                        ended >= began
+                    })
+                } else if same_decl {
                     let key = subject_key(gb.subject, per_incarnation);
                     all[a].iter().filter(|ga| subject_key(ga.subject, per_incarnation) == key).any(|ga| reached(ga))
                 } else {
@@ -440,7 +466,8 @@ fn subject_key(s: Option<RuntimeSubject>, per_incarnation: bool) -> SubjectKey {
 
 /// What every trace owes, whatever the plan: an end has an entry, except
 /// not started, which has none; a declared obligation is not re-entered
-/// while open; in a run that
+/// while open (but a bus handler, which an async pool runs as coroutines
+/// interleaved on one subscriber); in a run that
 /// ended normally, every entry has an end; a subject is reclaimed at
 /// most once, and only after it was born (a second teardown of a
 /// reclaimed struct shows as a reclaim of a subject never born, since
@@ -492,7 +519,9 @@ pub fn laws(trace: &Trace, complete: bool) -> Vec<Violation> {
                 let key = (e.kind, s.instance.raw(), s.incarnation.raw());
                 let n = open.entry(key).or_insert(0);
                 if e.point == Point::Entered {
-                    if *n > 0 {
+                    // An async pool runs a subscriber's handlers as
+                    // coroutines, one parked while the next starts.
+                    if *n > 0 && e.kind != ObligationKind::Handler {
                         out.push(what("re-entered while open"));
                     }
                     *n += 1;
@@ -634,6 +663,63 @@ mod tests {
                 "edge: -.PoolJoin@EagerTeardown.Entered (process) with -.WaitAbort@EagerTeardown.Completed not reached"
             ]
         );
+    }
+
+    /// R52: a bus handler, owed per delivered cell, retains its subscriber.
+    /// Two handlers, then the reclaim: held. The reclaim completing while
+    /// the second still runs: the retention's edge fails. A subscriber no
+    /// cell reached owes none, and two handlers of one subscriber running
+    /// at once (an async pool's coroutines) are no re-entry.
+    #[test]
+    fn a_handler_is_owed_per_cell_and_retains_its_subscriber() {
+        let handler = Owed {
+            multiplicity: Multiplicity::OncePerTrigger,
+            count: Count::AtLeast(0),
+            ends: Point::Ended,
+            ..owed(Some("K"), ObligationKind::Handler, None)
+        };
+        let exp = Expected {
+            owed: vec![handler, owed(Some("K"), ObligationKind::Reclaim, None)],
+            sequences: vec![],
+            edges: vec![(ev(0, Point::Ended), ev(1, Point::Completed))],
+        };
+        let lines = |order: &[&str]| -> Trace {
+            let mut all = vec!["Birth Entered", "Birth Completed"];
+            all.extend(order);
+            let lines: Vec<String> = all
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let dom = if e.starts_with("Handler") { "pool:io" } else { "main" };
+                    format!("lc {} {e} spine=- dom={dom} type=K inst=1 inc=0", i + 1)
+                })
+                .collect();
+            parse(&lines.join("\n")).expect("parses")
+        };
+        let held = lines(&[
+            "Handler Entered",
+            "Handler Entered",
+            "Handler Completed",
+            "Reclaim Entered",
+            "Handler Completed",
+            "Reclaim Completed",
+        ]);
+        assert_eq!(exp.check(&held, true), vec![]);
+        assert_eq!(laws(&held, true), vec![]);
+        let freed = lines(&[
+            "Handler Entered",
+            "Handler Completed",
+            "Handler Entered",
+            "Reclaim Entered",
+            "Reclaim Completed",
+            "Handler Completed",
+        ]);
+        let v: Vec<String> = exp.check(&freed, true).iter().map(|v| v.to_string()).collect();
+        assert_eq!(v, ["edge: K.Reclaim.Completed (inst 1 inc 0) with K.Handler.Ended not reached"]);
+        assert_eq!(exp.check(&lines(&["Reclaim Entered", "Reclaim Completed"]), true), vec![]);
+        let unended = lines(&["Handler Entered", "Handler Entered", "Handler Completed"]);
+        let v: Vec<String> = exp.check(&unended, true).iter().map(|v| v.to_string()).collect();
+        assert_eq!(v, ["unended: K.Handler (inst 1 inc 0)", "missing: K.Reclaim"]);
     }
 
     /// `K`'s Birth and Run, owed per incarnation over two incarnations.

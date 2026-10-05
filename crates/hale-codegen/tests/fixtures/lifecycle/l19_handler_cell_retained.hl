@@ -1,0 +1,52 @@
+// Decision line 19, a bus handler running when its subscriber is
+// reclaimed (Handler, inventory row R52): the handler's cell holds its
+// subscriber until it returns, as a started run holds its child.
+//
+// App's placed field `k`, on pool `side`, subscribes to `Gos`. Its
+// handler says so through a gate file, sleeps, and then reads the heap
+// String its birth() built in its arena. App's run(), on main, waits
+// for the gate and replaces `k` while that handler is running. The old
+// child's drain and dissolve run beside the handler, and its reclaim
+// waits for the handler to return before its arena is released.
+//
+// Expected terminal outcome: the handler reads the old child's name,
+// its end comes before the old child's reclaim completes, and each
+// child is torn down once, judged by the harness: `handler-held`.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "lifecycle.l19.handler"; }
+
+fn gate() -> String {
+    return "/tmp/hale-l19-handler-cell-" + to_string(std::process::pid());
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            std::io::fs::write_file(gate(), "go") or discard;
+            std::time::sleep(100ms);
+            println("ev handler " + to_string(self.tag) + " " + self.name);
+        }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 0 }; }
+    placement { k: cooperative(pool = side); }
+    bus { publish Gos; }
+    run() {
+        Gos <- Go { k: 0 };
+        while !std::io::fs::file_exists(gate()) {
+            std::time::sleep(1ms);
+        }
+        self.k = Kid { tag: 1 };
+        println("ev replaced");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

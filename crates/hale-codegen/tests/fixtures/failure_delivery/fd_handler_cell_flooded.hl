@@ -1,0 +1,77 @@
+// A bus handler's cell holds its subscriber (inventory row R52), and a
+// worker that carries that hold from one cell to the next for the same
+// subscriber ends it when a reclaim waits for it. `f`, on pool `left`,
+// publishes as fast as its pool's ring takes the cells until App writes
+// its stop file. `b`, on pool `right`, is the only subscriber, and its
+// handler sleeps 1 ms a cell, so `right`'s worker never finds its ring
+// empty while the flood lasts. App's run() replaces `b` once its
+// handler has run a hundred cells: the old child's reclaim completes
+// with the flood still running (`f` publishes after it), and the old
+// child's handler reads its heap name whole on every cell it runs. The
+// new child's cells are delivered on main's queue, which a function's
+// exit drains: App's run() calls none of its own between the
+// replacement and the stop file (the paths are made before), since that
+// drain would run the flood's cells as fast as they come. Only the old
+// child's handler sleeps, so the drain at App's end is short.
+// Expected outcome: `replaced flood-running read-whole
+// dissolved-once-each finished`.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.cellflood.go"; }
+
+fn gate() -> String { return "/tmp/hale-fd-cellflood-" + to_string(std::process::pid()); }
+fn stop() -> String { return "/tmp/hale-fd-cellflood-stop-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; heard: Int = 0; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) {
+        self.heard = self.heard + 1;
+        if self.heard == 100 && self.tag == 1 { std::io::fs::write_file(gate(), "go") or discard; }
+        if self.name != "kid-" + to_string(self.tag) + "-name" { println("ev handler-torn " + self.name); }
+        if self.tag == 1 { std::time::sleep(1ms); }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag) + " " + self.name); }
+}
+
+locus Flood {
+    params { sent: Int = 0; }
+    bus { publish Gos; }
+    run() {
+        let mut going = true;
+        while going {
+            Gos <- Go { k: self.sent };
+            self.sent = self.sent + 1;
+            if self.sent % 64 == 0 { going = !std::io::fs::file_exists(stop()); }
+        }
+    }
+}
+
+main locus App {
+    params { b: Kid = Kid { tag: 1 }; f: Flood = Flood { }; }
+    placement {
+        b: cooperative(pool = right);
+        f: cooperative(pool = left);
+    }
+    run() {
+        let opened = gate();
+        let stopped = stop();
+        let until = std::time::monotonic_ns() + 10000000000;
+        while (!std::io::fs::file_exists(opened) && std::time::monotonic_ns() < until) { std::time::sleep(1ms); }
+        let sent = self.f.sent;
+        self.b = Kid { tag: 2 };
+        println("ev replaced");
+        let spin = std::time::monotonic_ns() + 20000000;
+        while (std::time::monotonic_ns() < spin) { }
+        if self.f.sent > sent { println("ev flood-running"); }
+        std::io::fs::write_file(stopped, "stop") or discard;
+        println("ev finished");
+    }
+    dissolve() {
+        std::io::fs::unlink(gate()) or discard;
+        std::io::fs::unlink(stop()) or discard;
+    }
+}
+
+fn main() { App { }; }

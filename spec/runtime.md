@@ -1912,10 +1912,19 @@ zero_copy binding produces.
     owner's settle while another failure is posted to the same
     thread; the posted handler's entry and exit lines follow the held
     one's. Before the settle's guard they came inside it.
-  - `fd_handler_cell_no_hold.hl`, known open at inventory row R52 and
-    asserted to fail under ASan: a pool-placed child replaced while
-    its bus handler runs is freed under that handler (decision line
-    19).
+  - `fd_handler_cell*.hl` (inventory row R52, decision line 19): a
+    pool-placed child replaced while its bus handler runs keeps its
+    storage until that handler returns, under ASan in both dispatch
+    modes (before the handler's hold it was freed under the handler);
+    the owner's failure handler replacing and restarting the child
+    whose bus handler waits for that delivery, and a reclaim waiting
+    for a handler that waits on main, each end under the deadline. A
+    worker that carries the hold from cell to cell ends it for the
+    reclaim: a subscriber flooded so that its worker never finds its
+    queue empty is replaced mid-flood, and one of two subscribers
+    sharing a worker, their cells interleaved, is replaced
+    mid-stream; each reclaim completes with the publisher still
+    running, under ASan in both dispatch modes and the deadline.
 
   The lifecycle matrix holds the domain of every cell's
   `FailureDelivery` to the plan's: the cells whose failure is raised
@@ -1965,7 +1974,13 @@ counted from the run's path, and a main locus built more than once
 owes its eager spine at each of its teardowns: line 19's three
 cross-pool and shutdown fixtures are derived that way.
 The six started-run retention fixtures use the derived plan, including
-the edge from each run's end to its reclaim's completion. A posted run
+the edge from each run's end to its reclaim's completion. A subscriber
+a pool hosts owes a `Handler` row the same way (line 19, inventory row
+R52): one per delivered cell, as many as the run delivers, its
+instance retained until each ends, and the reclaim's completion after
+the end of every one that began before it (`l19_handler_cell_retained.hl`);
+the worker's hold, which a classic worker may carry to its next cell,
+ends no earlier, and no later than the carry's bounds (line 19 below). A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
@@ -2477,15 +2492,45 @@ its `KNOWN_OPEN` table, which is empty today.
   running run, a heap-use-after-free under AddressSanitizer in both
   dispatch modes. A run whose child is never reclaimed until its
   pool joins is still ordered against the teardown by the join.
-  A bus handler's cell holds nothing (inventory row R52, known
-  open): a reclaim of a pool-placed child does not wait for its
-  running bus handler, so replacing the child while its handler runs
-  frees the storage under it, a heap-use-after-free under
-  AddressSanitizer in both dispatch modes
-  (`fd_handler_cell_no_hold.hl`, under
-  `crates/hale-codegen/tests/fixtures/failure_delivery/`). A hold per
-  dispatched cell would close it at a cost on the dispatch path the
-  row states.
+  A bus handler running on a pool's worker holds its subscriber the
+  same way (inventory row R52): the worker takes a held ticket on the
+  subscriber when it starts the handler for a dequeued cell and ends it
+  when the handler returns, or where a shutdown abandons the parked
+  coroutine, and a reclaim waits for it as it waits for a running
+  `run()`, so a pool-placed child replaced while its bus handler runs
+  keeps its storage until that handler returns. Its drain and dissolve
+  still run beside the handler. Every locus a pool hosts is a placed
+  field of the main locus or nested under one, so main can reclaim it
+  while its worker runs a handler. The main queue's handlers and a
+  pinned thread's take no hold: their subscribers are reclaimed on
+  the thread that runs them, between handlers, or after the pinned
+  thread's join. A cell still queued for a subscriber whose reclaim
+  has deregistered it is dropped unrun when its worker reaches it
+  (GH #703); the worker takes the hold before it looks, so it either
+  drops the cell or the reclaim waits for its handler. Before the
+  hold, replacing the child while its handler ran freed the storage
+  under it, a heap-use-after-free under AddressSanitizer in both
+  dispatch modes (`fd_handler_cell_no_hold.hl`, under
+  `crates/hale-codegen/tests/fixtures/failure_delivery/`;
+  `l19_handler_cell_retained.hl`, whose trace holds the handler's end
+  before the reclaim's completion). Taking and ending the hold costs
+  two acquisitions of the run tickets' lock, so a classic pool's
+  worker carries it from a handler to its next cell when that cell is
+  the same subscriber's, and ends it: before a cell of another
+  subscriber or one that is no bus cell (a run, a root's init, a
+  failure's wake) and before a failure posted to its domain is
+  delivered; before it parks or idles (its queue empty, replay's
+  idle wait, the end of a root's init yield), so never across its
+  pool's shutdown; when the next cell's dead-self check drops it,
+  which runs on every cell; after the handler in progress when a
+  reclaim waits for the hold (the reclaim marks the ticket wanted
+  under the lock as it counts it, and the worker reads that word once
+  per cell before it carries); and after 64 handlers under one hold,
+  whatever else. A reclaim therefore waits for the handler in
+  progress and no further one. An async pool's worker carries
+  nothing: a coroutine's hold spans its parks, and the cells of one
+  subscriber overlap there, so each costs its cell the two
+  acquisitions. A dispatch on the publishing thread takes none.
   Shipped (F.40 phase 3,
   L5): the cancellation is named in the trace build on the thread
   that reclaims, inside the Reclaim's bracket, and the release build
@@ -2602,7 +2647,15 @@ shutdown, with that `Cancellation`; a run that never starts ends
 `Reclaim` cancels it, with that `Cancellation`, inside the reclaim;
 `Shutdown(PoolShutdown)` when the post is refused at shutdown, on
 the posting thread; `Shutdown(PoolTeardown)`, with a
-`Cancellation`, when the pools' teardown frees its cell), `FailureDelivery` (entered
+`Cancellation`, when the pools' teardown frees its cell), `Handler`
+(a bus handler on a pool's worker, once per delivered cell, carried
+hold or not: entered as the handler starts, holding its subscriber,
+completed as it returns, the hold still standing, or
+`Terminal(CanceledAfterStart)` where a shutdown abandons its parked
+coroutine; the oracle holds every handler of a subscriber that began
+before its `Reclaim` completed to have ended first; a hold carried
+past that end only makes the reclaim wait longer, and the trace does
+not name it), `FailureDelivery` (entered
 where the failure is raised, completed when the handler returns,
 in place or at settle), `ConstructionDelivery` (a held failure,
 from the hold to its handler's return at settle), `Restart`,
@@ -2633,14 +2686,19 @@ skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
 place while the params are open; for `Cancellation`, a reclaim
 cancels no queued run, which only a fixture whose cells no worker
-will dequeue may use); `<Kind>.<Point>` drops that one
+will dequeue may use); two name a hold, not a kind: `RunHold`, where
+a reclaim does not wait for its child's started runs, and
+`HandlerHold`, where a pool worker links no hold on a handler's
+subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan
 holds a run to, a run with that step removed or reordered fails the
 oracle, and with the violation that says why: a removed pool join
 lets a worker's teardown begin before its `run()` has ended, a
-removed hold delivers a failure before its owner's settle, an omitted
+removed hold delivers a failure before its owner's settle, a removed
+handler hold lets a subscriber's reclaim complete while its handler
+still runs, an omitted
 completion leaves a dependent step entered with its prerequisite
 unreached, and the host's own order (join, then abort the waits)
 fails line 7's edge.
