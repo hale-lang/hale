@@ -791,7 +791,11 @@ sibling was left out. A seed with no `main locus` of its own at the
 top level is not an entrypoint and is not demanded of the manifest —
 one that only imports a library's `main locus`, or keeps its `main
 locus` inside a `module { }`, included — and `--env` refuses it as a
-deployment target.
+deployment target. List one in an environment anyway and its pair
+fails with that refusal and nothing more: there is no entrypoint for
+the environment's roles to be mapped to, so the matrix reports no role
+coverage for it, and it does not compare that seed's constitutions
+with the entrypoints'.
 
 ### Groups must be declared by every adopting entrypoint
 

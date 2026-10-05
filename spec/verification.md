@@ -1059,6 +1059,16 @@ otherwise a syntax error would erase a seed from coverage. Within one
 environment, all entrypoints must resolve each constitution to the
 same closure digest.
 
+A listed seed the check refuses (one with no entry: a library, or a
+seed whose only `main locus` is imported or inside a `module { }`) is
+reported by that refusal alone, and its pair fails. It has no
+entrypoint for the environment's roles to be mapped to, so no role
+coverage is reported for it, and a constitution it can never deploy
+under takes no part in the closure-digest comparison. A pair whose seed
+loads but fails to typecheck keeps both: its role coverage and its
+constitutions' identities are read from what it declares, whether or
+not it typechecks.
+
 The artifact records three things: per-claim `source` (where this
 clause came from), and an `evaluation` section carrying the
 `environment` label plus `roots` and `closure` with their digests

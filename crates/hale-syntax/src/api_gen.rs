@@ -788,8 +788,10 @@ pub fn grants(surface: &ApiSurface, role: &str) -> Vec<String> {
 }
 
 /// GH #1109: the roles the program declares (`role x;`), bundle-wide,
-/// in name order — what `hale check --matrix` asks each environment
-/// to map. `owner` is included when the program has an api binding or
+/// in name order, over programs no snapshot holds: what `hale check
+/// --matrix` asks each environment to map, which it reads from the
+/// pair's role rows (`RoleRows::declared_roles`, held equal to this
+/// list). `owner` is included when the program has an api binding or
 /// declares a role, because that is when something is gated on it. The
 /// binding is `root`'s, the `main locus` it is generated into (see
 /// [`api_surface`]). The names of [`role_vocabulary`].

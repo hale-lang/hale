@@ -360,6 +360,18 @@ pub fn collect_checkable(
     link_checkable(target, &files, own, programs, sources, file_bases, effects, src)
 }
 
+thread_local! {
+    static SEED_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many whole-seed loads this thread began ([`parse_checkable`],
+/// which `Snapshot::load` and [`collect_checkable`] both start with):
+/// the accounting a test reads to pin that the environment matrix loads
+/// each pair's seed once (F.40 phase 4, A3).
+pub fn seed_loads_on_this_thread() -> u64 {
+    SEED_LOADS.with(|n| n.get())
+}
+
 /// The first half of a whole seed's load: the target's own files,
 /// each parsed at its own base, before any `import` is followed, and
 /// the effect-class table they were parsed through (the load's one,
@@ -380,6 +392,7 @@ pub fn parse_checkable(
     ),
     CheckableFailure,
 > {
+    SEED_LOADS.with(|n| n.set(n.get() + 1));
     let files = match collect_ap_files(target, LoadMode::WholeSeed, src) {
         Ok(f) => f,
         Err(e) => {
