@@ -57,6 +57,28 @@ fn the_model_and_every_control_compile() {
     }
 }
 
+/// Each phase selection GenMC is run with compiles under the same
+/// flags (a phase left out of a run is still compiled, unused), and
+/// the header's `GENMC-RUN:` lines are exactly phases 1 to 3: phase 4
+/// is not explored exhaustively, and the header says so.
+#[test]
+fn every_phase_selection_compiles_and_the_runs_are_the_headers() {
+    let src = std::fs::read_to_string(model()).expect("read the model");
+    for phase in 1..=4 {
+        let out = Command::new("clang")
+            .args(FLAGS)
+            .arg("-fsyntax-only")
+            .arg(format!("-DMODEL_PHASE={phase}"))
+            .arg(model())
+            .output()
+            .expect("run clang");
+        assert!(out.status.success(), "clang -DMODEL_PHASE={phase}:\n{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let runs: Vec<&str> = src.lines().filter_map(|l| l.split("GENMC-RUN:").nth(1)).map(str::trim).collect();
+    assert_eq!(runs, ["-DMODEL_PHASE=1", "-DMODEL_PHASE=2", "-DMODEL_PHASE=3"], "the model's GenMC runs");
+    assert!(src.contains("Phase 4") && src.contains("NOT explored"), "the header says phase 4 is not explored exhaustively");
+}
+
 /// Builds the model natively (with or without one control) and runs it
 /// once under a deadline: (exit code, stderr).
 fn run_native(control: Option<&str>) -> (Option<i32>, String) {
