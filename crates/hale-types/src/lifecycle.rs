@@ -18,7 +18,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C51, R1–R52, R19a and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C54, R1–R52, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
