@@ -6160,16 +6160,21 @@ impl Parser {
                 TokenKind::Ident(s) if matches!(s.as_str(), "range" | "round" | "origin") => {
                     s.clone()
                 }
-                other => {
-                    let got = match other {
-                        TokenKind::Ident(s) => format!("`{s}`"),
-                        other => format!("{other:?}"),
-                    };
+                TokenKind::Ident(s) => {
                     return Err(Diag::parse(
                         name_tok.span,
                         format!(
-                            "unknown scalar clause {got}: the clauses are `range`, \
+                            "unknown scalar clause `{s}`: the clauses are `range`, \
                              `round` and `origin`"
+                        ),
+                    ));
+                }
+                other => {
+                    return Err(Diag::parse(
+                        name_tok.span,
+                        format!(
+                            "expected a scalar clause (`range`, `round` or `origin`), \
+                             got {other:?}"
                         ),
                     ));
                 }

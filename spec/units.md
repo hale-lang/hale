@@ -2,9 +2,62 @@
 
 The compiler's `hale_types::unit_graph` API closes a catalogue of
 resolved unit identities and positive rational equations. It is the
-declaration-layer arithmetic core for GH #1076 / #1212. Source syntax
-and expression typing do not yet consume this API; the existing
-`Time` and `Duration` primitive behavior is unchanged.
+declaration-layer arithmetic core for GH #1076 / #1212. The source
+syntax of the declarations parses (§ Declarations); neither it nor
+expression typing consumes this API yet, and the existing `Time` and
+`Duration` primitive behavior is unchanged.
+
+## Declarations
+
+A program declares units and the scalar types counted in them. The
+words are contextual (spec/tokens.md § Unit dialect words); the
+productions are `unit_decl` and `type_decl`'s `scalar_body` in
+spec/grammar.ebnf.
+
+**A unit.** `unit tick;` declares a unit with no equation, its own
+component. `unit us = 1_000 ns;` declares `us` and states that one
+`us` is 1000 `ns`. A factor is a positive integer or a ratio of two
+(`unit inch = 127/5 mm;`), and a zero in either place is a parse
+error. With no target the unit is that multiple of the pure number:
+`unit pct = 1/100;`. The magnitude and the target may be written
+apart or together (`1_000 ns`, `1_000ns`, `1024KiB`); the two
+spellings declare the same equation. A unit is seed-global: its
+name is never mangled across an import.
+
+**A scalar type.** A `type` declaration whose body is
+
+```text
+[quantity | point | distinct] BASE [in DENOMINATION] [{ CLAUSE; ... }]
+```
+
+with at least one of the kind word, the `in` and the clause block
+(with none of the three it is an alias):
+
+```hale
+type Duration  = quantity Int in ns;
+type Time      = point Duration;
+type Celsius   = point TempDelta { origin: 273_150 mK; }
+type Session   = distinct Int { range: 0..64; }
+type Byte      = Int { range: 0..256; }
+type WireStamp = Time in us { round: floor; }
+type Bucket    = quantity Int in 100ms { round: floor; }
+```
+
+A denomination is a unit and a positive integer multiple of it
+(`ns`, `100ms`, `100 ms`). The clauses are `range: LO..HI` (or
+`LO..=HI`), `round: POLICY` and `origin: N UNIT`; each appears at
+most once, and any other name is a parse error listing the three. A
+clause block closes the declaration, so a `;` after it is optional.
+A scalar type takes no generic parameters.
+
+**A quantity literal** is an integer written against a unit name,
+`3bp` or `1_250_000USD` (spec/tokens.md § Quantity literals).
+
+A program that declares a unit or a scalar type, or writes a
+quantity literal, is refused by `hale check` with one located error
+for each ("the unit dialect's declarations are parsed and not yet
+checked (GH #1076)") until the dialect's declaration rows and laws
+land.
 
 ## Identities and equations
 
