@@ -51,14 +51,14 @@ fn gzip_zstd_roundtrip_and_corrupt_input() {
         fn main() {
             let original = std::bytes::from_string("the quick brown fox jumps over the lazy dog, twice: the quick brown fox jumps over the lazy dog");
             let gz = std::compress::gzip(original) or on_err(err);
-            if std::bytes::at(gz, 0) != 31 { std::process::exit(1); }
-            if std::bytes::at(gz, 1) != 139 { std::process::exit(1); }
+            if (std::bytes::at(gz, 0) or -1) != 31 { std::process::exit(1); }
+            if (std::bytes::at(gz, 1) or -1) != 139 { std::process::exit(1); }
             let back = std::compress::gunzip(gz) or on_err(err);
             if len(back) != len(original) { std::process::exit(1); }
             let junk = std::bytes::from_string("definitely not a gzip stream");
             let bad = std::compress::gunzip(junk) or expect_invalid(err);
             let z = std::compress::zstd(original) or zstd_err(err);
-            if std::bytes::at(z, 0) != 40 { std::process::exit(1); }
+            if (std::bytes::at(z, 0) or -1) != 40 { std::process::exit(1); }
             let zback = std::compress::unzstd(z) or zstd_err(err);
             if len(zback) != len(original) { std::process::exit(1); }
             println("roundtrips-ok");

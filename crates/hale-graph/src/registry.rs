@@ -260,6 +260,8 @@ const QUALIFIED_SUBJECTS: &str = "crates/hale-types/src/qualified_subjects.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const CLOSURE_EVENTS: &str = "crates/hale-types/src/closure_events.rs";
+const SEALED_ACCESS: &str = "crates/hale-types/src/sealed_access.rs";
+const SEALABILITY: &str = "crates/hale-types/src/sealability.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
@@ -541,24 +543,30 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "top_scope",
         layer: Layer::Declarations,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Derivation,
         answers: "What every top-level name denotes: the symbol table over the merged program.",
         inputs: &["the merged program", "import renames"],
         producer: Some(site(RESOLVE, "build_top_scope")),
-        legacy: &[
-            legacy(TLIB, "check_bundle_opts_scoped", "`check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), the certificate report of such a bundle (`effect_certificates`, for its form rows) and `resolve_program` (the bare program's test entry, once over that program for the scope and the graphs it hands the view) rebuild it; the lowering view reads its snapshot's (F.40 phase 3, C5); every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs", "phase 4, when every consumer demands the scope from a snapshot: 2.3 moved every verb and the LSP, and what still builds its own is the test entries over a bundle or a program no snapshot holds (`check_program`, `derive_application_model`, `effect_certificates`, `resolve_program`), which phase 3 kept (C5's follow-up ruling)"),
-        ],
+        legacy: &[],
         consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("check (type expressions: the scope's name table)", CHECK, "&top.names"),consumer_at("demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot)", SNAPSHOT, "build_top_scope"), consumer_at("model (the snapshot's scope, handed in)", MODEL_BUILDER, "ModelInputs"), consumer_at("resolved program (lowering: the snapshot's scope, handed in; its topic rows, and the stdlib's bus rows and typed-body pairs answered over it)", TY_RESOLVED, "top: &TopScope"), consumer_at("resolve_program (the bare program's test entry: once over that program)", TY_RESOLVED, "build_top_scope"), consumer_at("the stdlib's bus rows (the scope of no program, which holds the stdlib's declarations alone: once per process)", STDLIB_BODIES, "build_top_scope"), consumer_at("lsp (definition, placement, the allocation survey: the snapshot's scope)", LSP, "demand_scope"), consumer_at("lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not)", LSP, "demand_editor_scope")],
         invariants: &[
             "one namespace decision: module-nested declarations and imported seeds resolve the same way everywhere",
             "the editor's scope over a seed with a hole (`demand_editor_scope`) is the same producer over the members that parsed, counted as this family; the whole scope, the check and everything after it stay blocked, so no check runs over a partial program",
             "one name table: the checker resolves every type expression against the scope's own (`TopScope::names`, the declared loci, types and perspectives with each alias's expanded target and the bundle's import renames), built once with the symbols, and keeps none of its own",
+            "every production path demands the scope from a snapshot (`demand_scope`): every verb, the LSP (its diagnostics and every request), the check, the model and its graphs, and the lowering view (F.40 phase 3, C5); since the `--sealable` survey reads its snapshot's rows (F.40 phase 4, W4), no production caller builds a program's scope outside it (the stdlib's bus rows read the scope of no program, which holds the stdlib's declarations alone and is built once per process: F.40 phase 4, S9). What still builds its own is the entries over a bundle or a program no snapshot holds, which no code outside tests calls: the bare-bundle check (`check_bundle_opts_scoped`, under `check_program`, `check_bundle`, `check_bundle_opts`, `check_bundle_opts_whole_program`, `check_bundle_for_build`), the bare model (`derive_application_model`, under `claim_law_diags`, `model_shape_hash`, `dump_topology`), `effect_certificates` and `resolve_program`; and the unit tests of `lib.rs`, `sync_inference.rs` and `lifecycle/derive.rs`. The seam counts them",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-types/src/lifecycle/derive.rs (shared ancestry regression)", "crates/hale-types/tests/checks_inside_modules.rs", "crates/hale-cli/tests/check_unknown_identifier.rs", "crates/hale-types/tests/type_alias.rs"],
         spec: &["spec/semantics.md"],
         owned: &[],
+        // The producer's definition; the snapshot's `demand_scope`; the
+        // no-snapshot entries (`lib.rs`: the bare-bundle check and the
+        // bare model, and a unit test; `effects.rs`:
+        // `effect_certificates`; `resolved.rs`: `resolve_program`); the
+        // unit tests of `sync_inference.rs` and `lifecycle/derive.rs`;
+        // `stdlib_bodies.rs`: the scope of no program, which holds the
+        // stdlib's declarations alone, once per process, for its bus rows.
         seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (SYNC, 1), (EFFECTS, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1), (LIFECYCLE_DERIVE, 1), (STDLIB_BODIES, 1)] }],
     },
     Family {
@@ -570,11 +578,11 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["top_scope", "declarations", "bodies"],
         producer: Some(site(CHECK, "check_bundle_scoped")),
         legacy: &[],
-        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law)", CHECK, "check_bundle_reporting"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer_at("codegen (a bare builtin's arity and result: its signature row)", CG, "builtin_sig"), consumer_at("the cross-pool value law (`law_backstops`, at the harness's lowering view: the table's `omitted_args`; the check reads its record's)", SNAPSHOT, "omitted_args"), consumer("every layer"), ],
+        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law)", CHECK, "check_bundle_reporting"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer_at("codegen (a bare builtin's arity and result: its signature row)", CG, "builtin_sig"), consumer_at("the cross-pool value law (`law_backstops`, at the harness's lowering view: the table's `omitted_args`; the check reads its record's)", SNAPSHOT, "omitted_args"), consumer_at("the sealed rule (`sealability`: the `param_accesses` rows of each declaration, as its walk ends)", CHECK, "settle_param_accesses"), consumer_at("check --sealable (the snapshot's table's `param_accesses`)", V_CHECK, "demand_typed_bodies"), consumer("every layer"), ],
         invariants: &[
             "expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)",
             "codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span",
-            "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with six columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call), and `omitted_args` (per call that leaves arguments to their defaults, the declaration the checker resolves the callee to, a method by its receiver's type, and the first parameter it leaves; a type's field defaults, which the checker does not type, have their calls recorded too); a site the checker could not type is a hole with its reason",
+            "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with seven columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call), `omitted_args` (per call that leaves arguments to their defaults, the declaration the checker resolves the callee to, a method by its receiver's type, and the first parameter it leaves; a type's field defaults, which the checker does not type, have their calls recorded too), and `param_accesses` (per body, each read or write of a locus's `params` through a receiver typed as that locus, with the reader and the receiver by declaration: the `sealability` family's rows); a site the checker could not type is a hole with its reason",
             "the bare builtins (`len`, `to_string`, the `Int` / `Float` casts, `abs` / `min` / `max`, `starts_with` / `contains`) are typed by one signature table (`BARE_BUILTIN_SIGS`), lowering's inference written down: the checker types a call by its row where lowering lowers it and leaves it `Unknown` where lowering refuses, and lowering reads each builtin's arity and result from the same row",
         ],
         missing: Missing::Required {
@@ -671,7 +679,7 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Capability,
         answers: "What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as.",
-        inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one, and how it lowers: an intrinsic id, a Hale body by name, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
+        inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one (with the error type of a function that can fail), and how it lowers: an intrinsic id, a Hale body by name, one Hale body per receiver type, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
         producer: Some(site(STDLIB_SURFACE, "SURFACES")),
         legacy: &[
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
@@ -680,13 +688,14 @@ pub const FAMILIES: &[Family] = &[
         ],
         consumers: &[consumer_at("effects", EFFECTS, "effects_for"), consumer_at("frontier", FRONTIER, "effects_for"), consumer("codegen"), consumer("lsp (hover, completion)"), consumer("doc")],
         invariants: &[
-            "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature",
-            "codegen dispatches every stdlib call from its row, at all three positions: at statement or value position the position is a parameter (`lower_std_call`), an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; under `or` (`lower_std_fallible_call`) the id picks its arm in an exhaustive match of its own beside it (`lower_std_intrinsic_fallible`), because what it produces is the call's success value and its error path, and any other row is not a stdlib fallible call; the three refusal lists (a bare call of a fallible function at statement and at value position, an `or` over one that is not fallible) are id lists until the row's fallibility replaces them; every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
+            "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature; whether a function can fail is its row's error type, and every function lowering lowers only under `or` has one, so a bare call of one is the check's bare-fallible error (F.40 phase 4, S5)",
+            "codegen dispatches every stdlib call from its row, at all three positions: at statement or value position the position is a parameter (`lower_std_call`), an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, an overload on the first argument is the row's (one body per receiver type, `HaleBodyByReceiver`: the receiver is lowered once and its type picks the body), and a renamed or unlowered row reaches the fallback, where a statement calls a body that returns nothing and is done; under `or` (`lower_std_fallible_call`) the id picks its arm in an exhaustive match of its own beside it (`lower_std_intrinsic_fallible`), because what it produces is the call's success value and its error path, and any other row is not a stdlib fallible call; every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
+            "lowering decides nothing about a stdlib call's fallibility or its overload: which calls it refuses is the rows' (no id list): a bare call of a function whose row can fail reaches one arm of `lower_std_intrinsic` (`bare_call_of_a_fallible_row`), and an `or` over one whose row cannot reaches the last arm of `lower_std_intrinsic_fallible` (`or_over_an_infallible_row`); the check refuses both first, so lowering's answer is an internal error naming the row at the callee, save an `or` over a row with no signature yet, which the check types permissively and lowering refuses; no fallible row keeps a bare arm that lowers, and no row that cannot fail is lowered under `or` (parity test: `which_calls_lowering_refuses_is_the_rows_fallibility`)",
             "no `[\"std\",` path literal in `crates/hale-codegen/src` outside `CODEGEN_STD_PATH_LITERALS`, the registry's allowance with its reason per file (registry_guard.rs: `std_path_literals_in_codegen_are_the_registry_allowance`): a stdlib call's lowering is an arm of a match on its row's id, never a match on its path",
             "the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs", "crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)"],
+        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/stdlib_statement_position.rs", "crates/hale-types/tests/stdlib_sig_check.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs", "crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)"],
         spec: &["spec/stdlib.md"],
         owned: &[],
         seams: &[],
@@ -1139,21 +1148,37 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "sealability",
         layer: Layer::Locus,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Law,
         answers: "Which loci confine their state (`@sealed`), and which could.",
-        inputs: &["locus declarations", "field accesses"],
-        producer: Some(site(CHECK, "check_sealed_access")),
-        legacy: &[
-            legacy("crates/hale-types/src/sealability.rs", "survey", "the `--sealable` survey seals every locus, re-runs a partial check and PARSES THE DIAGNOSTIC MESSAGE TEXT to decide", "the survey reads the sealed-access rows"),
+        inputs: &["expression_typing (the typed bodies' `param_accesses` column)", "top_scope (whether a receiver is sealed, and the methods it declares)", "locus declarations (the survey's loci)"],
+        producer: Some(site(CHECK, "record_param_access")),
+        legacy: &[],
+        consumers: &[
+            consumer_at("check (the sealed rule, a law over the rows, run as each top-level declaration's walk ends: each finding placed where the walk first reached the access)", CHECK, "settle_param_accesses"),
+            consumer_at("check --sealable (the survey, a group-by over the snapshot's rows: `demand_typed_bodies`)", V_CHECK, "sealability::survey"),
+            consumer("claims (require sealed: the declaration's `sealed`, not the rows)"),
         ],
-        consumers: &[consumer("check"), consumer("check --sealable"), consumer("claims (require sealed)")],
-        invariants: &["a diagnostic's wording is never an input to a derivation"],
+        invariants: &[
+            "a diagnostic's wording is never an input to a derivation",
+            "the rows are the checker's (F.40 phase 4, W4): one `ParamAccess` per read or write of a locus's `params` field through a receiver the checker typed as that locus, recorded where it types the access (the field-read arm, an assignment target's field segment), sealed or not, before any rule judges it: the reader (the locus whose member is walked, `None` in a free fn) and the receiver by declaration (`LocusRef`: the minting universe and the id, a `std::` locus being the stdlib copy's), the receiver's scope name, the param, read or write, the span. An access through `self` in the locus's own members is a row whose reader is the receiver; a method or a capacity slot named on a locus is none; a receiver typed as a monomorph (`Box_Int`) is none, the scope declaring no locus by that name",
+            "a walk whose findings the check discards discards its accesses with them (`walk_mark` / `discard_since`): a receiver typed ahead of the call path that types it again, a default typed at an invocation, a generic body walked per monomorph; so a generic body has its template walk's rows, and an access in a fn param default (typed only at its invocations) is no row. An access the walk reaches twice is one row",
+            "the sealed rule is a filter over the rows (`sealed_access::outside_access`, a registered law on the law type, no witness): a row whose receiver the scope says is `@sealed` and whose reader is not the receiver, rendered with the author's spelling of the locus (`std::secret::Signer` for a stdlib locus) and the methods it declares; it decides nothing at the access",
+            "the `--sealable` survey is a query over the same rows of the check the command ran, imports resolved: per locus the programs declare (a module's included), the rows reaching it from outside its own members are its blockers, a locus with none is free; it re-checks nothing, so it agrees with the rule by construction",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/sealed_locus.rs"],
-        spec: &["spec/verification.md § Secrets — confine, classify, claim"],
-        owned: &[],
-        seams: &[],
+        tests: &[
+            "crates/hale-types/tests/sealed_locus.rs",
+            "crates/hale-types/tests/typed_bodies.rs (the_param_access_column_records_each_access_through_a_locus)",
+            "crates/hale-types/tests/sealability_survey.rs",
+            "crates/hale-types/tests/sealable_survey_correction.rs",
+        ],
+        spec: &["spec/verification.md § Secrets — confine, classify, claim", "spec/verification.md § Structural & design rules", "spec/projects.md (`hale check --sealable`)"],
+        owned: &[site(SEALED_ACCESS, "sealed_access_law"), site(SEALED_ACCESS, "outside_access"), site(SEALABILITY, "survey")],
+        seams: &[
+            Seam { symbol: "sealed_access_law(", allowed: &[(SEALED_ACCESS, 1), (CHECK, 1)] },
+            Seam { symbol: "sealability::survey(", allowed: &[(V_CHECK, 1)] },
+        ],
     },
     Family {
         name: "runs_under",
@@ -2283,6 +2308,16 @@ pub const RULES: &[Rule] = &[
         gist: "`persists_through(...)` on a closure whose assertion accumulates nothing, so the clause keeps nothing (warning, at the clause, the witness the assertion)",
         family: "closures",
         evaluator: Some(site(CLOSURE_EVENTS, "nothing_to_keep")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/sealed-confinement",
+        title: "Sealed confinement",
+        // The typed bodies' `param_accesses` rows (the reader and the receiver by declaration, the param, read or write), and the scope's entry for the receiver: whether it is sealed, and the methods the message names.
+        reads: Reads::Rows(&["expression_typing", "top_scope"]),
+        gist: "a read or write of a `@sealed` locus's `params` from outside its own members (error, at the access, naming the methods to call instead)",
+        family: "sealability",
+        evaluator: Some(site(SEALED_ACCESS, "outside_access")),
         state: State::Canonical,
     },
 ];

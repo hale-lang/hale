@@ -734,11 +734,19 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // GH #436: which loci could be `@sealed` today, and what it would
     // cost. `@sealed` is opt-in, so adopting it across an existing
     // codebase is otherwise a question you can only answer by reading.
+    // The survey reads the param-access rows of the snapshot's typed
+    // bodies, the ones the sealed rule judged: blocked only with the
+    // scope, whose errors were reported above.
     if std::env::args().any(|a| a == "--sealable") {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let rows = hale_types::sealability::survey(&progs);
-        eprint!("{}", hale_types::sealability::render(&rows));
+        match snap.demand_typed_bodies() {
+            Ok(typed) => {
+                let progs: Vec<&hale_syntax::ast::Program> =
+                    bundle.programs.values().copied().collect();
+                let rows = hale_types::sealability::survey(&progs, typed);
+                eprint!("{}", hale_types::sealability::render(&rows));
+            }
+            Err(_) => eprintln!("sealability: not surveyed: the program does not resolve, so no access was typed"),
+        }
     }
     // GH #736: which `release` clause makes a locus type a flow. Whether
     // `T` is a flow is decided over the whole program, imported seeds

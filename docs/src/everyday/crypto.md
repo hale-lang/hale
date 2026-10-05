@@ -62,11 +62,11 @@ let sig = std::crypto::ecdsa_p256_sign(key, message) or raise;
 let ok = std::crypto::ecdsa_p256_verify(pubkey, message, sig);
 ```
 
-`ecdsa_p256_sign` has two faces: a bare call returns an empty
-`Bytes` on failure (check `len(sig) == 0`), and in an `or` context
+`ecdsa_p256_sign` can fail (a bad key, a curve other than P-256):
 it is `fallible(CryptoError)`, so `or raise` / `or fail err` /
 `or handle(err)` propagate a structured `CryptoError { kind,
-detail }` like any other error.
+detail }` like any other error, and `or b""` takes an empty
+`Bytes` instead. A bare call is a compile error.
 
 ## Random numbers — `std::rand` and `std::os`
 
