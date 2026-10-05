@@ -224,18 +224,6 @@ pub struct DebugScan {
 const fn site(path: &'static str, symbol: &'static str) -> Site {
     Site { path, symbol }
 }
-const fn legacy(
-    path: &'static str,
-    symbol: &'static str,
-    note: &'static str,
-    removal: &'static str,
-) -> Legacy {
-    Legacy {
-        site: Site { path, symbol },
-        note,
-        removal,
-    }
-}
 const fn consumer(who: &'static str) -> Consumer {
     Consumer { who, site: None }
 }
@@ -289,6 +277,8 @@ const TYPED_BODIES: &str = "crates/hale-types/src/typed_bodies.rs";
 const BUILTIN_SIGS: &str = "crates/hale-types/src/builtin_sigs.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
+const PRINTABLE: &str = "crates/hale-types/src/printable.rs";
+const BUILTIN_TYPES_RS: &str = "crates/hale-types/src/builtin_types.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
 const CG: &str = "crates/hale-codegen/src/codegen.rs";
 const CG_INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
@@ -674,28 +664,39 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "stdlib_surface",
         layer: Layer::Declarations,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Capability,
         answers: "What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as.",
-        inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one (with the error type of a function that can fail), and how it lowers: an intrinsic id, a Hale body by name, one Hale body per receiver type, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
+        inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one (with the error type of a function that can fail), and how it lowers: an intrinsic id, a Hale body by name, one Hale body per receiver type, a rename, or not at all)", "one rule of what prints (`hale_types::printable`: `prints` over a one-level `PrintShape` each reader maps its own type into)", "one table of the builtin types (`BUILTIN_TYPES`: per type its name, its fields in order as a name and a primitive, and when the checker injects it)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
         producer: Some(site(STDLIB_SURFACE, "SURFACES")),
-        legacy: &[
-            legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
-            legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
+        legacy: &[],
+        consumers: &[
+            consumer_at("effects", EFFECTS, "effects_for"),
+            consumer_at("frontier", FRONTIER, "effects_for"),
+            consumer("codegen"),
+            consumer_at("codegen (the printable rule: `value_to_string_supports` maps a `CodegenTy` into the rule's shape before rendering)", CG, "value_to_string_supports"),
+            consumer_at("check (the printable rule: `ty_is_printable_at` maps a `Ty` into the rule's shape for println, to_string, an f-string and the `String + x` coercion)", CHECK, "ty_is_printable_at"),
+            consumer_at("codegen (the builtin types' structs, declared from their rows before the program's types)", CG, "declare_builtin_types"),
+            consumer_at("check (the builtin types injected into the top scope from their rows)", RESOLVE, "inject_builtin_types"),
+            consumer("lsp (hover, completion)"),
+            consumer("doc"),
         ],
-        consumers: &[consumer_at("effects", EFFECTS, "effects_for"), consumer_at("frontier", FRONTIER, "effects_for"), consumer("codegen"), consumer("lsp (hover, completion)"), consumer("doc")],
         invariants: &[
             "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature; whether a function can fail is its row's error type, and every function lowering lowers only under `or` has one, so a bare call of one is the check's bare-fallible error (F.40 phase 4, S5)",
-            "every public row has a signature, the one its lowering enforces (F.40 phase 4, S6: the helper's argument count, each argument's type as the helper's test accepts it, `Any` where it accepts more than one type the table can say, `Any` for a success the table cannot state), save the renamed rows (27 in the table), which the check types against their Hale bodies' own signatures (GH #470); the seven `std::io::mirror` cursor primitives are signed with the count and types their helper reads, though the helper does not count them, so the check refuses the extra arguments lowering ignored (S6's ruling); for a checked call of any other row the helper's own arity and argument tests are unreachable (kept, since the codegen tests lower programs the check refuses)",
+            "every public row has a signature, the one its lowering enforces (F.40 phase 4, S6: the helper's argument count, each argument's type as the helper's test accepts it, `Any` where it accepts more than one type the table can say, `Any` for a success the table cannot state), save 27 of the 39 renamed rows, which the check types against their Hale bodies' own signatures (GH #470); of the table's 432 rows (424 public, 8 internal), 353 lower by an intrinsic, 39 by a Hale body, 1 by one Hale body per receiver type and 39 by a rename, and the 8 internal rows carry no signature; the seven `std::io::mirror` cursor primitives are signed with the count and types their helper reads, though the helper does not count them, so the check refuses the extra arguments lowering ignored (S6's ruling); for a checked call of any other row the helper's own arity and argument tests are unreachable (kept, since the codegen tests lower programs the check refuses)",
             "codegen dispatches every stdlib call from its row, at all three positions: at statement or value position the position is a parameter (`lower_std_call`), an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, an overload on the first argument is the row's (one body per receiver type, `HaleBodyByReceiver`: the receiver is lowered once and its type picks the body), and a renamed or unlowered row reaches the fallback, where a statement calls a body that returns nothing and is done; under `or` (`lower_std_fallible_call`) the id picks its arm in an exhaustive match of its own beside it (`lower_std_intrinsic_fallible`), because what it produces is the call's success value and its error path, and any other row is not a stdlib fallible call; every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
             "lowering decides nothing about a stdlib call's fallibility or its overload: which calls it refuses is the rows' (no id list): a bare call of a function whose row can fail reaches one arm of `lower_std_intrinsic` (`bare_call_of_a_fallible_row`), and an `or` over one whose row cannot reaches the last arm of `lower_std_intrinsic_fallible` (`or_over_an_infallible_row`); the check refuses both first, so lowering's answer is an internal error naming the row at the callee, save an `or` over an intrinsic row with an `Any` success (`std::bytes::builder::__view` / `__text_view`), which the check types permissively and lowering refuses (every public intrinsic row is signed, so an internal row, which user code cannot call, is the only one with none); no fallible row keeps a bare arm that lowers, and no row that cannot fail is lowered under `or` (parity test: `which_calls_lowering_refuses_is_the_rows_fallibility`)",
             "no `[\"std\",` path literal in `crates/hale-codegen/src` outside `CODEGEN_STD_PATH_LITERALS`, the registry's allowance with its reason per file (registry_guard.rs: `std_path_literals_in_codegen_are_the_registry_allowance`): a stdlib call's lowering is an arm of a match on its row's id, never a match on its path",
-            "the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)",
+            "the checker and codegen agree on every stdlib call shape (parity test)",
+            "what prints is one rule, which the checker and lowering both read (F.40 phase 4, S7): `hale_types::printable::prints`, over the `PrintShape` each side maps its own type into, so `hale check` and `hale build` give one answer for println, to_string, an f-string and the `String + x` coercion; a record prints when every field does, a fixed array or a `bounded` when its element is a scalar, a `StringView` as its text (copied), and `Bytes`, its views, a locus, a function, a fallible and an unsized array do not; a type the checker cannot see (`Unknown`, an unresolved name) prints, which lowering never meets",
+            "the builtin types are declared once (F.40 phase 4, S8): `BUILTIN_TYPES` holds each one's fields in order, the checker injects each from its row (always, or `BusUnmatchedKey` only in a bundle with an `on_unmatched: fail` topic), the unknown-type-name rule accepts each name, the stdlib error-type shadow rule compares a user's declaration against its row's fields, and lowering builds each struct from the row; a declaration of the same name in the program wins on both sides; `ClosureViolation` is injected like the others since S8, so an `on_failure` handler's reads of it are typed",
         ],
-        missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/stdlib_statement_position.rs", "crates/hale-types/tests/stdlib_sig_check.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs", "crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)"],
-        spec: &["spec/stdlib.md"],
-        owned: &[],
+        missing: Missing::Total(
+            "no row means the path is not one of the table's functions: lowering calls the stdlib Hale declaration the path names by its mangled name (a Hale-source stdlib function, GH #470) and refuses any other path as not implemented, which the check's unknown-function error refuses first (`lower_std_unarmed`); a type with no `BUILTIN_TYPES` row is the program's own, and the printable rule answers every type",
+        ),
+        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/stdlib_statement_position.rs", "crates/hale-types/tests/stdlib_sig_check.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-codegen/tests/printable_rule.rs", "crates/hale-codegen/tests/builtin_types.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs", "crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)"],
+        spec: &["spec/stdlib.md", "spec/semantics.md § Rendering values as text"],
+        owned: &[site(PRINTABLE, "prints"), site(BUILTIN_TYPES_RS, "BUILTIN_TYPES")],
         seams: &[],
     },
     // ------------------------------------------------------------ Locus

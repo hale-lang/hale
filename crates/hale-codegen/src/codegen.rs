@@ -25703,6 +25703,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(Lower::HaleBodyByReceiver(bodies)) => {
                 self.lower_std_hale_body_by_receiver(bodies, segs, args, scope).map(Some)
             }
+            // No row (the `stdlib_surface` family's total answer): the
+            // path is no table function, so it is the stdlib Hale
+            // declaration its mangled name names, or not implemented.
             Some(Lower::Renamed) | Some(Lower::Unlowered) | None => {
                 self.lower_std_unarmed(segs, args, scope, pos)
             }
