@@ -12,6 +12,8 @@
 //! child's result field directly instead of calling a method, which
 //! the no-locus-return rule already discourages.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 use hale_types::sealability::{render, survey};
 
@@ -96,7 +98,7 @@ fn the_survey_agrees_with_the_checker() {
     // produce a sealed diagnostic when sealed for real.
     let sealed_for_real = SRC.replace("locus Exposed", "@sealed locus Exposed");
     let p = parse_source(&sealed_for_real).expect("parse");
-    let es: Vec<String> = hale_types::check_program(&p)
+    let es: Vec<String> = entries::check_program(&p)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)

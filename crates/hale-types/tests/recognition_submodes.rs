@@ -7,8 +7,10 @@
 //! locus-name span so the user sees the rejection alongside the
 //! annotation they wrote.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

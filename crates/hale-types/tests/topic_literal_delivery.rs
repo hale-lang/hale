@@ -5,9 +5,12 @@
 //! fallback catch-all rule and a send's policy read the wire, not a
 //! convenience resolution (outside review of #1282, finding 1).
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn errors(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parses");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)

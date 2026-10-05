@@ -20,6 +20,9 @@
 //! corpus** — the programs presented as exemplary Hale — typechecks
 //! clean.
 
+#[path = "support/entries.rs"]
+mod entries;
+
 /// Multi-file projects: a single `main.hl` legitimately can't see
 /// types its siblings declare, so checking it in isolation reports
 /// "unknown type" for reasons that are not defects.
@@ -48,7 +51,7 @@ fn on_disk_example_corpus_typechecks_clean() {
             continue;
         };
         checked += 1;
-        let errs: Vec<String> = hale_types::check_program(&program)
+        let errs: Vec<String> = entries::check_program(&program)
             .into_iter()
             .filter(|d| d.is_error())
             .map(|d| d.message)

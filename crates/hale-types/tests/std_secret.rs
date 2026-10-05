@@ -14,11 +14,13 @@
 //! real key bytes while `hale check` passed. The module was written,
 //! found unsafe, and held back until the resolver could see it.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn errors(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)

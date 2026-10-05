@@ -10,11 +10,13 @@
 //! compiler owns propagation; the program owns classification, which
 //! is the same split the stdlib registry has with a different owner.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn errs(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()
@@ -183,7 +185,7 @@ fn the_last_class_within_the_ceiling_still_propagates() {
          fn main() {{ println(caller(1)); }}"
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let ds: Vec<String> = hale_types::check_program(&program)
+    let ds: Vec<String> = entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect();

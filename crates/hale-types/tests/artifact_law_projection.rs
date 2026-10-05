@@ -11,12 +11,14 @@
 //! judgment's verdict is the more-correct one; the artifact adopts
 //! it, and the SEMANTICS constant records the change).
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_types::claim_lowering::lower_claims;
-use hale_types::effects::effect_certificates;
+use entries::effect_certificates;
 use hale_types::evidence::derive_certificate_evidence;
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::topology_projection::project_law_rows;
 use hale_types::verdict::Verdict;
@@ -266,7 +268,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     // law rows: ordinal-addressable, family + verdict typed.
@@ -353,7 +355,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     assert_eq!(v["capabilities"]["exact_publishes"], false);
@@ -390,7 +392,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     assert_eq!(v["capabilities"]["exact_cardinality"], true);
@@ -436,7 +438,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     assert_eq!(v["semantics"], 2);
@@ -478,7 +480,7 @@ fn clean_verdict_implies_every_law_row_holds() {
         let caught = std::panic::catch_unwind(
             std::panic::AssertUnwindSafe(|| {
                 let bundle = bundle_of(&p.source, &program);
-                hale_types::topology::dump_topology(&bundle)
+                entries::dump_topology(&bundle)
             }),
         );
         let Ok(art) = caught else {
@@ -550,7 +552,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -591,7 +593,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -627,7 +629,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -690,7 +692,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -784,7 +786,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -841,7 +843,7 @@ fn main() { App { }; }
         "a field literally named `opaque` is STRUCTURAL — the \
          discriminant is the flag, never the string"
     );
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let topics = v["topics"].as_array().expect("topics");
@@ -911,7 +913,7 @@ fn main() { App { }; }
             "__lib_x_events_Changed".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     // The V1 rule demangles the colliding literal EVERYWHERE.
@@ -1014,7 +1016,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -1082,7 +1084,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");
@@ -1170,7 +1172,7 @@ fn main() { App { }; }
     let program =
         hale_syntax::parse_source(&padded).expect("parse");
     let bundle = bundle_of(&padded, &program);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     let rows = v["law"]["rows"].as_array().expect("law.rows");

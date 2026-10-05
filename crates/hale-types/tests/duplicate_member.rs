@@ -5,8 +5,10 @@
 //! codecs and the api description assumed one slot per name. It is a
 //! type error at the second declaration, naming the first.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn diag_naming(src: &str, needle: &str) -> hale_syntax::error::Diag {
     let prog = parse_source(src).expect("parse");

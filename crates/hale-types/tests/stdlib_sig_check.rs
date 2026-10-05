@@ -3,8 +3,10 @@
 //! passthrough for tabled fns). Fallible rows return Ty::Fallible,
 //! so `or` substitutes check against the true success type.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn msgs(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse");

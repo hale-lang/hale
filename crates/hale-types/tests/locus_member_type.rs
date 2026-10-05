@@ -25,8 +25,11 @@
 //! spelling — a top-level `type`, in scope inside every locus of the
 //! seed — is named in the message.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::{check_bundle_opts_whole_program, check_program, Bundle};
+use hale_types::Bundle;
+use entries::{check_bundle_opts_whole_program, check_program};
 use std::collections::BTreeMap;
 
 /// The GH #756 locus-member-type diagnostics raised for `src`, as

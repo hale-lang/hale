@@ -21,9 +21,11 @@
 //! whose two ends spell the same wire differently, and a second bus
 //! hop.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::verdict::Verdict;
 use hale_types::Bundle;
@@ -117,7 +119,7 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
             continue;
         };
         let bundle = bundle_of(&p.source, &program);
-        if hale_types::check_bundle_opts(&bundle, false)
+        if entries::check_bundle_opts(&bundle, false)
             .iter()
             .any(|d| {
                 d.is_error()
@@ -1285,7 +1287,7 @@ fn main() { App { }; }
     );
 
     // …and the check path carries it, so the program is not clean.
-    let check = hale_types::check_bundle_opts(&bundle, false);
+    let check = entries::check_bundle_opts(&bundle, false);
     assert!(
         check.iter().any(|d| d.message.contains("causal set")),
         "check reports the law: {:?}",

@@ -12,9 +12,11 @@
 //! code: a debug-build panic at the builder's own assertion, and in
 //! release a walk over relations whose indexing assumes lawfulness.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 
@@ -62,7 +64,7 @@ fn an_ill_typed_program_with_claims_is_never_judged() {
     let bundle = bundle_of(UNLAWFUL_WITH_CLAIMS, &program);
 
     // Premise 1: the program really is refused by the checker.
-    let diags = hale_types::check_bundle_opts(&bundle, false);
+    let diags = entries::check_bundle_opts(&bundle, false);
     assert!(
         diags.iter().any(|d| d.is_error()
             && d.kind != hale_syntax::error::DiagKind::Claim),
@@ -100,7 +102,7 @@ fn the_same_program_is_judged_once_it_typechecks() {
                  "topic Plain { payload: Reading; subject: \"p\"; keyed_by sensor; }");
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bundle = bundle_of(&src, &program);
-    let diags = hale_types::check_bundle_opts(&bundle, false);
+    let diags = entries::check_bundle_opts(&bundle, false);
     assert!(
         !diags.iter().any(|d| d.is_error()
             && d.kind != hale_syntax::error::DiagKind::Claim),
@@ -118,7 +120,7 @@ fn the_same_program_is_judged_once_it_typechecks() {
     // The claim holds here, so the proof that it was JUDGED is that
     // no claim error appears while the machinery ran — check the
     // judgment directly instead.
-    let judged = hale_types::judgment::claim_law_diags(&bundle);
+    let judged = entries::claim_law_diags(&bundle);
     assert!(
         judged.is_empty(),
         "a satisfied claim should judge clean: {:?}",
@@ -133,7 +135,7 @@ fn the_same_program_is_judged_once_it_typechecks() {
     );
     let program2 = hale_syntax::parse_source(&violating).expect("parse");
     let bundle2 = bundle_of(&violating, &program2);
-    let diags2 = hale_types::check_bundle_opts(&bundle2, false);
+    let diags2 = entries::check_bundle_opts(&bundle2, false);
     assert!(
         diags2
             .iter()
@@ -175,7 +177,7 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(SRC).expect("parse");
     // The PUBLIC api — `Bundle::new`, no source map installed.
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     let claim = diags
         .iter()
         .find(|d| d.message.contains("claim `isolation`"))
@@ -366,7 +368,7 @@ locus Sink { params { n: Int = 0; } fn take() { self.n = self.n + 1; } }
             .unwrap_or_else(|| panic!("{}: the law did not lower", label));
 
         let evidence = hale_types::evidence::derive_certificate_evidence(
-            &bundle, &table, &model, &hale_types::effects::effect_certificates(&bundle),
+            &bundle, &table, &model, &entries::effect_certificates(&bundle),
         );
         let bases: Vec<u32> =
             bundle.sources.iter().map(|f| f.base).collect();

@@ -1,8 +1,11 @@
 //! GH #265 step 5 — the quantitative layer.
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn diags_for(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()
@@ -255,7 +258,7 @@ fn budget_counts_string_concatenation() {
                fn build(a: String) -> Int { let s = \"x\" + a + \"y\"; return len(s); }\n\
                fn main() { println(build(\"q\")); }";
     let program = hale_syntax::parse_source(src).expect("parse");
-    let msgs: Vec<String> = hale_types::check_program(&program)
+    let msgs: Vec<String> = entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect();
@@ -283,7 +286,7 @@ fn integer_arithmetic_is_not_an_allocation() {
                fn add(a: Int, b: Int) -> Int { let n = a + b + 1; return n; }\n\
                fn main() { println(add(1, 2)); }";
     let program = hale_syntax::parse_source(src).expect("parse");
-    let msgs: Vec<String> = hale_types::check_program(&program)
+    let msgs: Vec<String> = entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect();

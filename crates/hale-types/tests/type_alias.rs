@@ -8,6 +8,8 @@
 //! supported, and the cyclic-chain diagnostic that making the
 //! form writable created.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 use hale_types::symbol::Bundle;
 
@@ -351,7 +353,7 @@ fn the_sequence_is_the_one_resolution_of_a_construction_alias() {
                    }\n\
                }\n";
     let program = parse_source(src).expect("parse");
-    let through_sequence = hale_types::check_program(&program);
+    let through_sequence = entries::check_program(&program);
     assert!(through_sequence.is_empty(), "{through_sequence:?}");
 
     let mut programs = std::collections::BTreeMap::new();

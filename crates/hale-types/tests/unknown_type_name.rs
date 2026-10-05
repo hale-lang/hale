@@ -39,11 +39,14 @@
 //! strings would harvest the rule's own counterexamples into the
 //! gates the rule is judged by. Do not "tidy" them into raw strings.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_syntax::error::DiagKind;
 use hale_syntax::parse_source;
-use hale_types::{check_bundle_opts_whole_program, check_program, Bundle};
+use hale_types::Bundle;
+use entries::{check_bundle_opts_whole_program, check_program};
 
 /// The GH #877 diagnostics for `src` under the WHOLE-program check —
 /// what `hale check <dir>`, `hale build`, `hale run`, `hale test` and
@@ -198,7 +201,7 @@ fn one_file_checked_alone_stays_permissive() {
         BTreeMap::new();
     programs.insert("main.hl".to_string(), &prog);
     let errors: Vec<String> =
-        hale_types::check_bundle_opts(&Bundle::new(programs), false)
+        entries::check_bundle_opts(&Bundle::new(programs), false)
             .into_iter()
             .filter(|d| d.is_error())
             .map(|d| d.message)

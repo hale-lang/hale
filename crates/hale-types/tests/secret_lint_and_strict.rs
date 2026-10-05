@@ -13,11 +13,13 @@
 //! today, which is a userspace break even when every new finding is a
 //! real bug. The widened, fail-closed walk is opt-in.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn diags(src: &str) -> Vec<hale_syntax::error::Diag> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
 }
 
 fn strict(src: &str) -> Vec<String> {

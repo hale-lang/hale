@@ -2,8 +2,10 @@
 //! Proposal B, PR2): the layout reference must resolve to a declared
 //! `ring_layout`. Absent layout = the native ring (back-compat).
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

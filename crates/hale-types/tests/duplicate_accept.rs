@@ -5,8 +5,10 @@
 //! It is now an error naming both clauses; the first stays the
 //! locus's accept type.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 const TWO_ACCEPTS: &str = r#"
 locus Work { params { id: Int = 0; } run() { } }

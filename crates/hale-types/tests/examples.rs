@@ -3,13 +3,16 @@
 //! as a bundle. This is the Phase 0 exit-gate test for
 //! milestone 2 — Phase 1.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::{Diag, parse_source};
-use hale_types::{check_bundle, Bundle};
+use hale_types::Bundle;
+use entries::check_bundle;
 
 fn examples_dir() -> PathBuf {
     // Examples moved to crates/hale-codegen/tests/fixtures/examples/

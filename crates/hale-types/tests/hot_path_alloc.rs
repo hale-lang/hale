@@ -8,8 +8,10 @@
 //!      buffer.
 //! The zero-alloc equivalents (reused field, `recv_into`) stay silent.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn warnings(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

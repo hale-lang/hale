@@ -93,6 +93,8 @@
 //! bare name (measured against the base build's dump and effect rows on
 //! every corpus program with a module-nested body: equal).
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -927,9 +929,9 @@ main locus App {
 fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let diags: Vec<String> = hale_types::check_program(&program).iter().map(|d| d.message.clone()).collect();
+    let diags: Vec<String> = entries::check_program(&program).iter().map(|d| d.message.clone()).collect();
     assert_eq!(diags, Vec::<String>::new());
     let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
-    let model = hale_types::model_builder::derive_application_model(&bundle);
+    let model = entries::derive_application_model(&bundle);
     assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
 }

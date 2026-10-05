@@ -10,6 +10,8 @@
 //! Case 12 (an import alias's wrapper) needs a second seed and is
 //! `crates/hale-cli/tests/target_precedence.rs`'s.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 use hale_types::capability::uses::{derive_capability_uses, Need, UseKind};
 use hale_types::capability::{Capability, ConfiguredTarget};
@@ -33,7 +35,7 @@ fn check(src: &str, triple: Option<&str>) -> Vec<(usize, usize, String)> {
         let spec = TargetSpec::parse(t).unwrap();
         bundle.target = ConfiguredTarget { name: spec.triple.to_string(), spec, explicit: true };
     }
-    hale_types::check_bundle_opts_whole_program(&bundle, false)
+    entries::check_bundle_opts_whole_program(&bundle, false)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| {

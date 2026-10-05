@@ -5,9 +5,12 @@
 //! initialization" (the DO-178 discipline) IS "alloc allowed in
 //! birth, forbidden in run and handlers".
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn diags_for(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()

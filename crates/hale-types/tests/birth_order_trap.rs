@@ -10,8 +10,10 @@
 //! tests only assert that the compiler says so, and — the part that
 //! matters more — that it stays quiet on every shape that works.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn msgs(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

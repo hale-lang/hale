@@ -17,10 +17,12 @@
 //!      `same_domain` rather than guessing.
 //!   4. **Identity.** The digest moves when the plan moves.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_model::dispatch_plan::{DispatchFlavor, DispatchPlan};
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::Bundle;
 
 fn plan_of(src: &str) -> DispatchPlan {
