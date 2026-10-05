@@ -53,7 +53,7 @@ pub mod shadow;
 
 pub use registry::{
     families, family, render_markdown, rules, Consumer, DebugScan, Family, Kind, Layer, Legacy,
-    Missing, Rule, RuleList, ScanVerdict, Seam, Site, State, DEBUG_SCANS, FAMILIES, RULES,
+    Missing, Reads, Rule, RuleList, ScanVerdict, Seam, Site, State, DEBUG_SCANS, FAMILIES, RULES,
     RULE_LISTS,
     SHADOW_CALL_SITES,
 };

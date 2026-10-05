@@ -87,6 +87,19 @@ fn numbered_rules(lines: &[String]) -> Vec<(usize, String)> {
     out
 }
 
+/// The bold title opening each row of a table in the section (the
+/// first cell, `| **Title** | ..`), in order.
+fn table_titles(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|l| {
+            let cell = l.strip_prefix("| **")?;
+            let end = cell.find("**")?;
+            Some(cell[..end].split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+        .collect()
+}
+
 #[test]
 fn rule_lists_match_the_spec() {
     let mut problems = Vec::new();
@@ -103,6 +116,46 @@ fn rule_lists_match_the_spec() {
         );
         let at = format!("{} § {}", list.spec, list.heading);
 
+        let prefix = format!("{}/", list.key);
+        if !list.numbered {
+            // A table: each row opens with a bold title, and the
+            // registry's rule holds the same title under any slug.
+            let spec = table_titles(&lines);
+            let held: Vec<&hale_graph::Rule> = hale_graph::rules()
+                .iter()
+                .filter(|r| r.id.starts_with(&prefix))
+                .collect();
+            assert!(
+                !spec.is_empty() && !held.is_empty(),
+                "{at}: the scrape found {} rules and the registry holds {}: vacuous",
+                spec.len(),
+                held.len()
+            );
+            for t in &spec {
+                if !held.iter().any(|r| r.title == t) {
+                    problems.push(format!(
+                        "{at}: the row \"{t}\" is in the spec and not registered under `{prefix}`"
+                    ));
+                }
+            }
+            for r in &held {
+                if !spec.iter().any(|t| *t == r.title) {
+                    problems.push(format!(
+                        "`{}` (\"{}\") is registered and the spec's {at} has no such row",
+                        r.id, r.title
+                    ));
+                }
+            }
+            if spec.len() != held.len() {
+                problems.push(format!(
+                    "{at}: the scrape found {} rows, the registry holds {}",
+                    spec.len(),
+                    held.len()
+                ));
+            }
+            continue;
+        }
+
         let spec: Vec<(usize, String)> = numbered_rules(&lines);
         for (i, (n, _)) in spec.iter().enumerate() {
             if *n != i + 1 {
@@ -111,7 +164,6 @@ fn rule_lists_match_the_spec() {
         }
         let spec: BTreeMap<usize, String> = spec.into_iter().collect();
 
-        let prefix = format!("{}/", list.key);
         let mut held: BTreeMap<usize, (&str, &str)> = BTreeMap::new();
         for r in hale_graph::rules().iter().filter(|r| r.id.starts_with(&prefix)) {
             match r.id[prefix.len()..].parse::<usize>() {
@@ -162,6 +214,15 @@ fn rule_lists_match_the_spec() {
         problems.is_empty(),
         "the registry and the spec's rule lists disagree:\n{}",
         problems.join("\n")
+    );
+}
+
+#[test]
+fn the_scrape_reads_table_rows() {
+    let text = "## T\n\n| Check | Catches |\n|---|---|\n| **A / b** | x |\n| **`c` d** | y **z** |\n\n## Next\n\n| **Out** | n |\n";
+    assert_eq!(
+        table_titles(&section(text, "T", 2)),
+        vec!["A / b".to_string(), "`c` d".to_string()]
     );
 }
 

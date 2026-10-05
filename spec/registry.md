@@ -1548,6 +1548,16 @@ A registered rule without an evaluator fails the compiler's own build.
 | semantics/placement/18 | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/lowering_laws.rs` · `placement_entry_consumed` | Canonical |
 | semantics/placement/19 | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | Migrating |
 | semantics/placement/20 | a subscriber born in a bus handler is owned | `ownership` | `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` | Canonical |
+| semantics/slots/1 | a capacity slot's cell type is not a locus: a span-targeted typecheck error, and again at codegen (`locus/decl.rs`) as defense in depth | `forms` | `crates/hale-types/src/check.rs` · `check_locus_member_at` | Canonical |
+| semantics/slots/2 | structurally enforced, no check: a slot name is a locus member, not a typeable identifier (`self.<slot>` is typed `Unknown`, `check_expr_at`), so it cannot appear as a payload struct field | `forms` | `crates/hale-types/src/check.rs` · `check_expr_at` | Canonical |
+| semantics/slots/3 | two slots of one name are a typecheck error, and again at codegen (`locus/decl.rs`) | `forms` | `crates/hale-types/src/check.rs` · `check_locus_member_at` | Canonical |
+| verification/structural/cqrs-no-locus-return | a locus `fn` whose return type or `fallible(T)` payload names a user-declared locus (error) | `surfaces` | `crates/hale-types/src/check.rs` · `check_no_locus_return` | Canonical |
+| verification/structural/stdlib-error-type-shadow | a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type (error) | `stdlib_surface` | `crates/hale-types/src/resolve.rs` · `check_stdlib_error_shadowing` | Migrating |
+| verification/structural/codec-purity | a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | Canonical |
+| verification/structural/ring-layout-contract | a foreign-ring layout declaration that is internally ill-formed (error); `check_ring_layout`, and `check_main_and_bindings` for a binding's `layout:` reference | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | Canonical |
+| verification/structural/ring-layout-geometry | a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings` | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | Canonical |
+| verification/structural/foreign-ring-payload-shape | a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error) | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | Canonical |
+| verification/structural/cell-slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | Canonical |
 
 ## The shadow facility's allowance
 

@@ -166,6 +166,18 @@ pub struct Family {
     pub seams: &'static [Seam],
 }
 
+/// What a rule's evaluator reads (filled from the evaluator's code).
+#[derive(Debug, Clone, Copy)]
+pub enum Reads {
+    /// The families whose rows it reads, each a registered family
+    /// (`registry_is_well_formed`). A rule that also reads the
+    /// declaration it judges says what, in a comment at the rule.
+    Rows(&'static [&'static str]),
+    /// The declaration it judges, and no fact another consumer
+    /// re-derives: a well-formedness check with one evaluator.
+    Declaration,
+}
+
 /// A numbered spec rule and the code that evaluates it.
 #[derive(Debug, Clone, Copy)]
 pub struct Rule {
@@ -175,6 +187,8 @@ pub struct Rule {
     /// `rule_lists_match_the_spec` compares it, so a renumbering or a
     /// retitling in the spec fails the build until the registry follows.
     pub title: &'static str,
+    /// What the evaluator reads, from its code.
+    pub reads: Reads,
     pub gist: &'static str,
     pub family: &'static str,
     pub evaluator: Option<Site>,
@@ -1849,17 +1863,36 @@ pub struct RuleList {
     pub heading: &'static str,
     /// The heading's level (the number of `#`).
     pub level: usize,
+    /// A numbered list (`N. **Title.**`), or a table whose rows open with a bold title.
+    pub numbered: bool,
 }
 
 /// The rule lists the spec states and the registry holds in full:
 /// `rule_lists_match_the_spec` (registry_rules_match_spec.rs) reads each
 /// section and fails on a rule one side lacks.
-pub const RULE_LISTS: &[RuleList] = &[RuleList {
-    key: "semantics/placement",
-    spec: "spec/semantics.md",
-    heading: "Type-check rules",
-    level: 3,
-}];
+pub const RULE_LISTS: &[RuleList] = &[
+    RuleList {
+        key: "semantics/placement",
+        spec: "spec/semantics.md",
+        heading: "Type-check rules",
+        level: 3,
+        numbered: true,
+    },
+    RuleList {
+        key: "semantics/slots",
+        spec: "spec/semantics.md",
+        heading: "Slot restrictions (v1)",
+        level: 3,
+        numbered: true,
+    },
+    RuleList {
+        key: "verification/structural",
+        spec: "spec/verification.md",
+        heading: "Structural & design rules",
+        level: 2,
+        numbered: false,
+    },
+];
 
 /// The spec's rules and their evaluators. A registered rule
 /// whose evaluator is `None` fails the build (registry_guard.rs),
@@ -1868,6 +1901,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/1",
         title: "`placement { }` is `main locus` only.",
+        // The parser rejects the block while parsing: it reads the syntax it judges.
+        reads: Reads::Declaration,
         gist: "`placement { }` is main-locus-only",
         family: "placement",
         evaluator: Some(site(PARSER, "`placement` block is only valid inside")),
@@ -1876,6 +1911,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/2",
         title: "Keys reference main-locus `params` field names.",
+        // The declared `params` come from the symbol table (`LocusInfo`); the block's keys are read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
         gist: "keys name main-locus params fields",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1884,6 +1921,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/3",
         title: "Field values are locus types.",
+        // The field's type resolves through the symbol table (`TopSymbol::Locus`); the entry is read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
         gist: "field values are locus types",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1892,6 +1931,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/4",
         title: "At most one placement entry per field.",
+        // A set of the block's own field names: the declaration.
+        reads: Reads::Declaration,
         gist: "at most one entry per field",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1900,6 +1941,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/5",
         title: "Pool names use snake_case Idents.",
+        // The parser reads the identifiers it parses.
+        reads: Reads::Declaration,
         gist: "pool names are identifiers; `main` always exists",
         family: "placement",
         evaluator: Some(site(PARSER, "parse_placement_block")),
@@ -1908,6 +1951,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/6",
         title: "Locus-pinning compatibility.",
+        // The instances are the placement table's rows (the entry's, each replica, the adapter binding's); the two features (an `accept` of any arity, a closure whose epoch is `birth` or `dissolve`) are still read off the declaration the instance realizes.
+        reads: Reads::Rows(&["placement"]),
         gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
@@ -1916,6 +1961,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/7",
         title: "Dead bus receiver (error).",
+        // Where each field runs is the placement table's; the subscriptions are the bus graph's; the blocking-fn set is the effect rows'. The `run()` body's direct blocking call is still found by walking the declaration.
+        reads: Reads::Rows(&["placement", "bus_graph", "effects"]),
         gist: "dead bus receiver on a cooperative pool is an error",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
@@ -1924,6 +1971,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/8",
         title: "Blocking syscall on a cooperative pool (warning).",
+        // As rule 7 (it judges what rule 7 spares): placement rows, the bus graph, the effect rows blocking-fn set, and the `run()` body's call walk on the declaration.
+        reads: Reads::Rows(&["placement", "bus_graph", "effects"]),
         gist: "a blocking syscall on a cooperative pool is a warning",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
@@ -1932,6 +1981,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/9",
         title: "Orphan bus topic (warning).",
+        // The graph's subjects, wiring columns and canonical keys, and the entry row's closed world; the symbol table for a qualified subject.
+        reads: Reads::Rows(&["bus_graph", "entrypoint", "top_scope"]),
         gist: "orphan bus topic (closed world)",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_graph")),
@@ -1940,6 +1991,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/10",
         title: "Bus cycles.",
+        // The graph's edges and `cycle_from`, joined by send id to the intra-locus rewrite relation.
+        reads: Reads::Rows(&["bus_graph", "desugar_sequence"]),
         gist: "bus cycles: a queued cycle warns, an unconditional intra-locus cycle of direct calls is an error",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_cycles")),
@@ -1948,6 +2001,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/11",
         title: "Bus backpressure (warning).",
+        // Walks the locus bodies for a `while true` loop that publishes and has no flow-control point: the declaration alone.
+        reads: Reads::Declaration,
         gist: "bus backpressure heuristic",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_backpressure")),
@@ -1956,6 +2011,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/12",
         title: "Bus subject type-mismatch (error).",
+        // Groups the literal subjects' `of type` clauses (by type identity) across the bundle's declarations; no row holds them.
+        reads: Reads::Declaration,
         gist: "one literal subject, one payload type",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_subject_types")),
@@ -1964,6 +2021,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/13",
         title: "Empty / degenerate `pinned(cores = …)` (error).",
+        // The core spec of the entry is judged as written.
+        reads: Reads::Declaration,
         gist: "degenerate `pinned(cores = ..)` is an error",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1972,6 +2031,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/14",
         title: "`topology { }` consistency + `pinned(node/l3)` resolution (error).",
+        // The `topology { }` block is judged as written (and the `pinned(node/l3)` specs against it).
+        reads: Reads::Declaration,
         gist: "topology consistency and node/l3 resolution",
         family: "placement",
         evaluator: Some(site(CHECK, "check_topology_block")),
@@ -1980,6 +2041,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/15",
         title: "`replicas = K` (error on `K < 1`; pinned-only).",
+        // The entry's `replicas` value and spec kind, as written.
+        reads: Reads::Declaration,
         gist: "`replicas = K`: K >= 1, pinned only",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1988,6 +2051,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/16",
         title: "Pool affinity (2026-08-12).",
+        // The entry row names the `main locus` declarations; each one's `placement { }` entries are still read off the declaration to compare their affinities per pool.
+        reads: Reads::Rows(&["entrypoint"]),
         gist: "pool affinity agrees per pool",
         family: "placement",
         evaluator: Some(site(CHECK, "check_pool_affinity")),
@@ -1996,6 +2061,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/17",
         title: "A `pinned` placement forbids a loop (error).",
+        // The root's constructions and their `built_in_a_loop` bound, from the placement table.
+        reads: Reads::Rows(&["placement"]),
         gist: "a pinned locus is not instantiated in a loop",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_root_in_a_loop")),
@@ -2004,6 +2071,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/18",
         title: "Every entry is consumed by exactly one instantiation (error).",
+        // The placement table's root and the literals that carry an entry; the main locus's `placement { }` and `params` are still read off the declaration to find the entries.
+        reads: Reads::Rows(&["placement"]),
         gist: "every placement entry is consumed exactly once",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "placement_entry_consumed")),
@@ -2012,6 +2081,8 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/19",
         title: "Uncarriable bus payload (error).",
+        // Walks each locus's bus members for an `of type` clause and resolves the type through the symbol table.
+        reads: Reads::Rows(&["top_scope"]),
         gist: "a bus payload is carriable",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_payload_carriable")),
@@ -2020,9 +2091,111 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/20",
         title: "Unowned subscriber (error).",
+        // The ownership graph's sites and owner resolution, and the placement table for the construction paths.
+        reads: Reads::Rows(&["ownership", "placement"]),
         gist: "a subscriber born in a bus handler is owned",
         family: "ownership",
         evaluator: Some(site(CHECK, "check_unowned_subscriber_locus")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "semantics/slots/1",
+        title: "Slot element type must be a value-shape, not a LocusRef.",
+        // The element type resolves through the symbol table (`TopSymbol::Locus`); the slot is read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a capacity slot's cell type is not a locus: a span-targeted typecheck error, and again at codegen (`locus/decl.rs`) as defense in depth",
+        family: "forms",
+        evaluator: Some(site(CHECK, "check_locus_member_at")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "semantics/slots/2",
+        title: "Slot pointers don't cross the bus.",
+        // Structural: nothing is checked. A `self.<slot>` reference types as `Ty::Unknown` here, and a payload field names a type, never a locus member, so a slot cannot be written as a payload field.
+        reads: Reads::Declaration,
+        gist: "structurally enforced, no check: a slot name is a locus member, not a typeable identifier (`self.<slot>` is typed `Unknown`, `check_expr_at`), so it cannot appear as a payload struct field",
+        family: "forms",
+        evaluator: Some(site(CHECK, "check_expr_at")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "semantics/slots/3",
+        title: "Duplicate slot names rejected.",
+        // The names within one `capacity { }` block, as written.
+        reads: Reads::Declaration,
+        gist: "two slots of one name are a typecheck error, and again at codegen (`locus/decl.rs`)",
+        family: "forms",
+        evaluator: Some(site(CHECK, "check_locus_member_at")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/cqrs-no-locus-return",
+        title: "CQRS / no-locus-return",
+        // A method's written return (or `fallible`) type, resolved through the symbol table to a locus.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a locus `fn` whose return type or `fallible(T)` payload names a user-declared locus (error)",
+        family: "surfaces",
+        evaluator: Some(site(CHECK, "check_no_locus_return")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/stdlib-error-type-shadow",
+        title: "Stdlib error-type shadow",
+        // The top scope's user types against the stdlib error shapes, gated on a usage fact (`StdlibErrorUsage`) the resolver collects from the declarations.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type (error)",
+        family: "stdlib_surface",
+        evaluator: Some(site(RESOLVE, "check_stdlib_error_shadowing")),
+        state: State::Migrating,
+    },
+    Rule {
+        id: "verification/structural/codec-purity",
+        title: "Codec purity",
+        // The binding's codec locus and its `encode` / `decode` methods are named by the declaration; whether each is pure is the effect rows' purity column.
+        reads: Reads::Rows(&["effects"]),
+        gist: "a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_main_and_bindings")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/ring-layout-contract",
+        title: "`ring_layout` contract",
+        // The `ring_layout` declaration judged on its own fields (and the `layout:` reference of a binding, in `check_main_and_bindings`).
+        reads: Reads::Declaration,
+        gist: "a foreign-ring layout declaration that is internally ill-formed (error); `check_ring_layout`, and `check_main_and_bindings` for a binding's `layout:` reference",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_ring_layout")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/ring-layout-geometry",
+        title: "`ring_layout` geometry",
+        // The declaration's offsets, widths and alignment, and the binding's `buffer_size` against it, as written.
+        reads: Reads::Declaration,
+        gist: "a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings`",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_ring_layout")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/foreign-ring-payload-shape",
+        title: "Foreign-ring payload shape",
+        // The topic's payload type is read through the symbol table (`is_flat_shapeable` over the top scope); the binding is read off the declaration.
+        reads: Reads::Rows(&["top_scope"]),
+        gist: "a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error)",
+        family: "bindings",
+        evaluator: Some(site(CHECK, "check_main_and_bindings")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/cell-slot-of-origin",
+        title: "Cell slot-of-origin",
+        // The cell's type carries its (locus, slot) of origin; the release call is lowered from the declaration. A codegen error, not a check: no row.
+        reads: Reads::Declaration,
+        gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen)",
+        family: "forms",
+        evaluator: Some(site(CG, "try_lower_capacity_slot_method_call")),
         state: State::Canonical,
     },
 ];
