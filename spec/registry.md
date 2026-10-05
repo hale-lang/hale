@@ -26,10 +26,10 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Canonical | derivation | `fn from_gates` | 0 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
-| `handler_routing` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
+| `handler_routing` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which `on_failure` handler a failing child's locus type reaches, and from which parent; and which recovery statements written outside a handler apply which operation to a child of which type. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
-| `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
+| `closures` | Layer 3 | Canonical | law | `closure_event_rows` | 0 | Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep. |
 | `api_surface` | Layer 3 | Canonical | derivation | `api_surface` | 0 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form; and the role rows: every `role` declaration, every `@gated` site and the api entry's role source, with or without an `api:` entry. |
 | `sealability` | Layer 3 | Migrating | law | `check_sealed_access` | 1 | Which loci confine their state (`@sealed`), and which could. |
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
@@ -638,7 +638,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 ### `handler_routing` — Canonical · derivation
 
-**Answers.** Which `on_failure` handler a failing child's locus type reaches, and from which parent.
+**Answers.** Which `on_failure` handler a failing child's locus type reaches, and from which parent; and which recovery statements written outside a handler apply which operation to a child of which type.
 
 **Inputs.** failure declarations; declared loci and type aliases (the bundled stdlib's loci included); import renames; ownership (the supervising parent instance, in lowering)
 
@@ -646,7 +646,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-types/src/handler_routing.rs` · `child_locus_name`; `crates/hale-types/src/handler_routing.rs` · `resolve_locus_type`
 
-**Consumers.** lowering view (its rows: the snapshot's through the correspondence, then the stdlib's, the indexes rebuilt over the union) (`crates/hale-types/src/resolved.rs` · `lowering_handler_routing`); codegen (the handler table, one fn per row keyed by the row's site) (`crates/hale-codegen/src/locus/decl.rs` · `handlers_of_instance`); codegen (handler bodies, by the row's site) (`crates/hale-codegen/src/locus/method.rs` · `handlers_of_instance`); codegen (concrete handler rows at locus synthesis) (`crates/hale-codegen/src/codegen.rs` · `self.handlers.specialize`); codegen (a route: the row's handler fn) (`crates/hale-codegen/src/channels/mod.rs` · `failure_handler_for`); codegen (__parent_on_failure) (`crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route`); codegen (the params-settle bracket: whether the locus has a handler) (`crates/hale-codegen/src/locus/instantiation.rs` · `settles_failures`); codegen (restart in place) (`crates/hale-codegen/src/locus/restart.rs` · `restarts_in_place`); model (supervises, over the snapshot's rows: `demand_handlers`) (`crates/hale-types/src/model_builder.rs` · `Supervises`); check (duplicate handlers, over the snapshot's rows handed in: `CheckInputs`) (`crates/hale-types/src/check.rs` · `check_duplicate_failure_handlers`); check (@supervised, over the same rows) (`crates/hale-types/src/frontier.rs` · `supervised_diags`); ownership births (resolved child, declaring template and identity) (`crates/hale-types/src/ownership_graph.rs` · `identify_child`)
+**Consumers.** lowering view (its rows: the snapshot's through the correspondence, then the stdlib's, the indexes rebuilt over the union) (`crates/hale-types/src/resolved.rs` · `lowering_handler_routing`); codegen (the handler table, one fn per row keyed by the row's site) (`crates/hale-codegen/src/locus/decl.rs` · `handlers_of_instance`); codegen (handler bodies, by the row's site) (`crates/hale-codegen/src/locus/method.rs` · `handlers_of_instance`); codegen (concrete handler rows at locus synthesis) (`crates/hale-codegen/src/codegen.rs` · `self.handlers.specialize`); codegen (a route: the row's handler fn) (`crates/hale-codegen/src/channels/mod.rs` · `failure_handler_for`); codegen (__parent_on_failure) (`crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route`); codegen (the params-settle bracket: whether the locus has a handler) (`crates/hale-codegen/src/locus/instantiation.rs` · `settles_failures`); codegen (restart in place) (`crates/hale-codegen/src/locus/restart.rs` · `restarts_in_place`); model (supervises, over the snapshot's rows: `demand_handlers`) (`crates/hale-types/src/model_builder.rs` · `Supervises`); check (duplicate handlers, over the snapshot's rows handed in: `CheckInputs`) (`crates/hale-types/src/check.rs` · `check_duplicate_failure_handlers`); check (@supervised, over the same rows) (`crates/hale-types/src/frontier.rs` · `supervised_diags`); check (a recovery event no handler applies: each row's child and the events its ops apply, and the recovery statements outside handlers, over the rows handed in) (`crates/hale-types/src/closure_events.rs` · `unreached_events`); ownership births (resolved child, declaring template and identity) (`crates/hale-types/src/ownership_graph.rs` · `identify_child`)
 
 **Invariants.**
 
@@ -657,6 +657,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - a generic supervisor's child types are substituted at synthesis by the handler producer (`specialize`) using the same substitution as the locus; each concrete row preserves its template handler's site and recovery ops, resolves the concrete child's declaration in the original bundle, and is indexed by template identity and specialization name. Dispatch, handler body layouts and restart-in-place attribution read those concrete rows; the declaration-level snapshot rows are unchanged
 - the checker builds no rows: the snapshot demands them before the check (`CheckInputs`), and the checker's duplicate-handler rule, the `@supervised` law and the model read that one build; a bundle no snapshot holds (the test entries) builds them once, in `bundle_handler_rows`
 - a build path derives the rows once (F.40 phase 4, Q1): the snapshot's (`demand_handlers`, over the checked programs, the `handler_routing` count), which the check, the model and the lowering view read. The view reads them as C5 folded the ownership and bus graphs (`lowering_handler_routing`): every user row carried across, its handler and parent sites each the merged site's `Image::Checked` (a row that is not is refused, by name); the stdlib's rows derived over the merged program's tail only (`stdlib_handler_rows`, its child types resolved against the whole merged program); and the indexes, the failure column and the span-keyed bounds rebuilt over the union, the stdlib's entered after the user's, as the walk over the merged program entered them (the stdlib writes no recovery bound, so none of its spans, which overlap the first file's, answers for a user statement). A carried row's `child_decl` is the snapshot's (a stdlib child `SiteRef::stdlib`); no lowering reader reads it, and lowering's joins (`is_row_of`, `handlers_of_decl`, `specialize`, `instance_key`) read site indexes the merged mint kept
+- the recovery statements written outside every `on_failure` body are a column of the rows (`HandlerRouting::recoveries`, F.40 phase 4, W3), from the same walk as their bounds: each with its operation, whether it states a `for` bound, its parent locus, and the child type its receiver is declared with (a param of the body it is in, or `self.<param>` of its locus), resolved by `child_locus` as a handler's child is; any other receiver (a local, an element, a call's result) has no child, and a reader that needs one says so. A handler's own statements stay its row's `ops` on its row's child. The column is an addition: no other answer of the rows reads it, and the lowering view carries the snapshot's
 - a route's parent instance is the lowering frame's (`resolve_failure_route`): a runtime pointer (the supervising parent's, else `current_self`, else `params_init_self`), which no snapshot row holds; its handler is the row's, and the one join in it, the supervising parent a field literal records matched to the child, is by the child's identity as the rows key a concrete locus (`HandlerRouting::instance_key`: its declaration's site, a monomorph's with the specialization `specialize` registered), never by name; a declaration no mint numbered is keyed by its name (C3 rest)
 
 **Missing data.** required: a missing row is a `CodegenError`, pinned by `crates/hale-codegen/tests/missing_rows.rs` · `handler_routing_a_handler_without_its_row_is_refused`; total: no route means the parent declares no handler for the child, whose failure takes the unhandled route, and no handler row means the locus settles no failures
@@ -669,7 +670,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `handler_rows(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
 - `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×2, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
-- `child_locus(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×3
+- `child_locus(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×4
 - `resolve_locus_type(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×3, `crates/hale-types/src/ownership_graph.rs` ×2
 - `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
 - `stdlib_handler_rows(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
@@ -733,29 +734,35 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `can_fail(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-codegen/src/locus/restart.rs` ×1
 - `retry_bound_at(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
 
-### `closures` — Migrating · law
+### `closures` — Canonical · law
 
-**Answers.** Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names.
+**Answers.** Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep.
 
-**Inputs.** closure declarations; lifecycle_order (the event alphabet)
+**Inputs.** closure declarations (each clause's names as the parser typed them: `RecoveryEvents`); handler_routing (each handler's child and the events its ops apply, and the recovery statements outside handlers with their receivers' child types); entrypoint (whether the world is closed, as rule 9 asks)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_locus_member`
+**Producer.** `crates/hale-types/src/closure_events.rs` · `closure_event_rows`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/closure_events.rs` · `closure_event_laws`; `crates/hale-types/src/closure_events.rs` · `outside_the_alphabet`; `crates/hale-types/src/closure_events.rs` · `persists_through_dissolve`; `crates/hale-types/src/closure_events.rs` · `in_both_clauses`; `crates/hale-types/src/closure_events.rs` · `unreached_events`; `crates/hale-types/src/closure_events.rs` · `nothing_to_keep`
 
-- `crates/hale-codegen/src/codegen.rs` · `emit_accumulator_reset_for_event` — the recovery events a closure names are matched ad hoc: `persists_through(...)` takes any identifier (`parse_recovery_event_name`), `locus/decl.rs` copies the names as strings, and this function compares them with the event being lowered, which is only ever `restart`, `restart_in_place` or `quarantine`, so a clause naming an event the locus never reaches is a silent no-op; `resets_on(...)` is read by nothing. The epoch is not ad hoc: its names are a closed enum (`EpochSpec`) the parser enforces. *Removed when:* the clause joins the lifecycle table and an unreachable event is a law violation with a witness.
-
-**Consumers.** check; codegen
+**Consumers.** check (the five laws, through one entry, over the handler rows and the entry row handed in: `CheckInputs`) (`crates/hale-types/src/check.rs` · `closure_event_laws`); codegen (the accumulator reset: each closure's typed `persists_through` events, compared as `RecoveryEvent`s with the event a recovery statement lowers) (`crates/hale-codegen/src/locus/decl.rs` · `persists_through`)
 
 **Invariants.**
 
-- closures are a consumer of the layer-6 alphabet (RFC §2)
+- a recovery event is typed once, by the parser (`parse_recovery_event_name`): a `RecoveryEventName` keeps the name as written, with its span, and the `RecoveryEvent` it is when it is in the closed alphabet (`restart`, `restart_in_place`, `quarantine`); a name outside the alphabet is kept for the check to refuse, never a parse error; the clause carries its own span
+- lowering compares no string: the per-closure persistence map holds `RecoveryEvent`s (`ClosureDecl::persists_through`), and each recovery statement zeroes the accumulators of every closure that does not persist through its event (a spent `restart(c) for N` bound is `quarantine`). Nothing reads `resets_on` at run time: it states that default, and the laws hold it
+- the laws are registered rules of `spec/verification.md`'s structural table, each a function over the clause rows producing `law::Violation`s, run by the check through `closure_event_laws`: the errors (a name outside the alphabet, `dissolve` persisted through, an event in both clauses) for every locus the bundle declares; the warnings (an unreached event, a persistence with nothing to keep) for the loci of the program's own seed only
+- whether a recovery reaches a locus is read from the handler rows (a handler's ops on its child, by the declaration the child resolves to; a recovery statement outside handlers on the child its receiver is declared with), never from the lifecycle plan, where one flag covers both restarts, quarantine has no obligation, and no check may build the plan. The world is closed as rule 9 asks (the entry row has an entry); an event some recovery applies to a child the rows cannot name (a generic supervisor's type parameter, a receiver that is not a declared param) is not judged
 
-**Missing data.** a missing required row is a compiler error
+**Missing data.** total: no persisted event means the closure persists through none: its accumulators are zeroed at every recovery event, the default `resets_on` states (`emit_accumulator_reset_for_event`)
 
-**Focused tests.** crates/hale-codegen/tests/closure_resets_per_epoch.rs; crates/hale-types/tests/violate.rs
+**Focused tests.** crates/hale-types/tests/closure_events.rs; crates/hale-syntax/tests/closure_recovery_events.rs; crates/hale-codegen/tests/closure_recovery_events.rs (the reset at run time: default, `resets_on`, `persists_through`); crates/hale-types/tests/handler_routing_probes.rs (the recovery statements' column); crates/hale-codegen/tests/closure_resets_per_epoch.rs; crates/hale-types/tests/violate.rs
 
-**Spec.** spec/semantics.md § closures
+**Spec.** spec/semantics.md § Recovery events; spec/verification.md § Structural & design rules; spec/runtime.md § Closure-test infrastructure (recovery-event interaction)
+
+**Guarded seams.**
+
+- `closure_event_rows(` may be referenced from: `crates/hale-types/src/closure_events.rs` ×1
+- `closure_event_laws(` may be referenced from: `crates/hale-types/src/closure_events.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `api_surface` — Canonical · derivation
 
@@ -1519,7 +1526,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 7 |
+| `spec/verification.md` § Structural & design rules | 12 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1553,6 +1560,11 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/ring-layout-geometry | `spec/verification.md` § Structural & design rules | `ring_layout` geometry | a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings` | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | the declaration | Canonical |
 | verification/structural/foreign-ring-payload-shape | `spec/verification.md` § Structural & design rules | Foreign-ring payload shape | a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error) | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | `top_scope` | Canonical |
 | verification/structural/cell-slot-of-origin | `spec/verification.md` § Structural & design rules | Cell slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | the declaration | Canonical |
+| verification/structural/recovery-event-alphabet | `spec/verification.md` § Structural & design rules | Recovery event alphabet | a name in `persists_through(...)` or `resets_on(...)` outside `restart`, `restart_in_place`, `quarantine` (error, at the name, a misspelling one edit away suggesting the event) | `closures` | `crates/hale-types/src/closure_events.rs` · `outside_the_alphabet` | the declaration | Canonical |
+| verification/structural/persist-through-dissolve | `spec/verification.md` § Structural & design rules | Persisting through dissolve | `dissolve` in `persists_through(...)`, which can mean nothing: an accumulator does not outlive its locus's dissolve (error, at the name) | `closures` | `crates/hale-types/src/closure_events.rs` · `persists_through_dissolve` | the declaration | Canonical |
+| verification/structural/contradicting-recovery-clauses | `spec/verification.md` § Structural & design rules | Contradicting recovery clauses | an event one closure names in both `persists_through(...)` and `resets_on(...)` (error, at the `resets_on` name, the witness the `persists_through` name); `resets_on` otherwise states the default and changes nothing at run time | `closures` | `crates/hale-types/src/closure_events.rs` · `in_both_clauses` | the declaration | Canonical |
+| verification/structural/unreached-recovery-event | `spec/verification.md` § Structural & design rules | Unreached recovery event | an event a closure of the program's own seed names that no handler or recovery statement of the closed world applies to its locus (warning, at the name, the witness each handler and statement that names the locus and the events it applies); a spent `restart(c) for N` is `quarantine`; not judged in an open world, for an imported locus, or for an event a recovery applies to a child the rows cannot name | `closures` | `crates/hale-types/src/closure_events.rs` · `unreached_events` | `handler_routing`, `entrypoint` | Canonical |
+| verification/structural/persistence-without-accumulator | `spec/verification.md` § Structural & design rules | Persistence with no accumulator | `persists_through(...)` on a closure whose assertion accumulates nothing, so the clause keeps nothing (warning, at the clause, the witness the assertion) | `closures` | `crates/hale-types/src/closure_events.rs` · `nothing_to_keep` | the declaration | Canonical |
 
 ## The shadow facility's allowance
 

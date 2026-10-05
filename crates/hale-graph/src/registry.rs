@@ -259,6 +259,7 @@ const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
 const QUALIFIED_SUBJECTS: &str = "crates/hale-types/src/qualified_subjects.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
+const CLOSURE_EVENTS: &str = "crates/hale-types/src/closure_events.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
@@ -975,11 +976,11 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Locus,
         state: State::Canonical,
         kind: Kind::Derivation,
-        answers: "Which `on_failure` handler a failing child's locus type reaches, and from which parent.",
+        answers: "Which `on_failure` handler a failing child's locus type reaches, and from which parent; and which recovery statements written outside a handler apply which operation to a child of which type.",
         inputs: &["failure declarations", "declared loci and type aliases (the bundled stdlib's loci included)", "import renames", "ownership (the supervising parent instance, in lowering)"],
         producer: Some(site(HANDLER_ROUTING, "handler_rows")),
         legacy: &[],
-        consumers: &[consumer_at("lowering view (its rows: the snapshot's through the correspondence, then the stdlib's, the indexes rebuilt over the union)", TY_RESOLVED, "lowering_handler_routing"), consumer_at("codegen (the handler table, one fn per row keyed by the row's site)", CG_DECL, "handlers_of_instance"), consumer_at("codegen (handler bodies, by the row's site)", CG_METHOD, "handlers_of_instance"), consumer_at("codegen (concrete handler rows at locus synthesis)", CG, "self.handlers.specialize"), consumer_at("codegen (a route: the row's handler fn)", CG_CHANNELS, "failure_handler_for"), consumer_at("codegen (__parent_on_failure)", CG_CHANNELS, "resolve_failure_route"), consumer_at("codegen (the params-settle bracket: whether the locus has a handler)", CG_INST, "settles_failures"), consumer_at("codegen (restart in place)", CG_RESTART, "restarts_in_place"), consumer_at("model (supervises, over the snapshot's rows: `demand_handlers`)", MODEL_BUILDER, "Supervises"), consumer_at("check (duplicate handlers, over the snapshot's rows handed in: `CheckInputs`)", CHECK, "check_duplicate_failure_handlers"), consumer_at("check (@supervised, over the same rows)", FRONTIER, "supervised_diags"), consumer_at("ownership births (resolved child, declaring template and identity)", OWNERSHIP_GRAPH, "identify_child")],
+        consumers: &[consumer_at("lowering view (its rows: the snapshot's through the correspondence, then the stdlib's, the indexes rebuilt over the union)", TY_RESOLVED, "lowering_handler_routing"), consumer_at("codegen (the handler table, one fn per row keyed by the row's site)", CG_DECL, "handlers_of_instance"), consumer_at("codegen (handler bodies, by the row's site)", CG_METHOD, "handlers_of_instance"), consumer_at("codegen (concrete handler rows at locus synthesis)", CG, "self.handlers.specialize"), consumer_at("codegen (a route: the row's handler fn)", CG_CHANNELS, "failure_handler_for"), consumer_at("codegen (__parent_on_failure)", CG_CHANNELS, "resolve_failure_route"), consumer_at("codegen (the params-settle bracket: whether the locus has a handler)", CG_INST, "settles_failures"), consumer_at("codegen (restart in place)", CG_RESTART, "restarts_in_place"), consumer_at("model (supervises, over the snapshot's rows: `demand_handlers`)", MODEL_BUILDER, "Supervises"), consumer_at("check (duplicate handlers, over the snapshot's rows handed in: `CheckInputs`)", CHECK, "check_duplicate_failure_handlers"), consumer_at("check (@supervised, over the same rows)", FRONTIER, "supervised_diags"), consumer_at("check (a recovery event no handler applies: each row's child and the events its ops apply, and the recovery statements outside handlers, over the rows handed in)", CLOSURE_EVENTS, "unreached_events"), consumer_at("ownership births (resolved child, declaring template and identity)", OWNERSHIP_GRAPH, "identify_child")],
         invariants: &[
             "the child type is resolved once, by `child_locus_name`; lowering, the checker and the model read the same row",
             "a row carries its parent declaration's site (`parent_id`) and a reader holding a locus declaration asks for its rows by that identity (`handlers_of_decl`, `route_decl`): a monomorph keeps its template's id and selects concrete rows by that identity and its specialization name (`handlers_of_instance`, `route_instance`); lowering's handler fn is a column of the row, held per locus keyed by the row's site (`LocusInfo::failure_handlers`), and the handler table, the body pass and a route each join by that site, never by the row's ordinal",
@@ -988,6 +989,7 @@ pub const FAMILIES: &[Family] = &[
             "a generic supervisor's child types are substituted at synthesis by the handler producer (`specialize`) using the same substitution as the locus; each concrete row preserves its template handler's site and recovery ops, resolves the concrete child's declaration in the original bundle, and is indexed by template identity and specialization name. Dispatch, handler body layouts and restart-in-place attribution read those concrete rows; the declaration-level snapshot rows are unchanged",
             "the checker builds no rows: the snapshot demands them before the check (`CheckInputs`), and the checker's duplicate-handler rule, the `@supervised` law and the model read that one build; a bundle no snapshot holds (the test entries) builds them once, in `bundle_handler_rows`",
             "a build path derives the rows once (F.40 phase 4, Q1): the snapshot's (`demand_handlers`, over the checked programs, the `handler_routing` count), which the check, the model and the lowering view read. The view reads them as C5 folded the ownership and bus graphs (`lowering_handler_routing`): every user row carried across, its handler and parent sites each the merged site's `Image::Checked` (a row that is not is refused, by name); the stdlib's rows derived over the merged program's tail only (`stdlib_handler_rows`, its child types resolved against the whole merged program); and the indexes, the failure column and the span-keyed bounds rebuilt over the union, the stdlib's entered after the user's, as the walk over the merged program entered them (the stdlib writes no recovery bound, so none of its spans, which overlap the first file's, answers for a user statement). A carried row's `child_decl` is the snapshot's (a stdlib child `SiteRef::stdlib`); no lowering reader reads it, and lowering's joins (`is_row_of`, `handlers_of_decl`, `specialize`, `instance_key`) read site indexes the merged mint kept",
+            "the recovery statements written outside every `on_failure` body are a column of the rows (`HandlerRouting::recoveries`, F.40 phase 4, W3), from the same walk as their bounds: each with its operation, whether it states a `for` bound, its parent locus, and the child type its receiver is declared with (a param of the body it is in, or `self.<param>` of its locus), resolved by `child_locus` as a handler's child is; any other receiver (a local, an element, a call's result) has no child, and a reader that needs one says so. A handler's own statements stay its row's `ops` on its row's child. The column is an addition: no other answer of the rows reads it, and the lowering view carries the snapshot's",
             "a route's parent instance is the lowering frame's (`resolve_failure_route`): a runtime pointer (the supervising parent's, else `current_self`, else `params_init_self`), which no snapshot row holds; its handler is the row's, and the one join in it, the supervising parent a field literal records matched to the child, is by the child's identity as the rows key a concrete locus (`HandlerRouting::instance_key`: its declaration's site, a monomorph's with the specialization `specialize` registered), never by name; a declaration no mint numbered is keyed by its name (C3 rest)",
         ],
         missing: required(
@@ -1000,7 +1002,7 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "handler_rows(", allowed: &[(HANDLER_ROUTING, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1)] },
             Seam { symbol: "child_locus_name(", allowed: &[(HANDLER_ROUTING, 1), (OWNERSHIP_GRAPH, 2), (TY_OWN, 1), ("crates/hale-types/src/flows.rs", 1)] },
-            Seam { symbol: "child_locus(", allowed: &[(HANDLER_ROUTING, 3)] },
+            Seam { symbol: "child_locus(", allowed: &[(HANDLER_ROUTING, 4)] },
             Seam { symbol: "resolve_locus_type(", allowed: &[(HANDLER_ROUTING, 3), (OWNERSHIP_GRAPH, 2)] },
             Seam { symbol: "DeclaredNames::of(", allowed: &[(HANDLER_ROUTING, 2), (OWNERSHIP_GRAPH, 1), (TY_OWN, 1), ("crates/hale-types/src/flows.rs", 1)] },
             Seam { symbol: "stdlib_handler_rows(", allowed: &[(HANDLER_ROUTING, 1), (TY_RESOLVED, 1)] },
@@ -1070,21 +1072,37 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "closures",
         layer: Layer::Locus,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Law,
-        answers: "Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names.",
-        inputs: &["closure declarations", "lifecycle_order (the event alphabet)"],
-        producer: Some(site(CHECK, "check_locus_member")),
-        legacy: &[
-            legacy(CG, "emit_accumulator_reset_for_event", "the recovery events a closure names are matched ad hoc: `persists_through(...)` takes any identifier (`parse_recovery_event_name`), `locus/decl.rs` copies the names as strings, and this function compares them with the event being lowered, which is only ever `restart`, `restart_in_place` or `quarantine`, so a clause naming an event the locus never reaches is a silent no-op; `resets_on(...)` is read by nothing. The epoch is not ad hoc: its names are a closed enum (`EpochSpec`) the parser enforces", "the clause joins the lifecycle table and an unreachable event is a law violation with a witness"),
+        answers: "Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep.",
+        inputs: &["closure declarations (each clause's names as the parser typed them: `RecoveryEvents`)", "handler_routing (each handler's child and the events its ops apply, and the recovery statements outside handlers with their receivers' child types)", "entrypoint (whether the world is closed, as rule 9 asks)"],
+        producer: Some(site(CLOSURE_EVENTS, "closure_event_rows")),
+        legacy: &[],
+        consumers: &[
+            consumer_at("check (the five laws, through one entry, over the handler rows and the entry row handed in: `CheckInputs`)", CHECK, "closure_event_laws"),
+            consumer_at("codegen (the accumulator reset: each closure's typed `persists_through` events, compared as `RecoveryEvent`s with the event a recovery statement lowers)", CG_DECL, "persists_through"),
         ],
-        consumers: &[consumer("check"), consumer("codegen")],
-        invariants: &["closures are a consumer of the layer-6 alphabet (RFC §2)"],
-        missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/closure_resets_per_epoch.rs", "crates/hale-types/tests/violate.rs"],
-        spec: &["spec/semantics.md § closures"],
-        owned: &[],
-        seams: &[],
+        invariants: &[
+            "a recovery event is typed once, by the parser (`parse_recovery_event_name`): a `RecoveryEventName` keeps the name as written, with its span, and the `RecoveryEvent` it is when it is in the closed alphabet (`restart`, `restart_in_place`, `quarantine`); a name outside the alphabet is kept for the check to refuse, never a parse error; the clause carries its own span",
+            "lowering compares no string: the per-closure persistence map holds `RecoveryEvent`s (`ClosureDecl::persists_through`), and each recovery statement zeroes the accumulators of every closure that does not persist through its event (a spent `restart(c) for N` bound is `quarantine`). Nothing reads `resets_on` at run time: it states that default, and the laws hold it",
+            "the laws are registered rules of `spec/verification.md`'s structural table, each a function over the clause rows producing `law::Violation`s, run by the check through `closure_event_laws`: the errors (a name outside the alphabet, `dissolve` persisted through, an event in both clauses) for every locus the bundle declares; the warnings (an unreached event, a persistence with nothing to keep) for the loci of the program's own seed only",
+            "whether a recovery reaches a locus is read from the handler rows (a handler's ops on its child, by the declaration the child resolves to; a recovery statement outside handlers on the child its receiver is declared with), never from the lifecycle plan, where one flag covers both restarts, quarantine has no obligation, and no check may build the plan. The world is closed as rule 9 asks (the entry row has an entry); an event some recovery applies to a child the rows cannot name (a generic supervisor's type parameter, a receiver that is not a declared param) is not judged",
+        ],
+        missing: Missing::Total("no persisted event means the closure persists through none: its accumulators are zeroed at every recovery event, the default `resets_on` states (`emit_accumulator_reset_for_event`)"),
+        tests: &["crates/hale-types/tests/closure_events.rs", "crates/hale-syntax/tests/closure_recovery_events.rs", "crates/hale-codegen/tests/closure_recovery_events.rs (the reset at run time: default, `resets_on`, `persists_through`)", "crates/hale-types/tests/handler_routing_probes.rs (the recovery statements' column)", "crates/hale-codegen/tests/closure_resets_per_epoch.rs", "crates/hale-types/tests/violate.rs"],
+        spec: &["spec/semantics.md § Recovery events", "spec/verification.md § Structural & design rules", "spec/runtime.md § Closure-test infrastructure (recovery-event interaction)"],
+        owned: &[
+            site(CLOSURE_EVENTS, "closure_event_laws"),
+            site(CLOSURE_EVENTS, "outside_the_alphabet"),
+            site(CLOSURE_EVENTS, "persists_through_dissolve"),
+            site(CLOSURE_EVENTS, "in_both_clauses"),
+            site(CLOSURE_EVENTS, "unreached_events"),
+            site(CLOSURE_EVENTS, "nothing_to_keep"),
+        ],
+        seams: &[
+            Seam { symbol: "closure_event_rows(", allowed: &[(CLOSURE_EVENTS, 1)] },
+            Seam { symbol: "closure_event_laws(", allowed: &[(CLOSURE_EVENTS, 1), (CHECK, 1)] },
+        ],
     },
     Family {
         name: "api_surface",
@@ -2215,6 +2233,56 @@ pub const RULES: &[Rule] = &[
         gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen)",
         family: "forms",
         evaluator: Some(site(CG, "try_lower_capacity_slot_method_call")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/recovery-event-alphabet",
+        title: "Recovery event alphabet",
+        // The closure's clause, as the parser typed it: each name, and the event it is when it is in the alphabet.
+        reads: Reads::Declaration,
+        gist: "a name in `persists_through(...)` or `resets_on(...)` outside `restart`, `restart_in_place`, `quarantine` (error, at the name, a misspelling one edit away suggesting the event)",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "outside_the_alphabet")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/persist-through-dissolve",
+        title: "Persisting through dissolve",
+        // The closure's `persists_through(...)` clause, as written.
+        reads: Reads::Declaration,
+        gist: "`dissolve` in `persists_through(...)`, which can mean nothing: an accumulator does not outlive its locus's dissolve (error, at the name)",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "persists_through_dissolve")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/contradicting-recovery-clauses",
+        title: "Contradicting recovery clauses",
+        // The closure's two clauses, as the parser typed them.
+        reads: Reads::Declaration,
+        gist: "an event one closure names in both `persists_through(...)` and `resets_on(...)` (error, at the `resets_on` name, the witness the `persists_through` name); `resets_on` otherwise states the default and changes nothing at run time",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "in_both_clauses")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/unreached-recovery-event",
+        title: "Unreached recovery event",
+        // The handler rows: each handler's child and the events its ops apply, and the recovery statements outside handlers with their receivers' child types; the entry row for whether the world is closed (rule 9's question); the clause and its locus's declaration (own seed or imported, its generic params) as written.
+        reads: Reads::Rows(&["handler_routing", "entrypoint"]),
+        gist: "an event a closure of the program's own seed names that no handler or recovery statement of the closed world applies to its locus (warning, at the name, the witness each handler and statement that names the locus and the events it applies); a spent `restart(c) for N` is `quarantine`; not judged in an open world, for an imported locus, or for an event a recovery applies to a child the rows cannot name",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "unreached_events")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/persistence-without-accumulator",
+        title: "Persistence with no accumulator",
+        // The closure's assertion (its `sum` / `count` / `mean` sites) and its `persists_through(...)` clause, as written.
+        reads: Reads::Declaration,
+        gist: "`persists_through(...)` on a closure whose assertion accumulates nothing, so the clause keeps nothing (warning, at the clause, the witness the assertion)",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "nothing_to_keep")),
         state: State::Canonical,
     },
 ];

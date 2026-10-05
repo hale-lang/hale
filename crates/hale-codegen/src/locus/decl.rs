@@ -8,7 +8,7 @@ use hale_syntax::ast::{
     BusMember, CapacitySlotKind, ClosureAssertion,
     ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind,
     LocusAnnotation, LocusDecl, LocusMember, ModeKind,
-    ParamInit, ProjectionClass, ScheduleClass,
+    ParamInit, ProjectionClass, RecoveryEvent, ScheduleClass,
     TypeExpr,
 };
 use hale_types::form_rows::Discipline;
@@ -682,7 +682,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             String,
             Vec<AccumulatorSlot>,
         > = BTreeMap::new();
-        let mut persists_through_per_closure: BTreeMap<String, Vec<String>> =
+        let mut persists_through_per_closure: BTreeMap<String, Vec<RecoveryEvent>> =
             BTreeMap::new();
         // v1.x-WINDOWED (F.34): per-closure list of field names to
         // zero at each `duration(N)` epoch fire. The runtime hook
@@ -787,14 +787,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 accumulators_per_closure
                     .insert(c.name.name.clone(), slots);
             }
-            let mut persists: Vec<String> = Vec::new();
-            for clause in &c.clauses {
-                if let ClosureClause::PersistsThrough(events) = clause {
-                    for ev in events {
-                        persists.push(ev.name.clone());
-                    }
-                }
-            }
+            let persists: Vec<RecoveryEvent> = c.persists_through().collect();
             if !persists.is_empty() {
                 persists_through_per_closure
                     .insert(c.name.name.clone(), persists);

@@ -1646,11 +1646,17 @@ zero_copy binding produces.
   miscompilation) — those terminate the process directly
   without the ClosureViolation routing path. See
   decisions §F.9.
-- **Recovery-event interaction.** `persists_through(...)` and
-  `resets_on(...)` clauses are honored at recovery time; the
-  accumulator is preserved or zeroed per declaration. The
-  exploded flag itself persists across `restart_in_place` and
-  `quarantine` (per default; future `clear_violation_on(...)`
+- **Recovery-event interaction.** At each recovery event a
+  parent applies to the locus (`restart`, `restart_in_place`,
+  `quarantine`; a spent `restart(c) for N` bound is
+  `quarantine`), the runtime zeroes the accumulators of every
+  closure whose `persists_through(...)` does not name that
+  event, and keeps those of the closures that do. Nothing reads
+  `resets_on(...)` at run time: it states the default, and the
+  check holds it to the alphabet and refuses an event a closure
+  names in both clauses (`spec/semantics.md` § Recovery events).
+  The exploded flag itself persists across `restart_in_place`
+  and `quarantine` (per default; future `clear_violation_on(...)`
   clause may override).
 
 ### Perspective infrastructure
