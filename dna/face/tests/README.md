@@ -38,8 +38,10 @@ intercepted 401/503 responses to exercise browser state transitions; real OIDC
 callbacks and authenticated reads remain covered by `dna/api/tests`. Delaying a
 real detail response tests that obsolete data cannot overwrite another workspace.
 
-Organization tests commit the native seed in `tests/organization` and a separate
-domain ownership map into their temporary Git Record. The API invokes the actual
+Organization tests commit the native seed in `tests/organization`, a root
+`hale.toml` (the project's manifest, which the compiler names source files
+relative to) and a separate domain ownership map into their temporary Git
+Record. The API invokes the actual
 compiler against that committed source; tests do not substitute a hand-authored
 topology artifact. Repeated nested instances, the explicit positions group,
 structure outside that group and an uninstantiated declaration remain distinct.

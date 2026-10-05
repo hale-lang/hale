@@ -24,8 +24,8 @@ pub enum Operands {
     /// `len`: a String or Bytes, a view of either, or a fixed-size
     /// array.
     Lengthed,
-    /// `to_string`: a printable value (the checker's printable set,
-    /// in lockstep with lowering's `value_to_string_supports`).
+    /// `to_string`: a printable value ([`crate::printable`]'s rule,
+    /// which lowering reads too).
     Printable,
     /// `Int(x)` / `Float(x)`: an Int or a Float.
     IntOrFloat,

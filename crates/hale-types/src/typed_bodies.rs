@@ -41,6 +41,12 @@
 //!    its receiver's type) and the first parameter it leaves. Lowering
 //!    expands those defaults at the call, in the caller's context; the
 //!    cross-pool value law reads where (C3 rest, the review of #1351).
+//! 7. `param_accesses`, per body: each read or write of a locus's
+//!    `params` field through a receiver the checker typed as that locus
+//!    (`self.k`, `self.child.k`, `x.k = v`), with the locus it is read
+//!    from inside and the receiver's declaration, recorded before any
+//!    rule judges it. The sealed rule and the `--sealable` survey read
+//!    it (F.40 phase 4, W4).
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -245,6 +251,68 @@ pub struct DefaultCalls {
     pub calls: BTreeMap<u32, Typed<GenericCall>>,
 }
 
+/// Whether an access reads a param or assigns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessKind {
+    /// A field read (`self.child.k`).
+    Read,
+    /// An assignment target's segment (`self.child.k = v`).
+    Write,
+}
+
+/// A locus declaration by its site: the store that minted it and its id
+/// there. A receiver may be a `std::` locus, whose declaration the
+/// bundled stdlib's own mint numbers, so the id alone names nothing.
+/// Equal by the id's value: `NodeId`'s own `PartialEq` ignores it.
+#[derive(Debug, Clone, Copy, Eq, PartialOrd, Ord, Hash)]
+pub struct LocusRef {
+    pub universe: crate::placement::SiteUniverse,
+    pub decl: NodeId,
+}
+
+impl PartialEq for LocusRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.universe == other.universe && self.decl.0 == other.decl.0
+    }
+}
+
+/// One access to a `params` field of a locus, through a receiver the
+/// checker typed as that locus: the `param_accesses` column.
+///
+/// Recorded wherever the checker types a field read or an assignment
+/// target's field segment whose receiver is a locus declaring that
+/// param, sealed or not, and whoever reads it: an access through `self`
+/// inside the locus's own members is a row whose reader is the
+/// receiver. Only `params` are rows: a capacity slot or a method named
+/// on a locus is no state access. A receiver typed as a generic locus's
+/// monomorph (`Box_Int`) is no row: the scope declares no locus by that
+/// name, as the conformance column says of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamAccess {
+    /// The locus whose member the access is written in (its method, hook,
+    /// mode, closure or params default), by declaration; `None` outside
+    /// every locus (a free fn).
+    pub reader: Option<LocusRef>,
+    /// The locus the receiver is typed as, by declaration.
+    pub receiver: LocusRef,
+    /// The receiver locus's name in the scope (`TopScope::symbols`): the
+    /// declared name, mangled for a `std::` locus. Not the spelling a
+    /// diagnostic shows.
+    pub locus: String,
+    pub param: String,
+    pub kind: AccessKind,
+    /// The read's whole `receiver.param` expression; a write's param
+    /// segment.
+    pub span: Span,
+}
+
+impl ParamAccess {
+    /// Whether the access is written inside the receiver's own members.
+    pub fn from_inside(&self) -> bool {
+        self.reader == Some(self.receiver)
+    }
+}
+
 /// The rows of one body.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypedBody {
@@ -266,6 +334,10 @@ pub struct TypedBody {
     pub default_calls: Vec<DefaultCalls>,
     /// By call site.
     pub fallible_calls: BTreeMap<u32, FallibleCall>,
+    /// In walk order. A generic fn's or locus's body has the template
+    /// walk's rows only: the walk per monomorph reports nothing and
+    /// records none, as for `accumulators`.
+    pub param_accesses: Vec<ParamAccess>,
 }
 
 /// What a monomorph's template is.
@@ -601,6 +673,12 @@ impl TypedBodies {
     /// Every fallible call's row, body by body.
     pub fn fallible_calls(&self) -> impl Iterator<Item = &FallibleCall> {
         self.bodies.values().flat_map(|b| b.fallible_calls.values())
+    }
+
+    /// Every param access's row, body by body (by the body's
+    /// declaration), each body's in walk order.
+    pub fn param_accesses(&self) -> impl Iterator<Item = (NodeId, &ParamAccess)> {
+        self.bodies.iter().flat_map(|(id, b)| b.param_accesses.iter().map(move |a| (NodeId(*id), a)))
     }
 
     pub fn monomorphs(&self) -> &Monomorphs {

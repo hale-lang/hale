@@ -529,6 +529,9 @@ shift_unit_enum!(ModeKind { Bulk, Harmonic, Resolution });
 shift_struct!(FailureDecl { params, body, span, id });
 shift_struct!(ClosureDecl { name, assertion, clauses, span, id });
 shift_struct!(ClosureAssertion { left, right, tolerance, span });
+shift_struct!(RecoveryEvents { names, span });
+shift_struct!(RecoveryEventName { name, event });
+shift_unit_enum!(RecoveryEvent { Restart, RestartInPlace, Quarantine });
 
 impl Shift for ClosureClause {
     fn shift(&mut self, d: Move) {

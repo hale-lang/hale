@@ -16,9 +16,12 @@ use hale_types::judgment::{
     judge_bound, judge_endpoints, judge_forbid_reaches,
     judge_only_edges,
 };
-use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
+
+#[path = "support/entries.rs"]
+mod entries;
+use entries::derive_application_model;
 
 /// A single-program bundle WITH a populated source table, so model
 /// provenance is Source-backed and the engine reconstructs the
@@ -468,7 +471,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
-            dispatch_gates: Vec::new(),
+            dispatch_plan: Default::default(),
             stdlib_absorption: vec![StdlibAbsorption {
                 from: FunctionId(0),
                 site: 0,
@@ -2679,7 +2682,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
-            dispatch_gates: Vec::new(),
+            dispatch_plan: Default::default(),
             // The stdlib alternative of the SAME authored dispatch
             // (site 0), carrying a summary-global group id that
             // differs from the local ordinal.

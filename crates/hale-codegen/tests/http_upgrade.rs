@@ -13,8 +13,6 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -58,9 +56,8 @@ fn takeover_answers_101_and_keeps_the_connection_live() {
         }}
     "#
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_http_upgrade_{}", std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -153,9 +150,8 @@ fn takeover_raw_writes_nothing_and_defers_the_response() {
         }}
     "#
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_http_takeover_raw_{}", std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::piped())
         .spawn()

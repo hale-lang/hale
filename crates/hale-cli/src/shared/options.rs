@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::imports::{resolve_import, ImportTarget};
@@ -597,8 +596,49 @@ pub(crate) fn resolve_build_env(
 ) -> Result<Option<(crate::pkg::EnvSpec, Option<String>)>, String> {
     let Some(env) = options.env.clone() else { return Ok(None) };
     let (spec, base) = resolve_env_spec(target, &env)?;
-    options.api_roles = Some(crate::pkg::roles_table(&spec.roles));
+    options.api_roles = Some(env_roles(&spec));
     Ok(Some((spec, base)))
+}
+
+/// GH #1109: the role table an environment binds, the one line the api
+/// binding bakes in. `build --env`, `run --env`, `check --env` and the
+/// matrix's pair all take it from here, so the check judges the binding
+/// the build lowers (F.40 phase 4, A1).
+pub(crate) fn env_roles(spec: &crate::pkg::EnvSpec) -> String {
+    crate::pkg::roles_table(&spec.roles)
+}
+
+/// The options the execution identity is computed from (F.40 phase 4,
+/// I2): one function for `hale build`, `run` and `replay`, each passing
+/// the options its own flags parsed with its `--env` resolved onto them
+/// ([`resolve_build_env`], before the load). It appends what the flags
+/// do not say, the `[ffi]` link libraries and C sources each imported
+/// package's `hale.toml` declares ([`collect_ffi_from_imports`]), so a
+/// program importing such a package has one identity whichever verb
+/// computes it. `build` builds with what this returns; `run` and
+/// `replay` fingerprint it and build with their flags alone, as they
+/// always have.
+pub(crate) fn identity_options(
+    options: &hale_codegen::BuildOptions,
+    snap: &hale_frontend::snapshot::Snapshot,
+    target: &Path,
+) -> hale_codegen::BuildOptions {
+    // The imports are the target's own, resolved against the directory
+    // they were written in.
+    let entry_dir = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+    let toml_opts = collect_ffi_from_imports(
+        snap.entry_imports(),
+        &entry_dir,
+        super::workspace::find_workspace_root(target).as_deref(),
+    );
+    let mut o = options.clone();
+    o.link_libs.extend(toml_opts.link_libs);
+    o.csrc_files.extend(toml_opts.csrc_files);
+    o
 }
 
 /// GH #1109: the config a build's snapshot is loaded with, from its
@@ -644,15 +684,16 @@ pub(crate) fn note_unmapped_roles(
     }
 }
 
-/// Which constitution does environment `env` require? Walks up from
-/// the target for the nearest `hale.toml`, so `hale check apps/a
-/// --env prod` works from anywhere in the tree.
-pub(crate) fn resolve_env_constitution(
+/// Which constitutions does environment `env` require, and which role
+/// table does it bind? Walks up from the target for the nearest
+/// `hale.toml`, so `hale check apps/a --env prod` works from anywhere
+/// in the tree.
+pub(crate) fn resolve_env_check(
     target: &Path,
     env: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, String), String> {
     let (spec, base) = resolve_env_spec(target, env)?;
-    Ok(env_adopts(&spec, &base))
+    Ok((env_adopts(&spec, &base), env_roles(&spec)))
 }
 
 /// The constitutions an environment binds: the workspace base first,
@@ -672,8 +713,8 @@ pub(crate) fn env_adopts(spec: &crate::pkg::EnvSpec, base: &Option<String>) -> V
 
 /// GH #1109: the `[environments.<env>]` section the nearest
 /// `hale.toml` at or above `target` declares, with the workspace
-/// base. `check --env` reads its constitution; `build --env` and
-/// `run --env` read that and its `roles` table.
+/// base. `check --env`, `build --env` and `run --env` read its
+/// constitution and its `roles` table.
 pub(crate) fn resolve_env_spec(
     target: &Path,
     env: &str,
@@ -728,19 +769,15 @@ pub(crate) fn resolve_env_spec(
 ///     differ);
 ///   - the CLI crate version;
 ///   - the build options that alter emitted code;
-///   - every source file's FULL normalized path, byte length, and
-///     contents, each length-framed (no concatenation ambiguity).
+///   - every source file's source-map path and contents
+///     ([`source_frames`]), each length-framed (no concatenation
+///     ambiguity), in the source map's order.
 ///
 /// Structural `shape_hash` says "same model"; this says "same build
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
-pub(crate) fn exec_digest(
-    sources: &BTreeMap<PathBuf, String>,
-    entry: &Path,
-    options_fp: &str,
-    plan_digest: u64,
-) -> [u64; 4] {
+pub(crate) fn exec_digest(files: &[(&str, &str)], options_fp: &str, plan_digest: u64) -> [u64; 4] {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
         buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
@@ -763,21 +800,9 @@ pub(crate) fn exec_digest(
     // replay against a program whose bus behaves differently. The
     // plan's digest is framed here so the boundary is a refusal.
     frame(&plan_digest.to_le_bytes(), &mut buf);
-    buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
-    // Logical (entry-relative) source ids: identical trees checked
-    // out under different roots are the same build inputs.
-    let base = entry.parent().map(Path::to_path_buf);
-    for (path, src) in sources {
-        let logical = base
-            .as_deref()
-            .and_then(|b| path.strip_prefix(b).ok())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
-        frame(logical.as_bytes(), &mut buf);
+    buf.extend_from_slice(&(files.len() as u64).to_le_bytes());
+    for (path, src) in files {
+        frame(path.as_bytes(), &mut buf);
         frame(src.as_bytes(), &mut buf);
     }
     let d = openssl::sha::sha256(&buf);
@@ -789,6 +814,24 @@ pub(crate) fn exec_digest(
         out[0] = 1;
     }
     out
+}
+
+/// The sources [`exec_digest`] frames: each file of the snapshot's
+/// source map, by its source-map path, with its text, in the map's order
+/// (F.40 phase 4, I3). The source map is the program's one naming of its
+/// files — relative to one root, the same whichever target loaded them
+/// and wherever the tree is checked out — so the identity has no path
+/// logic of its own: a directory build and the replay of its entry file
+/// frame one program alike, and two imports with one file name are two
+/// paths.
+pub(crate) fn source_frames(snap: &hale_frontend::snapshot::Snapshot) -> Vec<(&str, &str)> {
+    snap.source_map()
+        .iter()
+        .zip(snap.file_bases())
+        .map(|(file, (_, path, _))| {
+            (file.path.as_str(), snap.sources().get(path).map_or("", String::as_str))
+        })
+        .collect()
 }
 
 /// What a build stamps as its identity beside the sources, all of it

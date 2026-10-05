@@ -15,17 +15,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_compress_{}_{}", name, std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -54,14 +51,14 @@ fn gzip_zstd_roundtrip_and_corrupt_input() {
         fn main() {
             let original = std::bytes::from_string("the quick brown fox jumps over the lazy dog, twice: the quick brown fox jumps over the lazy dog");
             let gz = std::compress::gzip(original) or on_err(err);
-            if std::bytes::at(gz, 0) != 31 { std::process::exit(1); }
-            if std::bytes::at(gz, 1) != 139 { std::process::exit(1); }
+            if (std::bytes::at(gz, 0) or -1) != 31 { std::process::exit(1); }
+            if (std::bytes::at(gz, 1) or -1) != 139 { std::process::exit(1); }
             let back = std::compress::gunzip(gz) or on_err(err);
             if len(back) != len(original) { std::process::exit(1); }
             let junk = std::bytes::from_string("definitely not a gzip stream");
             let bad = std::compress::gunzip(junk) or expect_invalid(err);
             let z = std::compress::zstd(original) or zstd_err(err);
-            if std::bytes::at(z, 0) != 40 { std::process::exit(1); }
+            if (std::bytes::at(z, 0) or -1) != 40 { std::process::exit(1); }
             let zback = std::compress::unzstd(z) or zstd_err(err);
             if len(zback) != len(original) { std::process::exit(1); }
             println("roundtrips-ok");

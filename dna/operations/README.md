@@ -86,9 +86,11 @@ Contract fields contain declaration types, method names, publish/subscribe
 topics and supervision policy. Capacity and retry descriptors are canonical
 decimal strings or null, preserving values beyond JavaScript's exact integer
 range. Parameter values are absent. Source files are
-compiler relative provenance. After verifying the artifact, the reader strips
-an absolute path only when it starts with the supplied `source_root` followed
-by `/`, producing a path within that source snapshot. Other absolute paths are
+compiler relative provenance: relative to the snapshot's root when its
+committed tree has a `hale.toml` there, and to the organization seed otherwise.
+An artifact from an older compiler may carry an absolute path; after verifying
+the artifact, the reader strips one only when it starts with the supplied
+`source_root` followed by `/`, producing a path within that source snapshot. Other absolute paths are
 withheld; neither arbitrary prefixes nor artifact bytes are rewritten.
 The basis includes source commit, dependency digest/source, artifact schema/digest,
 shape identity and coverage. `dependency_source` is `committed_source`,

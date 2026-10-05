@@ -17,8 +17,6 @@ use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -80,9 +78,8 @@ fn get(port: u16) -> usize {
 
 #[test]
 fn a_server_answering_large_bodies_keeps_its_memory_flat() {
-    let program = hale_syntax::parse_source(BIG_BODY_SERVER).expect("parse");
     let bin = harness::unique_bin("http_server_memory");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(BIG_BODY_SERVER, &bin, &build_opts::options()).expect("build");
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut child = Command::new(&bin)
         .arg(port.to_string())

@@ -27,7 +27,7 @@
 
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, CodegenError};
+use hale_codegen::CodegenError;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -35,9 +35,8 @@ mod harness;
 mod build_opts;
 
 fn build_err(name: &str, source: &str) -> CodegenError {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_selfcontain_{}", name));
-    let out = build_executable_with_options(&program, &bin, &[], &build_opts::options());
+    let out = build_opts::build_source(source, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     match out {
         Ok(_) => panic!("expected the self-containment law to refuse it"),
@@ -46,9 +45,8 @@ fn build_err(name: &str, source: &str) -> CodegenError {
 }
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_selfcontain_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

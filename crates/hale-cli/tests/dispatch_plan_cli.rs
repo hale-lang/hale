@@ -119,22 +119,32 @@ fn a_different_lowering_is_a_different_build_identity() {
 /// the ordinary build path set only the model hash, so the PR's
 /// central claim ("a different lowering is a different build") was
 /// false for exactly the binaries users ship.
+///
+/// F.40 phase 4, I2: this test claimed the refusal and could not see
+/// its cause. Its builds were directory builds, whose recordings no
+/// replay admitted at all (`build` fingerprinted `debug`, and a
+/// directory frames its paths unlike its entry file, I3's), so the
+/// refusal held whatever the plan was. The builds are single files now,
+/// two of one program differing only in the lowering, and each is
+/// admitted by the replay that lowers as it did and refused by the
+/// other. The lowering is selected by `LOTUS_NO_BUS_DEVIRT`, which is
+/// also a knob of the options fingerprint (GH #843), so end to end the
+/// plan cannot differ alone; that the plan's own frame moves the
+/// identity is `build_env`'s unit test.
 #[test]
 fn hale_build_artifacts_carry_the_plan_in_their_identity() {
     let dir = workdir("buildident");
-    let seed = dir.join("app");
-    std::fs::create_dir_all(&seed).unwrap();
-    std::fs::write(seed.join("main.hl"), BUS_PROG).unwrap();
 
-    // Build twice from ONE source tree: default lowering, then the
-    // all-dynamic control arm. Separate output dirs so the second
-    // build cannot be mistaken for the first.
-    let build = |tag: &str, devirt: bool| -> PathBuf {
+    // Build one program twice: default lowering, then the all-dynamic
+    // control arm. Separate dirs so the second build cannot be mistaken
+    // for the first.
+    let build = |tag: &str, devirt: bool| -> (PathBuf, PathBuf) {
         let out = dir.join(tag);
         std::fs::create_dir_all(&out).unwrap();
-        std::fs::copy(seed.join("main.hl"), out.join("main.hl")).unwrap();
+        let prog = out.join("app.hl");
+        std::fs::write(&prog, BUS_PROG).unwrap();
         let mut cmd = hale();
-        cmd.arg("build").arg(&out);
+        cmd.arg("build").arg(&prog);
         if !devirt {
             cmd.env("LOTUS_NO_BUS_DEVIRT", "1");
         }
@@ -144,10 +154,10 @@ fn hale_build_artifacts_carry_the_plan_in_their_identity() {
             "build failed: {}",
             String::from_utf8_lossy(&o.stderr)
         );
-        out.join(tag)
+        (prog, out.join("app"))
     };
-    let fast = build("fast", true);
-    let slow = build("slow", false);
+    let (fast_prog, fast) = build("fast", true);
+    let (slow_prog, slow) = build("slow", false);
 
     let record = |bin: &Path, tag: &str| -> PathBuf {
         let rec = dir.join(format!("{}.halerec", tag));
@@ -162,8 +172,10 @@ fn hale_build_artifacts_carry_the_plan_in_their_identity() {
         );
         rec
     };
-    let d_fast = recorded_exec_digest(&record(&fast, "fast"));
-    let d_slow = recorded_exec_digest(&record(&slow, "slow"));
+    let fast_rec = record(&fast, "fast");
+    let slow_rec = record(&slow, "slow");
+    let d_fast = recorded_exec_digest(&fast_rec);
+    let d_slow = recorded_exec_digest(&slow_rec);
     assert_ne!(
         d_fast, [0; 4],
         "a `hale build` artifact carries no execution identity at all"
@@ -175,20 +187,32 @@ fn hale_build_artifacts_carry_the_plan_in_their_identity() {
          share one execution identity"
     );
 
-    // Enforced, not merely visible.
-    let out = hale()
-        .arg("replay")
-        .arg(dir.join("slow.halerec"))
-        .arg(seed.join("main.hl"))
-        .arg("--allow-live-effects")
-        .output()
-        .expect("hale replay");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success()
-            && err.contains("recorded from different build inputs"),
-        "replay across the lowering boundary was admitted:\n{}",
-        err
-    );
+    // Enforced, not merely visible: each recording is admitted by the
+    // replay that lowers as its build did, and refused by the other.
+    // (The program prints, so replay's live-effect gate is accepted
+    // explicitly to reach the identity.)
+    let replay = |rec: &Path, prog: &Path, devirt: bool| -> (bool, String) {
+        let mut cmd = hale();
+        cmd.arg("replay").arg(rec).arg(prog).arg("--allow-live-effects");
+        if !devirt {
+            cmd.env("LOTUS_NO_BUS_DEVIRT", "1");
+        }
+        let out = cmd.output().expect("hale replay");
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    for (rec, prog, devirt, tag) in [(&fast_rec, &fast_prog, true, "fast"), (&slow_rec, &slow_prog, false, "slow")] {
+        let (ok, err) = replay(rec, prog, devirt);
+        assert!(
+            ok && !err.contains("different build inputs"),
+            "the {tag} build's own lowering admits its recording:\n{}",
+            err
+        );
+        let (ok, err) = replay(rec, prog, !devirt);
+        assert!(
+            !ok && err.contains("recorded from different build inputs"),
+            "replay of the {tag} build's recording across the lowering boundary was admitted:\n{}",
+            err
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

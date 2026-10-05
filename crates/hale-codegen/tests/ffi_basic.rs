@@ -15,7 +15,7 @@
 
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -27,7 +27,6 @@ fn build_with_csrc(
     hale_src: &str,
     csrc_body: &str,
 ) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(hale_src).expect("parse");
     let tmpdir = harness::unique_bin(&format!("hale_test_ffi_basic_{}", name));
     let _ = std::fs::create_dir_all(&tmpdir);
 
@@ -40,7 +39,7 @@ fn build_with_csrc(
         csrc_files: vec![csrc_path.clone()],
         ..build_opts::options()
     };
-    build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(hale_src, &bin, &options)
         .expect("build");
     let _ = std::fs::remove_file(&csrc_path);
     bin

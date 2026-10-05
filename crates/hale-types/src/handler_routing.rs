@@ -26,7 +26,7 @@
 //!
 //! The row carries the handler's snapshot identity (a `SiteId`, looked
 //! up in the snapshot the caller hands in) as a column, not as its key:
-//! every entry point and `resolve_program` mint it, but a test that
+//! every entry point and the lowering view mint it, but a test that
 //! builds a bundle without minting has none there. A reader holding a
 //! declaration joins it to its row by that identity
 //! ([`HandlerRow::is_row_of`]); the span is the fallback for the
@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusDecl, LocusMember, LValueSeg,
-    MatchArmBody, NodeId, OrDisposition, PerspectiveMember, Program, RecoveryModifier,
+    MatchArmBody, NodeId, OrDisposition, Param, PerspectiveMember, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
@@ -125,6 +125,32 @@ pub enum RetryBound {
     Expr(Span),
 }
 
+/// A recovery statement written outside every `on_failure` body (a
+/// method or a lifecycle body that restarts a child it holds): which
+/// operation, on which child type. A handler's statements are its row's
+/// `ops`, on its row's `child`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoveryRow {
+    /// The locus whose body writes the statement; `None` in a free fn or
+    /// a perspective's.
+    pub parent: Option<String>,
+    /// The parent declaration's snapshot identity (`None` when unminted,
+    /// or when there is no parent).
+    pub parent_id: Option<SiteId>,
+    /// The statement's span.
+    pub statement: Span,
+    pub op: RecoveryOp,
+    /// Whether it states a `for` bound: a spent one quarantines the child.
+    pub bounded: bool,
+    /// The child type the receiver is declared with, resolved as a
+    /// handler's child is ([`child_locus`]): a param of the body the
+    /// statement is in, or a param of its locus (`self.w`). `None` when
+    /// the receiver is anything else, whose child the rows cannot name.
+    pub child: Option<ChildRef>,
+    /// The declaration `child` resolves to, as [`HandlerRow::child_decl`].
+    pub child_decl: Option<SiteRef>,
+}
+
 /// One recovery statement's `for` bound.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StatedBound {
@@ -179,11 +205,22 @@ pub struct HandlerRouting {
     /// ([`HandlerRouting::retry_bound_at`]): the handlers' rows' and
     /// those written in any other body.
     bounds: BTreeMap<(u32, u32), StatedBound>,
+    /// The recovery statements outside every `on_failure` body, in walk
+    /// order (F.40 phase 4, W3).
+    recoveries: Vec<RecoveryRow>,
 }
 
 impl HandlerRouting {
     pub fn rows(&self) -> &[HandlerRow] {
         &self.rows
+    }
+
+    /// The recovery statements written outside every `on_failure` body,
+    /// each with its operation and the child type its receiver names
+    /// ([`RecoveryRow`]): with the rows' `ops`, every recovery a parent
+    /// applies to a child of a given type.
+    pub fn recoveries(&self) -> &[RecoveryRow] {
+        &self.recoveries
     }
 
     /// The handler a failing child of type `child` reaches in `parent`:
@@ -294,6 +331,12 @@ impl HandlerRouting {
     /// template's spans, so it reads its template's entries.
     pub fn retry_bound_at(&self, statement: Span) -> Option<RetryBound> {
         self.bounds.get(&(statement.start.0, statement.end.0)).map(|b| b.bound)
+    }
+
+    /// Every recovery statement's `for` bound [`HandlerRouting::retry_bound_at`]
+    /// answers, in the order of the statements' spans.
+    pub fn bounds(&self) -> impl Iterator<Item = &StatedBound> + '_ {
+        self.bounds.values()
     }
 
     /// The identity the rows key the concrete locus `name`, declared at
@@ -532,7 +575,103 @@ pub fn handler_rows(
     import_renames: &[(Vec<String>, String)],
     snapshot: &Snapshot,
 ) -> HandlerRouting {
-    let declared = DeclaredNames::of(programs);
+    rows_over(
+        || programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)),
+        DeclaredNames::of(programs),
+        import_renames,
+        snapshot,
+    )
+}
+
+/// The rows of the stdlib's loci in a merged program (the lowering
+/// view's): `stdlib` is the stdlib's items, the tail of `merged`, which
+/// `ids` minted. The snapshot's rows are derived over the checked
+/// programs, which hold no stdlib, so the stdlib's are the one part of
+/// lowering's routing the merged program answers itself
+/// ([`lowering_handler_routing`]); each child type resolves against the
+/// whole merged program, as it did when the rows were derived over it.
+pub fn stdlib_handler_rows(
+    merged: &Program,
+    stdlib: &[TopDecl],
+    import_renames: &[(Vec<String>, String)],
+    ids: &Snapshot,
+) -> HandlerRouting {
+    rows_over(|| hale_syntax::ast::flat_decls(stdlib), DeclaredNames::of(&[merged]), import_renames, ids)
+}
+
+/// Lowering's handler routing (F.40 phase 4, Q1): the snapshot's rows,
+/// read for the program lowering walks through the view's
+/// correspondence, followed by the stdlib's ([`stdlib_handler_rows`]),
+/// with the indexes rebuilt over the union.
+///
+/// Every user row's handler and parent keep their identities in the
+/// merged program ([`crate::correspondence::Image::Checked`]); a row
+/// whose site is not that is refused, by name. Lowering joins a
+/// declaration to its rows by the site's index (`is_row_of`,
+/// `handlers_of_decl`), which the merged mint kept, and reads the rest
+/// of a row as the checked declaration's own: neither rewrite touches a
+/// locus's `on_failure`, closure or `birth_check`, nor any recovery
+/// statement the merged program keeps.
+///
+/// The bounds are keyed by the statement's span alone, and the stdlib's
+/// spans overlap the first user file's: the stdlib's are entered after
+/// the user's, as the walk over the merged program entered them. The
+/// resolver and the declaration sites are the stdlib rows' own, the
+/// merged program's, which a specialization lowering asks for
+/// (`specialize`) resolves through, as before. A user row's
+/// `child_decl` is the snapshot's (a stdlib child named in the analysis
+/// copy, `SiteRef::stdlib`); no lowering reader reads it.
+pub fn lowering_handler_routing(
+    snapshot: &HandlerRouting,
+    stdlib: HandlerRouting,
+    correspondence: &crate::correspondence::Correspondence,
+) -> Result<HandlerRouting, String> {
+    use crate::correspondence::Image;
+    for row in &snapshot.rows {
+        for (what, site) in [("handler", row.id), ("parent", row.parent_id)] {
+            let image = site.and_then(|s| correspondence.image(NodeId(s.index)));
+            if !matches!(image, Some(Image::Checked(c)) if Some(c) == site) {
+                return Err(format!(
+                    "the handler row of `{}`'s on_failure({}) at {:?}: its {what} has no checked image in the \
+                     merged program",
+                    row.parent, row.written, row.span
+                ));
+            }
+        }
+    }
+    for row in &stdlib.rows {
+        if !matches!(row.id.and_then(|s| correspondence.image(NodeId(s.index))), Some(Image::Stdlib(_))) {
+            return Err(format!(
+                "the stdlib's handler row of `{}`'s on_failure({}) is no stdlib site of the merged program",
+                row.parent, row.written
+            ));
+        }
+    }
+    let HandlerRouting { rows, declared, renames, declaration_sites, failing, bounds, recoveries, .. } = stdlib;
+    let mut routing = HandlerRouting {
+        declared,
+        renames,
+        declaration_sites,
+        failing: snapshot.failing.iter().cloned().chain(failing).collect(),
+        bounds: snapshot.bounds.clone(),
+        recoveries: snapshot.recoveries.iter().cloned().chain(recoveries).collect(),
+        ..HandlerRouting::default()
+    };
+    routing.bounds.extend(bounds);
+    for row in snapshot.rows.iter().cloned().chain(rows) {
+        routing.push(row);
+    }
+    Ok(routing)
+}
+
+/// The rows of the declarations `items` yields (called twice: the rows,
+/// then the bounds' walk), each child type resolved against `declared`.
+fn rows_over<'a, I: Iterator<Item = &'a TopDecl>>(
+    items: impl Fn() -> I,
+    declared: DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+    snapshot: &Snapshot,
+) -> HandlerRouting {
     let declaration_sites = declared.decls.iter().filter_map(|(name, at)| {
         declaration_site(*at, snapshot).map(|site| (name.clone(), site))
     }).collect();
@@ -542,8 +681,7 @@ pub fn handler_rows(
         declaration_sites,
         ..HandlerRouting::default()
     };
-    let items = programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items));
-    for item in items {
+    for item in items() {
         let TopDecl::Locus(l) = item else { continue };
         let fails = l
             .members
@@ -583,11 +721,31 @@ pub fn handler_rows(
     // handlers' (the rows' own, by the same walk), and one written in
     // any other body (a method that restarts a child it holds).
     let mut w = OpWalk::default();
-    for item in programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)) {
+    for item in items() {
         w.top_decl(item);
     }
     for b in w.bounds {
         routing.bounds.insert((b.statement.start.0, b.statement.end.0), b);
+    }
+    // The recovery statements outside every handler, each child type
+    // resolved as a handler's is.
+    for o in w.outside {
+        let (child, at) = match o.receiver {
+            Some(te) => {
+                let (child, at) = child_locus(te, &declared, import_renames);
+                (Some(child), at)
+            }
+            None => (None, None),
+        };
+        routing.recoveries.push(RecoveryRow {
+            parent: o.locus.map(|l| l.name.name.clone()),
+            parent_id: o.locus.and_then(|l| snapshot.site_id(l.id)),
+            statement: o.statement,
+            op: o.op,
+            bounded: o.bounded,
+            child,
+            child_decl: at.and_then(|at| declaration_site(at, snapshot)),
+        });
     }
     routing
 }
@@ -633,20 +791,63 @@ pub fn op_name(op: RecoveryOp) -> &'static str {
 }
 
 #[derive(Default)]
-struct OpWalk {
+struct OpWalk<'a> {
     ops: Vec<RecoveryOp>,
     bounds: Vec<StatedBound>,
+    /// The recovery statements outside every `on_failure` body, with
+    /// the type their receiver is declared with: the declarations' walk
+    /// ([`rows_over`]) reads them; a handler body's ([`recovery_ops`])
+    /// does not.
+    outside: Vec<Outside<'a>>,
+    /// The locus whose member the walk is in.
+    locus: Option<&'a LocusDecl>,
+    /// The params of the body the walk is in.
+    params: &'a [Param],
+    /// Whether the walk is in an `on_failure` body.
+    in_handler: bool,
 }
 
-impl OpWalk {
+/// A recovery statement outside every `on_failure` body, as the walk
+/// found it.
+struct Outside<'a> {
+    statement: Span,
+    op: RecoveryOp,
+    bounded: bool,
+    locus: Option<&'a LocusDecl>,
+    /// The type the receiver is declared with, when the walk can read
+    /// it ([`declared_receiver`]).
+    receiver: Option<&'a TypeExpr>,
+}
+
+/// The type a recovery statement's receiver is declared with: a param
+/// of the body it is written in (`restart(c)`), or a param of the locus
+/// it is written in (`restart(self.w)`). `None` for any other receiver
+/// (a local, an element, a call's result): the rows cannot name its
+/// child.
+fn declared_receiver<'a>(arg: &Expr, locus: Option<&'a LocusDecl>, params: &'a [Param]) -> Option<&'a TypeExpr> {
+    match arg {
+        Expr::Ident(name) => params.iter().find(|p| p.name.name == name.name).map(|p| &p.ty),
+        Expr::Field { receiver, name, .. } if matches!(**receiver, Expr::KwSelf(_)) => {
+            locus?.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == name.name)?.ty.as_ref(),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+impl<'a> OpWalk<'a> {
     /// Every body and expression of a declaration a recovery statement
     /// can be lowered from.
-    fn top_decl(&mut self, d: &TopDecl) {
+    fn top_decl(&mut self, d: &'a TopDecl) {
         match d {
             TopDecl::Locus(l) => {
+                self.locus = Some(l);
                 for m in &l.members {
                     self.locus_member(m);
                 }
+                self.locus = None;
             }
             TopDecl::Perspective(p) => {
                 for m in &p.members {
@@ -664,20 +865,22 @@ impl OpWalk {
         }
     }
 
-    fn locus_member(&mut self, m: &LocusMember) {
+    fn locus_member(&mut self, m: &'a LocusMember) {
         match m {
             LocusMember::Params(pb) => self.params_block(pb),
             LocusMember::Lifecycle(ld) => {
                 self.params(&ld.params);
-                self.block(&ld.body);
+                self.body(&ld.params, &ld.body);
             }
             LocusMember::Mode(md) => {
                 self.params(&md.params);
-                self.block(&md.body);
+                self.body(&md.params, &md.body);
             }
             LocusMember::Failure(fd) => {
                 self.params(&fd.params);
-                self.block(&fd.body);
+                self.in_handler = true;
+                self.body(&fd.params, &fd.body);
+                self.in_handler = false;
             }
             LocusMember::Fn(f) => self.fn_decl(f),
             LocusMember::Const(c) => self.expr(&c.value),
@@ -698,18 +901,25 @@ impl OpWalk {
         }
     }
 
-    fn fn_decl(&mut self, f: &hale_syntax::ast::FnDecl) {
+    fn fn_decl(&mut self, f: &'a hale_syntax::ast::FnDecl) {
         self.params(&f.params);
-        self.block(&f.body);
+        self.body(&f.params, &f.body);
     }
 
-    fn params(&mut self, ps: &[hale_syntax::ast::Param]) {
+    /// A body, with the params its statements' receivers may name.
+    fn body(&mut self, params: &'a [Param], b: &'a Block) {
+        let outer = std::mem::replace(&mut self.params, params);
+        self.block(b);
+        self.params = outer;
+    }
+
+    fn params(&mut self, ps: &'a [Param]) {
         for p in ps.iter().filter_map(|p| p.default.as_ref()) {
             self.expr(p);
         }
     }
 
-    fn params_block(&mut self, pb: &hale_syntax::ast::ParamsBlock) {
+    fn params_block(&mut self, pb: &'a hale_syntax::ast::ParamsBlock) {
         for p in &pb.params {
             if let hale_syntax::ast::ParamInit::Value(e) = &p.init {
                 self.expr(e);
@@ -717,7 +927,7 @@ impl OpWalk {
         }
     }
 
-    fn block(&mut self, b: &Block) {
+    fn block(&mut self, b: &'a Block) {
         for s in &b.stmts {
             self.stmt(s);
         }
@@ -726,7 +936,7 @@ impl OpWalk {
         }
     }
 
-    fn if_stmt(&mut self, i: &IfStmt) {
+    fn if_stmt(&mut self, i: &'a IfStmt) {
         self.expr(&i.cond);
         self.block(&i.then_block);
         match i.else_block.as_deref() {
@@ -736,7 +946,7 @@ impl OpWalk {
         }
     }
 
-    fn match_stmt(&mut self, m: &hale_syntax::ast::MatchStmt) {
+    fn match_stmt(&mut self, m: &'a hale_syntax::ast::MatchStmt) {
         self.expr(&m.scrutinee);
         for arm in &m.arms {
             if let Some(g) = &arm.guard {
@@ -749,18 +959,27 @@ impl OpWalk {
         }
     }
 
-    fn or_disposition(&mut self, d: &OrDisposition) {
+    fn or_disposition(&mut self, d: &'a OrDisposition) {
         match d {
             OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
             OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
         }
     }
 
-    fn stmt(&mut self, s: &Stmt) {
+    fn stmt(&mut self, s: &'a Stmt) {
         match s {
             Stmt::Recovery { op, args, modifier, span } => {
                 if !self.ops.contains(op) {
                     self.ops.push(*op);
+                }
+                if !self.in_handler {
+                    self.outside.push(Outside {
+                        statement: *span,
+                        op: *op,
+                        bounded: matches!(modifier, Some(RecoveryModifier::For(_))),
+                        locus: self.locus,
+                        receiver: args.first().and_then(|a| declared_receiver(a, self.locus, self.params)),
+                    });
                 }
                 for a in args {
                     self.expr(a);
@@ -829,7 +1048,7 @@ impl OpWalk {
         }
     }
 
-    fn expr(&mut self, e: &Expr) {
+    fn expr(&mut self, e: &'a Expr) {
         match e {
             Expr::Block(b) => self.block(b),
             Expr::If(i) => self.if_stmt(i),

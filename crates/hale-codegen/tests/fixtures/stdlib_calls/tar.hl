@@ -1,0 +1,16 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::tar` under `or`, the
+// one position it is dispatched from. Never run; `stdlib_call_fixtures`
+// builds it to IR.
+
+fn main() {
+    let empty = std::bytes::from_string("");
+    let one = std::tar::pack(empty, "a.txt", std::bytes::from_string("x")) or empty;
+    let dir = std::tar::pack_dir(one, "d") or empty;
+    let archive = std::tar::finish(dir) or empty;
+    let n = std::tar::entries(archive) or 0;
+    let name = std::tar::entry_name(archive, 0) or "";
+    let size = std::tar::entry_size(archive, 0) or 0;
+    let kind = std::tar::entry_type(archive, 0) or "";
+    let data = std::tar::entry_data(archive, 0) or empty;
+    println(n + size, name, kind, len(data));
+}

@@ -1,0 +1,11 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::regex` at expression
+// position (`matches` included: the one other program of the line S
+// shadow set that calls it is a DNA example that does not build). Never
+// run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let at = std::regex::find("a+", "baaa");
+    let ok = std::regex::valid("a+");
+    let hit = std::regex::matches("a+", "baaa");
+    println(at, ok, hit);
+}

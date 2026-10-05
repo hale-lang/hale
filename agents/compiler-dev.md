@@ -11,7 +11,7 @@ for the language as users write it. **Hale** is the language;
 
 - Work in a git worktree, not the main checkout, with its own
   `CARGO_TARGET_DIR`. Build scripts bake absolute paths
-  (`HALE_CODEGEN_DIR` in `crates/hale-cli/build.rs`,
+  (`HALE_STALE_ROOT` in `crates/hale-cli/build.rs`,
   `CARGO_MANIFEST_DIR` in `hale-corpus` and the ts-shim locator), so
   a shared target dir makes one checkout's binary read another tree.
 - **LLVM 18 only**: `llvm-config-18` on PATH or
@@ -79,28 +79,35 @@ hale-ts-shim  staticlib; no dependents; linked by path
    `hale_types::desugar_sequence::desugar_before_check`: JSON parsers,
    the api surface, unit returns, construction aliases, qualified bus subjects, the omitted
    `run` (marked `LifecycleDecl::synthesized`), repr accessors.
-4. **Resolve + check**: `hale_types::check_bundle_opts_scoped`
-   (`hale-types/src/lib.rs`): `resolve::build_top_scope`, then
-   `check::check_bundle_scoped` (`check.rs`).
+4. **Resolve + check**: the snapshot's `demand_scope`
+   (`resolve::build_top_scope`), then `demand_check`:
+   `check::check_bundle_by_declaration` (`check.rs`) over the rows
+   the snapshot demands for it (`CheckInputs`), then the laws stage
+   (`Snapshot::demand_laws`).
 5. **Model**: `model_builder::derive_application_model_over`, on
    demand (`Snapshot::demand_model`), over the snapshot's scope, bus
    graph, ownership graph and handler rows.
-6. **Judgment**: `judgment::claim_law_diags`, from the check path
+6. **Judgment**: `judgment::claim_law_diags_over`, from the check path
    only when no non-`Claim` error exists and claims are present.
-7. **The resolved program**: `hale_types::resolved::resolve_program`
+7. **The resolved program**: `hale_types::resolved::rewrite_intra_locus`
+   then `resolve_rewritten`, the snapshot's `intra_locus` and
+   `lowering_view` families
    (the two lowering rewrites, kept as relations, the stdlib merge,
    the snapshot mint with the bundle's source map, the ownership,
    handler-routing and bus tables; the envelope keeps the renames and
    api it was resolved with, its top scope, and hands out its bundle
    view), then **codegen**: `hale_codegen::build_resolved`
    (`codegen.rs`), which refuses options whose api disagrees with the
-   envelope's. `build_executable_with_options` is the adapter the test
-   harness uses; it runs the desugar sequence, resolves and then
-   lowers.
+   envelope's. The test harness builds as the verbs do:
+   `crates/hale-codegen/tests/support/build.rs` loads a seed
+   (`build_source` from text, `build_seed_dir` from disk) with the
+   harness configuration, demands the lowering view from the snapshot
+   and hands it to `build_resolved`; a test whose subject is a
+   `Program` it made uses `build_program` (`Snapshot::from_program`).
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
    (source, flags) key into a cache, linked by clang.
 
-Inside `resolve_program` (hale-types), in order: the two lowering rewrites in
+Inside those two (hale-types), in order: the two lowering rewrites in
 `hale-syntax/src/desugar.rs`, `desugar_intra_locus_topics` and
 `desugar_topics`, **which run after check, so the checker sees topic
 references as written**: they are not desugars (each erases a
@@ -123,7 +130,8 @@ lowering still derives for itself is listed in `spec/registry.md`
 as legacy rows with their removal conditions.
 
 `hale build` derives the model to stamp its identity into the binary
-(`model_identity`, `topology::model_shape_hash`); `hale check` builds
+(`model_identity`, `topology_projection::project_shape_hash` over its
+snapshot's model); `hale check` builds
 one only when claims exist (`HALE_MODEL_TRACE=1` shows derivations).
 `HALE_TIME=1` prints build phase times. No interpreter: `hale run`
 compiles to a temp binary and execs it.
@@ -149,9 +157,9 @@ Contract: [`spec/model.md`](../spec/model.md); tutorial:
 
 - **One constructor**:
   `hale_types::model_builder::derive_application_model_over(&Bundle,
-  &ModelInputs)`, over a *checked* bundle; a test without a snapshot
-  calls `derive_application_model(&Bundle)`, which builds the inputs
-  and derives over them. No artifact-to-model, no plan-to-model, no
+  &ModelInputs)`, over a *checked* bundle, with the inputs a snapshot
+  demands (`Snapshot::demand_model`); a test asks a snapshot too
+  (`crates/hale-types/tests/support/entries.rs`). No artifact-to-model, no plan-to-model, no
   hand-authored model format; a test that needs a shape derives a
   real model and edits its tables.
 - The law: `Bundle -> ApplicationModel`; `Bundle + Model ->
@@ -247,28 +255,30 @@ The `hale` binary carries source that only a rebuild refreshes:
   after editing `dna/**`, rebuild before testing or you measure the
   old core. Compare: `hale dna --embedded-digest --from-tree <dir>`.
 - **iris**: `crates/hale-iris/src/lib.rs`. The cache key
-  (`toolchain_hash`) covers the version and embedded bytes, **not
-  codegen or the runtime**, and a cached binary is exec'd without a
-  staleness check. After a codegen or runtime change, delete
-  `~/.cache/hale/iris/` before trusting `hale iris` / `hale dna`
-  (verify).
+  (`toolchain_hash`) covers the version, the identity-covered
+  compiler sources (`HALE_COMPILER_SRC_HASH`: codegen, the runtime,
+  the stdlib seeds, the CLI, the manifests), the options fingerprint
+  of the `hale build` the cache runs (`HALE_DEV`, a sanitizer, LTO:
+  the knobs that subprocess inherits, F.40 phase 4, I5) and the
+  embedded bytes. A cached binary is exec'd without a staleness
+  check, so what the key leaves out (rustc, the C compiler) is the
+  reason to delete `~/.cache/hale/iris/`.
 - **spec**: `spec/*.md`, for `hale mcp`.
 
 The stale-binary warning (`check_stale_cli`, `main.rs`) runs on
 every source-reading command (`check`, `verify`, `build`, `run`,
-`test`, `dna`, `inputs`) and has two halves: it hashes `codegen.rs`
-and `runtime/lotus_arena.c` (its `runtime/stdlib` probe names a
-directory that no longer exists), and since GH #785 it digests the
-workspace's `dna/**` against what the binary embeds
-(`hale_dna::EMBEDDED_DIGEST`), so an edited `dna/core` that was never
-rebuilt in is announced before a fixture runs the old one. The
-codegen half's hint says `cargo build -p hale-cli`, which is wrong
-here; rebuild the workspace. Edits anywhere else will not trip it.
+`test`, `dna`, `inputs`) and has two halves: it holds every
+identity-covered source (`hale_graph::identity::identity_files`: the
+covered crates' `src`, `runtime` and `hl`, the lock file and the
+ts-shim manifest) against the fold `build.rs` baked (F.40 phase 4,
+I4), statting each file and reading them only when one is newer than
+the binary; and since GH #785 it digests the workspace's `dna/**`
+against what the binary embeds (`hale_dna::EMBEDDED_DIGEST`), so an
+edited `dna/core` that was never rebuilt in is announced before a
+fixture runs the old one. Edits outside those trees will not trip it.
 `HALE_SKIP_STALE_CHECK=1` silences both. The replay identity
-`HALE_TOOLCHAIN_SHA256` walks `hale-syntax`, `hale-types`,
-`hale-codegen` and `hale-cli` plus rustc and `git HEAD`;
-`hale-stdlib` and `hale-model` are outside it (verify whether
-intended).
+`HALE_TOOLCHAIN_SHA256` frames the same selection plus rustc and
+`git HEAD`.
 
 ## Tests
 
@@ -276,7 +286,8 @@ Where a test goes:
 
 - "Run a program, check what it computed": `tests/hale/*_test.hl`
   (`hale test tests/hale`, or `cargo test -p hale-cli --test
-  hale_native_suite`). It is typechecked; `build_executable` is not.
+  hale_native_suite`). It is typechecked; the Rust codegen tests'
+  harness build (`build_source` in `support/build.rs`) is not.
 - Compiler output (diagnostics, IR shape, leak counts, artifact
   JSON): Rust, in the owning crate's `tests/`. Artifact tests parse
   the JSON rather than matching substrings.

@@ -279,7 +279,9 @@ locus FastFeed {
 `Topic.write(max) { w => ... }` reserves up to `max` bytes, hands the
 body a writable view `w` over the slot, and commits the byte count the
 body's tail yields. The `std::bytes::write_*` family mirrors the readers
-(bounds-checked, `fallible(IndexError)`). The reserve and commit are
+(bounds-checked, `fallible(IndexError)`), and each writer returns the
+offset past its write, so `let next = std::bytes::write_u8(w, 0, 2) or
+raise;` hands the next field its offset. The reserve and commit are
 scoped to the block, so the view can't escape and the commit can't be
 forgotten.
 

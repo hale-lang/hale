@@ -12,14 +12,16 @@
 //! unmigrated families judge Uncertified rather than vanishing);
 //! and evidence is refused when stale, missing, or malformed.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
-use hale_types::effects::effect_certificates;
+use entries::effect_certificates;
 use hale_types::evidence::derive_certificate_evidence;
 use hale_types::judgment::judge_certificates;
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::verdict::Verdict;
 use hale_types::Bundle;

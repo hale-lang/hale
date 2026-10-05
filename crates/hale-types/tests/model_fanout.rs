@@ -11,6 +11,8 @@
 //! coverage charged two mutually-exclusive filters that one exact
 //! publish key can never both reach.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_types::symbol::SourceFile;
@@ -28,7 +30,7 @@ fn diags(src: &str) -> Vec<String> {
         base: 0,
         len: src.len() as u32,
     }];
-    hale_types::check_bundle_opts(&b, false)
+    entries::check_bundle_opts(&b, false)
         .into_iter()
         .map(|d| d.message)
         .collect()
@@ -734,7 +736,7 @@ fn model_and_ids(
         base: 0,
         len: src.len() as u32,
     }];
-    let m = hale_types::model_builder::derive_application_model(&b);
+    let m = entries::derive_application_model(&b);
     (m, b)
 }
 

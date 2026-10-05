@@ -32,10 +32,12 @@
 
 #![cfg(unix)]
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -47,13 +49,13 @@ fn build(name: &str, src: &str) -> std::path::PathBuf {
     let mut programs = std::collections::BTreeMap::new();
     programs.insert(name.to_string(), &program);
     let bundle = hale_types::Bundle::new(programs);
-    let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    let model_hash = entries::model_shape_hash(&bundle);
     let bin = harness::unique_bin(&format!("hale_test_468_{}", name));
     let options = BuildOptions {
         model_hash: Some(model_hash),
         ..build_opts::options()
     };
-    build_executable_with_options(&program, &bin, &[], &options)
+    build_opts::build_source(src, &bin, &options)
         .expect("build");
     bin
 }

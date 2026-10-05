@@ -9,6 +9,8 @@
 //! (`lotus_bus_declare_subject_payload`, C49), growing the table four
 //! times under the reads.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -40,7 +42,7 @@ fn the_fixtures_check_and_are_formatted() {
         assert!(formatted == src, "{file} is not `hale fmt` clean; formatted:\n{formatted}");
         let program = hale_syntax::parse_source(&src).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
         let errs: Vec<String> =
-            hale_types::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
+            entries::check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
         assert!(errs.is_empty(), "{file}: `hale check` refuses it: {errs:?}");
     }
 }
@@ -49,11 +51,10 @@ fn the_fixtures_check_and_are_formatted() {
 /// declared for another payload is refused, in both dispatch modes.
 #[test]
 fn a_computed_publish_reaching_another_payloads_subscriber_is_refused() {
-    let program = hale_syntax::parse_source(&source(MISMATCH)).unwrap_or_else(|e| panic!("{MISMATCH}: parse: {e:?}"));
     for no_bus_devirt in [false, true] {
         let bin = harness::unique_bin(&format!("subj_pay_mismatch_{no_bus_devirt}"));
         let options = hale_codegen::BuildOptions { no_bus_devirt, ..build_opts::options() };
-        hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        build_opts::build_source(&source(MISMATCH), &bin, &options)
             .unwrap_or_else(|e| panic!("{MISMATCH}: build: {e:?}"));
         let out = Command::new("timeout").arg("60").arg(&bin).output().expect("run the fixture");
         let _ = std::fs::remove_file(&bin);
@@ -70,12 +71,11 @@ fn a_computed_publish_reaching_another_payloads_subscriber_is_refused() {
 /// run prints both lines, exits 0, and reports nothing.
 #[test]
 fn recording_a_subject_on_an_anchors_thread_never_frees_the_table_under_a_read() {
-    let program = hale_syntax::parse_source(&source(FIXTURE)).unwrap_or_else(|e| panic!("{FIXTURE}: parse: {e:?}"));
     let mut failed = Vec::new();
     for no_bus_devirt in [false, true] {
         let bin = harness::unique_bin(&format!("subj_pay_{no_bus_devirt}"));
         let options = hale_codegen::BuildOptions { asan: true, no_bus_devirt, ..build_opts::options() };
-        hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        build_opts::build_source(&source(FIXTURE), &bin, &options)
             .unwrap_or_else(|e| panic!("{FIXTURE}: build: {e:?}"));
         let image = std::fs::read(&bin).expect("read the ASan binary");
         assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");

@@ -53,8 +53,6 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -68,9 +66,8 @@ mod build_opts;
 const DEADLINE: Duration = Duration::from_secs(60);
 
 fn build_and_run(tag: &str, src: &str) -> (String, String) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("factory_field_{}", tag));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -499,14 +496,13 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("factory_field_asan");
     // GH #843: an ASan build is a per-build option, not a
     // process-wide `LOTUS_ASAN` that every concurrent build in this
     // binary would also have picked up. The helper checks the
     // artifact is really instrumented — the assertions below are all
     // negative, so an uninstrumented build passes them vacuously.
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         // GH #816: compiled in by the ASan cflags already
@@ -632,9 +628,8 @@ fn an_interface_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("factory_iface_field_asan");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .env("LOTUS_NO_CHUNK_POOL", "1")

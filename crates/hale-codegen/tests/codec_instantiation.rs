@@ -18,8 +18,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 /// Compile transport_driver.c + lotus_arena.c into a peer binary
 /// (same recipe as tests/transport.rs). GH #227 made an
 /// unrealizable binding a birth failure, so the connect-role
@@ -93,9 +91,8 @@ fn codec_locus_is_instantiated_at_main_prelude() {
     "#,
         sock
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_test_codec_instantiation");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     // Listener peer first so the app's connect-with-retry lands.
     let driver = build_peer_driver("smoke");
     let listener = Command::new(&driver)
@@ -187,9 +184,8 @@ fn a_codec_locus_is_reclaimed_at_main_exit() {
         "fn main() { App { }; }\n",
     ]
     .concat();
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_codec_dissolve_921");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&sock);

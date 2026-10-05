@@ -82,7 +82,7 @@
 //!      that nothing is done to an instance nothing built: a step on a
 //!      reclaimed struct), and the cell's plan.
 //!   3. **ASan**, on the cells of the default sample:
-//!      `harness::build_asan`, chunk pooling off (GH #816), and the
+//!      `harness::build_source_asan`, chunk pooling off (GH #816), and the
 //!      instrumented build must give the same outcome.
 //!   4. **differential**, where it applies: the `let_literal`
 //!      position's inline twin, the receiver literal, is the same
@@ -135,6 +135,8 @@
 //! literals that look like a program out of every Rust file under a
 //! `tests` directory (the ownership matrix's note).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
@@ -142,7 +144,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_types::lifecycle::project::{self, Focus, PathFailure, RunPath};
 use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
@@ -911,16 +912,16 @@ fn slug(c: Cell) -> String {
     cell_id(c).replace('/', "_")
 }
 
-fn trace_build(program: &hale_syntax::ast::Program, bin: &Path) -> Result<(), String> {
+fn trace_build(src: &str, bin: &Path) -> Result<(), String> {
     let opts = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
-    build_executable_with_options(program, bin, &[], &opts).map_err(|e| format!("{e:?}"))
+    build_opts::build_source(src, bin, &opts).map_err(|e| format!("{e:?}"))
 }
 
 /// Parse and check a cell's source: `Ok` when the front end takes it,
 /// the refusal's diagnostics otherwise.
 fn front_end(src: &str) -> Result<hale_syntax::ast::Program, Vec<String>> {
     let program = hale_syntax::parse_source(src).map_err(|e| vec![format!("{e:?}")])?;
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
@@ -961,7 +962,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let mut failures = Vec::new();
     let bin = harness::unique_bin(&["lcmatrix_", &slug(c)].concat());
     let _ = std::fs::write(bin.with_extension("hl"), &p.src);
-    if let Err(e) = trace_build(&program, &bin) {
+    if let Err(e) = trace_build(&p.src, &bin) {
         return vec![format!("build: {e}")];
     }
     let ran = run_bin(&bin, &[]);
@@ -983,9 +984,9 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
 
     // --- 4: the differential ---------------------------------------
     if let Some(twin) = &p.twin {
-        let tprogram = front_end(twin).unwrap_or_else(|e| panic!("{id}: the twin is refused: {e:#?}\n{twin}"));
+        front_end(twin).unwrap_or_else(|e| panic!("{id}: the twin is refused: {e:#?}\n{twin}"));
         let tbin = harness::unique_bin(&["lcmatrix_twin_", &slug(c)].concat());
-        match trace_build(&tprogram, &tbin) {
+        match trace_build(twin, &tbin) {
             Err(e) => failures.push(format!("differential: the twin does not build: {e}")),
             Ok(()) => {
                 let tran = run_bin(&tbin, &[]);
@@ -1003,7 +1004,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     // --- 3: the sanitizer ------------------------------------------
     if asan {
         let abin = harness::unique_bin(&["lcmatrix_asan_", &slug(c)].concat());
-        harness::build_asan(&program, &abin);
+        harness::build_source_asan(&p.src, &abin);
         let arun = run_bin(&abin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
         let _ = std::fs::remove_file(&abin);
         let report = [arun.stdout.as_str(), arun.stderr.as_str()].concat();

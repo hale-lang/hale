@@ -15,14 +15,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    Block, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember,
-    MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program, RecoveryModifier, Stmt,
-    StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
+    Block, ClosureClause, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl,
+    LocusMember, MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program,
+    RecoveryModifier, Stmt, StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
-use hale_syntax::{Diag, Span};
+use hale_syntax::{Diag, Span, SpanOrigin};
 
 use crate::binding_rows::BindingRows;
 use crate::entry::EntryRow;
+use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
@@ -48,15 +49,35 @@ pub struct LoweringLawInputs<'a> {
     pub omitted: &'a OmittedArgsByCall,
 }
 
+/// What a law on the shared finding type ([`Law`]) reads: the bundle and
+/// the rows.
+struct LawRows<'r, 'b, 'i> {
+    bundle: &'r Bundle<'b>,
+    inputs: &'r LoweringLawInputs<'i>,
+}
+
+/// Rule 6, the locus-pinning compatibility rule.
+const RULE_6: RuleId = RuleId::registered("semantics/placement", "6");
+/// Rule 17, a `pinned` placement forbids a loop.
+const RULE_17: RuleId = RuleId::registered("semantics/placement", "17");
+/// Rule 18, every placement entry is consumed by a locus literal.
+const RULE_18: RuleId = RuleId::registered("semantics/placement", "18");
+/// Decision 2: the entry is top-level.
+const TOP_LEVEL_ENTRY: RuleId = RuleId::registered("verification/structural", "module-nested-main");
+/// A cross-pool spawn is fire-and-forget.
+const CROSS_POOL_VALUE: RuleId = RuleId::registered("verification/structural", "cross-pool-spawn-as-a-value");
+/// GH #813, #870: a locus cannot contain itself by value.
+const SELF_CONTAINING: RuleId = RuleId::registered("verification/structural", "self-containing-locus");
+
 /// Every law that replaced a lowering backstop, over `bundle`.
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
-    let mut diags = Vec::new();
-    module_nested_main_is_not_the_entry(bundle, inputs, &mut diags);
-    pinned_features(bundle, inputs, &mut diags);
-    pinned_root_in_a_loop(bundle, inputs, &mut diags);
-    placement_entry_consumed(bundle, inputs, &mut diags);
-    cross_pool_spawn_used_as_a_value(inputs, &mut diags);
-    self_containing_locus(bundle, &mut diags);
+    let rows = LawRows { bundle, inputs };
+    let mut diags = Law { rule: TOP_LEVEL_ENTRY, eval: module_nested_main_is_not_the_entry }.diags(&rows);
+    diags.extend(Law { rule: RULE_6, eval: pinned_features }.diags(&rows));
+    diags.extend(Law { rule: RULE_17, eval: pinned_root_in_a_loop }.diags(&rows));
+    diags.extend(Law { rule: RULE_18, eval: placement_entry_consumed }.diags(&rows));
+    diags.extend(Law { rule: CROSS_POOL_VALUE, eval: cross_pool_spawn_used_as_a_value }.diags(&rows));
+    diags.extend(Law { rule: SELF_CONTAINING, eval: self_containing_locus }.diags(&rows));
     diags
 }
 
@@ -71,10 +92,12 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
 /// so a program refused today for another reason is refused for both.
 /// A module-nested `main` beside an entry is not refused here (rule 1
 /// counts it).
-fn module_nested_main_is_not_the_entry(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn module_nested_main_is_not_the_entry(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let Some(main) = inputs.entry.refused() else { return };
     let Some(decl) = main.decl(bundle) else { return };
-    diags.push(Diag::ty(
+    out.push(Violation::error(
+        TOP_LEVEL_ENTRY,
         decl.name.span,
         format!(
             "the entry must be top-level: `main locus {}` inside `module {}` is not the program's \
@@ -112,7 +135,8 @@ fn module_nested_main_is_not_the_entry(bundle: &Bundle<'_>, inputs: &LoweringLaw
 /// thread is not refused (the review of #1351; lowering passed a null
 /// pointer for it, after its own refusal was taken out). Lowering keeps
 /// an error for a value use that reaches it, as a judgment missing here.
-fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let inputs = rows.inputs;
     // A cross-pool edge needs a locus placed off the main thread; a
     // table whose one domain is main has none, and the graph is not
     // built.
@@ -135,7 +159,8 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
         }
         let child = &site.child_ty;
         let Some(owner) = crosspool.get(&(site.enclosing_locus.clone(), child.clone())) else { continue };
-        diags.push(Diag::ty(
+        out.push(Violation::error(
+            CROSS_POOL_VALUE,
             site.span,
             format!(
                 "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
@@ -167,7 +192,8 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
         match (other.position, other.enclosing_decl) {
             (OtherPosition::Closure, Some(decl)) => {
                 let Some(owner) = crosspool.get(&(decl_names[decl].clone(), child.clone())) else { continue };
-                diags.push(Diag::ty(
+                out.push(Violation::error(
+                    CROSS_POOL_VALUE,
                     site.span,
                     format!(
                         "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
@@ -179,7 +205,11 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
             (OtherPosition::PerUse(position), _) => {
                 let crossing = decl_names.iter().find_map(|d| crosspool.get(&((*d).clone(), child.clone())).map(|o| (d, o)));
                 let Some((context, owner)) = crossing else { continue };
-                diags.push(Diag::ty(site.span, per_use_message(child, owner, context, position, "here, ")));
+                out.push(Violation::error(
+                    CROSS_POOL_VALUE,
+                    site.span,
+                    per_use_message(child, owner, context, position, "here, "),
+                ));
             }
             (OtherPosition::Closure, None) => {}
         }
@@ -206,16 +236,21 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
             {
                 continue;
             }
-            diags.push(
-                Diag::ty(root, per_use_message(child, owner, context, position, "through the defaults this leaves, "))
-                    .with_related(span, format!("the default builds `{child}` here")),
+            out.push(
+                Violation::error(
+                    CROSS_POOL_VALUE,
+                    root,
+                    per_use_message(child, owner, context, position, "through the defaults this leaves, "),
+                )
+                .step(span, format!("the default builds `{child}` here")),
             );
         } else if let (Some(field), Some(holder)) = (params_field, holder) {
             if !params_reported.insert((expansion.literal, expansion.context)) {
                 continue;
             }
             let holder = &ownership.declarations[holder].name;
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                CROSS_POOL_VALUE,
                 span,
                 format!(
                     "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{holder}`'s param \
@@ -230,8 +265,9 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
                 continue;
             }
             let (callee, param) = (&arg.fn_name, &arg.param);
-            diags.push(
-                Diag::ty(
+            out.push(
+                Violation::error(
+                    CROSS_POOL_VALUE,
                     root,
                     format!(
                         "cross-pool spawn `{child}{{ }}` is fire-and-forget: it is the default of `{callee}`'s \
@@ -242,7 +278,7 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
                          not a value."
                     ),
                 )
-                .with_related(span, format!("the default of `{callee}`'s argument `{param}` builds `{child}` here")),
+                .step(span, format!("the default of `{callee}`'s argument `{param}` builds `{child}` here")),
             );
         }
     }
@@ -280,7 +316,8 @@ fn cross_pool_spawn_used_as_a_value(inputs: &LoweringLawInputs<'_>, diags: &mut 
 /// literal some lowered literal expands builds it as a construction
 /// does, so `App { w: Worker { } }` in `Holder`'s default, with `Holder {
 /// }` built, leaves `App`'s own default dead.
-fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn placement_entry_consumed(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let Some(root) = &inputs.placement.root else { return };
     let decls = declarations(bundle);
     let Some(main) = decls.get(&root.realizes.site).copied() else { return };
@@ -342,7 +379,7 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
         }
         for init in overrides {
             if !matches!(init, Expr::Struct { .. }) {
-                diags.push(placement_unconsumed_diag(field, &ty_name, init, entry.span, true));
+                out.push(placement_unconsumed(field, &ty_name, init, entry.span, true));
             }
         }
         // The default is live when some literal of the root omits the
@@ -358,14 +395,14 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
         // owns that program, not this one.
         let ParamInit::Value(default) = &param.init else { continue };
         if !matches!(default, Expr::Struct { .. }) {
-            diags.push(placement_unconsumed_diag(field, &ty_name, default, entry.span, false));
+            out.push(placement_unconsumed(field, &ty_name, default, entry.span, false));
         }
     }
 }
 
-/// The rule 18 diagnostic, for an initialiser written at a root literal
+/// The rule 18 finding, for an initialiser written at a root literal
 /// (`at_site`) or in the params default.
-fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span: Span, at_site: bool) -> Diag {
+fn placement_unconsumed(field: &str, ty_name: &str, init: &Expr, entry_span: Span, at_site: bool) -> Violation {
     let shape = match init {
         Expr::Call { .. } => "a call",
         Expr::Or { .. } => "a fallible call",
@@ -378,7 +415,8 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
         | Expr::KwSelf(_) => "a reference to an instance built elsewhere",
         _ => "an expression that is not a locus literal",
     };
-    Diag::ty(
+    Violation::error(
+        RULE_18,
         init.span(),
         format!(
             "placement entry `{}` names a field no locus literal initialises: {} is {}. A placement \
@@ -398,7 +436,7 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
             },
         ),
     )
-    .with_related(entry_span, format!("`{}` is placed here", field))
+    .step(entry_span, format!("`{}` is placed here", field))
 }
 
 /// Every expression written in a body, handed to `f` once, outermost
@@ -710,7 +748,8 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
 /// construction the table records, so no bound shows the root built
 /// once: it is refused outright at that position's literal, loop or no
 /// loop, naming the hoist.
-fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+fn pinned_root_in_a_loop(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let placement = inputs.placement;
     let Some(root) = &placement.root else { return };
     let span_of = |site: SiteRef| match site.universe {
@@ -764,8 +803,9 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
                 continue;
             }
             let Some(span) = span_of(literal) else { continue };
-            diags.push(
-                Diag::ty(
+            out.push(
+                Violation::error(
+                    RULE_17,
                     span,
                     format!(
                         "locus `{}` is built by this literal, written in {}, but its `placement {{ }}` \
@@ -780,14 +820,15 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
                         locus
                     ),
                 )
-                .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+                .step(entry_span, format!("field `{}` is placed `pinned` here", field)),
             );
         }
     }
     for (literal, (entry_span, field)) in sites {
         let Some(span) = span_of(literal) else { continue };
-        diags.push(
-            Diag::ty(
+        out.push(
+            Violation::error(
+                RULE_17,
                 span,
                 format!(
                     "locus `{}` is instantiated inside a loop, but its `placement {{ }}` block pins \
@@ -800,7 +841,7 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
                     locus, field, locus
                 ),
             )
-            .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+            .step(entry_span, format!("field `{}` is placed `pinned` here", field)),
         );
     }
 }
@@ -823,7 +864,14 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
 /// checker resolves to `Unknown` (a stdlib locus), an `accept()` written
 /// with no parameter (the checker read `accept_param`, lowering the
 /// member), and the adapter, which no placement entry names.
-fn pinned_features(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+///
+/// Its finding is a [`Violation`] whose witness is the chain the walk
+/// follows (F.40 phase 4, W2): the entry that decides the instance runs
+/// pinned (the placement entry, or the binding entry), the declaration
+/// the instance realizes, and the member that conflicts (the `accept`, or
+/// the closure's assertion).
+fn pinned_features(rows: &LawRows<'_, '_, '_>, violations: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let placement = inputs.placement;
     let decls = declarations(bundle);
     let mut reported: BTreeSet<(SiteRef, &'static str)> = BTreeSet::new();
@@ -839,13 +887,21 @@ fn pinned_features(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &
         };
         let Some(realizes) = &row.realizes else { continue };
         let Some(decl) = decls.get(&realizes.site) else { continue };
-        let Some(why) = pinned_conflict(decl) else { continue };
+        let Some(conflict) = pinned_conflict(decl) else { continue };
+        let why = conflict.why;
         if !reported.insert((entry, why)) {
             continue;
         }
-        let Some(mut span) = bundle.snapshot.site(entry.id).map(|s| s.span) else { continue };
+        let Some(entry_span) = bundle.snapshot.site(entry.id).map(|s| s.span) else { continue };
+        let mut span = entry_span;
         let locus = decl.name.name.as_str();
-        let message = if binding {
+        // The declaration, and so the conflicting member, is the stdlib's
+        // when the instance realizes a `std::` locus.
+        let decl_origin = match realizes.site.universe {
+            SiteUniverse::User => SpanOrigin::Seed,
+            SiteUniverse::StdlibAnalysis => SpanOrigin::Stdlib,
+        };
+        let (message, decides) = if binding {
             let binding_row = inputs.bindings.for_site(entry.id);
             let topic = binding_row.map(|r| r.topic.as_str()).unwrap_or("?");
             if let Some(hale_syntax::ast::BindingEntry {
@@ -853,48 +909,88 @@ fn pinned_features(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &
             }) = binding_row.and_then(|r| r.entry(bundle)) {
                 span = locus.span;
             }
-            format!(
-                "adapter binding for topic `{}`: `{}` runs on its own pinned thread but {}; \
-                 drop the feature from the adapter locus (rule 6)",
-                topic, locus, why
+            (
+                format!(
+                    "adapter binding for topic `{}`: `{}` runs on its own pinned thread but {}; \
+                     drop the feature from the adapter locus (rule 6)",
+                    topic, locus, why
+                ),
+                format!("the adapter runs on a thread of its own: topic `{topic}` is bound to it here"),
             )
         } else {
             let field = key.path.last().map(|s| s.field.as_str()).unwrap_or("?");
-            format!(
-                "placement entry `{}`: `{}` is placed `pinned` but {}; place it `cooperative`, or \
-                 drop the feature (rule 6)",
-                field, locus, why
+            (
+                format!(
+                    "placement entry `{}`: `{}` is placed `pinned` but {}; place it `cooperative`, or \
+                     drop the feature (rule 6)",
+                    field, locus, why
+                ),
+                format!("the instance runs on a thread of its own: field `{field}` is placed `pinned` here"),
             )
         };
-        diags.push(Diag::ty(span, message));
+        let witness = vec![
+            WitnessStep { span: entry_span, origin: SpanOrigin::Seed, note: decides },
+            WitnessStep {
+                span: decl.name.span,
+                origin: decl_origin,
+                note: format!("the instance realizes `{locus}`, declared here"),
+            },
+            WitnessStep { span: conflict.at, origin: decl_origin, note: conflict.note },
+        ];
+        violations.push(Violation { rule: RULE_6, severity: Severity::Error, span, message, witness });
     }
+}
+
+/// What a declaration does that a pinned instance cannot, and where.
+struct PinnedConflict {
+    /// The phrase the message gives.
+    why: &'static str,
+    /// The member that does it: the `accept`, or the closure's assertion.
+    at: Span,
+    /// The witness's note at it.
+    note: String,
 }
 
 /// What a declaration does that a pinned instance cannot: lowering's
 /// own two conditions, read off the declaration (an `accept` of any
 /// arity, and a closure with an assertion whose epoch is `birth` or
 /// `dissolve`; an assertion-less closure is inline and fires through
-/// `violate`).
-fn pinned_conflict(decl: &LocusDecl) -> Option<&'static str> {
-    let accepts = decl
-        .members
-        .iter()
-        .any(|m| matches!(m, LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept)));
-    if accepts {
-        return Some(
-            "declares `accept()`: a pinned locus owns its own thread and cannot accept children",
-        );
-    }
-    let cascade_closure = decl.members.iter().any(|m| match m {
-        LocusMember::Closure(c) => {
-            c.assertion.is_some() && matches!(c.epoch(), EpochSpec::Birth | EpochSpec::Dissolve)
-        }
-        _ => false,
+/// `violate`). The first such member in source order, an `accept` before
+/// any closure.
+fn pinned_conflict(decl: &LocusDecl) -> Option<PinnedConflict> {
+    let locus = decl.name.name.as_str();
+    let accept = decl.members.iter().find_map(|m| match m {
+        LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept) => Some(lc.span),
+        _ => None,
     });
-    cascade_closure.then_some(
-        "declares a closure whose epoch is `birth` or `dissolve` (dissolve is the default): the \
-         lifecycle cascade cannot route it across a pinned locus's thread",
-    )
+    if let Some(at) = accept {
+        return Some(PinnedConflict {
+            why: "declares `accept()`: a pinned locus owns its own thread and cannot accept children",
+            at,
+            note: format!("`{locus}` declares `accept()` here"),
+        });
+    }
+    decl.members.iter().find_map(|m| {
+        let LocusMember::Closure(c) = m else { return None };
+        let assertion = c.assertion.as_ref()?;
+        let epoch = match c.epoch() {
+            EpochSpec::Birth => "epoch `birth`",
+            EpochSpec::Dissolve if c.clauses.iter().any(|k| matches!(k, ClosureClause::Epoch(_))) => {
+                "epoch `dissolve`"
+            }
+            EpochSpec::Dissolve => "epoch `dissolve` (no `epoch` is written, and dissolve is the default)",
+            _ => return None,
+        };
+        Some(PinnedConflict {
+            why: "declares a closure whose epoch is `birth` or `dissolve` (dissolve is the default): the \
+                  lifecycle cascade cannot route it across a pinned locus's thread",
+            at: assertion.span,
+            note: format!(
+                "`{locus}`'s closure `{}` fires inside the lifecycle cascade, at {epoch}: its assertion is here",
+                c.name.name
+            ),
+        })
+    })
 }
 
 /// Every locus declaration of both universes, by the site the placement
@@ -1013,7 +1109,8 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// refused as a duplicate top-level name), and a literal through a
 /// module or import path names a locus the seed's own check refuses or
 /// one whose own seed's check judges it.
-fn self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+fn self_containing_locus(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let bundle = rows.bundle;
     fn collect<'a>(
         items: &'a [TopDecl],
         out: &mut BTreeMap<&'a str, &'a LocusDecl>,
@@ -1064,7 +1161,7 @@ fn self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             &mut path,
             &mut finished,
             &mut reported,
-            diags,
+            out,
         );
     }
 }
@@ -1082,7 +1179,7 @@ fn walk_param_default_containment(
     path: &mut Vec<ContainmentState>,
     finished: &mut BTreeSet<ContainmentState>,
     reported: &mut BTreeSet<(u32, String)>,
-    diags: &mut Vec<Diag>,
+    out: &mut Vec<Violation>,
 ) {
     let state: ContainmentState = (locus.to_string(), supplied.to_vec());
     if finished.contains(&state) {
@@ -1111,7 +1208,7 @@ fn walk_param_default_containment(
                 let Some(at) = path.iter().position(|s| *s == child) else {
                     walk_param_default_containment(
                         &child.0, &child.1, loci, factories, path,
-                        finished, reported, diags,
+                        finished, reported, out,
                     );
                     continue;
                 };
@@ -1164,7 +1261,7 @@ fn walk_param_default_containment(
                     child.0,
                 );
                 if reported.insert((pd.span.start.0, message.clone())) {
-                    diags.push(Diag::ty(pd.span, message));
+                    out.push(Violation::error(SELF_CONTAINING, pd.span, message));
                 }
             }
         }

@@ -246,7 +246,17 @@ Rendering is defined recursively, with two rules about the nesting:
 
 Rendering has no user-visible ordering or allocation guarantees
 beyond producing the text above; results are owned by the caller's
-arena like any other constructed String.
+arena like any other constructed String. A `StringView` renders as
+its text, copied as `std::str::clone` copies it, so the String that
+`to_string(view)`, `"x=" + view` or `f"{view}"` produces does not
+follow the builder the view reads (2026-10-05, F.40 phase 4: before
+it, only `println` and `print` rendered a view, and the other three
+passed the check and were refused at build).
+
+The checker and lowering read one definition of this rule
+(`hale_types::printable`): the checker refuses a value outside the
+set at its span, and lowering renders a record only when every
+field is printable, as the checker does.
 
 ### Format specs
 
@@ -2207,7 +2217,8 @@ so the program builds its source with its own state and keeps a
 handle to it, and the binding holds it as a `std::api::RoleSource`
 (a borrow) — or the stdlib's `std::api::StaticRoles`, whose table
 `hale build --env <name>` / `hale run --env <name>` bakes from
-`[environments.<name>.roles]` in `hale.toml` and `LOTUS_API_ROLES`
+`[environments.<name>.roles]` in `hale.toml` (and `hale check --env
+<name>` checks the binding with the same table) and `LOTUS_API_ROLES`
 overrides at run time. The table travels as one line the binding
 re-splits, so it is held to one rule at check, at build and at
 birth: a key is a role the program declares (an identifier), a
@@ -3402,7 +3413,12 @@ main locus App {
    `bindings { }`, which has a thread of its own with no entry —
    and judges the locus the instance realizes (a construction
    site's override literal, a `std::` locus), at the entry's
-   span. A locus that uses neither feature can be placed either
+   span. The refusal carries its witness as related locations,
+   in order: the entry that runs the instance pinned (the
+   placement entry, or the binding entry), the declaration the
+   instance realizes, and the member that conflicts (the
+   `accept`, or the closure's assertion). A locus that uses
+   neither feature can be placed either
    cooperative or pinned at the deployment's discretion. (F.40
    phase 0: until then the rule was stated as "no closure
    declarations" while lowering refused only birth and dissolve
@@ -3411,7 +3427,8 @@ main locus App {
    table's rows, so the adapter, an `accept()` with no parameter
    and a field whose written type the entry walk could not
    resolve are judged too, and lowering keeps no refusal of its
-   own.)
+   own. Phase 4, W2: the refusal's message is unchanged, and the
+   witness is new.)
 7. **Dead bus receiver (error).** A locus that declares
    `bus { subscribe ... }`, is placed `cooperative(pool = X)` with
    `X != main` (and not `where async_io`), **and** whose `run()`
@@ -4223,6 +4240,56 @@ keeps the substrate honest about which window the counter
 belongs to without forcing the user to maintain a `last_reset_at`
 field or a parallel pre-fire hook.
 
+### Recovery events (`persists_through`, `resets_on`)
+
+A closure's accumulators (`sum`, `count`, `mean`) are zeroed when its
+locus goes through a recovery event, unless the closure persists
+through that event:
+
+```hale,fragment
+closure within_band {
+    sum(self.delta) ~~ 0 within 100;
+    epoch tick;
+    persists_through(quarantine);
+}
+```
+
+The recovery events are a closed alphabet, the recovery statements a
+parent applies to a failed child: `restart`, `restart_in_place` and
+`quarantine` (a spent `restart(c) for N` bound quarantines, and is the
+`quarantine` event). The check holds each name a clause writes to it:
+
+- A name outside the alphabet is an error at the name, which names
+  the alphabet; a misspelling one edit away from an event suggests it
+  (`verification.md` § Structural & design rules, *Recovery event
+  alphabet*).
+- `dissolve` in `persists_through(...)` is an error: an accumulator
+  does not outlive its locus's dissolve, so the clause can mean
+  nothing (*Persisting through dissolve*).
+
+`resets_on(...)` states the default. An accumulator resets on every
+recovery event its closure does not persist through, whether or not
+`resets_on` names it, so `resets_on(E)` adds nothing at run time; it
+is a statement the check holds to the alphabet like any other, and an
+event a closure names in both clauses is an error at the `resets_on`
+name, with the `persists_through` name as its witness (*Contradicting
+recovery clauses*).
+
+Two warnings say when a clause cannot take effect:
+
+- In a closed world (the program has an entry), an event a closure of
+  the program's own seed names that no recovery applies to its locus:
+  no parent's `on_failure` for the locus's type performs it, and no
+  recovery statement outside a handler performs it on a child of that
+  type. The witness lists each handler and statement that names the
+  locus, with the events it applies. A library checked alone has no
+  parents, so it is not judged; nor is an imported locus, nor an event
+  some recovery applies to a child the check cannot name (a generic
+  supervisor's type parameter, a receiver that is not a declared
+  param) (*Unreached recovery event*).
+- `persists_through(...)` on a closure whose assertion accumulates
+  nothing keeps nothing (*Persistence with no accumulator*).
+
 ## Inline closure violation
 
 (F.27, v1.x-VIOLATE.) Inline closures provide a pull-only
@@ -4252,8 +4319,9 @@ closure synchronously at the call site:
      effects (and to detect typecheck errors on the payload
      type) but no `payload` field is materialized on the
      `ClosureViolation`.
-   - The assertion-shape fields (`left`, `right`, `tolerance`,
-     `diff`) are NOT populated for inline violations.
+   - The assertion-shape fields (`left`, `right`, `tolerance`) are
+     not fields of the struct, and `diff` is 0 for an inline
+     violation.
 2. The locus's exploded flag is set (same as the auto-epoch
    path; downstream observers can't tell from the flag whether
    the fire was auto-epoch or inline).
@@ -4282,12 +4350,15 @@ do not execute, so the child's locus state is frozen at the
 violate moment. `c.last_error` reads exactly the value the
 violate site observed.
 
-The `ClosureViolation` value carries only `err.locus` and
-`err.closure`; it does not materialize the captured fields.
-Source that reads `err.last_error` will typecheck
-(`ClosureViolation` admits unknown fields permissively at
-field-access time) but will fail to link / run — read captured
-state through the child handle (`c.last_error`) instead.
+The `ClosureViolation` value carries `err.locus` and
+`err.closure` (Strings) and `err.diff` (an Int: `left - right`
+for an Int or Duration assertion, 0 otherwise); it does not
+materialize the captured fields. Source that reads
+`err.last_error` is a type error at the read ("no field
+`last_error` on `ClosureViolation`"): read captured state through
+the child handle (`c.last_error`) instead. (Until F.40 phase 4,
+S8 the checker left `ClosureViolation` unresolved, so such a read
+passed `hale check` and failed at build without a location.)
 
 The `violate` statement is divergent: the typechecker treats it
 as `Never`, the same as `fail` in fallible fn bodies and
@@ -4935,7 +5006,14 @@ concerned are the signature table's rows with a payload
 (`stdlib_surface.rs`): 94 at the time of the ruling, across
 `std::io::fs`, `std::process`, `std::http::client`, `std::io::tcp`,
 `std::compress`, `std::tar`, `std::bytes`, `std::str` and
-`std::time`.
+`std::time`. Lowering carries no bare form of any of them: it reads
+the same rows, and the last bare forms (`std::bytes::at`, which
+answered -1, and `std::io::fs`'s `read_file`, `read_bytes`,
+`write_file`, `write_file_append`, `mkdir`, `file_size`,
+`list_dir_count` and `list_dir_at`, which answered a direct value or
+an Int status) are gone (F.40 phase 4, S5). A bare call that reaches
+lowering, in a build that skipped the check, is an internal error
+naming the row.
 
 **Limitations to lift.** These are where lowering's support stops
 today, not part of the rule:
@@ -4949,10 +5027,6 @@ today, not part of the rule:
   works, `or (f(err) or raise)`. That covers a stdlib entry point, a
   generic fn, an interface's or a perspective's method, and a
   container's, an array's or a stdlib handle's method.
-- **The stdlib's legacy form.** Lowering still carries a bare form
-  for some stdlib entry points (`read_file` returns the success value,
-  the write fns an Int status). The check refuses every bare call, so
-  no program reaches it.
 - **A call through an interface-typed value.** The checker types a
   local or parameter whose declared type is an interface as unknown
   (an interface slot accepts any locus that satisfies it), so it does

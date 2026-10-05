@@ -40,14 +40,18 @@ fn topology_artifact<'c>(
     if cell.get().is_none() {
         match snap
             .demand_model()
-            .and_then(|model| Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?)))
+            .and_then(|model| {
+                Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?, snap.demand_law_selection()?))
+            })
         {
-            Ok((model, effects, summary)) => {
-                // The artifact's environment label is the snapshot's own
-                // (outside review of #1283, finding 1). Its law evidence
-                // reads the check's effects certificate report and the
-                // allocation summary the check read.
-                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary));
+            Ok((model, effects, summary, laws)) => {
+                // The artifact's law rows, constitution identities and
+                // environment label are the snapshot's law selection, the
+                // one the check reported (outside review of #1283,
+                // finding 1). Its law evidence reads the check's effects
+                // certificate report and the allocation summary the check
+                // read.
+                let art = hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary, laws);
                 let _ = cell.set(art);
             }
             Err(b) => return Err(refuse_without_model(target, doing, b)),
@@ -89,15 +93,38 @@ pub(crate) fn run_check_impl_env(
     gate_warnings: bool,
     adopt_env: &[String],
 ) -> u8 {
-    run_check_impl_labelled(target, gate_warnings, adopt_env, None)
+    run_check_impl_labelled(target, gate_warnings, adopt_env, None, None)
 }
 
+/// `env_roles` is the environment's role table (GH #1109), resolved by
+/// the function `build --env` uses (`options::env_roles`): the api
+/// binding the sequence generates bakes it in, so the check judges the
+/// binding the build lowers (F.40 phase 4, A1).
 pub(crate) fn run_check_impl_labelled(
     target: &Path,
     gate_warnings: bool,
     adopt_env: &[String],
     env_label: Option<&str>,
+    env_roles: Option<&str>,
 ) -> u8 {
+    match load_for_check(target, adopt_env, env_label, env_roles) {
+        Ok(snap) => check_loaded(target, gate_warnings, &snap),
+        Err(code) => code,
+    }
+}
+
+/// The check's snapshot of `target`, loaded as `hale check` loads it:
+/// the `--target` flag, the environment's constitutions and its role
+/// table. A load that fails has printed why, and `Err` is the exit
+/// code. The environment matrix keeps the snapshot its pair's check
+/// reads, and reads the identities and the roles from it too (F.40
+/// phase 4, A3).
+pub(crate) fn load_for_check(
+    target: &Path,
+    adopt_env: &[String],
+    env_label: Option<&str>,
+    env_roles: Option<&str>,
+) -> Result<Snapshot, u8> {
     // F.18: a whole seed (a directory) is checked to what `build`
     // accepts — a call to a bare name nothing binds is an error here;
     // one file of a seed keeps the permissive reading for a sibling's fn
@@ -121,12 +148,12 @@ pub(crate) fn run_check_impl_labelled(
             Ok(spec) => config.target = configured_target(compile_target(spec), true),
             Err(msg) => {
                 eprintln!("{}", msg);
-                return 2;
+                return Err(2);
             }
         },
         Err(msg) => {
             eprintln!("{}", msg);
-            return 2;
+            return Err(2);
         }
     }
     // GH #409: an environment binds law to an ENTRYPOINT; the snapshot
@@ -136,24 +163,30 @@ pub(crate) fn run_check_impl_labelled(
         name: name.to_string(),
         adopt: adopt_env.to_vec(),
     });
+    config.api_roles = env_roles.map(str::to_string);
     // F.40 phase 2.2a: one snapshot, and the check demanded from it.
     // `check` resolves cross-seed imports the same way `build` and
     // `run` do (an imported seed's bodies are in the program the
     // analysis walks, so effect assertions, budgets and taint do not
     // stop at a seed boundary), then runs the one sequence before the
     // check: sync inference, the desugars, the mint.
-    let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
-        Ok(s) => s,
+    match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
+        Ok(s) => Ok(s),
         // GH #765: a failure that carries diagnostics renders them
         // here, honouring `--json` and resolving each span against
         // the file it lives in — including a file reached only
         // through an `import`.
-        Err(LoadError::Load(f)) => return f.report(),
+        Err(LoadError::Load(f)) => Err(f.report()),
         Err(LoadError::Refused(msg)) => {
             eprintln!("{}", msg);
-            return 2;
+            Err(2)
         }
-    };
+    }
+}
+
+/// The check over the snapshot [`load_for_check`] loaded: its
+/// diagnostics and every flag's dump, and the exit code.
+pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) -> u8 {
     let (sources, file_bases, import_renames, own_files) =
         (snap.sources(), snap.file_bases(), snap.import_renames(), snap.own_files());
     let bundle = snap.bundle();
@@ -337,7 +370,7 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let artifact = match topology_artifact(&artifact_cell, &snap, target, "emit a topology artifact") {
+        let artifact = match topology_artifact(&artifact_cell, snap, target, "emit a topology artifact") {
             Ok(a) => a,
             Err(code) => return code,
         };
@@ -548,7 +581,7 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = check_topology_path {
-        let current = match topology_artifact(&artifact_cell, &snap, target, "compare a topology baseline") {
+        let current = match topology_artifact(&artifact_cell, snap, target, "compare a topology baseline") {
             Ok(a) => a,
             Err(code) => return code,
         };
@@ -701,22 +734,29 @@ pub(crate) fn run_check_impl_labelled(
     // GH #436: which loci could be `@sealed` today, and what it would
     // cost. `@sealed` is opt-in, so adopting it across an existing
     // codebase is otherwise a question you can only answer by reading.
+    // The survey reads the param-access rows of the snapshot's typed
+    // bodies, the ones the sealed rule judged: blocked only with the
+    // scope, whose errors were reported above.
     if std::env::args().any(|a| a == "--sealable") {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let rows = hale_types::sealability::survey(&progs);
-        eprint!("{}", hale_types::sealability::render(&rows));
+        match snap.demand_typed_bodies() {
+            Ok(typed) => {
+                let progs: Vec<&hale_syntax::ast::Program> =
+                    bundle.programs.values().copied().collect();
+                let rows = hale_types::sealability::survey(&progs, typed);
+                eprint!("{}", hale_types::sealability::render(&rows));
+            }
+            Err(_) => eprintln!("sealability: not surveyed: the program does not resolve, so no access was typed"),
+        }
     }
     // GH #736: which `release` clause makes a locus type a flow. Whether
     // `T` is a flow is decided over the whole program, imported seeds
     // included, so a child still reclaimed when its `run()` returns after
     // its own owner dropped the hook is answered here: every clause that
     // names its type, with the file and line.
+    // The rows are the snapshot's, the ones the check judged with.
     if std::env::args().any(|a| a == "--flows") {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let flows = hale_types::flows::survey(&progs, &bundle.import_renames);
-        eprint!("{}", render_flows(&flows, file_bases, sources, import_renames));
+        let flows = snap.demand_flows().expect("a whole seed has no hole, so its flow rows are never blocked");
+        eprint!("{}", render_flows(flows, file_bases, sources, import_renames));
     }
     if std::env::args().any(|a| a == "--strict-secret") {
         let progs: Vec<&hale_syntax::ast::Program> =
@@ -729,7 +769,7 @@ pub(crate) fn run_check_impl_labelled(
     // dispatch or the binding that owns it must last longer than the
     // holder. Errors, with the witness call site where a parameter carries
     // the handle in. Beside it the GH #737 notice. `build`, `run` and
-    // `test` refuse the same through `check_bundle_for_build`.
+    // `test` refuse the same through their snapshot (`Config::build_rules`).
     // Which locus accepts which child is the snapshot's ownership graph's
     // (its rows; the bundle's own walk where the graph is blocked).
     {

@@ -1,0 +1,10 @@
+// Build-only call fixture (F.40 phase 4, S0): the `std::shm` record
+// header getters at expression position. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let seq = std::shm::last_record_seq();
+    let kernel = std::shm::last_record_kernel_ns();
+    let user = std::shm::last_record_user_ns();
+    println(seq + kernel + user);
+}

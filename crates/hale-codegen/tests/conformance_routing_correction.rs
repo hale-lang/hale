@@ -13,8 +13,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -54,9 +52,8 @@ fn main() {
 
 /// The body of the free fn `make`, from its `define` to its closing brace.
 fn make_body(tag: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("conf_routing_ir_{tag}"));
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     let start = ir.find("define ptr @make(").expect("`make` defined");
     let end = ir[start..].find("\n}").map_or(ir.len(), |i| start + i);
@@ -64,9 +61,8 @@ fn make_body(tag: &str, src: &str) -> String {
 }
 
 fn run(tag: &str, src: &str) -> (String, Option<i32>) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("conf_routing_run_{tag}"));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code())

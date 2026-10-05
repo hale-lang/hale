@@ -97,13 +97,8 @@ pub const ANALYSIS_SEMANTICS_VERSION: u32 = 7;
 /// judgment recomputes this and refuses evidence produced by a
 /// different analysis.
 pub fn analysis_inputs_digest() -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
+    let mut h = hale_graph::identity::Fnv64::new();
+    let mut eat = |bytes: &[u8]| h.write(bytes);
     eat(&ANALYSIS_SEMANTICS_VERSION.to_le_bytes());
     eat(hale_stdlib::AP_SOURCE.as_bytes());
     eat(env!("CARGO_PKG_VERSION").as_bytes());
@@ -120,7 +115,7 @@ pub fn analysis_inputs_digest() -> u64 {
             eat(s.as_bytes());
             eat(b"\x1f");
         }
-        for f in surface.fns {
+        for f in surface.public() {
             eat(f.name.as_bytes());
             eat(&f.effects.0.to_le_bytes());
         }
@@ -130,7 +125,7 @@ pub fn analysis_inputs_digest() -> u64 {
         }
         eat(b"\x1e");
     }
-    h
+    h.finish()
 }
 
 /// Derive the sidecar for one bundle's lowered law table.
@@ -831,8 +826,8 @@ pub fn model_fanout<'a>(
 
 /// The evidence for `table`'s certificates over `model`. The effects
 /// certificates are the report the caller holds (`effects`: the
-/// check's run on a snapshot, [`crate::effects::effect_certificates`]
-/// for a bundle no check ran over), never a second run of the engine;
+/// check's run on a snapshot, `Snapshot::demand_effect_certificates`),
+/// never a second run of the engine;
 /// the counting engines (`@budget`) measure here, over the bundle's
 /// allocation summary, derived here for a bundle no snapshot holds.
 pub fn derive_certificate_evidence(

@@ -12,11 +12,13 @@
 //! entrypoint's own closed world. One text, N evaluations, N worlds —
 //! the soundness argument is unchanged.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn diags(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse failed");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)
@@ -39,6 +41,25 @@ group research = { Research };
 
 fn program(body: &str) -> String {
     format!("{WORLD}\n{body}\nfn main() {{ App {{ }}; }}")
+}
+
+/// The constitutions `src` adopts, with their identities: the
+/// projection of its snapshot's law selection (F.40 phase 4, A2), the
+/// one the artifact's `evaluation` section reads and the environment
+/// matrix compares. Change 10: identities come from SELECTION, which is
+/// what they always were — adoption is settled before any clause is
+/// evaluated.
+fn adopted(src: &str) -> hale_types::claims::Adoption {
+    use hale_frontend::snapshot::{Config, Snapshot};
+    let prog = parse_source(src).expect("parse");
+    let snap = match Snapshot::from_program(prog, Vec::new(), Config::check(false, false)) {
+        Ok(s) => s,
+        Err(_) => panic!("the program shapes"),
+    };
+    let laws = snap.demand_law_selection().expect("a program selects its laws");
+    let bundle = snap.bundle();
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    laws.identities(&progs)
 }
 
 #[test]
@@ -324,19 +345,8 @@ main locus App {
 /// must.
 #[test]
 fn constitution_identity_follows_the_closure_not_the_name() {
-    use hale_types::claims::constitution_identities;
-
     fn identities(src: &str) -> Vec<(String, String)> {
-        let prog = parse_source(src).expect("parse");
-        let mut programs = std::collections::BTreeMap::new();
-        programs.insert("app.hl".to_string(), &prog);
-        let bundle = hale_types::Bundle::new(programs);
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        // Change 10: identities come from SELECTION, which is what
-        // they always were — adoption is settled before any clause
-        // is evaluated.
-        let ids = constitution_identities(&progs, &[]);
+        let ids = adopted(src);
         ids.closure.into_iter().map(|i| (i.name, i.digest)).collect()
     }
 
@@ -375,19 +385,8 @@ main locus App {
 /// otherwise a base edit would slip past an identity comparison.
 #[test]
 fn a_changed_base_clause_changes_the_derived_digest() {
-    use hale_types::claims::constitution_identities;
-
     fn digest_of(src: &str, want: &str) -> String {
-        let prog = parse_source(src).expect("parse");
-        let mut programs = std::collections::BTreeMap::new();
-        programs.insert("app.hl".to_string(), &prog);
-        let bundle = hale_types::Bundle::new(programs);
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        // Change 10: identities come from SELECTION, which is what
-        // they always were — adoption is settled before any clause
-        // is evaluated.
-        let ids = constitution_identities(&progs, &[]);
+        let ids = adopted(src);
         ids.closure
             .into_iter()
             .find(|i| i.name == want)
@@ -422,16 +421,8 @@ main locus App {
 /// none.
 #[test]
 fn a_pure_composition_constitution_has_an_identity() {
-    use hale_types::claims::constitution_identities;
-
     fn adoption(src: &str) -> (Vec<String>, Vec<String>) {
-        let prog = parse_source(src).expect("parse");
-        let mut programs = std::collections::BTreeMap::new();
-        programs.insert("app.hl".to_string(), &prog);
-        let bundle = hale_types::Bundle::new(programs);
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let a = constitution_identities(&progs, &[]);
+        let a = adopted(src);
         (
             a.roots.iter().map(|i| i.name.clone()).collect(),
             a.closure.iter().map(|i| i.name.clone()).collect(),
@@ -467,16 +458,8 @@ main locus App {
 /// — that is the whole point of comparing closures.
 #[test]
 fn pure_composition_digests_follow_the_base() {
-    use hale_types::claims::constitution_identities;
-
     fn dev_digest(src: &str) -> String {
-        let prog = parse_source(src).expect("parse");
-        let mut programs = std::collections::BTreeMap::new();
-        programs.insert("app.hl".to_string(), &prog);
-        let bundle = hale_types::Bundle::new(programs);
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let a = constitution_identities(&progs, &[]);
+        let a = adopted(src);
         a.roots
             .iter()
             .find(|i| i.name == "Dev")
@@ -513,16 +496,8 @@ main locus App {
 /// between semantically identical closures.
 #[test]
 fn duplicate_bases_normalize_to_one_digest() {
-    use hale_types::claims::constitution_identities;
-
     fn digest(src: &str, want: &str) -> String {
-        let prog = parse_source(src).expect("parse");
-        let mut programs = std::collections::BTreeMap::new();
-        programs.insert("app.hl".to_string(), &prog);
-        let bundle = hale_types::Bundle::new(programs);
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let a = constitution_identities(&progs, &[]);
+        let a = adopted(src);
         a.roots
             .iter()
             .find(|i| i.name == want)
@@ -578,8 +553,6 @@ main locus App {
 /// once. (A second `adopt` is redundant, not contradictory.)
 #[test]
 fn adopting_the_same_constitution_twice_is_idempotent() {
-    use hale_types::claims::constitution_identities;
-
     let src = program(
         r#"
 constitution Core { r: count publishers(topic Settled) == 1; }
@@ -599,9 +572,7 @@ main locus App {
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("app.hl".to_string(), &prog);
     let bundle = hale_types::Bundle::new(programs);
-    let progs: Vec<&hale_syntax::ast::Program> =
-        bundle.programs.values().copied().collect();
-    let a = constitution_identities(&progs, &[]);
+    let a = adopted(&src);
     assert_eq!(
         a.roots.len(),
         1,
@@ -613,7 +584,7 @@ main locus App {
     // table is what every consumer judges, so it is the stronger
     // place to assert de-duplication anyway.
     let model =
-        hale_types::model_builder::derive_application_model(&bundle);
+        entries::derive_application_model(&bundle);
     let table =
         hale_types::claim_lowering::lower_claims(&bundle, &model);
     assert_eq!(

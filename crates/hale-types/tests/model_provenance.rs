@@ -11,11 +11,13 @@
 //! and pointing a bundle diagnostic at one would name the wrong
 //! source line.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::{parse_source, Diag};
 
 fn all_diags(src: &str) -> Vec<Diag> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
 }
 
 /// The span of `needle`'s first occurrence in `src`.

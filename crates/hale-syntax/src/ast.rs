@@ -2136,8 +2136,8 @@ pub struct ClosureAssertion {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClosureClause {
     Epoch(EpochSpec),
-    PersistsThrough(Vec<Ident>),
-    ResetsOn(Vec<Ident>),
+    PersistsThrough(RecoveryEvents),
+    ResetsOn(RecoveryEvents),
     /// v1.x-WINDOWED (F.34): after the assertion fires at a
     /// `duration(N)` epoch boundary, the runtime zeros the
     /// listed locus fields. Lets a closure express a per-window
@@ -2166,6 +2166,74 @@ impl ClosureDecl {
                 _ => None,
             })
             .unwrap_or(EpochSpec::Dissolve)
+    }
+
+    /// The recovery events the closure's `persists_through(...)` clauses
+    /// name in the alphabet, in source order: the events its accumulators
+    /// survive. A name outside the alphabet is not one.
+    pub fn persists_through(&self) -> impl Iterator<Item = RecoveryEvent> + '_ {
+        self.clauses.iter().flat_map(|c| match c {
+            ClosureClause::PersistsThrough(events) => events.events().collect(),
+            _ => Vec::new(),
+        })
+    }
+}
+
+/// A recovery event a closure's accumulators may persist through or
+/// reset on (F.40 phase 4, W3): what a parent's recovery statement does
+/// to a failed child. The alphabet is closed; lowering resets a
+/// closure's accumulators on each of them, unless the closure persists
+/// through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RecoveryEvent {
+    Restart,
+    RestartInPlace,
+    Quarantine,
+}
+
+impl RecoveryEvent {
+    /// The alphabet, in the order the spec lists it.
+    pub const ALL: [RecoveryEvent; 3] =
+        [RecoveryEvent::Restart, RecoveryEvent::RestartInPlace, RecoveryEvent::Quarantine];
+
+    /// The event a name spells, if the name is in the alphabet.
+    pub fn named(name: &str) -> Option<RecoveryEvent> {
+        RecoveryEvent::ALL.into_iter().find(|e| e.name() == name)
+    }
+
+    /// The name the event is written with, which is its recovery
+    /// statement's.
+    pub fn name(self) -> &'static str {
+        match self {
+            RecoveryEvent::Restart => "restart",
+            RecoveryEvent::RestartInPlace => "restart_in_place",
+            RecoveryEvent::Quarantine => "quarantine",
+        }
+    }
+}
+
+/// One name a `persists_through(...)` or `resets_on(...)` list writes:
+/// the name as written, and the event it is when the name is in the
+/// alphabet. The parser decides `event` once; a name outside the
+/// alphabet is kept as written for the check to refuse at its span.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoveryEventName {
+    pub name: Ident,
+    pub event: Option<RecoveryEvent>,
+}
+
+/// A `persists_through(...)` or `resets_on(...)` clause's list, with the
+/// clause's span (its keyword to its `;`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoveryEvents {
+    pub names: Vec<RecoveryEventName>,
+    pub span: Span,
+}
+
+impl RecoveryEvents {
+    /// The events the list names in the alphabet, in source order.
+    pub fn events(&self) -> impl Iterator<Item = RecoveryEvent> + '_ {
+        self.names.iter().filter_map(|n| n.event)
     }
 }
 

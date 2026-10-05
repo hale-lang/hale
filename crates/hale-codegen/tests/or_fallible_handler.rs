@@ -6,11 +6,12 @@
 //! idiom that made jobs::Queue non-reentrant (DbError→JobError
 //! conversion couldn't `fail` from inside an `or` clause).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -18,9 +19,8 @@ mod harness;
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

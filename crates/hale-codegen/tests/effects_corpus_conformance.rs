@@ -21,6 +21,8 @@
 //!      violates its own contract is either a compiler bug or a bad
 //!      fixture; both want to fail loudly here.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -145,7 +147,7 @@ fn corpus_declared_contracts_hold() {
             continue;
         }
         let Ok(program) = hale_syntax::parse_source(&src) else { continue };
-        for d in hale_types::check_program(&program) {
+        for d in entries::check_program(&program) {
             let m = &d.message;
             if m.contains("effect assertion violated")
                 || m.contains("phase contract violated")

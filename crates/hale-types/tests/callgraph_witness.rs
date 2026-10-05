@@ -107,7 +107,7 @@ fn stdlib_registry_effects_lookup() {
     // the whole frontier is classified — no residue
     let unclassified: Vec<&str> = SURFACES
         .iter()
-        .flat_map(|s| s.fns.iter())
+        .flat_map(|s| s.public())
         .filter(|e| e.effects.is_unclassified())
         .map(|e| e.name)
         .collect();

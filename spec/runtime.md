@@ -454,9 +454,14 @@ their own loop.
 subject's dispatch receives — `dynamic` (runtime hash lookup),
 `static_bucket` (compile-time subject id, dispatch still queued),
 `static_direct` (synchronous direct calls to every subscriber) —
-is a CONCLUSION derived from the canonical model, not a fact
-declared anywhere in the program. `DispatchPlan::derive(
-&ApplicationModel)` owns that derivation: the bus graph's
+is a CONCLUSION, not a fact declared anywhere in the program. A
+program has one plan, derived once (`DispatchPlan::from_gates`) from
+one gate set: the bus graph's sites, each keyed by its wire subject,
+and the bundled stdlib's sites after them (the logger's `log.**` and
+its sinks, which every program's lowering dispatches). Lowering
+lowers that plan, the execution identity frames its digest, and the
+canonical model holds it restricted to the subjects the program's own
+bus sites name and the loci the program declares. The bus graph's
 per-subject eligibility gates decide the flavor (a single ladder,
 `DispatchFlavor::of`, which the backend calls rather than
 re-deciding; `static_direct` takes three legs: every publisher and
@@ -477,8 +482,8 @@ display name, so a locus of an imported seed has its domains like
 any other (before F.40 phase 3's C5 they were found by the display
 name, which demangles an imported locus and never met the gates'
 spelling, and every such row printed no domain). Plan subjects are
-WIRE subjects; `hale model dump` prints the plan and the
-same-domain count.
+WIRE subjects; `hale model dump` prints the model's restriction of
+the plan and its same-domain count.
 
 The gates' placement leg reads the placement table (F.40 phase 3,
 P1): a type is same-thread only when every instance of it runs on
@@ -1472,7 +1477,12 @@ bytes for a bound subject) can use this too.
 fixed-slot ring over CALLER-PROVIDED memory, exposed as lotus
 primitives (`lotus_spsc_init` / `_emit` / `_note_drop` /
 `_set_tag_b` / `_read`) and the raw all-Int Hale surface
-`std::ring::__spsc_*`. Built for observation planes (the iris
+`std::ring::__spsc_*`, every address an `Int`: statements
+`__spsc_init(desc, data_off, tag_a, tag_b)`,
+`__spsc_emit(seg_base, desc, ring_slots, w0, w1)`,
+`__spsc_note_drop(desc)` and `__spsc_set_tag_b(desc, v)`, and
+`__spsc_read(seg_base, desc, ring_slots, cursor_io, overruns_io,
+out, max) -> Int`, the records copied. Built for observation planes (the iris
 observer attaches to these rings inside an shm segment,
 read-only, from a foreign process), so the layout is a STABLE
 documented contract:
@@ -1641,11 +1651,17 @@ zero_copy binding produces.
   miscompilation) — those terminate the process directly
   without the ClosureViolation routing path. See
   decisions §F.9.
-- **Recovery-event interaction.** `persists_through(...)` and
-  `resets_on(...)` clauses are honored at recovery time; the
-  accumulator is preserved or zeroed per declaration. The
-  exploded flag itself persists across `restart_in_place` and
-  `quarantine` (per default; future `clear_violation_on(...)`
+- **Recovery-event interaction.** At each recovery event a
+  parent applies to the locus (`restart`, `restart_in_place`,
+  `quarantine`; a spent `restart(c) for N` bound is
+  `quarantine`), the runtime zeroes the accumulators of every
+  closure whose `persists_through(...)` does not name that
+  event, and keeps those of the closures that do. Nothing reads
+  `resets_on(...)` at run time: it states the default, and the
+  check holds it to the alphabet and refuses an event a closure
+  names in both clauses (`spec/semantics.md` § Recovery events).
+  The exploded flag itself persists across `restart_in_place`
+  and `quarantine` (per default; future `clear_violation_on(...)`
   clause may override).
 
 ### Perspective infrastructure
@@ -1896,10 +1912,19 @@ zero_copy binding produces.
     owner's settle while another failure is posted to the same
     thread; the posted handler's entry and exit lines follow the held
     one's. Before the settle's guard they came inside it.
-  - `fd_handler_cell_no_hold.hl`, known open at inventory row R52 and
-    asserted to fail under ASan: a pool-placed child replaced while
-    its bus handler runs is freed under that handler (decision line
-    19).
+  - `fd_handler_cell*.hl` (inventory row R52, decision line 19): a
+    pool-placed child replaced while its bus handler runs keeps its
+    storage until that handler returns, under ASan in both dispatch
+    modes (before the handler's hold it was freed under the handler);
+    the owner's failure handler replacing and restarting the child
+    whose bus handler waits for that delivery, and a reclaim waiting
+    for a handler that waits on main, each end under the deadline. A
+    worker that carries the hold from cell to cell ends it for the
+    reclaim: a subscriber flooded so that its worker never finds its
+    queue empty is replaced mid-flood, and one of two subscribers
+    sharing a worker, their cells interleaved, is replaced
+    mid-stream; each reclaim completes with the publisher still
+    running, under ASan in both dispatch modes and the deadline.
 
   The lifecycle matrix holds the domain of every cell's
   `FailureDelivery` to the plan's: the cells whose failure is raised
@@ -1949,11 +1974,21 @@ counted from the run's path, and a main locus built more than once
 owes its eager spine at each of its teardowns: line 19's three
 cross-pool and shutdown fixtures are derived that way.
 The six started-run retention fixtures use the derived plan, including
-the edge from each run's end to its reclaim's completion. A posted run
+the edge from each run's end to its reclaim's completion. A subscriber
+a pool hosts owes a `Handler` row the same way (line 19, inventory row
+R52): one per delivered cell, as many as the run delivers, its
+instance retained until each ends, and the reclaim's completion after
+the end of every one that began before it (`l19_handler_cell_retained.hl`);
+the worker's hold, which a classic worker may carry to its next cell,
+ends no earlier, and no later than the carry's bounds (line 19 below). A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
-teardown at the literal. An owner's Reclaim entry follows its children's
+teardown at the literal. Any other literal a statement of a lifecycle
+body builds is torn down where its statement ends, so that body's row
+completes after the literal's reclaim: a run that exits inside the
+teardown has not reached the body's end and owes nothing that waits
+for it. An owner's Reclaim entry follows its children's
 Dissolve completion; its Reclaim completion follows their Reclaim
 completion. This permits retained storage while preserving physical
 release from children to owner.
@@ -2457,15 +2492,45 @@ its `KNOWN_OPEN` table, which is empty today.
   running run, a heap-use-after-free under AddressSanitizer in both
   dispatch modes. A run whose child is never reclaimed until its
   pool joins is still ordered against the teardown by the join.
-  A bus handler's cell holds nothing (inventory row R52, known
-  open): a reclaim of a pool-placed child does not wait for its
-  running bus handler, so replacing the child while its handler runs
-  frees the storage under it, a heap-use-after-free under
-  AddressSanitizer in both dispatch modes
-  (`fd_handler_cell_no_hold.hl`, under
-  `crates/hale-codegen/tests/fixtures/failure_delivery/`). A hold per
-  dispatched cell would close it at a cost on the dispatch path the
-  row states.
+  A bus handler running on a pool's worker holds its subscriber the
+  same way (inventory row R52): the worker takes a held ticket on the
+  subscriber when it starts the handler for a dequeued cell and ends it
+  when the handler returns, or where a shutdown abandons the parked
+  coroutine, and a reclaim waits for it as it waits for a running
+  `run()`, so a pool-placed child replaced while its bus handler runs
+  keeps its storage until that handler returns. Its drain and dissolve
+  still run beside the handler. Every locus a pool hosts is a placed
+  field of the main locus or nested under one, so main can reclaim it
+  while its worker runs a handler. The main queue's handlers and a
+  pinned thread's take no hold: their subscribers are reclaimed on
+  the thread that runs them, between handlers, or after the pinned
+  thread's join. A cell still queued for a subscriber whose reclaim
+  has deregistered it is dropped unrun when its worker reaches it
+  (GH #703); the worker takes the hold before it looks, so it either
+  drops the cell or the reclaim waits for its handler. Before the
+  hold, replacing the child while its handler ran freed the storage
+  under it, a heap-use-after-free under AddressSanitizer in both
+  dispatch modes (`fd_handler_cell_no_hold.hl`, under
+  `crates/hale-codegen/tests/fixtures/failure_delivery/`;
+  `l19_handler_cell_retained.hl`, whose trace holds the handler's end
+  before the reclaim's completion). Taking and ending the hold costs
+  two acquisitions of the run tickets' lock, so a classic pool's
+  worker carries it from a handler to its next cell when that cell is
+  the same subscriber's, and ends it: before a cell of another
+  subscriber or one that is no bus cell (a run, a root's init, a
+  failure's wake) and before a failure posted to its domain is
+  delivered; before it parks or idles (its queue empty, replay's
+  idle wait, the end of a root's init yield), so never across its
+  pool's shutdown; when the next cell's dead-self check drops it,
+  which runs on every cell; after the handler in progress when a
+  reclaim waits for the hold (the reclaim marks the ticket wanted
+  under the lock as it counts it, and the worker reads that word once
+  per cell before it carries); and after 64 handlers under one hold,
+  whatever else. A reclaim therefore waits for the handler in
+  progress and no further one. An async pool's worker carries
+  nothing: a coroutine's hold spans its parks, and the cells of one
+  subscriber overlap there, so each costs its cell the two
+  acquisitions. A dispatch on the publishing thread takes none.
   Shipped (F.40 phase 3,
   L5): the cancellation is named in the trace build on the thread
   that reclaims, inside the Reclaim's bracket, and the release build
@@ -2582,7 +2647,15 @@ shutdown, with that `Cancellation`; a run that never starts ends
 `Reclaim` cancels it, with that `Cancellation`, inside the reclaim;
 `Shutdown(PoolShutdown)` when the post is refused at shutdown, on
 the posting thread; `Shutdown(PoolTeardown)`, with a
-`Cancellation`, when the pools' teardown frees its cell), `FailureDelivery` (entered
+`Cancellation`, when the pools' teardown frees its cell), `Handler`
+(a bus handler on a pool's worker, once per delivered cell, carried
+hold or not: entered as the handler starts, holding its subscriber,
+completed as it returns, the hold still standing, or
+`Terminal(CanceledAfterStart)` where a shutdown abandons its parked
+coroutine; the oracle holds every handler of a subscriber that began
+before its `Reclaim` completed to have ended first; a hold carried
+past that end only makes the reclaim wait longer, and the trace does
+not name it), `FailureDelivery` (entered
 where the failure is raised, completed when the handler returns,
 in place or at settle), `ConstructionDelivery` (a held failure,
 from the hold to its handler's return at settle), `Restart`,
@@ -2613,14 +2686,19 @@ skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
 place while the params are open; for `Cancellation`, a reclaim
 cancels no queued run, which only a fixture whose cells no worker
-will dequeue may use); `<Kind>.<Point>` drops that one
+will dequeue may use); two name a hold, not a kind: `RunHold`, where
+a reclaim does not wait for its child's started runs, and
+`HandlerHold`, where a pool worker links no hold on a handler's
+subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan
 holds a run to, a run with that step removed or reordered fails the
 oracle, and with the violation that says why: a removed pool join
 lets a worker's teardown begin before its `run()` has ended, a
-removed hold delivers a failure before its owner's settle, an omitted
+removed hold delivers a failure before its owner's settle, a removed
+handler hold lets a subscriber's reclaim complete while its handler
+still runs, an omitted
 completion leaves a dependent step entered with its prerequisite
 unreached, and the host's own order (join, then abort the waits)
 fails line 7's edge.
@@ -3039,14 +3117,35 @@ checks: with a finalize present, any truncation is corruption.
 strongest check first: the recording's `exec_digest` — a framed
 SHA-256 over the toolchain source hash (compiler + runtime +
 stdlib implementation, via the stale-CLI build hash), the CLI
-version, build options, and every source file's full path,
-length, and contents — must match the recompiled program exactly;
+version, build options, and every source file's path, length, and
+contents — must match the recompiled program exactly. A file's
+path is its path in the program's source map, in the map's order
+(F.40 phase 4, I3; [verification.md § Source maps and model
+semantics](verification.md)): relative to one root, the same
+whichever target loaded the program, wherever the tree is checked
+out and however the target is typed, and distinct for two files of
+one name;
 the build options are the ones the compiling command was GIVEN
 (`hale run` and `hale replay` take `hale build`'s option flags —
 2026-09-20, GH #904; `run` compiled with the defaults and
 fingerprinted the defaults), so a recording made under `hale run
 --dev` is admitted by `hale replay --dev` and by no default
-replay. The build options include the environment's build knobs that
+replay. `hale build`, `hale run` and `hale replay` compute the
+options one way (F.40 phase 4, I2): the command's flags, `--env`'s
+role table (`replay --env` resolves the environment as `run --env`
+does, so a recording made under `--env prod` is admitted by `hale
+replay --env prod` and refused under another environment's roles or
+none), and the `[ffi]` link libraries and C sources each imported
+package's `hale.toml` declares, which every one of the three folds
+in (`run` and `replay` still BUILD with their flags alone, so a
+program that needs a package's `[ffi] csrc` builds under `hale build`
+only). Debug information is not part of it: the DWARF line tables
+`hale build` adds by default change no behaviour, so a recording made
+by a binary from `hale build` of a file is admitted by `hale replay`
+of that file, and a built binary and `hale run` of one program carry
+one identity. A recording of a DIRECTORY build is admitted by the
+replay of its entry file: the two name each file by its source-map
+path, so they frame one program alike. The build options include the environment's build knobs that
 change the binary (see *Build-time and toolchain environment*:
 `LOTUS_ASAN`, `LOTUS_TSAN`, `LOTUS_UBSAN`, `LOTUS_LTO`,
 `LOTUS_DISABLE_PREFETCH`, `LOTUS_NO_BUS_DEVIRT`,
@@ -3915,7 +4014,7 @@ build.
 | `HALE_MCP_ROOT` | none | `hale mcp`: every path a tool call names must resolve under this directory. | unset: no restriction |
 | `HALE_MODEL_TRACE` | none | Print the model builder's and the fleet lowering's demand-proof line on stderr (`1` turns it on). | off |
 | `HALE_REPLAY_TEST_HOLD` | none | A test hook: `hale replay` waits, between admitting a recording and starting it, until this path exists, so a test can replace the recording at a chosen moment. | unset |
-| `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from. | off |
+| `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from: every source of the identity-covered crates, the lock file and the ts-shim manifest (statted on each invocation, read only when one is newer than the binary), and the `dna/` tree it embeds. | off |
 | `HALE_STALE_DNA_ROOT` | none | The tree the stale-DNA check compares the embedded DNA against; the regression test's way to hand it a tree it may edit. | the workspace the binary was built from |
 | `HALE_TEST_JOBS` | none | How many workers `hale test` runs when `-j` is not given. | one per available core |
 | `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`) after its run and prints where, instead of removing it. | remove |

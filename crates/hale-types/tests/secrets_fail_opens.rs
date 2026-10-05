@@ -18,11 +18,13 @@
 //!   * `require attributed` reported `holds` for classes its
 //!     evaluator never implemented.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn errors(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)
@@ -405,7 +407,7 @@ fn sealing_a_locus_moves_the_shape_hash() {
         let p = parse_source(src).expect("parse");
         let mut m = std::collections::BTreeMap::new();
         m.insert(String::new(), &p);
-        let art = hale_types::topology::dump_topology(
+        let art = entries::dump_topology(
             &hale_types::Bundle::new(m),
         );
         let v: serde_json::Value =

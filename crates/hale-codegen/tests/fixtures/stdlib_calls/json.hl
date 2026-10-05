@@ -1,0 +1,24 @@
+// Build-only call fixture (F.40 phase 4, S0): the `std::json` arms the
+// rest of the line S shadow set calls only through the stdlib's own
+// JSON walkers, or not at all. Never run; `stdlib_call_fixtures` builds
+// it to IR.
+
+fn main() {
+    let json = "{\"a\": 1, \"b\": true, \"c\": 1.5, \"d\": \"x\"}";
+    std::json::next_non_ws(json, 0, 4);
+    std::json::next_quote_or_bs(json, 0, 4);
+    std::json::next_struct_or_quote(json, 0, 4);
+    let p = std::json::next_non_ws(json, 0, 4) + std::json::next_quote_or_bs(json, 0, 4)
+        + std::json::next_struct_or_quote(json, 0, 4);
+    let range = std::json::find_field_range_in(json, "a", 0, 40);
+    let it = std::json::object_first(json);
+    let klen = std::json::obj_key_len(it);
+    let is_a = std::json::obj_key_eq(it, json, "a");
+    let vi = std::json::obj_value_int(it, json);
+    let vb = std::json::obj_value_bool(it, json);
+    let vf = std::json::obj_value_float(it, json);
+    let vs = std::json::obj_value_string(it, json);
+    let arr = std::json::array_first_span("[{\"b\": true}]");
+    let found = std::json::iter_find_bool_field(arr, "[{\"b\": true}]", "b");
+    println(p + klen + vi, is_a, vb, vf, vs, found, range.start);
+}

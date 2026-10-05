@@ -357,10 +357,13 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
                         | EpochSpec::Explicit
                         | EpochSpec::Inline => {}
                     },
-                    ClosureClause::PersistsThrough(is)
-                    | ClosureClause::ResetsOn(is)
-                    | ClosureClause::ResetsPerEpoch(is)
-                    | ClosureClause::Captures(is) => names(is, f),
+                    ClosureClause::PersistsThrough(evs) | ClosureClause::ResetsOn(evs) => {
+                        let RecoveryEvents { names: written, span: _ } = evs;
+                        for RecoveryEventName { name: n, event: _ } in written {
+                            name(n, f);
+                        }
+                    }
+                    ClosureClause::ResetsPerEpoch(is) | ClosureClause::Captures(is) => names(is, f),
                 }
             }
         }

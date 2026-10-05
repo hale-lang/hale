@@ -1,0 +1,11 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::io::unix` at the
+// positions the rest of the line S shadow set does not reach. Never run:
+// the fd is never connected; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let fd = std::io::unix::listen_socket("/tmp/s0-fixture.sock") or - 1;
+    let ids = std::io::unix::user_id("root") + std::io::unix::group_id("root");
+    let peer = std::io::unix::peer_uid(fd) + std::io::unix::peer_gid(fd);
+    let groups = std::io::unix::peer_groups_count(fd) + std::io::unix::peer_group_at(fd, 0);
+    println(ids + peer + groups);
+}

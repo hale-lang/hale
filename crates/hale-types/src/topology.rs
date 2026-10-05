@@ -198,37 +198,6 @@ pub const TOPOLOGY_SCHEMA: &str = "1.19";
 /// `holds`).
 pub const MODEL_SEMANTICS: u32 = 2;
 
-/// The model identity alone (downstream handoff P26, 2026-08-12):
-/// the same `shape_hash` `dump_topology` stamps, for embedding in
-/// the built binary's observation segment, for a bundle no snapshot
-/// holds. It is the model half's digest read from the model
-/// ([`crate::topology_projection::project_shape_hash`], the function
-/// the artifact's own stamp is asserted equal to), not scraped out of a
-/// rendered artifact. A verb reads its snapshot's model instead
-/// (`model_identity` in the CLI).
-pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
-    crate::topology_projection::project_shape_hash(&crate::derive_application_model(bundle))
-}
-
-/// Serialize the bundle's model + claim results as the topology
-/// artifact (JSON), for a bundle no snapshot holds: the model is
-/// derived here ([`crate::derive_application_model`]). `hale check`
-/// renders its snapshot's model instead ([`dump_topology_over`]).
-pub fn dump_topology(bundle: &Bundle<'_>) -> String {
-    dump_topology_over(
-        bundle,
-        &crate::derive_application_model(bundle),
-        &crate::effects::effect_certificates(bundle),
-        &alloc_summary::derive_alloc_summary(bundle),
-    )
-}
-
-/// [`dump_topology`], under its Change-6 name (the projection tests').
-#[doc(hidden)]
-pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
-    dump_topology(bundle)
-}
-
 /// The artifact of `bundle`, projected from `app_model`, the model the
 /// caller holds (F.40 phase 2.3: `hale check`'s snapshot's, the one its
 /// laws were judged over, so a check of a program with claims derives
@@ -237,13 +206,17 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
 /// direction; Change 9 deleted the legacy gathering that had stayed
 /// behind as the corpus differential's comparison arm). `effects` is
 /// the effects certificate report of the same check, which the law
-/// evidence reads, and `summary` the allocation summary that check read
-/// (`demand_alloc_summary`).
+/// evidence reads, `summary` the allocation summary that check read
+/// (`demand_alloc_summary`), and `laws` the law selection that check
+/// reported (`demand_law_selection`): the law rows' clauses, the
+/// constitution identities projected from its adoption and the
+/// environment it was made for.
 pub fn dump_topology_over(
     bundle: &Bundle<'_>,
     app_model: &hale_model::ApplicationModel,
     effects: &crate::effects::EffectCertificates,
     summary: &alloc_summary::AllocSummary,
+    laws: &crate::claims::LawSelection,
 ) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
@@ -396,14 +369,12 @@ pub fn dump_topology_over(
     // results) — and since Change 9 that same judgment is what
     // `hale check` reports, so the document and the checker cannot
     // disagree about a law. Law SELECTION still comes from the
-    // claim surface, which is where adoption is settled; this call
-    // takes the constitution identities from it and nothing else.
-    let identities = crate::claims::constitution_identities(
-        &programs,
-        &bundle.import_renames,
-    );
+    // claim surface, which is where adoption is settled: the check's
+    // selection, handed in, whose adoption projects to the
+    // constitution identities.
+    let identities = laws.identities(&programs);
     let vmodel = app_model;
-    let law_table = crate::claim_lowering::lower_claims(bundle, vmodel);
+    let law_table = crate::claim_lowering::lower_claims_over(bundle, vmodel, laws);
     let law_evidence = crate::evidence::derive_certificate_evidence_over(
         bundle, &law_table, vmodel, effects, summary,
     );
@@ -1382,8 +1353,9 @@ pub fn dump_topology_over(
     // environment labels selecting identical law produce equivalent
     // certificates on the `closure` alone — but the prose promised
     // this section says WHICH deployment was certified, and only the
-    // label can say that.
-    if let Some(env) = crate::claims::current_environment() {
+    // label can say that. It is the selection's: the environment the
+    // law was selected for.
+    if let Some(env) = &laws.environment {
         out.push_str(&format!(
             "    \"environment\": {},\n",
             quote(&env)
@@ -1435,17 +1407,31 @@ pub fn dump_topology_over(
     // family imports an outside verdict any more — so no
     // non-passing law row can coexist with a `clean` document
     // verdict (round 1).
-    let law_pass = law_rows.iter().all(|r| {
-        matches!(r.family, hale_model::JudgmentFamily::Fleet)
-            || r.verdict.passed()
-    });
-    let all_pass = outcomes.iter().all(|o| o.result.passed())
-        && lowered.iter().all(|r| r.result.passed())
-        && law_pass
-        && law_issues.is_empty();
+    //
+    // The rule is the model's (`hale_model::document_verdict`), the
+    // one admission recomputes the field with.
+    let document = hale_model::document_verdict(
+        outcomes
+            .iter()
+            .map(|o| o.result)
+            .chain(lowered.iter().map(|r| r.result))
+            .chain(
+                law_rows
+                    .iter()
+                    .filter(|r| {
+                        !matches!(
+                            r.family,
+                            hale_model::JudgmentFamily::Fleet
+                        )
+                    })
+                    .map(|r| r.verdict),
+            )
+            .map(hale_model::VerdictIr::from),
+        law_issues.len(),
+    );
     out.push_str(&format!(
         ",\n  \"verdict\": {}",
-        quote(if all_pass { "clean" } else { "law_failed" })
+        quote(document.as_str())
     ));
 
     // Integrity (schema 1.3). `shape_hash` is an IDENTITY, not an
@@ -1814,10 +1800,5 @@ pub(crate) fn trim_trailing_comma(s: &mut String) {
 /// FNV for the per-topic payload shape); deterministic, dependency-
 /// free, stable across platforms.
 pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+    hale_graph::identity::fnv64(bytes)
 }

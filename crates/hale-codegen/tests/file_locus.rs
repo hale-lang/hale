@@ -10,8 +10,6 @@
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -32,9 +30,8 @@ fn unique_path(tag: &str) -> std::path::PathBuf {
 }
 
 fn build_and_run(name: &str, source: &str) -> (String, String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

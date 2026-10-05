@@ -25,8 +25,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 /// A flood program parameterized by the per-payload body. An async_io
 /// subscriber (its run() parked forever on an accept — the server-loop
 /// shape) counts deliveries and, at the target count, prints final RSS and
@@ -96,9 +94,8 @@ fn flood_src(body_expr: &str, n: u32) -> String {
 /// same harness footprint, so the gap this test asserts on was 0
 /// whatever the payloads did (GH #772).
 fn build_and_rss(name: &str, src: &str) -> i64 {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bus_async_reclaim_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);

@@ -17,6 +17,8 @@
 //! declaration a conscious act rather than a silent regression to
 //! the old permissiveness.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::ast::Program;
 use hale_syntax::parse_source;
 use hale_types::Bundle;
@@ -24,7 +26,7 @@ use std::collections::BTreeMap;
 
 fn errors(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)
@@ -192,7 +194,7 @@ fn non_stdlib_qualified_literals_keep_the_historical_tolerance() {
     let program = parse_source(src).expect("parse");
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), &program);
-    let permissive: Vec<String> = hale_types::check_bundle(&Bundle::new(programs))
+    let permissive: Vec<String> = entries::check_bundle(&Bundle::new(programs))
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)

@@ -5812,16 +5812,16 @@ impl Parser {
                 Ok(ClosureClause::Epoch(spec))
             }
             TokenKind::PersistsThrough => {
-                self.bump();
+                let kw = self.bump();
                 let names = self.parse_paren_recovery_event_list()?;
-                self.expect(TokenKind::Semi, ";")?;
-                Ok(ClosureClause::PersistsThrough(names))
+                let semi = self.expect(TokenKind::Semi, ";")?;
+                Ok(ClosureClause::PersistsThrough(RecoveryEvents { names, span: kw.span.merge(semi.span) }))
             }
             TokenKind::ResetsOn => {
-                self.bump();
+                let kw = self.bump();
                 let names = self.parse_paren_recovery_event_list()?;
-                self.expect(TokenKind::Semi, ";")?;
-                Ok(ClosureClause::ResetsOn(names))
+                let semi = self.expect(TokenKind::Semi, ";")?;
+                Ok(ClosureClause::ResetsOn(RecoveryEvents { names, span: kw.span.merge(semi.span) }))
             }
             // v1.x-WINDOWED (F.34): `resets_per_epoch(f1, f2, ...);`
             // names locus fields to zero AFTER assertion eval at a
@@ -5906,11 +5906,12 @@ impl Parser {
     /// `resets_on(...)` take these names as bare keywords per
     /// the spec example `persists_through(restart_in_place,
     /// quarantine);` — each event spelling is a reserved
-    /// keyword token, not a plain identifier. Each keyword
-    /// surfaces here as an `Ident` whose `name` matches the
-    /// keyword spelling so downstream code can match on the
-    /// string.
-    fn parse_paren_recovery_event_list(&mut self) -> Result<Vec<Ident>, Diag> {
+    /// keyword token, not a plain identifier. Each name is
+    /// typed here, once: the event it is when it is in the
+    /// alphabet ([`RecoveryEvent`]), and the name as written
+    /// either way, which the check refuses at its span when it
+    /// is not (F.40 phase 4, W3).
+    fn parse_paren_recovery_event_list(&mut self) -> Result<Vec<RecoveryEventName>, Diag> {
         self.expect(TokenKind::LParen, "(")?;
         let mut names = Vec::new();
         if !self.at(&TokenKind::RParen) {
@@ -5923,17 +5924,20 @@ impl Parser {
         Ok(names)
     }
 
-    fn parse_recovery_event_name(&mut self) -> Result<Ident, Diag> {
+    fn parse_recovery_event_name(&mut self) -> Result<RecoveryEventName, Diag> {
         let tok = self.peek_token().clone();
         let name: &'static str = match tok.kind {
             TokenKind::Restart => "restart",
             TokenKind::RestartInPlace => "restart_in_place",
             TokenKind::Quarantine => "quarantine",
             TokenKind::Dissolve => "dissolve",
-            _ => return self.expect_ident("recovery event name"),
+            _ => {
+                let name = self.expect_ident("recovery event name")?;
+                return Ok(RecoveryEventName { event: RecoveryEvent::named(&name.name), name });
+            }
         };
         self.bump();
-        Ok(Ident::new(name, tok.span))
+        Ok(RecoveryEventName { name: Ident::new(name, tok.span), event: RecoveryEvent::named(name) })
     }
 
     fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {

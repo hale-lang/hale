@@ -1,0 +1,55 @@
+// A bus handler's cell holds its subscriber (inventory row R52), and the
+// handler the reclaim waits for waits for the reclaiming thread. `b`, on
+// pool `right`, runs a bus handler that opens a gate, sleeps 200 ms,
+// reads its heap name and fails. Its failure is delivered on its
+// owner's domain, main (decision L0-1), so the handler waits until main
+// has run the delivery. App's run() replaces `b` once the gate opens,
+// spinning without a yield, so main is inside the old child's reclaim,
+// waiting for the handler, when the failure is posted to it. The wait
+// runs the failures posted to its thread, so the delivery runs there,
+// the handler returns, and the reclaim completes.
+// Expected outcome: `read-whole delivered-whole dissolved-once-each
+// finished`, the handler and the delivery both printing the old child's
+// name.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.cellblock.go"; }
+
+fn gate() -> String { return "/tmp/hale-fd-cellblock-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    closure fuse { captures: tag; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            std::io::fs::write_file(gate(), "go") or discard;
+            std::time::sleep(200ms);
+            println("ev handler-read " + self.name);
+            violate fuse;
+        }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { b: Kid = Kid { tag: 1 }; }
+    placement { b: cooperative(pool = right); }
+    bus { publish Gos; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("ev delivered " + c.name);
+    }
+    run() {
+        Gos <- Go { k: 1 };
+        let until = std::time::monotonic_ns() + 5000000000;
+        while (!std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until) { }
+        self.b = Kid { tag: 2 };
+        println("ev replaced");
+        std::time::sleep(300ms);
+        println("ev finished");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

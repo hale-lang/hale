@@ -1,0 +1,7 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::http::parse_request`
+// at statement position. Never run; `stdlib_call_fixtures` builds it to
+// IR.
+
+fn main() {
+    std::http::parse_request("GET / HTTP/1.1\r\n\r\n");
+}

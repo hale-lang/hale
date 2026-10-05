@@ -13,13 +13,14 @@ use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/sanitize.rs"]
 mod sanitize;
 
 fn build_and_run(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
+    build_opts::build_source(src, &bin, &sanitize::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     String::from_utf8_lossy(&out.stdout).to_string()

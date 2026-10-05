@@ -34,6 +34,8 @@ use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 const PRELUDE: &str = r#"
 type Row { name: String; n: Int; }
@@ -80,7 +82,7 @@ fn build_diags(program: &hale_syntax::ast::Program) -> Vec<hale_syntax::error::D
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), program);
     let bundle = hale_types::Bundle::new(programs);
-    hale_types::check_bundle_for_build(&bundle, false)
+    entries::check_bundle_for_build(&bundle, false)
 }
 
 fn errors(src: &str) -> Vec<(String, usize, usize)> {
@@ -111,7 +113,7 @@ fn run_asan(tag: &str, src: &str) -> String {
     let clean: Vec<_> = build_diags(&program).into_iter().filter(|d| d.is_error()).collect();
     assert!(clean.is_empty(), "the program must check clean: {clean:?}");
     let bin = harness::unique_bin(tag);
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .env("ASAN_OPTIONS", "detect_leaks=0")

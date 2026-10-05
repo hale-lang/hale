@@ -1,0 +1,9 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::bus::__local_dispatch`
+// at expression position. (The bus transport primitives the checker
+// admits only from the stdlib are reached through the stdlib's unix
+// transports instead.) Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let d = std::bus::__local_dispatch("subject", std::bytes::from_string("x"));
+    println(d);
+}

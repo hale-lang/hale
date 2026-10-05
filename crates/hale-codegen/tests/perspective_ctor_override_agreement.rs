@@ -8,11 +8,12 @@
 //! a program that checks and then fails to build is the worst
 //! failure mode the toolchain has (see corpus_check_build_agreement).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -54,7 +55,7 @@ fn main() {{ App {{ }}; }}
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let bin = harness::unique_bin("hale_test_persp_ctor_locus");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?}", out.status);

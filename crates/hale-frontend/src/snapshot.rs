@@ -17,6 +17,16 @@
 //!   graph and the handler rows over the checked programs, what the
 //!   model reads beside the scope. The checker reads the handler rows
 //!   too, demanded before it runs.
+//! - [`Snapshot::demand_flows`]: the flow rows over the checked
+//!   programs, which the check, the lifecycle plan, the lowering view,
+//!   the editor's dependents relation and `check --flows` read.
+//! - [`Snapshot::demand_law_selection`]: law selection over the programs
+//!   after the sequence, for the configuration's environment: the check
+//!   reports its diagnostics, the laws stage lowers its clauses, and the
+//!   artifact projects its adoption to the constitution identities.
+//! - [`Snapshot::demand_role_rows`]: the role declarations, `@gated`
+//!   sites and role source over the programs after the sequence, which
+//!   the check's role rules read.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
 //!   over the checked programs and the stdlib's analysis copy, which
 //!   the check's effects certificate engine and the effect rows read.
@@ -70,18 +80,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hale_graph::ids::SiteId;
+use hale_model::dispatch_plan::DispatchPlan;
 use hale_model::ApplicationModel;
 use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
+use hale_types::arrangement::Arrangement;
 use hale_types::capability::uses::CapabilityUses;
 use hale_types::capability::TargetRow;
 use hale_types::binding_rows::BindingRows;
+use hale_types::claims::LawSelection;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
 use hale_types::entry::EntryRow;
+use hale_types::flows::FlowRows;
 use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::lifecycle::LifecyclePlan;
@@ -89,6 +103,7 @@ use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
 use hale_types::resolved::{IntraLocusStage, LoweringView};
+use hale_types::roles::RoleRows;
 use hale_types::symbol::SourceFile;
 use hale_types::typed_bodies::{TypedBodies, TypingRecord};
 use hale_types::Bundle;
@@ -105,7 +120,18 @@ use crate::source::SourceProvider;
 /// The families a snapshot produces, in the order a build demands them.
 /// The names are the registry's (`spec/registry.md`). `bus_graph`,
 /// `ownership` and `handler_routing` count the checked programs' graphs,
-/// the model's inputs; `intra_locus` is the intra-locus rewrite, whose
+/// the model's inputs; `flows` the flow rows, which the check, the
+/// lifecycle plan and the lowering view read; `law_selection` law
+/// selection, which the check, the laws stage and the artifact read
+/// ([`Snapshot::demand_law_selection`]); `api_surface` the role rows,
+/// which the check reads ([`Snapshot::demand_role_rows`]: the surface
+/// itself is the desugar sequence's product); `arrangement` the
+/// placement table's projection onto the user's declarations, which the
+/// model and the lowering view read ([`Snapshot::demand_arrangement`]);
+/// `dispatch` the dispatch plan, derived once from the one gate set
+/// ([`Snapshot::demand_dispatch_plan`]), which the model and the lowering
+/// view read;
+/// `intra_locus` is the intra-locus rewrite, whose
 /// relation the check reads (rule 10) and whose program lowering
 /// continues from; `lowering_view` is the `demand` family's own, the
 /// view over the resolved program whose tables are lowering's ownership,
@@ -117,7 +143,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 21] = [
+pub const FAMILIES: [&str; 26] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -131,9 +157,14 @@ pub const FAMILIES: [&str; 21] = [
     "bus_graph",
     "ownership",
     "handler_routing",
+    "flows",
+    "law_selection",
+    "api_surface",
     "alloc_summary",
     "effects",
     "placement",
+    "arrangement",
+    "dispatch",
     "lifecycle_order",
     "model",
     "claims",
@@ -200,7 +231,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// `hale check`'s: the host, no api, no environment.
+    /// `hale check`'s: the host, no api, no environment. `--env` sets
+    /// the environment and its roles, as a build's caller does.
     pub fn check(whole_program: bool, allow_unowned_subscriber: bool) -> Self {
         Config {
             target: Target::host(),
@@ -235,8 +267,8 @@ impl Config {
         }
     }
 
-    /// The test harness's (codegen's `build_executable_with_options`,
-    /// over [`Snapshot::from_program`]): a build's config whose
+    /// The test harness's (codegen's `tests/support/build.rs`, over
+    /// [`Snapshot::load`] or [`Snapshot::from_program`]): a build's config whose
     /// lowering is not gated on a check. The harness runs no checker —
     /// a test that wants the check calls it itself, and the agreement
     /// sweep (`corpus_check_build_agreement`) compares the two — so its
@@ -296,23 +328,6 @@ impl Config {
 
 /// What identifies a snapshot. Two snapshots with different keys were
 /// loaded from different inputs, and share no result.
-/// FNV-1a/64 over whatever the key hashes.
-struct Fnv(u64);
-impl Fnv {
-    fn new() -> Self {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= *b as u64;
-            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SnapshotKey {
     /// The target the load started from, canonical where it exists.
@@ -410,10 +425,6 @@ pub struct EditorScope<'a> {
 
 /// One load's inputs, and the families derived from them.
 pub struct Snapshot {
-    /// The environment this snapshot's claims are checked for and its
-    /// artifact is labelled with; bound around each demand and each
-    /// serialization by [`Snapshot::with_env`].
-    env: hale_types::claims::EnvBinding,
     key: SnapshotKey,
     config: Config,
     files: Vec<PathBuf>,
@@ -467,11 +478,17 @@ pub struct Snapshot {
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
+    flows: OnceCell<Result<FlowRows, Blocked>>,
     /// Shared with the effect rows, which hold the summary their walk
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
+    law_selection: OnceCell<Result<LawSelection, Blocked>>,
+    role_rows: OnceCell<Result<RoleRows, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
+    arrangement: OnceCell<Result<Arrangement, Blocked>>,
+    dispatch_gates: OnceCell<Result<Vec<hale_model::DispatchGate>, Blocked>>,
+    dispatch_plan: OnceCell<Result<DispatchPlan, Blocked>>,
     lifecycle: OnceCell<Result<LifecyclePlan, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     /// The typing stage, and how many of its diagnostics are the
@@ -542,7 +559,7 @@ impl Snapshot {
         }
         .map_err(LoadError::Load)?;
         // the key names what was read, so it is computed after the load
-        let mut h = Fnv::new();
+        let mut h = hale_graph::identity::Fnv64::new();
         for (path, text) in &loaded.sources {
             h.write(path.to_string_lossy().as_bytes());
             h.write(b"\0");
@@ -560,10 +577,11 @@ impl Snapshot {
         Snapshot::shape(entry, Some(mode), key, config, loaded)
     }
 
-    /// A snapshot of a program a caller already holds: the test
-    /// harness's (codegen's `build_executable_with_options`), whose
-    /// program was parsed from a string and carries its imports
-    /// already merged under `import_renames`. It is shaped as
+    /// A snapshot of a program a caller already holds: the frontend's
+    /// entry for the tests that construct a view directly (codegen's
+    /// `tests/support/build.rs` `build_program` is one), whose
+    /// program was parsed from a string or built by the test and carries
+    /// its imports already merged under `import_renames`. It is shaped as
     /// [`Snapshot::load`] shapes a loaded seed; it has no files, so no
     /// source map, and its sites are seeded by ordinal.
     pub fn from_program(
@@ -611,23 +629,9 @@ impl Snapshot {
         config: Config,
         loaded: Loaded,
     ) -> Result<Snapshot, LoadError> {
-        // GH #409: the claims name the environment they were checked
-        // for; its label travels beside the evaluation. The binding is
-        // the snapshot's own and is scoped around each demand and each
-        // serialization ([`Snapshot::with_env`]), never left on the
-        // thread for the next snapshot to read.
-        let env = hale_types::claims::EnvBinding {
-            name: config.environment.as_ref().map(|e| e.name.clone()),
-            injected: config
-                .environment
-                .as_ref()
-                .map(|e| e.adopt.clone())
-                .unwrap_or_default(),
-        };
         let builds: [Cell<u32>; FAMILIES.len()] = Default::default();
         let mut snap = Snapshot {
             key,
-            env,
             config,
             files: loaded.files,
             own_files: loaded.own_files,
@@ -657,9 +661,15 @@ impl Snapshot {
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
+            flows: OnceCell::new(),
             alloc_summary: OnceCell::new(),
+            law_selection: OnceCell::new(),
+            role_rows: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
+            arrangement: OnceCell::new(),
+            dispatch_gates: OnceCell::new(),
+            dispatch_plan: OnceCell::new(),
             lifecycle: OnceCell::new(),
             model: OnceCell::new(),
             typing_stage: OnceCell::new(),
@@ -936,15 +946,6 @@ impl Snapshot {
         b
     }
 
-    /// Run `f` with this snapshot's environment bound: what a demand
-    /// runs under, and what a caller serializing this snapshot's
-    /// artifact (`hale check --dump-topology`) wraps the serialization
-    /// in, so the label and the claims' explanations are this
-    /// snapshot's whatever was loaded since.
-    pub fn with_env<R>(&self, f: impl FnOnce() -> R) -> R {
-        hale_types::claims::with_env_binding(&self.env, f)
-    }
-
     /// How many times each family's producer ran for this snapshot,
     /// and each stage of the check: every family of [`FAMILIES`] and
     /// every stage of [`STAGES`], zero when never demanded.
@@ -1163,6 +1164,7 @@ impl Snapshot {
         let inputs = hale_types::check::CheckInputs {
             top: &scope.top,
             handlers: self.demand_handlers().map_err(Clone::clone)?,
+            flows: self.demand_flows().map_err(Clone::clone)?,
             ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
             effects: &effects,
             entry: self.demand_entry().map_err(Clone::clone)?,
@@ -1174,6 +1176,9 @@ impl Snapshot {
             placement: self.demand_placement().map_err(Clone::clone)?,
             target: self.demand_target().map_err(Clone::clone)?,
             uses: self.demand_capability_uses().map_err(Clone::clone)?,
+            laws: self.demand_law_selection().map_err(Clone::clone)?,
+            roles: self.demand_role_rows().map_err(Clone::clone)?,
+            api_surface: self.api_surface(),
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered
@@ -1363,6 +1368,78 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The flow rows of the checked programs ([`hale_types::flows::survey`]):
+    /// which child types a `release` clause makes flows, and each locus
+    /// declaration's run row. The check's run-row rules and accept/release
+    /// law, the lifecycle plan, the lowering view, the editor's dependents
+    /// relation and `check --flows` read them. Blocked with the scope; the
+    /// survey reads declarations, not types.
+    pub fn demand_flows(&self) -> Result<&FlowRows, &Blocked> {
+        self.flows
+            .get_or_init(|| {
+                self.scope().map_err(Clone::clone)?;
+                self.count("flows");
+                // In the bundle's order, as the handler rows.
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::flows::survey(&programs, &bundle.import_renames))
+            })
+            .as_ref()
+    }
+
+    /// Law selection ([`hale_types::claims::select_laws`], F.40 phase 4,
+    /// A2): the clauses the programs' claims and constitutions select,
+    /// the groups they resolve, the constitutions the entry adopts and
+    /// their closure, and selection's diagnostics, over the programs
+    /// after the sequence, for the configuration's environment (its
+    /// label, and the constitutions it injected, which a diagnostic names).
+    /// The check reports its diagnostics (`CheckInputs::laws`), the laws
+    /// stage lowers its clauses, and the artifact projects its adoption
+    /// to the constitution identities and carries its environment.
+    /// Not gated on the typing: it reads clause text, adoption and
+    /// membership, never types, so a program that does not typecheck
+    /// still answers it. A seed with a hole is not a program, and its
+    /// selection is blocked with its scope.
+    pub fn demand_law_selection(&self) -> Result<&LawSelection, &Blocked> {
+        self.law_selection
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "law_selection", ..self.hole_blocked() });
+                }
+                self.count("law_selection");
+                let env = hale_types::claims::EnvBinding {
+                    name: self.config.environment.as_ref().map(|e| e.name.clone()),
+                    injected: self.config.environment.as_ref().map(|e| e.adopt.clone()).unwrap_or_default(),
+                };
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::claims::select_laws(&programs, &bundle.import_renames, &env))
+            })
+            .as_ref()
+    }
+
+    /// The role rows ([`hale_types::roles::role_rows`], F.40 phase 4, A4):
+    /// every `role` declaration (duplicates kept), every `@gated` site by
+    /// kind and the api entry's role source, over the programs after the
+    /// sequence, with or without an `api:` entry. Counted as the
+    /// `api_surface` family, whose rows they are; the surface itself is
+    /// the sequence's ([`Snapshot::api_surface`]). The check's role rules
+    /// read them (`CheckInputs::roles`). Not gated on the typing: they
+    /// read declarations only. A seed with a hole is not a program, and
+    /// its rows are blocked with its scope.
+    pub fn demand_role_rows(&self) -> Result<&RoleRows, &Blocked> {
+        self.role_rows
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "api_surface", ..self.hole_blocked() });
+                }
+                let entry = self.demand_entry().map_err(Clone::clone)?;
+                self.count("api_surface");
+                Ok(hale_types::roles::role_rows(&self.bundle(), entry))
+            })
+            .as_ref()
+    }
+
     /// The effect rows over the checked programs: one fixpoint, with
     /// the stdlib's analysis copy beside them and cross-seed calls
     /// resolved through the import renames. Per fn: the resolved call
@@ -1429,6 +1506,66 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The arrangement ([`hale_types::arrangement::project_arrangement`]):
+    /// the placement table's rows projected onto the user's locus
+    /// declarations, with the births the ownership graph finds outside
+    /// it. The model makes its instances, owners, placements and
+    /// placement holes from it, and the lowering view its dispatch plans'
+    /// domains: one projection for both. Blocked with the table and the
+    /// graph.
+    pub fn demand_arrangement(&self) -> Result<&Arrangement, &Blocked> {
+        self.arrangement
+            .get_or_init(|| {
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                self.count("arrangement");
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership))
+            })
+            .as_ref()
+    }
+
+    /// The dispatch gates ([`hale_types::bus_graph::derive_dispatch_gates`],
+    /// F.40 phase 4, S9): per bus subject, what the plan decides its
+    /// flavor from, over the bus graph's rows keyed by wire and the
+    /// stdlib's rows after them, which are derived once per process from
+    /// the stdlib's analysis copy, so no lowering view is built for them.
+    /// Lowering's subjects in lowering's order. Blocked with the graph.
+    /// The family's count is its plan's ([`Snapshot::demand_dispatch_plan`]):
+    /// the gates are its first product, derived once beside it.
+    pub fn demand_dispatch_gates(&self) -> Result<&[hale_model::DispatchGate], &Blocked> {
+        self.dispatch_gates
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                let bus = self.demand_bus_graph().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                Ok(hale_types::bus_graph::derive_dispatch_gates(bus, &scope.top, placement))
+            })
+            .as_ref()
+            .map(Vec::as_slice)
+    }
+
+    /// The dispatch plan (F.40 phase 4, S9): per bus subject, the flavor
+    /// it is lowered to, from the gates ([`Snapshot::demand_dispatch_gates`])
+    /// and the arrangement's domains ([`Snapshot::demand_arrangement`]),
+    /// derived once (`DispatchPlan::from_gates`). The one plan: the
+    /// lowering view carries it to lowering, whose execution digest frames
+    /// it, and the model holds it projected onto its own subjects and loci,
+    /// so the model's dump prints the plan lowering lowers. Neither reads
+    /// the other: a check that builds the model builds no lowering view
+    /// for it. Blocked with the gates and the arrangement.
+    pub fn demand_dispatch_plan(&self) -> Result<&DispatchPlan, &Blocked> {
+        self.dispatch_plan
+            .get_or_init(|| {
+                let gates = self.demand_dispatch_gates().map_err(Clone::clone)?;
+                let arrangement = self.demand_arrangement().map_err(Clone::clone)?;
+                self.count("dispatch");
+                Ok(DispatchPlan::from_gates(gates, &arrangement.domains()))
+            })
+            .as_ref()
+    }
+
     /// The top-level declarations of the programs held, in program then
     /// item order, each with its minted site ([`crate::dependents`]).
     /// Empty for a seed with a hole, which is not a program.
@@ -1468,8 +1605,7 @@ impl Snapshot {
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
-                let programs: Vec<&Program> = self.programs.values().collect();
-                let flows = hale_types::flows::survey(&programs, &self.import_renames);
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 Ok(DependencyIndex::build(&crate::dependents::Families {
                     programs: &self.programs,
                     decls: self.declarations(),
@@ -1477,7 +1613,7 @@ impl Snapshot {
                     ownership,
                     bus,
                     placement,
-                    flows: &flows,
+                    flows,
                 }))
             })
             .as_ref()
@@ -1500,15 +1636,14 @@ impl Snapshot {
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
+                let flows = self.demand_flows().map_err(Clone::clone)?;
                 self.count("lifecycle_order");
                 let bundle = self.bundle();
-                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                let flows = hale_types::flows::survey(&programs, &bundle.import_renames);
                 Ok(hale_types::lifecycle::derive::derive_lifecycle(&hale_types::lifecycle::derive::LifecycleInputs {
                     bundle: &bundle,
                     placement,
                     handlers,
-                    flows: &flows,
+                    flows,
                     bus,
                     entry,
                 }))
@@ -1523,7 +1658,7 @@ impl Snapshot {
     /// claim's.
     pub fn demand_model(&self) -> Result<&ApplicationModel, &Blocked> {
         self.model
-            .get_or_init(|| self.with_env(|| {
+            .get_or_init(|| {
                 let typed = self.typing().map_err(Clone::clone)?;
                 if !hale_types::denotes_a_model(typed) {
                     return Err(Blocked {
@@ -1545,13 +1680,15 @@ impl Snapshot {
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
                     placement: self.demand_placement().map_err(Clone::clone)?,
+                    arrangement: self.demand_arrangement().map_err(Clone::clone)?,
+                    dispatch_plan: self.demand_dispatch_plan().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
                     &self.bundle(),
                     &inputs,
                 ))
-            }))
+            })
             .as_ref()
     }
 
@@ -1567,7 +1704,7 @@ impl Snapshot {
 
     fn typing_stage(&self) -> Result<&(Checked, usize), &Blocked> {
         self.typing_stage
-            .get_or_init(|| self.with_env(|| {
+            .get_or_init(|| {
                 let mut diags = self.typing().map_err(Clone::clone)?.to_vec();
                 self.count("typing_stage");
                 // The `bare_fallible` law, with the typing diagnostics:
@@ -1587,7 +1724,7 @@ impl Snapshot {
                     diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, true));
                 }
                 Ok((Checked { diags }, own))
-            }))
+            })
             .as_ref()
     }
 
@@ -1599,7 +1736,7 @@ impl Snapshot {
     /// Blocked with the typing.
     pub fn demand_laws(&self) -> Result<&Checked, &Blocked> {
         self.laws
-            .get_or_init(|| self.with_env(|| {
+            .get_or_init(|| {
                 let typed = self.typing().map_err(Clone::clone)?;
                 let (stage, own) = self.typing_stage().map_err(Clone::clone)?;
                 self.count("laws_stage");
@@ -1612,12 +1749,13 @@ impl Snapshot {
                         self.count("claims");
                         let effects = self.demand_effect_certificates().map_err(Clone::clone)?;
                         let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
-                        diags = hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary);
+                        let laws = self.demand_law_selection().map_err(Clone::clone)?;
+                        diags = hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary, laws);
                     }
                 }
                 hale_types::finish_check_diags_after(&stage.diags[..*own], &mut diags);
                 Ok(Checked { diags })
-            }))
+            })
             .as_ref()
     }
 
@@ -1687,7 +1825,7 @@ impl Snapshot {
             ownership: &ownership,
             omitted: self.demand_typed_bodies().map_err(Clone::clone)?.omitted_args(),
         };
-        let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
+        let mut diags = hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs);
         hale_types::finish_check_diags(&mut diags);
         Ok(diags)
     }
@@ -1733,10 +1871,18 @@ impl Snapshot {
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
                 // Lowering's scope is this one, and its bus and ownership
-                // graphs are these ones' rows (C5).
+                // graphs are these ones' rows (C5), and its handler rows
+                // (F.40 phase 4, Q1).
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                let handlers = self.demand_handlers().map_err(Clone::clone)?;
+                // And its flow rows these ones, and its scratch-local set
+                // the allocation summary's (F.40 phase 4, Q1): the check
+                // demanded the summary on the gated path, the target
+                // admission on the harness's.
+                let flows = self.demand_flows().map_err(Clone::clone)?;
+                let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
                 // target with no column (Windows) never reaches a snapshot.
@@ -1750,13 +1896,9 @@ impl Snapshot {
                 // Lowering reads which `main locus` it deploys from the
                 // entry row (F.40 phase 3, L4).
                 let entry = self.demand_entry().map_err(Clone::clone)?.clone();
-                // The dispatch plan's domains are the arrangement's, the
-                // projection the model's arrangement rows are made of, over
-                // the same programs, table and graph (F.40 phase 3, C5).
-                let bundle = self.bundle();
-                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                let arrangement =
-                    hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
+                // The dispatch plan is the snapshot's, the one the model
+                // holds projected (F.40 phase 4, S9).
+                let plan = self.demand_dispatch_plan().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1772,7 +1914,10 @@ impl Snapshot {
                     &scope.top,
                     bus,
                     ownership,
-                    &arrangement.domains(),
+                    handlers,
+                    flows,
+                    &summary.scratch_local,
+                    plan,
                     class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;
@@ -1966,18 +2111,15 @@ pub fn adopt_into_root(programs: &mut [&mut Program], names: &[String]) {
 
 /// FNV-1a/64 over length-framed fields: two different field lists
 /// never frame to one byte string.
-pub(crate) struct Digest(u64);
+pub(crate) struct Digest(hale_graph::identity::Fnv64);
 
 impl Digest {
     pub(crate) fn new() -> Self {
-        Digest(0xcbf2_9ce4_8422_2325)
+        Digest(hale_graph::identity::Fnv64::new())
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= *b as u64;
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+        self.0.write(bytes);
     }
 
     pub(crate) fn count(&mut self, n: usize) {
@@ -2004,7 +2146,7 @@ impl Digest {
     }
 
     pub(crate) fn finish(&self) -> u64 {
-        self.0
+        self.0.finish()
     }
 }
 

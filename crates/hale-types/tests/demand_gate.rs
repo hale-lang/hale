@@ -16,9 +16,11 @@
 //! - every build path (`build`, `run`, `test`, `replay`, `bench`, F.40
 //!   phase 2.2b): the whole seed with a build's config, the check, the
 //!   lowering view, and the model the build's identity reads;
-//! - the test harness (codegen's `build_executable_with_options`): a
-//!   bare program's snapshot (`Snapshot::from_program`), whose lowering
-//!   is not gated on the check.
+//! - the test harness (codegen's `tests/support/build.rs`: `build_source`
+//!   loads a seed from text, `build_seed_dir` from disk, and
+//!   `build_program` hands a bare program to `Snapshot::from_program`):
+//!   the harness configuration, whose lowering is not gated on the
+//!   check.
 //!
 //! A program that swears to nothing builds no model on the editor path;
 //! one that declares a law builds exactly one on `hale check`, which a
@@ -143,6 +145,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
          annotation must not derive an ApplicationModel on the LSP's path"
     );
     assert_eq!(builds["claims"], 0);
+    assert_eq!(builds["dispatch"], 0, "nor its dispatch plan");
     assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
     // Both stages ran (the allocation advisory is the editor's typing
@@ -156,7 +159,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     // snapshot counts. The bus graph is one of them since rules 7, 9 and
     // 10 read it, the ownership graph since rule 20 does (F.40 phase 3,
     // C4).
-    for family in ["handler_routing", "entrypoint", "bus_graph", "ownership"] {
+    for family in ["handler_routing", "flows", "entrypoint", "bus_graph", "ownership"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_eq!(builds["alloc_summary"], 1, "the check's certificate engine reads the snapshot's summary");
@@ -239,6 +242,12 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
             assert_eq!(s.builds()[family], 1, "the check and the model demand `{family}`");
         }
         assert_eq!(s.builds()["effects"], 1, "the model reads the effect rows: one fixpoint for the check with a law");
+        // The model's dispatch plan is the snapshot's, derived from the
+        // checked graph and the stdlib's per-process rows: a check pays
+        // for no lowering view, so no merge of the stdlib (F.40 phase 4,
+        // S9).
+        assert_eq!(s.builds()["dispatch"], 1, "the model holds the snapshot's dispatch plan");
+        assert_eq!(s.builds()["lowering_view"], 0, "the plan needs no lowering view");
         s.demand_bus_graph().expect("the graph the model read");
         s.demand_ownership_graph().expect("the graph the model read");
         s.demand_handlers().expect("the rows the model read");
@@ -262,14 +271,13 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         // typing's: `--dump-topology` after the check reads the same
         // report and runs no second check.
         let report = s.demand_effect_certificates().expect("the check's report") as *const _;
-        let artifact = s.with_env(|| {
-            hale_types::topology::dump_topology_over(
-                &s.bundle(),
-                s.demand_model().expect("the check's model"),
-                s.demand_effect_certificates().expect("the same report"),
-                summary,
-            )
-        });
+        let artifact = hale_types::topology::dump_topology_over(
+            &s.bundle(),
+            s.demand_model().expect("the check's model"),
+            s.demand_effect_certificates().expect("the same report"),
+            summary,
+            s.demand_law_selection().expect("the check's selection"),
+        );
         assert!(artifact.contains("\"claims\""), "the artifact carries the law");
         assert_eq!(report, s.demand_effect_certificates().expect("still there") as *const _);
         assert_eq!(s.builds()["expression_typing"], 1, "the report is the one typing's");
@@ -314,6 +322,20 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "bus_graph",
                 "ownership",
                 "handler_routing",
+                // The check reads it, and the lifecycle plan and lowering
+                // the same one (F.40 phase 4, Q1).
+                "flows",
+                // The model's arrangement rows and lowering's dispatch
+                // domains are one projection (F.40 phase 4, Q1).
+                "arrangement",
+                // One dispatch plan: the model holds it projected and
+                // lowering lowers it (F.40 phase 4, S9).
+                "dispatch",
+                // The check reads it, and the laws stage the same one
+                // (F.40 phase 4, A2).
+                "law_selection",
+                // The role rows the check's role rules read (A4).
+                "api_surface",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -345,9 +367,17 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     assert_eq!(builds["lowering_view"], 1);
     assert_eq!(builds["model"], 0, "nothing asked for the model yet");
     assert_eq!(builds["effects"], 0, "nor for the effect rows it reads");
+    assert_eq!(builds["arrangement"], 1, "lowering's dispatch domains are the arrangement's");
+    assert_eq!(builds["dispatch"], 1, "lowering's plan is the snapshot's");
+    let lowered = &s.demand_lowering().unwrap().plan;
     s.demand_model().expect("the build's identity reads the model");
     assert_eq!(s.builds()["model"], 1);
     assert_eq!(s.builds()["effects"], 1);
+    assert_eq!(s.builds()["arrangement"], 1, "the model reads the projection lowering read (F.40 phase 4, Q1)");
+    // The model holds the plan lowering lowered: `from_gates` ran once
+    // for both (F.40 phase 4, S9).
+    assert_eq!(s.builds()["dispatch"], 1, "the model reads the plan lowering read");
+    assert_eq!(lowered.digest(), s.demand_dispatch_plan().unwrap().digest());
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -363,7 +393,9 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     let s = build(&d.join("app.hl"));
     let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
     let builds = s.builds();
-    for family in ["top_scope", "bus_graph", "ownership"] {
+    // And the handler rows, the flow rows and the arrangement (F.40
+    // phase 4, Q1).
+    for family in ["top_scope", "bus_graph", "ownership", "handler_routing", "flows", "arrangement"] {
         assert_eq!(builds[family], 1, "`{family}`: one derivation, and lowering reads it");
     }
     let scope = s.demand_scope().expect("scoped");
@@ -380,6 +412,105 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     assert_eq!(names(&view.ownership)[..own.declarations.len()], names(own)[..], "the view's ownership rows are the snapshot's, first");
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// The fixtures below are plain literals, not raw ones: the corpus
+// harvests `r#"…"#` programs from test files, and these belong to this
+// test.
+const WITH_FLOWS: &str = "
+locus Worker { params { ran: Int = 0; } run() { self.ran = 1; } }
+type Job = Worker;
+locus Pool {
+    params { n: Int = 0; }
+    accept(c: Job) { }
+    release(c: Job) { self.n = self.n + 1; }
+    run() { Worker { }; }
+}
+locus Manager<T> {
+    params { released: Int = 0; }
+    accept(c: T) { }
+    release(c: T) { self.released = self.released + 1; }
+}
+fn main() { Pool { }; let a: Manager<Worker> = Manager { }; }
+";
+
+/// F.40 phase 4, Q1: the flow rows are surveyed once per snapshot, and
+/// the lowering view reads that survey. It used to survey the merged
+/// program again; lowering reads the rows by locus name (`is_flow`,
+/// `specialize`), and the stdlib declares no `release` clause and no
+/// type alias, so that survey's clauses are the snapshot's, row for row:
+/// an alias followed, a template's clause kept for its specializations.
+#[test]
+fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
+    let std = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    assert!(hale_types::flows::survey(&[std], &[]).is_empty(), "the stdlib declares no `release` clause");
+    let declared = hale_types::handler_routing::DeclaredNames::of(&[std]);
+    assert!(declared.aliases.is_empty(), "the stdlib declares no type alias a clause's child could follow");
+
+    let d = seed("one-flows", WITH_FLOWS);
+    let s = build(&d.join("app.hl"));
+    assert_clean(&s);
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    assert_eq!(s.builds()["flows"], 1, "the check, the lifecycle plan and lowering read one survey");
+    let rows = |flows: &[hale_types::flows::Flow]| {
+        flows
+            .iter()
+            .flat_map(|f| {
+                f.clauses.iter().map(move |c| {
+                    (f.child.clone(), c.owner.clone(), c.param.clone(), c.span, c.locus.clone(), c.template.is_some())
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let snapshot = rows(s.demand_flows().expect("the rows"));
+    assert_eq!(
+        snapshot.iter().map(|r| (r.0.as_str(), r.4.as_deref(), r.5)).collect::<Vec<_>>(),
+        vec![("Job", Some("Worker"), false), ("T", None, true)],
+        "the alias resolved, the template's clause kept"
+    );
+    assert_eq!(rows(&view.flows), snapshot, "the view's rows are the snapshot's");
+    let merged = hale_types::flows::survey(&[&view.merged], &view.import_renames);
+    assert_eq!(rows(&merged), snapshot, "the merged program's survey is the snapshot's, row for row");
+    assert_at_most_once(&s, "build");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+const WITH_SCRATCH: &str = "
+fn shout(s: String) -> Int { let t = s + \"!\"; return len(t); }
+locus App {
+    params { n: Int = 0; }
+    run() { self.n = shout(\"a\"); }
+}
+fn main() { App { }; }
+";
+
+/// F.40 phase 4, Q1: the scratch-local free fns are classified once on
+/// a build path, in the allocation summary, and lowering's routing rows
+/// read that set; the harness's lowering too. The count is this
+/// thread's, so the tests of this binary do not share it.
+#[test]
+fn a_build_classifies_the_scratch_local_fns_once() {
+    let classified = hale_types::alloc_routing::scratch_local_derivations_on_this_thread;
+    let d = seed("one-scratch", WITH_SCRATCH);
+    let before = classified();
+    let s = build(&d.join("app.hl"));
+    assert_clean(&s);
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    assert_eq!(classified() - before, 1, "the summary classifies, and lowering reads its set");
+    let summary = s.demand_alloc_summary().expect("the summary");
+    assert!(summary.scratch_local.contains("shout"), "{:?}", summary.scratch_local);
+    assert_eq!(view.alloc_routing.scratch_local, summary.scratch_local, "the routing's set is the summary's");
+    let _ = std::fs::remove_dir_all(&d);
+
+    let program = hale_syntax::parse_source(WITH_SCRATCH).expect("the fixture parses");
+    let before = classified();
+    let s = match Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program's snapshot is not refused"),
+    };
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("the harness lowers what it is handed"));
+    assert_eq!(classified() - before, 1, "harness: one classification");
+    assert!(view.alloc_routing.is_scratch_local("shout"));
 }
 
 /// F.40 phase 2, use-site identity: which declaration each use names is
@@ -437,10 +568,14 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "entrypoint",
         "bindings",
         "handler_routing",
+        "flows",
+        "law_selection",
+        "api_surface",
         "ownership",
         "bus_graph",
         "alloc_summary",
         "placement",
+        "arrangement",
         "intra_locus",
         "expression_typing",
         "typed_bodies",
@@ -505,6 +640,232 @@ fn a_demand_reads_its_own_snapshots_environment_not_the_last_loaded() {
         msgs.iter().any(|m| m.contains("unknown constitution `Missing`") && m.contains("`[environments.dev]` in hale.toml requires it")),
         "the first snapshot's claims are explained by ITS environment: {msgs:?}"
     );
-    let artifact = first.with_env(|| hale_types::topology::dump_topology(&first.bundle()));
+    // The label is the selection's, made for the first snapshot's
+    // configuration: data its artifact reads, not a binding on the thread.
+    let artifact = hale_types::topology::dump_topology_over(
+        &first.bundle(),
+        first.demand_model().expect("a claims error does not block the model"),
+        first.demand_effect_certificates().expect("the check's report"),
+        first.demand_alloc_summary().expect("the summary"),
+        first.demand_law_selection().expect("the selection"),
+    );
     assert!(artifact.contains("\"environment\": \"dev\""), "the artifact carries the first snapshot's label: {}", &artifact[..artifact.len().min(400)]);
+}
+
+// A plain literal, not a raw one: the corpus harvests `r#"…"#` programs
+// from test files, and this one belongs to this test.
+const WITH_CONSTITUTION: &str = "
+type Order { id: Int = 0; }
+topic Placed { payload: Order; }
+locus Desk {
+    params { seen: Int = 0; }
+    bus { subscribe Placed as on_placed; }
+    fn on_placed(o: Order) { self.seen = o.id; }
+}
+locus Feed {
+    bus { publish Placed; }
+    fn go() { Placed <- Order { id: 1 }; }
+}
+group feeds = { Feed };
+constitution Core { one_writer: count publishers(topic Placed) == 1; }
+constitution Prod extends Core { fed: require publishes(some feeds, topic Placed); }
+main locus App {
+    params { d: Desk = Desk { }; f: Feed = Feed { }; }
+    claims { adopt Core; }
+}
+fn main() { App { }; }
+";
+
+/// F.40 phase 4, A2: law selection runs once per snapshot. The check
+/// reports its diagnostics, the laws stage lowers its clauses, and the
+/// artifact (`--dump-topology`) projects its adoption to the
+/// constitution identities and carries its environment, each reading
+/// the snapshot's `law_selection` cell; it used to run four times for
+/// one `hale check --dump-topology`. The thread's count pins that no
+/// reader selects beside the cell; it is this thread's, so the tests of
+/// this binary do not share it.
+#[test]
+fn law_selection_runs_once_per_snapshot_on_every_verb_path() {
+    use hale_frontend::snapshot::Environment;
+    let selected = hale_types::claims::selections_on_this_thread;
+    for (name, text) in [("sel-plain", NO_CLAIMS), ("sel-law", WITH_CLAIM), ("sel-constitution", WITH_CONSTITUTION)] {
+        let d = seed(name, text);
+        let mut prod = Config::check(false, false);
+        prod.environment = Some(Environment { name: "prod".into(), adopt: vec!["Prod".into()] });
+        let paths: [(&str, Box<dyn Fn() -> Snapshot>, bool); 5] = [
+            ("lsp", Box::new(|| editor(&d.join("app.hl"), text)), false),
+            ("check", Box::new(|| check(&d)), true),
+            ("check --env", Box::new(|| load(&d, LoadMode::WholeSeed, &Disk, prod.clone())), true),
+            ("build", Box::new(|| build(&d)), false),
+            ("harness", Box::new(|| {
+                let program = hale_syntax::parse_source(text).expect("the fixture parses");
+                match Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) {
+                    Ok(s) => s,
+                    Err(_) => panic!("a bare program's snapshot is not refused"),
+                }
+            }), false),
+        ];
+        for (path, snapshot, dumps) in &paths {
+            let before = selected();
+            let s = snapshot();
+            if *path == "harness" {
+                assert!(s.demand_lowering().is_ok(), "{name} {path}: the harness lowers");
+            } else {
+                s.demand_check().expect("checked");
+            }
+            if *path == "build" {
+                assert!(s.demand_lowering().is_ok(), "{name} {path}: a clean program is lowered");
+                s.demand_model().expect("the build's identity reads the model");
+            }
+            if *dumps {
+                // `--dump-topology` after the check.
+                let artifact = hale_types::topology::dump_topology_over(
+                    &s.bundle(),
+                    s.demand_model().expect("a clean program has a model"),
+                    s.demand_effect_certificates().expect("the check's report"),
+                    s.demand_alloc_summary().expect("the summary"),
+                    s.demand_law_selection().expect("the selection"),
+                );
+                if *path == "check --env" {
+                    assert!(artifact.contains("\"environment\": \"prod\""), "{name}: the label is the selection's");
+                }
+            }
+            assert_eq!(s.builds()["law_selection"], 1, "{name} {path}: one selection, demanded by the check");
+            assert_eq!(selected() - before, 1, "{name} {path}: no reader selects beside the cell");
+            assert_at_most_once(&s, path);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// One counted cell of the snapshot: its name in [`Snapshot::builds`],
+/// how many times it is built on `hale check` and on a build path for a
+/// program with a law, and the demand that reads it again (a load-time
+/// cell has none: the load made it).
+struct GateRow {
+    cell: &'static str,
+    on_check: u32,
+    on_build: u32,
+    again: fn(&Snapshot),
+}
+
+const fn row(cell: &'static str, on_check: u32, on_build: u32, again: fn(&Snapshot)) -> GateRow {
+    GateRow { cell, on_check, on_build, again }
+}
+
+/// Every cell the snapshot counts, and its count on each verb path
+/// (F.40 phase 4, standing check). This list IS the list of counted
+/// cells: `the_gate_names_every_counted_cell` fails on a cell
+/// `Snapshot::builds` reports that is not here (or a row here that names
+/// no cell), so a family or stage added to the snapshot is added with
+/// its counts or not at all. A count above one is a derivation redone
+/// for one snapshot (phase 3 found three); a count of one where it was
+/// none is work a path started paying for.
+const GATE: &[GateRow] = &[
+    // The load's own: made once, before any demand.
+    row("seed_loading", 1, 1, |_| {}),
+    row("desugar_sequence", 1, 1, |_| {}),
+    row("snapshot_identity", 1, 1, |_| {}),
+    // The families the check, its laws and the model demand.
+    row("entrypoint", 1, 1, |s| { let _ = s.demand_entry(); }),
+    row("target_capability", 1, 1, |s| { let _ = s.demand_target(); }),
+    row("top_scope", 1, 1, |s| { let _ = s.demand_scope(); }),
+    row("bindings", 1, 1, |s| { let _ = s.demand_bindings(); }),
+    row("sync_inference", 1, 1, |s| { let _ = s.demand_forms(); }),
+    row("expression_typing", 1, 1, |s| { let _ = s.demand_effect_certificates(); }),
+    row("typed_bodies", 1, 1, |s| { let _ = s.demand_typed_bodies(); }),
+    row("bus_graph", 1, 1, |s| { let _ = s.demand_bus_graph(); }),
+    row("ownership", 1, 1, |s| { let _ = s.demand_ownership_graph(); }),
+    row("handler_routing", 1, 1, |s| { let _ = s.demand_handlers(); }),
+    row("flows", 1, 1, |s| { let _ = s.demand_flows(); }),
+    row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
+    row("api_surface", 1, 1, |s| { let _ = s.demand_role_rows(); }),
+    row("alloc_summary", 1, 1, |s| { let _ = s.demand_alloc_summary(); }),
+    row("effects", 1, 1, |s| { let _ = s.demand_effects(); }),
+    row("placement", 1, 1, |s| { let _ = s.demand_placement(); }),
+    row("arrangement", 1, 1, |s| { let _ = s.demand_arrangement(); }),
+    row("dispatch", 1, 1, |s| { let _ = s.demand_dispatch_plan(); }),
+    // Lowering's: a check emits nothing, so it plans no lifecycle and
+    // builds no lowering view.
+    row("lifecycle_order", 0, 1, |s| { let _ = s.demand_lifecycle(); }),
+    row("model", 1, 1, |s| { let _ = s.demand_model(); }),
+    row("claims", 1, 1, |s| { let _ = s.demand_laws(); }),
+    row("intra_locus", 1, 1, |s| { let _ = s.demand_intra_locus(); }),
+    row("lowering_view", 0, 1, |s| { let _ = s.demand_lowering(); }),
+    // The check's two stages.
+    row("typing_stage", 1, 1, |s| { let _ = s.demand_typing(); }),
+    row("laws_stage", 1, 1, |s| { let _ = s.demand_laws(); }),
+];
+
+/// A cell `Snapshot::builds` counts that the gate has no row for fails,
+/// with what to add; so does a row naming no cell, or a cell named twice.
+#[test]
+fn the_gate_names_every_counted_cell() {
+    let program = hale_syntax::parse_source("fn main() { }").expect("parses");
+    let s = match Snapshot::from_program(program, Vec::new(), Config::build(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program shapes"),
+    };
+    let counted: Vec<&str> = s.builds().into_keys().collect();
+    let mut gated: Vec<&str> = GATE.iter().map(|r| r.cell).collect();
+    gated.sort_unstable();
+    let twice: Vec<&&str> = gated.windows(2).filter(|w| w[0] == w[1]).map(|w| &w[0]).collect();
+    assert!(twice.is_empty(), "GATE names {twice:?} twice");
+    let missing: Vec<&&str> = counted.iter().filter(|c| !gated.contains(c)).collect();
+    assert!(
+        missing.is_empty(),
+        "the snapshot counts {missing:?} (`Snapshot::builds`), and the demand gate does not assert it: add a row to \
+         GATE in crates/hale-types/tests/demand_gate.rs with its count on `hale check` and on a build path, and the \
+         demand that reads it"
+    );
+    let stale: Vec<&&str> = gated.iter().filter(|c| !counted.contains(c)).collect();
+    assert!(stale.is_empty(), "GATE names {stale:?}, which the snapshot does not count: remove the row");
+}
+
+/// Every counted cell is built as many times as GATE says on `hale
+/// check` and on a build path, for a program with a law (so the model
+/// and the laws run), however often each cell is demanded again.
+#[test]
+fn every_counted_cell_is_built_as_the_gate_says_on_a_check_and_a_build() {
+    let d = seed("gate-rows", WITH_CLAIM);
+    let paths: [(&str, Snapshot, bool); 2] = [("check", check(&d), false), ("build", build(&d), true)];
+    let mut wrong = Vec::new();
+    for (path, s, lowers) in &paths {
+        assert_clean(s);
+        // What the verb demands: the check (whose laws judge the
+        // model), and on a build path the lowering view and the model
+        // the build's identity reads.
+        s.demand_check().expect("checked");
+        if *lowers {
+            assert!(s.demand_lowering().is_ok(), "{path}: a clean program is lowered");
+        }
+        s.demand_model().expect("a clean program has a model");
+        let builds = s.builds();
+        for r in GATE {
+            let want = if *lowers { r.on_build } else { r.on_check };
+            let got = builds.get(r.cell).copied().unwrap_or(u32::MAX);
+            if got != want {
+                wrong.push(format!("{path}: `{}` built {got} times, the gate says {want}", r.cell));
+            }
+        }
+        // Then every cell the path built, read again: none is rebuilt.
+        for r in GATE {
+            if builds.get(r.cell).is_some_and(|n| *n > 0) {
+                (r.again)(s);
+            }
+        }
+        for (cell, n) in s.builds() {
+            if builds.get(cell) != Some(&n) {
+                wrong.push(format!("{path}: `{cell}` demanded again built it again ({} times)", n));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(
+        wrong.is_empty(),
+        "{}\nA cell built more than once is a derivation redone for one snapshot; one built where the gate says \
+         none is work this path now pays for. A change meant to move a count edits its GATE row, with the reason \
+         in the commit.",
+        wrong.join("\n")
+    );
 }

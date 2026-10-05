@@ -193,6 +193,41 @@ event, not a surprise. This is Erlang's let-it-crash, but the
 recovery policy is *typed* and written next to the locus it
 governs.
 
+### What a recovery does to a closure's running totals
+
+A closure that accumulates (`sum(...)`, `count(...)`, `mean(...)`)
+keeps its totals across epochs. A recovery zeroes them, so a
+restarted child starts its audit fresh. A closure that should
+keep its totals through a recovery says which recoveries:
+
+```hale,fragment
+closure within_band {
+    sum(self.delta) ~~ 0 within 100;
+    epoch tick;
+    persists_through(quarantine);
+}
+```
+
+The recoveries a clause can name are the three a parent applies:
+`restart`, `restart_in_place` and `quarantine` (a spent
+`restart(c) for N` quarantines, so it counts as `quarantine`).
+Any other name is refused at the name, and a misspelling one
+letter away from a recovery is pointed at it. `dissolve` is
+refused in `persists_through(...)`: a closure's totals end with
+its locus, so there is nothing to keep.
+
+`resets_on(...)` says the default out loud: `resets_on(restart)`
+documents that the totals start over on a restart, which they do
+anyway. It is checked like `persists_through`, and naming the same
+recovery in both is refused, since the two cannot both hold.
+
+`hale check` warns when a clause cannot take effect: when no
+`on_failure` (and no recovery statement elsewhere) in the program
+applies that recovery to the locus, it lists the handlers that do
+handle it and what they apply; and when a closure with no `sum`,
+`count` or `mean` says `persists_through`, since it has no totals to
+keep.
+
 ## Crossing from value to structural
 
 Sometimes a method catches a value-level error and decides it's
@@ -240,9 +275,11 @@ locus DbConnection {
 - `closure fatal_io { ... epoch inline; }` is a *named structural
   failure* with no assertion — it only fires when you say so. The
   `captures:` clause names the state the failure is about. The
-  `ClosureViolation` itself has a fixed shape (which locus, which
-  closure), so the supervisor reads that state through the child
-  handle it is given: `c.last_error` in `on_failure(c, err)`.
+  `ClosureViolation` itself has a fixed shape (`err.locus` and
+  `err.closure`, which locus and which closure, and `err.diff`), so
+  the supervisor reads that state through the child handle it is
+  given: `c.last_error` in `on_failure(c, err)`. `err.last_error` is
+  a type error, since the violation has no such field.
 - `violate fatal_io;` fires it. It's divergent (the `Never` type,
   like `fail` and `bubble`), so the branches that violate need no
   `return`. It fires on the spot: `self.draining` turns true, the

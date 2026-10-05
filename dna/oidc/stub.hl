@@ -100,7 +100,7 @@ fn signed_id_token(key: String, kid: String, issuer: String, client: String, sub
     claims.int_field("exp", std::time::now() + ttl);
     claims.end_object();
     let signed = b64("{\"alg\":\"ES256\",\"kid\":\"" + kid + "\",\"typ\":\"JWT\"}") + "." + b64(claims.result());
-    let sig = std::crypto::ecdsa_p256_sign(std::bytes::from_string(key), std::bytes::from_string(signed));
+    let sig = std::crypto::ecdsa_p256_sign(std::bytes::from_string(key), std::bytes::from_string(signed)) or b"";
     return signed + "." + std::text::base64::url_encode(sig);
 }
 

@@ -24,8 +24,10 @@
 //! the synthetic members keep their meaning, they just cannot be
 //! shadowed.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 /// The GH #734 reserved-member diagnostics raised for `src`.
 fn reserved_diags(src: &str) -> Vec<(String, String)> {

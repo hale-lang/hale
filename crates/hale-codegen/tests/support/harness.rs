@@ -35,7 +35,7 @@ mod build_opts;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Build `program` to `bin` with the PRE-optimization LLVM IR dumped
+/// Build the source text `source` to `bin` with the PRE-optimization LLVM IR dumped
 /// beside it, and hand back the IR text. The `.ll` is removed; the
 /// binary is left in place, because several callers also run it.
 ///
@@ -57,26 +57,9 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 ///
 /// `BuildOptions::dump_ir` asks for the same dump through the API,
 /// so the request is scoped to one build.
-#[allow(dead_code)]
-pub fn build_ir_text(
-    program: &hale_syntax::ast::Program,
-    bin: &Path,
-) -> Result<String, hale_codegen::CodegenError> {
-    let ll = bin.with_extension("ll");
-    let options = hale_codegen::BuildOptions {
-        dump_ir: Some(ll.clone()),
-        ..build_opts::options()
-    };
-    hale_codegen::build_executable_with_options(program, bin, &[], &options)?;
-    let text = std::fs::read_to_string(&ll)
-        .expect("BuildOptions::dump_ir should have written the .ll");
-    let _ = std::fs::remove_file(&ll);
-    Ok(text)
-}
-
-/// [`build_ir_text`] from source text: `build_opts::build_source`, the
-/// text loaded as a seed of one file (F.40 phase 4, T1), with the same
-/// dump, the `.ll` removed and the binary left in place.
+///
+/// The text is built with `build_opts::build_source`: loaded as a seed
+/// of one file, as a verb loads it (F.40 phase 4, T2).
 #[allow(dead_code)]
 pub fn build_source_ir_text(source: &str, bin: &Path) -> Result<String, hale_codegen::CodegenError> {
     let ll = bin.with_extension("ll");
@@ -91,7 +74,7 @@ pub fn build_source_ir_text(source: &str, bin: &Path) -> Result<String, hale_cod
     Ok(text)
 }
 
-/// Build `program` to `bin` with AddressSanitizer instrumentation
+/// Build the source text `source` to `bin` with AddressSanitizer instrumentation
 /// (`BuildOptions::asan`), and check the artifact really carries it.
 ///
 /// The check is not ceremony. Every ASan test in this suite asserts
@@ -103,12 +86,12 @@ pub fn build_source_ir_text(source: &str, bin: &Path) -> Result<String, hale_cod
 /// environment). An instrumented binary links the ASan runtime, so
 /// its symbols are in the image.
 #[allow(dead_code)]
-pub fn build_asan(program: &hale_syntax::ast::Program, bin: &Path) {
+pub fn build_source_asan(source: &str, bin: &Path) {
     let options = hale_codegen::BuildOptions {
         asan: true,
         ..build_opts::options()
     };
-    hale_codegen::build_executable_with_options(program, bin, &[], &options)
+    build_opts::build_source(source, bin, &options)
         .expect("asan build");
     const MARKER: &[u8] = b"__asan_init";
     let image = std::fs::read(bin).expect("read the built binary");
@@ -212,4 +195,15 @@ pub fn unique_bin(name: &str) -> PathBuf {
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     p
+}
+
+/// A scratch directory for a test that builds a seed spanning files
+/// ([`build_opts::build_seed_dir`]): `unique_bin`'s name (file, `name`,
+/// pid, counter) under the temp dir, created empty. The test removes it
+/// with `std::fs::remove_dir_all` at its end.
+#[allow(dead_code)]
+pub fn unique_dir(name: &str) -> PathBuf {
+    let dir = unique_bin(name);
+    std::fs::create_dir_all(&dir).expect("create the scratch directory");
+    dir
 }

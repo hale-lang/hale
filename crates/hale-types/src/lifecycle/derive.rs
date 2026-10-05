@@ -158,6 +158,9 @@ enum Member {
     Fn,
     /// An `on_failure` body: runs only when the handler does.
     Handler,
+    /// A lifecycle body with a row of its locus's own (`birth`, `run`,
+    /// `drain`, `dissolve`): the row whose end follows each statement.
+    Lifecycle(K),
     Other,
 }
 
@@ -203,7 +206,13 @@ impl LiteralWalk<'_> {
                                 }
                             }
                             LocusMember::Lifecycle(d) => {
-                                self.member = Member::Other;
+                                self.member = match d.kind {
+                                    LifecycleKind::Birth => Member::Lifecycle(K::Birth),
+                                    LifecycleKind::Run => Member::Lifecycle(K::Run),
+                                    LifecycleKind::Drain => Member::Lifecycle(K::Drain),
+                                    LifecycleKind::Dissolve => Member::Lifecycle(K::Dissolve),
+                                    LifecycleKind::Accept | LifecycleKind::Release => Member::Other,
+                                };
                                 self.block(&d.body);
                             }
                             LocusMember::Fn(f) => {
@@ -352,6 +361,10 @@ struct Subject<'a> {
     /// Built in an `on_failure` body under every contribution: it exists
     /// only on a path where the handler runs.
     in_handler: bool,
+    /// Built by a statement of its enclosing locus's lifecycle body: the
+    /// kind of that body's row, which ends after the statement's
+    /// teardown (C13).
+    statement_of: Option<K>,
     /// A field's name in its owner's params: where it falls in the
     /// owner's declaration order, the order the cascade walks fields in.
     field: Option<String>,
@@ -597,6 +610,7 @@ fn subjects<'a>(
             }],
             bound,
             in_handler: false,
+            statement_of: None,
             field: (how == How::Field).then(|| key.path.last().map(|s| s.field.clone())).flatten(),
             placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
         });
@@ -639,6 +653,10 @@ fn subjects<'a>(
             contributions: vec![Contribution { owner: None, under: None, it: domain, own: domain, in_handler }],
             bound: d.bound.clone(),
             in_handler,
+            statement_of: match (how, at.member) {
+                (How::Body { built: Built::Statement, .. }, Member::Lifecycle(k)) => Some(k),
+                _ => None,
+            },
             field: None,
             placed: false,
         });
@@ -769,6 +787,7 @@ fn dynamic_fields<'a>(
                         contributions: Vec::new(),
                         bound: Bound::Once,
                         in_handler: false,
+                        statement_of: None,
                     });
                     sources.push(Source::Field { parents: vec![parent] });
                     dynamic_fields(out, sources, out.len() - 1, index, ids);
@@ -1440,6 +1459,36 @@ impl<'b, 'a> Builder<'b, 'a> {
             self.push(o);
         }
         self.failures(i, &mut r, &[FailureSource::Run, FailureSource::Handler]);
+        // A bus handler on a pool's worker holds its subscriber until it
+        // returns (line 19, R52), once per delivered cell: another thread
+        // can reclaim the subscriber (main replaces a placed field, or
+        // tears it down and everything under it), and that reclaim
+        // completes only once every handler it found running has
+        // returned. A classic worker may carry the hold past a handler's
+        // end to its next cell of the subscriber, but ends it after the
+        // handler in progress once a reclaim waits for it: that only
+        // delays the reclaim, so the row still ends with each handler and
+        // the edge is to that end. Main's queue and a pinned thread run
+        // their handlers on the thread that reclaims their subscribers,
+        // and owe none.
+        let handler = (subscribes && on_pool).then(|| {
+            let mut o = self.row(i, K::Handler, Holder { spine: Spine::PoolRun, domain: DomainRole::Own });
+            o.line = Some("19");
+            o.multiplicity = Multiplicity::OncePerTrigger;
+            o.terminals = vec![Terminal::Completed];
+            if on_async_pool {
+                o.terminals.push(Terminal::CanceledAfterStart);
+            }
+            o.runs_on = self.claim(i, |c| if self.is_pool(c.own) { Self::on(c.own, shipped("19")) } else { None });
+            o.lifetime.push(Retention {
+                resource: Resource::Instance,
+                until: Event { obligation: ObligationId(0), point: Point::Ended },
+                status: Status::Shipped,
+            });
+            let id = self.push(o);
+            self.get(id).lifetime[0].until.obligation = id;
+            id
+        });
         // The teardown: drain, dissolve, the pinned join, the reclaim.
         let (spine, role) = self.teardown(i);
         let holder = Holder { spine, domain: role };
@@ -1531,6 +1580,10 @@ impl<'b, 'a> Builder<'b, 'a> {
         // before teardown; pinned runs satisfy it through their join.
         if let Some(run) = r.run {
             self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
+        }
+        // And a bus handler running on a pool's worker (R52).
+        if let Some(h) = handler {
+            self.get(id).edges.completion.push(after(h, Point::Ended, shipped("19")));
         }
         // Any posted run still queued at reclaim is canceled there,
         // including a static field reclaimed on main after its pool stops.
@@ -1919,6 +1972,22 @@ impl<'b, 'a> Builder<'b, 'a> {
             // cascade after the owner's dissolve (inventory C28).
             if let (Some(cd), Some(pd), How::Accepted { flow: false }) = (child.drain, parent.dissolve, self.subjects[i].how) {
                 self.get(cd).edges.entry.push(after(pd, Point::Completed, Rule::SHIPPED));
+            }
+        }
+        // A literal a statement of the owner's lifecycle body builds is
+        // torn down where the statement ends (the eager spine), so the body
+        // ends after its reclaim (C13): a run that ends inside that teardown
+        // has not reached the body's end, nor what waits for it.
+        if let (Some(kind), (Spine::EagerTeardown, _), Some(cr)) = (self.subjects[i].statement_of, self.teardown(i), child.reclaim) {
+            let body = match kind {
+                K::Birth => parent.birth,
+                K::Run => parent.run,
+                K::Drain => parent.drain,
+                K::Dissolve => parent.dissolve,
+                _ => None,
+            };
+            if let Some(b) = body {
+                self.get(b).edges.completion.push(after(cr, Point::Completed, Rule::SHIPPED));
             }
         }
         // Children before their owner's physical release (line 14).

@@ -8,9 +8,9 @@
 //! owner, after every child that borrowed it. A different interface
 //! is still refused by the checker.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
-
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -20,12 +20,12 @@ mod build_opts;
 fn build_and_run(name: &str, source: &str) -> (bool, String) {
     let program = hale_syntax::parse_source(source).expect("parse");
     assert!(
-        !hale_types::check_program(&program).iter().any(|d| d.is_error()),
+        !entries::check_program(&program).iter().any(|d| d.is_error()),
         "the checker admits it: {:?}",
-        hale_types::check_program(&program)
+        entries::check_program(&program)
     );
     let bin = harness::unique_bin(&format!("gh730_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (output.status.success(), String::from_utf8_lossy(&output.stdout).to_string())
@@ -124,7 +124,7 @@ fn main() {{ Work {{ }}; }}
 "
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     assert!(
         diags.iter().any(|d| d.is_error() && d.message.contains("cannot satisfy interface")),
         "a Namer into a Performer slot is refused: {diags:?}"

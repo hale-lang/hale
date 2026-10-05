@@ -12,8 +12,9 @@
 //! child's result field directly instead of calling a method, which
 //! the no-locus-return rule already discourages.
 
+use hale_frontend::snapshot::{Config, Snapshot};
 use hale_syntax::parse_source;
-use hale_types::sealability::{render, survey};
+use hale_types::sealability::{render, survey, Sealable};
 
 const SRC: &str = r#"
     locus Private { params { k: Int = 1; }
@@ -35,9 +36,24 @@ const SRC: &str = r#"
     fn main() { App { }; }
 "#;
 
-fn rows() -> Vec<hale_types::sealability::Sealable> {
-    let p = parse_source(SRC).expect("parse");
-    survey(&[&p])
+/// The snapshot of `src`, as `hale check` builds it.
+fn snapshot(src: &str) -> Snapshot {
+    let p = parse_source(src).expect("parse");
+    match Snapshot::from_program(p, Vec::new(), Config::check(true, false)) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program's snapshot is not refused"),
+    }
+}
+
+/// The survey over the snapshot's typed bodies, as `--sealable` reads it.
+fn survey_of(src: &str) -> Vec<Sealable> {
+    let s = snapshot(src);
+    let typed = s.demand_typed_bodies().expect("the typed bodies");
+    survey(&[s.program().expect("one program")], typed)
+}
+
+fn rows() -> Vec<Sealable> {
+    survey_of(SRC)
 }
 
 #[test]
@@ -90,16 +106,19 @@ fn every_locus_appears_exactly_once() {
 
 #[test]
 fn the_survey_agrees_with_the_checker() {
-    // The survey runs the real check against an all-sealed clone
-    // rather than reimplementing the rule. This pins that
-    // equivalence: a locus the survey calls blocked must actually
-    // produce a sealed diagnostic when sealed for real.
+    // The survey and the sealed rule read the same rows (the typed
+    // bodies' param accesses) rather than the survey reimplementing
+    // the rule. This pins that equivalence: a locus the survey calls
+    // blocked must actually produce a sealed diagnostic when sealed for
+    // real.
     let sealed_for_real = SRC.replace("locus Exposed", "@sealed locus Exposed");
-    let p = parse_source(&sealed_for_real).expect("parse");
-    let es: Vec<String> = hale_types::check_program(&p)
-        .into_iter()
+    let es: Vec<String> = snapshot(&sealed_for_real)
+        .demand_check()
+        .expect("checked")
+        .diags
+        .iter()
         .filter(|d| d.is_error())
-        .map(|d| d.message)
+        .map(|d| d.message.clone())
         .collect();
     assert!(
         es.iter().any(|m| m.contains("`@sealed`") && m.contains("Exposed")),
@@ -119,7 +138,7 @@ fn the_rendering_leads_with_the_count() {
     assert!(out.contains("would break callers"), "{out}");
     assert!(
         out.contains("external access(es)"),
-        "the survey covers writes as well as reads now that the \
-         sealed rule does — reruns of the real checker track it: {out}"
+        "the survey covers writes as well as reads, as the sealed \
+         rule does: both read the same rows: {out}"
     );
 }

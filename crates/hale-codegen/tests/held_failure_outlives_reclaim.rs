@@ -51,9 +51,8 @@ fn main() { App { }; }
 
 #[test]
 fn a_held_failures_child_is_reclaimed_after_its_handler() {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin("hale_held_failure_reclaim");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(SRC, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()

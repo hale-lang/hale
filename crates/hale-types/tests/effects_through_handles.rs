@@ -18,9 +18,12 @@
 //! through a user locus, through a Hale-source stdlib locus, and
 //! through a frontier path with no registry row at all.
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn diags_for(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()

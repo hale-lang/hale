@@ -20,6 +20,7 @@ const LOWERING_READS: &[&str] = &[
     "generics",
     "surfaces",
     "forms",
+    "stdlib_surface",
     "entrypoint",
     "ownership",
     "bus_graph",
@@ -29,6 +30,7 @@ const LOWERING_READS: &[&str] = &[
     "handler_routing",
     "flows",
     "restart",
+    "closures",
     "blocking",
     "alloc_summary",
     "placement",
@@ -128,5 +130,5 @@ fn the_exempt_families_are_the_known_ones() {
         .filter_map(|f| exempt(f).map(|why| (f.name, why)))
         .collect();
     let names: Vec<&str> = exempt.iter().map(|(n, _)| *n).collect();
-    assert_eq!(names, ["desugar_sequence", "stdlib_surface", "closures"], "{exempt:?}");
+    assert_eq!(names, ["desugar_sequence"], "{exempt:?}");
 }

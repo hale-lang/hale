@@ -23,7 +23,7 @@ Bundle + Model                      -->  ClaimIrTable
 Bundle + Model + ClaimIrTable       -->  EvidenceTable
 Model + ClaimIrTable [+ Evidence]   -->  Judged verdicts
 ApplicationModel                    -->  model-half projection (artifact)
-ApplicationModel                    -->  DispatchPlan
+dispatch gates + arrangement        -->  DispatchPlan (the model holds it projected)
 admitted Artifact                   -->  ComponentModel --> fleet ModelGraph
 ```
 
@@ -153,9 +153,9 @@ It builds none of the families it reads beside the program:
 `ModelInputs` hands it the top scope with its topic rows, the bus
 graph, the ownership graph and the handler rows, each built once
 over the checked programs. Every verb demands them, and the model,
-from its snapshot (`Snapshot::demand_model`, F.40 phase 2.3);
-`hale_types::derive_application_model(&Bundle)` builds them for a
-bundle no snapshot holds (the test entry's) and derives over them.
+from its snapshot (`Snapshot::demand_model`, F.40 phase 2.3), and
+so does every test: no entry builds them for a bundle no snapshot
+holds.
 
 **There is no other way in.** In particular:
 
@@ -559,8 +559,12 @@ each carry their own.
 `Analyses` carries products the model does not derive itself but
 that no other table holds:
 
-- **`dispatch_gates`** — the bus graph's per-subject
-  devirtualization gates.
+- **`dispatch_plan`** — the program's one dispatch plan (below),
+  projected onto the subjects the program's own bus sites name and
+  the loci the model declares: each kept row's subscriber column
+  holds only those loci, sorted; every other column is the plan's.
+  The stdlib's `log.**` row appears only where the program names
+  `log.**` itself, and never with the stdlib's sinks.
 - **`stdlib_absorption`** — what a merged-summary walk sees *inside*
   stdlib bodies reachable from a user fn.
 
@@ -661,11 +665,14 @@ is derived from the model ALONE — see the layering above:
   `model_shape`, `law_digest`, `inputs_digest` and
   `coverage_digest`; a judgment refuses evidence whose ties
   disagree rather than replaying it.
-- **`DispatchPlan`** — from the model alone (GH #476 Change 8),
-  combining dispatch gates with the arrangement. It decides how a
-  BUS SUBJECT dispatches — dynamic, static bucket, or static
-  direct — not how calls in general lower. Which flavour a subject
-  gets is a plan *conclusion*, never a model row.
+- **`DispatchPlan`** — (GH #476 Change 8) derived once per program
+  from one gate set, the bus graph's sites keyed by wire subject with
+  the bundled stdlib's after them, and the arrangement's thread
+  domains. It decides how a BUS SUBJECT dispatches — dynamic, static
+  bucket, or static direct — not how calls in general lower.
+  Lowering lowers it and the model holds it projected
+  (`Analyses::dispatch_plan`); which flavour a subject gets is a plan
+  *conclusion*, never a model row.
 
 ## Identity and versioning
 
@@ -887,8 +894,8 @@ Operands: `NameRef`, `GroupRef`, `TopicIrRef`, `PhaseIrRef`,
 index in its own table.
 
 **`dispatch_plan`** — `DispatchPlan`, `SubjectPlan`,
-`DispatchFlavor`. Conclusions derived from the model, never
-authored facts.
+`DispatchFlavor`. Conclusions derived from the dispatch gates and
+the arrangement, never authored facts.
 
 **`obs_ids`** — `ObsEntityId`, `ObsEntityKind`, the join back from
 an observed record to a model row.

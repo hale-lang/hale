@@ -11,8 +11,10 @@
 //!      off the placement table since phase 3, C7, when lowering's
 //!      spanless refusal was deleted).
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");
@@ -3081,6 +3083,139 @@ fn main() { App { }; }
             && msg.contains("dissolve is the default")
             && msg.ends_with("(rule 6)"),
         "expected the rule 6 refusal for an adapter's dissolve closure, got: {msg}"
+    );
+}
+
+// Rule 6's witness (F.40 phase 4, W2): the refusal's message is as
+// above, and its related locations are the chain the law walks, in
+// order: the entry that pins the instance, the declaration it
+// realizes, and the member that conflicts.
+
+/// The only error's related locations, each as (the source text at its
+/// span's start, up to `len` bytes, and its note).
+fn rule_6_witness(src: &str) -> Vec<(String, String)> {
+    let program = parse_source(src).expect("parse");
+    let diags = check_program(&program);
+    let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "the rule 6 refusal and nothing else: {diags:?}");
+    assert!(errors[0].message.ends_with("(rule 6)"), "{:?}", errors[0]);
+    errors[0]
+        .related
+        .iter()
+        .map(|r| {
+            assert_eq!(r.origin, hale_syntax::SpanOrigin::Seed, "{r:?}");
+            let at = &src[r.span.start.as_usize()..r.span.end.as_usize()];
+            (at.lines().next().unwrap_or("").to_string(), r.label.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn rule_6_at_a_placement_entry_witnesses_the_entry_the_declaration_and_the_accept() {
+    let src = r#"
+locus Child { run() { } }
+locus Coord {
+    accept(c: Child) { }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Coord = Coord { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(
+        rule_6_witness(src),
+        [
+            ("w: pinned;".to_string(), "the instance runs on a thread of its own: field `w` is placed `pinned` here".to_string()),
+            ("Coord".to_string(), "the instance realizes `Coord`, declared here".to_string()),
+            ("accept(c: Child) { }".to_string(), "`Coord` declares `accept()` here".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn rule_6_at_a_placement_entry_witnesses_a_birth_closure_by_its_assertion() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure audited { epoch inline; }
+    closure ready { self.n ~~ self.n within 0; epoch birth; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let witness = rule_6_witness(src);
+    assert_eq!(witness.len(), 3, "{witness:?}");
+    assert_eq!(witness[1].0, "Worker");
+    assert_eq!(
+        witness[2],
+        (
+            "self.n ~~ self.n within 0;".to_string(),
+            "`Worker`'s closure `ready` fires inside the lifecycle cascade, at epoch `birth`: its assertion is here"
+                .to_string()
+        )
+    );
+    // A written `epoch dissolve` is named as written.
+    let dissolve = rule_6_witness(&src.replace("epoch birth;", "epoch dissolve;"));
+    assert!(dissolve[2].1.contains("at epoch `dissolve`: its assertion"), "{dissolve:?}");
+}
+
+#[test]
+fn rule_6_at_an_adapter_binding_witnesses_the_binding_the_declaration_and_the_closure() {
+    let src = r#"
+type Tick { n: Int; }
+topic Beat { payload: Tick; subject: "beat"; }
+
+locus Sink {
+    params { sent: Int = 0; }
+    closure settled { self.sent ~~ self.sent within 0; }
+    fn send(subject: String, bytes: Bytes) { self.sent = self.sent + 1; }
+}
+
+locus Pub {
+    bus { publish Beat; }
+    run() { Beat <- Tick { n: 1 }; }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; }
+    bindings { Beat: Sink { }; }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(
+        rule_6_witness(src),
+        [
+            (
+                "Beat: Sink { };".to_string(),
+                "the adapter runs on a thread of its own: topic `Beat` is bound to it here".to_string()
+            ),
+            ("Sink".to_string(), "the instance realizes `Sink`, declared here".to_string()),
+            (
+                "self.sent ~~ self.sent within 0;".to_string(),
+                "`Sink`'s closure `settled` fires inside the lifecycle cascade, at epoch `dissolve` (no `epoch` is \
+                 written, and dissolve is the default): its assertion is here"
+                    .to_string()
+            ),
+        ]
     );
 }
 

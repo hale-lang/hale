@@ -76,14 +76,11 @@ fn the_identities_take_the_list_and_the_walk_from_hale_graph() {
     ] {
         let text = read(rel);
         assert!(
-            text.contains("hale_graph::identity::stale_hash_paths("),
-            "{rel}: the stale hash takes its path list from hale_graph::identity"
+            text.contains("hale_graph::identity::identity_files(")
+                && text.contains("hale_graph::identity::fold_files("),
+            "{rel}: the stale hash folds hale_graph::identity's selection with its fold, at build and at run time"
         );
     }
-    assert!(
-        !root().join("crates/hale-codegen/runtime/stdlib").exists(),
-        "codegen/runtime/stdlib exists again; stale_hash_paths must say which tree is the stdlib"
-    );
 }
 
 #[test]
@@ -115,11 +112,6 @@ fn every_covered_directory_exists_and_every_covered_crate_contributes() {
         hale_graph::identity::manifest_files(&root).len(),
         hale_graph::identity::MANIFEST_FILES.len(),
         "a manifest file the identity names does not exist"
-    );
-    let stale = hale_graph::identity::stale_hash_paths(&root.join("crates/hale-codegen"));
-    assert!(
-        stale.len() > 3 && stale.iter().all(|p| p.is_file()),
-        "the stale hash's paths exist: {stale:?}"
     );
 }
 
@@ -184,4 +176,255 @@ fn a_change_to_any_hashed_input_moves_the_cache_key() {
         "a CLI source added leaves the cache key where it was"
     );
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+fn identity(name: &str) -> &'static hale_graph::identity::Identity {
+    hale_graph::identity::IDENTITIES
+        .iter()
+        .find(|i| i.name == name)
+        .unwrap_or_else(|| panic!("no inventory entry named `{name}`"))
+}
+
+#[test]
+fn the_inventory_names_each_identity_once_and_fills_every_column() {
+    let mut seen = std::collections::BTreeSet::new();
+    for i in hale_graph::identity::IDENTITIES {
+        assert!(seen.insert(i.name), "`{}` is inventoried twice", i.name);
+        for (column, text) in [
+            ("identifies", i.identifies),
+            ("computed", i.computed),
+            ("producer file", i.producer.0),
+            ("producer symbol", i.producer.1),
+            ("on_mismatch", i.on_mismatch),
+            ("versioned_by", i.versioned_by),
+        ] {
+            assert!(!text.trim().is_empty(), "`{}`: `{column}` is empty", i.name);
+        }
+        assert!(!i.covers.is_empty(), "`{}` covers nothing", i.name);
+        assert!(!i.consumers.is_empty(), "`{}` has no consumer", i.name);
+        for (_, why) in i.leaves_out {
+            assert!(!why.trim().is_empty(), "`{}` leaves an input out without a reason", i.name);
+        }
+        if let Some(f) = i.frozen {
+            assert!(!f.trim().is_empty(), "`{}` is frozen by nothing it names", i.name);
+        }
+    }
+}
+
+/// `fn NAME`, `struct NAME`, `const NAME` or `static NAME` at the start
+/// of a line (after `pub`, `pub(crate)` and the like), the name ended
+/// by a non-identifier character.
+fn defined_in(text: &str, name: &str) -> bool {
+    text.lines().any(|line| {
+        let mut t = line.trim_start();
+        for vis in ["pub(crate) ", "pub(super) ", "pub "] {
+            if let Some(r) = t.strip_prefix(vis) {
+                t = r;
+                break;
+            }
+        }
+        ["fn ", "struct ", "const ", "static "].iter().any(|k| {
+            t.strip_prefix(k).is_some_and(|rest| {
+                rest.starts_with(name)
+                    && !rest[name.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        })
+    })
+}
+
+#[test]
+fn every_inventory_producer_is_defined_in_its_file() {
+    for i in hale_graph::identity::IDENTITIES {
+        let (file, symbol) = i.producer;
+        let text = read(file);
+        assert!(
+            defined_in(&text, symbol),
+            "`{}`: its producer `{symbol}` is not defined in {file}",
+            i.name
+        );
+    }
+}
+
+/// The input classes a walked file belongs to, by extension and name.
+fn classes_of(files: &[PathBuf]) -> std::collections::BTreeSet<&'static str> {
+    use hale_graph::identity::MANIFEST_FILES;
+    files
+        .iter()
+        .map(|f| {
+            let rel = f.strip_prefix(root()).unwrap_or(f).to_string_lossy().replace('\\', "/");
+            if MANIFEST_FILES.contains(&rel.as_str()) {
+                return "manifests";
+            }
+            match f.extension().and_then(|s| s.to_str()) {
+                Some("rs") => "compiler",
+                Some("c") | Some("h") => "runtime",
+                Some("hl") => "stdlib",
+                other => panic!("{}: a walked file of no class ({other:?})", f.display()),
+            }
+        })
+        .collect()
+}
+
+fn covered_classes(i: &hale_graph::identity::Identity) -> std::collections::BTreeSet<&'static str> {
+    use hale_graph::identity::Input;
+    i.covers
+        .iter()
+        .filter_map(|c| match c {
+            Input::CompilerSources => Some("compiler"),
+            Input::RuntimeC => Some("runtime"),
+            Input::StdlibSeeds => Some("stdlib"),
+            Input::Manifests => Some("manifests"),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
+    let root = root();
+    let selected = classes_of(&hale_graph::identity::identity_files(&root));
+    for name in ["toolchain_digest", "compiler_src_hash", "stale_src_hash"] {
+        assert_eq!(
+            covered_classes(identity(name)),
+            selected,
+            "`{name}` folds `identity_files`: its `covers` must name the classes that selection holds"
+        );
+    }
+    // `exec_digest` takes the compiler half whole, through `toolchain_digest`.
+    assert_eq!(
+        covered_classes(identity("exec_digest")),
+        selected,
+        "`exec_digest` frames `toolchain_digest`: it covers what that does"
+    );
+    // The two build scripts and the stale check call the selection the
+    // entry says they fold.
+    assert!(read("crates/hale-cli/build.rs").contains("identity_files("));
+    assert!(read("crates/hale-iris/build.rs").contains("identity_files("));
+    assert!(read("crates/hale-cli/src/shared/stale.rs").contains("identity_files("));
+}
+
+/// Where the 64-bit FNV offset basis may be written in a crate's `src`
+/// or its build script, each with the reason. The goal is the one
+/// fold's home: every FNV identity feeds its bytes to
+/// `hale_graph::identity::Fnv64` (F.40 phase 4, I6), so a new
+/// hand-rolled digest is either an inventory entry that calls the fold
+/// or a non-identity use listed here with its reason.
+const FNV_BASIS_ALLOWED: &[(&str, &str)] = &[(
+    "crates/hale-graph/src/identity.rs",
+    "the one fold (`Fnv64::BASIS`) and its known-answer test",
+)];
+
+/// Every file under `dir`, recursively.
+fn every_file(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            every_file(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+fn writes_fnv_basis(line: &str) -> bool {
+    !line.trim_start().starts_with("//")
+        && line.to_ascii_lowercase().replace('_', "").contains("0xcbf29ce484222325")
+}
+
+#[test]
+fn the_basis_scan_sees_every_spelling_and_skips_comments() {
+    assert!(writes_fnv_basis("    let mut h: u64 = 0xcbf29ce484222325;"));
+    assert!(writes_fnv_basis("    let mut h: u64 = 0xcbf2_9ce4_8422_2325;"));
+    assert!(writes_fnv_basis("    Digest(0xCBF2_9CE4_8422_2325)"));
+    assert!(!writes_fnv_basis("//!  * **hash** — FNV-1a/64 (offset 0xcbf29ce484222325, prime"));
+    assert!(!writes_fnv_basis("    let mut h = Fnv64::new();"));
+}
+
+/// A seam cannot say this: the registry's matcher counts one literal
+/// spelling, and the basis is written with and without digit
+/// separators, in either case. So the scan normalizes each line
+/// (lower case, no `_`) and skips comments, which may name the
+/// constant (the topic hash's doc says which C function it mirrors).
+#[test]
+fn the_fnv_basis_is_written_only_where_the_one_fold_lives() {
+    let root = root();
+    let mut files = Vec::new();
+    for e in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+        let krate = e.path();
+        every_file(&krate.join("src"), &mut files);
+        if krate.join("build.rs").is_file() {
+            files.push(krate.join("build.rs"));
+        }
+    }
+    assert!(files.len() > 200, "the scan is vacuous: {} files", files.len());
+    let mut found = std::collections::BTreeSet::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        if text.lines().any(writes_fnv_basis) {
+            found.insert(f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"));
+        }
+    }
+    let allowed: std::collections::BTreeSet<String> =
+        FNV_BASIS_ALLOWED.iter().map(|(f, _)| f.to_string()).collect();
+    let unlisted: Vec<&String> = found.difference(&allowed).collect();
+    assert!(
+        unlisted.is_empty(),
+        "a hand-rolled FNV fold: {unlisted:?} writes the offset basis. Feed the bytes to \
+         hale_graph::identity::Fnv64 (or fnv64) and, if the value is compared to decide that two \
+         things are the same, add the identity to IDENTITIES; a use that is no identity goes in \
+         FNV_BASIS_ALLOWED with the reason."
+    );
+    let stale: Vec<&String> = allowed.difference(&found).collect();
+    assert!(stale.is_empty(), "FNV_BASIS_ALLOWED lists a file that no longer writes the basis: {stale:?}");
+    for (f, why) in FNV_BASIS_ALLOWED {
+        assert!(!why.trim().is_empty(), "{f} is allowed without a reason");
+    }
+}
+
+/// The legacy rows an inventory entry's producer still shares: the
+/// identities whose own correction retires the row. None is left since
+/// I4 retired the stale-binary hash's; every legacy row names a symbol
+/// no inventory entry produces.
+const LEGACY_STILL_SHARED: &[&str] = &[];
+
+#[test]
+fn every_inventory_producer_is_registered_and_no_legacy_row_duplicates_one() {
+    let mut registered = std::collections::BTreeSet::new();
+    let mut legacy = std::collections::BTreeSet::new();
+    for f in hale_graph::families() {
+        if let Some(p) = &f.producer {
+            registered.insert((p.path, p.symbol));
+        }
+        for o in f.owned {
+            registered.insert((o.path, o.symbol));
+        }
+        for l in f.legacy {
+            registered.insert((l.site.path, l.site.symbol));
+            legacy.insert((l.site.path, l.site.symbol));
+        }
+    }
+    for i in hale_graph::identity::IDENTITIES {
+        assert!(
+            registered.contains(&i.producer),
+            "`{}`: its producer {:?} is not a registered site (the `digests` family's `owned` list)",
+            i.name,
+            i.producer
+        );
+        if legacy.contains(&i.producer) {
+            assert!(
+                LEGACY_STILL_SHARED.contains(&i.producer.1),
+                "`{}`: a legacy row names its producer {:?}; an inventory entry is registered through the family's `owned` list, not a legacy row",
+                i.name,
+                i.producer
+            );
+        }
+    }
 }

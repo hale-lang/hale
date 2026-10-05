@@ -73,9 +73,8 @@ fn layout_binding_emits_layout_register_call() {
     "#;
 
     let bin = unique_path("layout", "bin");
-    let program = hale_syntax::parse_source(src).expect("parse");
 
-    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
+    let ir_text = harness::build_source_ir_text(src, &bin).expect("build");
 
     let _ = std::fs::remove_file(&bin);
 
@@ -129,9 +128,8 @@ fn layout_publisher_emits_producer_register_and_publish() {
     "#;
 
     let bin = unique_path("producer", "bin");
-    let program = hale_syntax::parse_source(src).expect("parse");
 
-    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
+    let ir_text = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
 
     assert!(

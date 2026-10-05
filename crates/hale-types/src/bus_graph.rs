@@ -43,6 +43,8 @@ use crate::topic_identity::TopicRows;
 /// `PublisherSite` later.
 pub(crate) struct RawPub {
     pub(crate) locus: String,
+    pub(crate) decl: usize,
+    pub(crate) topic: Option<String>,
     pub(crate) key: String,
     pub(crate) subject: Subject,
     pub(crate) span: Span,
@@ -55,7 +57,10 @@ pub(crate) struct RawPub {
 /// unresolvable-to-a-single-call here, so they force ineligibility.
 pub(crate) struct RawSub {
     pub(crate) locus: String,
+    pub(crate) decl: usize,
+    pub(crate) topic: Option<String>,
     pub(crate) handler: String,
+    pub(crate) handler_span: Span,
     pub(crate) key: String,
     pub(crate) subject: Subject,
     pub(crate) span: Span,
@@ -119,7 +124,13 @@ pub(crate) fn collect_bus_walk<'p>(
             match item {
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
-                    w.decls.push(LocusDeclRow { name: locus.clone(), ..at.clone() });
+                    let decl = w.decls.len();
+                    w.decls.push(LocusDeclRow { name: locus.clone(), imported: l.imported, ..at.clone() });
+                    // The topic a site names by a plain reference, as written.
+                    let topic = |subject: &BusSubject| match subject {
+                        BusSubject::Topic(id) => Some(id.name.clone()),
+                        _ => None,
+                    };
                     w.edges.extend(handler_edges(l, w.decls.len() - 1, topics));
                     for m in &l.members {
                         match m {
@@ -127,6 +138,7 @@ pub(crate) fn collect_bus_walk<'p>(
                                 for bm in &bb.members {
                                     match bm {
                                         BusMember::Publish { subject, span, id, .. } => {
+                                            let written = topic(subject);
                                             let key = subject.canonical().to_string();
                                             if matches!(subject, BusSubject::QualifiedTopic(_)) {
                                                 w.cross_seed.insert(key.clone());
@@ -137,6 +149,8 @@ pub(crate) fn collect_bus_walk<'p>(
                                             }
                                             w.pub_sites.push(RawPub {
                                                 locus: locus.clone(),
+                                                decl,
+                                                topic: written,
                                                 key,
                                                 subject,
                                                 span: *span,
@@ -151,6 +165,7 @@ pub(crate) fn collect_bus_walk<'p>(
                                             id,
                                             ..
                                         } => {
+                                            let written = topic(subject);
                                             let key = subject.canonical().to_string();
                                             let qualified = matches!(
                                                 subject,
@@ -163,9 +178,25 @@ pub(crate) fn collect_bus_walk<'p>(
                                             if let Some(d) = w.decls.last_mut() {
                                                 d.subscribes.push((subject.clone(), handler.name.clone()));
                                             }
+                                            // A diagnostic names the handler at the
+                                            // declaration's own first `fn` of its
+                                            // name, else at the declaration's name.
+                                            let handler_span = l
+                                                .members
+                                                .iter()
+                                                .find_map(|m| match m {
+                                                    LocusMember::Fn(f) if f.name.name == handler.name => {
+                                                        Some(f.name.span)
+                                                    }
+                                                    _ => None,
+                                                })
+                                                .unwrap_or(l.name.span);
                                             w.sub_sites.push(RawSub {
                                                 locus: locus.clone(),
+                                                decl,
+                                                topic: written,
                                                 handler: handler.name.clone(),
+                                                handler_span,
                                                 key,
                                                 subject,
                                                 span: *span,
@@ -211,6 +242,8 @@ pub struct LocusDeclRow {
     /// depth (a module's contents under the module's index).
     pub program: String,
     pub path: Vec<usize>,
+    /// An imported seed's declaration (`LocusDecl::imported`).
+    pub imported: bool,
     /// Its `publish` subjects, in member order.
     pub publishes: Vec<Subject>,
     /// Its `subscribe` subjects with their handlers, in member order.
@@ -681,6 +714,12 @@ pub struct PublishRow {
     /// The `publish` member's identity.
     pub id: NodeId,
     pub locus: String,
+    /// The declaration that holds the site: its index in the walk's
+    /// [`BusGraph::decls`] (a stdlib row's, in the stdlib's walk).
+    pub decl: usize,
+    /// The topic the site names by a plain reference, as written; `None`
+    /// for a literal subject or a qualified path.
+    pub topic: Option<String>,
     /// The subject as written (`BusSubject::canonical`): a topic's
     /// name, a literal subject, a qualified path joined with `::`.
     pub key: String,
@@ -698,7 +737,16 @@ pub struct SubscribeRow {
     /// The `subscribe` member's identity.
     pub id: NodeId,
     pub locus: String,
+    /// The declaration that holds the site, as [`PublishRow::decl`].
+    pub decl: usize,
+    /// The topic the site names by a plain reference, as
+    /// [`PublishRow::topic`].
+    pub topic: Option<String>,
     pub handler: String,
+    /// Where a diagnostic names the handler: the name of the
+    /// declaration's own first `fn` of the handler's name, else the
+    /// declaration's name.
+    pub handler_span: Span,
     /// The subject as written, as [`PublishRow::key`].
     pub key: String,
     pub payload: String,
@@ -919,6 +967,8 @@ fn bus_rows(bundle: &Bundle<'_>, top: &TopScope, walk: &BusWalk, closed_world: b
             .map(|p| PublishRow {
                 id: p.id,
                 locus: p.locus.clone(),
+                decl: p.decl,
+                topic: p.topic.clone(),
                 key: p.key.clone(),
                 payload: resolve_payload(top, &p.locus, &p.key),
                 flat: flat(&p.locus, &p.key),
@@ -931,7 +981,10 @@ fn bus_rows(bundle: &Bundle<'_>, top: &TopScope, walk: &BusWalk, closed_world: b
             .map(|s| SubscribeRow {
                 id: s.id,
                 locus: s.locus.clone(),
+                decl: s.decl,
+                topic: s.topic.clone(),
                 handler: s.handler.clone(),
+                handler_span: s.handler_span,
                 key: s.key.clone(),
                 payload: resolve_payload(top, &s.locus, &s.key),
                 flat: flat(&s.locus, &s.key),
@@ -1152,6 +1205,46 @@ pub fn lowering_bus_graph(
     rows.subscribes.extend(stdlib.subscribes);
     let subjects = rows.subjects(placement);
     Ok(BusGraph { subjects, rows, ..BusGraph::default() })
+}
+
+/// The dispatch gates (F.40 phase 4, S9): the one gate set the dispatch
+/// plan is derived from, the snapshot's `dispatch` family
+/// (`Snapshot::demand_dispatch_gates`). They are the gates of lowering's
+/// graph ([`lowering_bus_graph`]) without the merge it is read through:
+/// the snapshot's rows, each keyed by the wire subject the program
+/// lowering walks spells it with (a plain topic reference by the scope's
+/// topic row's wire, which the topic rewrite writes there; any other
+/// subject as written), in the snapshot's walk order, followed by the
+/// stdlib's rows ([`crate::stdlib_bodies::bus_rows`], once per process),
+/// assembled into subjects with the placement table's labels. A
+/// subject's subscribers are in registration order, the order the direct
+/// lowering bakes and the plan's digest frames.
+pub fn derive_dispatch_gates(
+    snapshot: &BusGraph,
+    top: &TopScope,
+    placement: &crate::placement::PlacementTable,
+) -> Vec<hale_model::DispatchGate> {
+    let mut rows = snapshot.rows.clone();
+    let rekey = |topic: &Option<String>, key: &mut String| {
+        if let Some(topic) = topic {
+            *key = top.topics.named(topic).map_or_else(|| topic.clone(), |row| row.wire.clone());
+        }
+    };
+    for p in &mut rows.publishes {
+        rekey(&p.topic, &mut p.key);
+    }
+    for s in &mut rows.subscribes {
+        rekey(&s.topic, &mut s.key);
+    }
+    if let Some(stdlib) = crate::stdlib_bodies::bus_rows() {
+        rows.closed_world |= stdlib.closed_world;
+        rows.bound.extend(stdlib.bound.iter().cloned());
+        rows.cross_seed.extend(stdlib.cross_seed.iter().cloned());
+        rows.publishes.extend(stdlib.publishes.iter().cloned());
+        rows.subscribes.extend(stdlib.subscribes.iter().cloned());
+    }
+    let subjects = rows.subjects(placement);
+    BusGraph { subjects, rows, ..BusGraph::default() }.dispatch_gates()
 }
 
 /// The resolved payload type of a site on `key`: the declared topic's,

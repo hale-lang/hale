@@ -41,10 +41,11 @@
 //! that moves four committed baselines every time a row is added is a
 //! probe matrix nobody will add a row to.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::ast::{TopDecl, TypeDeclBody, TypeExpr};
 
 #[path = "support/harness.rs"]
@@ -55,7 +56,7 @@ mod build_opts;
 /// Does the CHECKER accept this program? The verdict `hale check`
 /// reports, as the agreement sweep reads it.
 fn check_accepts(program: &hale_syntax::ast::Program) -> Result<(), String> {
-    let errs: Vec<String> = hale_types::check_program(program)
+    let errs: Vec<String> = entries::check_program(program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
@@ -70,11 +71,11 @@ fn check_accepts(program: &hale_syntax::ast::Program) -> Result<(), String> {
 /// Does CODEGEN accept it? Builds to a unique path and removes the
 /// binary; the error is rendered so a failure names the refusal.
 fn build_accepts(
-    program: &hale_syntax::ast::Program,
+    src: &str,
     tag: &str,
 ) -> Result<(), String> {
     let bin = harness::unique_bin(tag);
-    match build_executable_with_options(program, &bin, &[], &build_opts::options()) {
+    match build_opts::build_source(src, &bin, &build_opts::options()) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             Ok(())
@@ -135,7 +136,7 @@ fn every_primitive_as_a_generic_argument_agrees_between_check_and_build() {
         let expected_ok = hale_types::ty::generic_arg_mangle_token(*p).is_some();
 
         let checked = check_accepts(&program);
-        let built = build_accepts(&program, &format!("hale_vg_ga_{}", spelling));
+        let built = build_accepts(&src, &format!("hale_vg_ga_{}", spelling));
 
         match (&checked, &built) {
             (Ok(()), Err(e)) => disagreements.push(format!(
@@ -271,10 +272,9 @@ fn a_bytes_generic_argument_round_trips_at_run_time() {
                fn main() {\n    \
                let inner = Box_Bytes { item: std::bytes::from_string(\"abcd\") };\n    \
                let h = Holder { b: inner };\n    \
-               println(\"b0=\", std::bytes::at(h.b.item, 0));\n}\n";
-    let program = hale_syntax::parse_source(src).expect("parses");
+               println(\"b0=\", std::bytes::at(h.b.item, 0) or -1);\n}\n";
     let bin = harness::unique_bin("hale_vg_bytes_monomorph");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("a Bytes monomorph must build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("a Bytes monomorph must build");
     let out = Command::new(&bin).output().expect("runs");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -458,7 +458,7 @@ fn statement_position_lowers_every_bare_builtin() {
             }
         };
         let tag = format!("hale_vg_stmt_{}", i);
-        match (check_accepts(&program), build_accepts(&program, &tag)) {
+        match (check_accepts(&program), build_accepts(src, &tag)) {
             (Ok(()), Ok(())) => {}
             (Err(e), Ok(())) => failures.push(format!(
                 "  `{}` — check refuses a statement-position call the \

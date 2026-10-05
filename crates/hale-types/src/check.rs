@@ -31,6 +31,7 @@ use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
 use crate::handler_routing::ChildRef;
+use crate::law::{Law, RuleId, Violation};
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
@@ -487,6 +488,10 @@ fn substitute_generic_ty(
 pub struct CheckInputs<'a> {
     pub top: &'a TopScope,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
+    /// The flow rows over the programs checked (the `flows` family's):
+    /// the long-running-child rule's and the starvation and birth-order
+    /// laws' run rows, and the accept/release law's release clauses.
+    pub flows: &'a crate::flows::FlowRows,
     /// The ownership graph over the programs checked: the
     /// unowned-subscriber rule's births, declarations and owners.
     pub ownership: &'a crate::ownership_graph::OwnershipGraph,
@@ -528,6 +533,22 @@ pub struct CheckInputs<'a> {
     /// one target the check judges the program against, and the row's
     /// own refusals, which the check reports.
     pub target: &'a crate::capability::TargetRow,
+    /// Law selection (the snapshot's `law_selection` cell, F.40 phase
+    /// 4, A2): its diagnostics are the check's law-selection issues
+    /// (constitutions, group resolution, the tier rule). It reads clause
+    /// text, adoption and membership, never types, so it is total over a
+    /// program that does not typecheck.
+    pub laws: &'a crate::claims::LawSelection,
+    /// The role rows (the snapshot's `api_surface` cell, F.40 phase 4,
+    /// A4): every `role` declaration, `@gated` site and the api entry's
+    /// role source, which the role rules read. Like law selection they
+    /// read declarations only, so they are total over a program that does
+    /// not typecheck.
+    pub roles: &'a crate::roles::RoleRows,
+    /// The served surface the api binding was generated from, if the
+    /// program has an `api:` entry (`Snapshot::api_surface`, the desugar
+    /// sequence's): the api entry's rules read it.
+    pub api_surface: Option<&'a hale_syntax::api_gen::ApiSurface>,
     /// The use rows (the `target_capability` family's): every way the
     /// program asks its target for a capability, which the admission law
     /// holds to the effective target's cells.
@@ -539,7 +560,8 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
-/// the bus and ownership graphs, by the snapshot's producers; the effect rows when
+/// [`crate::bundle_law_selection`], [`crate::roles::role_rows`],
+/// [`crate::bundle_api_surface`], the bus and ownership graphs, by the snapshot's producers; the effect rows when
 /// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
 /// is read beside the numbered copy: a scope names declarations, not
 /// sites, so the one built over `bundle` is the copy's.
@@ -557,6 +579,7 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
+    let flows = crate::bundle_flow_rows(bundle);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -574,9 +597,13 @@ fn check_numbered_bundle(
     let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
+    let laws = crate::bundle_law_selection(bundle);
+    let roles = crate::roles::role_rows(bundle, &entry);
+    let api_surface = crate::bundle_api_surface(bundle, &entry);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
+        flows: &flows,
         ownership: &ownership,
         effects: &effects,
         entry: &entry,
@@ -588,6 +615,9 @@ fn check_numbered_bundle(
         placement: &placement,
         target: &target,
         uses: &uses,
+        laws: &laws,
+        roles: &roles,
+        api_surface: api_surface.as_ref(),
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -777,6 +807,9 @@ pub fn check_bundle_by_declaration(
     // checked program's mint makes unique (the bundled stdlib is minted
     // apart), so it records a call to one of these only.
     let mut user_fns: BTreeSet<*const FnDecl> = BTreeSet::new();
+    // And the loci: a `param_accesses` row names its loci by the store
+    // that minted them.
+    let mut user_loci: BTreeSet<*const LocusDecl> = BTreeSet::new();
     for program in bundle.programs.values() {
         for decl in hale_syntax::ast::flat_decls(&program.items) {
             match decl {
@@ -784,6 +817,7 @@ pub fn check_bundle_by_declaration(
                     user_fns.insert(f as *const FnDecl);
                 }
                 TopDecl::Locus(l) => {
+                    user_loci.insert(l as *const LocusDecl);
                     for m in &l.members {
                         if let LocusMember::Fn(f) = m {
                             user_fns.insert(f as *const FnDecl);
@@ -814,6 +848,8 @@ pub fn check_bundle_by_declaration(
         fn_decls,
         locus_decls,
         user_fns,
+        user_loci,
+        access_visits: Vec::new(),
         default_invocations: Vec::new(),
         generic_types,
         generic_loci,
@@ -842,6 +878,7 @@ pub fn check_bundle_by_declaration(
                 None => {
                     let start = cx.diags.len();
                     cx.check_top_decl(item);
+                    cx.settle_param_accesses();
                     per.push(DeclChecked { typing: cx.diags[start..].to_vec(), reveal: Vec::new() });
                 }
             }
@@ -849,11 +886,13 @@ pub fn check_bundle_by_declaration(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
+    // The walks per monomorph keep nothing: there is nothing to settle.
+    debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
-    check_main_and_bindings(bundle, top, inputs.effects, inputs.entry, inputs.bindings, &mut diags);
+    check_main_and_bindings(bundle, inputs, &mut diags);
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
@@ -891,6 +930,9 @@ pub fn check_bundle_by_declaration(
             omitted: &typed.omitted_args,
         },
     ));
+    // F.40 phase 4, W3: the recovery events a closure's
+    // `persists_through(...)` / `resets_on(...)` clauses name.
+    diags.extend(crate::closure_events::closure_event_laws(bundle, inputs.handlers, inputs.entry));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.
@@ -906,13 +948,13 @@ pub fn check_bundle_by_declaration(
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
     //
-    // The flow rows, surveyed once: the long-running-child rule and the
-    // starvation and birth-order laws read their run rows (F.40 phase 3,
-    // E2: "long-running" and "never returns" are two columns), and the
-    // accept/release law their release clauses.
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let flows = crate::flows::survey(&programs, &bundle.import_renames);
-    check_nested_long_running_child(bundle, &flows, &mut diags);
+    // The flow rows, the snapshot's (F.40 phase 4, Q1): the
+    // long-running-child rule and the starvation and birth-order laws
+    // read their run rows (F.40 phase 3, E2: "long-running" and "never
+    // returns" are two columns), and the accept/release law their
+    // release clauses.
+    let flows = inputs.flows;
+    check_nested_long_running_child(bundle, flows, &mut diags);
     // F.40 phase 3, E2: the three rules that ask where a root field runs
     // read the placement table's rows for the root lowering deploys (a
     // `main locus` lowering does not deploy places nothing, so it starves
@@ -920,23 +962,28 @@ pub fn check_bundle_by_declaration(
     // pool the dead-receiver error already reported.
     if let Some(main) = inputs.placement.root.as_ref().and_then(|r| r.decl.decl(bundle)) {
         let fields = root_field_placements(bundle, inputs.placement);
+        // Rules 7 and 8 report as one walk reaches them (F.40 phase 4, W5).
+        let mut found = Vec::new();
         let errored_pools =
-            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut diags);
-        check_pool_starvation(main, &fields, &flows, &errored_pools, &mut diags);
-        check_birth_order(main, &fields, &flows, &mut diags);
+            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut found);
+        diags.extend(crate::law::diags(found));
+        let rows = RootRunRows { main, fields: &fields, flows, errored_pools: &errored_pools };
+        diags.extend(Law { rule: STARVATION, eval: check_pool_starvation }.diags(&rows));
+        diags.extend(Law { rule: BIRTH_ORDER, eval: check_birth_order }.diags(&rows));
     }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    check_hot_path_alloc(inputs.alloc_summary, top, &mut diags);
+    let rows = HotPathRows { summary: inputs.alloc_summary, top };
+    diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
     check_decorator_stacks(bundle, &mut diags);
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
-    check_accept_release(bundle, &flows, &mut diags);
+    check_accept_release(bundle, flows, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     // hot-path allocation contract. A hard error when an annotated fn
     // allocates more than its declared per-call ceiling (0 = zero-alloc
@@ -959,7 +1006,7 @@ pub fn check_bundle_by_declaration(
         // GH #476 Change 5h: `@budget` is judged over the model
         // through the evidence sidecar — the counting engines
         // measure, `judge_certificates` decides. See
-        // `check_bundle_opts`.
+        // `Snapshot::demand_laws`.
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
         // @budget, over the shared callgraph witness engine. The flat
@@ -978,7 +1025,7 @@ pub fn check_bundle_by_declaration(
         // (cross-actor causality is judged over the model).
         // GH #476 Change 5f/5g: `causes:` and its backward dual
         // `depends:` (RFC #330) are judged over the model with
-        // the other migrated families — see `check_bundle_opts`.
+        // the other migrated families — see `Snapshot::demand_laws`.
         // GH #382 phase 1: bundle-level claims — group
         // resolution (unknown name = error, vacuity) and
         // `forbid reaches` evaluation with countermodel
@@ -993,11 +1040,10 @@ pub fn check_bundle_by_declaration(
         // that re-derived the same four families from source.
         // `tests/claim_diags_differential.rs` held the two
         // byte-equal over the corpus through the cutover.
-        diags.extend(crate::claims::selection_diags(
-            &programs_vec,
-            &bundle.import_renames,
-        ));
-        // The VERDICTS are appended by `check_bundle_opts`,
+        // The selection is the snapshot's (`law_selection`, F.40
+        // phase 4, A2), the one the laws stage and the artifact read.
+        diags.extend(inputs.laws.diags.iter().cloned());
+        // The VERDICTS are appended by `Snapshot::demand_laws`,
         // after this whole pass establishes that the program
         // denotes a valid model — see the note there. Selection
         // stays here: it reads the claim surface directly and is
@@ -1015,18 +1061,24 @@ pub fn check_bundle_by_declaration(
     // returns, so its subscription can never fire. Judged over the
     // ownership graph (F.40 phase 3, C4). Hard error unless
     // `--allow-unowned-subscriber` is set.
-    check_unowned_subscriber_locus(bundle, inputs, allow_unowned_subscriber, &mut diags);
+    // Rule 20 is a law over those rows (F.40 phase 4, W5).
+    if !allow_unowned_subscriber {
+        let rows = UnownedSubscriberRows { bundle, ownership: inputs.ownership, placement: inputs.placement };
+        diags.extend(Law { rule: RULE_20, eval: check_unowned_subscriber_locus }.diags(&rows));
+    }
     // GH #18 #4: bus-graph property checks over the typed topic
     // topology. v1 (PR A): orphan topics — declared/used subjects
     // wired to only one end. Gated on a closed-world program (one
     // with an entry), so library seeds whose consumers are external
     // aren't falsely flagged.
-    check_bus_graph(bundle, top, inputs.entry, inputs.bus, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
     // an intra-locus loop lowering turns into direct calls is
     // synchronous self-dispatch that recurses without bound (error).
-    check_bus_cycles(inputs.bus, inputs.intra_locus, &mut diags);
+    // Rules 9 and 10 are laws over the bus graph (F.40 phase 4, W5).
+    let bus_rows =
+        BusLawRows { bundle, top, entry: inputs.entry, bus: inputs.bus, intra_locus: inputs.intra_locus };
+    bus_graph_laws(&bus_rows, &mut diags);
     // GH #18 #4: backpressure. An unbounded publish loop with no
     // yield/throttle floods the bus — the producer has no
     // backpressure. Structural heuristic (warning).
@@ -1330,21 +1382,18 @@ fn locus_accepts(parent: &LocusDecl, child_name: &str) -> bool {
 /// handler's locus, which the placement table records
 /// (`OwnershipGraph::construction_paths`); the diagnostic names a path
 /// with none.
-fn check_unowned_subscriber_locus(
-    bundle: &Bundle<'_>,
-    inputs: &CheckInputs<'_>,
-    allow: bool,
-    diags: &mut Vec<Diag>,
-) {
+///
+/// Its finding is a [`Violation`] (F.40 phase 4, W5) whose witness steps
+/// are the two related locations the diagnostic always carried: the
+/// declaration judged when two share the child's name, and the
+/// construction path no accepting ancestor lies on.
+fn check_unowned_subscriber_locus(rows: &UnownedSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::ownership_graph::{ConstructionPath, OwnerResolution};
-    if allow {
-        return;
-    }
-    let graph = inputs.ownership;
+    let (bundle, graph) = (rows.bundle, rows.ownership);
     // The construction paths are derived from the table once, by the
     // first birth its own locus does not accept.
     let paths = std::cell::OnceCell::new();
-    let paths = || paths.get_or_init(|| graph.construction_paths(inputs.placement, bundle));
+    let paths = || paths.get_or_init(|| graph.construction_paths(rows.placement, bundle));
     // In declaration order of the enclosing locus, as the program reads;
     // the graph lists its sites by locus name.
     let mut sites: Vec<&crate::ownership_graph::OwnedSite> = graph.sites.iter().collect();
@@ -1367,7 +1416,8 @@ fn check_unowned_subscriber_locus(
             continue;
         }
         let (name, p_name) = (&child.name, &p.name);
-        let mut diag = Diag::ty(
+        let mut found = Violation::error(
+            RULE_20,
             site.span,
             format!(
                 "locus `{}` declares `bus subscribe` but is \
@@ -1390,7 +1440,7 @@ fn check_unowned_subscriber_locus(
         // A name two declarations share: the graph judged the first.
         let same_name = graph.declarations.iter().filter(|d| d.name == *name).count();
         if same_name > 1 {
-            diag = diag.with_related(
+            found = found.step(
                 child.span,
                 format!(
                     "the declaration judged: the first, in declaration order, of the \
@@ -1425,10 +1475,21 @@ fn check_unowned_subscriber_locus(
                     format!("{within}no construction of `{top}` has an ancestor that accepts `{name}`"),
                 ),
             };
-            diag = diag.with_related(at, note);
+            found = found.step(at, note);
         }
-        diags.push(diag);
+        out.push(found);
     }
+}
+
+/// Rule 20, the unowned subscriber.
+const RULE_20: RuleId = RuleId::registered("semantics/placement", "20");
+
+/// What rule 20 reads: the ownership graph, and the placement table its
+/// construction paths are derived from.
+struct UnownedSubscriberRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    ownership: &'r crate::ownership_graph::OwnershipGraph,
+    placement: &'r crate::placement::PlacementTable,
 }
 
 /// Known stdlib loci whose `run()` body is structurally non-
@@ -2036,8 +2097,12 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 /// a recovery, `shm_write`): a locus instantiated there in a loop is a
 /// finding now. It does not walk a callee that is an expression of its
 /// own, which the lint's walk did, so nothing written there is.
-fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopScope, diags: &mut Vec<Diag>) {
+///
+/// Its finding is a [`Violation`] (F.40 phase 4, W5): an error under
+/// `@hot`, else a warning.
+fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
+    let (summary, top) = (rows.summary, rows.top);
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =
         summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
     rows.sort_by_key(|f| f.decl_index);
@@ -2085,12 +2150,22 @@ fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopS
         found.dedup();
         for (span, msg) in found {
             if f.hot {
-                diags.push(Diag::ty(span, format!("@hot: {}", msg)));
+                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
             } else if !summary.unbounded_fns.contains(&f.key) {
-                diags.push(Diag::warn(span, msg));
+                out.push(Violation::warning(HOT_PATH, span, msg));
             }
         }
     }
+}
+
+/// The hot-path allocation lint.
+const HOT_PATH: RuleId = RuleId::registered("verification/structural", "hot-path-allocation");
+
+/// What the hot-path lint reads: the allocation summary's rows, and the
+/// scope, for which literal is a locus and which call is a factory.
+struct HotPathRows<'r> {
+    summary: &'r crate::alloc_summary::AllocSummary,
+    top: &'r TopScope,
 }
 
 // === GH #723: decorator stacks =====================================
@@ -2350,12 +2425,16 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
 ///
 /// The helpers that block are the effect rows' ([`worker_holding_fns`]),
 /// demanded only once a placed field has a `run()` to walk.
+///
+/// One walk judges both rules, field by field, so its findings, each a
+/// [`Violation`] of rule 7 or rule 8 (F.40 phase 4, W5), are reported in
+/// the order it reaches them.
 fn check_cooperative_pool_blocking<'r>(
     bundle: &Bundle<'_>,
     bus: &crate::bus_graph::BusGraph,
     effects: &dyn Fn() -> Option<&'r crate::effect_rows::EffectRows>,
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    diags: &mut Vec<Diag>,
+    found: &mut Vec<Violation>,
 ) -> BTreeSet<String> {
     // GH #825: the rows key a module's fns by their bare names, as the
     // resolver does, so a module-nested helper that blocks is in the
@@ -2450,7 +2529,8 @@ fn check_cooperative_pool_blocking<'r>(
                 // placement-only rule, which over-fired on
                 // event-driven subscribers — `Reader`/`Dispatcher`
                 // received fine for 16h+ in production.)
-                diags.push(Diag::ty(
+                found.push(Violation::error(
+                    RULE_7,
                     span,
                     format!(
                         "locus `{}` (field `{}`) subscribes to bus topics \
@@ -2478,7 +2558,8 @@ fn check_cooperative_pool_blocking<'r>(
                 // locus isn't itself a subscriber. Interprocedural:
                 // `deep_call` may name a helper fn / self-method that
                 // blocks transitively, not just a literal stdlib op.
-                diags.push(Diag::warn(
+                found.push(Violation::warning(
+                    RULE_8,
                     deep_span,
                     format!(
                         "locus `{}` (field `{}`) is placed `cooperative(pool \
@@ -2504,6 +2585,11 @@ fn check_cooperative_pool_blocking<'r>(
     errored_pools
 }
 
+/// Rule 7, the dead bus receiver.
+const RULE_7: RuleId = RuleId::registered("semantics/placement", "7");
+/// Rule 8, a blocking syscall on a cooperative pool.
+const RULE_8: RuleId = RuleId::registered("semantics/placement", "8");
+
 /// Pool starvation, a law over the deployed root's placement rows: two
 /// (or more) statically non-returning `run()` bodies on one cooperative
 /// pool. The pool runs each `run()` cell to completion in birth order,
@@ -2514,13 +2600,8 @@ fn check_cooperative_pool_blocking<'r>(
 /// both warnings (blocking AND starving a sibling); they name different
 /// defects. Not reported on a pool where the dead-receiver error fired
 /// (`errored_pools`): that error already says the thread is monopolized.
-fn check_pool_starvation(
-    main: &LocusDecl,
-    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    flows: &crate::flows::FlowRows,
-    errored_pools: &BTreeSet<String>,
-    diags: &mut Vec<Diag>,
-) {
+fn check_pool_starvation(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
+    let RootRunRows { main, fields, flows, errored_pools } = *rows;
     let mut by_pool: BTreeMap<String, Vec<(String, Span)>> =
         BTreeMap::new();
     for m in &main.members {
@@ -2601,7 +2682,8 @@ fn check_pool_starvation(
         } else {
             String::new()
         };
-        diags.push(Diag::warn(
+        out.push(Violation::warning(
+            STARVATION,
             *first_span,
             format!(
                 "cooperative pool `{}` is shared by {}, whose `run()` \
@@ -2651,12 +2733,8 @@ fn check_pool_starvation(
 /// mis-filed as a cooperative-child handler-cadence question. It is
 /// neither: the drain is fine and the cadence is fine; the publisher
 /// simply had not been born yet.
-fn check_birth_order(
-    main: &LocusDecl,
-    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    flows: &crate::flows::FlowRows,
-    diags: &mut Vec<Diag>,
-) {
+fn check_birth_order(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
+    let RootRunRows { main, fields, flows, .. } = *rows;
     // Params in declaration order, tagged with whether
     // each one blocks the births that follow it.
     let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
@@ -2710,7 +2788,8 @@ fn check_birth_order(
         return;
     }
     let (field, span, _, _) = &ordered[i];
-    diags.push(Diag::warn(
+    out.push(Violation::warning(
+        BIRTH_ORDER,
         *span,
         format!(
             "params field `{}` runs inline on the main \
@@ -2736,6 +2815,25 @@ fn check_birth_order(
             field,
         ),
     ));
+}
+
+/// Pool starvation.
+const STARVATION: RuleId = RuleId::registered("verification/structural", "pool-starvation");
+/// The birth-order trap.
+const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
+
+/// What the starvation and birth-order laws read: where each params
+/// field of the deployed root runs (the placement table's rows,
+/// [`root_field_placements`]), the flow rows' run columns, and the pools
+/// where rule 7 fired; the root's params, in the order written and with
+/// the type each names (the stdlib's long-running list is by path), are
+/// read off its declaration.
+#[derive(Clone, Copy)]
+struct RootRunRows<'r, 'a> {
+    main: &'r LocusDecl,
+    fields: &'r BTreeMap<&'a str, RootFieldPlacement<'a>>,
+    flows: &'r crate::flows::FlowRows,
+    errored_pools: &'r BTreeSet<String>,
 }
 
 /// Where a root params field runs, as the blocking check reads it.
@@ -3788,7 +3886,10 @@ fn check_binding_codec<'e>(
             Some(crate::purity::Purity::Pure) => {}
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);
-                diags.push(Diag::ty(
+                // The codec-purity rule's finding (F.40 phase 4, W5),
+                // where the walk reaches it among the codec's checks.
+                diags.push(Violation::error(
+                    CODEC_PURITY,
                     codec.locus.span,
                     format!(
                         "codec `{}.{}` is not safe to dispatch from \
@@ -3802,7 +3903,7 @@ fn check_binding_codec<'e>(
                          help: {}",
                         codec.locus.name, method_name, line, hint,
                     ),
-                ));
+                ).into_diag());
             }
             None => {
                 // Method should have been in the map if the
@@ -3815,6 +3916,12 @@ fn check_binding_codec<'e>(
         }
     }
 }
+
+/// Codec purity, a registered rule over the effect rows' purity column.
+const CODEC_PURITY: RuleId = RuleId::registered("verification/structural", "codec-purity");
+/// The foreign-ring payload shape, a registered rule over the scope's
+/// payload types.
+const FOREIGN_RING_PAYLOAD: RuleId = RuleId::registered("verification/structural", "foreign-ring-payload-shape");
 
 /// Render an [`Impurity`] as `(note_line, fix_hint)` strings for
 /// embedding in a codec binding-site diagnostic.
@@ -4315,14 +4422,8 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-fn check_main_and_bindings<'e>(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    effects: &dyn Fn() -> Option<&'e crate::effect_rows::EffectRows>,
-    entry: &crate::entry::EntryRow,
-    bindings: &crate::binding_rows::BindingRows,
-    diags: &mut Vec<Diag>,
-) {
+fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags: &mut Vec<Diag>) {
+    let (top, effects, entry, bindings) = (inputs.top, inputs.effects, inputs.entry, inputs.bindings);
     // Rule 1 counts the entry row's witness (F.40 phase 3, E0): the
     // seed's own `main locus` declarations, module-nested ones
     // included (GH #825: a count that skips half the declarations is
@@ -4540,7 +4641,10 @@ fn check_main_and_bindings<'e>(
                         if !is_raw_view
                             && !is_flat_shapeable(&topic.payload, top)
                         {
-                            diags.push(Diag::ty(
+                            // The foreign-ring payload rule's finding
+                            // (F.40 phase 4, W5), in the walk's place.
+                            diags.push(Violation::error(
+                                FOREIGN_RING_PAYLOAD,
                                 entry.span,
                                 format!(
                                     "shm_ring binding for topic \
@@ -4555,7 +4659,7 @@ fn check_main_and_bindings<'e>(
                                     lid.name,
                                     topic.payload.display()
                                 ),
-                            ));
+                            ).into_diag());
                         }
                     }
                 }
@@ -4608,8 +4712,10 @@ fn check_main_and_bindings<'e>(
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    check_api_binding(&programs_vec, entry.root().and_then(|m| m.decl(bundle)), diags);
-    check_api_roles(&programs_vec, &top.topics, bindings, diags);
+    if let Some(surface) = inputs.api_surface {
+        check_api_binding(surface, diags);
+    }
+    diags.extend(crate::roles::role_laws(inputs.roles, inputs.bus, &top.topics, bindings));
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -4627,13 +4733,10 @@ fn check_main_and_bindings<'e>(
 
 /// GH #1106: the `api:` entry. The knobs the entry must carry, the
 /// one-replier rule, and what the api leaves out. The surface is the
-/// one `api_gen` emitted from, so a warning here names exactly what
-/// the binding will not serve. `root` is the entry row's lowering root,
-/// the `main locus` the binding was generated into.
-fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mut Vec<Diag>) {
-    let Some(surface) = hale_syntax::api_gen::api_surface(programs, root) else {
-        return;
-    };
+/// one `api_gen` emitted from (`CheckInputs::api_surface`: the
+/// snapshot's, the desugar sequence's), so a warning here names exactly
+/// what the binding will not serve.
+fn check_api_binding(surface: &hale_syntax::api_gen::ApiSurface, diags: &mut Vec<Diag>) {
     let b = &surface.binding;
     if b.bound.is_none() || b.on_full.is_none() {
         diags.push(Diag::ty(
@@ -4699,19 +4802,6 @@ fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mu
     }
 }
 
-/// GH #1109: the role vocabulary and the `@gated(role:)` sites.
-///
-/// Roles are declared vocabulary like `group` and `effect`: a name
-/// nothing declares is an error, bundle-wide, with `owner` the one
-/// role that needs no declaration (a program declares it only to
-/// give it `includes`). `includes` is grant-only and union-only, so a
-/// cycle says nothing and is refused. A gate goes on a subscribed
-/// handler, an `expose` member or a `publish`, and every subscriber
-/// (or publisher) of one topic states the same gate, because the
-/// binding refuses the message, not the handler. A gated handler's
-/// topic cannot also be bound to a transport in `bindings { }`: that
-/// transport has no gate, so the annotation would promise a check
-/// that does not run.
 /// GH #1141: a struct, a locus's `params`, a `contract` and an
 /// `interface` declare each name once. A second declaration of one
 /// name used to pass silently — one of the two won the slot, and the
@@ -4813,408 +4903,6 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
     }
 }
 
-fn check_api_roles(
-    programs: &[&Program],
-    topics: &crate::topic_identity::TopicRows,
-    bindings: &crate::binding_rows::BindingRows,
-    diags: &mut Vec<Diag>,
-) {
-    use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let mut decls: BTreeMap<String, (Vec<Ident>, Span)> = BTreeMap::new();
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Role(r) = item {
-                if let Some((_, first)) = decls.get(&r.name.name) {
-                    diags.push(
-                        Diag::ty(
-                            r.name.span,
-                            format!(
-                                "role `{}` is declared twice; a role is one name the \
-                                 deployment maps, so declare it once and `includes` it \
-                                 where a wider role should hold it",
-                                r.name.name
-                            ),
-                        )
-                        .with_related(*first, "the first declaration"),
-                    );
-                } else {
-                    decls.insert(r.name.name.clone(), (r.includes.clone(), r.name.span));
-                }
-            }
-        });
-    }
-    let declared = |n: &str| n == "owner" || decls.contains_key(n);
-    let undeclared = |n: &Ident, at: &str| {
-        Diag::ty(
-            n.span,
-            format!(
-                "{} names role `{}`, which nothing declares — roles are declared \
-                 vocabulary: `role {};` at top level (only `owner` needs no declaration)",
-                at, n.name, n.name
-            ),
-        )
-    };
-    for (name, (incs, span)) in &decls {
-        for inc in incs {
-            if !declared(&inc.name) {
-                diags.push(undeclared(inc, &format!("`role {} includes …`", name)));
-            }
-        }
-        // A cycle: `name` reachable from its own includes.
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut stack: Vec<String> = incs.iter().map(|i| i.name.clone()).collect();
-        while let Some(cur) = stack.pop() {
-            if cur == *name {
-                diags.push(Diag::ty(
-                    *span,
-                    format!(
-                        "role `{}` includes itself through its `includes` chain; \
-                         composition is grant-only and union-only, so a cycle says nothing",
-                        name
-                    ),
-                ));
-                break;
-            }
-            if !seen.insert(cur.clone()) {
-                continue;
-            }
-            if let Some((more, _)) = decls.get(&cur) {
-                stack.extend(more.iter().map(|i| i.name.clone()));
-            }
-        }
-    }
-
-    // Topics bound to a transport in `bindings { }` have no gate; the
-    // api entry's own source, and the main locus's params (a source
-    // may be `self.<param>`).
-    let bound: BTreeSet<String> = bindings.bound_names();
-    let mut api_roles: Option<ApiRoles> = None;
-    let mut api_span: Option<Span> = None;
-    let mut main_params: Vec<(String, TypeExpr)> = Vec::new();
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                for m in &l.members {
-                    if let LocusMember::Bindings(bb) = m {
-                        if let Some(api) = &bb.api {
-                            api_span = Some(api.span);
-                            if let Some(r) = &api.roles {
-                                api_roles = Some(r.clone());
-                            }
-                            for pm in &l.members {
-                                if let LocusMember::Params(pb) = pm {
-                                    for prm in &pb.params {
-                                        if let Some(t) = &prm.ty {
-                                            main_params.push((prm.name.name.clone(), t.clone()));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    // Review F3: a gate on a free fn is an error — nothing there is
-    // reached from the binding — and its role is checked all the same.
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Fn(f) = item {
-                if let Some(g) = &f.gated {
-                    diags.push(Diag::ty(
-                        g.span,
-                        format!(
-                            "`@gated(role: {})` on the free fn `{}`: a gate goes on a subscribed \
-                             handler, an `expose` member or a `publish` — it is checked at the api \
-                             binding, and a free fn is never reached from there",
-                            g.name, f.name.name
-                        ),
-                    ));
-                    if !declared(&g.name) {
-                        diags.push(undeclared(g, &format!("`@gated` on `{}`", f.name.name)));
-                    }
-                }
-            }
-        });
-    }
-
-    // A topic reference joins on its row's wire subject (spec/model.md
-    // rule 8), and is named as written.
-    let topic_key = |name: &str| -> String {
-        topics.named(name).map_or_else(|| name.to_string(), |t| t.wire.clone())
-    };
-    let bound: BTreeSet<String> = bound.iter().map(|n| topic_key(n)).collect();
-    // The sites, and the gate each topic's subscribers and publishers
-    // state: wire subject → (the topic as written, [(site, role, span)]).
-    type Gates = BTreeMap<String, (String, Vec<(String, Option<String>, Span)>)>;
-    let mut sub_gates: Gates = BTreeMap::new();
-    let mut pub_gates: Gates = BTreeMap::new();
-    let mut loci: BTreeMap<String, &hale_syntax::ast::LocusDecl> = BTreeMap::new();
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            let TopDecl::Locus(l) = item else { return };
-            if l.name.name.starts_with("__Api") {
-                return;
-            }
-            loci.insert(l.name.name.clone(), l);
-            // An imported locus is not reached from the binding, so its
-            // gates (or their absence) say nothing about the entrypoint's.
-            if l.imported {
-                return;
-            }
-            // Every subscription, by handler: one handler may subscribe
-            // several topics (review F5), and each is a site.
-            // (handler, (wire key, topic as written)).
-            let mut subscribed: Vec<(&str, Option<(String, String)>)> = Vec::new();
-            for m in &l.members {
-                let LocusMember::Bus(bb) = m else { continue };
-                for bm in &bb.members {
-                    match bm {
-                        BusMember::Subscribe { subject, handler, .. } => {
-                            let topic = match subject {
-                                BusSubject::Topic(id) => Some((topic_key(&id.name), id.name.clone())),
-                                _ => None,
-                            };
-                            subscribed.push((handler.name.as_str(), topic));
-                        }
-                        BusMember::Publish { subject, gated, span, .. } => {
-                            if let Some(g) = gated {
-                                if !declared(&g.name) {
-                                    diags.push(undeclared(g, &format!("`@gated` on `{}`'s publish", l.name.name)));
-                                }
-                            }
-                            if let BusSubject::Topic(id) = subject {
-                                let entry = pub_gates
-                                    .entry(topic_key(&id.name))
-                                    .or_insert_with(|| (id.name.clone(), Vec::new()));
-                                entry.1.push((
-                                    format!("{} publishes it", l.name.name),
-                                    gated.as_ref().map(|g| g.name.clone()),
-                                    *span,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            for m in &l.members {
-                match m {
-                    LocusMember::Fn(f) => {
-                        let Some(g) = &f.gated else { continue };
-                        if !declared(&g.name) {
-                            diags.push(undeclared(g, &format!("`@gated` on `{}.{}`", l.name.name, f.name.name)));
-                        }
-                        let mine: Vec<&Option<(String, String)>> = subscribed
-                            .iter()
-                            .filter(|(h, _)| *h == f.name.name.as_str())
-                            .map(|(_, t)| t)
-                            .collect();
-                        if mine.is_empty() {
-                            diags.push(Diag::ty(
-                                g.span,
-                                format!(
-                                    "`@gated(role: {})` on `{}.{}`, which no `subscribe` line of \
-                                     `{}` names: a gate goes on a subscribed handler, an `expose` \
-                                     member or a `publish` — it is checked at the binding, and a \
-                                     plain method is never reached from there",
-                                    g.name, l.name.name, f.name.name, l.name.name
-                                ),
-                            ));
-                        }
-                        for (key, topic) in mine.into_iter().flatten() {
-                            if bound.contains(key) {
-                                diags.push(Diag::ty(
-                                    g.span,
-                                    format!(
-                                        "`@gated(role: {})` on `{}.{}`, but its topic `{}` is \
-                                         bound to a transport in `bindings {{ }}` that has no \
-                                         gate: a message from another process would reach the \
-                                         handler unchecked. Reach the topic through the api \
-                                         binding, or drop the annotation",
-                                        g.name, l.name.name, f.name.name, topic
-                                    ),
-                                ));
-                            }
-                            let entry = sub_gates
-                                .entry(key.clone())
-                                .or_insert_with(|| (topic.clone(), Vec::new()));
-                            entry.1.push((
-                                format!("{}.{}", l.name.name, f.name.name),
-                                Some(g.name.clone()),
-                                g.span,
-                            ));
-                        }
-                    }
-                    LocusMember::Contract(cb) => {
-                        let ContractKind::Members(members) = &cb.kind else { continue };
-                        for cm in members {
-                            let Some(g) = &cm.gated else { continue };
-                            if cm.direction != ContractDirection::Expose {
-                                continue;
-                            }
-                            if !declared(&g.name) {
-                                diags.push(undeclared(g, &format!("`@gated` on an `expose` of `{}`", l.name.name)));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // Ungated subscribers count too: every subscriber of a
-            // topic must agree.
-            for (h, topic) in &subscribed {
-                let Some((key, t)) = topic else { continue };
-                let gated = l.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == *h && f.gated.is_some()));
-                if !gated {
-                    let span = l
-                        .members
-                        .iter()
-                        .find_map(|m| match m {
-                            LocusMember::Fn(f) if f.name.name == *h => Some(f.name.span),
-                            _ => None,
-                        })
-                        .unwrap_or(l.name.span);
-                    let entry = sub_gates.entry(key.clone()).or_insert_with(|| (t.clone(), Vec::new()));
-                    entry.1.push((format!("{}.{}", l.name.name, h), None, span));
-                }
-            }
-        });
-    }
-    for (kind, gates) in [("subscribes", &sub_gates), ("publishes", &pub_gates)] {
-        // Reported in the order of the topics' written names.
-        let mut groups: Vec<&(String, Vec<(String, Option<String>, Span)>)> = gates.values().collect();
-        groups.sort_by(|a, b| a.0.cmp(&b.0));
-        for (topic, sites) in groups {
-            let distinct: BTreeSet<Option<String>> = sites.iter().map(|(_, r, _)| r.clone()).collect();
-            if distinct.len() < 2 {
-                continue;
-            }
-            let listed: Vec<String> = sites
-                .iter()
-                .map(|(site, r, _)| match r {
-                    Some(r) => format!("{} gated `{}`", site, r),
-                    None => format!("{} ungated", site),
-                })
-                .collect();
-            let (_, _, span) = sites.iter().find(|(_, r, _)| r.is_some()).unwrap_or(&sites[0]);
-            diags.push(Diag::ty(
-                *span,
-                format!(
-                    "topic `{}`: {} — every locus that {} one topic states the same gate, \
-                     because the binding refuses the message, not the handler",
-                    topic,
-                    listed.join(", "),
-                    kind
-                ),
-            ));
-        }
-    }
-
-    // A program-named source is a locus satisfying std::api::RoleSource
-    // (review F6): a locus literal or `self.<param>` of the main locus
-    // is checked structurally here, with the fn's span; any other
-    // expression is typed against the interface at the generated init.
-    let Some(src) = api_roles else { return };
-    let named = |path: &hale_syntax::ast::QualifiedName| -> String {
-        path.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::")
-    };
-    let locus_name: Option<String> = match &src.expr {
-        Expr::Struct { path, .. } => Some(named(path)),
-        Expr::Field { receiver, name, .. } if matches!(**receiver, Expr::KwSelf(_)) => main_params
-            .iter()
-            .find(|(n, _)| *n == name.name)
-            .and_then(|(_, t)| match t {
-                TypeExpr::Named { path, .. } => Some(named(path)),
-                _ => None,
-            }),
-        _ => None,
-    };
-    let Some(locus_name) = locus_name else { return };
-    if locus_name.starts_with("__Std") || locus_name.starts_with("std::") {
-        return;
-    }
-    // A qualified path (`lib::TableRoles`) is renamed to the imported
-    // locus's mangled name only on the build path; here the generated
-    // init is typed against the interface, which is check enough.
-    if locus_name.contains("::") && !loci.contains_key(&locus_name) {
-        return;
-    }
-    let entry = api_span.unwrap_or(src.span);
-    let Some(l) = loci.get(&locus_name) else {
-        diags.push(Diag::ty(
-            src.span,
-            format!(
-                "api binding: `roles:` names `{}`, which is no locus of this bundle; a role \
-                 source is a locus with `fn holds(p: std::api::Principal, r: String) -> Bool` \
-                 (std::api::RoleSource)",
-                locus_name
-            ),
-        ));
-        return;
-    };
-    let holds = l.members.iter().find_map(|m| match m {
-        LocusMember::Fn(f) if f.name.name == "holds" => Some(f),
-        _ => None,
-    });
-    let Some(f) = holds else {
-        diags.push(Diag::ty(
-            src.span,
-            format!(
-                "api binding: `roles:` names `{}`, which has no `fn holds`: a role source \
-                 answers `fn holds(p: std::api::Principal, r: String) -> Bool` \
-                 (std::api::RoleSource) — whether the principal holds the role directly; \
-                 the binding walks `includes` itself",
-                locus_name
-            ),
-        ));
-        return;
-    };
-    let is_principal = |t: &TypeExpr| match t {
-        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
-            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-            segs == ["std", "api", "Principal"] || segs == ["__StdApiPrincipal"]
-        }
-        _ => false,
-    };
-    let mut why: Vec<String> = Vec::new();
-    if f.params.len() != 2 {
-        why.push(format!("takes {} parameter(s), not 2", f.params.len()));
-    } else {
-        if !is_principal(&f.params[0].ty) {
-            why.push(format!("its first parameter is not a `std::api::Principal`"));
-        }
-        if !matches!(&f.params[1].ty, TypeExpr::Primitive(PrimType::String, _)) {
-            why.push(format!("its second parameter is not a `String`"));
-        }
-    }
-    if !matches!(&f.ret, Some(TypeExpr::Primitive(PrimType::Bool, _))) {
-        why.push("it does not return `Bool`".to_string());
-    }
-    if f.fallible.is_some() {
-        why.push("it is fallible".to_string());
-    }
-    if !why.is_empty() {
-        diags.push(
-            Diag::ty(
-                f.name.span,
-                format!(
-                    "`{}.holds` does not satisfy std::api::RoleSource: {} — a role source \
-                     answers `fn holds(p: std::api::Principal, r: String) -> Bool`, not \
-                     fallible, whether the principal holds the role directly (the binding \
-                     walks `includes` itself)",
-                    locus_name,
-                    why.join("; ")
-                ),
-            )
-            .with_related(entry, "the api entry that names it"),
-        );
-    }
-}
-
 // === Bus-graph property checks (GH #18 #4) =========================
 //
 // The bus topology is a typed directed graph already in the AST.
@@ -5231,13 +4919,36 @@ fn check_api_roles(
 // cross-seed (`alias::Foo`) references (the other seed owns the other
 // half). A site the graph cannot resolve is a hole, judged by no rule.
 
-fn check_bus_graph(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-    bus: &crate::bus_graph::BusGraph,
-    diags: &mut Vec<Diag>,
-) {
+/// Rule 9, the orphan bus topic.
+const RULE_9: RuleId = RuleId::registered("semantics/placement", "9");
+/// Rule 10, bus cycles.
+const RULE_10: RuleId = RuleId::registered("semantics/placement", "10");
+
+/// What rules 9 and 10 read: the bus graph, the entry row (the closed
+/// world, and the entry's `api:` binding, read off its declaration), the
+/// scope's declared topics, and the intra-locus rewrite relation.
+struct BusLawRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    top: &'r TopScope,
+    entry: &'r crate::entry::EntryRow,
+    bus: &'r crate::bus_graph::BusGraph,
+    intra_locus: &'r [hale_syntax::desugar::IntraLocusRewrite],
+}
+
+/// Rules 9 and 10 over the bus graph, and between them the wildcard
+/// payload warning (`spec/semantics.md` § "Computed publish subjects are
+/// confined to their declaration"), which no list registers: it reads the
+/// scope's declarations and judges a closed world, as rule 9 does.
+fn bus_graph_laws(rows: &BusLawRows<'_, '_>, diags: &mut Vec<Diag>) {
+    diags.extend(Law { rule: RULE_9, eval: check_bus_graph }.diags(rows));
+    if rows.entry.entry().is_some() {
+        check_wildcard_publish_payloads(rows.top, diags);
+    }
+    diags.extend(Law { rule: RULE_10, eval: check_bus_cycles }.diags(rows));
+}
+
+fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
+    let BusLawRows { bundle, top, entry, bus, .. } = *rows;
     // Closed-world gate: only a complete program (one with an entry,
     // F.40 phase 3, E0) has both ends of every channel in-bundle. A
     // seed whose only `main locus` is imported or module-nested has
@@ -5286,7 +4997,8 @@ fn check_bus_graph(
         let s = has_sub(row);
         if p && !s {
             let span = row.and_then(|r| r.published).unwrap_or(info.span);
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus topic `{}` is published but has no subscriber — \
@@ -5297,7 +5009,8 @@ fn check_bus_graph(
             ));
         } else if s && !p {
             let span = row.and_then(|r| r.subscribed).unwrap_or(info.span);
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus topic `{}` is subscribed but never published — its \
@@ -5307,7 +5020,8 @@ fn check_bus_graph(
                 ),
             ));
         } else if !p && !s {
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 info.span,
                 format!(
                     "bus topic `{}` is declared but neither published nor \
@@ -5328,7 +5042,8 @@ fn check_bus_graph(
         let s = has_sub(Some(row));
         if p && !s {
             let Some(span) = row.published else { continue };
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus subject `\"{}\"` is published but has no subscriber — \
@@ -5339,7 +5054,8 @@ fn check_bus_graph(
             ));
         } else if s && !p {
             let Some(span) = row.subscribed else { continue };
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus subject `\"{}\"` is subscribed but never published — \
@@ -5350,8 +5066,6 @@ fn check_bus_graph(
             ));
         }
     }
-
-    check_wildcard_publish_payloads(top, diags);
 }
 
 /// A wildcard publish declaration authorizes its locus to publish any
@@ -5501,12 +5215,9 @@ fn cycle_path(cycle: &[&crate::bus_graph::BusEdge]) -> String {
 /// declarations, not names. Whether a hop is a direct call is the
 /// intra-locus rewrite's relation (`intra_locus`, by the send's id),
 /// never re-derived here.
-fn check_bus_cycles(
-    bus: &crate::bus_graph::BusGraph,
-    intra_locus: &[hale_syntax::desugar::IntraLocusRewrite],
-    diags: &mut Vec<Diag>,
-) {
+fn check_bus_cycles(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::bus_graph::BusEdge;
+    let (bus, intra_locus) = (rows.bus, rows.intra_locus);
     let roots = |keep: &dyn Fn(&BusEdge) -> bool| -> BTreeSet<&str> {
         bus.edges.iter().filter(|e| keep(e)).map(|e| e.from.as_str()).collect()
     };
@@ -5533,7 +5244,8 @@ fn check_bus_cycles(
         // the queue carries, so it is refused here rather than judged.
         // Every entry numbers before it checks; this is the invariant.
         if let Some(e) = bus.edges.iter().find(|e| keep(e) && e.send.is_none()) {
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                RULE_10,
                 e.span,
                 format!(
                     "internal: the send to `{}` in handler `{}` of locus `{}` \
@@ -5549,7 +5261,8 @@ fn check_bus_cycles(
             ));
             intra.insert(d);
         } else if let Some(cycle) = first_cycle(&called) {
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                RULE_10,
                 cycle[0].span,
                 format!(
                     "locus `{}` has a re-entrant synchronous bus cycle \
@@ -5564,7 +5277,8 @@ fn check_bus_cycles(
             ));
             intra.insert(d);
         } else {
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_10,
                 queued[0].span,
                 format!(
                     "bus cycle `{}` in locus `{}`: a cell can re-trigger \
@@ -5608,7 +5322,8 @@ fn check_bus_cycles(
             })
             .collect();
         loci.sort();
-        diags.push(Diag::warn(
+        out.push(Violation::warning(
+            RULE_10,
             cycle[0].span,
             format!(
                 "bus cycle `{}` across loci ({}): a cell can re-trigger \
@@ -6289,6 +6004,14 @@ struct Checker<'a> {
     /// The fns and locus methods the bundle's programs declare (not the
     /// bundled stdlib's): the callees the `omitted_args` column records.
     user_fns: BTreeSet<*const FnDecl>,
+    /// The loci the bundle's programs declare: a declaration in
+    /// `locus_decls` that is not one is the bundled stdlib's.
+    user_loci: BTreeSet<*const LocusDecl>,
+    /// The param accesses the walk of the current top-level declaration
+    /// reached, each with where the diagnostics stood when it did; moved
+    /// into the `param_accesses` column, and judged by the sealed rule,
+    /// when the declaration's walk ends (`settle_param_accesses`).
+    access_visits: Vec<AccessVisit>,
     default_invocations: Vec<u32>,
     /// GH #877: the generic parameters of the declaration being
     /// checked — a fn's `<T>`, a generic `type`'s. They name no
@@ -6442,17 +6165,22 @@ impl ScopeStack {
     }
 }
 
-/// GH #436 follow-up: which half of confinement a site exercises.
-///
-/// Reads resolve through the expression field-access arm and writes
-/// through LValue traversal — two paths, and the original check only
-/// hooked the first. Naming the distinction keeps the diagnostic
-/// honest ("writes one from outside", not "reads") and makes the
-/// second path impossible to forget again.
+/// A param access the walk reached: the body it is in, the row, and how
+/// many diagnostics stood before it, which is where the sealed rule's
+/// finding for it goes.
+struct AccessVisit {
+    at: usize,
+    body: NodeId,
+    row: crate::typed_bodies::ParamAccess,
+}
+
+/// Where a walk whose findings may be discarded began: the diagnostics
+/// and the accesses it reached are discarded together
+/// (`Checker::discard_since`).
 #[derive(Clone, Copy)]
-enum SealedAccess {
-    Read,
-    Write,
+struct WalkMark {
+    diags: usize,
+    visits: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -11542,13 +11270,9 @@ impl<'a> Checker<'a> {
                     // writes. Confinement that stops a read and permits
                     // a write is not confinement — for `std::secret` it
                     // let outside code CHOOSE the signing key, which is
-                    // worse than reading it.
-                    self.check_sealed_access(
-                        &ty,
-                        f,
-                        f.span,
-                        SealedAccess::Write,
-                    );
+                    // worse than reading it. A write is a row of its own
+                    // kind, so the rule says "writes one from outside".
+                    self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
                 }
                 LValueSeg::Index(idx) => {
@@ -11954,7 +11678,7 @@ impl<'a> Checker<'a> {
             walked += 1;
             let bindings: BTreeMap<String, Ty> =
                 generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
-            let mark = self.diags.len();
+            let mark = self.walk_mark();
             let prev_bindings = std::mem::replace(&mut self.generic_bindings, bindings);
             let prev_specializing = self.specializing.replace(m.args.clone());
             let prev_locus = self.current_locus.take();
@@ -11973,7 +11697,7 @@ impl<'a> Checker<'a> {
             self.current_locus = prev_locus;
             self.specializing = prev_specializing;
             self.generic_bindings = prev_bindings;
-            self.diags.truncate(mark);
+            self.discard_since(mark);
         }
     }
 
@@ -12048,75 +11772,89 @@ impl<'a> Checker<'a> {
         body.specialized_accumulators = specialized;
     }
 
-    /// GH #436: `@sealed` — a sealed locus's `params` are reachable
-    /// only from inside its own methods.
-    ///
-    /// The rule is about the *reader*, not the receiver syntax: what
-    /// matters is whether the enclosing locus IS the sealed one. A
-    /// parent holding `s: Signer` reads `self.s.key` with receiver
-    /// type `Signer` while `current_locus` is `Gateway`, and that is
-    /// the read this forbids. `self.key` inside `Signer` has the same
-    /// receiver type with `current_locus == Signer`, and is fine.
-    ///
-    /// Only `params` are sealed. Capacity slots and methods are
-    /// untouched — sealing confines state, it does not make a locus
-    /// uncallable, which is the entire point.
-    fn check_sealed_access(
+    /// The `param_accesses` row of an access to `name` through a
+    /// receiver typed `rt` (F.40 phase 4, W4): when `rt` is a locus the
+    /// scope declares and `name` one of its `params`, the row names the
+    /// locus whose member is being walked (the reader), the receiver's
+    /// locus, both by declaration, and the access. Recorded whether or
+    /// not the locus is sealed, as a visit the declaration's walk settles
+    /// when it ends; a walk whose findings the check discards (a
+    /// receiver typed ahead of the call path that types it again, a
+    /// default typed at an invocation, a generic body walked per
+    /// monomorph) discards its visits with them.
+    fn record_param_access(
         &mut self,
         rt: &Ty,
         name: &Ident,
         span: Span,
-        access: SealedAccess,
+        kind: crate::typed_bodies::AccessKind,
     ) {
         let Ty::Named(locus_name) = rt else { return };
-        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name)
-        else {
+        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name) else {
             return;
         };
-        if !li.sealed {
-            return;
-        }
-        // Inside the sealed locus itself: every read is legal.
-        if self.current_locus.map_or(false, |cur| cur.name == li.name) {
-            return;
-        }
-        // Only `params` are confined; a slot or method name reaching
-        // here is not a state read.
         if !li.params.iter().any(|p| p.name == name.name) {
             return;
         }
-        // Render the spelling the author wrote. A stdlib locus is
-        // declared under a mangled name (`__StdSecretSigner`) that
-        // appears nowhere in their program; they wrote
-        // `std::secret::Signer`.
-        let shown = hale_stdlib::PATH_RENAMES
-            .iter()
-            .find(|(_, m)| *m == li.name)
-            .map(|(p, _)| p.join("::"))
-            .unwrap_or_else(|| li.name.clone());
-        let callable: Vec<&str> =
-            li.methods.iter().map(|m| m.name.as_str()).collect();
-        let hint = if callable.is_empty() {
-            format!(
-                "`{shown}` declares no methods, so its state is \
-                 reachable only from inside it"
-            )
-        } else {
-            format!("call one of its methods instead ({})", callable.join(", "))
-        };
-        let (verb, gerund) = match access {
-            SealedAccess::Read => ("readable", "reads"),
-            SealedAccess::Write => ("writable", "writes"),
-        };
-        self.diags.push(Diag::ty(
+        let Some(receiver) = self.locus_ref(&li.name) else { return };
+        let reader = self.current_locus.and_then(|cur| self.locus_ref(&cur.name));
+        let row = crate::typed_bodies::ParamAccess {
+            reader,
+            receiver,
+            locus: li.name.clone(),
+            param: name.name.clone(),
+            kind,
             span,
-            format!(
-                "`{shown}` is `@sealed`: its `params` are {verb} only \
-                 from inside its own methods, and `{shown}.{}` {gerund} \
-                 one from outside — {hint}",
-                name.name
-            ),
-        ));
+        };
+        self.access_visits.push(AccessVisit { at: self.diags.len(), body: self.body, row });
+    }
+
+    /// The start of a walk whose findings may be discarded.
+    fn walk_mark(&self) -> WalkMark {
+        WalkMark { diags: self.diags.len(), visits: self.access_visits.len() }
+    }
+
+    /// Discard what the walk since `mark` found: its diagnostics and the
+    /// param accesses it reached.
+    fn discard_since(&mut self, mark: WalkMark) {
+        self.diags.truncate(mark.diags);
+        self.access_visits.truncate(mark.visits);
+    }
+
+    /// The end of a top-level declaration's walk: each access it reached
+    /// becomes its body's `param_accesses` row (an access the walk
+    /// reached twice, a method call's receiver, is one row), and the
+    /// sealed rule judges the rows ([`crate::sealed_access`]), each
+    /// finding placed among the declaration's diagnostics where the walk
+    /// first reached the access.
+    fn settle_param_accesses(&mut self) {
+        let mut fresh: Vec<(usize, crate::typed_bodies::ParamAccess)> = Vec::new();
+        for visit in std::mem::take(&mut self.access_visits) {
+            let rows = &mut self.typed.body(visit.body).param_accesses;
+            if !rows.contains(&visit.row) {
+                rows.push(visit.row.clone());
+                fresh.push((visit.at, visit.row));
+            }
+        }
+        let rows: Vec<crate::typed_bodies::ParamAccess> = fresh.iter().map(|(_, r)| r.clone()).collect();
+        let found = crate::sealed_access::sealed_access_law(self.top, &rows);
+        // From the last, so each insertion leaves the earlier places
+        // where they were; two at one place keep their order.
+        for (i, diag) in found.into_iter().rev() {
+            self.diags.insert(fresh[i].0, diag);
+        }
+    }
+
+    /// The declaration the scope's locus `name` is, by its site.
+    fn locus_ref(&self, name: &str) -> Option<crate::typed_bodies::LocusRef> {
+        use crate::placement::SiteUniverse;
+        let decl = self.locus_decls.get(name)?;
+        let universe = if self.user_loci.contains(&(*decl as *const LocusDecl)) {
+            SiteUniverse::User
+        } else {
+            SiteUniverse::StdlibAnalysis
+        };
+        Some(crate::typed_bodies::LocusRef { universe, decl: decl.id })
     }
 
     /// GH #759: a type name written in a position the checker reads
@@ -12709,7 +12447,11 @@ impl<'a> Checker<'a> {
     fn type_name_is_declared(&self, name: &str) -> bool {
         if self.known.contains_key(name)
             || self.known.alias_target(name).is_some()
-            || SYNTHESIZED_TYPE_NAMES.contains(&name)
+            // GH #877: a builtin type names something even where the
+            // resolver injects nothing (`BusUnmatchedKey` without a fail
+            // topic): lowering declares every one
+            // unconditionally, so a signature naming one lowers.
+            || crate::builtin_types::builtin_type(name).is_some()
             || self.generic_params.iter().any(|g| g == name)
             || self.generic_types.contains_key(name)
         {
@@ -12761,7 +12503,7 @@ impl<'a> Checker<'a> {
                 .filter(|k| !k.starts_with("__")),
         );
         cands.extend(self.generic_params.iter().map(|g| g.as_str()));
-        cands.extend(SYNTHESIZED_TYPE_NAMES.iter().copied());
+        cands.extend(crate::builtin_types::BUILTIN_TYPES.iter().map(|t| t.name));
         cands.extend(
             self.top
                 .symbols
@@ -13075,9 +12817,9 @@ impl<'a> Checker<'a> {
                     .and_then(|name| self.fn_decls.get(name).copied())
             }
             Expr::Field { receiver, name, .. } => {
-                let mark = self.diags.len();
+                let mark = self.walk_mark();
                 let ty = self.check_expr(receiver);
-                self.diags.truncate(mark);
+                self.discard_since(mark);
                 let locus = match ty {
                     Ty::Named(ref n) => self.locus_decls.get(n).copied().or_else(|| {
                         let mono = self.typed.monomorphs.named(n)?;
@@ -13107,7 +12849,7 @@ impl<'a> Checker<'a> {
         if defaults.is_empty() {
             return;
         }
-        let mark = self.diags.len();
+        let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
         for default in defaults {
             let _ = self.check_expr(default);
@@ -13115,7 +12857,7 @@ impl<'a> Checker<'a> {
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer.
-        self.diags.truncate(mark);
+        self.discard_since(mark);
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -13381,7 +13123,7 @@ impl<'a> Checker<'a> {
                                     crate::typed_bodies::FallibleCall {
                                         span: expr.span(),
                                         kind: crate::typed_bodies::CalleeKind::Stdlib,
-                                        callee: sig.display_path(),
+                                        callee: segs.join("::"),
                                         payload,
                                         handled: self.handling,
                                     },
@@ -13394,7 +13136,7 @@ impl<'a> Checker<'a> {
                                     qn.span,
                                     format!(
                                         "`{}` takes {} argument{}, got {}",
-                                        sig.display_path(),
+                                        segs.join("::"),
                                         sig.params.len(),
                                         if sig.params.len() == 1 {
                                             ""
@@ -13414,7 +13156,7 @@ impl<'a> Checker<'a> {
                                             format!(
                                                 "`{}` argument {}: expected \
                                                  `{}`, got `{}`",
-                                                sig.display_path(),
+                                                segs.join("::"),
                                                 i + 1,
                                                 want.to_ty().display(),
                                                 got.display()
@@ -13519,7 +13261,7 @@ impl<'a> Checker<'a> {
                             | "truncate"
                     ) && !args.is_empty()
                     {
-                        let mark = self.diags.len();
+                        let mark = self.walk_mark();
                         let recv_ty = self.check_expr(&args[0]);
                         let shadowed = match &recv_ty {
                             Ty::Bounded(elem, cap) => self
@@ -13688,7 +13430,7 @@ impl<'a> Checker<'a> {
                         // the name for this receiver type (GH #892):
                         // roll back the speculative diags and let the
                         // ordinary call paths resolve it.
-                        self.diags.truncate(mark);
+                        self.discard_since(mark);
                     }
                 }
                 // M3 stage 3 (2026-07-02): generic fn call
@@ -14123,9 +13865,9 @@ impl<'a> Checker<'a> {
                                 },
                             ),
                             Expr::Field { receiver, name, .. } => {
-                                let mark = self.diags.len();
+                                let mark = self.walk_mark();
                                 let rt = self.check_expr(receiver);
-                                self.diags.truncate(mark);
+                                self.discard_since(mark);
                                 match rt {
                                     Ty::Named(tn) => {
                                         match self.top.symbols.get(&tn) {
@@ -14353,12 +14095,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let rt = self.check_expr(receiver);
-                self.check_sealed_access(
-                    &rt,
-                    name,
-                    *span,
-                    SealedAccess::Read,
-                );
+                self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
                 match self.field_ty(&rt, &name.name) {
                     Some(t) => t,
                     None => {
@@ -15051,11 +14788,9 @@ impl<'a> Checker<'a> {
         );
     }
 
-    /// Whether a value of type `t` can be auto-coerced to String
-    /// inside a `String + <t>` expression. Mirrors the codegen
-    /// `value_to_string_supports` set: every primitive that
-    /// `to_string(...)` accepts, plus enums (which render as their
-    /// variant name).
+    /// Whether a value of type `t` prints: `println`, `to_string`,
+    /// f-string interpolation and the `String + <t>` coercion. The rule
+    /// is [`crate::printable`]'s, which lowering reads too.
     fn ty_is_printable(&self, t: &Ty) -> bool {
         self.ty_is_printable_at(t, 0)
     }
@@ -15244,42 +14979,41 @@ impl<'a> Checker<'a> {
     /// size), but the checker runs first and must not hang on a
     /// program it is about to reject for another reason.
     fn ty_is_printable_at(&self, t: &Ty, depth: u32) -> bool {
-        if depth > 16 {
-            return false;
-        }
+        crate::printable::prints_at(t, depth, &|t: &Ty| self.print_shape(t))
+    }
+
+    /// `t` as the printable rule sees it.
+    fn print_shape(&self, t: &Ty) -> crate::printable::PrintShape<Ty> {
+        use crate::printable::PrintShape;
         match t {
-            Ty::Tuple(ts) => {
-                ts.iter().all(|x| self.ty_is_printable_at(x, depth + 1))
+            Ty::Prim(p) => PrintShape::Prim(*p),
+            Ty::Tuple(ts) => PrintShape::Tuple(ts.clone()),
+            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => {
+                PrintShape::Sequence(elem.as_ref().clone())
             }
-            // Element types are restricted to the scalars, matching
-            // `value_to_string_supports` in codegen: those are the
-            // shapes whose runtime value is reliably a pointer to
-            // inline storage the renderer can walk. Widening this
-            // without widening codegen is a check/build divergence,
-            // which `corpus_check_build_agreement` fails on.
-            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => matches!(
-                elem.as_ref(),
-                Ty::Prim(
-                    PrimType::Int
-                        | PrimType::Float
-                        | PrimType::Bool
-                        | PrimType::Decimal
-                        | PrimType::Duration
-                )
-            ),
             Ty::Named(n) => match self.top.symbols.get(n) {
                 Some(TopSymbol::Type(ti)) => match &ti.kind {
-                    TypeKind::Enum(_) => true,
-                    TypeKind::Struct(fs) => fs.iter().all(|f| {
-                        self.ty_is_printable_at(&f.ty, depth + 1)
-                    }),
-                    TypeKind::Alias(inner) => {
-                        self.ty_is_printable_at(inner, depth + 1)
+                    TypeKind::Enum(_) => PrintShape::Enum,
+                    TypeKind::Struct(fs) => {
+                        PrintShape::Record(fs.iter().map(|f| f.ty.clone()).collect())
                     }
+                    TypeKind::Alias(inner) => PrintShape::Alias(inner.clone()),
                 },
-                _ => self.ty_is_printable_scalar(t),
+                Some(
+                    TopSymbol::Locus(_)
+                    | TopSymbol::Perspective(_)
+                    | TopSymbol::Interface(_),
+                ) => PrintShape::NoTextForm,
+                // Unresolved names stay permissive (imports /
+                // synthesized types).
+                _ => PrintShape::Unseen,
             },
-            _ => self.ty_is_printable_scalar(t),
+            Ty::Unknown => PrintShape::Unseen,
+            Ty::Array(_, None)
+            | Ty::Projection(..)
+            | Ty::Function { .. }
+            | Ty::Unit
+            | Ty::Fallible { .. } => PrintShape::NoTextForm,
         }
     }
 
@@ -15344,42 +15078,6 @@ impl<'a> Checker<'a> {
                     .to_string(),
             ),
             other => Some(format!("`{}` does not render", other.display())),
-        }
-    }
-
-    fn ty_is_printable_scalar(&self, t: &Ty) -> bool {
-        match t {
-            Ty::Prim(p) => matches!(
-                p,
-                PrimType::String
-                    | PrimType::Int
-                    | PrimType::Bool
-                    | PrimType::Float
-                    | PrimType::Decimal
-                    | PrimType::Duration
-                    | PrimType::Time
-                    | PrimType::StringView
-            ),
-            // GH #241 (audit item 1): enums render via to_string
-            // (variant name); structs / loci / perspectives do
-            // NOT — pre-#241 this deferred to a spanless codegen
-            // error ("`to_string` not supported for type ...").
-            // Resolve the name: enum printable, everything else
-            // known is not. Unresolved names stay permissive
-            // (imports / synthesized types).
-            Ty::Named(n) => match self.top.symbols.get(n) {
-                Some(TopSymbol::Type(ti)) => {
-                    matches!(ti.kind, TypeKind::Enum(_))
-                }
-                Some(
-                    TopSymbol::Locus(_)
-                    | TopSymbol::Perspective(_)
-                    | TopSymbol::Interface(_),
-                ) => false,
-                _ => true,
-            },
-            Ty::Unknown => true,
-            _ => false,
         }
     }
 
@@ -16463,35 +16161,6 @@ fn locus_has_unsynchronized_state(
     }
     None
 }
-
-/// GH #877: the type names the COMPILER declares, which therefore
-/// name something even when no declaration in the bundle does.
-///
-/// Codegen synthesizes each of these unconditionally (`codegen.rs`'s
-/// builtin-type declarations; `CapacityError` in `form/bounded.rs`),
-/// so a signature naming one lowers. The resolver injects most of
-/// them into the top scope as well — `IoError`, `ParseError`,
-/// `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
-/// `CapacityError` are there unconditionally since 2026-07-29, and
-/// `BusUnmatchedKey` only when a topic declares `on_unmatched: fail`
-/// — but `ClosureViolation`, the `on_failure` error payload, is
-/// injected nowhere and has always resolved to `Ty::Unknown`.
-///
-/// Listing all of them keeps the unknown-bare-type-name rule at
-/// least as permissive as codegen: an entry that the top scope
-/// already carries is simply redundant, while a missing one would
-/// refuse a program `hale build` accepts.
-const SYNTHESIZED_TYPE_NAMES: &[&str] = &[
-    "BusUnmatchedKey",
-    "CapacityError",
-    "ClosureViolation",
-    "CryptoError",
-    "EmptyError",
-    "IndexError",
-    "IoError",
-    "KeyError",
-    "ParseError",
-];
 
 /// The bare names codegen answers itself when they resolve to no user
 /// fn. A call to any other unbound bare name is refused by `hale

@@ -155,6 +155,7 @@ pub const TRACED: &[super::ObligationKind] = &[
     K::Readiness,
     K::Birth,
     K::Run,
+    K::Handler,
     K::FailureDelivery,
     K::Restart,
     K::Resume,
@@ -169,10 +170,12 @@ pub const TRACED: &[super::ObligationKind] = &[
 ];
 
 /// How the trace notation counts a kind: per incarnation for a step
-/// every incarnation repeats, else per instance.
+/// every incarnation repeats, per trigger for a bus handler (one per
+/// delivered cell, any number per instance), else per instance.
 pub fn trace_multiplicity(kind: super::ObligationKind) -> Multiplicity {
     match kind {
         K::Birth | K::Run | K::RunEnd | K::Closures => Multiplicity::OncePerIncarnation,
+        K::Handler => Multiplicity::OncePerTrigger,
         _ => Multiplicity::OncePerInstance,
     }
 }
@@ -313,6 +316,11 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             x.decl == decl(o) && x.kind == o.kind && (o.site.is_some() || x.spine == Some(o.holder.spine))
         })
     };
+    // An owed row whose completion waits for an event the run never
+    // reaches is entered and never ends (a run that exits inside a body
+    // literal's teardown, in its owner's run()): what waits for its end is
+    // cut with it.
+    let mut unended = vec![false; n];
     loop {
         let mut changed = false;
         for i in 0..n {
@@ -320,16 +328,19 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                 continue;
             }
             let o = &plan.obligations[i];
-            let cut = o.edges.entry.iter().filter(|p| focus.holds(p.rule)).any(|p| {
+            let never = |p: &super::Prerequisite| {
                 let j = p.event.obligation.0 as usize;
                 match state[j] {
                     State::Cut => true,
-                    State::Owed => inside(&plan.obligations[j]) && p.event.point != Point::Entered,
+                    State::Owed => (inside(&plan.obligations[j]) || unended[j]) && p.event.point != Point::Entered,
                     State::Off | State::Unchecked => false,
                 }
-            });
-            if cut {
+            };
+            if o.edges.entry.iter().filter(|p| focus.holds(p.rule)).any(never) {
                 state[i] = State::Cut;
+                changed = true;
+            } else if !unended[i] && o.edges.completion.iter().filter(|p| focus.holds(p.rule)).any(never) {
+                unended[i] = true;
                 changed = true;
             }
         }
@@ -363,10 +374,18 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             && o.holder.domain == DomainRole::Teardown
             && decl(o).is_some_and(|l| path.canceled.contains_key(&l))
     };
+    // A bus handler is held however many templates owe it: one on no
+    // pool's worker runs no handler there and names none, so what the
+    // row and its retention say of a subject is said only of the
+    // instances of the templates that owe it (R52).
     for (i, o) in plan.obligations.iter().enumerate() {
         let Some(site) = &o.site else { continue };
         let l = &site.decl.lowered;
-        if state[i] == State::Owed && !counted_cancel(o) && !every_template(l, &owing[&(l.clone(), o.kind)]) {
+        if state[i] == State::Owed
+            && !counted_cancel(o)
+            && o.kind != K::Handler
+            && !every_template(l, &owing[&(l.clone(), o.kind)])
+        {
             state[i] = State::Unchecked;
         }
     }
@@ -462,6 +481,9 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                         let canceled = path.canceled.get(l).filter(|_| o.holder.domain == DomainRole::Teardown);
                         match (o.kind, base) {
                             _ if never_started => Count::Exactly(0),
+                            // As many as the cells delivered to it, none
+                            // where nothing is published to it.
+                            (K::Handler, _) => Count::AtLeast(0),
                             (K::Cancellation, _) if canceled.is_some() => Count::Exactly(canceled.map_or(0, |&k| k as usize)),
                             (K::Restart, Count::Exactly(b)) => Count::Exactly(b * failure.map_or(0, |f| f.restarts as usize)),
                             (K::Birth | K::Run, Count::Exactly(b)) => Count::Exactly(b * (1 + restarts)),
@@ -483,6 +505,9 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                             Point::Ended
                         }
                     }
+                    // A handler a pool's shutdown abandons parked ends
+                    // canceled after start.
+                    K::Handler => Point::Ended,
                     _ => Point::Completed,
                 };
                 let at = exp.owed.len();
@@ -496,9 +521,14 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                     domain: None,
                 });
                 index.insert(k.clone(), at);
-                match lines.iter_mut().find(|(d, _)| d.is_some() && *d == k.0) {
-                    Some((_, seq)) => seq.push(at),
-                    None => lines.push((k.0.clone(), vec![at])),
+                // A handler runs whenever a cell reaches it, from its
+                // readiness to its drain: in no program order with the
+                // instance's other rows.
+                if o.kind != K::Handler {
+                    match lines.iter_mut().find(|(d, _)| d.is_some() && *d == k.0) {
+                        Some((_, seq)) => seq.push(at),
+                        None => lines.push((k.0.clone(), vec![at])),
+                    }
                 }
                 at
             }
@@ -601,6 +631,9 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             let cancel = [a, b].into_iter().find(|&at| counted(at)).filter(|_| exp.owed[a].decl == exp.owed[b].decl);
             match cancel.and_then(|at| exp.owed[at].decl.clone()).and_then(|l| owing.get(&(l, K::Cancellation))) {
                 Some(owe) => owe.is_subset(by_a) && owe.is_subset(by_b),
+                // A handler's retention holds of every subject of its
+                // declaration: one no handler ran on waits for none.
+                None if exp.owed[a].kind == K::Handler => tied(a, b),
                 None => held_by_every(a, by_a) && held_by_every(b, by_b) && tied(a, b),
             }
         })

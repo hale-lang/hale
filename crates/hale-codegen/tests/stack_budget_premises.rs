@@ -39,18 +39,20 @@
 //! statement; settling that needs post-codegen measurement
 //! (`.stack_sizes`), which is not wired up.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
+
 #[path = "support/harness.rs"]
 mod harness;
 
 /// Emit pre-optimization IR for a program and return it.
 fn ir_for(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_stackprem_{}_{}",
         name,
         std::process::id()
     ));
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     ir
 }
@@ -151,7 +153,7 @@ fn an_array_on_the_frame_is_charged_by_the_estimator() {
     );
     // And the estimate covers it.
     let program = hale_syntax::parse_source(src).expect("parse");
-    let ds: Vec<String> = hale_types::check_program(&program)
+    let ds: Vec<String> = entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect();
@@ -224,7 +226,7 @@ fn the_budget_still_rejects_an_over_deep_chain() {
                fn b(n: Int) -> Int { let y = n; return y; }\n\
                fn main() { println(a(1)); }";
     let program = hale_syntax::parse_source(src).expect("parse");
-    let ds: Vec<String> = hale_types::check_program(&program)
+    let ds: Vec<String> = entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect();

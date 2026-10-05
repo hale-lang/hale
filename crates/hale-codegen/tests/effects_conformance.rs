@@ -22,9 +22,9 @@
 //! seam is `std::diag::syscall_count` / `heap_alloc_count`, which
 //! the runtime already exposes for exactly this purpose.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
-
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -35,7 +35,7 @@ fn build_and_run(tag: &str, src: &str) -> (String, bool) {
     let program = hale_syntax::parse_source(src).expect("parse");
     // The program must also pass the static effect checks — if it
     // doesn't, the conformance question is moot.
-    let diags = hale_types::check_program(&program);
+    let diags = entries::check_program(&program);
     let hard: Vec<String> = diags
         .iter()
         // `is_error()` rather than a kind match: a violated
@@ -53,7 +53,7 @@ fn build_and_run(tag: &str, src: &str) -> (String, bool) {
         hard
     );
     let bin = harness::unique_bin(&format!("hale_conform_{}_{}", tag, std::process::id()));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

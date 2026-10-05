@@ -93,6 +93,8 @@
 //! bare name (measured against the base build's dump and effect rows on
 //! every corpus program with a module-nested body: equal).
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -472,38 +474,38 @@ fn reached_oidc() {
             "+ fn form_field",
             "- fn signed_id_token   [invoked-unboundedly]",
             "+ fn signed_id_token",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5079..5128",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5079..5128",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5086..5135",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5086..5135",
             "- fn StubIssuer::handle   [invoked-unboundedly]",
             "+ fn StubIssuer::handle",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7454..7693",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7454..7693",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7529..7691",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7529..7691",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8394..8471",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8394..8471",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8701..8787",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8701..8787",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9063..9208",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9063..9208",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9135..9196",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9135..9196",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9908..10017",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9908..10017",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10297..10407",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10297..10407",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11144..11252",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11144..11252",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11279..11333",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11279..11333",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7461..7700",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7461..7700",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7536..7698",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7536..7698",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8401..8478",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8401..8478",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8708..8794",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8708..8794",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9070..9215",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9070..9215",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9142..9203",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9142..9203",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9915..10024",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9915..10024",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10304..10414",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10304..10414",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11151..11259",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11151..11259",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11286..11340",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11286..11340",
             "- fn StubIssuer::json   [invoked-unboundedly]",
             "+ fn StubIssuer::json",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6360..6447",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6360..6447",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6367..6454",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6367..6454",
             "- fn StubIssuer::service_token   [invoked-unboundedly]",
             "+ fn StubIssuer::service_token",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12119..12228",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12119..12228",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12126..12235",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12126..12235",
             "- fn StubIssuer::token_answer   [invoked-unboundedly]",
             "+ fn StubIssuer::token_answer",
         ],
@@ -596,7 +598,7 @@ fn own_entries_run_to_exit_programs() {
         }
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
     }
-    assert_eq!(moved, 79, "the run-to-exit programs among the targets");
+    assert_eq!(moved, 80, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [
@@ -927,9 +929,9 @@ main locus App {
 fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let diags: Vec<String> = hale_types::check_program(&program).iter().map(|d| d.message.clone()).collect();
+    let diags: Vec<String> = entries::check_program(&program).iter().map(|d| d.message.clone()).collect();
     assert_eq!(diags, Vec::<String>::new());
     let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
-    let model = hale_types::model_builder::derive_application_model(&bundle);
+    let model = entries::derive_application_model(&bundle);
     assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
 }

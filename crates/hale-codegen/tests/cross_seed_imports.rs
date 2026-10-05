@@ -23,7 +23,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
@@ -61,6 +60,20 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         // GH #1076: a unit is seed-global and never mangled.
         TopDecl::Unit(_) => None,
     }
+}
+
+/// Lay a seed out under `dir` as an `import "../lib"` expects: the
+/// consumer's `main.hl` in `dir/consumer`, the library's one file in
+/// `dir/lib`. Returns the entry.
+fn write_seed(dir: &std::path::Path, consumer_src: &str, lib_src: &str) -> PathBuf {
+    let consumer = dir.join("consumer");
+    let lib = dir.join("lib");
+    std::fs::create_dir_all(&consumer).expect("create consumer dir");
+    std::fs::create_dir_all(&lib).expect("create lib dir");
+    std::fs::write(lib.join("thing.hl"), lib_src).expect("write lib");
+    let entry = consumer.join("main.hl");
+    std::fs::write(&entry, consumer_src).expect("write consumer");
+    entry
 }
 
 /// Replicate the CLI's resolve-and-mangle pipeline for one
@@ -107,25 +120,15 @@ fn or_on_path_callee_for_imported_fallible_fn() {
     // `alias::fn(args) or fallback` codegen against a path
     // callee. Before the fix the Path callee shape rejected
     // with "or callee shape not yet supported: Discriminant(2)".
-    let lib_dir = fixtures_dir().join("lib-fallible");
     let consumer_src_path = fixtures_dir()
         .join("import-fallible-consumer")
         .join("main.hl");
-
-    let consumer_src = std::fs::read_to_string(&consumer_src_path)
-        .expect("read consumer main.hl");
-    let mut consumer_prog =
-        parse_source(&consumer_src).expect("parse consumer");
-    consumer_prog.imports.clear();
-
-    let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "lp");
-    consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!(
         "hale_or_on_path_callee_{}",
         std::process::id()
     ));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    build_opts::build_seed_dir(&consumer_src_path, &bin, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run consumer");
@@ -149,24 +152,15 @@ fn cross_seed_form_vec_split_across_two_files() {
     // `lib::double_push(...)` + `v.get(...)` end-to-end. Lock-in
     // test: ensures cross-file synthesized-method resolution
     // continues to work after the multi-file mangling pass.
-    let lib_dir = fixtures_dir().join("lib-form-vec-multi");
     let consumer_src_path = fixtures_dir()
         .join("import-form-vec-multi-consumer")
         .join("main.hl");
-    let consumer_src = std::fs::read_to_string(&consumer_src_path)
-        .expect("read consumer main.hl");
-    let mut consumer_prog =
-        parse_source(&consumer_src).expect("parse consumer");
-    consumer_prog.imports.clear();
-
-    let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "lib");
-    consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!(
         "hale_cross_seed_form_vec_multi_{}",
         std::process::id()
     ));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    build_opts::build_seed_dir(&consumer_src_path, &bin, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -185,22 +179,12 @@ fn cross_seed_topic_subscribe_and_publish() {
     // errored. Codegen also has to resolve the QualifiedTopic
     // through the per-build path-rename table before the desugar
     // pass runs.
-    let lib_dir = fixtures_dir().join("lib-topic-source");
     let consumer_src_path = fixtures_dir()
         .join("import-topic-consumer")
         .join("main.hl");
 
-    let consumer_src = std::fs::read_to_string(&consumer_src_path)
-        .expect("read consumer main.hl");
-    let mut consumer_prog =
-        parse_source(&consumer_src).expect("parse consumer");
-    consumer_prog.imports.clear();
-
-    let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "source");
-    consumer_prog.items.extend(lib_items);
-
     let bin = harness::unique_bin(&format!("hale_cross_seed_topic_{}", std::process::id()));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    build_opts::build_seed_dir(&consumer_src_path, &bin, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run");
@@ -259,7 +243,8 @@ fn three_file_lib_exposes_decls_from_every_file() {
     );
 
     let bin = harness::unique_bin(&format!("hale_three_file_lib_{}", std::process::id()));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    // built from the AST and the table this test made and asserted on: no loaded seed reproduces them
+    build_opts::build_program(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run");
@@ -287,25 +272,15 @@ fn cross_seed_non_fallible_free_fn_call_in_expr_and_stmt_positions() {
     // non-fallible imported fn errored. Fallible cross-seed calls
     // worked because `lower_fallible_call` already had the
     // rename-table lookup.
-    let lib_dir = fixtures_dir().join("lib-nonfallible-fn");
     let consumer_src_path = fixtures_dir()
         .join("import-nonfallible-consumer")
         .join("main.hl");
-
-    let consumer_src = std::fs::read_to_string(&consumer_src_path)
-        .expect("read consumer main.hl");
-    let mut consumer_prog =
-        parse_source(&consumer_src).expect("parse consumer");
-    consumer_prog.imports.clear();
-
-    let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "h");
-    consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!(
         "hale_cross_seed_nonfallible_{}",
         std::process::id()
     ));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    build_opts::build_seed_dir(&consumer_src_path, &bin, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run consumer");
@@ -369,7 +344,8 @@ fn consumer_uses_greeter_and_formatted_from_lib_toy() {
         "hale_cross_seed_imports_{}",
         std::process::id()
     ));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    // built from the AST and the table this test made and asserted on: no loaded seed reproduces them
+    build_opts::build_program(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run consumer binary");
@@ -421,7 +397,8 @@ fn accept_of_a_qualified_imported_type_runs_through_the_api() {
         vec![(vec!["lib".to_string(), "Child".to_string()], "ImportedChild".to_string())];
     let prog = parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_accept_qualified_import");
-    build_executable_with_options(&prog, &bin, &renames, &build_opts::options())
+    // the subject is the rename table handed through the API (no import line, no loaded seed has one)
+    build_opts::build_program(&prog, &bin, &renames, &build_opts::options())
         .expect("build with the rename table");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -457,25 +434,14 @@ fn method_name_shadowed_by_top_level_fn_resolves() {
             c.title("collision-ok");
         }
     "#;
-    let alias = "lib";
-    let mut lib_prog = parse_source(lib_src).expect("parse lib");
-    // Build the rename map (immutable borrow), then mangle the seed.
-    let seed_renames = {
-        let stem_refs: Vec<(String, &Program)> = vec![("thing".to_string(), &lib_prog)];
-        mangle::build_seed_renames(&stem_refs, alias)
-    };
-    let renames: Vec<(Vec<String>, String)> = seed_renames
-        .iter()
-        .map(|(name, mangled)| (vec![alias.to_string(), name.clone()], mangled.clone()))
-        .collect();
-    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
-
-    let mut consumer = parse_source(consumer_src).expect("parse consumer");
-    consumer.imports.clear();
-    consumer.items.extend(lib_prog.items);
+    // the seed on disk: the consumer imports the lib directory beside it
+    let dir = harness::unique_dir("hale_p1_method_shadow");
+    let entry = write_seed(&dir, &format!("import \"../lib\" as lib;\n{consumer_src}"), lib_src);
 
     let bin = harness::unique_bin(&format!("hale_p1_method_shadow_{}", std::process::id()));
-    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
+    let built = build_opts::build_seed_dir(&entry, &bin, &build_opts::options());
+    let _ = std::fs::remove_dir_all(&dir);
+    built.expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(
@@ -538,7 +504,8 @@ fn library_enum_match_and_perspective_serves_survive_import() {
     consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!("hale_cross_seed_enum_persp_{}", std::process::id()));
-    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
+    // built from the AST and the table this test made and asserted on: no loaded seed reproduces them
+    build_opts::build_program(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -600,7 +567,8 @@ fn perspective_contract_method_shadowed_by_top_level_fn_resolves() {
     consumer.imports.clear();
     consumer.items.extend(lib_prog.items);
     let bin = harness::unique_bin(&format!("hale_persp_method_shadow_{}", std::process::id()));
-    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
+    // the lib is mangled by hand and the mangled AST asserted on above: built from it, not from a loaded seed
+    build_opts::build_program(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
@@ -632,22 +600,12 @@ fn bus_handler_name_shadowed_by_top_level_fn_resolves() {
         }
         fn main() { App { }; }
     "#;
-    let alias = "lib";
-    let mut lib_prog = parse_source(lib_src).expect("parse lib");
-    let seed_renames = {
-        let stem_refs: Vec<(String, &Program)> = vec![("thing".to_string(), &lib_prog)];
-        mangle::build_seed_renames(&stem_refs, alias)
-    };
-    let renames: Vec<(Vec<String>, String)> = seed_renames
-        .iter()
-        .map(|(name, mangled)| (vec![alias.to_string(), name.clone()], mangled.clone()))
-        .collect();
-    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
-    let mut consumer = parse_source(consumer_src).expect("parse consumer");
-    consumer.imports.clear();
-    consumer.items.extend(lib_prog.items);
+    let dir = harness::unique_dir("hale_handler_shadow");
+    let entry = write_seed(&dir, consumer_src, lib_src);
     let bin = harness::unique_bin(&format!("hale_handler_shadow_{}", std::process::id()));
-    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
+    let built = build_opts::build_seed_dir(&entry, &bin, &build_opts::options());
+    let _ = std::fs::remove_dir_all(&dir);
+    built.expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
@@ -691,29 +649,15 @@ fn an_imported_alias_can_be_spelled_in_a_literal() {
             println("id=", r.id, " label=", r.label, " c=", lib::describe(c));
         }
     "#;
-    let alias = "lib";
-    let mut lib_prog = parse_source(lib_src).expect("parse lib");
-    let seed_renames = {
-        let stem_refs: Vec<(String, &Program)> =
-            vec![("thing".to_string(), &lib_prog)];
-        mangle::build_seed_renames(&stem_refs, alias)
-    };
-    let renames: Vec<(Vec<String>, String)> = seed_renames
-        .iter()
-        .map(|(name, mangled)| {
-            (vec![alias.to_string(), name.clone()], mangled.clone())
-        })
-        .collect();
-    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
-    let mut consumer = parse_source(consumer_src).expect("parse consumer");
-    consumer.imports.clear();
-    consumer.items.extend(lib_prog.items);
+    let dir = harness::unique_dir("hale_imported_alias_literal");
+    let entry = write_seed(&dir, &format!("import \"../lib\" as lib;\n{consumer_src}"), lib_src);
     let bin = harness::unique_bin(&format!(
         "hale_imported_alias_literal_{}",
         std::process::id()
     ));
-    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options())
-        .expect("build consumer + lib");
+    let built = build_opts::build_seed_dir(&entry, &bin, &build_opts::options());
+    let _ = std::fs::remove_dir_all(&dir);
+    built.expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(

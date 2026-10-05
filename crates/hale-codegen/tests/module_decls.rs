@@ -29,10 +29,12 @@
 //! not run) and then codegen, because half of the bug is that the two
 //! disagreed.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use hale_codegen::{build_executable_with_options, mangle};
+use hale_codegen::mangle;
 use hale_syntax::ast::{
     LocusMember, Program, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -57,7 +59,7 @@ fn fixtures_dir() -> std::path::PathBuf {
 /// this file pins.
 fn check_build_run(tag: &str, src: &str) -> String {
     let program = parse_source(src).expect("parse");
-    let errors: Vec<String> = hale_types::check_program(&program)
+    let errors: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
@@ -65,7 +67,7 @@ fn check_build_run(tag: &str, src: &str) -> String {
     assert!(errors.is_empty(), "check refused it: {:?}", errors);
 
     let bin = harness::unique_bin(tag);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    build_opts::build_source(src, &bin, &build_opts::options())
         .unwrap_or_else(|e| panic!("build refused a check-clean program: {:?}", e));
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -211,7 +213,7 @@ fn main() {
 #[test]
 fn a_topic_declared_in_a_module_is_delivered() {
     // Not just "it builds": the drain-elision gate in
-    // `build_executable_with_options` decides a program is bus-inert
+    // the build decides a program is bus-inert
     // by walking the same declaration list. A module-nested topic it
     // cannot see is a program whose queue is never drained, so the
     // handler would not run and this test would see no line at all.
@@ -328,7 +330,7 @@ fn qualified_paths_inside_a_module_body_resolve_across_an_import() {
     let mut bundle = hale_types::Bundle::new(programs);
     bundle.import_renames = renames.clone();
     let errors: Vec<String> =
-        hale_types::check_bundle_opts_whole_program(&bundle, false)
+        entries::check_bundle_opts_whole_program(&bundle, false)
             .into_iter()
             .filter(|d| d.is_error())
             .map(|d| d.message.clone())
@@ -336,7 +338,8 @@ fn qualified_paths_inside_a_module_body_resolve_across_an_import() {
     assert!(errors.is_empty(), "check refused it: {:?}", errors);
 
     let bin = harness::unique_bin("hale_module_xseed");
-    build_executable_with_options(&merged, &bin, &renames, &build_opts::options())
+    // the merge and the rename table are this test's own and checked above: built from them, not from a loaded seed
+    build_opts::build_program(&merged, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

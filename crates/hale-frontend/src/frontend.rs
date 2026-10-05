@@ -360,6 +360,18 @@ pub fn collect_checkable(
     link_checkable(target, &files, own, programs, sources, file_bases, effects, src)
 }
 
+thread_local! {
+    static SEED_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many whole-seed loads this thread began ([`parse_checkable`],
+/// which `Snapshot::load` and [`collect_checkable`] both start with):
+/// the accounting a test reads to pin that the environment matrix loads
+/// each pair's seed once (F.40 phase 4, A3).
+pub fn seed_loads_on_this_thread() -> u64 {
+    SEED_LOADS.with(|n| n.get())
+}
+
 /// The first half of a whole seed's load: the target's own files,
 /// each parsed at its own base, before any `import` is followed, and
 /// the effect-class table they were parsed through (the load's one,
@@ -380,6 +392,7 @@ pub fn parse_checkable(
     ),
     CheckableFailure,
 > {
+    SEED_LOADS.with(|n| n.set(n.get() + 1));
     let files = match collect_ap_files(target, LoadMode::WholeSeed, src) {
         Ok(f) => f,
         Err(e) => {
@@ -612,12 +625,14 @@ pub fn link_checkable(
 
 /// GH #408 Phase 0: the bundle's source map, one unit per file of
 /// `file_bases`, so a span resolves to a file outside this process.
-/// Paths are relative to the target's workspace (an absolute path would
-/// make an artifact differ per machine, and it is meant to be
-/// comparable), with forward slashes so a Windows-built artifact matches
-/// a Linux-built one. The snapshot seeds each site from it: `check`
-/// mints with it, and every verb that builds mints and resolves with the
-/// same map, so a site has the same seed on every path.
+/// Every path is relative to one root (an absolute path would make an
+/// artifact differ per machine, and it is meant to be comparable), with
+/// forward slashes so a Windows-built artifact matches a Linux-built
+/// one. The snapshot seeds each site from it: `check` mints with it,
+/// and every verb that builds mints and resolves with the same map, so
+/// a site has the same seed on every path. It is also the program's one
+/// naming of its files: the execution identity frames these paths, in
+/// this order (F.40 phase 4, I3).
 pub fn source_map(
     target: &Path,
     file_bases: &[(u32, PathBuf, u32)],
@@ -631,9 +646,23 @@ pub fn source_map(
     // it exists for.
     //
     // The nearest ancestor holding a `hale.toml` is the natural
-    // root: it is where a fleet plan's repo-relative paths are
-    // anchored too. Failing that, the deepest common ancestor of
-    // every source, which is always fully relativizing.
+    // root when every source is under it: it is where a fleet plan's
+    // repo-relative paths are anchored too. Otherwise (no manifest,
+    // or a file above it: `app/` with its own `hale.toml` importing
+    // `../lib`) the deepest common ancestor of every source, which is
+    // always fully relativizing. Paths are canonicalized first: the
+    // target's own file arrives as written on the command line while
+    // imported seeds arrive absolute, so stripping without this left
+    // the target's path relative to the CWD — and the same sources
+    // checked from two directories produced two different artifacts.
+    let abs: Vec<PathBuf> = file_bases
+        .iter()
+        .map(|(_, p, _)| {
+            p.canonicalize()
+                .or_else(|_| std::path::absolute(p))
+                .unwrap_or_else(|_| p.clone())
+        })
+        .collect();
     let start = if target.is_dir() {
         target.to_path_buf()
     } else {
@@ -652,9 +681,10 @@ pub fn source_map(
         }
         found
     };
+    let manifest_root = manifest_root.filter(|m| abs.iter().all(|p| p.starts_with(m)));
     let root = manifest_root.unwrap_or_else(|| {
         let mut common: Option<PathBuf> = None;
-        for (_, p, _) in file_bases {
+        for p in &abs {
             let dir = p.parent().unwrap_or(Path::new("/")).to_path_buf();
             common = Some(match common {
                 None => dir,
@@ -674,30 +704,17 @@ pub fn source_map(
     });
     file_bases
         .iter()
+        .zip(&abs)
         .enumerate()
-        .map(|(i, (base, path, len))| {
-            // Canonicalize first: the target's own file arrives
-            // as written on the command line while imported seeds
-            // arrive absolute, so stripping without this left the
-            // target's path relative to the CWD — and the same
-            // sources checked from two directories produced two
-            // different artifacts.
-            let abs = path.canonicalize().unwrap_or_else(|_| path.clone());
+        .map(|(i, ((base, path, len), abs))| {
             let rel = abs
                 .strip_prefix(&root)
-                .unwrap_or(&abs)
+                .unwrap_or(abs)
                 .to_string_lossy()
                 .replace('\\', "/");
             let digest = sources
                 .get(path)
-                .map(|src| {
-                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-                    for b in src.as_bytes() {
-                        h ^= *b as u64;
-                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-                    }
-                    format!("{:016x}", h)
-                })
+                .map(|src| format!("{:016x}", hale_graph::identity::fnv64(src.as_bytes())))
                 .unwrap_or_else(|| "unknown".to_string());
             hale_types::symbol::SourceFile {
                 id: i as u32,

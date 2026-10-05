@@ -4,9 +4,11 @@
 //! guidance. The portable surface (str/bytes/json/math/...) is allowed,
 //! and a program with no `target` decl is never gated.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 use hale_types::capability::ConfiguredTarget;
-use hale_types::check_program;
+use entries::check_program;
 use hale_types::target::TargetSpec;
 
 fn check(src: &str) -> Vec<String> {
@@ -30,7 +32,7 @@ fn check_for(src: &str, triple: &str) -> Vec<String> {
     bundle.snapshot = ids;
     let spec = TargetSpec::parse(triple).unwrap();
     bundle.target = ConfiguredTarget { name: spec.triple.to_string(), spec, explicit: true };
-    hale_types::check_bundle_opts_whole_program(&bundle, false).into_iter().map(|d| d.message).collect()
+    entries::check_bundle_opts_whole_program(&bundle, false).into_iter().map(|d| d.message).collect()
 }
 
 #[test]

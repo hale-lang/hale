@@ -10,6 +10,8 @@
 //! This is pure analysis (no codegen) — it exists to quantify how
 //! much of the corpus a later devirt pass (#1b) would cover.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,8 @@ use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 use hale_types::bus_graph::{build_bus_graph, BusGraph, Placement};
 use hale_types::resolve::build_top_scope;
-use hale_types::{check_bundle, Bundle};
+use hale_types::Bundle;
+use entries::check_bundle;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

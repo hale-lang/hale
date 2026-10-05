@@ -1027,10 +1027,12 @@ mapped there (`[]` says
 explicitly that nobody holds it), and that nothing is mapped that the
 entrypoint does not declare: an omission is indistinguishable from a
 mistake, and a misspelt key would otherwise map nobody quietly. `hale
-build --env <name>` and `hale run --env <name>` bind the same section
-to the program: they adopt its constitution as `check --env` does and
-bake its `roles` table into the api binding (`spec/semantics.md` §
-"The gate"), where `LOTUS_API_ROLES` may override it at run time.
+check --env <name>`, `hale build --env <name>` and `hale run --env
+<name>` bind the same section to the program: each adopts its
+constitution and bakes its `roles` table into the api binding
+(`spec/semantics.md` § "The gate"), where `LOTUS_API_ROLES` may
+override it at run time, so the check judges the binding the build
+lowers; `--matrix` binds each pair's section the same way.
 
 Combinations that cannot be honoured are rejected rather than
 ignored. `--matrix` runs many evaluations, so a per-evaluation
@@ -1057,6 +1059,16 @@ otherwise a syntax error would erase a seed from coverage. Within one
 environment, all entrypoints must resolve each constitution to the
 same closure digest.
 
+A listed seed the check refuses (one with no entry: a library, or a
+seed whose only `main locus` is imported or inside a `module { }`) is
+reported by that refusal alone, and its pair fails. It has no
+entrypoint for the environment's roles to be mapped to, so no role
+coverage is reported for it, and a constitution it can never deploy
+under takes no part in the closure-digest comparison. A pair whose seed
+loads but fails to typecheck keeps both: its role coverage and its
+constitutions' identities are read from what it declares, whether or
+not it typechecks.
+
 The artifact records three things: per-claim `source` (where this
 clause came from), and an `evaluation` section carrying the
 `environment` label plus `roots` and `closure` with their digests
@@ -1080,14 +1092,23 @@ them. A consumer composing artifacts from separately compiled
 applications cannot turn `[1204, 1231]` into a location, so no
 cross-artifact witness could say where to look.
 
-Paths are relative to the **workspace** (the nearest ancestor holding
-a `hale.toml`, else the deepest common ancestor of every source) and
-are canonicalized before being made relative. Both matter: an
-absolute path makes the artifact machine-specific, and rooting at the
-target alone leaves an imported seed — which usually lives outside it
-— absolute anyway. The artifact must be byte-identical for the same
-sources regardless of the working directory it was produced from,
+Every path is relative to one root, and no path is absolute. The root
+is the **workspace** — the nearest ancestor of the target holding a
+`hale.toml` — when every source is under it, and otherwise the deepest
+common ancestor of every source: an application in `app/` with its own
+`hale.toml` importing `../lib` names its files `app/main.hl` and
+`lib/…`. Paths are canonicalized before being made relative, so a
+target typed relative to the working directory is named as one typed
+absolute. Both matter: an absolute path makes the artifact
+machine-specific, and rooting at the target alone leaves an imported
+seed — which usually lives outside it — absolute anyway. The artifact
+must be byte-identical for the same sources regardless of the working
+directory it was produced from or the place the tree is checked out,
 because comparing two of them is the point.
+
+The source map is the program's one naming of its files: the
+execution identity a recording carries frames these paths, in the
+map's order ([runtime.md § Replay](runtime.md)).
 
 Each source carries a content digest, so a consumer can tell whether
 two artifacts were built from the same text, and can catch a stale
@@ -1626,6 +1647,28 @@ state), and zeroization.
 | **`ring_layout` geometry** | a *cross-field* inconsistency that would let a record header land out of bounds or silently corrupt the reader: a header scalar or the cursor overrunning `data_at`, two fields overlapping, a non-power-of-two `align`, a `pad_sentinel` too wide for the `len_prefix`, a `len_prefix` width `> align`, a non-8-aligned `atomic_u64` cursor, or (producer side) a `buffer_size:` that isn't a multiple of `align` | error | `check_ring_layout` + `check_main_and_bindings` |
 | **Foreign-ring payload shape** | a `layout:`-bound topic whose payload is neither flat-shapeable (typed mode — read by direct cast, needs a fixed byte layout) nor `BytesView` (raw-frame mode — a bounded view per record, for heterogeneous rings); e.g. a struct with `String` / `Bytes` / variable-size fields. Enforced regardless of `where zero_copy` | error | `check_main_and_bindings` |
 | **Cell slot-of-origin** | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from | error | codegen |
+| **Recovery event alphabet** | a name in a closure's `persists_through(...)` or `resets_on(...)` that is not a recovery event: the alphabet is closed, `restart`, `restart_in_place` and `quarantine`; the message names it at the name, and suggests the event a misspelling one edit away means | error | `outside_the_alphabet` (closure events) |
+| **Persisting through dissolve** | `dissolve` in a closure's `persists_through(...)`: an accumulator does not outlive its locus's dissolve, so the clause can mean nothing | error | `persists_through_dissolve` (closure events) |
+| **Contradicting recovery clauses** | a recovery event one closure names in both `persists_through(...)` and `resets_on(...)`: the two contradict each other. Reported at the `resets_on` name, with the `persists_through` name as its witness | error | `in_both_clauses` (closure events) |
+| **Unreached recovery event** | in a closed world (the program has an entry), a recovery event a closure of the program's own seed names that no handler and no recovery statement applies to its locus, read from the handler rows (a spent `restart(c) for N` bound is `quarantine`). The witness is each handler and statement that names the locus, with the events it applies, or the locus when none does. Not judged for an imported locus, nor for an event some recovery applies to a child the rows cannot name (a generic supervisor's type parameter, or a receiver that is not a declared param) | warning | `unreached_events` (closure events) |
+| **Persistence with no accumulator** | `persists_through(...)` on a closure whose assertion has no `sum`, `count` or `mean`: there is nothing to keep. Reported at the clause, with the assertion as its witness | warning | `nothing_to_keep` (closure events) |
+| **Sealed confinement** | a read or a write of a `@sealed` locus's `params` field from outside that locus's own members (`self.signer.key` in its parent), naming the methods to call instead; see § "Secrets — confine, classify, claim". Judged over the param-access rows the checker records for every access through a locus-typed receiver, sealed or not, which the `--sealable` survey reads too | error | `outside_access` (sealed access) |
+| **Module-nested entry** | a seed whose only `main locus` sits inside a `module { }`: it is not the entry (`spec/semantics.md` § "The entry locus"), and nothing else in the seed is, so the program would build with a `main locus` that never runs. Reported once, at that locus's name, read from the entry row; every other rule still judges the declaration | error | `module_nested_main_is_not_the_entry` (lowering laws) |
+| **Cross-pool spawn as a value** | a locus literal used as a value (let-bound, an argument, a field, a sub-expression) where the ownership graph's bubble plan posts it to an owner on another thread: a cross-pool spawn is fire-and-forget (`spec/semantics.md` § "accept bubbling"), so it may only be a bare statement. Judged at every place lowering builds the literal, a default's expansions included, from the ownership graph's sites and expansions and the typed bodies' omitted arguments | error | `cross_pool_spawn_used_as_a_value` (lowering laws) |
+| **Self-containing locus** | a locus whose params defaults construct one of its own kind by value, by a literal or through a fresh-factory call, so its construction has no floor (`spec/types.md` § "A locus may not contain itself by value"). Reported at the param that closes the cycle, naming the ring | error | `self_containing_locus` (lowering laws) |
+| **Role declared once** | a `role` declared twice (`spec/types.md` § "Roles and `@gated`"): a role is one name the deployment maps, not a merge. Reported at the second declaration, with the first as its witness | error | `declared_twice` (roles) |
+| **Declared role** | a role an `includes`, a free fn's `@gated`, a handler's, an `expose`'s or a `publish`'s names that no `role` declares; `owner` alone needs no declaration | error | `undeclared` (roles) |
+| **Acyclic role includes** | a role reachable from its own `includes` chain: composition is grant-only and union-only, so a cycle says nothing | error | `role_cycle` (roles) |
+| **Gate on a free fn** | `@gated(role:)` on a free fn, which the api binding never reaches | error | `gate_on_a_free_fn` (roles) |
+| **Gate on a plain method** | `@gated(role:)` on a locus fn that no `subscribe` line of its locus names, read from the bus graph's subscriptions | error | `gate_on_a_plain_method` (roles) |
+| **Gate on a bound topic** | a gated handler whose topic is also bound to a transport in `bindings { }`, which has no gate, read from the binding rows' bound topics, joined on the topic rows' wire subject | error | `gate_on_a_bound_topic` (roles) |
+| **Gates agree per topic** | subscribers (or publishers) of one topic, joined on its wire subject, that state different gates, an ungated one included: the binding refuses the message, not the handler. Reported at the first gated site, listing every site | error | `gates_disagree` (roles) |
+| **Role source is a locus** | an api entry's `roles:` that names, by a literal or `self.<param>`'s declared type, no locus of the bundle | error | `source_is_no_locus` (roles) |
+| **Role source has holds** | a role source's locus with no `fn holds` | error | `source_has_no_holds` (roles) |
+| **Role source signature** | a role source's `fn holds` that is not `std::api::RoleSource`'s as written (two parameters, a `std::api::Principal` and a `String`, returning `Bool`, not fallible), every way it is not listed, with the api entry as its witness | error | `holds_is_not_a_role_source` (roles) |
+| **Pool starvation** | two or more `run()` bodies that statically never return sharing one cooperative pool of the deployed root (the main locus's own `run()` counts on pool `main`): the pool runs each `run()` to completion in birth order, so the later ones never start (`spec/semantics.md` rules 7 and 8). Read from the placement table's rows and the flow rows' "never returns" column; not reported on a pool where the dead-receiver error fired | warning | `check_pool_starvation` |
+| **Birth-order trap** | a params field of the deployed root whose `run()` runs inline on the main thread and statically never returns, with params declared after it, which are then never born. Reported once, at the first such field, listing the fields it starves; read from the placement table's rows and the flow rows | warning | `check_birth_order` |
+| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound, an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` silences | warning / error | `check_hot_path_alloc` |
 
 CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the
@@ -2420,6 +2463,12 @@ assume the others in a build:
   when a count exceeds a declared ceiling); and **fd-leak detection**
   `--warn-resource-leak` (an fd-acquiring call whose result is stored
   resident in an unbounded context). See `notes/resource-budgets.md`.
+  The fd-opening calls are `std::io::file::open`, `std::io::tcp`'s
+  `connect`, `connect_wait`, `listen_socket` and `accept_one` (and the
+  last two's `__` primitives), and `std::io::unix`'s `connect`,
+  `connect_wait` and `listen_socket`; the tcp `connect_wait` was
+  missing until F.40 phase 4, S5, so a program that calls it counts one
+  more site per call.
 
   The budget counts the resource, not the declaration that asks for it,
   and reads the threads and pools from the placement table (F.40 phase

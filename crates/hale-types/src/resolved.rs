@@ -1,7 +1,8 @@
 //! The lowering view (F.40 phase 1.2a-ii, a demanded family since
 //! phase 2.2b): what codegen lowers.
 //!
-//! [`resolve_program`] takes the program a verb checked and produces
+//! [`rewrite_intra_locus`] and then [`resolve_rewritten`] take the
+//! program a verb checked and produce
 //! what lowering walks — the user program after the two lowering
 //! rewrites, the same program merged with the bundled stdlib —
 //! together with the snapshot minted over the merged program and the
@@ -11,8 +12,8 @@
 //! The view is a family of the frontend's snapshot
 //! (`hale_frontend::snapshot::Snapshot::demand_lowering`), which runs
 //! this function once, after the check it is gated on, over the
-//! snapshot's programs, source map, renames and config. The only other
-//! caller is codegen's harness adapter, for a bare program.
+//! snapshot's programs, source map, renames and config. Nothing else
+//! calls it (the bare-program entry left with F.40 phase 4, T3).
 //!
 //! The two lowering rewrites are the intra-locus rewrite (a publish to
 //! a subscriber in the same tree becomes a direct call) and the topic
@@ -46,8 +47,7 @@
 //! `Struct` or `Call` it finds unnumbered is an error.
 //!
 //! Before the intra-locus rewrite the user program is minted once
-//! more, so every send the relation records is minted on every path,
-//! the harness adapter's included.
+//! more, so every send the relation records is minted.
 //!
 //! The passes that shape a declaration are not run here: every caller
 //! ran the desugar sequence
@@ -138,8 +138,11 @@ pub struct LoweringView {
     /// rows only: the checker's wire rows, holes, declarations and edges
     /// are the snapshot's graph's.
     pub bus: BusGraph,
-    /// Lowering's dispatch plan, derived from `bus`'s gates with an
-    /// empty domain map: the flavor each subject is lowered to.
+    /// The program's dispatch plan, the snapshot's (F.40 phase 4, S9):
+    /// derived once from the gates `bus`'s are (`bus_graph::
+    /// derive_dispatch_gates`) and the arrangement's domains, the flavor
+    /// each subject is lowered to. The model holds the same plan,
+    /// projected.
     pub plan: DispatchPlan,
     /// Every send the intra-locus rewrite replaced with a direct call:
     /// the relation that keeps the publish in the program's account
@@ -174,8 +177,9 @@ pub struct LoweringView {
     /// family) of the program the view was resolved from: the emitters
     /// read a spine's obligations, in order, from it
     /// ([`LoweringView::lifecycle`]). The snapshot's view carries its
-    /// plan; a view resolved from a bare program ([`resolve_program`])
-    /// has none, and lowering refuses it (a required row).
+    /// plan; a view without one (as [`resolve_rewritten`] returns it,
+    /// before the snapshot sets it) is refused by lowering (a required
+    /// row).
     pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
     /// program the view was resolved from: its entry, the `main locus`
@@ -319,8 +323,8 @@ pub fn rewrite_intra_locus(
     let mut program_owned = program.clone();
     // The intra-locus rewrite moves each send's id onto the call that
     // replaces it and records it in the relation, so the sends have to
-    // be minted before it runs: a caller that did not mint (the
-    // harness adapter, `build_executable_with_options`) would otherwise
+    // be minted before it runs: a caller that did not mint (the test
+    // harness's bare-program snapshot, `Snapshot::from_program`) would otherwise
     // get a relation of `NodeId::NONE` sends no call can be joined to.
     // Idempotent: the ids a bundle already minted are kept, so the
     // relation names the sends the check's graph holds, and the mint
@@ -337,66 +341,9 @@ pub fn rewrite_intra_locus(
     IntraLocusStage { program: program_owned, intra_locus, rewritten_in: t_start.elapsed() }
 }
 
-/// Resolve `program` into the view codegen lowers: the intra-locus
-/// rewrite ([`rewrite_intra_locus`]), then [`resolve_rewritten`]. The
-/// snapshot runs the two halves as its `intra_locus` and
-/// `lowering_view` families; this is the bare program's entry, and a
-/// bare program is the host's.
-/// `placement` is the table the rewrite reads ([`rewrite_intra_locus`]).
-/// The program is minted first, as an entry point's load mints it, and
-/// those identities are the checked ones the view corresponds to. A bare
-/// program has no snapshot to hand the view its bus and ownership graphs,
-/// so they are built here over the minted program, by the snapshot's own
-/// producers (`bus_graph::build_bus_graph`,
-/// `ownership_graph::build_ownership_graph`), with `bindings` and
-/// `placement`.
-pub fn resolve_program(
-    program: &Program,
-    sources: &[SourceFile],
-    import_renames: &[(Vec<String>, String)],
-    api: Option<&str>,
-    api_roles: Option<&str>,
-    forms: &crate::form_rows::FormRows,
-    bindings: &crate::binding_rows::BindingRows,
-    placement: &crate::placement::PlacementTable,
-    typed: &crate::typed_bodies::TypedBodies,
-) -> Result<LoweringView, String> {
-    let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
-        .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
-    let mut minted = program.clone();
-    let checked = crate::snapshot::mint([("program", &mut minted)], sources);
-    let (top, bus, ownership) = {
-        let bundle = merged_bundle(&minted, import_renames, &checked);
-        let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        // The closed world is the entry row's, over the minted program.
-        let entry = crate::entry::entry_row(&bundle);
-        let bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement, &entry);
-        let ownership = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement, &entry);
-        (top, bus, ownership)
-    };
-    let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
-    resolve_rewritten(
-        &rewrite_intra_locus(&minted, placement),
-        &checked,
-        sources,
-        import_renames,
-        api,
-        api_roles,
-        forms,
-        bindings,
-        placement,
-        typed,
-        &top,
-        &bus,
-        &ownership,
-        &arrangement.domains(),
-        host,
-    )
-}
-
 /// Resolve the intra-locus rewrite's program into the view codegen
 /// lowers: the producer of the snapshot's `lowering_view` family, run by
-/// the snapshot and by [`resolve_program`] and by nothing else.
+/// the snapshot and by nothing else.
 ///
 /// The stage's program is the one the verb checked, rewritten: it has
 /// been through [`crate::desugar_sequence::desugar_before_check`], and
@@ -410,7 +357,7 @@ pub fn resolve_program(
 /// its span falls in, as the bundle's does. A caller with no source
 /// map passes `&[]`, and the user program is then seed 0 by ordinal.
 /// `import_renames` is the per-build path-rename table for cross-seed
-/// imports (see `hale_codegen::build_executable_with_options`); `api`
+/// imports (see `hale_frontend::snapshot::Snapshot::from_program`); `api`
 /// and `api_roles` are the build's `--api` path and the roles its
 /// environment binds, the ones the sequence shaped the api surface
 /// with, recorded on the envelope for lowering to hold its options
@@ -436,11 +383,19 @@ pub fn resolve_program(
 /// over the checked programs: lowering's graph is its rows, read through
 /// the correspondence (`bus_graph::lowering_bus_graph`); `ownership` the
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
-/// the same way (`ownership_graph::lowering_ownership_graph`). `domains`
-/// is the dispatch plan's domain map, the arrangement's
-/// ([`crate::arrangement::Arrangement::domains`] over the snapshot's
-/// programs, placement table and ownership graph): the map the model's
-/// plan is derived with. `class` is the
+/// the same way (`ownership_graph::lowering_ownership_graph`). `flows` is
+/// the snapshot's flow rows (`Snapshot::demand_flows`), which lowering
+/// reads by locus name, so they need no correspondence. `handlers` is the
+/// snapshot's handler rows (`Snapshot::demand_handlers`), read the way
+/// the graphs are (`handler_routing::lowering_handler_routing`): through
+/// the correspondence, the stdlib's after them. `scratch_local`
+/// is the snapshot's allocation summary's scratch-local set
+/// (`AllocSummary::scratch_local`), classified over the declarations the
+/// merged program holds; the routing rows read it. `plan` is the
+/// snapshot's dispatch plan (`Snapshot::demand_dispatch_plan`, F.40
+/// phase 4, S9): the one plan, derived once from the snapshot's gates
+/// and the arrangement's domains, which the view carries to lowering
+/// and the model holds projected; the view derives none. `class` is the
 /// effective target's column of the capability matrix, the cells the
 /// view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
@@ -460,7 +415,10 @@ pub fn resolve_rewritten(
     top: &TopScope,
     bus: &BusGraph,
     ownership: &OwnershipGraph,
-    domains: &BTreeMap<&str, Vec<String>>,
+    handlers: &crate::handler_routing::HandlerRouting,
+    flows: &crate::flows::FlowRows,
+    scratch_local: &std::collections::BTreeSet<String>,
+    plan: &DispatchPlan,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
@@ -594,16 +552,16 @@ pub fn resolve_rewritten(
     // graph is. The bundle's one program keeps the name codegen gave
     // it, so nothing keyed by program name moves.
     //
-    // F.40 phase 1.5: and the bus graph and lowering's dispatch plan.
-    // The graph is the snapshot's rows read through the correspondence
-    // (F.40 phase 3, C5, `bus_graph::lowering_bus_graph`): each user site
-    // keyed by the wire literal the topic rewrite gave it — the string
-    // the register and publish sites see — and after them the stdlib's,
-    // the one part derived here, over the merged program's tail and the
-    // snapshot's scope, so the gates are sound against its wildcard
-    // subscribers (`log.**`). A program with no entry point is open
-    // world: every subject is ineligible, and the plan is all dynamic.
-    let (ownership, bubble, bus, plan) = {
+    // F.40 phase 1.5: and the bus graph. The graph is the snapshot's
+    // rows read through the correspondence (F.40 phase 3, C5,
+    // `bus_graph::lowering_bus_graph`): each user site keyed by the wire
+    // literal the topic rewrite gave it — the string the register and
+    // publish sites see — and after them the stdlib's, the one part
+    // derived here, over the merged program's tail and the snapshot's
+    // scope. The dispatch plan is not derived here (F.40 phase 4, S9):
+    // the snapshot's gates are this graph's, without the merge
+    // (`bus_graph::derive_dispatch_gates`), and its plan is handed in.
+    let (ownership, bubble, bus) = {
         let bundle = merged_bundle(&merged, import_renames, &snapshot);
         // The closed world is the snapshot's rows', the entry row's over
         // the checked bundle: the merged program holds the same
@@ -645,27 +603,30 @@ pub fn resolve_rewritten(
                 info.written_topics.push((rw.site, rw.written.clone()));
             }
         }
-        // The gates are the ones the rewritten program was judged by,
-        // as before: the relation is recorded, not yet read.
-        //
-        // The flavor is a function of the gates alone; the domains are
-        // the arrangement's, the map the model's plan is derived with
-        // too (F.40 phase 3, C5), and fill the `same_domain` survey
-        // column. No lowering reads it until #464's flavors, so the
-        // plan's digest does not cover it.
-        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(&bus.dispatch_gates(), domains);
-        (graph, bubble, bus, plan)
+        (graph, bubble, bus)
     };
+    let plan = plan.clone();
 
-    // F.40 phase 1.4: the handler rows, over the same merged program,
-    // with the child type resolved the way lowering resolves it.
-    let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
-    // The flow rows over the same merged program, each clause's child
-    // resolved to the locus lowering names: lowering reads flow-ness here.
-    let flows = crate::flows::survey(&[&merged], import_renames);
+    // F.40 phase 1.4: the handler rows, with the child type resolved the
+    // way lowering resolves it. They are the snapshot's rows read through
+    // the correspondence, and after them the stdlib's, derived over the
+    // merged program's tail (F.40 phase 4, Q1,
+    // `handler_routing::lowering_handler_routing`).
+    let handlers = crate::handler_routing::lowering_handler_routing(
+        handlers,
+        crate::handler_routing::stdlib_handler_rows(&merged, &merged.items[user_items..], import_renames, &snapshot),
+        &correspondence,
+    )?;
+    // The flow rows are the snapshot's (F.40 phase 4, Q1): lowering reads
+    // them by locus name (`is_flow`, `specialize`), the stdlib declares no
+    // `release` clause and no type alias, and `DeclaredNames` holds the
+    // stdlib's loci over either program, so the merged program's survey
+    // is the checked one's in every row lowering reads.
+    let flows = flows.clone();
     // The allocation-routing rows over the same merged program, cross-seed
-    // calls resolved through the same renames: lowering reads them.
-    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames);
+    // calls resolved through the same renames: lowering reads them. Their
+    // scratch-local set is the allocation summary's (F.40 phase 4, Q1).
+    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames, scratch_local);
     // The snapshot's form rows, found by the identities the merge kept,
     // and a written-configuration row for every declaration they do not
     // hold (the stdlib's).

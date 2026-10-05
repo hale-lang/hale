@@ -46,6 +46,8 @@
 //! a rule not yet shipped), each asserted to make the oracle fail, and
 //! with the violation that says why.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -53,7 +55,6 @@ use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 
-use hale_codegen::build_executable_with_options;
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
@@ -276,6 +277,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
     Fixture { file: "l19_started_run_retained.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
     Fixture { file: "l19_started_run_retained_async.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_handler_cell_retained.hl", line: "19", adopted: Some("handler-held"), run: RunMode::Plain, judge: handler_held },
     Fixture { file: "l19_started_run_publishes_back.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
     Fixture { file: "l19_started_run_publishes_back_async.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
     Fixture { file: "l19_handler_replaces_started_run.hl", line: "19", adopted: Some("answered-after-handler"), run: RunMode::Plain, judge: answered_after_handler },
@@ -519,6 +521,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // The placed child's started run and the inline replacement
         // both end before their own physical reclaim (line 19).
         "l19_started_run_retained.hl" | "l19_started_run_retained_async.hl"
+        // The placed subscriber's running handler, likewise (R52).
+        | "l19_handler_cell_retained.hl"
         => {
             p.occurrences = count(&[("Kid", 2)]);
             &["19"]
@@ -791,6 +795,17 @@ const CONTROLS: &[Control] = &[
         fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Run.Ended not reached",
         baseline_passes: true,
     },
+    // R52: without the handler's hold, the old subscriber's reclaim
+    // completes while its bus handler is still running.
+    Control {
+        name: "handler_hold_removed",
+        covers: ObligationKind::Handler,
+        fixture: "l19_handler_cell_retained.hl",
+        skip: "HandlerHold",
+        plan: None,
+        fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Handler.Ended not reached",
+        baseline_passes: true,
+    },
     Control {
         name: "restart_completion_omitted",
         covers: ObligationKind::Restart,
@@ -978,7 +993,7 @@ fn source(file: &str) -> String {
 /// Check one fixture and build it with the lifecycle trace.
 fn build_fixture(f: &Fixture) -> PathBuf {
     let program = hale_syntax::parse_source(&source(f.file)).unwrap_or_else(|e| panic!("{}: parse: {e:?}", f.file));
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
@@ -986,7 +1001,7 @@ fn build_fixture(f: &Fixture) -> PathBuf {
     assert!(errs.is_empty(), "{}: `hale check` refuses it: {errs:?}", f.file);
     let bin = harness::unique_bin(&format!("hale_lifecycle_{}", f.file.trim_end_matches(".hl")));
     let opts = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("{}: build: {e:?}", f.file));
+    build_opts::build_source(&source(f.file), &bin, &opts).unwrap_or_else(|e| panic!("{}: build: {e:?}", f.file));
     bin
 }
 
@@ -1350,6 +1365,22 @@ fn started_printed(r: &Ran) -> bool {
 fn run_held(r: &Ran) -> String {
     match (started_printed(r), r.code) {
         (true, Some(0)) => "run-held".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
+/// The old child's bus handler read its own name (R52), and each child
+/// was torn down once.
+fn handler_printed(r: &Ran) -> bool {
+    count(r, "ev handler 0 kid-0-name") == 1 && count(r, "ev kid-dissolve 0") == 1 && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// The running handler returned, reading its own subscriber, and the
+/// trace's plan holds its end before its subscriber's reclaim completes.
+fn handler_held(r: &Ran) -> String {
+    match (handler_printed(r), r.code) {
+        (true, Some(0)) => "handler-held".to_string(),
         _ if r.code != Some(0) => exit_word(r),
         _ => "printed otherwise".to_string(),
     }
@@ -1796,8 +1827,12 @@ const SPINES: &[Spine] = &[
 /// either path ([`LifecyclePlan::shutdown_spine`]).
 const EVERY_SPINE: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
 
+/// A bus handler is no step of its spine: it runs once per delivered
+/// cell, between the readiness and the drain, any number of times (R52).
 fn read(spine: Spine, kind: ObligationKind) -> bool {
-    !RECOVERY_KINDS.contains(&kind) && (SPINES.contains(&spine) || EVERY_SPINE.contains(&kind))
+    !RECOVERY_KINDS.contains(&kind)
+        && kind != ObligationKind::Handler
+        && (SPINES.contains(&spine) || EVERY_SPINE.contains(&kind))
 }
 
 /// Spines whose emitted steps depart from the plan today, each classified
@@ -1809,6 +1844,8 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l19_started_run_retained.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_started_run_retained_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_handler_cell_retained.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_started_run_publishes_back.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
@@ -2039,7 +2076,8 @@ fixture_tests! {
     l19_cross_pool_queued_run_canceled => "l19_cross_pool_queued_run_canceled.hl",
     l19_started_run_retained => "l19_started_run_retained.hl",
     l19_started_run_retained_async => "l19_started_run_retained_async.hl",
-    l19_started_run_publishes_back => "l19_started_run_publishes_back.hl",
+    l19_handler_cell_retained => "l19_handler_cell_retained.hl",
+    l19_started_run_publishes_back =>"l19_started_run_publishes_back.hl",
     l19_started_run_publishes_back_async => "l19_started_run_publishes_back_async.hl",
     l19_handler_replaces_started_run => "l19_handler_replaces_started_run.hl",
     l19_handler_replaces_started_run_async => "l19_handler_replaces_started_run_async.hl",
@@ -2098,9 +2136,8 @@ const SANITIZER_MARKERS: &[&str] = &[
 #[test]
 fn l19_cross_pool_queued_run_canceled_under_asan() {
     let file = "l19_cross_pool_queued_run_canceled.hl";
-    let program = hale_syntax::parse_source(&source(file)).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
     let bin = harness::unique_bin("hale_lifecycle_asan_l19_cross_pool");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(&source(file), &bin);
     let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
@@ -2115,9 +2152,8 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
 /// Before the run hold the reclaim released that arena under the run (a
 /// heap-use-after-free); with it the reclaim waits for the run to return.
 fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
-    let program = hale_syntax::parse_source(&source(file)).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
     let bin = harness::unique_bin(&format!("hale_lifecycle_asan_{tag}"));
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(&source(file), &bin);
     let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
@@ -2157,6 +2193,12 @@ fn l19_started_run_retained_under_asan() {
     assert_clean_under_asan("l19_started_run_retained.hl", "l19_started", started_printed);
 }
 
+/// R52: the old subscriber's storage outlives its running handler.
+#[test]
+fn l19_handler_cell_retained_under_asan() {
+    assert_clean_under_asan("l19_handler_cell_retained.hl", "l19_handler_cell", handler_printed);
+}
+
 #[test]
 fn l19_started_run_retained_async_under_asan() {
     assert_clean_under_asan("l19_started_run_retained_async.hl", "l19_started_async", started_printed);
@@ -2184,13 +2226,12 @@ fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
         "l19_started_run_publishes_back_async.hl",
     ] {
         let f = fixture(file);
-        let program = hale_syntax::parse_source(&source(file)).expect("parse the fixture");
         for no_bus_devirt in [false, true] {
             let bin = harness::unique_bin("hale_handler_reclaim_asan");
             let options = hale_codegen::BuildOptions {
                 asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
             };
-            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("read ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
             let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
@@ -2232,7 +2273,7 @@ fn retired_run_self_reclaim_has_one_owner_under_asan() {
                 let options = hale_codegen::BuildOptions {
                     asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
                 };
-                build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+                build_opts::build_source(&src, &bin, &options).expect("ASan build");
                 let image = std::fs::read(&bin).expect("ASan binary");
                 assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
                 let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
@@ -2280,7 +2321,7 @@ locus Kid {"#)
             let options = hale_codegen::BuildOptions {
                 asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
             };
-            build_executable_with_options(&program, &bin, &[], &options).expect("ASan build");
+            build_opts::build_source(&src, &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
             let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
@@ -2313,10 +2354,9 @@ locus Kid {"#)
 /// reply cannot run. The ASan cases above are its completing controls.
 #[test]
 fn synchronous_handler_storage_wait_restores_the_deadlock() {
-    let program = hale_syntax::parse_source(&source("l19_handler_replaces_started_run.hl")).expect("parse");
     let bin = harness::unique_bin("hale_handler_storage_negative");
     let options = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    build_opts::build_source(&source("l19_handler_replaces_started_run.hl"), &bin, &options).expect("build");
     let ran = run_bin(&bin, RunMode::Plain, &[("LOTUS_LIFECYCLE_SKIP", "HandlerStorage")]);
     let _ = std::fs::remove_file(&bin);
     assert!(ran.timed_out, "synchronous handler wait unexpectedly completed: {} {}", ran.stdout, ran.stderr);
@@ -2362,6 +2402,7 @@ control_tests! {
     cancellation_completion_omitted,
     queued_run_cancel_unnamed,
     run_hold_wait_removed,
+    handler_hold_removed,
     restart_completion_omitted,
     resume_completion_omitted,
     wait_abort_removed,

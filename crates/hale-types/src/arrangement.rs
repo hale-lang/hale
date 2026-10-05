@@ -2,7 +2,8 @@
 //! user's locus declarations (F.40 phase 3, P1;
 //! `notes/f40-placement-correspondence.md` § 2.4).
 //!
-//! It is read twice, and is one projection both times: the model builder
+//! It is read twice, and is one projection, the snapshot's
+//! (`Snapshot::demand_arrangement`, F.40 phase 4, Q1): the model builder
 //! makes the model's instances, owners, placements and placement holes
 //! from it, and lowering reads the thread domains each locus runs on
 //! from it ([`Arrangement::domains`], the dispatch plan's domain map:
@@ -43,12 +44,13 @@ use crate::placement::{DomainId, DomainKind, InstanceKey, InstanceRow, Origin, P
 use crate::snapshot::Snapshot;
 
 /// One arranged instance.
-pub struct Arranged<'a> {
+pub struct Arranged {
     /// The fields from the root, the replica index after the replicated
     /// field.
     pub path: String,
-    /// The user declaration it realizes.
-    pub decl: &'a LocusDecl,
+    /// The user declaration it realizes, by name: the model's entity is
+    /// one per name, and the dispatch plans key a locus by it.
+    pub decl: String,
     /// The instance's OWN replica index — what codegen bakes into
     /// replica `i` and what a keyed subscriber on this field registers
     /// under: the replica row's, never an ancestor's copied down.
@@ -63,22 +65,25 @@ pub struct Arranged<'a> {
     pub span: hale_syntax::Span,
 }
 
-/// The placement table's rows projected onto the user's declarations.
-pub struct Arrangement<'a> {
-    /// The root's declaration, when the table has a root the user
-    /// declared.
-    pub root: Option<&'a LocusDecl>,
+/// The placement table's rows projected onto the user's declarations,
+/// each declaration by its name. It borrows nothing, so a snapshot holds
+/// it: one projection per snapshot, the model's and lowering's (F.40
+/// phase 4, Q1).
+pub struct Arrangement {
+    /// The root's declaration, by name, when the table has a root the
+    /// user declared.
+    pub root: Option<String>,
     /// The arranged instances, one per path, in path order.
-    pub instances: Vec<Arranged<'a>>,
+    pub instances: Vec<Arranged>,
     /// Every row at or under a path whose templates disagree, with the
     /// path they disagree at: in path order, each path's rows as the
     /// table yields them. No instance is arranged there, and each
     /// declaration realized there is unplaced.
-    pub disagreeing: Vec<(Arranged<'a>, String)>,
+    pub disagreeing: Vec<(Arranged, String)>,
     /// The births outside the arrangement (owner and placement resolve
-    /// at runtime), each with its declaration and span, in the
+    /// at runtime), each with its declaration's name and span, in the
     /// ownership graph's order. Each declaration is unplaced.
-    pub unarranged: Vec<(&'a LocusDecl, hale_syntax::Span)>,
+    pub unarranged: Vec<(String, hale_syntax::Span)>,
 }
 
 /// The path of an instance key: the root's name, then each field, the
@@ -97,7 +102,7 @@ fn path_of(root_name: Option<&str>, k: &InstanceKey) -> String {
     p
 }
 
-impl<'a> Arrangement<'a> {
+impl Arrangement {
     /// A table domain's name: `main`, `pool:<name>`, or `pinned:<the
     /// anchor's path>`.
     pub fn domain_name(&self, table: &PlacementTable, d: DomainId) -> String {
@@ -105,40 +110,41 @@ impl<'a> Arrangement<'a> {
             DomainKind::Main => "main".to_string(),
             DomainKind::Pool { name, .. } => format!("pool:{name}"),
             DomainKind::Pinned { anchor, .. } => {
-                format!("pinned:{}", path_of(self.root.map(|l| l.name.name.as_str()), anchor))
+                format!("pinned:{}", path_of(self.root.as_deref(), anchor))
             }
         }
     }
 
-    /// Every declaration the arrangement does not fully place: one
-    /// realized under a path whose templates disagree, or born outside
-    /// the arrangement.
-    pub fn unplaced(&self) -> impl Iterator<Item = &'a LocusDecl> + '_ {
-        self.disagreeing.iter().map(|(a, _)| a.decl).chain(self.unarranged.iter().map(|(l, _)| *l))
+    /// Every declaration the arrangement does not fully place, by name:
+    /// one realized under a path whose templates disagree, or born
+    /// outside the arrangement.
+    pub fn unplaced(&self) -> impl Iterator<Item = &str> + '_ {
+        self.disagreeing.iter().map(|(a, _)| a.decl.as_str()).chain(self.unarranged.iter().map(|(l, _)| l.as_str()))
     }
 
     /// The dispatch plans' domain map
     /// ([`hale_model::dispatch_plan::domain_map`]) over this
     /// arrangement, keyed by each declaration's name: the raw post-merge
     /// symbol, the gates' spelling of a locus.
-    pub fn domains(&self) -> BTreeMap<&'a str, Vec<String>> {
+    pub fn domains(&self) -> BTreeMap<&str, Vec<String>> {
         hale_model::dispatch_plan::domain_map(
-            self.instances.iter().map(|a| (a.decl.name.name.as_str(), a.domain.clone())),
-            self.unplaced().map(|l| l.name.name.as_str()),
+            self.instances.iter().map(|a| (a.decl.as_str(), a.domain.clone())),
+            self.unplaced(),
         )
     }
 }
 
 /// Project the placement table onto the user's locus declarations of
 /// `programs` (minted by `snapshot`), with the births the ownership graph
-/// finds outside the arrangement. The model builder and lowering call it
-/// over the same snapshot's programs, table and graph.
+/// finds outside the arrangement. The snapshot projects it once
+/// (`Snapshot::demand_arrangement`), and the model builder and lowering
+/// read that one.
 pub fn project_arrangement<'a>(
     programs: &[&'a Program],
     snapshot: &Snapshot,
     table: &PlacementTable,
     ownership: &OwnershipGraph,
-) -> Arrangement<'a> {
+) -> Arrangement {
     // The user's locus declarations by their minted site: what a row's
     // `realizes` names. A stdlib site is never here.
     let mut decl_at: BTreeMap<SiteRef, &'a LocusDecl> = BTreeMap::new();
@@ -186,7 +192,7 @@ pub fn project_arrangement<'a>(
     let mut coverage: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
     let mut parents: BTreeMap<String, BTreeSet<&InstanceKey>> = BTreeMap::new();
     // Per path, every user row that reaches it.
-    let mut at_path: BTreeMap<String, Vec<Arranged<'a>>> = BTreeMap::new();
+    let mut at_path: BTreeMap<String, Vec<Arranged>> = BTreeMap::new();
     for (k, r) in &table.instances {
         if !root_template(k.origin) || handed_off.contains(k) {
             continue;
@@ -218,7 +224,7 @@ pub fn project_arrangement<'a>(
         }
         at_path.entry(path.clone()).or_default().push(Arranged {
             path,
-            decl: l,
+            decl: l.name.name.clone(),
             // `validate` requires `None` on every path whose last
             // component is not a replica.
             replica: if k.path.len() == 1 { k.replica } else { None },
@@ -232,7 +238,7 @@ pub fn project_arrangement<'a>(
     let disagree: Vec<String> = at_path
         .iter()
         .filter(|(path, rows)| {
-            rows.iter().any(|a| a.decl.name.name != rows[0].decl.name.name || a.domain != rows[0].domain)
+            rows.iter().any(|a| a.decl != rows[0].decl || a.domain != rows[0].domain)
                 || rows.len() != coverage[*path].len()
                 // Full instance keys retain construction and alternative
                 // identity, which the model path omits.
@@ -240,8 +246,8 @@ pub fn project_arrangement<'a>(
         })
         .map(|(p, _)| p.clone())
         .collect();
-    let mut instances: Vec<Arranged<'a>> = Vec::new();
-    let mut disagreeing: Vec<(Arranged<'a>, String)> = Vec::new();
+    let mut instances: Vec<Arranged> = Vec::new();
+    let mut disagreeing: Vec<(Arranged, String)> = Vec::new();
     for (path, rows) in at_path {
         let under = disagree
             .iter()
@@ -279,7 +285,7 @@ pub fn project_arrangement<'a>(
             None => by_name.get(decl.name.as_str()),
         };
         let Some(l) = l else { continue };
-        unarranged.push((*l, birth.span));
+        unarranged.push((l.name.name.clone(), birth.span));
     }
-    Arrangement { root, instances, disagreeing, unarranged }
+    Arrangement { root: root.map(|l| l.name.name.clone()), instances, disagreeing, unarranged }
 }

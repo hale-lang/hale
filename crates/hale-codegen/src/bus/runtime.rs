@@ -899,10 +899,5 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 /// so a computed publish can be compared against what a matching
 /// subscription expects without either side carrying the name.
 pub(crate) fn bus_payload_id(payload_type: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in payload_type.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
+    hale_graph::identity::fnv64(payload_type.as_bytes())
 }

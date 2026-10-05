@@ -4,8 +4,10 @@
 //! codegen, since the accessor desugars to a `std::bytes::*` call). A
 //! valid accessor is clean, and `T::x` on a non-wire type is not touched.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

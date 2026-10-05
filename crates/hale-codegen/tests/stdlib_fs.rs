@@ -16,17 +16,14 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_stdlib_fs_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&output.stdout).to_string(), output.status)
@@ -54,7 +51,7 @@ fn hale_write_file_then_read_it_back_via_std_fs() {
     let source = format!(
         r#"
         fn main() {{
-            std::io::fs::write_file("{}", "hello from hale");
+            std::io::fs::write_file("{}", "hello from hale") or discard;
         }}
         "#,
         tmp.to_str().unwrap()
@@ -75,7 +72,7 @@ fn hale_read_file_returns_full_contents() {
     let source = format!(
         r#"
         fn main() {{
-            let s = std::io::fs::read_file("{}");
+            let s = std::io::fs::read_file("{}") or "";
             println("got=", s);
         }}
         "#,
@@ -100,8 +97,8 @@ fn hale_round_trip_write_then_read() {
     let source = format!(
         r#"
         fn main() {{
-            std::io::fs::write_file("{}", "round-trip payload\nwith newline");
-            let s = std::io::fs::read_file("{}");
+            std::io::fs::write_file("{}", "round-trip payload\nwith newline") or discard;
+            let s = std::io::fs::read_file("{}") or "";
             println("read=", s);
         }}
         "#,
@@ -129,7 +126,7 @@ fn hale_file_size_returns_byte_count() {
     let source = format!(
         r#"
         fn main() {{
-            let s = std::io::fs::file_size("{}");
+            let s = std::io::fs::file_size("{}") or -1;
             println("size=", s);
         }}
         "#,
@@ -182,16 +179,15 @@ fn hale_file_exists_distinguishes_present_from_absent() {
 
 #[test]
 fn hale_read_file_on_missing_path_returns_empty_string() {
-    // The clamp-on-negative behavior: read_file on a missing
-    // path returns "" rather than aborting. Callers that need
-    // to distinguish empty-file from missing-file probe with
-    // file_exists first.
+    // read_file and file_size on a missing path fail (IoError) rather
+    // than abort, and the `or` substitutes stand in. The bare forms
+    // that answered "" and -1 themselves went in F.40 phase 4, S5.
     let absent = unique_tempfile("missing");
     let source = format!(
         r#"
         fn main() {{
-            let s = std::io::fs::read_file("{}");
-            let n = std::io::fs::file_size("{}");
+            let s = std::io::fs::read_file("{}") or "";
+            let n = std::io::fs::file_size("{}") or -1;
             println("s=", s, " n=", n);
         }}
         "#,
@@ -200,7 +196,7 @@ fn hale_read_file_on_missing_path_returns_empty_string() {
     );
     let (stdout, status) = build_and_run("missing", &source);
     assert!(status.success());
-    // s should be empty; n should be -1 (file_size error).
+    // s is the "" substitute; n the -1 substitute.
     assert!(
         stdout.contains("s= n=-1"),
         "expected empty string + size=-1 for missing file; got: {:?}",

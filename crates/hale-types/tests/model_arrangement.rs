@@ -516,7 +516,7 @@ fn copied_api_binding_expressions_keep_params_birth_provenance() {
         assert!(!m.holes.iter().any(|h| h.at == hale_model::EntityRef::LocusDecl(hale_model::LocusDeclId(lid as u32))
             && h.kind == hale_model::HoleKind::RuntimeInheritedPlacement), "{child}: {:?}", locus_holes(m));
     }
-    let plan = hale_model::dispatch_plan::DispatchPlan::derive(m);
+    let plan = &m.analyses.dispatch_plan;
     let pings = plan.subjects.iter().find(|p| p.subject == "__api.call.Pings").expect("API call dispatch");
     assert_eq!(pings.publisher_domains, ["pool:__api_io"], "the API adapter's publisher is arranged: {pings:?}");
     assert_eq!(pings.subscriber_domains, ["pool:work"]);

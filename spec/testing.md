@@ -550,10 +550,10 @@ change in the move:
   code — no second copy to drift. It is also stricter:
   `assert_eq_int(n, 42)` rejects what `stdout.contains("a=42")`
   accepts, because the latter also passes on `a=421`.
-- **The program gets typechecked.** `build_executable`, which the
-  Rust codegen tests call, parses and lowers but never runs the
-  checker, so those programs are compiled and executed without ever
-  being checked.
+- **The program gets typechecked.** The harness build the Rust
+  codegen tests call (`build_source` in `crates/hale-codegen/tests/support/build.rs`)
+  loads and lowers but never gates lowering on the checker, so those
+  programs are compiled and executed without ever being checked.
 
 What stays in Rust is anything asserting on *compiler output* rather
 than program behaviour: diagnostics, IR shape, leak counts,

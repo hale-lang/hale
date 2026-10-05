@@ -7,17 +7,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_sha1_base64_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -29,11 +26,11 @@ fn sha1_known_test_vectors() {
         fn main() {
             let abc = std::bytes::from_string("abc");
             let d = std::crypto::sha1(abc);
-            println("b0=", std::bytes::at(d, 0));
-            println("b1=", std::bytes::at(d, 1));
-            println("b2=", std::bytes::at(d, 2));
-            println("b3=", std::bytes::at(d, 3));
-            println("b19=", std::bytes::at(d, 19));
+            println("b0=", std::bytes::at(d, 0) or -1);
+            println("b1=", std::bytes::at(d, 1) or -1);
+            println("b2=", std::bytes::at(d, 2) or -1);
+            println("b3=", std::bytes::at(d, 3) or -1);
+            println("b19=", std::bytes::at(d, 19) or -1);
         }
     "#;
     let bin = build("abc", src);

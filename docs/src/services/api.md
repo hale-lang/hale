@@ -368,8 +368,10 @@ owner          = ["user:alice"]
 ```
 
 `hale build --env prod` (or `hale run --env prod`) bakes that table
-into the binding, held by the stdlib's `std::api::StaticRoles` source.
-A member takes one of six spellings:
+into the binding, held by the stdlib's `std::api::StaticRoles` source,
+and `hale check --env prod` checks the binding with the same table, so
+the check judges the program the build lowers. A member takes one of
+six spellings:
 
 | member | matches |
 |---|---|

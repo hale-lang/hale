@@ -7,17 +7,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_bytes_construct_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -28,7 +25,7 @@ fn from_int_yields_single_byte_blob() {
     let src = r#"
         fn main() {
             let b = std::bytes::from_int(0x81);
-            let v = std::bytes::at(b, 0);
+            let v = std::bytes::at(b, 0) or -1;
             println("b0=", v);
         }
     "#;
@@ -52,11 +49,11 @@ fn concat_assembles_ws_text_frame_header() {
             let header = std::bytes::concat(hdr0, hdr1);
             let body = std::bytes::from_string("hello");
             let frame = std::bytes::concat(header, body);
-            println("len=", std::bytes::at(frame, 0));
-            println("o0=", std::bytes::at(frame, 0));
-            println("o1=", std::bytes::at(frame, 1));
-            println("o2=", std::bytes::at(frame, 2));
-            println("o6=", std::bytes::at(frame, 6));
+            println("len=", std::bytes::at(frame, 0) or -1);
+            println("o0=", std::bytes::at(frame, 0) or -1);
+            println("o1=", std::bytes::at(frame, 1) or -1);
+            println("o2=", std::bytes::at(frame, 2) or -1);
+            println("o6=", std::bytes::at(frame, 6) or -1);
         }
     "#;
     let bin = build("ws_frame", src);
@@ -80,8 +77,8 @@ fn concat_empty_with_nonempty_returns_nonempty() {
             let nz = std::bytes::from_int(0xAB);
             let r1 = std::bytes::concat(e, nz);
             let r2 = std::bytes::concat(nz, e);
-            println("r1.0=", std::bytes::at(r1, 0));
-            println("r2.0=", std::bytes::at(r2, 0));
+            println("r1.0=", std::bytes::at(r1, 0) or -1);
+            println("r2.0=", std::bytes::at(r2, 0) or -1);
         }
     "#;
     let bin = build("concat_edges", src);

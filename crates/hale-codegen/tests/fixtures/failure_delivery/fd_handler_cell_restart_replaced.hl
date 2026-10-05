@@ -1,0 +1,52 @@
+// A bus handler's cell holds its subscriber (inventory row R52), and the
+// owner's own handler replaces and restarts the child whose bus handler
+// is running. `b`, on pool `right`, runs a bus handler that reads its
+// heap name and fails; it waits for its delivery on main (decision
+// L0-1), holding `b` all the while. App's handler, on main, reads the
+// child's name, replaces it in its field and asks for its restart. The
+// reclaim is deferred behind that delivery and wins over the restart;
+// once the handler has returned, the reclaim waits for the bus handler
+// on `right` to return before it releases the old child.
+// Expected outcome: `old-born-1 old-dissolved-1 read-whole
+// delivered-whole new-born-1 new-dissolved-1 finished`.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.cellrestart.go"; }
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    closure fuse { captures: tag; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    birth() {
+        self.name = "kid-" + to_string(self.tag) + "-name";
+        println("ev kid-birth " + to_string(self.tag));
+    }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            println("ev handler-read " + self.name);
+            violate fuse;
+        }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { b: Kid = Kid { tag: 1 }; heard: Int = 0; }
+    placement { b: cooperative(pool = right); }
+    bus { publish Gos; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("ev delivered " + c.name);
+        self.b = Kid { tag: 2 };
+        restart (c);
+        self.heard = self.heard + 1;
+    }
+    run() {
+        Gos <- Go { k: 1 };
+        let until = std::time::monotonic_ns() + 5000000000;
+        while self.heard < 1 && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        std::time::sleep(300ms);
+        println("ev finished");
+    }
+}
+
+fn main() { App { }; }

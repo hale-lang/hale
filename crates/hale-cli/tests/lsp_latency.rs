@@ -9,7 +9,8 @@
 //! it three times — one declaration's body edited, the same body edited
 //! again, one newline appended ([`EVENTS`], X2: the first two are the
 //! incremental typing stage's case, the edit before each one's previous
-//! snapshot) — and times each event to the first
+//! snapshot) — then closes it and opens it again ([`SESSION_EVENTS`]'s
+//! warm open, F.40 phase 4, Q2), and times each event to the first
 //! `publishDiagnostics` for the file and to the last one before a fence
 //! request sent behind the event is answered: the typing stage's
 //! publication, and the final one, which differs only for a program
@@ -18,6 +19,18 @@
 //! `HALE_LSP_LATENCY_BASE` to another `hale` binary to time it beside
 //! this one (a before-and-after on one machine). The same events taken
 //! apart by stage, in process, are [`lsp_latency_by_stage`] (X3).
+//!
+//! What each number includes. The **open** is a new process's first
+//! check: the stdlib's parse and every other table a process builds once
+//! are in it, and there is no typed snapshot to reuse. Each **edit** and
+//! the **newline** is a pass of the same process whose typing reuses the
+//! event before's snapshot. The **warm open** follows a `didClose`
+//! (fenced and not timed: the server rechecks the closed file's disk
+//! copy) and opens the file with its text again: nothing is parsed once
+//! per process any more, and the typing reuses the snapshot the close's
+//! pass left, whose declarations the reopened text does not change —
+//! what reopening a file costs an editor that is already running. The
+//! cold open less the warm one is the process's one-time cost.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -101,6 +114,10 @@ impl Server {
 /// declaration changes).
 const EVENTS: [&str; 4] = ["open", "body edit", "body edit again", "newline"];
 
+/// A server session's events: [`EVENTS`], then the file closed and opened
+/// again in the same process (the module header says what each includes).
+const SESSION_EVENTS: [&str; 5] = ["open", "body edit", "body edit again", "newline", "warm open"];
+
 /// `text` with `stmt` added at the start of the first fn's body.
 fn body_edited(text: &str, stmt: &str) -> String {
     let at = text.find("fn ").expect("a fn");
@@ -108,9 +125,9 @@ fn body_edited(text: &str, stmt: &str) -> String {
     format!("{}{stmt}{}", &text[..=brace], &text[brace + 1..])
 }
 
-/// One session over `file`: each of [`EVENTS`], (first ms, final ms,
-/// publications).
-fn session(bin: &Path, file: &Path) -> [(f64, f64, usize); 4] {
+/// One session over `file`: each of [`SESSION_EVENTS`], (first ms, final
+/// ms, publications).
+fn session(bin: &Path, file: &Path) -> [(f64, f64, usize); 5] {
     let text = std::fs::read_to_string(file).expect("the program");
     let uri = format!("file://{}", file.display());
     let mut s = Server::start(bin);
@@ -134,11 +151,23 @@ fn session(bin: &Path, file: &Path) -> [(f64, f64, usize); 4] {
     let edit = change(2, body_edited(&text, " let x2_probe: Int = 1;"));
     let again = change(3, body_edited(&text, " let x2_probe: Int = 2;"));
     let newline = change(4, format!("{text}\n"));
+    let _ = s.timed(
+        &uri,
+        serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didClose",
+            "params": { "textDocument": { "uri": uri } } }),
+        105,
+    );
+    let warm = s.timed(
+        &uri,
+        serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "languageId": "hale", "version": 6, "text": text } } }),
+        106,
+    );
     s.send(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null }));
     while s.recv().get("id").and_then(|i| i.as_u64()) != Some(2) {}
     s.send(serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
     let _ = s.child.wait();
-    [open, edit, again, newline]
+    [open, edit, again, newline, warm]
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -159,12 +188,12 @@ fn lsp_latency_first_and_final_publication() {
     if let Some(base) = std::env::var_os("HALE_LSP_LATENCY_BASE") {
         bins.insert(0, ("base", PathBuf::from(base)));
     }
-    println!("| binary | program | {} |", EVENTS.map(|e| format!("{e}: first / final")).join(" | "));
-    println!("|---|---|---|---|---|---|");
+    println!("| binary | program | {} |", SESSION_EVENTS.map(|e| format!("{e}: first / final")).join(" | "));
+    println!("|---|---|{}", "---|".repeat(SESSION_EVENTS.len()));
     for p in programs {
         // The binaries' sessions alternate (X3), so a machine whose load
         // changes over the run loads both alike.
-        let mut runs: Vec<Vec<[(f64, f64, usize); 4]>> = vec![Vec::new(); bins.len()];
+        let mut runs: Vec<Vec<[(f64, f64, usize); 5]>> = vec![Vec::new(); bins.len()];
         for _ in 0..5 {
             for ((_, bin), runs) in bins.iter().zip(&mut runs) {
                 runs.push(session(bin, &root.join(p)));
@@ -176,7 +205,7 @@ fn lsp_latency_first_and_final_publication() {
                 let last = median(runs.iter().map(|r| r[event].1).collect());
                 format!("{first:.0} / {last:.0} ms ({} pub.)", runs[0][event].2)
             };
-            let cells: Vec<String> = (0..EVENTS.len()).map(cell).collect();
+            let cells: Vec<String> = (0..SESSION_EVENTS.len()).map(cell).collect();
             println!("| {label} | {p} | {} |", cells.join(" | "));
         }
     }

@@ -1,0 +1,83 @@
+// Build-only call fixture (F.40 phase 4, S0): the `std::bytes` arms the
+// rest of the shadow set does not call at these positions — the
+// builder primitives at statement and expression position, the plain
+// functions as statements, and the `read_*` / `write_*` families under
+// `or`. Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let b = std::bytes::from_string("abcdefgh");
+    std::bytes::clone(b);
+    std::bytes::concat(b, b);
+    std::bytes::find_byte(b, 97, 0);
+    std::bytes::from_int(7);
+    std::bytes::from_string("x");
+    std::bytes::slice(b, 0, 2);
+    std::bytes::__is_alloc_fail(b);
+    let failed = std::bytes::__is_alloc_fail(b);
+
+    std::bytes::builder::__new(64);
+    let h = std::bytes::builder::__new(64);
+    std::bytes::builder::__append(h, b);
+    std::bytes::builder::__append_str(h, "s");
+    std::bytes::builder::__append_slice(h, b, 0, 2);
+    std::bytes::builder::__append_scalar(h, 1, 4, 0);
+    std::bytes::builder::__append_f64(h, 1.5, 0);
+    std::bytes::builder::__append_f32(h, 1.5, 0);
+    std::bytes::builder::__append_pad(h, 4);
+    std::bytes::builder::__len(h);
+    std::bytes::builder::__view(h);
+    std::bytes::builder::__text_view(h);
+    std::bytes::builder::__snapshot(h);
+    std::bytes::builder::__xor_mask_into(h, b, 305419896);
+    std::bytes::builder::__finish(h);
+    let k = std::bytes::builder::__new(64);
+    let a1 = std::bytes::builder::__append(k, b);
+    let a2 = std::bytes::builder::__append_str(k, "s");
+    let a3 = std::bytes::builder::__append_slice(k, b, 0, 2);
+    let a4 = std::bytes::builder::__append_scalar(k, 1, 4, 0);
+    let a5 = std::bytes::builder::__append_f64(k, 1.5, 0);
+    let a6 = std::bytes::builder::__append_f32(k, 1.5, 0);
+    let a7 = std::bytes::builder::__append_pad(k, 4);
+    let n = std::bytes::builder::__len(k);
+    let v = std::bytes::builder::__view(k);
+    let t = std::bytes::builder::__text_view(k);
+    let s = std::bytes::builder::__snapshot(k);
+    let x = std::bytes::builder::__xor_mask_into(k, b, 305419896);
+    let sf = std::bytes::builder::__shift_front(k, 1);
+    let cl = std::bytes::builder::__clear(k);
+    let fin = std::bytes::builder::__finish(k);
+    let fr = std::bytes::builder::__free(k);
+    std::bytes::builder::__shift_front(h, 1);
+    std::bytes::builder::__clear(h);
+    std::bytes::builder::__free(h);
+
+    let r1 = std::bytes::read_f64_be(b, 0) or 0.0;
+    let r2 = std::bytes::read_i16_be(b, 0) or 0;
+    let r3 = std::bytes::read_i32_be(b, 0) or 0;
+    let r4 = std::bytes::read_i64_be(b, 0) or 0;
+    let r5 = std::bytes::read_i64_le(b, 0) or 0;
+    let r6 = std::bytes::read_u64_be(b, 0) or 0;
+
+    let ring = std::io::mirror::__new(4096);
+    let w = std::io::mirror::__writable(ring);
+    // The writers at statement position: the offset past the write each
+    // returns is discarded, as any statement's value is
+    // (`tests/hale/bytes_writer_offset_test.hl` chains it).
+    std::bytes::write_f32_le(w, 0, 1.5) or raise;
+    std::bytes::write_f64_be(w, 0, 1.5) or raise;
+    std::bytes::write_f64_le(w, 0, 1.5) or raise;
+    std::bytes::write_i16_be(w, 0, 1) or raise;
+    std::bytes::write_i16_le(w, 0, 1) or raise;
+    std::bytes::write_i32_be(w, 0, 1) or raise;
+    std::bytes::write_i32_le(w, 0, 1) or raise;
+    std::bytes::write_i64_be(w, 0, 1) or raise;
+    std::bytes::write_i8(w, 0, 1) or raise;
+    std::bytes::write_u16_be(w, 0, 1) or raise;
+    std::bytes::write_u32_be(w, 0, 1) or raise;
+    std::bytes::write_u32_le(w, 0, 1) or raise;
+    std::bytes::write_u64_be(w, 0, 1) or raise;
+    println(failed, a1, a2, a3, a4, a5, a6, a7, n, x, sf, cl, fr, r1, r2, r3, r4, r5, r6);
+    // A Bytes value (and a BytesView) does not print: the lengths are
+    // the rendering.
+    println(len(v), t, len(s), len(fin));
+}

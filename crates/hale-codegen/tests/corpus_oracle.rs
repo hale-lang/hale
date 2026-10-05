@@ -51,7 +51,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -467,14 +466,10 @@ fn corpus_run_path(name: &str) -> hale_types::lifecycle::project::RunPath {
 /// Examples whose run departs from their derived plan today: (example,
 /// inventory row, the departures, exactly). The traced pass asserts the
 /// run shows these and nothing else, so when the fix lands the entry
-/// fails and goes.
-const PLAN_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
-    // The plan orders a statement-position literal's teardown before its
-    // owner's reclaim completes, not before the end of the body whose
-    // statement built it: a run that exits inside CheckerL's dissolve,
-    // in AuditL's run(), is still owed AuditL's drain and dissolve.
-    ("03c-closure-bubbled", "C13", &["missing: AuditL.Drain", "missing: AuditL.Dissolve"]),
-];
+/// fails and goes. None today: the last, `03c-closure-bubbled` (C13), went
+/// when the plan ordered a body's end after the teardown of the literals
+/// its statements build.
+const PLAN_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[];
 
 /// Build one fixture to a unique temp binary and run it under the
 /// oracles. With `traced` it is built with the lifecycle trace (F.40
@@ -492,7 +487,7 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration, traced: bool) -
     };
     let bin = harness::unique_bin(&format!("lotus_corpus_{}_{}", name.replace(['/', '-'], "_"), std::process::id()));
     let opts = hale_codegen::BuildOptions { lifecycle_trace: traced, ..fixture_build_options() };
-    if let Err(e) = build_executable_with_options(&program, &bin, &[], &opts) {
+    if let Err(e) = build_opts::build_source(&src, &bin, &opts) {
         let msg = format!("{e:?}");
         // A codegen feature gap is ACKNOWLEDGED only when the fixture
         // is on the interpreter-only list; otherwise it's a

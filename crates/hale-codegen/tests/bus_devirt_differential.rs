@@ -143,7 +143,6 @@ fn run(bin: &Path, cwd: &Path) -> Option<RunOutcome> {
 /// caller records it — a build failure on either arm is a harness
 /// failure, since both arms must compile identically).
 fn build(src: &str, tag: &str, devirt: bool) -> Option<PathBuf> {
-    let program = hale_syntax::parse_source(src).ok()?;
     let bin = harness::unique_bin(&format!(
         "lotus_devirt_{}_{}_{}",
         tag.replace(['/', '-', '.'], "_"),
@@ -159,7 +158,7 @@ fn build(src: &str, tag: &str, devirt: bool) -> Option<PathBuf> {
         ..build_opts::options()
     };
     let ok =
-        hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        build_opts::build_source(src, &bin, &options)
             .is_ok();
     if ok {
         Some(bin)

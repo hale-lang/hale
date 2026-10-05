@@ -496,6 +496,62 @@ fn one_environment_may_not_mean_two_different_claimsets() {
     assert_eq!(code2, 0, "one shared declaration is fine: {}", out2);
 }
 
+/// F.40 phase 4, A3: a pair whose check fails still has its role
+/// coverage and its identity comparison. Both read the pair's snapshot,
+/// whose law selection and role rows are not gated on the typing, so an
+/// entrypoint that does not typecheck still has the roles it declares
+/// compared with the table and its `Core` compared with its neighbour's.
+#[test]
+fn a_pair_that_does_not_typecheck_keeps_its_roles_and_its_identity() {
+    let r = root("untyped");
+    write(&r, "p1/p.hl", LIB);
+    write(
+        &r,
+        "p2/p.hl",
+        &LIB.replace(
+            "constitution Core { tenant_iso: forbid reaches(billing, research); }",
+            "constitution Core { tenant_iso: forbid reaches(billing, research); \
+             extra: count subscribers(topic Settled) == 0; }",
+        ),
+    );
+    let app = |lib: &str| {
+        format!(
+            "import \"../{lib}\" as lb;\nrole support;\n\
+             main locus A {{ params {{ r: lb::Research = lb::Research {{ }}; }} \
+             fn bad() -> Int {{ return \"x\"; }} }}\nfn main() {{ A {{ }}; }}\n"
+        )
+    };
+    write(&r, "app-a/main.hl", &app("p1"));
+    write(&r, "app-b/main.hl", &app("p2"));
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n\
+         \n[environments.prod.roles]\nsuport = []\n",
+    );
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(out.matches("type error: return: expected `Int`, got `String`").count(), 2, "neither typechecks: {out}");
+    for ep in ["app-a", "app-b"] {
+        assert!(
+            out.contains(&format!(
+                "{ep} @ prod: role(s) `owner`, `support` are not mapped in [environments.prod.roles]"
+            )) && out.contains(&format!(
+                "{ep} @ prod: [environments.prod.roles] maps `suport`, which the entrypoint does not declare \
+                 (declared: `owner`, `support`)"
+            )),
+            "{ep}'s roles are compared with the table: {out}"
+        );
+    }
+    assert!(
+        out.contains("environment `prod` resolves `Core` to two different claimsets: app-a sees ")
+            && out.contains("  app-b @ prod (constitution identity)\n"),
+        "and its `Core` with its neighbour's: {out}"
+    );
+    assert!(out.contains("7 pair(s) failed:"), "{out}");
+}
+
 /// Review acceptance 12: an entrypoint that genuinely lacks a
 /// component declares the vocabulary explicitly. An undeclared group
 /// is an unknown-name error, not an empty set — the PR's original
@@ -800,6 +856,165 @@ fn a_seed_whose_import_does_not_resolve_is_still_an_entrypoint() {
     assert!(out.contains("dangling") && out.contains("in no environment"), "{out}");
 }
 
+/// `hale check --matrix .` run in `root`: stdout, stderr and the exit
+/// code apart, the targets named relative to the workspace.
+fn matrix_in(root: &Path) -> (String, String, i32) {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check", "--matrix", "."])
+        .current_dir(root)
+        .output()
+        .expect("run hale");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+/// F.40 phase 4, A3: a pair whose seed the check refuses is reported by
+/// its refusal alone. The listed seed here is a library declaring a
+/// role; its pair fails with the refusal, and no role-coverage line
+/// follows it, since there is no entrypoint for the environment's roles
+/// to map. Before, the matrix re-loaded the library, reported its roles
+/// `ops` and `owner` as not mapped, and added a `lib @ dev (roles)`
+/// failure. The healthy pair beside it is untouched.
+#[test]
+fn a_listed_library_is_reported_by_its_refusal_alone() {
+    let r = root("refusedlib");
+    write(&r, "lib/lib.hl", "role ops;\nlocus Research { params { n: Int = 0; } }\n");
+    write(&r, "app/main.hl", "main locus A { params { n: Int = 0; } }\nfn main() { A { }; }\n");
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"lib\"]\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./app @ dev ===\n=== ./lib @ dev ===\n\n");
+    assert_eq!(
+        err,
+        "ok: 1 file(s) typechecked\n\
+         ./lib: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
+         1 pair(s) failed:\n  lib @ dev\n"
+    );
+    assert_eq!(code, 1);
+}
+
+/// As above, for a seed whose only `main locus` is the one it imports.
+/// The imported head declares a role, which the importer's environment
+/// does not map; before, the importer's pair printed that as a
+/// role-coverage failure besides its refusal.
+#[test]
+fn a_seed_whose_only_main_is_imported_is_reported_by_its_refusal_alone() {
+    let r = root("refusedimporter");
+    write(&r, "head/main.hl", &format!("role ops;\n{HEAD}"));
+    write(&r, "importer/main.hl", "import \"../head\" as h;\nfn main() { }\n");
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n\
+         [environments.dev]\nsource_only = true\nentrypoints = [\"head\"]\n\n\
+         [environments.dev.roles]\nops = []\nowner = []\n\n\
+         [environments.stage]\nsource_only = true\nentrypoints = [\"importer\"]\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./head @ dev ===\n=== ./importer @ stage ===\n\n");
+    assert_eq!(
+        err,
+        "ok: 1 file(s) typechecked\n\
+         ./importer: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
+         1 pair(s) failed:\n  importer @ stage\n"
+    );
+    assert_eq!(code, 1);
+}
+
+/// As above, for a seed whose only `main locus` is nested in a module.
+/// It declares `audit` where the table, which the entrypoint beside it
+/// matches, maps `ops`; before, both directions of that mismatch were
+/// printed for the refused pair, each with a `(roles)` failure.
+#[test]
+fn a_seed_whose_only_main_is_module_nested_is_reported_by_its_refusal_alone() {
+    let r = root("refusednested");
+    write(&r, "app/main.hl", &format!("role ops;\n{HEAD}"));
+    write(
+        &r,
+        "nested/main.hl",
+        "role audit;\nmodule inner {\n    main locus Head { params { n: Int = 0; } }\n}\nfn main() { }\n",
+    );
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n\
+         [environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"nested\"]\n\n\
+         [environments.dev.roles]\nops = []\nowner = []\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./app @ dev ===\n=== ./nested @ dev ===\n\n");
+    assert_eq!(
+        err,
+        "ok: 1 file(s) typechecked\n\
+         ./nested: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
+         1 pair(s) failed:\n  nested @ dev\n"
+    );
+    assert_eq!(code, 1);
+}
+
+/// A refused pair's constitution takes no part in the identity
+/// comparison, and the comparison between the healthy pairs stands. The
+/// refused pair is listed first, and its module-nested `main` imports a
+/// third `Core`; before, the matrix adopted that `Core` into the nested
+/// `main` and made it the reference both entrypoints were measured
+/// against, so each was reported as differing from the seed that cannot
+/// deploy. They are measured against each other.
+#[test]
+fn a_refused_pair_leaves_the_identity_comparison_to_the_healthy_pairs() {
+    let r = root("refusedidentity");
+    let core_with = |extra: &str| {
+        LIB.replace(
+            "constitution Core { tenant_iso: forbid reaches(billing, research); }",
+            &format!("constitution Core {{ tenant_iso: forbid reaches(billing, research); {extra} }}"),
+        )
+    };
+    write(&r, "p1/p.hl", LIB);
+    write(&r, "p2/p.hl", &core_with("extra: count subscribers(topic Settled) == 0;"));
+    write(&r, "p3/p.hl", &core_with("extra: count subscribers(topic Settled) == 3;"));
+    write(&r, "app-a/main.hl", &APP.replace("../lib", "../p1"));
+    write(&r, "app-b/main.hl", &APP.replace("../lib", "../p2"));
+    write(
+        &r,
+        "nested/main.hl",
+        "import \"../p3\" as lb;\nmodule inner {\n    main locus Head { params { r: lb::Research = lb::Research { }; } }\n}\nfn main() { }\n",
+    );
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"nested\", \"app-a\", \"app-b\"]\n",
+    );
+    let (out, err, code) = matrix_in(&r);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(out, "=== ./nested @ prod ===\n=== ./app-a @ prod ===\n=== ./app-b @ prod ===\n\n");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 7, "{err}");
+    assert_eq!(
+        lines[0],
+        "./nested: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`"
+    );
+    assert_eq!(lines[1], "ok: 1 file(s) typechecked");
+    assert_eq!(lines[2], "ok: 1 file(s) typechecked");
+    assert!(
+        lines[3].starts_with("environment `prod` resolves `Core` to two different claimsets: app-a sees ")
+            && lines[3].contains(", app-b sees ")
+            && lines[3].ends_with(
+                ". One name must mean one law — the entrypoints are importing different declarations that happen to share it"
+            ),
+        "{err}"
+    );
+    assert_eq!(&lines[4..], ["2 pair(s) failed:", "  nested @ prod", "  app-b @ prod (constitution identity)"]);
+    assert_eq!(code, 1);
+}
+
 /// The artifact must say WHICH deployment it certifies, not only
 /// which law applied — two environment labels can select identical
 /// law and would otherwise produce indistinguishable certificates.
@@ -1093,4 +1308,104 @@ fn the_matrix_accepts_a_bearer_member_and_refuses_a_misspelled_prefix() {
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);
     assert!(out.contains("is not a bearer name"), "{}", out);
+}
+
+/// F.40 phase 4, A1: `hale check --env` carries the environment's role
+/// table, the one `hale build --env` bakes into the api binding, so the
+/// check judges the binding the build lowers. Two workspaces hold the
+/// same program under the same environment, one with a `roles` table
+/// and one without. The build bakes the table verbatim. The check sees
+/// it through the one artifact the table reaches: the generated
+/// binding's sites after its `roles` line sit exactly the table's
+/// length further on in `--dump-topology`'s provenance, and nothing
+/// else moves but `artifact_digest`, which covers those spans. The
+/// diagnostics, `--dump-api` (the description carries no table) and
+/// `shape_hash` (the hashed half renders no param default) are equal,
+/// and a program with no api entry gets the same artifact byte for
+/// byte.
+#[test]
+fn check_env_judges_the_binding_build_lowers() {
+    const TABLE: &str = "auditor=;owner=user:root;support=uid:1000,group:ops";
+    const PLAIN_APP: &str = "main locus P { run() { println(\"hi\"); } }\nfn main() { P { }; }\n";
+    let manifest = "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"plain\"]\n";
+    let with_roles = root("a1_roles");
+    let without = root("a1_bare");
+    for (r, roles) in [
+        (&with_roles, "\n[environments.dev.roles]\nsupport = [\"uid:1000\", \"group:ops\"]\nauditor = []\nowner = [\"user:root\"]\n"),
+        (&without, ""),
+    ] {
+        write(r, "app/main.hl", GATED_APP);
+        write(r, "plain/main.hl", PLAIN_APP);
+        write(r, "hale.toml", &format!("{}{}", manifest, roles));
+    }
+    // Relative targets from the workspace, so the two artifacts name
+    // the same sources.
+    let run = |dir: &Path, args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(dir).output().expect("run hale");
+        (String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string(), o.status.code())
+    };
+
+    let (_, err, code) = run(&with_roles, &["build", "--env", "dev", "app", "-o", "app.bin"]);
+    assert_eq!(code, Some(0), "build --env: {}", err);
+    let bin = std::fs::read(with_roles.join("app.bin")).expect("the built binary");
+    assert!(bin.windows(TABLE.len()).any(|w| w == TABLE.as_bytes()), "build --env bakes the table `{}`", TABLE);
+
+    for args in [&["check", "app", "--env", "dev"][..], &["check", "app", "--env", "dev", "--dump-api"]] {
+        let got = run(&with_roles, args);
+        assert_eq!(got.2, Some(0), "{:?}: {}{}", args, got.0, got.1);
+        assert_eq!(got, run(&without, args), "{:?} does not depend on the role table", args);
+    }
+    let plain = ["check", "plain", "--env", "dev", "--dump-topology"];
+    let got = run(&with_roles, &plain);
+    assert_eq!(got.2, Some(0), "{}", got.1);
+    assert_eq!(got, run(&without, &plain), "with no api entry the artifact is byte-identical");
+
+    let topology = |dir: &Path| -> serde_json::Value {
+        let (out, err, code) = run(dir, &["check", "app", "--env", "dev", "--dump-topology"]);
+        assert_eq!(code, Some(0), "{}", err);
+        serde_json::from_str(&out).expect("the artifact is JSON")
+    };
+    let (mut a, mut b) = (topology(&with_roles), topology(&without));
+    assert_eq!(a["shape_hash"], b["shape_hash"], "the hashed half does not see the table");
+    // Take the spans out, in document order, with the site each is
+    // the span of; what is left must be equal.
+    fn spans(v: &mut serde_json::Value, site: &str, out: &mut Vec<(String, i64, i64)>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                let site = match ["from", "fn", "locus"].iter().find_map(|k| m.get(*k)) {
+                    Some(s) => s.as_str().unwrap_or("").to_string(),
+                    None => site.to_string(),
+                };
+                m.remove("artifact_digest");
+                if let Some(s) = m.remove("span") {
+                    out.push((site.clone(), s[0].as_i64().expect("start"), s[1].as_i64().expect("end")));
+                }
+                for (_, x) in m.iter_mut() {
+                    spans(x, &site, out);
+                }
+            }
+            serde_json::Value::Array(xs) => xs.iter_mut().for_each(|x| spans(x, site, out)),
+            _ => {}
+        }
+    }
+    let (mut sa, mut sb) = (Vec::new(), Vec::new());
+    spans(&mut a, "", &mut sa);
+    spans(&mut b, "", &mut sb);
+    assert_eq!(a, b, "only spans and artifact_digest depend on the table");
+    assert_eq!(sa.len(), sb.len());
+    let shift = TABLE.len() as i64;
+    let mut moved = 0;
+    for ((site, s, e), (_, s0, e0)) in sa.iter().zip(&sb) {
+        let d = s - s0;
+        assert_eq!(e - e0, d, "{}: a span moves whole", site);
+        if d == 0 {
+            continue;
+        }
+        assert_eq!(d, shift, "{}: a site after the roles line moves by the table's length", site);
+        assert!(site.starts_with("__ApiBinding"), "{}: only the generated binding's sites move", site);
+        moved += 1;
+    }
+    assert!(moved > 0, "the check's binding carries the table");
+    let _ = std::fs::remove_dir_all(&with_roles);
+    let _ = std::fs::remove_dir_all(&without);
 }

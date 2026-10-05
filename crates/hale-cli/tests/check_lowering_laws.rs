@@ -27,6 +27,32 @@ const ADAPTER_ACCEPTS: &str = "type Tick { n: Int; }\n\
 
 const RULE_6: &str = "adapter binding for topic `Beat`: `Sink` runs on its own pinned thread";
 
+/// Rule 6, the placement form: a field placed `pinned` whose locus
+/// accepts children.
+const PINNED_ACCEPTS: &str = "locus Child { run() { } }\n\
+     locus Coord {\n\
+         accept(c: Child) { }\n\
+         run() { }\n\
+     }\n\
+     main locus App {\n\
+         params { w: Coord = Coord { }; }\n\
+         placement { w: pinned; }\n\
+     }\n\
+     fn main() { App { }; }\n";
+
+/// Rule 6, the adapter-binding form: the adapter declares an epoch-less
+/// (so dissolve) closure with an assertion.
+const ADAPTER_CLOSURE: &str = "type Tick { n: Int; }\n\
+     topic Beat { payload: Tick; subject: \"beat\"; }\n\
+     locus Sink {\n\
+         params { sent: Int = 0; }\n\
+         closure settled { self.sent ~~ self.sent within 0; }\n\
+         fn send(subject: String, bytes: Bytes) { self.sent = self.sent + 1; }\n\
+     }\n\
+     locus Pub { bus { publish Beat; } run() { Beat <- Tick { n: 1 }; } }\n\
+     main locus App { params { p: Pub = Pub { }; } bindings { Beat: Sink { }; } }\n\
+     fn main() { App { }; }\n";
+
 /// Rule 17 (GH #826): a root that pins a field, built inside a loop. The
 /// literal is line 4, column 21.
 const PINNED_ROOT_IN_A_LOOP: &str = "locus Worker { run() { } }\n\
@@ -274,6 +300,63 @@ fn check_refuses_a_pinned_adapter_that_accepts_at_the_binding_entry() {
     assert!(out.contains(RULE_6) && out.contains("(rule 6)"), "{out}");
     assert!(out.contains(":6:"), "the span is the binding entry's line:\n{out}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `hale check`'s text and `--json` output for `src`, the seed's
+/// directory spelled `<seed>`.
+fn check_output(tag: &str, src: &str) -> (String, String) {
+    let d = seed(tag, src);
+    let dir = d.canonicalize().expect("canonical seed").to_string_lossy().to_string();
+    let (ok, text) = hale(&["check", &dir]);
+    assert!(!ok, "check must fail:\n{text}");
+    let (_, json) = hale(&["check", "--json", &dir]);
+    let _ = std::fs::remove_dir_all(&d);
+    (text.replace(&dir, "<seed>").trim_end().to_string(), json.replace(&dir, "<seed>").trim_end().to_string())
+}
+
+/// F.40 phase 4, W2: rule 6 names what makes it so. The primary line is
+/// the one `hale check` printed before (and its source line); the
+/// witness follows as three notes: the entry that pins the instance,
+/// the declaration it realizes, and the member that conflicts.
+#[test]
+fn check_prints_rule_6_with_its_witness_for_a_placement_entry() {
+    let (text, json) = check_output("w2_pin", PINNED_ACCEPTS);
+    assert_eq!(
+        text,
+        "<seed>/main.hl:8:13: type error: placement entry `w`: `Coord` is placed `pinned` but declares `accept()`: \
+         a pinned locus owns its own thread and cannot accept children; place it `cooperative`, or drop the feature (rule 6)\n\
+         \x20   placement { w: pinned; }\n\
+         \x20               ^^^^^^^^^^\n\
+         \x20   note: the instance runs on a thread of its own: field `w` is placed `pinned` here at <seed>/main.hl:8:13\n\
+         \x20   note: the instance realizes `Coord`, declared here at <seed>/main.hl:2:7\n\
+         \x20   note: `Coord` declares `accept()` here at <seed>/main.hl:3:1"
+    );
+    assert!(
+        json.ends_with(
+            "(rule 6)\",\"related\":[\
+             {\"file\":\"<seed>/main.hl\",\"line\":8,\"col\":13,\"note\":\"the instance runs on a thread of its own: field `w` is placed `pinned` here\"},\
+             {\"file\":\"<seed>/main.hl\",\"line\":2,\"col\":7,\"note\":\"the instance realizes `Coord`, declared here\"},\
+             {\"file\":\"<seed>/main.hl\",\"line\":3,\"col\":1,\"note\":\"`Coord` declares `accept()` here\"}]}"
+        ),
+        "{json}"
+    );
+}
+
+#[test]
+fn check_prints_rule_6_with_its_witness_for_an_adapter_binding() {
+    let (text, _) = check_output("w2_bind", ADAPTER_CLOSURE);
+    assert_eq!(
+        text,
+        "<seed>/main.hl:9:64: type error: adapter binding for topic `Beat`: `Sink` runs on its own pinned thread but \
+         declares a closure whose epoch is `birth` or `dissolve` (dissolve is the default): the lifecycle cascade cannot \
+         route it across a pinned locus's thread; drop the feature from the adapter locus (rule 6)\n\
+         \x20   main locus App { params { p: Pub = Pub { }; } bindings { Beat: Sink { }; } }\n\
+         \x20                                                                  ^^^^\n\
+         \x20   note: the adapter runs on a thread of its own: topic `Beat` is bound to it here at <seed>/main.hl:9:58\n\
+         \x20   note: the instance realizes `Sink`, declared here at <seed>/main.hl:3:7\n\
+         \x20   note: `Sink`'s closure `settled` fires inside the lifecycle cascade, at epoch `dissolve` (no `epoch` is \
+         written, and dissolve is the default): its assertion is here at <seed>/main.hl:5:19"
+    );
 }
 
 #[test]

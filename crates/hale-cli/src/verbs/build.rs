@@ -11,8 +11,8 @@ use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::shared::options::build_config;
 use crate::shared::options::compile_target;
-use crate::shared::options::collect_ffi_from_imports;
 use crate::shared::options::exec_digest;
+use crate::shared::options::identity_options;
 use crate::shared::workspace::find_workspace_root;
 use crate::shared::options::model_identity;
 use crate::shared::options::note_unmapped_roles;
@@ -21,6 +21,7 @@ use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 use crate::shared::options::resolve_build_env;
+use crate::shared::options::source_frames;
 use crate::shared::options::take_output_flag;
 use hale_frontend::snapshot::{LoadError, Snapshot};
 pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
@@ -328,15 +329,10 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // escape hatch); toml-sourced flags append. Duplicates are
     // tolerated — clang's `-lX -lX` is harmless, and the linker
     // dedupes csrc translation-unit contents at symbol level.
-    // The imports are the target's own, resolved against the
-    // directory they were written in (`entry_dir`, above).
-    let toml_opts = collect_ffi_from_imports(
-        snap.entry_imports(),
-        &entry_dir,
-        find_workspace_root(target).as_deref(),
-    );
-    options.link_libs.extend(toml_opts.link_libs);
-    options.csrc_files.extend(toml_opts.csrc_files);
+    // The options the identity is computed from, by the function
+    // `run` and `replay` compute theirs with (I2); the build builds
+    // with them.
+    let mut options = identity_options(&options, &snap, target);
     // 2026-07-01 debug story stage 2: DWARF line tables, ON by
     // default (debug sections cost binary bytes, zero runtime
     // speed). LOTUS_NO_DEBUGINFO=1 opts out. The source table is
@@ -399,8 +395,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     options.model_hash = Some(identity.model_hash);
     options.obs_entity_ids = identity.obs_ids;
     options.exec_digest = Some(exec_digest(
-        sources,
-        target,
+        &source_frames(&snap),
         &build_env::options_fingerprint(&options),
         identity.plan_digest,
     ));

@@ -48,9 +48,10 @@
 //! element-chain terminals are reached through a receiver, which no
 //! free fn claims.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
@@ -66,14 +67,14 @@ mod build_opts;
 /// checker.
 fn check_build_run(name: &str, src: &str) -> String {
     let program = parse_source(src).expect("parse");
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())
         .collect();
     assert!(errs.is_empty(), "`hale check` refuses it: {:?}", errs);
     let bin = harness::unique_bin(name);
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "non-zero: {:?}", out.status);

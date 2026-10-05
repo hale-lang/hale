@@ -65,17 +65,35 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
     o
 }
 
+/// The options fingerprint of the build the DNA host cache runs, for
+/// its key (`hale_iris::toolchain_hash`, F.40 phase 4, I5). That build
+/// is `hale build <seed>` with no flag, a subprocess that inherits this
+/// process's environment, so its options are [`build_options_from_env`]'s
+/// and its fingerprint is [`options_fingerprint`] of them: the function
+/// the execution identity uses, over the same environment. What the
+/// seed's own `[ffi]` adds is embedded source the key already folds.
+pub(crate) fn host_cache_options() -> String {
+    host_cache_options_from(|name| std::env::var(name).ok())
+}
+
+/// The same, over any lookup.
+pub(crate) fn host_cache_options_from(get: impl Fn(&str) -> Option<String>) -> String {
+    options_fingerprint(&build_options_from(get))
+}
+
 /// The build-options half of the execution identity. One spelling,
 /// so `hale build` and `hale run` fingerprint the same options the
 /// same way (they did not: the build path never computed a digest
 /// at all — GH #476 Change 8 review).
 pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
+    // `debug` keeps its place with the constant `false` (F.40 phase 4,
+    // I2): the DWARF line tables `hale build` adds by default change no
+    // behaviour, and `run` and `replay` never add them, so fingerprinting
+    // them made every recording of a built binary "different build
+    // inputs". The constant keeps the string `run` has always stamped.
     let mut fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        o.target,
-        o.target_cpu,
-        o.dev_profile,
-        o.debug.is_some()
+        "target={:?};cpu={:?};dev={};debug=false",
+        o.target, o.target_cpu, o.dev_profile
     );
     // GH #904: the FFI surface is part of what the executable IS —
     // two builds of one source that link different C are different
@@ -271,6 +289,69 @@ mod tests {
         let mut other = base();
         other.target_glibc = Some("2.31".into());
         assert_ne!(options_fingerprint(&two), options_fingerprint(&other), "the value is part of the identity");
+    }
+
+    /// `debug` adds DWARF line tables and changes no behaviour; `hale
+    /// build` sets it and `run` and `replay` never do, so it is no part
+    /// of the identity (F.40 phase 4, I2), and the default string is
+    /// what `run` has always stamped.
+    #[test]
+    fn debug_leaves_the_identity() {
+        let plain = options_fingerprint(&base());
+        let mut o = base();
+        o.debug = Some(hale_codegen::DebugSources { files: Vec::new() });
+        assert_eq!(options_fingerprint(&o), plain);
+        assert_eq!(plain, "target=Native;cpu=Native;dev=false;debug=false");
+    }
+
+    /// The options half's covered changes each move the identity (I2):
+    /// the target, `dev`, an environment's role table, a link library.
+    #[test]
+    fn a_covered_option_moves_the_identity() {
+        let plain = options_fingerprint(&base());
+        let moved = |set: &dyn Fn(&mut BuildOptions)| {
+            let mut o = base();
+            set(&mut o);
+            options_fingerprint(&o) != plain
+        };
+        assert!(moved(&|o| o.target = hale_codegen::CompileTarget::Wasm32), "the target");
+        assert!(moved(&|o| o.dev_profile = true), "dev");
+        assert!(moved(&|o| o.api_roles = Some("ops=uid:1000".into())), "a role table");
+        assert!(moved(&|o| o.link_libs.push("m".into())), "a link library");
+    }
+
+    /// The dispatch plan's own frame moves the execution identity, with
+    /// the sources and the options held: what the end-to-end plan test
+    /// cannot isolate, since the knob that changes the plan is in the
+    /// options too.
+    #[test]
+    fn the_dispatch_plan_alone_moves_the_execution_identity() {
+        let files = [("app.hl", "fn main() { }\n")];
+        let fp = options_fingerprint(&base());
+        let digest = |plan| crate::shared::options::exec_digest(&files, &fp, plan);
+        assert_eq!(digest(1), digest(1));
+        assert_ne!(digest(1), digest(2));
+    }
+
+    /// The DNA host cache's options (I5): the default environment's are
+    /// the default build's, a knob the subprocess build inherits and
+    /// fingerprints moves them, and what the fingerprint leaves out
+    /// (a narration, the DWARF switch) leaves them too.
+    #[test]
+    fn the_host_caches_options_are_the_inherited_builds_fingerprint() {
+        let options = |pairs: &[(&str, &str)]| {
+            let env: BTreeMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            host_cache_options_from(|n| env.get(n).cloned())
+        };
+        let plain = options(&[]);
+        assert_eq!(plain, "target=Native;cpu=Native;dev=false;debug=false");
+        assert_eq!(plain, options(&[]), "the unchanged environment gives the options it gave");
+        for knob in [("LOTUS_ASAN", "1"), ("LOTUS_UBSAN", "1"), ("HALE_DEV", "1"), ("LOTUS_LTO", "thin"), ("LOTUS_NO_BUS_DEVIRT", "1")] {
+            assert_ne!(options(&[knob]), plain, "{knob:?} is inherited by the cache's build and must move its key");
+        }
+        for quiet in [("HALE_TIME", "1"), ("LOTUS_NO_DEBUGINFO", "1"), ("HALE_CC_WARNINGS", "1")] {
+            assert_eq!(options(&[quiet]), plain, "{quiet:?} is no part of the execution identity");
+        }
     }
 
     /// What only narrates a build, times it, chooses its warnings or its

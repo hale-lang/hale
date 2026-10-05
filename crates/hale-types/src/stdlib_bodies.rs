@@ -74,6 +74,29 @@ pub fn forms() -> Option<&'static FormRows> {
     FORMS.get_or_init(|| program().map(|p| FormRows::configured(&p.items))).as_ref()
 }
 
+/// The bus rows of [`program`], once per process (F.40 phase 4, S9): the
+/// stdlib's publish and subscribe sites (the logger's `log.**` and its
+/// three sinks'), each with what the dispatch gate reads of it, answered
+/// over the copy and the scope of no program, which holds the stdlib's
+/// declarations alone (every scope registers them). The dispatch gates
+/// join them to each program's rows
+/// ([`crate::bus_graph::derive_dispatch_gates`]): lowering merges the
+/// whole bundled stdlib into every program, so these sites are in every
+/// program's dispatch, whatever it uses. A row's facts read only the
+/// stdlib's own declarations; a program could reach one only by declaring
+/// a topic whose wire subject is `log.**` or a locus that spells a
+/// stdlib locus's mangled name.
+pub fn bus_rows() -> Option<&'static crate::bus_graph::BusRows> {
+    static ROWS: OnceLock<Option<crate::bus_graph::BusRows>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        let program = program()?;
+        let bundle = crate::Bundle::new(std::iter::once((crate::snapshot::STDLIB_SEED.to_string(), program)).collect());
+        let (top, _) = crate::resolve::build_top_scope(&crate::Bundle::new(Default::default()));
+        Some(crate::bus_graph::stdlib_bus_rows(&bundle, &top, &program.items))
+    })
+    .as_ref()
+}
+
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled
 /// name the bodies actually declare. Struct-literal paths in user
 /// code are written in the public spelling, so resolving a

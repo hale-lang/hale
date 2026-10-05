@@ -28,6 +28,8 @@
 //! A diff here is a user-visible change to what `hale check` says.
 //! Read it line by line before blessing it.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -73,13 +75,8 @@ fn bundle_of<'a>(
 /// Exactly what `hale check` appends for the law block: selection,
 /// then every migrated judgment family over the canonical model.
 fn check_law_diags(bundle: &Bundle<'_>) -> Vec<String> {
-    let programs: Vec<&hale_syntax::ast::Program> =
-        bundle.programs.values().copied().collect();
-    let mut out = hale_types::claims::selection_diags(
-        &programs,
-        &bundle.import_renames,
-    );
-    out.extend(hale_types::judgment::claim_law_diags(bundle));
+    let mut out = hale_types::bundle_law_selection(bundle).diags;
+    out.extend(entries::claim_law_diags(bundle));
     out.iter().map(render).collect()
 }
 
@@ -103,7 +100,7 @@ fn claim_diagnostics_match_the_committed_snapshot() {
         // A model of an ill-typed program describes nothing; the
         // check path only reaches the law block when the bundle
         // typechecks, so hold this snapshot to the same gate.
-        if hale_types::check_bundle_opts(&bundle, false)
+        if entries::check_bundle_opts(&bundle, false)
             .iter()
             .any(|d| {
                 d.is_error()

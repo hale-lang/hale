@@ -12,13 +12,16 @@
 //! - the walk's bound, cross-seed and wildcard facts are columns of the
 //!   graph's wire rows.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::Program;
 use hale_syntax::parse_source;
 use hale_types::bus_graph::{build_bus_graph, BusGraph};
 use hale_types::resolve::build_top_scope;
-use hale_types::{check_program, Bundle};
+use hale_types::Bundle;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");
@@ -434,7 +437,7 @@ fn a_send_by_name_meets_a_subscription_by_literal_subject() {
 fn check_unminted(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");
     let bundle = Bundle::new(BTreeMap::from([("main.hl".to_string(), &prog)]));
-    hale_types::check_bundle(&bundle).into_iter().map(|d| d.message).collect()
+    entries::check_bundle(&bundle).into_iter().map(|d| d.message).collect()
 }
 
 const SELF_RECURSION_BY_NAME: &str = r#"
@@ -493,6 +496,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let bundle = Bundle::new(BTreeMap::from([(String::new(), &prog)]));
     let (top, _) = build_top_scope(&bundle);
     let handlers = hale_types::handler_routing::handler_rows(&[&prog], &[], &bundle.snapshot);
+    let flows = hale_types::flows::survey(&[&prog], &[]);
     let alloc_summary = std::sync::Arc::new(hale_types::alloc_summary::derive_alloc_summary(&bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -510,9 +514,12 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
     let target = hale_types::capability::target_row(&bundle);
     let uses = hale_types::capability::uses::derive_capability_uses(&bundle, &alloc_summary);
+    let laws = hale_types::bundle_law_selection(&bundle);
+    let roles = hale_types::roles::role_rows(&bundle, &entry);
     let inputs = CheckInputs {
         top: &top,
         handlers: &handlers,
+        flows: &flows,
         ownership: &ownership,
         effects: &effects,
         entry: &entry,
@@ -524,6 +531,9 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         placement: &placement,
         target: &target,
         uses: &uses,
+        laws: &laws,
+        roles: &roles,
+        api_surface: None,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags

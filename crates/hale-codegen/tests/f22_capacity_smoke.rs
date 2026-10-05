@@ -7,17 +7,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_f22_smoke_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 
@@ -115,9 +112,8 @@ fn locus_typed_slot_rejected_by_typecheck() {
         }
         fn main() { }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_f22_smoke_locus_cell");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err(
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err(
         "build should fail with F.22 restriction-1 diagnostic",
     );
     let msg = format!("{}", err);
@@ -141,9 +137,8 @@ fn duplicate_slot_name_rejected() {
         }
         fn main() { }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_f22_smoke_dup");
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err(
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err(
         "build should fail with duplicate-slot-name diagnostic",
     );
     let msg = format!("{}", err);

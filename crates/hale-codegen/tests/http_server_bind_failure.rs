@@ -14,8 +14,6 @@
 use std::net::TcpListener;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -49,13 +47,12 @@ fn http_server_violates_on_bind_failure() {
         port = port,
     );
 
-    let prog = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_test_http_bind_fail_{}_{}",
         std::process::id(),
         port,
     ));
-    build_executable_with_options(&prog, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
 
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

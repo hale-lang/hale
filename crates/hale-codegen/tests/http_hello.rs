@@ -14,8 +14,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
-
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
@@ -37,12 +35,11 @@ fn pick_free_port() -> u16 {
 fn build_http_hello() -> PathBuf {
     let src_path = examples_dir().join("http-hello").join("main.hl");
     let src = std::fs::read_to_string(&src_path).expect("read example");
-    let program = hale_syntax::parse_source(&src).expect("parse example");
     let bin = harness::unique_bin(&format!(
         "hale_http_hello_{}",
         std::process::id()
     ));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build example");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build example");
     bin
 }
 

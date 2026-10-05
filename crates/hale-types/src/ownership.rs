@@ -5,7 +5,7 @@
 //! pre-pass here with its algorithm unchanged, together with the
 //! fresh-factory seed it is handed ([`fresh_factories`],
 //! whose one producer this is). The frontend's resolved-program step
-//! (`crate::resolved::resolve_program`) runs the pass over the merged
+//! (`crate::resolved::resolve_rewritten`) runs the pass over the merged
 //! program it hands codegen, and codegen reads the tables from that
 //! envelope; it re-exports this module as `hale_codegen::ownership`.
 //!

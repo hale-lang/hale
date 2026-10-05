@@ -10,7 +10,7 @@
 //! change its verdicts).
 //!
 //! Change 9 finished it: these engines ARE the authority now, for
-//! `hale check` (via [`claim_law_diags`]) as well as for the
+//! `hale check` (via [`claim_law_diags_over`]) as well as for the
 //! artifact. `claims.rs` keeps law SELECTION — which laws exist at
 //! all — and nothing else: Change 10 deleted the evaluator that
 //! used to sit beside it.
@@ -4351,7 +4351,13 @@ pub fn judge_certificates(
             });
             continue;
         };
-        let mut verdict = Verdict::Holds;
+        // The row's verdict is the model's aggregation over its
+        // certificates — the same function admission recomputes it
+        // with from the artifact.
+        let verdict = verdict_of(hale_model::certificate_row_verdict(
+            ev.certs.iter().map(|c| c.result),
+            invalid_class,
+        ));
         // The source-space discriminator (round 5): every diag
         // accumulated BEFORE this loop is claim-space (bundle);
         // evidence diags carry their record's own variant — a
@@ -4359,10 +4365,6 @@ pub fn judge_certificates(
         // numbers must never be re-resolved against bundle files.
         let mut foreign: Vec<bool> = vec![false; diags.len()];
         for cert in ev.certs.iter() {
-            let v = verdict_of(cert.result);
-            if severity(v) > severity(verdict) {
-                verdict = v;
-            }
             for (msg, pid) in &cert.diags {
                 let is_foreign = matches!(
                     evidence.provenance.records.get(pid.index()),
@@ -4374,9 +4376,6 @@ pub fn judge_certificates(
                 foreign.push(is_foreign);
             }
         }
-        if invalid_class {
-            verdict = Verdict::Invalid;
-        }
         out.push(Judged {
             ordinal: row.ordinal,
             verdict,
@@ -4385,15 +4384,6 @@ pub fn judge_certificates(
         });
     }
     out
-}
-
-fn severity(v: Verdict) -> u8 {
-    match v {
-        Verdict::Holds => 0,
-        Verdict::Uncertified => 1,
-        Verdict::Violated => 2,
-        Verdict::Invalid => 3,
-    }
 }
 
 /// GH #476 Change 9 — the CHECK path's claim diagnostics, from the
@@ -4413,35 +4403,26 @@ fn severity(v: Verdict) -> u8 {
 /// check; re-emitting them here would duplicate, which is the thing
 /// being deleted. `Unmigrated` rows keep their existing single
 /// authority (`frontier`, `quantitative`, `budget_check`).
-pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
-    // The epic's demand rule: a program that swears to nothing has
-    // nothing to judge, and must not pay for a model derivation.
-    // The scan is structural and AST-cheap — no resolution, no
-    // summary — so the no-claims path (the LSP's) stays what it was.
-    if !has_claim_surface(bundle) {
-        return Vec::new();
-    }
-    let model = crate::model_builder::derive_application_model(bundle);
-    let summary = crate::alloc_summary::derive_alloc_summary(bundle);
-    claim_law_diags_over(bundle, &model, &crate::effects::effect_certificates(bundle), &summary)
-}
-
-/// [`claim_law_diags`] over a model the caller already holds: the
+///
+/// It judges over a model the caller already holds: the
 /// frontend's snapshot derives the model once, as a family of its own,
 /// and judges the laws over it. The caller has already asked
 /// [`has_claim_surface`]; a bundle with no surface judges nothing here
 /// either, but its model was paid for. `effects` is the effects
 /// certificate report the caller's check produced, which the evidence
-/// reads rather than running the engine again, and `summary` the
+/// reads rather than running the engine again, `summary` the
 /// allocation summary the check read, which the `@budget` engines
-/// count over.
+/// count over, and `laws` the law selection the check reported
+/// (the snapshot's `law_selection`), which the lowering turns into
+/// rows.
 pub fn claim_law_diags_over(
     bundle: &crate::symbol::Bundle<'_>,
     model: &hale_model::ApplicationModel,
     effects: &crate::effects::EffectCertificates,
     summary: &crate::alloc_summary::AllocSummary,
+    laws: &crate::claims::LawSelection,
 ) -> Vec<Diag> {
-    let table = crate::claim_lowering::lower_claims(bundle, model);
+    let table = crate::claim_lowering::lower_claims_over(bundle, model, laws);
     // Law-SELECTION invalidity (unknown/cyclic constitution, illegal
     // adoption, collisions) produced no row to judge, so it must be
     // reported from the table itself or it disappears between
@@ -4449,10 +4430,10 @@ pub fn claim_law_diags_over(
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();
     let mut out: Vec<Diag> = Vec::new();
-    // Law-SELECTION issues are NOT emitted here: `claims::
-    // selection_diags` is their one authority (they are questions
-    // about which laws exist, not about what a law says), and the
-    // check path calls it alongside this. The table still carries
+    // Law-SELECTION issues are NOT emitted here: `laws.diags` is
+    // their one authority (they are questions about which laws
+    // exist, not about what a law says), and the check reports the
+    // same selection's (`CheckInputs::laws`). The table still carries
     // them for the artifact, whose law account must show every
     // issue in one document.
     let evidence = crate::evidence::derive_certificate_evidence_over(
@@ -4951,7 +4932,7 @@ pub fn judge_causes_witnessed(
             Verdict::Violated
         } else if uncertain {
             // Round 3: an uncertified row without an explanation was
-            // SILENT on the check path — `claim_law_diags` appends
+            // SILENT on the check path — `claim_law_diags_over` appends
             // diagnostics, never verdicts — so a law that could not
             // be certified compiled clean while the artifact marked
             // the document `law_failed`. That is exactly the
@@ -5637,7 +5618,7 @@ pub fn judge_depends_witnessed(
         let verdict = if !diags.is_empty() {
             Verdict::Violated
         } else if uncertain {
-            // Round 3: never silent. `claim_law_diags` appends
+            // Round 3: never silent. `claim_law_diags_over` appends
             // diagnostics, not verdicts, so an unexplained
             // `Uncertified` compiled clean while the artifact
             // marked the document `law_failed` — and left the row

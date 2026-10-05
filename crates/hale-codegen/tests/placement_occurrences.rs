@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::{build_executable_with_options, BuildOptions};
+use hale_codegen::BuildOptions;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::placement::{Bound, DomainKind, Origin};
 
@@ -160,10 +160,9 @@ fn field(line: &str, key: &str) -> Option<i64> {
 /// Build the program (devirtualized, or with `no_bus_devirt`), run it
 /// under a deadline, and return what it printed with its exit status.
 fn run(no_bus_devirt: bool) -> (String, Option<i32>) {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(&format!("placement_occurrences_{no_bus_devirt}"));
     let opts = BuildOptions { no_bus_devirt, ..build_opts::options() };
-    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+    build_opts::build_source(SRC, &bin, &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
     let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn");
     let mut out = child.stdout.take().expect("piped stdout");
     let reader = std::thread::spawn(move || {
