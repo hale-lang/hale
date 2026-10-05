@@ -538,6 +538,16 @@ pub struct CheckInputs<'a> {
     /// text, adoption and membership, never types, so it is total over a
     /// program that does not typecheck.
     pub laws: &'a crate::claims::LawSelection,
+    /// The role rows (the snapshot's `api_surface` cell, F.40 phase 4,
+    /// A4): every `role` declaration, `@gated` site and the api entry's
+    /// role source, which the role rules read. Like law selection they
+    /// read declarations only, so they are total over a program that does
+    /// not typecheck.
+    pub roles: &'a crate::roles::RoleRows,
+    /// The served surface the api binding was generated from, if the
+    /// program has an `api:` entry (`Snapshot::api_surface`, the desugar
+    /// sequence's): the api entry's rules read it.
+    pub api_surface: Option<&'a hale_syntax::api_gen::ApiSurface>,
     /// The use rows (the `target_capability` family's): every way the
     /// program asks its target for a capability, which the admission law
     /// holds to the effective target's cells.
@@ -549,8 +559,8 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
-/// [`crate::bundle_law_selection`],
-/// the bus and ownership graphs, by the snapshot's producers; the effect rows when
+/// [`crate::bundle_law_selection`], [`crate::roles::role_rows`],
+/// [`crate::bundle_api_surface`], the bus and ownership graphs, by the snapshot's producers; the effect rows when
 /// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
 /// is read beside the numbered copy: a scope names declarations, not
 /// sites, so the one built over `bundle` is the copy's.
@@ -587,6 +597,8 @@ fn check_numbered_bundle(
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = crate::bundle_law_selection(bundle);
+    let roles = crate::roles::role_rows(bundle, &entry);
+    let api_surface = crate::bundle_api_surface(bundle, &entry);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -603,6 +615,8 @@ fn check_numbered_bundle(
         target: &target,
         uses: &uses,
         laws: &laws,
+        roles: &roles,
+        api_surface: api_surface.as_ref(),
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -868,7 +882,7 @@ pub fn check_bundle_by_declaration(
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
-    check_main_and_bindings(bundle, top, inputs.effects, inputs.entry, inputs.bindings, &mut diags);
+    check_main_and_bindings(bundle, inputs, &mut diags);
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
@@ -4329,14 +4343,8 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-fn check_main_and_bindings<'e>(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    effects: &dyn Fn() -> Option<&'e crate::effect_rows::EffectRows>,
-    entry: &crate::entry::EntryRow,
-    bindings: &crate::binding_rows::BindingRows,
-    diags: &mut Vec<Diag>,
-) {
+fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags: &mut Vec<Diag>) {
+    let (top, effects, entry, bindings) = (inputs.top, inputs.effects, inputs.entry, inputs.bindings);
     // Rule 1 counts the entry row's witness (F.40 phase 3, E0): the
     // seed's own `main locus` declarations, module-nested ones
     // included (GH #825: a count that skips half the declarations is
@@ -4622,8 +4630,10 @@ fn check_main_and_bindings<'e>(
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    check_api_binding(&programs_vec, entry.root().and_then(|m| m.decl(bundle)), diags);
-    check_api_roles(&programs_vec, &top.topics, bindings, diags);
+    if let Some(surface) = inputs.api_surface {
+        check_api_binding(surface, diags);
+    }
+    diags.extend(crate::roles::role_laws(inputs.roles, inputs.bus, &top.topics, bindings));
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -4641,13 +4651,10 @@ fn check_main_and_bindings<'e>(
 
 /// GH #1106: the `api:` entry. The knobs the entry must carry, the
 /// one-replier rule, and what the api leaves out. The surface is the
-/// one `api_gen` emitted from, so a warning here names exactly what
-/// the binding will not serve. `root` is the entry row's lowering root,
-/// the `main locus` the binding was generated into.
-fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mut Vec<Diag>) {
-    let Some(surface) = hale_syntax::api_gen::api_surface(programs, root) else {
-        return;
-    };
+/// one `api_gen` emitted from (`CheckInputs::api_surface`: the
+/// snapshot's, the desugar sequence's), so a warning here names exactly
+/// what the binding will not serve.
+fn check_api_binding(surface: &hale_syntax::api_gen::ApiSurface, diags: &mut Vec<Diag>) {
     let b = &surface.binding;
     if b.bound.is_none() || b.on_full.is_none() {
         diags.push(Diag::ty(
@@ -4713,19 +4720,6 @@ fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mu
     }
 }
 
-/// GH #1109: the role vocabulary and the `@gated(role:)` sites.
-///
-/// Roles are declared vocabulary like `group` and `effect`: a name
-/// nothing declares is an error, bundle-wide, with `owner` the one
-/// role that needs no declaration (a program declares it only to
-/// give it `includes`). `includes` is grant-only and union-only, so a
-/// cycle says nothing and is refused. A gate goes on a subscribed
-/// handler, an `expose` member or a `publish`, and every subscriber
-/// (or publisher) of one topic states the same gate, because the
-/// binding refuses the message, not the handler. A gated handler's
-/// topic cannot also be bound to a transport in `bindings { }`: that
-/// transport has no gate, so the annotation would promise a check
-/// that does not run.
 /// GH #1141: a struct, a locus's `params`, a `contract` and an
 /// `interface` declare each name once. A second declaration of one
 /// name used to pass silently — one of the two won the slot, and the
@@ -4824,408 +4818,6 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
             }
             _ => {}
         });
-    }
-}
-
-fn check_api_roles(
-    programs: &[&Program],
-    topics: &crate::topic_identity::TopicRows,
-    bindings: &crate::binding_rows::BindingRows,
-    diags: &mut Vec<Diag>,
-) {
-    use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let mut decls: BTreeMap<String, (Vec<Ident>, Span)> = BTreeMap::new();
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Role(r) = item {
-                if let Some((_, first)) = decls.get(&r.name.name) {
-                    diags.push(
-                        Diag::ty(
-                            r.name.span,
-                            format!(
-                                "role `{}` is declared twice; a role is one name the \
-                                 deployment maps, so declare it once and `includes` it \
-                                 where a wider role should hold it",
-                                r.name.name
-                            ),
-                        )
-                        .with_related(*first, "the first declaration"),
-                    );
-                } else {
-                    decls.insert(r.name.name.clone(), (r.includes.clone(), r.name.span));
-                }
-            }
-        });
-    }
-    let declared = |n: &str| n == "owner" || decls.contains_key(n);
-    let undeclared = |n: &Ident, at: &str| {
-        Diag::ty(
-            n.span,
-            format!(
-                "{} names role `{}`, which nothing declares — roles are declared \
-                 vocabulary: `role {};` at top level (only `owner` needs no declaration)",
-                at, n.name, n.name
-            ),
-        )
-    };
-    for (name, (incs, span)) in &decls {
-        for inc in incs {
-            if !declared(&inc.name) {
-                diags.push(undeclared(inc, &format!("`role {} includes …`", name)));
-            }
-        }
-        // A cycle: `name` reachable from its own includes.
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut stack: Vec<String> = incs.iter().map(|i| i.name.clone()).collect();
-        while let Some(cur) = stack.pop() {
-            if cur == *name {
-                diags.push(Diag::ty(
-                    *span,
-                    format!(
-                        "role `{}` includes itself through its `includes` chain; \
-                         composition is grant-only and union-only, so a cycle says nothing",
-                        name
-                    ),
-                ));
-                break;
-            }
-            if !seen.insert(cur.clone()) {
-                continue;
-            }
-            if let Some((more, _)) = decls.get(&cur) {
-                stack.extend(more.iter().map(|i| i.name.clone()));
-            }
-        }
-    }
-
-    // Topics bound to a transport in `bindings { }` have no gate; the
-    // api entry's own source, and the main locus's params (a source
-    // may be `self.<param>`).
-    let bound: BTreeSet<String> = bindings.bound_names();
-    let mut api_roles: Option<ApiRoles> = None;
-    let mut api_span: Option<Span> = None;
-    let mut main_params: Vec<(String, TypeExpr)> = Vec::new();
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                for m in &l.members {
-                    if let LocusMember::Bindings(bb) = m {
-                        if let Some(api) = &bb.api {
-                            api_span = Some(api.span);
-                            if let Some(r) = &api.roles {
-                                api_roles = Some(r.clone());
-                            }
-                            for pm in &l.members {
-                                if let LocusMember::Params(pb) = pm {
-                                    for prm in &pb.params {
-                                        if let Some(t) = &prm.ty {
-                                            main_params.push((prm.name.name.clone(), t.clone()));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    // Review F3: a gate on a free fn is an error — nothing there is
-    // reached from the binding — and its role is checked all the same.
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Fn(f) = item {
-                if let Some(g) = &f.gated {
-                    diags.push(Diag::ty(
-                        g.span,
-                        format!(
-                            "`@gated(role: {})` on the free fn `{}`: a gate goes on a subscribed \
-                             handler, an `expose` member or a `publish` — it is checked at the api \
-                             binding, and a free fn is never reached from there",
-                            g.name, f.name.name
-                        ),
-                    ));
-                    if !declared(&g.name) {
-                        diags.push(undeclared(g, &format!("`@gated` on `{}`", f.name.name)));
-                    }
-                }
-            }
-        });
-    }
-
-    // A topic reference joins on its row's wire subject (spec/model.md
-    // rule 8), and is named as written.
-    let topic_key = |name: &str| -> String {
-        topics.named(name).map_or_else(|| name.to_string(), |t| t.wire.clone())
-    };
-    let bound: BTreeSet<String> = bound.iter().map(|n| topic_key(n)).collect();
-    // The sites, and the gate each topic's subscribers and publishers
-    // state: wire subject → (the topic as written, [(site, role, span)]).
-    type Gates = BTreeMap<String, (String, Vec<(String, Option<String>, Span)>)>;
-    let mut sub_gates: Gates = BTreeMap::new();
-    let mut pub_gates: Gates = BTreeMap::new();
-    let mut loci: BTreeMap<String, &hale_syntax::ast::LocusDecl> = BTreeMap::new();
-    for p in programs {
-        walk_decls(&p.items, &mut |item| {
-            let TopDecl::Locus(l) = item else { return };
-            if l.name.name.starts_with("__Api") {
-                return;
-            }
-            loci.insert(l.name.name.clone(), l);
-            // An imported locus is not reached from the binding, so its
-            // gates (or their absence) say nothing about the entrypoint's.
-            if l.imported {
-                return;
-            }
-            // Every subscription, by handler: one handler may subscribe
-            // several topics (review F5), and each is a site.
-            // (handler, (wire key, topic as written)).
-            let mut subscribed: Vec<(&str, Option<(String, String)>)> = Vec::new();
-            for m in &l.members {
-                let LocusMember::Bus(bb) = m else { continue };
-                for bm in &bb.members {
-                    match bm {
-                        BusMember::Subscribe { subject, handler, .. } => {
-                            let topic = match subject {
-                                BusSubject::Topic(id) => Some((topic_key(&id.name), id.name.clone())),
-                                _ => None,
-                            };
-                            subscribed.push((handler.name.as_str(), topic));
-                        }
-                        BusMember::Publish { subject, gated, span, .. } => {
-                            if let Some(g) = gated {
-                                if !declared(&g.name) {
-                                    diags.push(undeclared(g, &format!("`@gated` on `{}`'s publish", l.name.name)));
-                                }
-                            }
-                            if let BusSubject::Topic(id) = subject {
-                                let entry = pub_gates
-                                    .entry(topic_key(&id.name))
-                                    .or_insert_with(|| (id.name.clone(), Vec::new()));
-                                entry.1.push((
-                                    format!("{} publishes it", l.name.name),
-                                    gated.as_ref().map(|g| g.name.clone()),
-                                    *span,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            for m in &l.members {
-                match m {
-                    LocusMember::Fn(f) => {
-                        let Some(g) = &f.gated else { continue };
-                        if !declared(&g.name) {
-                            diags.push(undeclared(g, &format!("`@gated` on `{}.{}`", l.name.name, f.name.name)));
-                        }
-                        let mine: Vec<&Option<(String, String)>> = subscribed
-                            .iter()
-                            .filter(|(h, _)| *h == f.name.name.as_str())
-                            .map(|(_, t)| t)
-                            .collect();
-                        if mine.is_empty() {
-                            diags.push(Diag::ty(
-                                g.span,
-                                format!(
-                                    "`@gated(role: {})` on `{}.{}`, which no `subscribe` line of \
-                                     `{}` names: a gate goes on a subscribed handler, an `expose` \
-                                     member or a `publish` — it is checked at the binding, and a \
-                                     plain method is never reached from there",
-                                    g.name, l.name.name, f.name.name, l.name.name
-                                ),
-                            ));
-                        }
-                        for (key, topic) in mine.into_iter().flatten() {
-                            if bound.contains(key) {
-                                diags.push(Diag::ty(
-                                    g.span,
-                                    format!(
-                                        "`@gated(role: {})` on `{}.{}`, but its topic `{}` is \
-                                         bound to a transport in `bindings {{ }}` that has no \
-                                         gate: a message from another process would reach the \
-                                         handler unchecked. Reach the topic through the api \
-                                         binding, or drop the annotation",
-                                        g.name, l.name.name, f.name.name, topic
-                                    ),
-                                ));
-                            }
-                            let entry = sub_gates
-                                .entry(key.clone())
-                                .or_insert_with(|| (topic.clone(), Vec::new()));
-                            entry.1.push((
-                                format!("{}.{}", l.name.name, f.name.name),
-                                Some(g.name.clone()),
-                                g.span,
-                            ));
-                        }
-                    }
-                    LocusMember::Contract(cb) => {
-                        let ContractKind::Members(members) = &cb.kind else { continue };
-                        for cm in members {
-                            let Some(g) = &cm.gated else { continue };
-                            if cm.direction != ContractDirection::Expose {
-                                continue;
-                            }
-                            if !declared(&g.name) {
-                                diags.push(undeclared(g, &format!("`@gated` on an `expose` of `{}`", l.name.name)));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // Ungated subscribers count too: every subscriber of a
-            // topic must agree.
-            for (h, topic) in &subscribed {
-                let Some((key, t)) = topic else { continue };
-                let gated = l.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == *h && f.gated.is_some()));
-                if !gated {
-                    let span = l
-                        .members
-                        .iter()
-                        .find_map(|m| match m {
-                            LocusMember::Fn(f) if f.name.name == *h => Some(f.name.span),
-                            _ => None,
-                        })
-                        .unwrap_or(l.name.span);
-                    let entry = sub_gates.entry(key.clone()).or_insert_with(|| (t.clone(), Vec::new()));
-                    entry.1.push((format!("{}.{}", l.name.name, h), None, span));
-                }
-            }
-        });
-    }
-    for (kind, gates) in [("subscribes", &sub_gates), ("publishes", &pub_gates)] {
-        // Reported in the order of the topics' written names.
-        let mut groups: Vec<&(String, Vec<(String, Option<String>, Span)>)> = gates.values().collect();
-        groups.sort_by(|a, b| a.0.cmp(&b.0));
-        for (topic, sites) in groups {
-            let distinct: BTreeSet<Option<String>> = sites.iter().map(|(_, r, _)| r.clone()).collect();
-            if distinct.len() < 2 {
-                continue;
-            }
-            let listed: Vec<String> = sites
-                .iter()
-                .map(|(site, r, _)| match r {
-                    Some(r) => format!("{} gated `{}`", site, r),
-                    None => format!("{} ungated", site),
-                })
-                .collect();
-            let (_, _, span) = sites.iter().find(|(_, r, _)| r.is_some()).unwrap_or(&sites[0]);
-            diags.push(Diag::ty(
-                *span,
-                format!(
-                    "topic `{}`: {} — every locus that {} one topic states the same gate, \
-                     because the binding refuses the message, not the handler",
-                    topic,
-                    listed.join(", "),
-                    kind
-                ),
-            ));
-        }
-    }
-
-    // A program-named source is a locus satisfying std::api::RoleSource
-    // (review F6): a locus literal or `self.<param>` of the main locus
-    // is checked structurally here, with the fn's span; any other
-    // expression is typed against the interface at the generated init.
-    let Some(src) = api_roles else { return };
-    let named = |path: &hale_syntax::ast::QualifiedName| -> String {
-        path.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::")
-    };
-    let locus_name: Option<String> = match &src.expr {
-        Expr::Struct { path, .. } => Some(named(path)),
-        Expr::Field { receiver, name, .. } if matches!(**receiver, Expr::KwSelf(_)) => main_params
-            .iter()
-            .find(|(n, _)| *n == name.name)
-            .and_then(|(_, t)| match t {
-                TypeExpr::Named { path, .. } => Some(named(path)),
-                _ => None,
-            }),
-        _ => None,
-    };
-    let Some(locus_name) = locus_name else { return };
-    if locus_name.starts_with("__Std") || locus_name.starts_with("std::") {
-        return;
-    }
-    // A qualified path (`lib::TableRoles`) is renamed to the imported
-    // locus's mangled name only on the build path; here the generated
-    // init is typed against the interface, which is check enough.
-    if locus_name.contains("::") && !loci.contains_key(&locus_name) {
-        return;
-    }
-    let entry = api_span.unwrap_or(src.span);
-    let Some(l) = loci.get(&locus_name) else {
-        diags.push(Diag::ty(
-            src.span,
-            format!(
-                "api binding: `roles:` names `{}`, which is no locus of this bundle; a role \
-                 source is a locus with `fn holds(p: std::api::Principal, r: String) -> Bool` \
-                 (std::api::RoleSource)",
-                locus_name
-            ),
-        ));
-        return;
-    };
-    let holds = l.members.iter().find_map(|m| match m {
-        LocusMember::Fn(f) if f.name.name == "holds" => Some(f),
-        _ => None,
-    });
-    let Some(f) = holds else {
-        diags.push(Diag::ty(
-            src.span,
-            format!(
-                "api binding: `roles:` names `{}`, which has no `fn holds`: a role source \
-                 answers `fn holds(p: std::api::Principal, r: String) -> Bool` \
-                 (std::api::RoleSource) — whether the principal holds the role directly; \
-                 the binding walks `includes` itself",
-                locus_name
-            ),
-        ));
-        return;
-    };
-    let is_principal = |t: &TypeExpr| match t {
-        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
-            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-            segs == ["std", "api", "Principal"] || segs == ["__StdApiPrincipal"]
-        }
-        _ => false,
-    };
-    let mut why: Vec<String> = Vec::new();
-    if f.params.len() != 2 {
-        why.push(format!("takes {} parameter(s), not 2", f.params.len()));
-    } else {
-        if !is_principal(&f.params[0].ty) {
-            why.push(format!("its first parameter is not a `std::api::Principal`"));
-        }
-        if !matches!(&f.params[1].ty, TypeExpr::Primitive(PrimType::String, _)) {
-            why.push(format!("its second parameter is not a `String`"));
-        }
-    }
-    if !matches!(&f.ret, Some(TypeExpr::Primitive(PrimType::Bool, _))) {
-        why.push("it does not return `Bool`".to_string());
-    }
-    if f.fallible.is_some() {
-        why.push("it is fallible".to_string());
-    }
-    if !why.is_empty() {
-        diags.push(
-            Diag::ty(
-                f.name.span,
-                format!(
-                    "`{}.holds` does not satisfy std::api::RoleSource: {} — a role source \
-                     answers `fn holds(p: std::api::Principal, r: String) -> Bool`, not \
-                     fallible, whether the principal holds the role directly (the binding \
-                     walks `includes` itself)",
-                    locus_name,
-                    why.join("; ")
-                ),
-            )
-            .with_related(entry, "the api entry that names it"),
-        );
     }
 }
 

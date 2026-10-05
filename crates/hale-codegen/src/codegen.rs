@@ -23,6 +23,7 @@ use hale_types::capability::{Capability, Obligation, Transport};
 use hale_types::handler_routing::RetryBound;
 use hale_types::lifecycle::{ObligationKind, Spine};
 use hale_types::resolved::LoweringView;
+use hale_types::stdlib_surface::IntrinsicId;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
 // during the codegen model-organization refactor (Round 1). Bringing
@@ -25833,10 +25834,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     // `Ty::Unknown`; codegen resolves them here.
     //
     // No general module system in Phase 1 — `std::*` is the only
-    // recognized prefix, matched against a hardcoded namespace
-    // dispatcher. Adding a function means: declare its libc backer
-    // in `declare_builtins` (Phase 1 stdlib section), add a match
-    // arm here, and implement one `lower_std_*` method.
+    // recognized prefix, dispatched from the function's row in
+    // `hale_types::stdlib_surface` (`lower_std_call`). Adding a
+    // function means: declare its libc backer in `declare_builtins`
+    // (Phase 1 stdlib section), give its row an `IntrinsicId` and the
+    // id an arm in `lower_std_intrinsic`, and implement one
+    // `lower_std_*` method.
     // ============================================================
 
     /// GH #808: remember where the program first reaches
@@ -25876,250 +25879,1269 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// Statement-position dispatcher for `std::*` paths: the
-    /// expression-position dispatcher's call with its value dropped.
-    /// It keeps only what a statement answers differently: the paths
-    /// the expression form has no arm for (Unit-only primitives, and
-    /// the assertions, which check for a recorded failure after the
-    /// call), two Hale-body arms whose expression twins refuse a body
-    /// that returns no value, and its own fallibility refusal. The
-    /// leading `"std"` segment is included in `segs` for symmetry with
-    /// the expression-position dispatcher.
+    /// A `std::*` call at statement position: [`Cx::lower_std_call`],
+    /// its value dropped.
     fn lower_stdlib_path_call(
         &mut self,
         segs: &[&str],
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
-        match segs {
-            // GH #244: SPSC observation-ring primitives
-            // (statement position; emit/init/note_drop/set_tag).
-            ["std", "ring", "__spsc_init"] => {
-                let _ = self.lower_std_ring_op(
-                    "lotus_spsc_init", 4, args, scope)?;
-                Ok(())
+        self.lower_std_call(segs, args, scope, StdCallPos::Statement).map(|_| ())
+    }
+
+    /// A `std::*` call at value position: [`Cx::lower_std_call`].
+    fn lower_stdlib_path_call_expr(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_std_call(segs, args, scope, StdCallPos::Value)
+            .map(|v| v.expect("a value position lowers to a value or an error"))
+    }
+
+    /// A `std::*` call at statement or value position, dispatched from
+    /// its row (`hale_types::stdlib_surface::row`): an intrinsic's id
+    /// picks its arm, a Hale body is called by the name the row gives,
+    /// and a path with neither answers as [`Cx::lower_std_unarmed`]
+    /// does. A statement drops the value: `None` is a statement that
+    /// produced none. The `or` position is
+    /// `try_lower_fallible_stdlib_path_call`'s.
+    fn lower_std_call(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        pos: StdCallPos,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        use hale_types::stdlib_surface::Lower;
+        match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
+            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic(id, segs, args, scope, pos),
+            Some(Lower::HaleBody(body)) => self.lower_std_hale_body(body, segs, args, scope, pos),
+            Some(Lower::Renamed) | Some(Lower::Unlowered) | None => {
+                self.lower_std_unarmed(segs, args, scope, pos)
             }
-            ["std", "ring", "__spsc_emit"] => {
-                let _ = self.lower_std_ring_op(
-                    "lotus_spsc_emit", 5, args, scope)?;
-                Ok(())
+        }
+    }
+
+    /// A stdlib call no arm lowers at `pos`: the Hale body
+    /// `hale_stdlib::PATH_RENAMES` names for the path, which must
+    /// return a value (`std::io::file::at_eof(f)` and the other
+    /// user-facing wrappers in `../../hale-stdlib/hl/file.hl`), or "not
+    /// implemented" in the position's words.
+    fn lower_std_unarmed(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        pos: StdCallPos,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        if let Some(mangled) = self.mangled_for_path(segs) {
+            if self.user_fns.contains_key(&mangled) {
+                let result = self.lower_user_fn_call(&mangled, args, scope)?;
+                return result.map(Some).ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "stdlib path `{}` returns no value but is \
+                         used in expression position",
+                        segs.join("::")
+                    ))
+                });
             }
-            ["std", "ring", "__spsc_note_drop"] => {
-                let _ = self.lower_std_ring_op(
-                    "lotus_spsc_note_drop", 1, args, scope)?;
-                Ok(())
+        }
+        Err(CodegenError::Unsupported(match pos {
+            StdCallPos::Statement => {
+                format!("stdlib path `{}` — not implemented", segs.join("::"))
             }
-            ["std", "ring", "__spsc_set_tag_b"] => {
-                let _ = self.lower_std_ring_op(
-                    "lotus_spsc_set_tag_b", 2, args, scope)?;
-                Ok(())
+            StdCallPos::Value => format!(
+                "stdlib path `{}` in expression position — not implemented",
+                segs.join("::")
+            ),
+        }))
+    }
+
+    /// A stdlib function whose row is a Hale body of the stdlib seeds,
+    /// called by the name the row gives (`HaleBody("__md_to_html")`).
+    /// A value position needs a value back. A statement drops it, and
+    /// the bodies a statement calls for their effect answer at a value
+    /// position as a path no arm lowers.
+    fn lower_std_hale_body(
+        &mut self,
+        body: &str,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        pos: StdCallPos,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        // The bodies a statement calls itself, dropping whatever comes
+        // back: `std::http::parse_request` and `std::text::md_to_html`
+        // (whose value position also refuses a body that returns
+        // none), and the five that return no value, below.
+        const STATEMENT_BODIES: &[&str] = &[
+            "__parse_http_request",
+            "__md_to_html",
+            "__write_http_response",
+            "__std_process_adopt",
+            "__test_assert",
+            "__test_assert_eq_int",
+            "__test_assert_eq_str",
+        ];
+        // The bodies that return no value (m85's response writer,
+        // GH #716's `adopt`, m87's assertions): a value position has no
+        // arm for them.
+        const NO_VALUE_BODIES: &[&str] = &[
+            "__write_http_response",
+            "__std_process_adopt",
+            "__test_assert",
+            "__test_assert_eq_int",
+            "__test_assert_eq_str",
+        ];
+        // m87: each `std::test` assertion prints a diagnostic and records
+        // the failure (GH #717 — it used to exit(1) from inside), no-op
+        // on success. Users write tests as ordinary Hale binaries that
+        // exit 0 on pass; the `emit_test_assert_failure_check` call
+        // after each one is what turns a recorded failure into a
+        // non-zero exit, through main's teardown where there is one.
+        const ASSERTION_BODIES: &[&str] =
+            &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"];
+        match pos {
+            StdCallPos::Statement if STATEMENT_BODIES.contains(&body) => {
+                let _ = self.lower_user_fn_call(body, args, scope)?;
+                if ASSERTION_BODIES.contains(&body) {
+                    self.emit_test_assert_failure_check()?;
+                }
+                Ok(None)
+            }
+            StdCallPos::Value if NO_VALUE_BODIES.contains(&body) => {
+                self.lower_std_unarmed(segs, args, scope, pos)
+            }
+            StdCallPos::Statement | StdCallPos::Value => {
+                let result = self.lower_user_fn_call(body, args, scope)?;
+                result.map(Some).ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "stdlib path `{}` returns no value but is \
+                         used in expression position",
+                        segs.join("::")
+                    ))
+                })
+            }
+        }
+    }
+
+    /// A natively lowered stdlib function, by its id. Exhaustive: an id
+    /// without an arm does not compile. An arm whose two positions
+    /// answer differently matches on `pos`; every other arm is the value
+    /// position's, its value dropped by a statement.
+    fn lower_std_intrinsic(
+        &mut self,
+        id: IntrinsicId,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        pos: StdCallPos,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        use IntrinsicId as Id;
+        let value = match id {
+            // #353: regex. Linear-time NFA, so a match is bounded by
+            // construction and usable under `@budget` / `@hot`.
+            Id::RegexMatches => self.lower_std_str_predicate(
+                "lotus_regex_matches",
+                "matches",
+                args,
+                scope,
+            ),
+            Id::RegexValid => {
+                let (v, ty) = self.lower_expr(&args[0], scope)?;
+                let v = self.unpack_view_if_needed(v, &ty)?;
+                let f = self
+                    .module
+                    .get_function("lotus_regex_valid")
+                    .expect("lotus_regex_valid declared");
+                let r = self
+                    .builder
+                    .build_call(f, &[v.into()], "re.valid.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i32");
+                let b = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        r.into_int_value(),
+                        self.context.i32_type().const_zero(),
+                        "re.valid.bool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((b.into(), CodegenTy::Bool))
+            }
+            Id::RegexFind => {
+                self.lower_str_cp_call2("lotus_regex_find", args, scope)
+            }
+            Id::BusLocalDispatchRaw => {
+                self.lower_std_bus_local_dispatch(args, scope)
+            }
+            // GH #233: __StdBusUnix*Transport lifecycle primitives
+            // (realize is assigned to self.handle in birth();
+            // spawn_server's status is checked there too; reclaim and
+            // binding_fail are statements).
+            Id::BusTransportRealizeRaw => {
+                self.lower_std_bus_transport_realize(args, scope)
+            }
+            Id::BusTransportSpawnServerRaw => {
+                self.lower_std_bus_transport_handle_op(
+                    "lotus_bus_transport_spawn_server", args, scope)
+            }
+            Id::BusTransportReclaimRaw => match pos {
+                StdCallPos::Statement => {
+                    let _ = self.lower_std_bus_transport_handle_op(
+                        "lotus_bus_transport_reclaim", args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::BusBindingFailRaw => match pos {
+                StdCallPos::Statement => {
+                    let _ = self.lower_std_bus_binding_fail(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            // GH #244: SPSC observation-ring primitives. The read returns
+            // the record count; emit/init/note_drop/set_tag are
+            // statements.
+            Id::RingSpscReadRaw => {
+                self.lower_std_ring_op("lotus_spsc_read", 7, args, scope)
+            }
+            Id::RingSpscInitRaw => match pos {
+                StdCallPos::Statement => {
+                    let _ = self.lower_std_ring_op(
+                        "lotus_spsc_init", 4, args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::RingSpscEmitRaw => match pos {
+                StdCallPos::Statement => {
+                    let _ = self.lower_std_ring_op(
+                        "lotus_spsc_emit", 5, args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::RingSpscNoteDropRaw => match pos {
+                StdCallPos::Statement => {
+                    let _ = self.lower_std_ring_op(
+                        "lotus_spsc_note_drop", 1, args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::RingSpscSetTagBRaw => match pos {
+                StdCallPos::Statement => {
+                    let _ = self.lower_std_ring_op(
+                        "lotus_spsc_set_tag_b", 2, args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            // GH #230: std::test pass-counter read.
+            Id::TestPassesRaw => {
+                let f = self
+                    .module
+                    .get_function("lotus_test_passes")
+                    .expect("lotus_test_passes declared");
+                let v = self
+                    .builder
+                    .build_call(f, &[], "test.passes")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Int))
+            }
+            // GH #717: std::test recorded-failure latch read (0 = no
+            // failure recorded yet).
+            Id::TestFailedRaw => {
+                let f = self
+                    .module
+                    .get_function("lotus_test_failed")
+                    .expect("lotus_test_failed declared");
+                let v = self
+                    .builder
+                    .build_call(f, &[], "test.failed")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Int))
             }
             // GH #230: std::test pass-counter bump (statement).
-            ["std", "test", "__note_pass"] => {
-                let f = self
-                    .module
-                    .get_function("lotus_test_note_pass")
-                    .expect("lotus_test_note_pass declared");
-                self.builder
-                    .build_call(f, &[], "test.note_pass")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok(())
-            }
+            Id::TestNotePassRaw => match pos {
+                StdCallPos::Statement => {
+                    let f = self
+                        .module
+                        .get_function("lotus_test_note_pass")
+                        .expect("lotus_test_note_pass declared");
+                    self.builder
+                        .build_call(f, &[], "test.note_pass")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
             // GH #717: std::test recorded-failure latch (statement).
-            ["std", "test", "__note_fail"] => {
+            Id::TestNoteFailRaw => match pos {
+                StdCallPos::Statement => {
+                    let f = self
+                        .module
+                        .get_function("lotus_test_note_fail")
+                        .expect("lotus_test_note_fail declared");
+                    self.builder
+                        .build_call(f, &[], "test.note_fail")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::DecimalToFloat => self.lower_std_decimal_to_float(args, scope),
+            Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
+            // 2026-06-13 — test-time gate counters (#7): read-only
+            // views over the runtime's heap-alloc / I/O-syscall
+            // counts for steady-state "did N allocs / syscalls"
+            // assertions.
+            Id::DiagHeapAllocCount => {
+                self.lower_std_diag_heap_alloc_count(args)
+            }
+            Id::DiagSyscallCount => {
+                self.lower_std_diag_syscall_count(args, scope)
+            }
+            Id::EnvArgsCount => self.lower_std_env_args_count(args),
+            Id::EnvArg => self.lower_std_env_arg(args, scope),
+            Id::EnvArgOr => self.lower_std_env_arg_or(args, scope),
+            Id::EnvVar => self.lower_std_env_var(args, scope),
+            Id::EnvVarExists => {
+                self.lower_std_env_var_exists(args, scope)
+            }
+            // Per-receiver header lookup. ws-echo added the
+            // Request-side surface; C11 (pond follow-up) extended
+            // it to Responses so server code can read back the
+            // headers it attached via `Response.headers` and so
+            // pond/http/client can lift its private `__find_header`
+            // walker into the stdlib. Dispatch forks on the type
+            // of the first argument: a Request receiver routes to
+            // `__http_request_header`; a Response receiver routes
+            // to `__http_response_header`. Both Hale fns are
+            // thin wrappers over the shared `__http_find_header_in_block`
+            // walker. We peek the type by lowering args[0] once;
+            // `lower_user_fn_call` will lower it again to build
+            // the actual call. For the typical Ident receiver
+            // (`std::http::header(r, name)`), the duplicate
+            // lowering is just an extra load — semantically
+            // equivalent.
+            Id::HttpHeader => {
+                if args.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "std::http::header expects 2 args (receiver, name); got 0".to_string(),
+                    ));
+                }
+                let (_, recv_ty) = self.lower_expr(&args[0], scope)?;
+                let callee = match &recv_ty {
+                    CodegenTy::TypeRef(n) if n == "__StdHttpRequest" => {
+                        "__http_request_header"
+                    }
+                    CodegenTy::TypeRef(n) if n == "__StdHttpResponse" => {
+                        "__http_response_header"
+                    }
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "std::http::header receiver must be Request or \
+                             Response; got {:?}",
+                            other
+                        )));
+                    }
+                };
+                let result = self.lower_user_fn_call(callee, args, scope)?;
+                result.ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "std::http::header returns String but called \
+                         in a position that expects no value"
+                            .to_string(),
+                    )
+                })
+            }
+            Id::JsonNextStructOrQuote => {
+                self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
+            }
+            Id::JsonNextQuoteOrBs => {
+                self.lower_json_scan("lotus_json_next_quote_or_bs", args, scope)
+            }
+            Id::JsonNextNonWs => {
+                self.lower_json_scan("lotus_json_next_non_ws", args, scope)
+            }
+            // #5 follow-on: in-band record-header field getters — the
+            // decoded seq / kernel timestamp of the most recent
+            // foreign-ring record dispatched on this thread (errno-style,
+            // read immediately in the subscribe handler).
+            Id::ShmLastRecordSeq
+            | Id::ShmLastRecordKernelNs
+            | Id::ShmLastRecordUserNs => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{}: takes 0 args, got {}", segs.join("::"), args.len()
+                    )));
+                }
+                let c_fn = format!("lotus_shm_{}", segs[2]);
                 let f = self
                     .module
-                    .get_function("lotus_test_note_fail")
-                    .expect("lotus_test_note_fail declared");
-                self.builder
-                    .build_call(f, &[], "test.note_fail")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok(())
+                    .get_function(&c_fn)
+                    .expect("lotus_shm_last_record_* declared");
+                let v = self
+                    .builder
+                    .build_call(f, &[], "shm.last_record.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Int))
             }
-            // GH #233: __StdBusUnix*Transport lifecycle primitives.
-            ["std", "bus", "__transport_reclaim"] => {
-                let _ = self.lower_std_bus_transport_handle_op(
-                    "lotus_bus_transport_reclaim", args, scope)?;
-                Ok(())
+            Id::RandNextInt => {
+                self.lower_std_rand_next_int(args, scope)
             }
-            ["std", "bus", "__binding_fail"] => {
-                let _ = self.lower_std_bus_binding_fail(args, scope)?;
-                Ok(())
+            Id::RandSeedFromTime => match pos {
+                StdCallPos::Statement => {
+                    self.lower_std_rand_seed_from_time(args)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::TermIsTty => self.lower_std_term_is_tty(args, scope),
+            Id::TermRawEnableRaw => {
+                self.lower_std_term_raw_toggle(args, "lotus_term_raw_enable")
             }
-            ["std", "rand", "seed_from_time"] => {
-                self.lower_std_rand_seed_from_time(args)?;
-                Ok(())
+            Id::TermRawDisableRaw => {
+                self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")
             }
-            // m84: parse_request also reachable in statement
-            // position (rare — usually you keep the result), but
-            // wire it for completeness so `std::http::parse_request(raw);`
-            // doesn't error. Not the expression arm's call: that one
-            // also refuses a body that returns no value; this drops
-            // whatever comes back.
-            ["std", "http", "parse_request"] => {
-                let _ = self.lower_user_fn_call(
-                    "__parse_http_request",
-                    args,
-                    scope,
-                )?;
-                Ok(())
+            Id::TermSizePackedRaw => self.lower_std_term_size_packed(args),
+            // 2026-05-16: std::text byte-class predicates. Each
+            // takes a byte value (Int) and returns Bool. Inline
+            // range checks — no libc dependency, no C primitive,
+            // pure LLVM IR. Address the friction the wordfreq
+            // corpus surfaced: every program reinvents the same
+            // 4-line is_word_char fn.
+            Id::TextIsAlpha => {
+                self.lower_std_text_byte_pred("is_alpha", args, scope)
             }
-            // m85: void-returning response writer. Routes to the
-            // bare-name stdlib fn `__write_http_response`.
-            ["std", "http", "write_response"] => {
-                let _ = self.lower_user_fn_call(
-                    "__write_http_response",
-                    args,
-                    scope,
-                )?;
-                Ok(())
+            Id::TextIsDigit => {
+                self.lower_std_text_byte_pred("is_digit", args, scope)
             }
-            // m87: std::test::* assertion primitives. Each is a
-            // void-returning stdlib fn that prints a diagnostic and
-            // records the failure (GH #717 — it used to exit(1) from
-            // inside), no-op on success. Users write tests as
-            // ordinary Hale binaries that exit 0 on pass; the
-            // `emit_test_assert_failure_check` call after each one is
-            // what turns a recorded failure into a non-zero exit,
-            // through main's teardown where there is one.
-            // m91: markdown → HTML (statement position rare, but
-            // wired for completeness). The expression-position arm
-            // is the canonical use; it also refuses a body that
-            // returns no value, where this drops whatever comes back.
-            ["std", "text", "md_to_html"] => {
-                let _ = self.lower_user_fn_call(
-                    "__md_to_html",
-                    args,
-                    scope,
-                )?;
-                Ok(())
+            Id::TextIsAlnum => {
+                self.lower_std_text_byte_pred("is_alnum", args, scope)
             }
-            ["std", "test", "assert"] => {
-                let _ = self.lower_user_fn_call(
-                    "__test_assert",
-                    args,
-                    scope,
-                )?;
-                self.emit_test_assert_failure_check()
+            Id::TextIsWhitespace => {
+                self.lower_std_text_byte_pred("is_whitespace", args, scope)
             }
-            ["std", "test", "assert_eq_int"] => {
-                let _ = self.lower_user_fn_call(
-                    "__test_assert_eq_int",
-                    args,
-                    scope,
-                )?;
-                self.emit_test_assert_failure_check()
-            }
-            ["std", "test", "assert_eq_str"] => {
-                let _ = self.lower_user_fn_call(
-                    "__test_assert_eq_str",
-                    args,
-                    scope,
-                )?;
-                self.emit_test_assert_failure_check()
-            }
-            // m79: std::time::* aliases. The legacy `time::*`
-            // dispatcher above still works; these route to the
-            // same lower_time_* implementations under the
-            // canonical `std::*` namespace.
-            ["std", "time", "sleep"] => self.lower_time_sleep(args, scope),
-            // m79: std::process::exit. Calls libc exit() with the
-            // user-supplied code, then emits unreachable + a fresh
-            // basic block so subsequent statements (dead but
-            // syntactically permitted) have somewhere to lower
-            // into.
-            ["std", "process", "exit"] => {
-                self.lower_std_process_exit(args, scope)
-            }
-            // GH #716: std::process::adopt(dest, src) — move a
-            // spawned Child's pid + pipe fds into a Child the caller
-            // already owns (typically its own `params` field) and
-            // disarm the source, so exactly one handle owns the
-            // process. Non-fallible Unit, so statement position is
-            // the only position it has; the Hale-source body is
-            // `__std_process_adopt` in `hl/process.hl`.
-            ["std", "process", "adopt"] => {
-                let _ = self.lower_user_fn_call(
-                    "__std_process_adopt",
-                    args,
-                    scope,
-                )?;
-                Ok(())
+            Id::TextIsWordChar => {
+                self.lower_std_text_byte_pred("is_word_char", args, scope)
             }
             // 2026-05-16: word-tokenize into a caller-supplied
             // @form(vec) of String. Replaces the ~30-line byte-
             // walk loop every wordfreq agent reinvented. Returns
             // Unit; the target vec is the output channel.
-            ["std", "text", "tokenize_words_into"] => {
-                self.lower_std_text_tokenize_words_into(args, scope)
+            Id::TextTokenizeWordsInto => match pos {
+                StdCallPos::Statement => {
+                    self.lower_std_text_tokenize_words_into(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::TextBase64Encode => {
+                self.lower_std_text_base64_encode(args, scope)
             }
-            ["std", "str", "split_into"] => {
-                self.lower_std_str_split_into(args, scope)
+            Id::TextBase64Decode => {
+                self.lower_std_text_base64_decode(args, scope)
             }
-            // C9: new fallible-only fs surfaces + C4: getrandom +
-            // C2: subprocess primitives. Same "use `or`" diagnostic
-            // shape as the parse_int family.
-            ["std", "io", "fs", "rename"]
-            | ["std", "io", "fs", "unlink"]
-            | ["std", "io", "fs", "mktemp"]
-            | ["std", "os", "getrandom"]
-            | ["std", "process", "run"]
-            | ["std", "process", "__spawn"]
-            | ["std", "process", "__wait_pid"]
-            | ["std", "process", "__try_wait_pid"]
-            | ["std", "process", "__signal_pid"]
-            | ["std", "process", "__kill_escalate"]
-            | ["std", "process", "__pipe_read"]
-            | ["std", "process", "__pipe_write"]
-            | ["std", "io", "file", "__open"]
-            | ["std", "io", "file", "__write_bytes"]
-            | ["std", "io", "file", "__seek"]
-            | ["std", "io", "udp", "__bind"]
-            | ["std", "io", "udp", "bind"]
-            | ["std", "io", "udp", "__send"]
-            | ["std", "io", "udp", "send"]
-            | ["std", "io", "udp", "__recv"]
-            | ["std", "io", "udp", "recv"]
-            | ["std", "io", "udp", "join_group"]
-            | ["std", "io", "udp", "leave_group"]
-            | ["std", "io", "udp", "set_multicast_ttl"]
-            | ["std", "io", "udp", "set_multicast_loop"]
-            | ["std", "io", "udp", "set_multicast_iface"]
-            | ["std", "io", "udp", "set_option_int"]
-            | ["std", "io", "udp", "set_option_bool"]
-            | ["std", "io", "udp", "get_option_int"]
-            | ["std", "io", "udp", "recv_with_source"]
-            | ["std", "io", "udp", "set_recv_timeout"]
-            | ["std", "io", "udp", "set_send_timeout"]
-            | ["std", "io", "tls", "set_recv_timeout"]
-            | ["std", "io", "tls", "set_send_timeout"] => {
-                Err(CodegenError::Unsupported(format!(
-                    "`{}` returns a fallible value — address the error with \
-                     `or raise`, `or <substitute>`, or `or self.handle(err)`",
-                    segs.join("::")
-                )))
+            Id::TextBase64UrlEncode => {
+                self.lower_std_text_base64_url_encode(args, scope)
             }
-            // Every other path is the expression form's call, its
-            // value dropped: its arms, its refusals, and its fallback
-            // to the Hale bodies `PATH_RENAMES` names.
-            _ => {
-                // A path no dispatcher lowers keeps the statement's
-                // wording: the expression form's last arm says "in
-                // expression position", which a statement is not. This
-                // goes when the dispatch takes its position as a
-                // parameter (S3).
-                let _ = self.lower_stdlib_path_call_expr(segs, args, scope).map_err(|e| match e {
-                    CodegenError::Unsupported(m) if m.ends_with("in expression position — not implemented") => {
-                        CodegenError::Unsupported(format!(
-                            "stdlib path `{}` — not implemented",
-                            segs.join("::")
-                        ))
-                    }
-                    e => e,
-                })?;
-                Ok(())
+            Id::StrFromBytes => {
+                self.lower_std_str_from_bytes(args, scope)
             }
-        }
+            Id::StrIndexOf => {
+                self.lower_std_str_index_of(args, scope)
+            }
+            Id::StrJoin => self.lower_std_str_join(args, scope),
+            // #353: UTF-8 code-point decoding. Byte-oriented String
+            // stays byte-oriented; these let a caller walk code points
+            // deliberately rather than pretending bytes are characters.
+            Id::StrCpCount => {
+                self.lower_str_cp_call("lotus_str_cp_count", 1, args, scope)
+            }
+            Id::StrCpAt => {
+                self.lower_str_cp_call("lotus_str_cp_at", 2, args, scope)
+            }
+            Id::StrCpSize => {
+                self.lower_str_cp_call("lotus_str_cp_size", 2, args, scope)
+            }
+            Id::StrContains => self.lower_std_str_predicate(
+                "lotus_str_contains",
+                "contains",
+                args,
+                scope,
+            ),
+            Id::StrStartsWith => self.lower_std_str_predicate(
+                "lotus_str_starts_with",
+                "starts_with",
+                args,
+                scope,
+            ),
+            Id::StrEndsWith => self.lower_std_str_predicate(
+                "lotus_str_ends_with",
+                "ends_with",
+                args,
+                scope,
+            ),
+            Id::StrRangeEq => {
+                self.lower_std_str_range_eq(args, scope)
+            }
+            Id::StrByteAtUnchecked => {
+                self.lower_std_str_byte_at_unchecked(args, scope)
+            }
+            Id::StrRangeCopy => {
+                self.lower_std_str_range_copy(args, scope)
+            }
+            Id::StrCanParseFloat => {
+                self.lower_std_str_can_parse_float(args, scope)
+            }
+            Id::StrCanParseInt => {
+                self.lower_std_str_can_parse_int(args, scope)
+            }
+            Id::StrLower => {
+                self.lower_std_str_case_fold(args, scope, "lower")
+            }
+            Id::StrUpper => {
+                self.lower_std_str_case_fold(args, scope, "upper")
+            }
+            Id::StrTrim => {
+                self.lower_std_str_case_fold(args, scope, "trim")
+            }
+            Id::StrSubstring => {
+                self.lower_std_str_substring(args, scope)
+            }
+            Id::StrReplace => {
+                self.lower_std_str_replace(args, scope)
+            }
+            Id::StrRepeat => {
+                self.lower_std_str_repeat(args, scope)
+            }
+            Id::StrPadLeft => {
+                self.lower_std_str_pad(args, scope, "pad_left")
+            }
+            Id::StrPadRight => {
+                self.lower_std_str_pad(args, scope, "pad_right")
+            }
+            Id::StrBuilderNew => {
+                self.lower_std_str_builder_new(args)
+            }
+            Id::StrBuilderAppend => {
+                self.lower_std_str_builder_append(args, scope)
+            }
+            Id::StrBuilderLen => {
+                self.lower_std_str_builder_len(args, scope)
+            }
+            Id::StrBuilderFinish => {
+                self.lower_std_str_builder_finish(args, scope)
+            }
+            Id::StrClone => {
+                self.lower_std_str_clone(args, scope)
+            }
+            Id::StrSplitInto => match pos {
+                StdCallPos::Statement => {
+                    self.lower_std_str_split_into(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::BytesFromString => {
+                self.lower_std_bytes_from_string(args, scope)
+            }
+            Id::BytesAt => {
+                self.lower_std_bytes_at(args, scope)
+            }
+            Id::BytesFindByte => {
+                self.lower_std_bytes_find_byte(args, scope)
+            }
+            Id::BytesSlice => {
+                self.lower_std_bytes_slice(args, scope)
+            }
+            Id::BytesFromInt => {
+                self.lower_std_bytes_from_int(args, scope)
+            }
+            Id::BytesConcat => {
+                self.lower_std_bytes_concat(args, scope)
+            }
+            Id::BytesIsAllocFailRaw => {
+                self.lower_std_bytes_is_alloc_fail(args, scope)
+            }
+            Id::BytesClone => {
+                self.lower_std_bytes_clone(args, scope)
+            }
+            // Internal C-primitive bridges for the BytesBuilder
+            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
+            // prefix marks these as not-for-user-code: user code
+            // constructs `std::bytes::BytesBuilder { }` and calls
+            // `.append() / .len() / .snapshot()` etc.; the locus's
+            // method bodies route through here.
+            Id::BytesBuilderXorMaskIntoRaw => {
+                self.lower_std_bytes_builder_xor_mask_into(args, scope)
+            }
+            Id::BytesBuilderNewRaw => {
+                self.lower_std_bytes_builder_new(args, scope)
+            }
+            Id::BytesBuilderAppendRaw => {
+                self.lower_std_bytes_builder_append(args, scope)
+            }
+            Id::BytesBuilderAppendStrRaw => {
+                self.lower_std_bytes_builder_append_str(args, scope)
+            }
+            Id::BytesBuilderLenRaw => {
+                self.lower_std_bytes_builder_len(args, scope)
+            }
+            Id::BytesBuilderFinishRaw => {
+                self.lower_std_bytes_builder_finish(args, scope)
+            }
+            Id::BytesBuilderShiftFrontRaw => {
+                self.lower_std_bytes_builder_shift_front(args, scope)
+            }
+            Id::BytesBuilderClearRaw => {
+                self.lower_std_bytes_builder_clear(args, scope)
+            }
+            Id::BytesBuilderSnapshotRaw => {
+                self.lower_std_bytes_builder_snapshot(args, scope)
+            }
+            Id::BytesBuilderFreeRaw => {
+                self.lower_std_bytes_builder_free(args, scope)
+            }
+            Id::BytesBuilderViewRaw => {
+                self.lower_std_bytes_builder_view(args, scope)
+            }
+            Id::BytesBuilderAppendSliceRaw => {
+                self.lower_std_bytes_builder_append_slice(args, scope)
+            }
+            Id::BytesBuilderAppendScalarRaw => {
+                self.lower_std_bytes_builder_append_scalar(args, scope)
+            }
+            Id::BytesBuilderAppendF64Raw => {
+                self.lower_std_bytes_builder_append_float(args, scope, false)
+            }
+            Id::BytesBuilderAppendF32Raw => {
+                self.lower_std_bytes_builder_append_float(args, scope, true)
+            }
+            Id::BytesBuilderAppendPadRaw => {
+                self.lower_std_bytes_builder_append_pad(args, scope)
+            }
+            Id::BytesBuilderTextViewRaw => {
+                self.lower_std_bytes_builder_text_view(args, scope)
+            }
+            // #3 MirrorRing primitives (backing the std::io::MirrorRing
+            // locus), by the primitive's name.
+            Id::IoMirrorNewRaw
+            | Id::IoMirrorFreeRaw
+            | Id::IoMirrorRecvIntoRaw
+            | Id::IoMirrorCommitRaw
+            | Id::IoMirrorConsumeRaw
+            | Id::IoMirrorReadableRaw
+            | Id::IoMirrorWritableRaw
+            | Id::IoMirrorLenRaw
+            | Id::IoMirrorCapacityRaw => {
+                self.lower_std_io_mirror(segs[3], args, scope)
+            }
+            // File primitives — `__`-prefixed only; user-facing
+            // names route via STDLIB_FN_RENAMES to file.hl wrappers.
+            Id::IoFileCloseRaw => {
+                self.lower_std_io_file_close(args, scope)
+            }
+            Id::IoFileAtEofRaw => {
+                self.lower_std_io_file_at_eof(args, scope)
+            }
+            Id::IoFileReadLineRaw => {
+                self.lower_std_io_file_read_line(args, scope)
+            }
+            Id::IoFsReadBytes => {
+                self.lower_std_io_fs_read_bytes(args, scope)
+            }
+            // Phase 2e: list_dir index API.
+            Id::IoFsListDirCount => {
+                self.lower_std_io_fs_list_dir_count(args, scope)
+            }
+            Id::IoFsListDirAt => {
+                self.lower_std_io_fs_list_dir_at(args, scope)
+            }
+            Id::IoFsReadFile => {
+                self.lower_std_io_fs_read_file(args, scope)
+            }
+            Id::IoFsWriteFile => {
+                self.lower_std_io_fs_write_file(args, scope)
+            }
+            Id::IoFsWriteFileAppend => {
+                self.lower_std_io_fs_write_file_append(args, scope)
+            }
+            Id::IoFsMkdir => {
+                self.lower_std_io_fs_mkdir(args, scope)
+            }
+            Id::IoFsFileSize => {
+                self.lower_std_io_fs_file_size(args, scope)
+            }
+            Id::IoFsFileExists => {
+                self.lower_std_io_fs_file_exists(args, scope)
+            }
+            Id::IoFsExtension => {
+                self.lower_std_io_fs_extension(args, scope)
+            }
+            Id::IoStdinReadByte => {
+                self.lower_std_io_stdin_read_byte(args, scope)
+            }
+            Id::IoStdinReadLine => {
+                self.lower_std_io_stdin_read_line(args, scope)
+            }
+            Id::IoStdinReadLineStatus => {
+                self.lower_std_io_stdin_read_line_status(args, scope)
+            }
+            Id::IoStdoutWriteBytes => {
+                self.lower_std_io_stdout_write_bytes(args, scope)
+            }
+            // GH #1108: the api binding's caller identity.
+            Id::IoUnixPeerUid => self.lower_std_io_unix_peer("uid", args, scope),
+            Id::IoUnixPeerGid => self.lower_std_io_unix_peer("gid", args, scope),
+            Id::IoUnixPeerPid => self.lower_std_io_unix_peer("pid", args, scope),
+            // GH #1109: the static role table's name spellings.
+            Id::IoUnixUserId => self.lower_std_io_unix_name_id("user_id", args, scope),
+            Id::IoUnixGroupId => self.lower_std_io_unix_name_id("group_id", args, scope),
+            Id::IoUnixPeerGroupsCount => self.lower_std_io_unix_peer("groups_count", args, scope),
+            Id::IoUnixPeerGroupAt => self.lower_std_io_unix_peer_group_at(args, scope),
+            Id::IoTcpListenSocketRaw => {
+                self.lower_std_io_tcp_listen_socket(args, scope)
+            }
+            Id::IoTcpAcceptOneRaw => {
+                self.lower_std_io_tcp_accept_one(args, scope)
+            }
+            Id::IoTcpConnectRaw => {
+                self.lower_std_io_tcp_connect(args, scope)
+            }
+            Id::IoTcpCloseFdRaw
+            | Id::IoTcpCloseFd => {
+                self.lower_std_io_tcp_close_fd(args, scope)
+            }
+            Id::IoTcpShutdownListenSocketRaw => {
+                self.lower_std_io_tcp_shutdown_listen_socket(args, scope)
+            }
+            Id::IoTcpSetRecvTimeoutNsRaw => {
+                self.lower_std_io_tcp_set_recv_timeout(args, scope)
+            }
+            Id::IoTcpSendRaw => {
+                self.lower_std_io_tcp_send(args, scope)
+            }
+            Id::IoTcpRecvRaw => {
+                self.lower_std_io_tcp_recv(args, scope)
+            }
+            Id::IoTcpSendBytesRaw => {
+                self.lower_std_io_tcp_send_bytes(args, scope)
+            }
+            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
+            Id::IoTcpRecvBytesRaw => {
+                self.lower_std_io_tcp_recv_bytes(args, scope)
+            }
+            Id::IoTcpRecvInto => {
+                self.lower_std_io_tcp_recv_into(args, scope)
+            }
+            Id::IoTcpRecvStampedInto => {
+                self.lower_std_io_tcp_recv_stamped_into(args, scope)
+            }
+            Id::IoTcpLastRecvKernelNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_recv_kernel_ns",
+                    "last_recv_kernel_ns",
+                ),
+            Id::IoTcpLastRecvUserNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_recv_user_ns",
+                    "last_recv_user_ns",
+                ),
+            // #209 — status pair backing the fallible Stream methods.
+            Id::IoTcpLastIoStatusRaw => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_io_status",
+                    "__last_io_status",
+                ),
+            Id::IoTcpIoErrorKindRaw => {
+                self.lower_std_io_tcp_io_error_kind(args, scope)
+            }
+            // 2026-05-26 — named socket-option constants. Each
+            // resolves to a zero-arg call into the matching C
+            // getter, which returns the platform's numeric
+            // value for that level / option name.
+            Id::IoSockoptIpprotoIp
+            | Id::IoSockoptIpprotoIpv6
+            | Id::IoSockoptIpprotoTcp
+            | Id::IoSockoptIpprotoUdp
+            | Id::IoSockoptIpAddMembership
+            | Id::IoSockoptIpDropMembership
+            | Id::IoSockoptIpMtuDiscover
+            | Id::IoSockoptIpMulticastIf
+            | Id::IoSockoptIpMulticastLoop
+            | Id::IoSockoptIpMulticastTtl
+            | Id::IoSockoptIpPktinfo
+            | Id::IoSockoptIpPmtudiscDo
+            | Id::IoSockoptIpPmtudiscDont
+            | Id::IoSockoptIpPmtudiscProbe
+            | Id::IoSockoptIpPmtudiscWant
+            | Id::IoSockoptIpTos
+            | Id::IoSockoptIpTtl
+            | Id::IoSockoptSolSocket
+            | Id::IoSockoptSoBindtodevice
+            | Id::IoSockoptSoBroadcast
+            | Id::IoSockoptSoKeepalive
+            | Id::IoSockoptSoLinger
+            | Id::IoSockoptSoPriority
+            | Id::IoSockoptSoRcvbuf
+            | Id::IoSockoptSoRcvtimeo
+            | Id::IoSockoptSoReuseaddr
+            | Id::IoSockoptSoReuseport
+            | Id::IoSockoptSoSndbuf
+            | Id::IoSockoptSoSndtimeo
+            | Id::IoSockoptTcpNodelay => {
+                self.lower_std_io_sockopt_getter(segs[3], args)
+            }
+            // TLS substrate (system OpenSSL): non-fallible
+            // send_bytes / recv_bytes / close mirror the tcp
+            // shape. connect is in the fallible dispatcher.
+            Id::IoTlsSendBytes => {
+                self.lower_std_io_tls_send_bytes(args, scope)
+            }
+            Id::IoTlsRecvBytes => {
+                self.lower_std_io_tls_recv_bytes(args, scope)
+            }
+            Id::IoTlsClose => {
+                self.lower_std_io_tls_close(args, scope)
+            }
+            Id::IoTlsRecvInto => {
+                self.lower_std_io_tls_recv_into(args, scope)
+            }
+            Id::IoTlsRecvStampedInto => self.lower_recv_into_common(
+                args, scope,
+                "lotus_tls_recv_stamped_into",
+                "std::io::tls::recv_stamped_into",
+            ),
+            Id::IoTlsLastRecvKernelNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tls_last_recv_kernel_ns",
+                    "last_recv_kernel_ns",
+                ),
+            Id::IoTlsLastRecvUserNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tls_last_recv_user_ns",
+                    "last_recv_user_ns",
+                ),
+            Id::IoUdpCloseRaw
+            | Id::IoUdpClose => {
+                self.lower_std_io_udp_close(args, scope)
+            }
+            Id::IoUdpRecvInto => {
+                self.lower_std_io_udp_recv_into(args, scope)
+            }
+            // 2026-05-26 — UDP P4: getters for the source IP +
+            // port of the last `recv_with_source` on this thread.
+            Id::IoUdpLastSourceHost => {
+                self.lower_std_io_udp_last_source_host(args)
+            }
+            Id::IoUdpLastSourcePort => {
+                self.lower_std_io_udp_last_source_port(args)
+            }
+            Id::CryptoSha1 => {
+                self.lower_std_crypto_sha1(args, scope)
+            }
+            Id::CryptoSha256 => {
+                self.lower_std_crypto_sha256(args, scope)
+            }
+            Id::CryptoHmacSha256 => {
+                self.lower_std_crypto_hmac_sha256(args, scope)
+            }
+            Id::CryptoSha512 => {
+                self.lower_std_crypto_sha512(args, scope)
+            }
+            Id::CryptoHmacSha512 => {
+                self.lower_std_crypto_hmac_sha512(args, scope)
+            }
+            Id::CryptoCrc32 => {
+                self.lower_std_crypto_crc32(args, scope)
+            }
+            Id::CryptoEcdsaP256Sign => {
+                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
+            }
+            Id::CryptoEcdsaP256Verify => {
+                self.lower_std_crypto_ecdsa_p256_verify(args, scope)
+            }
+            // m96: std::ts::* tree-sitter substrate. A statement
+            // reaches these too, its value dropped, for
+            // parse-and-discard patterns (unusual but legal).
+            Id::TsParseGo => self.lower_std_ts_parse_go(args, scope),
+            Id::TsRootNode => self.lower_std_ts_int1_to_int(
+                "lotus_ts_root_node",
+                args,
+                scope,
+                "std::ts::root_node",
+            ),
+            Id::TsNodeKind => self.lower_std_ts_int1_to_string(
+                "lotus_ts_node_kind",
+                args,
+                scope,
+                "std::ts::node_kind",
+            ),
+            Id::TsNodeText => self.lower_std_ts_int1_to_string(
+                "lotus_ts_node_text",
+                args,
+                scope,
+                "std::ts::node_text",
+            ),
+            Id::TsNodeChildCount => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_child_count",
+                args,
+                scope,
+                "std::ts::node_child_count",
+            ),
+            Id::TsNodeNamedChildCount => self
+                .lower_std_ts_int1_to_int(
+                    "lotus_ts_node_named_child_count",
+                    args,
+                    scope,
+                    "std::ts::node_named_child_count",
+                ),
+            Id::TsNodeChild => self.lower_std_ts_int2_to_int(
+                "lotus_ts_node_child",
+                args,
+                scope,
+                "std::ts::node_child",
+            ),
+            Id::TsNodeNamedChild => self.lower_std_ts_int2_to_int(
+                "lotus_ts_node_named_child",
+                args,
+                scope,
+                "std::ts::node_named_child",
+            ),
+            Id::TsNodeStartByte => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_start_byte",
+                args,
+                scope,
+                "std::ts::node_start_byte",
+            ),
+            Id::TsNodeEndByte => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_end_byte",
+                args,
+                scope,
+                "std::ts::node_end_byte",
+            ),
+            Id::TsNodeIsNamed => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_is_named",
+                args,
+                scope,
+                "std::ts::node_is_named",
+            ),
+            // m79: std::time::*. sleep is a statement; a value
+            // position has no arm for it.
+            Id::TimeSleep => match pos {
+                StdCallPos::Statement => {
+                    self.lower_time_sleep(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::TimeMonotonic => self.lower_time_monotonic(args),
+            Id::TimeMonotonicNs => self.lower_time_monotonic_ns(args),
+            // C7 (pond follow-up): wall-clock seconds-since-epoch
+            // as Int.
+            Id::TimeNow => self.lower_std_time_now(args),
+            Id::TimeTimeFromUnix => {
+                self.lower_std_time_from_unix(args, scope)
+            }
+            // GH #607: the Time-valued surface.
+            Id::TimeCurrent => self.lower_std_time_current(args),
+            Id::TimeIso8601 => self.lower_std_time_iso8601(args, scope),
+            Id::TimeUnix => self.lower_std_time_unix(args, scope),
+            Id::TimeNanos => self.lower_std_time_nanos(args, scope),
+            Id::TimeFromNanos => self.lower_std_time_from_nanos(args, scope),
+            // #353: the `can_` probe beside the fallible parse, the
+            // same pairing `str::parse_int` / `can_parse_int` has.
+            Id::TimeCanParseIso8601 => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "std::time::can_parse_iso8601 takes 1 arg, got {}",
+                        args.len()
+                    )));
+                }
+                let (v, ty) = self.lower_expr(&args[0], scope)?;
+                let s_val = self.unpack_view_if_needed(v, &ty)?;
+                let f = self
+                    .module
+                    .get_function("lotus_time_can_parse_iso8601")
+                    .expect("lotus_time_can_parse_iso8601 declared");
+                let r = self
+                    .builder
+                    .build_call(f, &[s_val.into()], "iso.can.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i32");
+                let b = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        r.into_int_value(),
+                        self.context.i32_type().const_zero(),
+                        "iso.can.bool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((b.into(), CodegenTy::Bool))
+            }
+            // std::math::* libm Float primitives. Resolves
+            // notes/hale-friction.md 2026-05-10 float-surface-gaps
+            // (the `std::math` sub-bullet). v0 cut: unary
+            // sqrt/exp/log/floor/ceil + binary pow. Each lowers to
+            // a libm call through the extern decl in
+            // declare_builtins; arg type-checked as Float.
+            Id::MathSqrt => {
+                self.lower_std_math_unary("sqrt", args, scope)
+            }
+            Id::MathExp => {
+                self.lower_std_math_unary("exp", args, scope)
+            }
+            Id::MathLog => {
+                self.lower_std_math_unary("log", args, scope)
+            }
+            Id::MathFloor => {
+                self.lower_std_math_unary("floor", args, scope)
+            }
+            Id::MathCeil => {
+                self.lower_std_math_unary("ceil", args, scope)
+            }
+            Id::MathPow => {
+                self.lower_std_math_binary("pow", args, scope)
+            }
+            // a downstream tool F.9 (2026-05-23): trig surface. Same libm
+            // pass-through shape as sqrt / exp / log.
+            Id::MathSin => {
+                self.lower_std_math_unary("sin", args, scope)
+            }
+            Id::MathCos => {
+                self.lower_std_math_unary("cos", args, scope)
+            }
+            Id::MathTan => {
+                self.lower_std_math_unary("tan", args, scope)
+            }
+            Id::MathAsin => {
+                self.lower_std_math_unary("asin", args, scope)
+            }
+            Id::MathAcos => {
+                self.lower_std_math_unary("acos", args, scope)
+            }
+            Id::MathAtan => {
+                self.lower_std_math_unary("atan", args, scope)
+            }
+            Id::MathAtan2 => {
+                self.lower_std_math_binary("atan2", args, scope)
+            }
+            // C8 (pond follow-up): IEEE 754 surface.
+            // tanh is a direct libm extern (same shape as sqrt /
+            // exp / log / floor / ceil / pow). nan / inf are
+            // nullary sentinels via lotus_math_* C wrappers (no
+            // libm dependency at link time). is_nan returns Bool
+            // through lotus_math_is_nan (canonical f != f test).
+            Id::MathTanh => {
+                self.lower_std_math_unary("tanh", args, scope)
+            }
+            Id::MathNan => self.lower_std_math_nullary_float(
+                "lotus_math_nan",
+                "nan",
+                args,
+            ),
+            Id::MathInf => self.lower_std_math_nullary_float(
+                "lotus_math_inf",
+                "inf",
+                args,
+            ),
+            Id::MathIsNan => {
+                self.lower_std_math_is_nan(args, scope)
+            }
+            // WS3.1 (2026-06-11): explicit numeric conversions in
+            // expression position. `int_to_float` is `sitofp`
+            // (widening); `float_to_int` is `fptosi` (narrowing,
+            // round-toward-zero). Before this, every numeric
+            // consumer round-tripped through ASCII (`to_string` +
+            // `parse_*`). See spec/types.md § Numeric conversions.
+            Id::MathIntToFloat => {
+                self.lower_std_math_int_to_float(args, scope)
+            }
+            Id::MathFloatToInt => {
+                self.lower_std_math_float_to_int(args, scope)
+            }
+            // Float→Int with explicit rounding mode → Int result.
+            // `trunc` truncates toward zero (alias of float_to_int);
+            // `round` rounds half away from zero. Both lower to
+            // `fptosi` (+ a compare/select shift for round) — pure
+            // LLVM, so they need no libm symbol on wasm32 (unlike
+            // `floor`/`ceil`, which are libm and return Float).
+            Id::MathTrunc => {
+                self.lower_std_math_to_int("trunc", false, args, scope)
+            }
+            Id::MathRound => {
+                self.lower_std_math_to_int("round", true, args, scope)
+            }
+            Id::ProcessPid => self.lower_std_process_pid(args),
+            Id::ProcessUid => self.lower_std_process_uid(args),
+            Id::ProcessRssBytes => self.lower_std_process_rss_bytes(args),
+            Id::ProcessDumpArenaResidency => {
+                self.lower_std_process_dump_arena_residency(args)
+            }
+            Id::ProcessDumpPoolResidency => {
+                self.lower_std_process_dump_pool_residency(args)
+            }
+            // m79: std::process::exit. Calls libc exit() with the
+            // user-supplied code, then emits unreachable + a fresh
+            // basic block so subsequent statements (dead but
+            // syntactically permitted) have somewhere to lower
+            // into. A statement; a value position has no arm for it.
+            Id::ProcessExit => match pos {
+                StdCallPos::Statement => {
+                    self.lower_std_process_exit(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            // No arm at either position: lowered only under `or`
+            // (`try_lower_fallible_stdlib_path_call`). A bare call of
+            // one the position's list refuses (`refuses_bare`) is
+            // refused as fallible, in the words the parse_int family
+            // has always had; any other answers as a path no arm
+            // lowers.
+            Id::BytesReadF32Le
+            | Id::BytesReadF64Be
+            | Id::BytesReadF64Le
+            | Id::BytesReadI16Be
+            | Id::BytesReadI16Le
+            | Id::BytesReadI32Be
+            | Id::BytesReadI32Le
+            | Id::BytesReadI64Be
+            | Id::BytesReadI64Le
+            | Id::BytesReadI8
+            | Id::BytesReadU16Be
+            | Id::BytesReadU16Le
+            | Id::BytesReadU32Be
+            | Id::BytesReadU32Le
+            | Id::BytesReadU64Be
+            | Id::BytesReadU64Le
+            | Id::BytesReadU8
+            | Id::BytesWriteF32Le
+            | Id::BytesWriteF64Be
+            | Id::BytesWriteF64Le
+            | Id::BytesWriteI16Be
+            | Id::BytesWriteI16Le
+            | Id::BytesWriteI32Be
+            | Id::BytesWriteI32Le
+            | Id::BytesWriteI64Be
+            | Id::BytesWriteI64Le
+            | Id::BytesWriteI8
+            | Id::BytesWriteU16Be
+            | Id::BytesWriteU16Le
+            | Id::BytesWriteU32Be
+            | Id::BytesWriteU32Le
+            | Id::BytesWriteU64Be
+            | Id::BytesWriteU64Le
+            | Id::BytesWriteU8
+            | Id::TarEntries
+            | Id::TarEntryData
+            | Id::TarEntryName
+            | Id::TarEntrySize
+            | Id::TarEntryType
+            | Id::TarFinish
+            | Id::TarPack
+            | Id::TarPackDir
+            | Id::CompressGunzip
+            | Id::CompressGzip
+            | Id::CompressUnzstd
+            | Id::CompressZstd
+            | Id::IoFileOpenRaw
+            | Id::IoFileSeekRaw
+            | Id::IoFileWriteBytesRaw
+            | Id::IoFsMktemp
+            | Id::IoFsRename
+            | Id::IoFsUnlink
+            | Id::IoFsWriteBytes
+            | Id::IoFsWritePrivateRaw
+            | Id::IoUnixConnect
+            | Id::IoUnixConnectWait
+            | Id::IoUnixListenSocket
+            | Id::IoTcpAcceptOne
+            | Id::IoTcpConnect
+            | Id::IoTcpConnectWait
+            | Id::IoTcpListenSocket
+            | Id::IoTcpSetNodelay
+            | Id::IoTcpSetRecvTimeout
+            | Id::IoTcpSetRxTimestamps
+            | Id::IoTcpSetSendTimeout
+            | Id::IoTlsConnect
+            | Id::IoTlsSetNodelay
+            | Id::IoTlsSetRecvTimeout
+            | Id::IoTlsSetRxTimestamps
+            | Id::IoTlsSetSendTimeout
+            | Id::IoTlsUpgrade
+            | Id::IoUdpBindRaw
+            | Id::IoUdpRecvRaw
+            | Id::IoUdpSendRaw
+            | Id::IoUdpBind
+            | Id::IoUdpGetOptionInt
+            | Id::IoUdpJoinGroup
+            | Id::IoUdpLeaveGroup
+            | Id::IoUdpRecv
+            | Id::IoUdpRecvWithSource
+            | Id::IoUdpSend
+            | Id::IoUdpSetMulticastIface
+            | Id::IoUdpSetMulticastLoop
+            | Id::IoUdpSetMulticastTtl
+            | Id::IoUdpSetOptionBool
+            | Id::IoUdpSetOptionInt
+            | Id::IoUdpSetRecvTimeout
+            | Id::IoUdpSetSendTimeout
+            | Id::OsGetrandom
+            | Id::ProcessKillEscalateRaw
+            | Id::ProcessPipeReadRaw
+            | Id::ProcessPipeWriteRaw
+            | Id::ProcessSignalPidRaw
+            | Id::ProcessSpawnRaw
+            | Id::ProcessTryWaitPidRaw
+            | Id::ProcessWaitPidRaw
+            | Id::ProcessRun
+            | Id::StrParseDecimal
+            | Id::StrParseFloat
+            | Id::StrParseInt
+            | Id::StrRangeParseDecimal
+            | Id::StrRangeParseInt
+            | Id::TimeParseIso8601
+            | Id::TimeParseTime => {
+                if refuses_bare(id, pos) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "`{}` returns a fallible value — address the error with \
+                         `or raise`, `or <substitute>`, or `or self.handle(err)`",
+                        segs.join("::")
+                    )));
+                }
+                return self.lower_std_unarmed(segs, args, scope, pos);
+            }
+        };
+        value.map(Some)
     }
 
     /// 2026-05-16: `std::text::tokenize_words_into(s: String,
@@ -26499,1140 +27521,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((res, CodegenTy::Int))
     }
 
-    /// Expression-position dispatcher for `std::*` paths.
-    fn lower_stdlib_path_call_expr(
-        &mut self,
-        segs: &[&str],
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        match segs {
-            ["std", "process", "pid"] => self.lower_std_process_pid(args),
-            ["std", "process", "uid"] => self.lower_std_process_uid(args),
-            ["std", "process", "rss_bytes"] => self.lower_std_process_rss_bytes(args),
-            ["std", "term", "is_tty"] => self.lower_std_term_is_tty(args, scope),
-            ["std", "io", "stdout", "write_bytes"] => {
-                self.lower_std_io_stdout_write_bytes(args, scope)
-            }
-            ["std", "term", "__raw_enable"] => {
-                self.lower_std_term_raw_toggle(args, "lotus_term_raw_enable")
-            }
-            ["std", "term", "__raw_disable"] => {
-                self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")
-            }
-            ["std", "term", "__size_packed"] => self.lower_std_term_size_packed(args),
-            ["std", "io", "stdin", "read_byte"] => {
-                self.lower_std_io_stdin_read_byte(args, scope)
-            }
-            ["std", "process", "dump_arena_residency"] => {
-                self.lower_std_process_dump_arena_residency(args)
-            }
-            ["std", "process", "dump_pool_residency"] => {
-                self.lower_std_process_dump_pool_residency(args)
-            }
-            // GH #1108: the api binding's caller identity.
-            ["std", "io", "unix", "peer_uid"] => self.lower_std_io_unix_peer("uid", args, scope),
-            ["std", "io", "unix", "peer_gid"] => self.lower_std_io_unix_peer("gid", args, scope),
-            ["std", "io", "unix", "peer_pid"] => self.lower_std_io_unix_peer("pid", args, scope),
-            // GH #1109: the static role table's name spellings.
-            ["std", "io", "unix", "user_id"] => self.lower_std_io_unix_name_id("user_id", args, scope),
-            ["std", "io", "unix", "group_id"] => self.lower_std_io_unix_name_id("group_id", args, scope),
-            ["std", "io", "unix", "peer_groups_count"] => self.lower_std_io_unix_peer("groups_count", args, scope),
-            ["std", "io", "unix", "peer_group_at"] => self.lower_std_io_unix_peer_group_at(args, scope),
-            // GH #1108: `std::api::local_context()`, the context a handler
-            // reached in-process receives (Hale source in api.hl).
-            ["std", "api", "local_context"] => {
-                let result = self.lower_user_fn_call("__api_local_context", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::api::local_context returns Context but called in a position that expects no value".to_string()))
-            }
-            ["std", "io", "tcp", "__listen_socket"] => {
-                self.lower_std_io_tcp_listen_socket(args, scope)
-            }
-            ["std", "io", "tcp", "__accept_one"] => {
-                self.lower_std_io_tcp_accept_one(args, scope)
-            }
-            ["std", "io", "tcp", "__connect"] => {
-                self.lower_std_io_tcp_connect(args, scope)
-            }
-            ["std", "io", "tcp", "__close_fd"]
-            | ["std", "io", "tcp", "close_fd"] => {
-                self.lower_std_io_tcp_close_fd(args, scope)
-            }
-            ["std", "io", "tcp", "__shutdown_listen_socket"] => {
-                self.lower_std_io_tcp_shutdown_listen_socket(args, scope)
-            }
-            ["std", "io", "tcp", "__set_recv_timeout_ns"] => {
-                self.lower_std_io_tcp_set_recv_timeout(args, scope)
-            }
-            ["std", "io", "udp", "__close"]
-            | ["std", "io", "udp", "close"] => {
-                self.lower_std_io_udp_close(args, scope)
-            }
-            // File primitives — `__`-prefixed only; user-facing
-            // names route via STDLIB_FN_RENAMES to file.hl wrappers.
-            ["std", "io", "file", "__close"] => {
-                self.lower_std_io_file_close(args, scope)
-            }
-            ["std", "io", "file", "__at_eof"] => {
-                self.lower_std_io_file_at_eof(args, scope)
-            }
-            ["std", "io", "file", "__read_line"] => {
-                self.lower_std_io_file_read_line(args, scope)
-            }
-            ["std", "io", "tcp", "__send"] => {
-                self.lower_std_io_tcp_send(args, scope)
-            }
-            ["std", "io", "tcp", "__recv"] => {
-                self.lower_std_io_tcp_recv(args, scope)
-            }
-            ["std", "io", "fs", "read_bytes"] => {
-                self.lower_std_io_fs_read_bytes(args, scope)
-            }
-            ["std", "io", "tcp", "__send_bytes"] => {
-                self.lower_std_io_tcp_send_bytes(args, scope)
-            }
-            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
-            ["std", "io", "tcp", "__recv_bytes"] => {
-                self.lower_std_io_tcp_recv_bytes(args, scope)
-            }
-            // TLS substrate (system OpenSSL): non-fallible
-            // send_bytes / recv_bytes / close mirror the tcp
-            // shape. connect is in the fallible dispatcher above.
-            ["std", "io", "tls", "send_bytes"] => {
-                self.lower_std_io_tls_send_bytes(args, scope)
-            }
-            ["std", "io", "tls", "recv_bytes"] => {
-                self.lower_std_io_tls_recv_bytes(args, scope)
-            }
-            ["std", "io", "tls", "close"] => {
-                self.lower_std_io_tls_close(args, scope)
-            }
-            ["std", "io", "tcp", "recv_into"] => {
-                self.lower_std_io_tcp_recv_into(args, scope)
-            }
-            ["std", "io", "tcp", "recv_stamped_into"] => {
-                self.lower_std_io_tcp_recv_stamped_into(args, scope)
-            }
-            ["std", "io", "tcp", "last_recv_kernel_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tcp_last_recv_kernel_ns",
-                    "last_recv_kernel_ns",
-                ),
-            ["std", "io", "tcp", "last_recv_user_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tcp_last_recv_user_ns",
-                    "last_recv_user_ns",
-                ),
-            // #209 — status pair backing the fallible Stream methods.
-            ["std", "io", "tcp", "__last_io_status"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tcp_last_io_status",
-                    "__last_io_status",
-                ),
-            ["std", "io", "tcp", "__io_error_kind"] => {
-                self.lower_std_io_tcp_io_error_kind(args, scope)
-            }
-            ["std", "io", "tls", "recv_into"] => {
-                self.lower_std_io_tls_recv_into(args, scope)
-            }
-            ["std", "io", "tls", "recv_stamped_into"] => self.lower_recv_into_common(
-                args, scope,
-                "lotus_tls_recv_stamped_into",
-                "std::io::tls::recv_stamped_into",
-            ),
-            ["std", "io", "tls", "last_recv_kernel_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tls_last_recv_kernel_ns",
-                    "last_recv_kernel_ns",
-                ),
-            ["std", "io", "tls", "last_recv_user_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tls_last_recv_user_ns",
-                    "last_recv_user_ns",
-                ),
-            ["std", "io", "udp", "recv_into"] => {
-                self.lower_std_io_udp_recv_into(args, scope)
-            }
-            ["std", "bus", "__local_dispatch"] => {
-                self.lower_std_bus_local_dispatch(args, scope)
-            }
-            // GH #233: expression-position transport primitives
-            // (realize is assigned to self.handle in birth();
-            // spawn_server's status is checked there too).
-            ["std", "bus", "__transport_realize"] => {
-                self.lower_std_bus_transport_realize(args, scope)
-            }
-            ["std", "bus", "__transport_spawn_server"] => {
-                self.lower_std_bus_transport_handle_op(
-                    "lotus_bus_transport_spawn_server", args, scope)
-            }
-            // GH #244: SPSC ring read (expression — returns the
-            // record count).
-            ["std", "ring", "__spsc_read"] => {
-                self.lower_std_ring_op("lotus_spsc_read", 7, args, scope)
-            }
-            // GH #230: std::test pass-counter read (expression).
-            ["std", "test", "__passes"] => {
-                let f = self
-                    .module
-                    .get_function("lotus_test_passes")
-                    .expect("lotus_test_passes declared");
-                let v = self
-                    .builder
-                    .build_call(f, &[], "test.passes")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("returns i64");
-                Ok((v, CodegenTy::Int))
-            }
-            // GH #717: std::test recorded-failure latch read
-            // (expression — 0 = no failure recorded yet).
-            ["std", "test", "__failed"] => {
-                let f = self
-                    .module
-                    .get_function("lotus_test_failed")
-                    .expect("lotus_test_failed declared");
-                let v = self
-                    .builder
-                    .build_call(f, &[], "test.failed")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("returns i64");
-                Ok((v, CodegenTy::Int))
-            }
-            ["std", "str", "from_bytes"] => {
-                self.lower_std_str_from_bytes(args, scope)
-            }
-            ["std", "bytes", "from_string"] => {
-                self.lower_std_bytes_from_string(args, scope)
-            }
-            ["std", "bytes", "at"] => {
-                self.lower_std_bytes_at(args, scope)
-            }
-            ["std", "bytes", "find_byte"] => {
-                self.lower_std_bytes_find_byte(args, scope)
-            }
-            ["std", "bytes", "builder", "__xor_mask_into"] => {
-                self.lower_std_bytes_builder_xor_mask_into(args, scope)
-            }
-            ["std", "bytes", "slice"] => {
-                self.lower_std_bytes_slice(args, scope)
-            }
-            ["std", "bytes", "from_int"] => {
-                self.lower_std_bytes_from_int(args, scope)
-            }
-            ["std", "bytes", "concat"] => {
-                self.lower_std_bytes_concat(args, scope)
-            }
-            ["std", "crypto", "sha1"] => {
-                self.lower_std_crypto_sha1(args, scope)
-            }
-            ["std", "crypto", "sha256"] => {
-                self.lower_std_crypto_sha256(args, scope)
-            }
-            ["std", "crypto", "hmac_sha256"] => {
-                self.lower_std_crypto_hmac_sha256(args, scope)
-            }
-            ["std", "crypto", "sha512"] => {
-                self.lower_std_crypto_sha512(args, scope)
-            }
-            ["std", "crypto", "hmac_sha512"] => {
-                self.lower_std_crypto_hmac_sha512(args, scope)
-            }
-            ["std", "crypto", "crc32"] => {
-                self.lower_std_crypto_crc32(args, scope)
-            }
-            ["std", "crypto", "ecdsa_p256_sign"] => {
-                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
-            }
-            ["std", "crypto", "ecdsa_p256_verify"] => {
-                self.lower_std_crypto_ecdsa_p256_verify(args, scope)
-            }
-            ["std", "text", "base64", "encode"] => {
-                self.lower_std_text_base64_encode(args, scope)
-            }
-            ["std", "text", "base64", "decode"] => {
-                self.lower_std_text_base64_decode(args, scope)
-            }
-            ["std", "text", "base64", "url_encode"] => {
-                self.lower_std_text_base64_url_encode(args, scope)
-            }
-            ["std", "rand", "next_int"] => {
-                self.lower_std_rand_next_int(args, scope)
-            }
-            // Phase 2e: list_dir index API.
-            ["std", "io", "fs", "list_dir_count"] => {
-                self.lower_std_io_fs_list_dir_count(args, scope)
-            }
-            ["std", "io", "fs", "list_dir_at"] => {
-                self.lower_std_io_fs_list_dir_at(args, scope)
-            }
-            ["std", "io", "fs", "read_file"] => {
-                self.lower_std_io_fs_read_file(args, scope)
-            }
-            ["std", "io", "fs", "write_file"] => {
-                self.lower_std_io_fs_write_file(args, scope)
-            }
-            ["std", "io", "fs", "write_file_append"] => {
-                self.lower_std_io_fs_write_file_append(args, scope)
-            }
-            ["std", "io", "fs", "mkdir"] => {
-                self.lower_std_io_fs_mkdir(args, scope)
-            }
-            ["std", "io", "fs", "file_size"] => {
-                self.lower_std_io_fs_file_size(args, scope)
-            }
-            ["std", "io", "fs", "file_exists"] => {
-                self.lower_std_io_fs_file_exists(args, scope)
-            }
-            ["std", "io", "fs", "extension"] => {
-                self.lower_std_io_fs_extension(args, scope)
-            }
-            ["std", "io", "stdin", "read_line"] => {
-                self.lower_std_io_stdin_read_line(args, scope)
-            }
-            ["std", "io", "stdin", "read_line_status"] => {
-                self.lower_std_io_stdin_read_line_status(args, scope)
-            }
-            ["std", "env", "args_count"] => self.lower_std_env_args_count(args),
-            ["std", "env", "arg"] => self.lower_std_env_arg(args, scope),
-            ["std", "env", "arg_or"] => self.lower_std_env_arg_or(args, scope),
-            ["std", "env", "var"] => self.lower_std_env_var(args, scope),
-            ["std", "env", "var_exists"] => {
-                self.lower_std_env_var_exists(args, scope)
-            }
-            ["std", "str", "index_of"] => {
-                self.lower_std_str_index_of(args, scope)
-            }
-            ["std", "str", "join"] => self.lower_std_str_join(args, scope),
-            // #353: regex. Linear-time NFA, so a match is bounded by
-            // construction and usable under `@budget` / `@hot`.
-            ["std", "regex", "matches"] => self.lower_std_str_predicate(
-                "lotus_regex_matches",
-                "matches",
-                args,
-                scope,
-            ),
-            ["std", "regex", "valid"] => {
-                let (v, ty) = self.lower_expr(&args[0], scope)?;
-                let v = self.unpack_view_if_needed(v, &ty)?;
-                let f = self
-                    .module
-                    .get_function("lotus_regex_valid")
-                    .expect("lotus_regex_valid declared");
-                let r = self
-                    .builder
-                    .build_call(f, &[v.into()], "re.valid.ret")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("returns i32");
-                let b = self
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        r.into_int_value(),
-                        self.context.i32_type().const_zero(),
-                        "re.valid.bool",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((b.into(), CodegenTy::Bool))
-            }
-            ["std", "regex", "find"] => {
-                self.lower_str_cp_call2("lotus_regex_find", args, scope)
-            }
-            // #353: UTF-8 code-point decoding. Byte-oriented String
-            // stays byte-oriented; these let a caller walk code points
-            // deliberately rather than pretending bytes are characters.
-            ["std", "str", "cp_count"] => {
-                self.lower_str_cp_call("lotus_str_cp_count", 1, args, scope)
-            }
-            ["std", "str", "cp_at"] => {
-                self.lower_str_cp_call("lotus_str_cp_at", 2, args, scope)
-            }
-            ["std", "str", "cp_size"] => {
-                self.lower_str_cp_call("lotus_str_cp_size", 2, args, scope)
-            }
-            ["std", "str", "contains"] => self.lower_std_str_predicate(
-                "lotus_str_contains",
-                "contains",
-                args,
-                scope,
-            ),
-            ["std", "str", "starts_with"] => self.lower_std_str_predicate(
-                "lotus_str_starts_with",
-                "starts_with",
-                args,
-                scope,
-            ),
-            ["std", "str", "ends_with"] => self.lower_std_str_predicate(
-                "lotus_str_ends_with",
-                "ends_with",
-                args,
-                scope,
-            ),
-            ["std", "str", "range_eq"] => {
-                self.lower_std_str_range_eq(args, scope)
-            }
-            ["std", "str", "byte_at_unchecked"] => {
-                self.lower_std_str_byte_at_unchecked(args, scope)
-            }
-            ["std", "str", "range_copy"] => {
-                self.lower_std_str_range_copy(args, scope)
-            }
-            ["std", "json", "next_struct_or_quote"] => {
-                self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
-            }
-            ["std", "json", "next_quote_or_bs"] => {
-                self.lower_json_scan("lotus_json_next_quote_or_bs", args, scope)
-            }
-            ["std", "json", "next_non_ws"] => {
-                self.lower_json_scan("lotus_json_next_non_ws", args, scope)
-            }
-            // 2026-05-26 — named socket-option constants. Each
-            // resolves to a zero-arg call into the matching C
-            // getter, which returns the platform's numeric
-            // value for that level / option name.
-            ["std", "io", "sockopt", name]
-                if SOCKOPT_NAMES.contains(name) =>
-            {
-                self.lower_std_io_sockopt_getter(name, args)
-            }
-            // 2026-06-13 — test-time gate counters (#7): read-only
-            // views over the runtime's heap-alloc / I/O-syscall
-            // counts for steady-state "did N allocs / syscalls"
-            // assertions.
-            ["std", "diag", "heap_alloc_count"] => {
-                self.lower_std_diag_heap_alloc_count(args)
-            }
-            ["std", "diag", "syscall_count"] => {
-                self.lower_std_diag_syscall_count(args, scope)
-            }
-            // #3 MirrorRing primitives (backing the std::io::MirrorRing locus).
-            ["std", "io", "mirror", op] => {
-                self.lower_std_io_mirror(op, args, scope)
-            }
-            // #5 follow-on: in-band record-header field getters — the
-            // decoded seq / kernel timestamp of the most recent
-            // foreign-ring record dispatched on this thread (errno-style,
-            // read immediately in the subscribe handler).
-            ["std", "shm", "last_record_seq"]
-            | ["std", "shm", "last_record_kernel_ns"]
-            | ["std", "shm", "last_record_user_ns"] => {
-                if !args.is_empty() {
-                    return Err(CodegenError::Unsupported(format!(
-                        "{}: takes 0 args, got {}", segs.join("::"), args.len()
-                    )));
-                }
-                let c_fn = format!("lotus_shm_{}", segs[2]);
-                let f = self
-                    .module
-                    .get_function(&c_fn)
-                    .expect("lotus_shm_last_record_* declared");
-                let v = self
-                    .builder
-                    .build_call(f, &[], "shm.last_record.ret")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("returns i64");
-                Ok((v, CodegenTy::Int))
-            }
-            // 2026-05-26 — UDP P4: getters for the source IP +
-            // port of the last `recv_with_source` on this thread.
-            ["std", "io", "udp", "last_source_host"] => {
-                self.lower_std_io_udp_last_source_host(args)
-            }
-            ["std", "io", "udp", "last_source_port"] => {
-                self.lower_std_io_udp_last_source_port(args)
-            }
-            ["std", "str", "can_parse_float"] => {
-                self.lower_std_str_can_parse_float(args, scope)
-            }
-            ["std", "str", "lower"] => {
-                self.lower_std_str_case_fold(args, scope, "lower")
-            }
-            ["std", "str", "upper"] => {
-                self.lower_std_str_case_fold(args, scope, "upper")
-            }
-            ["std", "str", "trim"] => {
-                self.lower_std_str_case_fold(args, scope, "trim")
-            }
-            ["std", "str", "substring"] => {
-                self.lower_std_str_substring(args, scope)
-            }
-            ["std", "str", "replace"] => {
-                self.lower_std_str_replace(args, scope)
-            }
-            ["std", "str", "repeat"] => {
-                self.lower_std_str_repeat(args, scope)
-            }
-            ["std", "str", "pad_left"] => {
-                self.lower_std_str_pad(args, scope, "pad_left")
-            }
-            ["std", "str", "pad_right"] => {
-                self.lower_std_str_pad(args, scope, "pad_right")
-            }
-            ["std", "str", "builder_new"] => {
-                self.lower_std_str_builder_new(args)
-            }
-            ["std", "str", "builder_append"] => {
-                self.lower_std_str_builder_append(args, scope)
-            }
-            ["std", "str", "builder_len"] => {
-                self.lower_std_str_builder_len(args, scope)
-            }
-            ["std", "str", "builder_finish"] => {
-                self.lower_std_str_builder_finish(args, scope)
-            }
-            // Internal C-primitive bridges for the BytesBuilder
-            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
-            // prefix marks these as not-for-user-code: user code
-            // constructs `std::bytes::BytesBuilder { }` and calls
-            // `.append() / .len() / .snapshot()` etc.; the locus's
-            // method bodies route through here.
-            ["std", "bytes", "builder", "__new"] => {
-                self.lower_std_bytes_builder_new(args, scope)
-            }
-            ["std", "bytes", "builder", "__append"] => {
-                self.lower_std_bytes_builder_append(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_str"] => {
-                self.lower_std_bytes_builder_append_str(args, scope)
-            }
-            ["std", "bytes", "builder", "__len"] => {
-                self.lower_std_bytes_builder_len(args, scope)
-            }
-            ["std", "bytes", "builder", "__finish"] => {
-                self.lower_std_bytes_builder_finish(args, scope)
-            }
-            ["std", "bytes", "builder", "__shift_front"] => {
-                self.lower_std_bytes_builder_shift_front(args, scope)
-            }
-            ["std", "bytes", "builder", "__clear"] => {
-                self.lower_std_bytes_builder_clear(args, scope)
-            }
-            ["std", "bytes", "builder", "__snapshot"] => {
-                self.lower_std_bytes_builder_snapshot(args, scope)
-            }
-            ["std", "bytes", "builder", "__free"] => {
-                self.lower_std_bytes_builder_free(args, scope)
-            }
-            ["std", "bytes", "builder", "__view"] => {
-                self.lower_std_bytes_builder_view(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_slice"] => {
-                self.lower_std_bytes_builder_append_slice(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_scalar"] => {
-                self.lower_std_bytes_builder_append_scalar(args, scope)
-            }
-            ["std", "bytes", "builder", "__append_f64"] => {
-                self.lower_std_bytes_builder_append_float(args, scope, false)
-            }
-            ["std", "bytes", "builder", "__append_f32"] => {
-                self.lower_std_bytes_builder_append_float(args, scope, true)
-            }
-            ["std", "bytes", "builder", "__append_pad"] => {
-                self.lower_std_bytes_builder_append_pad(args, scope)
-            }
-            ["std", "bytes", "builder", "__text_view"] => {
-                self.lower_std_bytes_builder_text_view(args, scope)
-            }
-            ["std", "bytes", "__is_alloc_fail"] => {
-                self.lower_std_bytes_is_alloc_fail(args, scope)
-            }
-            ["std", "bytes", "clone"] => {
-                self.lower_std_bytes_clone(args, scope)
-            }
-            ["std", "str", "clone"] => {
-                self.lower_std_str_clone(args, scope)
-            }
-            // m84: std::http::parse_request(raw: String) -> Request.
-            // Implementation lives in stdlib.hl as the bare-name
-            // free fn `__parse_http_request`. The path-call form is
-            // the user-facing API; routing here keeps the stdlib's
-            // private fn names hidden behind the std:: namespace.
-            ["std", "http", "parse_request"] => {
-                let result = self.lower_user_fn_call(
-                    "__parse_http_request",
-                    args,
-                    scope,
-                )?;
-                result.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "std::http::parse_request returns Request but \
-                         called in a position that expects no value"
-                            .to_string(),
-                    )
-                })
-            }
-            // 2026-05-16: std::json helpers — escape/unescape +
-            // flat-shape parse. All implementations live in
-            // ../../hale-stdlib/hl/json.hl under __json_* bare names;
-            // these path-call arms surface them under std::json::*.
-            ["std", "json", "escape_string"] => {
-                let result = self.lower_user_fn_call("__json_escape_string", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::escape_string returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "unescape_string"] => {
-                let result = self.lower_user_fn_call("__json_unescape_string", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::unescape_string returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "find_string_field"] => {
-                let result = self.lower_user_fn_call("__json_find_string_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::find_string_field returns String but called in a position that expects no value".to_string()))
-            }
-            // GH #719: the typed sibling of find_string_field. Returns
-            // a JsonString {kind, text} so null / missing / "" / a
-            // real string / a wrong-typed value are distinguishable;
-            // find_string_field stays permissive for its callers.
-            ["std", "json", "string_field"] => {
-                let result = self.lower_user_fn_call("__json_string_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::string_field returns JsonString but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "find_int_field"] => {
-                let result = self.lower_user_fn_call("__json_find_int_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::find_int_field returns Int but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "find_bool_field"] => {
-                let result = self.lower_user_fn_call("__json_find_bool_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::find_bool_field returns Bool but called in a position that expects no value".to_string()))
-            }
-            // GH #754: RFC 8259 syntax validation, the strict
-            // counterpart to the permissive find_* scanners.
-            ["std", "json", "valid"] => {
-                let result = self.lower_user_fn_call("__json_valid", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::valid returns Bool but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "valid_object"] => {
-                let result = self.lower_user_fn_call("__json_valid_object", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::valid_object returns Bool but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "find_field_raw"] => {
-                let result = self.lower_user_fn_call("__json_find_field_raw", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::find_field_raw returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "array_first"] => {
-                let result = self.lower_user_fn_call("__json_array_first", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::array_first returns ArrayIter but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "array_next"] => {
-                let result = self.lower_user_fn_call("__json_array_next", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::array_next returns ArrayIter but called in a position that expects no value".to_string()))
-            }
-            // 2026-05-23: zero-element-copy walker. The
-            // *_span variants track only positions in the source
-            // json; `iter_find_*` helpers scan bounded by the
-            // current element's range so per-iter allocation drops
-            // from O(element_size) to O(value_size). See
-            // `../../hale-stdlib/hl/json.hl` § "the zero-element-copy walker friction".
-            ["std", "json", "array_first_span"] => {
-                let result = self.lower_user_fn_call("__json_array_first_span", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::array_first_span returns ArrayIterSpan but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "array_next_span"] => {
-                let result = self.lower_user_fn_call("__json_array_next_span", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::array_next_span returns ArrayIterSpan but called in a position that expects no value".to_string()))
-            }
-            // Single-pass object member cursor (JSON Tier 2 substrate).
-            ["std", "json", "object_first"] => {
-                let result = self.lower_user_fn_call("__json_obj_first_span", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::object_first returns ObjectIterSpan but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "object_next"] => {
-                let result = self.lower_user_fn_call("__json_obj_next_span", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::object_next returns ObjectIterSpan but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_key_len"] => {
-                let result = self.lower_user_fn_call("__json_obj_key_len", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_key_len returns Int but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_key_eq"] => {
-                let result = self.lower_user_fn_call("__json_obj_key_eq", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_key_eq returns Bool but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_value_raw"] => {
-                let result = self.lower_user_fn_call("__json_obj_value_raw", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_value_raw returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_value_int"] => {
-                let result = self.lower_user_fn_call("__json_obj_value_int", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_value_int returns Int but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_value_bool"] => {
-                let result = self.lower_user_fn_call("__json_obj_value_bool", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_value_bool returns Bool but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_value_float"] => {
-                let result = self.lower_user_fn_call("__json_obj_value_float", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_value_float returns Float but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_value_string"] => {
-                let result = self.lower_user_fn_call("__json_obj_value_string", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_value_string returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "obj_key_string"] => {
-                let result = self.lower_user_fn_call("__json_obj_key_string", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::obj_key_string returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "iter_find_field_raw"] => {
-                let result = self.lower_user_fn_call("__json_iter_find_field_raw", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_find_field_raw returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "iter_find_string_field"] => {
-                let result = self.lower_user_fn_call("__json_iter_find_string_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_find_string_field returns String but called in a position that expects no value".to_string()))
-            }
-            // 2026-05-26 — range-bearing iter_find variants. Return
-            // a JsonFieldRange {ok, start, end_pos} instead of an
-            // owned-String substring; paired with
-            // std::str::range_eq / range_parse_* this runs the
-            // full JSON walk allocation-free.
-            ["std", "json", "iter_find_field_range"] => {
-                let result = self.lower_user_fn_call("__json_iter_find_field_range", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_find_field_range returns JsonFieldRange but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "iter_find_string_field_range"] => {
-                let result = self.lower_user_fn_call("__json_iter_find_string_field_range", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_find_string_field_range returns JsonFieldRange but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "find_field_range_in"] => {
-                let result = self.lower_user_fn_call("__json_find_field_range_in", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::find_field_range_in returns JsonFieldRange but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "iter_find_int_field"] => {
-                let result = self.lower_user_fn_call("__json_iter_find_int_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_find_int_field returns Int but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "iter_find_bool_field"] => {
-                let result = self.lower_user_fn_call("__json_iter_find_bool_field", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_find_bool_field returns Bool but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "iter_substring"] => {
-                let result = self.lower_user_fn_call("__json_iter_substring", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::iter_substring returns String but called in a position that expects no value".to_string()))
-            }
-            ["std", "json", "find_field_raw_in"] => {
-                let result = self.lower_user_fn_call("__json_find_field_raw_in", args, scope)?;
-                result.ok_or_else(|| CodegenError::Unsupported(
-                    "std::json::find_field_raw_in returns String but called in a position that expects no value".to_string()))
-            }
-            // Per-receiver header lookup. ws-echo added the
-            // Request-side surface; C11 (pond follow-up) extended
-            // it to Responses so server code can read back the
-            // headers it attached via `Response.headers` and so
-            // pond/http/client can lift its private `__find_header`
-            // walker into the stdlib. Dispatch forks on the type
-            // of the first argument: a Request receiver routes to
-            // `__http_request_header`; a Response receiver routes
-            // to `__http_response_header`. Both Hale fns are
-            // thin wrappers over the shared `__http_find_header_in_block`
-            // walker. We peek the type by lowering args[0] once;
-            // `lower_user_fn_call` will lower it again to build
-            // the actual call. For the typical Ident receiver
-            // (`std::http::header(r, name)`), the duplicate
-            // lowering is just an extra load — semantically
-            // equivalent.
-            ["std", "http", "header"] => {
-                if args.is_empty() {
-                    return Err(CodegenError::Unsupported(
-                        "std::http::header expects 2 args (receiver, name); got 0".to_string(),
-                    ));
-                }
-                let (_, recv_ty) = self.lower_expr(&args[0], scope)?;
-                let callee = match &recv_ty {
-                    CodegenTy::TypeRef(n) if n == "__StdHttpRequest" => {
-                        "__http_request_header"
-                    }
-                    CodegenTy::TypeRef(n) if n == "__StdHttpResponse" => {
-                        "__http_response_header"
-                    }
-                    other => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "std::http::header receiver must be Request or \
-                             Response; got {:?}",
-                            other
-                        )));
-                    }
-                };
-                let result = self.lower_user_fn_call(callee, args, scope)?;
-                result.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "std::http::header returns String but called \
-                         in a position that expects no value"
-                            .to_string(),
-                    )
-                })
-            }
-            // m91: markdown → HTML.
-            ["std", "text", "md_to_html"] => {
-                let result = self.lower_user_fn_call(
-                    "__md_to_html",
-                    args,
-                    scope,
-                )?;
-                result.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "std::text::md_to_html returns String but \
-                         called in a position that expects no value"
-                            .to_string(),
-                    )
-                })
-            }
-            ["std", "str", "can_parse_int"] => {
-                self.lower_std_str_can_parse_int(args, scope)
-            }
-            // m96: std::ts::* tree-sitter substrate. A statement
-            // reaches these too, its value dropped, for
-            // parse-and-discard patterns (unusual but legal).
-            ["std", "ts", "parse_go"] => self.lower_std_ts_parse_go(args, scope),
-            ["std", "ts", "root_node"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_root_node",
-                args,
-                scope,
-                "std::ts::root_node",
-            ),
-            ["std", "ts", "node_kind"] => self.lower_std_ts_int1_to_string(
-                "lotus_ts_node_kind",
-                args,
-                scope,
-                "std::ts::node_kind",
-            ),
-            ["std", "ts", "node_text"] => self.lower_std_ts_int1_to_string(
-                "lotus_ts_node_text",
-                args,
-                scope,
-                "std::ts::node_text",
-            ),
-            ["std", "ts", "node_child_count"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_child_count",
-                args,
-                scope,
-                "std::ts::node_child_count",
-            ),
-            ["std", "ts", "node_named_child_count"] => self
-                .lower_std_ts_int1_to_int(
-                    "lotus_ts_node_named_child_count",
-                    args,
-                    scope,
-                    "std::ts::node_named_child_count",
-                ),
-            ["std", "ts", "node_child"] => self.lower_std_ts_int2_to_int(
-                "lotus_ts_node_child",
-                args,
-                scope,
-                "std::ts::node_child",
-            ),
-            ["std", "ts", "node_named_child"] => self.lower_std_ts_int2_to_int(
-                "lotus_ts_node_named_child",
-                args,
-                scope,
-                "std::ts::node_named_child",
-            ),
-            ["std", "ts", "node_start_byte"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_start_byte",
-                args,
-                scope,
-                "std::ts::node_start_byte",
-            ),
-            ["std", "ts", "node_end_byte"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_end_byte",
-                args,
-                scope,
-                "std::ts::node_end_byte",
-            ),
-            ["std", "ts", "node_is_named"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_is_named",
-                args,
-                scope,
-                "std::ts::node_is_named",
-            ),
-            // m79: std::time::monotonic alias for expression position.
-            // sleep is statement-only; trying to use it in an
-            // expression falls through to the catch-all error.
-            ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
-            ["std", "time", "monotonic_ns"] => self.lower_time_monotonic_ns(args),
-            ["std", "decimal", "to_float"] => self.lower_std_decimal_to_float(args, scope),
-            ["std", "decimal", "format"] => self.lower_std_decimal_format(args, scope),
-            // C7 (pond follow-up): wall-clock seconds-since-epoch
-            // as Int.
-            ["std", "time", "now"] => self.lower_std_time_now(args),
-            ["std", "time", "time_from_unix"] => {
-                self.lower_std_time_from_unix(args, scope)
-            }
-            // GH #607: the Time-valued surface.
-            ["std", "time", "current"] => self.lower_std_time_current(args),
-            ["std", "time", "iso8601"] => self.lower_std_time_iso8601(args, scope),
-            ["std", "time", "unix"] => self.lower_std_time_unix(args, scope),
-            ["std", "time", "nanos"] => self.lower_std_time_nanos(args, scope),
-            ["std", "time", "from_nanos"] => self.lower_std_time_from_nanos(args, scope),
-            // #353: the `can_` probe beside the fallible parse, the
-            // same pairing `str::parse_int` / `can_parse_int` has.
-            ["std", "time", "can_parse_iso8601"] => {
-                if args.len() != 1 {
-                    return Err(CodegenError::Unsupported(format!(
-                        "std::time::can_parse_iso8601 takes 1 arg, got {}",
-                        args.len()
-                    )));
-                }
-                let (v, ty) = self.lower_expr(&args[0], scope)?;
-                let s_val = self.unpack_view_if_needed(v, &ty)?;
-                let f = self
-                    .module
-                    .get_function("lotus_time_can_parse_iso8601")
-                    .expect("lotus_time_can_parse_iso8601 declared");
-                let r = self
-                    .builder
-                    .build_call(f, &[s_val.into()], "iso.can.ret")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("returns i32");
-                let b = self
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        r.into_int_value(),
-                        self.context.i32_type().const_zero(),
-                        "iso.can.bool",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((b.into(), CodegenTy::Bool))
-            }
-            // std::math::* libm Float primitives. Resolves
-            // notes/hale-friction.md 2026-05-10 float-surface-gaps
-            // (the `std::math` sub-bullet). v0 cut: unary
-            // sqrt/exp/log/floor/ceil + binary pow. Each lowers to
-            // a libm call through the extern decl in
-            // declare_builtins; arg type-checked as Float.
-            ["std", "math", "sqrt"] => {
-                self.lower_std_math_unary("sqrt", args, scope)
-            }
-            ["std", "math", "exp"] => {
-                self.lower_std_math_unary("exp", args, scope)
-            }
-            ["std", "math", "log"] => {
-                self.lower_std_math_unary("log", args, scope)
-            }
-            ["std", "math", "floor"] => {
-                self.lower_std_math_unary("floor", args, scope)
-            }
-            ["std", "math", "ceil"] => {
-                self.lower_std_math_unary("ceil", args, scope)
-            }
-            ["std", "math", "pow"] => {
-                self.lower_std_math_binary("pow", args, scope)
-            }
-            // a downstream tool F.9 (2026-05-23): trig surface. Same libm
-            // pass-through shape as sqrt / exp / log.
-            ["std", "math", "sin"] => {
-                self.lower_std_math_unary("sin", args, scope)
-            }
-            ["std", "math", "cos"] => {
-                self.lower_std_math_unary("cos", args, scope)
-            }
-            ["std", "math", "tan"] => {
-                self.lower_std_math_unary("tan", args, scope)
-            }
-            ["std", "math", "asin"] => {
-                self.lower_std_math_unary("asin", args, scope)
-            }
-            ["std", "math", "acos"] => {
-                self.lower_std_math_unary("acos", args, scope)
-            }
-            ["std", "math", "atan"] => {
-                self.lower_std_math_unary("atan", args, scope)
-            }
-            ["std", "math", "atan2"] => {
-                self.lower_std_math_binary("atan2", args, scope)
-            }
-            // C8 (pond follow-up): IEEE 754 surface.
-            // tanh is a direct libm extern (same shape as sqrt /
-            // exp / log / floor / ceil / pow). nan / inf are
-            // nullary sentinels via lotus_math_* C wrappers (no
-            // libm dependency at link time). is_nan returns Bool
-            // through lotus_math_is_nan (canonical f != f test).
-            ["std", "math", "tanh"] => {
-                self.lower_std_math_unary("tanh", args, scope)
-            }
-            ["std", "math", "nan"] => self.lower_std_math_nullary_float(
-                "lotus_math_nan",
-                "nan",
-                args,
-            ),
-            ["std", "math", "inf"] => self.lower_std_math_nullary_float(
-                "lotus_math_inf",
-                "inf",
-                args,
-            ),
-            ["std", "math", "is_nan"] => {
-                self.lower_std_math_is_nan(args, scope)
-            }
-            // WS3.1 (2026-06-11): explicit numeric conversions in
-            // expression position. `int_to_float` is `sitofp`
-            // (widening); `float_to_int` is `fptosi` (narrowing,
-            // round-toward-zero). Before this, every numeric
-            // consumer round-tripped through ASCII (`to_string` +
-            // `parse_*`). See spec/types.md § Numeric conversions.
-            ["std", "math", "int_to_float"] => {
-                self.lower_std_math_int_to_float(args, scope)
-            }
-            ["std", "math", "float_to_int"] => {
-                self.lower_std_math_float_to_int(args, scope)
-            }
-            // Float→Int with explicit rounding mode → Int result.
-            // `trunc` truncates toward zero (alias of float_to_int);
-            // `round` rounds half away from zero. Both lower to
-            // `fptosi` (+ a compare/select shift for round) — pure
-            // LLVM, so they need no libm symbol on wasm32 (unlike
-            // `floor`/`ceil`, which are libm and return Float).
-            ["std", "math", "trunc"] => {
-                self.lower_std_math_to_int("trunc", false, args, scope)
-            }
-            ["std", "math", "round"] => {
-                self.lower_std_math_to_int("round", true, args, scope)
-            }
-            // 2026-05-16: std::text byte-class predicates. Each
-            // takes a byte value (Int) and returns Bool. Inline
-            // range checks — no libc dependency, no C primitive,
-            // pure LLVM IR. Address the friction the wordfreq
-            // corpus surfaced: every program reinvents the same
-            // 4-line is_word_char fn.
-            ["std", "text", "is_alpha"] => {
-                self.lower_std_text_byte_pred("is_alpha", args, scope)
-            }
-            ["std", "text", "is_digit"] => {
-                self.lower_std_text_byte_pred("is_digit", args, scope)
-            }
-            ["std", "text", "is_alnum"] => {
-                self.lower_std_text_byte_pred("is_alnum", args, scope)
-            }
-            ["std", "text", "is_whitespace"] => {
-                self.lower_std_text_byte_pred("is_whitespace", args, scope)
-            }
-            ["std", "text", "is_word_char"] => {
-                self.lower_std_text_byte_pred("is_word_char", args, scope)
-            }
-            // 2026-05-17 — parse_int / parse_float are fallible-
-            // only at the expression dispatch; surface a clear
-            // "this returns fallible" diagnostic when the caller
-            // forgets the `or` clause. (Other fallible-flipped
-            // paths like fs::read_file still have a non-fallible
-            // expression-dispatch sibling for legacy reasons —
-            // this arm doesn't shadow them.) C9 added the fs
-            // surfaces; C4 added getrandom.
-            ["std", "str", "parse_int"]
-            | ["std", "str", "parse_float"]
-            | ["std", "io", "fs", "rename"]
-            | ["std", "io", "fs", "unlink"]
-            | ["std", "io", "fs", "mktemp"]
-            | ["std", "os", "getrandom"]
-            | ["std", "process", "run"]
-            | ["std", "process", "__spawn"]
-            | ["std", "process", "__wait_pid"]
-            | ["std", "process", "__try_wait_pid"]
-            | ["std", "process", "__signal_pid"]
-            | ["std", "process", "__kill_escalate"]
-            | ["std", "process", "__pipe_read"]
-            | ["std", "process", "__pipe_write"]
-            | ["std", "io", "file", "__open"]
-            | ["std", "io", "file", "__write_bytes"]
-            | ["std", "io", "file", "__seek"]
-            | ["std", "io", "udp", "__bind"]
-            | ["std", "io", "udp", "bind"]
-            | ["std", "io", "udp", "__send"]
-            | ["std", "io", "udp", "send"]
-            | ["std", "io", "udp", "__recv"]
-            | ["std", "io", "udp", "recv"]
-            | ["std", "io", "udp", "join_group"]
-            | ["std", "io", "udp", "leave_group"]
-            | ["std", "io", "udp", "set_multicast_ttl"]
-            | ["std", "io", "udp", "set_multicast_loop"]
-            | ["std", "io", "udp", "set_multicast_iface"]
-            | ["std", "io", "udp", "set_option_int"]
-            | ["std", "io", "udp", "set_option_bool"]
-            | ["std", "io", "udp", "get_option_int"]
-            | ["std", "io", "udp", "recv_with_source"]
-            | ["std", "io", "udp", "set_recv_timeout"]
-            | ["std", "io", "udp", "set_send_timeout"]
-            | ["std", "io", "tls", "set_recv_timeout"]
-            | ["std", "io", "tls", "set_send_timeout"] => {
-                Err(CodegenError::Unsupported(format!(
-                    "`{}` returns a fallible value — address the error with \
-                     `or raise`, `or <substitute>`, or `or self.handle(err)`",
-                    segs.join("::")
-                )))
-            }
-            _ => {
-                // Fallback: stdlib paths that rename to an Hale-
-                // side user fn (via hale_stdlib::PATH_RENAMES) get
-                // dispatched through user_fns. The fallible side
-                // (lower_fallible_call) already has this fallback;
-                // mirror it here for non-fallible callsites. Used
-                // by `std::io::file::at_eof(f)`, `std::io::file::
-                // read_line(f)`, etc. — the user-facing wrappers
-                // in ../../hale-stdlib/hl/file.hl.
-                if let Some(mangled) = self.mangled_for_path(segs) {
-                    if self.user_fns.contains_key(&mangled) {
-                        let result =
-                            self.lower_user_fn_call(&mangled, args, scope)?;
-                        return result.ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "stdlib path `{}` returns no value but is \
-                                 used in expression position",
-                                segs.join("::")
-                            ))
-                        });
-                    }
-                }
-                Err(CodegenError::Unsupported(format!(
-                    "stdlib path `{}` in expression position — not implemented",
-                    segs.join("::")
-                )))
-            }
-        }
-    }
-
     /// Widen an Int value to Float, or pass through if it's
     /// already Float. Used at Float-typed slot boundaries
     /// (std::math fn args, let-binding ascription, fn-arg sites)
@@ -27699,8 +27587,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     // ---- m96: std::ts (tree-sitter) lowering helpers ----
     //
-    // The path-call dispatch arms (in `lower_stdlib_path_call_expr`,
-    // which a statement reaches too) route `std::ts::*` to these
+    // The path-call dispatch arms (in `lower_std_intrinsic`, which
+    // a statement reaches too) route `std::ts::*` to these
     // helpers. Each one
     // is a thin wrapper over a `lotus_ts_*` extern declared in
     // `declare_builtins`. Tree and node handles are i64 — 1-based
@@ -33652,13 +33540,123 @@ mod tests {
     }
 }
 
+/// Where a `std::*` call sits, for [`Cx::lower_std_call`]: a statement
+/// (`lower_stmt_at`'s path-call statement, through `lower_path_call`) or
+/// a value (`lower_expr`, through `lower_path_call_expr`). A call under
+/// `or` is the fallible dispatcher's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StdCallPos {
+    Statement,
+    Value,
+}
+
+/// The bare statement calls lowering refuses as fallible ("returns a
+/// fallible value — address the error with `or raise` ..."): C9's
+/// fallible-only fs surfaces, C4's getrandom, C2's subprocess
+/// primitives, the file and udp primitives and two tls setters. Most
+/// have no signature row, so the checker does not refuse them first.
+/// S5 replaces this list with the row's fallibility.
+const REFUSED_BARE_STATEMENT: &[IntrinsicId] = &[
+    IntrinsicId::IoFsRename,
+    IntrinsicId::IoFsUnlink,
+    IntrinsicId::IoFsMktemp,
+    IntrinsicId::OsGetrandom,
+    IntrinsicId::ProcessRun,
+    IntrinsicId::ProcessSpawnRaw,
+    IntrinsicId::ProcessWaitPidRaw,
+    IntrinsicId::ProcessTryWaitPidRaw,
+    IntrinsicId::ProcessSignalPidRaw,
+    IntrinsicId::ProcessKillEscalateRaw,
+    IntrinsicId::ProcessPipeReadRaw,
+    IntrinsicId::ProcessPipeWriteRaw,
+    IntrinsicId::IoFileOpenRaw,
+    IntrinsicId::IoFileWriteBytesRaw,
+    IntrinsicId::IoFileSeekRaw,
+    IntrinsicId::IoUdpBindRaw,
+    IntrinsicId::IoUdpBind,
+    IntrinsicId::IoUdpSendRaw,
+    IntrinsicId::IoUdpSend,
+    IntrinsicId::IoUdpRecvRaw,
+    IntrinsicId::IoUdpRecv,
+    IntrinsicId::IoUdpJoinGroup,
+    IntrinsicId::IoUdpLeaveGroup,
+    IntrinsicId::IoUdpSetMulticastTtl,
+    IntrinsicId::IoUdpSetMulticastLoop,
+    IntrinsicId::IoUdpSetMulticastIface,
+    IntrinsicId::IoUdpSetOptionInt,
+    IntrinsicId::IoUdpSetOptionBool,
+    IntrinsicId::IoUdpGetOptionInt,
+    IntrinsicId::IoUdpRecvWithSource,
+    IntrinsicId::IoUdpSetRecvTimeout,
+    IntrinsicId::IoUdpSetSendTimeout,
+    IntrinsicId::IoTlsSetRecvTimeout,
+    IntrinsicId::IoTlsSetSendTimeout,
+];
+
+/// The bare value calls lowering refuses as fallible, in the same
+/// words: the statement list and 2026-05-17's parse_int / parse_float,
+/// which are fallible-only at the expression dispatch. S5 replaces this
+/// list with the row's fallibility.
+const REFUSED_BARE_VALUE: &[IntrinsicId] = &[
+    IntrinsicId::StrParseInt,
+    IntrinsicId::StrParseFloat,
+    IntrinsicId::IoFsRename,
+    IntrinsicId::IoFsUnlink,
+    IntrinsicId::IoFsMktemp,
+    IntrinsicId::OsGetrandom,
+    IntrinsicId::ProcessRun,
+    IntrinsicId::ProcessSpawnRaw,
+    IntrinsicId::ProcessWaitPidRaw,
+    IntrinsicId::ProcessTryWaitPidRaw,
+    IntrinsicId::ProcessSignalPidRaw,
+    IntrinsicId::ProcessKillEscalateRaw,
+    IntrinsicId::ProcessPipeReadRaw,
+    IntrinsicId::ProcessPipeWriteRaw,
+    IntrinsicId::IoFileOpenRaw,
+    IntrinsicId::IoFileWriteBytesRaw,
+    IntrinsicId::IoFileSeekRaw,
+    IntrinsicId::IoUdpBindRaw,
+    IntrinsicId::IoUdpBind,
+    IntrinsicId::IoUdpSendRaw,
+    IntrinsicId::IoUdpSend,
+    IntrinsicId::IoUdpRecvRaw,
+    IntrinsicId::IoUdpRecv,
+    IntrinsicId::IoUdpJoinGroup,
+    IntrinsicId::IoUdpLeaveGroup,
+    IntrinsicId::IoUdpSetMulticastTtl,
+    IntrinsicId::IoUdpSetMulticastLoop,
+    IntrinsicId::IoUdpSetMulticastIface,
+    IntrinsicId::IoUdpSetOptionInt,
+    IntrinsicId::IoUdpSetOptionBool,
+    IntrinsicId::IoUdpGetOptionInt,
+    IntrinsicId::IoUdpRecvWithSource,
+    IntrinsicId::IoUdpSetRecvTimeout,
+    IntrinsicId::IoUdpSetSendTimeout,
+    IntrinsicId::IoTlsSetRecvTimeout,
+    IntrinsicId::IoTlsSetSendTimeout,
+];
+
+/// Whether lowering refuses a bare call of `id` at `pos` as fallible.
+/// A statement the statement list does not name was the value
+/// position's call with its value dropped (S1), so the value list
+/// refuses it too: that is how a bare `parse_int` statement is refused.
+fn refuses_bare(id: IntrinsicId, pos: StdCallPos) -> bool {
+    match pos {
+        StdCallPos::Statement => {
+            REFUSED_BARE_STATEMENT.contains(&id) || REFUSED_BARE_VALUE.contains(&id)
+        }
+        StdCallPos::Value => REFUSED_BARE_VALUE.contains(&id),
+    }
+}
+
 /// 2026-05-26 — named socket-option constants exposed via
 /// `std::io::sockopt::<NAME>()`. Each value is fetched at runtime
 /// from a C getter (so platform-correct: Linux SOL_SOCKET=1,
 /// macOS SOL_SOCKET=0xffff, etc.). Keep alphabetized; add new
 /// entries here AND in `lotus_arena.c`'s LOTUS_SOCKOPT_GETTER
-/// block. Used by both the extern-declaration loop and the
-/// path-call dispatch matcher.
+/// block. Used by the extern-declaration loop; a call dispatches from
+/// the `std::io::sockopt` rows, which name the same set (held equal by
+/// `stdlib::sockopt`'s test).
 pub(crate) const SOCKOPT_NAMES: &[&str] = &[
     "IPPROTO_IP",
     "IPPROTO_IPV6",

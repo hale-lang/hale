@@ -973,6 +973,10 @@ row	Probe@main1	Probe	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 
+== crates/hale-cli/tests/source_map.rs#00cdf6aa
+root	App	the entry
+row	App@literal1	App	main	default
+
 == crates/hale-cli/tests/target_model.rs#e644e39b
 root	App	the entry
 domain	pool:io	async_io

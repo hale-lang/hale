@@ -107,6 +107,24 @@ pub(crate) fn run_check_impl_labelled(
     env_label: Option<&str>,
     env_roles: Option<&str>,
 ) -> u8 {
+    match load_for_check(target, adopt_env, env_label, env_roles) {
+        Ok(snap) => check_loaded(target, gate_warnings, &snap),
+        Err(code) => code,
+    }
+}
+
+/// The check's snapshot of `target`, loaded as `hale check` loads it:
+/// the `--target` flag, the environment's constitutions and its role
+/// table. A load that fails has printed why, and `Err` is the exit
+/// code. The environment matrix keeps the snapshot its pair's check
+/// reads, and reads the identities and the roles from it too (F.40
+/// phase 4, A3).
+pub(crate) fn load_for_check(
+    target: &Path,
+    adopt_env: &[String],
+    env_label: Option<&str>,
+    env_roles: Option<&str>,
+) -> Result<Snapshot, u8> {
     // F.18: a whole seed (a directory) is checked to what `build`
     // accepts — a call to a bare name nothing binds is an error here;
     // one file of a seed keeps the permissive reading for a sibling's fn
@@ -130,12 +148,12 @@ pub(crate) fn run_check_impl_labelled(
             Ok(spec) => config.target = configured_target(compile_target(spec), true),
             Err(msg) => {
                 eprintln!("{}", msg);
-                return 2;
+                return Err(2);
             }
         },
         Err(msg) => {
             eprintln!("{}", msg);
-            return 2;
+            return Err(2);
         }
     }
     // GH #409: an environment binds law to an ENTRYPOINT; the snapshot
@@ -152,18 +170,23 @@ pub(crate) fn run_check_impl_labelled(
     // analysis walks, so effect assertions, budgets and taint do not
     // stop at a seed boundary), then runs the one sequence before the
     // check: sync inference, the desugars, the mint.
-    let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
-        Ok(s) => s,
+    match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
+        Ok(s) => Ok(s),
         // GH #765: a failure that carries diagnostics renders them
         // here, honouring `--json` and resolving each span against
         // the file it lives in — including a file reached only
         // through an `import`.
-        Err(LoadError::Load(f)) => return f.report(),
+        Err(LoadError::Load(f)) => Err(f.report()),
         Err(LoadError::Refused(msg)) => {
             eprintln!("{}", msg);
-            return 2;
+            Err(2)
         }
-    };
+    }
+}
+
+/// The check over the snapshot [`load_for_check`] loaded: its
+/// diagnostics and every flag's dump, and the exit code.
+pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) -> u8 {
     let (sources, file_bases, import_renames, own_files) =
         (snap.sources(), snap.file_bases(), snap.import_renames(), snap.own_files());
     let bundle = snap.bundle();
@@ -347,7 +370,7 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let artifact = match topology_artifact(&artifact_cell, &snap, target, "emit a topology artifact") {
+        let artifact = match topology_artifact(&artifact_cell, snap, target, "emit a topology artifact") {
             Ok(a) => a,
             Err(code) => return code,
         };
@@ -558,7 +581,7 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = check_topology_path {
-        let current = match topology_artifact(&artifact_cell, &snap, target, "compare a topology baseline") {
+        let current = match topology_artifact(&artifact_cell, snap, target, "compare a topology baseline") {
             Ok(a) => a,
             Err(code) => return code,
         };

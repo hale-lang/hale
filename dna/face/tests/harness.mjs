@@ -162,7 +162,13 @@ export const test = base.extend({
           originalOrganization = originalOrganization.replace('        metrics: Metrics', `${members}\n        metrics: Metrics`);
           await writeFile(orgSource, originalOrganization);
         }
-        await git(['add', 'dna/org']);
+        // A DNA project has a manifest at its root, as `hale dna new` writes
+        // one, and the compiler names a program's files relative to it. In a
+        // tree with none it names them relative to the seed (`main.hl`), so
+        // the organization's source would not be `dna/org/main.hl`.
+        const manifest = path.join(root, 'hale.toml');
+        try { await readFile(manifest); } catch { await writeFile(manifest, '[package]\nname = "face-organization"\nversion = "0.0.0"\n'); }
+        await git(['add', 'dna/org', 'hale.toml']);
         await git(['commit', '-q', '-m', 'Declare browser organization fixture']);
         data.organizationHead = await git(['rev-parse', 'HEAD']);
         // Domain ownership names intentionally do not equal compiler instance

@@ -112,11 +112,20 @@ hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
 - **Executable identity.** The recording carries a framed SHA-256
   over the full compiler/runtime/stdlib source tree, the compiler
   version, build options, and every application source's path,
-  length, and contents. The build options are the ones the
+  length, and contents. A path is the one the topology artifact's
+  `sources` table gives the file, never an absolute one, so the
+  same tree checked out elsewhere, or run from another directory,
+  has the same identity. The build options are the ones the
   compiling command was given — `hale run` and `hale replay` take
   `hale build`'s option flags — so a run recorded under `hale run
   --dev` replays under `hale replay --dev`, and a default replay
-  refuses it. A structurally compatible model with a
+  refuses it. The same holds for `--env`: a run recorded under
+  `--env prod` replays under `hale replay --env prod`. A binary from
+  `hale build` carries the identity `hale run` would give the same
+  program — the debug information a build adds is not part of it —
+  so you can record the binary you ship and replay it against its
+  source file; a *directory* build's recording replays against the
+  directory's entry file. A structurally compatible model with a
   changed function body is *not* the same executable — it is
   rejected, with `--allow-unverified-model` as the explicit
   override for unstamped or divergent-build recordings.

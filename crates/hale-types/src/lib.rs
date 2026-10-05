@@ -69,6 +69,7 @@ pub mod purity;
 pub mod quantitative;
 pub mod resolve;
 pub mod resolved;
+pub mod roles;
 pub mod unit_graph;
 mod qualified_subjects;
 pub mod snapshot;
@@ -363,6 +364,8 @@ fn check_numbered_bundle(
     let target = capability::target_row(bundle);
     let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = bundle_law_selection(bundle);
+    let roles = roles::role_rows(bundle, &entry);
+    let api_surface = bundle_api_surface(bundle, &entry);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -381,6 +384,8 @@ fn check_numbered_bundle(
             target: &target,
             uses: &uses,
             laws: &laws,
+            roles: &roles,
+            api_surface: api_surface.as_ref(),
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -432,6 +437,18 @@ fn check_numbered_bundle(
 pub fn bundle_law_selection(bundle: &Bundle<'_>) -> claims::LawSelection {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     claims::select_laws(&programs, &bundle.import_renames, &claims::EnvBinding::default())
+}
+
+/// The served surface of a bundle no snapshot holds: the api entry of
+/// the entry row's root (`entry`), over the bundle's programs as they
+/// stand, which the sequence has already generated the binding into, or
+/// not (a test that generated it itself). What the test entries' check
+/// reads ([`check_bundle_opts_scoped`], [`check::check_bundle`]); every
+/// verb reads its snapshot's, the surface its sequence generated the
+/// binding from (`Snapshot::api_surface`).
+pub fn bundle_api_surface(bundle: &Bundle<'_>, entry: &entry::EntryRow) -> Option<hale_syntax::api_gen::ApiSurface> {
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    hale_syntax::api_gen::api_surface(&programs, entry.root().and_then(|m| m.decl(bundle)))
 }
 
 /// The handler rows of a bundle no snapshot holds, in the bundle's

@@ -364,7 +364,12 @@ hale replay run.halerec app.hl --dev      # the build options the recording was 
 — as `hale run` does — and needs the ones the recording was made
 under: they are part of the execution identity, so a recording from
 `hale run --dev` is refused by a default `hale replay` and admitted
-by `hale replay --dev`.
+by `hale replay --dev`, and one made under `--env prod` needs `hale
+replay --env prod`. A binary from `hale build app.hl`, run with
+`LOTUS_OBS_RECORD` set, records a run that `hale replay ... app.hl`
+admits: a build and `hale run` give one program one identity. So does
+a directory build: the recording of `myapp/myapp` replays under
+`hale replay ... myapp/main.hl`.
 
 The full story — admission by executable identity, the
 safe-by-default effect gate (`--allow-live-effects`), env-value

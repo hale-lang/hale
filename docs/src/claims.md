@@ -791,7 +791,11 @@ sibling was left out. A seed with no `main locus` of its own at the
 top level is not an entrypoint and is not demanded of the manifest —
 one that only imports a library's `main locus`, or keeps its `main
 locus` inside a `module { }`, included — and `--env` refuses it as a
-deployment target.
+deployment target. List one in an environment anyway and its pair
+fails with that refusal and nothing more: there is no entrypoint for
+the environment's roles to be mapped to, so the matrix reports no role
+coverage for it, and it does not compare that seed's constitutions
+with the entrypoints'.
 
 ### Groups must be declared by every adopting entrypoint
 
@@ -1206,7 +1210,10 @@ The pieces worth knowing:
 - **`provenance`.** Byte-offset spans (`[start, end]`) for every
   user edge and decl, each with the `source` id of the file it
   sits in (the `sources` rows carry each file's path and digest) —
-  the "where to edit" data, unhashed by design.
+  the "where to edit" data, unhashed by design. A path is never
+  absolute: it is relative to the nearest `hale.toml` when every
+  file is under it, and otherwise to the deepest directory holding
+  them all, so one tree checked out anywhere gives one artifact.
 - **`lowered`.** Every fn-grained certificate — each `@effects`
   assert, each `@phase_effects` phase contract, each `@budget` —
   as the claim form it is pointwise sugar for, with the verdict of

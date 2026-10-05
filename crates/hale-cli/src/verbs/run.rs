@@ -9,6 +9,8 @@ use crate::shared::source::Disk;
 use crate::shared::process::dies_with_us;
 use crate::shared::options::build_config;
 use crate::shared::options::exec_digest;
+use crate::shared::options::source_frames;
+use crate::shared::options::identity_options;
 use crate::shared::options::model_identity;
 use crate::shared::options::note_unmapped_roles;
 use crate::shared::diag::render_blocked;
@@ -180,7 +182,10 @@ pub(crate) fn run_program(
             return ExitCode::from(1);
         }
     };
-    let options_fp = build_env::options_fingerprint(&options);
+    // The identity's options are `build`'s and `replay`'s (I2): the
+    // `[ffi]` surface of the imported packages among them. `run` builds
+    // with its flags alone.
+    let options_fp = build_env::options_fingerprint(&identity_options(&options, &snap, target));
     let identity = match model_identity(&snap, view, &options) {
         Ok(x) => x,
         Err(b) => {
@@ -188,7 +193,7 @@ pub(crate) fn run_program(
             return ExitCode::from(1);
         }
     };
-    let digest = exec_digest(sources, target, &options_fp, identity.plan_digest);
+    let digest = exec_digest(&source_frames(&snap), &options_fp, identity.plan_digest);
     compile_and_exec(
         view,
         user_args,
