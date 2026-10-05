@@ -391,7 +391,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call_expr` — 271 `["std", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`. *Removed when:* codegen dispatches from the registry row.
 - `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call` — the statement-form twin of the expression dispatch: 191 more `["std", ..]` literals. *Removed when:* same.
-- `crates/hale-codegen/src/channels/mod.rs` · `lower_fallible_call` — the fallible-call dispatch, a third copy of the stdlib call shapes (150 literals). *Removed when:* same.
+- `crates/hale-codegen/src/channels/mod.rs` · `try_lower_fallible_stdlib_path_call` — the fallible-call dispatch (`path or raise` on a stdlib path), a third copy of the stdlib call shapes: 150 more `["std", ..]` literals. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `value_to_string_supports` — the printable set, kept in lockstep by hand with the checker's `ty_is_printable`. *Removed when:* one predicate.
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.
 - `crates/hale-codegen/src/codegen.rs` · `declare_builtin_closure_violation_type` — a hand-maintained mirror of the checker's injected builtin types. *Removed when:* one declaration.
@@ -749,7 +749,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/closure.rs` · `EpochSpec::Birth` — event names are matched ad hoc in codegen; a clause naming an event the locus never reaches is a silent no-op. *Removed when:* the clause joins the lifecycle table and an unreachable event is a law violation with a witness.
+- `crates/hale-codegen/src/codegen.rs` · `emit_accumulator_reset_for_event` — the recovery events a closure names are matched ad hoc: `persists_through(...)` takes any identifier (`parse_recovery_event_name`), `locus/decl.rs` copies the names as strings, and this function compares them with the event being lowered, which is only ever `restart`, `restart_in_place` or `quarantine`, so a clause naming an event the locus never reaches is a silent no-op; `resets_on(...)` is read by nothing. The epoch is not ad hoc: its names are a closed enum (`EpochSpec`) the parser enforces. *Removed when:* the clause joins the lifecycle table and an unreachable event is a law violation with a witness.
 
 **Consumers.** check; codegen
 
@@ -773,7 +773,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-syntax/src/api_gen.rs` · `generate_api` — run by check with no roles and by build with roles, so check's description and model never carry what build --env bakes in; codegen runs it again. *Removed when:* one surface per snapshot, with the configuration as an input.
+- `crates/hale-syntax/src/api_gen.rs` · `generate_api` — its one production call is the desugar sequence's (`desugar_sequence.rs`), with the snapshot's roles; codegen no longer runs it (F.40 phase 2.2b), and the snapshot's `Config` carries `api`, `api_roles` and `environment`, which `Config::digest` hashes. What remains: `Config::check` carries no roles and `hale check --env` adopts the environment's constitutions only, so the check judges a generated binding whose role source differs from the one `build --env` lowers. *Removed when:* `hale check --env` carries the environment's roles.
 - `crates/hale-types/src/check.rs` · `check_api_roles` — role declarations, includes and gates are judged over the AST. *Removed when:* a law over the surface rows.
 - `crates/hale-cli/src/verbs/check/matrix.rs` · `role_coverage` — re-runs the loader and reads pre-desugar programs. *Removed when:* reads the rows.
 
@@ -1352,8 +1352,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/topology_law.rs` · `validate_law_account` — the CLI recomputes the law digest and re-judges certificate and document verdicts when it admits an artifact: a second law authority. *Removed when:* admission validates ties and reads verdicts; it re-derives none.
-- `crates/hale-cli/src/verbs/check/matrix.rs` · `constitution_identities` — re-runs the loader, the scope and the bus graph to re-derive identities the artifact already carries. *Removed when:* reads the artifact's section.
+- `crates/hale-cli/src/topology_law.rs` · `validate_law_account` — admitting an artifact, the CLI recomputes the law digest and compares the evidence inputs digest, decodes every law payload into a private copy of the law vocabulary (`decode_law`), re-renders the claims' forms with a private renderer that mirrors `hale-model`'s, and re-aggregates the stated verdicts (a row's from its certificates', the document's from the rows'); it evaluates no law over a model. *Removed when:* admission validates ties and reads verdicts; it re-derives none.
+- `crates/hale-cli/src/verbs/check/matrix.rs` · `constitution_identities` — re-runs the loader (`collect_checkable`) and law selection's adoption, not the scope or the bus graph, to re-derive identities the artifact already carries. *Removed when:* reads the artifact's section.
 - `crates/hale-types/src/claims.rs` · `constitution_identities` — the identity derivation the matrix calls. *Removed when:* one derivation, projected.
 
 **Consumers.** check / verify; the check's laws stage (judged over the snapshot's model, after its typing stage) (`crates/hale-frontend/src/snapshot.rs` · `demand_laws`); topology (law section); fleet; dna (dna_law.rs wording); model diff
