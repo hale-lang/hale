@@ -10,7 +10,7 @@
 //! change its verdicts).
 //!
 //! Change 9 finished it: these engines ARE the authority now, for
-//! `hale check` (via [`claim_law_diags`]) as well as for the
+//! `hale check` (via [`claim_law_diags_over`]) as well as for the
 //! artifact. `claims.rs` keeps law SELECTION — which laws exist at
 //! all — and nothing else: Change 10 deleted the evaluator that
 //! used to sit beside it.
@@ -4403,26 +4403,8 @@ pub fn judge_certificates(
 /// check; re-emitting them here would duplicate, which is the thing
 /// being deleted. `Unmigrated` rows keep their existing single
 /// authority (`frontier`, `quantitative`, `budget_check`).
-pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
-    // The epic's demand rule: a program that swears to nothing has
-    // nothing to judge, and must not pay for a model derivation.
-    // The scan is structural and AST-cheap — no resolution, no
-    // summary — so the no-claims path (the LSP's) stays what it was.
-    if !has_claim_surface(bundle) {
-        return Vec::new();
-    }
-    let model = crate::model_builder::derive_application_model(bundle);
-    let summary = crate::alloc_summary::derive_alloc_summary(bundle);
-    claim_law_diags_over(
-        bundle,
-        &model,
-        &crate::effects::effect_certificates(bundle),
-        &summary,
-        &crate::bundle_law_selection(bundle),
-    )
-}
-
-/// [`claim_law_diags`] over a model the caller already holds: the
+///
+/// It judges over a model the caller already holds: the
 /// frontend's snapshot derives the model once, as a family of its own,
 /// and judges the laws over it. The caller has already asked
 /// [`has_claim_surface`]; a bundle with no surface judges nothing here
@@ -4950,7 +4932,7 @@ pub fn judge_causes_witnessed(
             Verdict::Violated
         } else if uncertain {
             // Round 3: an uncertified row without an explanation was
-            // SILENT on the check path — `claim_law_diags` appends
+            // SILENT on the check path — `claim_law_diags_over` appends
             // diagnostics, never verdicts — so a law that could not
             // be certified compiled clean while the artifact marked
             // the document `law_failed`. That is exactly the
@@ -5636,7 +5618,7 @@ pub fn judge_depends_witnessed(
         let verdict = if !diags.is_empty() {
             Verdict::Violated
         } else if uncertain {
-            // Round 3: never silent. `claim_law_diags` appends
+            // Round 3: never silent. `claim_law_diags_over` appends
             // diagnostics, not verdicts, so an unexplained
             // `Uncertified` compiled clean while the artifact
             // marked the document `law_failed` — and left the row

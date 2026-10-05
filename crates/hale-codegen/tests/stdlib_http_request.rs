@@ -18,6 +18,8 @@ use std::process::Command;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_test_http_req_{}", name));
@@ -226,7 +228,7 @@ fn http_header_evaluates_its_receiver_once() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let errors: Vec<String> =
-        hale_types::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
     assert!(errors.is_empty(), "the checker refuses it: {errors:?}");
     let (stdout, status) = build_and_run("header_receiver_once", src);
     assert!(status.success(), "exit: {:?}", status);

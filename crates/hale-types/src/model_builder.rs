@@ -10,7 +10,7 @@
 //! summary carries yet (topic key/bound policy, subscription
 //! filters and bounds, group selectors, the declaration universe,
 //! `@sealed`). Extraction recipes deliberately mirror
-//! `topology::dump_topology`'s — the Change-3 projection must
+//! `topology::dump_topology_over`'s — the Change-3 projection must
 //! reproduce that artifact from this value, and the differential
 //! tests in `tests/model_builder.rs` hold the two extractions to
 //! agreement until Change 3 folds the artifact's own gathering
@@ -191,10 +191,6 @@ fn type_descriptor(ty: &TypeExpr) -> String {
     }
 }
 
-/// The model of a bundle no snapshot holds, built where the families it
-/// reads are built for it ([`crate::derive_application_model`]).
-pub use crate::derive_application_model;
-
 /// What the model reads from the families it does not own, each built
 /// once over the CHECKED programs (F.40 phase 2.3): the top scope with
 /// its topic rows, the bus graph, the ownership graph, the handler
@@ -261,7 +257,7 @@ pub fn derive_application_model_over(
     let effect_names = effect_classes.names();
     let ffi = &inputs.effects.ffi;
 
-    // ---- author-spelling map (same recipe as dump_topology) ----
+    // ---- author-spelling map (same recipe as dump_topology_over) ----
     let demangle: BTreeMap<&str, String> = bundle
         .import_renames
         .iter()

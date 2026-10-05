@@ -1,7 +1,7 @@
 //! GH #476 Change 3 — the model-backed artifact encoder.
 //!
 //! Projects an [`ApplicationModel`] down to the topology artifact's
-//! HASHED model half — the exact byte string `dump_topology` hashes
+//! HASHED model half — the exact byte string `dump_topology_over` hashes
 //! as `shape_hash` (`TopologyShapeV1`). The epic's exit criterion:
 //! this projection must reproduce the legacy serialization
 //! byte-for-byte over the whole corpus BEFORE any cutover, so
@@ -49,13 +49,13 @@ use hale_model::{
 use crate::topology::{fnv1a64, join_str, quote, trim_trailing_comma};
 
 /// The projected `shape_hash` — FNV-1a/64 over
-/// [`project_model_half`], exactly as `dump_topology` stamps it.
+/// [`project_model_half`], exactly as `dump_topology_over` stamps it.
 pub fn project_shape_hash(m: &ApplicationModel) -> u64 {
     fnv1a64(project_model_half(m).as_bytes())
 }
 
 /// Render the hashed model half of the topology artifact from the
-/// model alone. Byte-compatible with the string `dump_topology`
+/// model alone. Byte-compatible with the string `dump_topology_over`
 /// builds internally (the substring `shape_hash` covers).
 /// The V1 display map: raw post-merge symbol → author spelling,
 /// over EVERY declaration table. The legacy encoder ran name()
@@ -470,7 +470,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         ));
     }
 
-    // ---- serialize: byte-identical to dump_topology ----
+    // ---- serialize: byte-identical to dump_topology_over ----
     let mut model = String::new();
     model.push_str("  \"sorts\": {\n");
     model.push_str(&format!("    \"loci\": [{}],\n", join_str(loci.iter())));

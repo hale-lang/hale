@@ -174,7 +174,7 @@ pub fn lower_claims_over(
             // offset-space). Collapsing to `Synthetic` threw the
             // position away, and every consumer that resolves a
             // synthetic record renders span 0..0 — so a bundle with
-            // no source map (the public `check_program`, the LSP)
+            // no source map (a bare program's snapshot, the LSP)
             // anchored EVERY claim diagnostic at byte zero of the
             // first file, however far from the claim that was. GH
             // #476 Change 9, review round 1.
@@ -705,7 +705,7 @@ pub fn lower_claims_over(
                     // Change 5h: routed to the BUDGET bucket. The
                     // quantitative engine used to say this in
                     // check; it no longer runs there, so this issue
-                    // is now the only voice and `claim_law_diags`
+                    // is now the only voice and `claim_law_diags_over`
                     // emits it.
                     budget_issues_out.push((
                         format!(
@@ -829,7 +829,7 @@ pub fn lower_claims_over(
     // Change 5h: a misspelt `@budget(<class>)` dimension. Its old
     // reporter was the quantitative engine, which no longer runs on
     // the check path — so unlike the certificate issues above, this
-    // one has no other voice and `claim_law_diags` emits it.
+    // one has no other voice and `claim_law_diags_over` emits it.
     for (message, span) in budget_issues {
         let pid = intern(recs, span);
         table.issues.push(LoweringIssue {

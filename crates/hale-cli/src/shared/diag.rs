@@ -58,7 +58,7 @@ pub(crate) fn render_codegen_error(
 /// A snapshot family a build demanded and did not get, rendered as a
 /// compiling command reports it: the errors that blocked it, located,
 /// or its producer's own refusal as the codegen error it is (the
-/// lowering view's `resolve_program`). One line each, joined.
+/// lowering view's `resolve_rewritten`). One line each, joined.
 pub(crate) fn render_blocked(
     b: &hale_frontend::snapshot::Blocked,
     file_bases: &[(u32, PathBuf, u32)],

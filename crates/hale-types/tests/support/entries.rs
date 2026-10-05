@@ -1,17 +1,18 @@
 //! The check's and the model's test entries, through the snapshot
 //! (F.40 phase 4, T3).
 //!
-//! `hale_types` exports entry points that check or model a bundle no
-//! snapshot holds and build the top scope for themselves
+//! `hale_types` exported entry points that checked or modelled a bundle
+//! no snapshot holds and built the top scope for themselves
 //! (`check_program`, `check_bundle`, `check_bundle_opts`,
 //! `check_bundle_opts_whole_program`, `check_bundle_opts_scoped`,
-//! `derive_application_model`, `effect_certificates`, `resolve_program`,
+//! `check_bundle_for_build`, `derive_application_model`, `effect_certificates`, `resolve_program`,
 //! and the bundle forms of `claim_law_diags`, `model_shape_hash` and
-//! `dump_topology`). No verb reaches them: every verb and the editor
+//! `dump_topology`). No verb reached them: every verb and the editor
 //! build a `hale_frontend::snapshot::Snapshot` and demand the scope, the
-//! check and the model from it. This module offers each of those entries
+//! check and the model from it, and once every test had moved here the
+//! entries left `src`. This module offers each of them
 //! under the same name, with the same arguments and result, answered by
-//! a snapshot, so that a test moves to it by its imports alone. A test
+//! a snapshot, so that a test moved to it by its imports alone. A test
 //! file includes it as the codegen tests include their support:
 //!
 //! ```text
@@ -38,6 +39,11 @@
 //!   `check_bundle_opts_scoped(.., false, false)` had them.
 //! - [`check_bundle_opts_whole_program`]: the same under
 //!   `Config::check(true, allow_unowned_subscriber)`.
+//! - [`check_bundle_for_build`]: that check, then the borrow rule
+//!   (`hale_types::build_rule_diags`) over the snapshot's ownership rows,
+//!   appended after it as the old entry appended it. (A build's own
+//!   snapshot, `Config::build`, runs the rule inside its typing stage,
+//!   so its laws' diagnostics follow the rule's; the old order is kept.)
 //! - [`check_bundle_opts_scoped`]: `Config::check(strict, ..)` where the
 //!   two strictnesses agree. The snapshot holds one whole-program flag,
 //!   so a caller that asks for one rule without the other is refused by
@@ -76,7 +82,18 @@
 //!   typed-body rows and the source table the old entry took as
 //!   arguments are not read: the snapshot derives its own from the
 //!   program (the callers passed empty rows, standing in for the ones
-//!   the snapshot now has).
+//!   the snapshot now has). A caller that hands the old entry a source
+//!   table names its file, and a bare program's snapshot has no file to
+//!   name: [`resolve_files`] loads the caller's text under the caller's
+//!   name instead, so the view's snapshot seeds each site by its file.
+//! - [`check_files`]: what `hale check <dir>` reports for in-memory
+//!   files, the api binding included: the load's sequence generates the
+//!   binding a program's own `api:` entry asks for, and the check reads
+//!   the surface it generated, so a test that holds an api program's
+//!   text checks it as the verb does. (A program the caller ran the
+//!   api pass over itself has its binding already, so the sequence
+//!   generates none and records no surface: [`check_program`] over it
+//!   checks the binding without the entry's own rules.)
 //!
 //! The snapshot of a bundle (`bundle_snapshot`): the bundle's target and
 //! import renames on the config and the load, and its program. A bundle
@@ -149,6 +166,21 @@ pub fn check_bundle_opts_scoped(
     checked(&bundle_snapshot(bundle, Config::check(strict_callees, allow_unowned_subscriber)))
 }
 
+/// `hale_types::check_bundle_for_build`, through the snapshot: the
+/// whole-program check, then the rules a build refuses beside it
+/// (`hale_types::build_rule_diags`, the borrow rule) over the snapshot's
+/// ownership rows, after the check as the old entry appended them.
+pub fn check_bundle_for_build(bundle: &Bundle<'_>, allow_unowned_subscriber: bool) -> Vec<Diag> {
+    let snap = bundle_snapshot(bundle, Config::check(true, allow_unowned_subscriber));
+    let mut diags = checked(&snap);
+    let ownership = match snap.demand_ownership_graph() {
+        Ok(graph) => &graph.rows,
+        Err(blocked) => panic!("the ownership graph is blocked: {}", render_blocked(blocked)),
+    };
+    diags.extend(hale_types::build_rule_diags(&snap.bundle(), ownership));
+    diags
+}
+
 /// `hale_types::derive_application_model`, through the snapshot.
 pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     model_of(&bundle_snapshot(bundle, Config::check(true, false)), &bundle.sources)
@@ -213,14 +245,48 @@ pub fn resolve_program(
     }
 }
 
+/// `hale_types::resolved::resolve_program` for a caller that names its
+/// files: the seed of `files` loaded as [`load_files`] loads it, under
+/// `Config::harness(host)`, and its `demand_lowering` cloned out. The
+/// old entry seeded the view's sites by the caller's source table; a
+/// load has the table of the files it read, so each user site is seeded
+/// by the file it is in, under the caller's name for it.
+pub fn resolve_files(files: &[(&str, &str)]) -> Result<LoweringView, String> {
+    let snap = load_files(files, Config::harness(Target::host()));
+    match snap.demand_lowering() {
+        Ok(view) => Ok(view.clone()),
+        Err(blocked) => Err(render_blocked(blocked)),
+    }
+}
+
+/// What `hale check <dir>` reports for a seed of in-memory files: the
+/// directory of `files` loaded whole under `Config::check(true, false)`
+/// (a directory's check holds the whole-program rules, as
+/// `check_program` did), the desugar sequence generating the api binding
+/// the program's own `api:` entry asks for, and the load's diagnostics
+/// when the load fails, the check's otherwise (`load_for_check`, then
+/// `demand_check`). The verb prints its default advisories after these
+/// (the unbounded-allocation survey and the borrow rule); they are
+/// passes of their own, not the check, and are not here.
+pub fn check_files(files: &[(&str, &str)]) -> Vec<Diag> {
+    let dir = PathBuf::from(SEED_DIR);
+    let buffers = buffers(files);
+    match Snapshot::load(&dir, LoadMode::WholeSeed, &Overlay::new(&buffers), Config::check(true, false)) {
+        Ok(snap) => checked(&snap),
+        Err(hale_frontend::snapshot::LoadError::Load(failure)) => failure.diags,
+        Err(hale_frontend::snapshot::LoadError::Refused(msg)) => {
+            panic!("`hale check` refuses only an `--api` or `--env` it was not asked for: {msg}")
+        }
+    }
+}
+
 /// A seed of in-memory files, loaded as `hale check <dir>` loads one:
 /// each `(name, text)` an overlay buffer at `SEED_DIR/name`, the
 /// directory loaded whole (`LoadMode::WholeSeed`) and shaped as `config`
 /// says. One file is a seed too.
 pub fn load_files(files: &[(&str, &str)], config: Config) -> Snapshot {
     let dir = PathBuf::from(SEED_DIR);
-    let buffers: BTreeMap<PathBuf, String> =
-        files.iter().map(|(name, text)| (dir.join(name), text.to_string())).collect();
+    let buffers = buffers(files);
     let entry = match files {
         [(name, _)] => dir.join(name),
         _ => dir,
@@ -229,6 +295,12 @@ pub fn load_files(files: &[(&str, &str)], config: Config) -> Snapshot {
         Ok(s) => s,
         Err(_) => panic!("the test's seed at {} does not load", entry.display()),
     }
+}
+
+/// Each of `files` an overlay buffer under [`SEED_DIR`].
+fn buffers(files: &[(&str, &str)]) -> BTreeMap<PathBuf, String> {
+    let dir = PathBuf::from(SEED_DIR);
+    files.iter().map(|(name, text)| (dir.join(name), text.to_string())).collect()
 }
 
 /// A seed directory on disk, loaded whole as `hale check <dir>` loads it.
