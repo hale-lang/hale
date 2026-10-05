@@ -9,7 +9,10 @@
 //! control the suite can afford: the model passes, and
 //! `-DMODEL_BUG_DELIVER_IN_PLACE` (a failure off the owner's domain
 //! calls the handler in place, as before L5's fourth part) fails
-//! assertion (6), deterministically, in phase 3.
+//! assertion (6), deterministically, in phase 3, and
+//! `-DMODEL_BUG_SIBLING_RECLAIM_WAITS` (a reclaim inside a handler waits
+//! for a sibling's delivery held for its own thread, as before PR
+//! #1348's review) fails assertion (8) in phase 4.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,6 +31,7 @@ const CONTROLS: &[&str] = &[
     "MODEL_BUG_RECLAIM_SKIPS_WAIT",
     "MODEL_BUG_DELIVER_IN_PLACE",
     "MODEL_BUG_NO_CELL_HOLD",
+    "MODEL_BUG_SIBLING_RECLAIM_WAITS",
 ];
 
 fn model() -> PathBuf {
@@ -77,4 +81,17 @@ fn one_native_run_passes_and_the_in_place_control_fails_assertion_6() {
     assert_ne!(code, Some(0), "-DMODEL_BUG_DELIVER_IN_PLACE passed a native run");
     assert_ne!(code, Some(124), "-DMODEL_BUG_DELIVER_IN_PLACE hung instead of failing:\n{stderr}");
     assert!(stderr.contains("self_tid == o->domain"), "-DMODEL_BUG_DELIVER_IN_PLACE failed elsewhere than (6):\n{stderr}");
+}
+
+/// The sibling replacement (phase 4): without the deferral behind a
+/// delivery held for the reclaiming thread, the reclaim inside A's
+/// handler reaches the wait for B's delivery, which only that thread
+/// could run, and assertion (8) fails, deterministically (the handler
+/// waits for B's post before it replaces B).
+#[test]
+fn the_sibling_control_fails_assertion_8() {
+    let (code, stderr) = run_native(Some("MODEL_BUG_SIBLING_RECLAIM_WAITS"));
+    assert_ne!(code, Some(0), "-DMODEL_BUG_SIBLING_RECLAIM_WAITS passed a native run");
+    assert_ne!(code, Some(124), "-DMODEL_BUG_SIBLING_RECLAIM_WAITS hung instead of failing:\n{stderr}");
+    assert!(stderr.contains("n->posted == self_tid"), "-DMODEL_BUG_SIBLING_RECLAIM_WAITS failed elsewhere than (8):\n{stderr}");
 }

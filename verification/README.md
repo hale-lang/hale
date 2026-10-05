@@ -38,7 +38,7 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | `bus_grow_model.c` | the GROW branch of `bus_queue_enqueue_inner` vs. `lotus_bus_queue_drain` in `lotus_arena.c` — a producer reallocs and frees the `cells` array while a consumer is between its unlock and its use of the popped cell. The pop-snapshot-under-lock is what makes that safe. | ✅ verified: **6 executions, no errors** |
 | `hashmap_iter_model.c` | `lotus_hashmap_iter_next` (LOCKFREE arm) in `lotus_arena.c` — iteration is a SEQUENCE of enter/exit steps, so a grow can land between them. Pinned to `--sc`; see "the RA question" below. | ⚠️ verified under `--sc` only: **13 executions**; fails under the default RA model |
 | `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
-| `cascade_model.c` | the failure cascade in `lotus_arena.c` (F.40 phase 3, L5): `lotus_params_open` / `lotus_params_settle`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, the compiled `__reclaim_<L>` fast path and reclaim bracket, and the run tickets and holds (`lotus_run_ticket_take`, `lotus_run_admit`, `lotus_run_hold_release`, `lotus_run_cell_drop_canceled`, `lotus_run_cancel_queued` and its `lotus_run_hold_wait`) over the pool's MPSC ring, and decision L0-1's posted delivery (`lotus_failure_post`, the claim, `lotus_failure_service_here`, the servicing waits, the reclaim's wait for a posted delivery, the delivery's hold on its cell, and the joins' wait for the joined domain's end). Checks exactly-once teardown, the child and violation retained until the handler completes, a run finding its child whole or its ticket canceled, no delivery before the owner's params settle, a started run holding its child until it returns against a reclaim no join orders, every handler running on its owner's domain, and a posted delivery's child outliving its cell against the owner's reclaim. Its header states the proof boundary (see "The failure cascade's boundary" below). | ⏳ the delivery's domain (phase 3, two controls) not yet run under GenMC: not installed where it was written. Before it, 2026-10-03, GenMC 0.17 / LLVM 18: 630 complete, 126 blocked, no errors; all five negative controls then failed as expected. `lifecycle_flow cascade_model` compiles it and all seven controls with `-Wall -Wextra -Werror` and runs it natively once |
+| `cascade_model.c` | the failure cascade in `lotus_arena.c` (F.40 phase 3, L5): `lotus_params_open` / `lotus_params_settle`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, the compiled `__reclaim_<L>` fast path and reclaim bracket, and the run tickets and holds (`lotus_run_ticket_take`, `lotus_run_admit`, `lotus_run_hold_release`, `lotus_run_cell_drop_canceled`, `lotus_run_cancel_queued` and its `lotus_run_hold_wait`) over the pool's MPSC ring, and decision L0-1's posted delivery (`lotus_failure_post`, the claim, `lotus_failure_service_here`, the servicing waits, the reclaim's wait for a posted delivery, the delivery's hold on its cell, and the joins' wait for the joined domain's end). Checks exactly-once teardown, the child and violation retained until the handler completes, a run finding its child whole or its ticket canceled, no delivery before the owner's params settle, a started run holding its child until it returns against a reclaim no join orders, every handler running on its owner's domain, a posted delivery's child outliving its cell against the owner's reclaim, and a reclaim inside a handler never waiting for a sibling's delivery only its own thread can run. Its header states the proof boundary (see "The failure cascade's boundary" below). | ⏳ the delivery's domain (phases 3 and 4, three controls) not yet run under GenMC: not installed where it was written. Before it, 2026-10-03, GenMC 0.17 / LLVM 18: 630 complete, 126 blocked, no errors; all five negative controls then failed as expected. `lifecycle_flow cascade_model` compiles it and all eight controls with `-Wall -Wextra -Werror` and runs it natively once |
 | `reclaim_claim_model.c` | The shared per-instance reclaim claim (`lotus_reclaim_try_claim`) versus a started run’s self-reclaim: strong CAS admission, exactly-once logical teardown and physical release, and the owner’s wait for the started-run hold. Models one child with its struct retained by the existing owner/run retention; excludes handler-queue progress, owner reclamation and incarnation reuse. | ✅ 2026-10-04, GenMC 0.17 / LLVM 18: **2 complete, 1 blocked, no errors**; thread-local claim, check-then-claim and skipped-run-wait negative controls all fail as expected |
 
 ## Coverage gaps and drift (audited 2026-08-02)
@@ -196,8 +196,8 @@ the wake handshake).
 data structure, so its header states what it proves and what it does
 not, in one place: the functions and synchronization it mirrors, the
 bounded configuration (one owner, at most two children, one run or
-cell per phase, one pool worker, in three phases), the seven safety
-assertions, and the exclusions.
+cell per child, one pool worker per failing cell, in four phases), the
+eight safety assertions, and the exclusions.
 
 **Condition-variable liveness is out**: the await's
 `pthread_cond_wait` and the reclaim's timed wait for run holds are
@@ -234,10 +234,16 @@ fails on the worker while its owner, on the instantiating thread,
 reads its own state in a window and then reclaims the child with the
 delivery in flight; the reclaim's own wait runs the delivery in the
 first run, a yield runs it in the second, and assertion (7) holds the
-child live through the rest of the failing cell. The ended-domain path
-and a handler that reclaims its own child are transcribed and not
-reached, and that the joins and waits end stays the deadline oracle's
-and the matrix's.
+child live through the rest of the failing cell. Phase 4 replaces a
+sibling from a handler (PR #1348's review): the owner's handler for one
+child reclaims another whose failure is posted to the owner and not
+delivered, and assertion (8) holds that the reclaim never enters a
+wait only its own thread could end (a hang GenMC would count only as a
+blocked execution) and that handlers do not nest; the replaced child
+stays whole until its own handler, which runs after the replacing one
+returns. The ended-domain path and a handler that reclaims its own
+child are transcribed and not reached, and that the joins and waits
+end stays the deadline oracle's and the matrix's.
 
 Its negative controls are `-DMODEL_BUG_NO_HOLD`,
 `-DMODEL_BUG_RECLAIM_NOW`, `-DMODEL_BUG_DELIVERED_BEFORE_HANDLER`,
@@ -246,7 +252,9 @@ Its negative controls are `-DMODEL_BUG_NO_HOLD`,
 the arena released before the run returns), `-DMODEL_BUG_DELIVER_IN_PLACE`
 (the handler called in place on the failing thread: assertion (6)) and
 `-DMODEL_BUG_NO_CELL_HOLD` (the post holds no child: assertion (7), the
-reclaim releasing the arena under the rest of the cell). Each is named
+reclaim releasing the arena under the rest of the cell) and
+`-DMODEL_BUG_SIBLING_RECLAIM_WAITS` (the reclaim inside a handler waits
+for a sibling's delivery held for its own thread: assertion (8)). Each is named
 in the header with the assertion it is expected to fail. On
 2026-10-03, before the delivery's domain, GenMC 0.17 with LLVM 18
 explored 630 complete executions and 126 blocked executions of the
@@ -255,8 +263,9 @@ reported their expected safety failure (the delivered-before-handler
 control reports a non-atomic race). The model as it now stands has
 not been run under GenMC. `run_genmc.sh` runs only the default
 configuration; `lifecycle_flow cascade_model` compiles every
-configuration on each PR and runs the model and
-`-DMODEL_BUG_DELIVER_IN_PLACE` natively once each.
+configuration on each PR and runs the model,
+`-DMODEL_BUG_DELIVER_IN_PLACE` and `-DMODEL_BUG_SIBLING_RECLAIM_WAITS`
+natively once each.
 
 ## Roadmap
 

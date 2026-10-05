@@ -4,7 +4,8 @@
  * against the pool worker's admission, and a started run's hold, which
  * the reclaim waits for), and the delivery's domain: a failure raised
  * off its owner's domain is posted there and awaited, and the owner's
- * reclaim waits for it.
+ * reclaim waits for it, or, where only the reclaiming thread could run
+ * it (a handler replacing a failing sibling), is deferred behind it.
  * F.40 phase 3, L5 (spec/runtime.md § Failure handling, decision L0-1;
  * § Lifecycle obligations, decision lines 1 and 19, join progress;
  * notes/f40-lifecycle-inventory.md rows R19, R19a, C36).
@@ -56,8 +57,10 @@
  *     lotus_failure_service_here, lotus_failure_await_service_locked,
  *     lotus_failure_wait_locked (servicing this thread's own posts, and
  *     running a delivery whose domain has ended in place),
- *     lotus_failure_reclaim_wait_locked and defer_reclaim's posted
- *     branch; the settle skipping posted nodes; lotus_failure_hold_cell
+ *     lotus_failure_reclaim_wait_locked (deferring behind a delivery
+ *     only the reclaiming thread could run: its own handler's, or one
+ *     still held for its domain while it is inside another handler) and
+ *     defer_reclaim's posted branch; the settle skipping posted nodes; lotus_failure_hold_cell
  *     (the delivery's hold on the run-ticket table) and the dispatch's
  *     release of whichever hold its cell ended with; lotus_run_hold_wait
  *     servicing posted deliveries between its waits; the joins' wait
@@ -161,6 +164,17 @@
  *     the child: in the first run the reclaim's own wait runs the
  *     delivery; in the second a yield runs it first, and the reclaim
  *     then waits for the cell's hold. The owner then joins the worker.
+ *   Phase 4, a sibling replaced from a handler: one owner on the
+ *     instantiating thread and two children whose handler cells fail on
+ *     two pool workers; three threads. A posts its failure; a yield on
+ *     the owner's thread runs A's handler, which releases B's cell (the
+ *     message B fails on), waits for B's post (the probe, as the
+ *     fd_sibling_replace.hl fixture's gate file), and reclaims B from
+ *     inside the handler (`self.b = Kid { }`), B's delivery still held
+ *     for the owner's thread. The reclaim is deferred behind it; the
+ *     same service runs B's handler once A's has returned, then B's
+ *     reclaim once B's poster has resumed, which waits for B's cell's
+ *     hold. The owner then joins both workers and tears A down.
  *
  * SAFETY ASSERTIONS GenMC checks across every interleaving (plus its
  * automatic data-race, use-after-free and double-free detection):
@@ -199,6 +213,15 @@
  *       reclaim releases it once, after the cell's hold ends. Each
  *       posted delivery runs once, its node is freed once, and no
  *       delivery is left posted at the end of the phase.
+ *   (8) A RECLAIM NEVER WAITS FOR A DELIVERY ONLY ITS OWN THREAD CAN
+ *       RUN, AND HANDLERS DO NOT NEST: no reclaim enters the wait for a
+ *       posted delivery while its thread is inside a handler and the
+ *       delivery is still held for that thread's domain (the wait could
+ *       never end, which GenMC would report only as a blocked
+ *       execution, so the model asserts at its entry); no handler starts
+ *       while another runs on the same thread. The replaced child stays
+ *       whole until its own handler has run, that handler runs after the
+ *       replacing one returns, and neither failure is dropped.
  *
  * WHAT IT DOES NOT ESTABLISH:
  *   - LIVENESS. Condition-variable liveness is excluded: GenMC has no
@@ -224,9 +247,11 @@
  *     and replay's hold buffer (thread-local, no cross-thread surface).
  *   - The delivery's other domains and orders: a delivery to a pinned
  *     thread's or a pool worker's domain (the owner here is always the
- *     instantiating thread), more than one posted delivery at once, a
- *     handler that reclaims its own child (the reclaim deferred behind
- *     it, transcribed, not reached), a delivery posted to a domain that
+ *     instantiating thread), more than two posted deliveries at once or
+ *     a sibling replaced before its failure is posted, a handler that
+ *     reclaims its own child (the reclaim deferred behind it,
+ *     transcribed, not reached), a decision a handler makes about a
+ *     child already replaced, a delivery posted to a domain that
  *     has ended (transcribed, not reached: the owner's domain outlives
  *     every post here), and a reclaim that no observation orders after
  *     the post (a handler cell has no hold before it fails; that the
@@ -275,6 +300,13 @@
  *                                   post, while its cell still reads the
  *                                   child (a race or use-after-free on
  *                                   the child's arena)
+ *   -DMODEL_BUG_SIBLING_RECLAIM_WAITS  the reclaim defers only behind
+ *                                   its own handler's delivery, the code
+ *                                   before PR #1348's review: (8), phase
+ *                                   4's reclaim of B, inside A's handler,
+ *                                   waits for B's delivery held for its
+ *                                   own thread. A single native run
+ *                                   fails it too.
  *
  * Memory model: GenMC's default (release-acquire), the faithful one for
  * the runtime's orders. No GENMC-FLAGS pin.
@@ -285,7 +317,8 @@
  * `lifecycle_flow cascade_model` compiles it and each control with
  * `clang -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only`, and
  * runs it natively once (one interleaving, not a proof): the model
- * passes and -DMODEL_BUG_DELIVER_IN_PLACE aborts.
+ * passes, and -DMODEL_BUG_DELIVER_IN_PLACE and
+ * -DMODEL_BUG_SIBLING_RECLAIM_WAITS abort.
  */
 
 #include <pthread.h>
@@ -316,9 +349,9 @@ typedef struct { int code; int detail; } violation_t;
 
 #define PARAM_SET  42
 #define FAIL_CODE  7
-#define NCHILD     4
+#define NCHILD     6
 
-enum { TID_INSTANTIATING = 0, TID_WORKER = 1, NTID = 2 };
+enum { TID_INSTANTIATING = 0, TID_WORKER = 1, TID_WORKER2 = 2, NTID = 3 };
 
 static int g_teardowns[NCHILD];   /* arena releases per child          (1) */
 static int g_delivered[NCHILD];   /* handler completions per child     (4) */
@@ -673,7 +706,8 @@ static int g_domain_alive[NTID];      /* the thread still consumes */
 static int g_domain_pending[NTID];    /* posted deliveries not yet claimed */
 static int g_domain_refs[NTID];       /* posters still naming it */
 static int g_servicing[NTID];         /* t_failure_servicing: its own thread's */
-static _Atomic int g_posted_probe;    /* phase 3: the owner's observation */
+static _Atomic int g_posted_probe;    /* phases 3, 4: posts so far, observed */
+static int g_handler_depth[NTID];     /* handlers running on the thread (8) */
 
 #define OWNERS_CAP 2
 static struct { void *owner; int tid; } g_owner_domains[OWNERS_CAP];
@@ -994,10 +1028,20 @@ static void lotus_failure_wait_locked(lotus_held_failure_t *n, int self_tid) {
 }
 
 /* defer_reclaim's wait, the lock held: 0 once the posted delivery is
- * delivered and its poster has resumed; 1 for its own handler. */
+ * delivered and its poster has resumed; 1 when the reclaim is deferred
+ * behind it instead, since only this thread could run it: its own
+ * handler, or one still held for this thread while it is inside another
+ * handler (handlers do not nest). */
 static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n,
                                              int self_tid) {
     if (n->state == LOTUS_DELIVERING && n->deliverer == self_tid) return 1;
+#ifndef MODEL_BUG_SIBLING_RECLAIM_WAITS
+    if (g_servicing[self_tid] && n->state == LOTUS_HELD && n->posted == self_tid)
+        return 1;
+#endif
+    /* (8) never a wait for a delivery only this thread could run */
+    assert(!(g_servicing[self_tid] && n->state == LOTUS_HELD &&
+             n->posted == self_tid));
     n->waiters++;
     lotus_failure_wait_locked(n, self_tid);
     while (n->waiters > 1) held_delivered_wait();
@@ -1050,7 +1094,7 @@ static int64_t lotus_failure_post(void *parent, lotus_failure_fn fn, void *child
     held_delivered_broadcast();
     pthread_mutex_unlock(&g_params_open_lock);
     /* (the wake cell; then phase 3's probe: the delivery is in flight) */
-    atomic_store_explicit(&g_posted_probe, 1, memory_order_release);
+    atomic_fetch_add_explicit(&g_posted_probe, 1, memory_order_release);
     pthread_mutex_lock(&g_params_open_lock);
     lotus_failure_wait_locked(n, self_tid);
     g_domain_refs[d]--;
@@ -1114,6 +1158,10 @@ static void child_reclaim_spine(child_t *c, int self_tid) {
     child_teardown(c, self_tid);
 }
 
+/* What a handler does besides hearing the failure: phase 4's replaces a
+ * sibling. NULL elsewhere. */
+static void (*g_handler_body)(owner_t *o, child_t *c, int self_tid);
+
 /* The owner's on_failure. */
 static void owner_on_failure(void *parent, void *child, void *err, int self_tid) {
     owner_t *o = parent;
@@ -1121,6 +1169,9 @@ static void owner_on_failure(void *parent, void *child, void *err, int self_tid)
     violation_t *v = err;
     /* (6) on the owner's domain, never on the failing child's thread */
     assert(self_tid == o->domain);
+    /* (8) never started inside another handler on the same thread */
+    assert(g_handler_depth[self_tid] == 0);
+    g_handler_depth[self_tid]++;
     /* (4) never before the owner is active: its last param is stored */
     assert(o->param == PARAM_SET);
     /* (2), (7) the child and the violation outlive the handler */
@@ -1128,8 +1179,10 @@ static void owner_on_failure(void *parent, void *child, void *err, int self_tid)
     assert(a != NULL);
     assert(a->alive == 1);
     assert(v->code == FAIL_CODE && v->detail == c->id);
+    if (g_handler_body) g_handler_body(o, c, self_tid);
     o->heard++;
     g_delivered[c->id]++;
+    g_handler_depth[self_tid]--;
 }
 
 /* The compiled delivery (emit_on_failure_call): held while the owner's
@@ -1188,7 +1241,9 @@ static void reset(void) {
         g_domain_alive[t] = 1;
         g_domain_pending[t] = g_domain_refs[t] = 0;
         g_servicing[t] = 0;
+        g_handler_depth[t] = 0;
     }
+    g_handler_body = NULL;
     for (int i = 0; i < NCHILD; i++) {
         g_teardowns[i] = g_delivered[i] = 0;
         g_run_started[i] = g_run_canceled[i] = 0;
@@ -1304,26 +1359,32 @@ static void phase2_unjoined_reclaim(void) {
 /* A handler cell of the child's on the worker (it carries no run
  * ticket): it fails, learns the decision, then reads the child as what
  * follows the decision does; its dispatch releases the hold. */
-static void child_d_cell(child_t *c) {
+static void child_d_cell(child_t *c, int self_tid) {
     assert(c->arena != NULL && c->arena->alive == 1);
-    child_raise(c, TID_WORKER);
-    lotus_failure_await(c, 0, TID_WORKER);
+    child_raise(c, self_tid);
+    lotus_failure_await(c, 0, self_tid);
     /* (7) still whole after the decision, until the cell returns */
     arena_t *a = c->arena;
     assert(a != NULL && a->alive == 1);
+}
+
+/* A worker running one failing handler cell, its dispatch releasing the
+ * hold the post took, then leaving its loop. */
+static void child_cell_worker(child_t *c, int self_tid) {
+    g_run_running[self_tid] = NULL;            /* a bus cell: no hold */
+    child_d_cell(c, self_tid);
+    lotus_run_ticket_t *took = g_run_running[self_tid];
+    g_run_running[self_tid] = NULL;
+    lotus_run_hold_release(took);
+    lotus_failure_service_here(self_tid);
+    lotus_domain_end(self_tid);
 }
 
 static child_t *g_phase3_child;
 
 static void *phase3_worker(void *_) {
     (void)_;
-    g_run_running[TID_WORKER] = NULL;          /* a bus cell: no hold */
-    child_d_cell(g_phase3_child);
-    lotus_run_ticket_t *took = g_run_running[TID_WORKER];
-    g_run_running[TID_WORKER] = NULL;
-    lotus_run_hold_release(took);
-    lotus_failure_service_here(TID_WORKER);
-    lotus_domain_end(TID_WORKER);
+    child_cell_worker(g_phase3_child, TID_WORKER);
     return NULL;
 }
 
@@ -1374,6 +1435,90 @@ static void phase3_delivery_domain(int yield_first) {
     free(owner);
 }
 
+/* ==================================================================== *
+ * Phase 4 — a sibling replaced from a handler: the owner's handler for
+ * A replaces B while B's failure is posted to the owner, undelivered.
+ * ==================================================================== */
+
+static child_t *g_phase4_a, *g_phase4_b;
+static _Atomic int g_phase4_go;            /* the message B fails on */
+
+/* A's handler: publish what B fails on, wait for B's post (the
+ * fixture's gate file), then `self.b = Kid { }`, the old B's reclaim,
+ * from inside this handler. */
+static void phase4_replace_sibling(owner_t *o, child_t *c, int self_tid) {
+    (void)o;
+    if (c != g_phase4_a) return;
+    atomic_store_explicit(&g_phase4_go, 1, memory_order_release);
+    while (atomic_load_explicit(&g_posted_probe, memory_order_acquire) < 2) { }
+    child_t *b = g_phase4_b;
+    child_reclaim_spine(b, self_tid);
+    /* (8) deferred behind B's delivery: the old B is still whole and
+     * not yet heard */
+    assert(b->arena != NULL && b->arena->alive == 1);
+    assert(g_teardowns[b->id] == 0 && g_delivered[b->id] == 0);
+}
+
+static void *phase4_worker_a(void *_) {
+    (void)_;
+    child_cell_worker(g_phase4_a, TID_WORKER);
+    return NULL;
+}
+
+static void *phase4_worker_b(void *_) {
+    (void)_;
+    while (!atomic_load_explicit(&g_phase4_go, memory_order_acquire)) { }
+    child_cell_worker(g_phase4_b, TID_WORKER2);
+    return NULL;
+}
+
+static void phase4_sibling_replaced(void) {
+    reset();
+    atomic_store_explicit(&g_phase4_go, 0, memory_order_relaxed);
+    owner_t *owner = malloc(sizeof *owner);
+    owner->param = PARAM_SET;
+    owner->born = 1;
+    owner->domain = TID_INSTANTIATING;
+    owner->heard = 0;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_failure_owner_note_locked(owner, TID_INSTANTIATING);
+    pthread_mutex_unlock(&g_params_open_lock);
+    child_t *a = child_create(owner, 4);
+    child_t *b = child_create(owner, 5);
+    g_phase4_a = a;
+    g_phase4_b = b;
+    g_handler_body = phase4_replace_sibling;
+    pthread_t wa, wb;
+    pthread_create(&wa, NULL, phase4_worker_a, NULL);
+    pthread_create(&wb, NULL, phase4_worker_b, NULL);
+
+    /* A's failure is posted; a yield runs it, and B's after it returns,
+     * then the old B's deferred reclaim, once B's poster has resumed. */
+    while (!atomic_load_explicit(&g_posted_probe, memory_order_acquire)) { }
+    lotus_failure_service_here(TID_INSTANTIATING);
+    assert(g_delivered[4] == 1 && g_delivered[5] == 1);  /* (8) none dropped */
+    assert(g_teardowns[5] == 1 && g_teardowns[4] == 0);
+    assert(owner->heard == 2);
+
+    lotus_domain_join_wait(TID_WORKER, TID_INSTANTIATING);
+    pthread_join(wa, NULL);
+    lotus_domain_join_wait(TID_WORKER2, TID_INSTANTIATING);
+    pthread_join(wb, NULL);
+    child_teardown(a, TID_INSTANTIATING);               /* the cascade */
+
+    assert(g_teardowns[4] == 1 && g_teardowns[5] == 1);  /* (1) */
+    assert(g_held_head == NULL);
+    assert(atomic_load_explicit(&lotus_held_failure_count,
+                                memory_order_relaxed) == 0);
+    assert(atomic_load_explicit(&g_failure_posted_count,
+                                memory_order_relaxed) == 0);
+    assert(atomic_load_explicit(&g_run_tickets_live, memory_order_relaxed) == 0);
+    assert(g_run_tickets == NULL);
+    free(a);
+    free(b);
+    free(owner);
+}
+
 int main(void) {
     pthread_mutex_init(&g_params_open_lock, NULL);
     pthread_mutex_init(&g_run_tickets_lock, NULL);
@@ -1381,5 +1526,6 @@ int main(void) {
     phase2_unjoined_reclaim();
     phase3_delivery_domain(0);
     phase3_delivery_domain(1);
+    phase4_sibling_replaced();
     return 0;
 }

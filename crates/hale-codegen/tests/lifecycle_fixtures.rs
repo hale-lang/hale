@@ -251,6 +251,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l07_or_wait_main_return.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_test_failure.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l08_birth_failure_kept.hl", line: "8", adopted: Some("closure-violation-child-kept"), run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l08_sibling_replaced_kept.hl", line: "8", adopted: Some("delivered-then-reclaimed"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l09_delivery_at_epoch.hl", line: "9", adopted: Some("delivered-at-epoch"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l10_dissolve_closures_first.hl", line: "10", adopted: Some("closures-before-dissolve"), run: RunMode::Plain, judge: closures_before_dissolve },
     Fixture { file: "l11_let_bound_drain.hl", line: "11", adopted: Some("drain-at-scope-exit"), run: RunMode::Plain, judge: drain_at_scope_exit },
@@ -348,6 +349,18 @@ const PLANS: &[(&str, &str)] = &[
          Kid*2: Birth Drain Dissolve Reclaim
          Kid: Cancellation!main
          edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
+    ),
+    // Line 8 under L0-1: App's handler for one Kid replaces another
+    // whose failure is posted to App; that Kid's reclaim (the one Kid
+    // torn down on the Reclaim spine) follows its own delivery, on main.
+    (
+        "l08_sibling_replaced_kept.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid*3: Birth
+         Kid*2: Drain@Cascade Dissolve@Cascade Reclaim@Cascade
+         Kid: Drain@Reclaim Dissolve@Reclaim Reclaim@Reclaim
+         Kid*2: FailureDelivery!main
+         edge Kid.FailureDelivery.Completed -> Kid.Drain@Reclaim.Entered",
     ),
 ];
 
@@ -535,6 +548,10 @@ const UNDERIVED: &[(&str, &str)] = &[
         "200 App literals, each torn down where it stands; Kid's runs complete once, then are canceled on main or refused",
     ),
     ("l19_empty_ring_last_check.hl", "two App literals; the first Kid's run completes, the second's is canceled on main"),
+    (
+        "l08_sibling_replaced_kept.hl",
+        "C29: the producer has no field replacement, so not where the replaced Kid's reclaim sits: after its own delivery",
+    ),
 ];
 
 /// The plan the producer derives for a fixture's program, on its run's
@@ -1702,6 +1719,8 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_handler_replaces_started_run_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l08_sibling_replaced_kept.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
 ];
 
 /// The emitted step sequence of every instance a run of `file` built, per
@@ -1832,6 +1851,7 @@ fixture_tests! {
     l07_or_wait_main_return => "l07_or_wait_main_return.hl",
     l07_or_wait_main_test_failure => "l07_or_wait_main_test_failure.hl",
     l08_birth_failure_kept => "l08_birth_failure_kept.hl",
+    l08_sibling_replaced_kept => "l08_sibling_replaced_kept.hl",
     l09_delivery_at_epoch => "l09_delivery_at_epoch.hl",
     l10_dissolve_closures_first => "l10_dissolve_closures_first.hl",
     l11_let_bound_drain => "l11_let_bound_drain.hl",
