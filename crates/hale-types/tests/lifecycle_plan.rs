@@ -407,6 +407,45 @@ fn a_pinned_fields_join_precedes_its_owners_drain() {
     );
 }
 
+/// C52, every replica (the review of #1354): a root handed back with a
+/// `pinned(replicas = 2)` field owes one pinned join per replica, each
+/// replica its own template (`InstanceKey::replica`), and the root's
+/// drain waits for every one, which is the order the root's cascade
+/// emits from its join records. Two roots of one type returned from two
+/// calls are the same templates: the plan states its rows per template,
+/// not per call, so that each root joins its own two replicas is the
+/// run's fact (the fixture's occurrences, App 2 and Sink 4, against
+/// which the trace oracle holds the run), not a row the plan carries.
+#[test]
+fn every_replica_of_a_returned_roots_pinned_field_is_joined_before_its_drain() {
+    for src in [
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_root_pinned_replicas.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_roots_pinned_replicas.hl"),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        let joins = rows(p, "Sink", K::PinnedJoin);
+        let replicas: BTreeSet<Option<u32>> = joins
+            .iter()
+            .map(|j| match &j.site.as_ref().expect("a sited row").template {
+                Template::Static(k) => k.replica,
+                Template::Dynamic { .. } => panic!("a field replica is a static template"),
+            })
+            .collect();
+        assert_eq!(replicas, BTreeSet::from([Some(0), Some(1)]), "one pinned join per replica");
+        let drain = one(p, "App", K::Drain);
+        for j in joins {
+            let join = id_of(p, j);
+            assert!(
+                drain.edges.entry.iter().any(|pr| pr.event.obligation == join
+                    && pr.event.point == Point::Completed
+                    && pr.rule == Rule::line("12", Status::Shipped)),
+                "App's drain waits for every replica's join"
+            );
+        }
+    }
+}
+
 /// Line 12 over the instance tree: an owner's fields drain in their
 /// declaration order, and each is torn down before the next is dissolved.
 #[test]

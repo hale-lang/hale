@@ -516,8 +516,9 @@ so nothing tears it down twice. The rules that order gives you:
   thread, and a field typed by an interface or a perspective like
   any other. Each is dissolved after its owner's `dissolve()`.
   A field lives as long as its owner: a pinned field of a `main`
-  that a function builds and returns keeps its thread until the
-  caller is done with that `main`, not until the function returns.
+  that a function builds and returns keeps its threads, one per
+  replica, until the caller is done with that `main`, not until the
+  function returns.
 - **Dissolve-epoch closures run before `dissolve()`.** A violation
   there reaches the parent before your cleanup runs.
 - **Replacing a field dissolves the old child before creating the new

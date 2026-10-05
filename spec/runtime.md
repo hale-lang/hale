@@ -2081,19 +2081,25 @@ its `KNOWN_OPEN` table.
   perspective-slot cells). Before, a pinned locus's fields were
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
-  An owned field's lifetime is its owner's, so a pinned field's
-  thread is joined in its owner's teardown, before the owner drains
-  (the plan's edge from the field's join to the owner's drain).
-  Shipped for a root returned from the fn that built it too
-  (inventory row C52, `l12_returned_root_pinned_anchor.hl`, also under
-  AddressSanitizer): the join record lives in the anchor's instance,
-  not in the building fn's frame, and the field's join is part of its
-  drain in its owner's cascade, wherever the caller's binding ends the
-  owner. The building frame's flush owns the join only when that frame
-  still owns the root at its exit (the ownership table's handed-back
-  column); it used to join the field when the building fn returned,
-  while the caller still held the root, so a publish to the field
-  afterwards was dropped.
+  An owned field's lifetime is its owner's, so every replica of a
+  pinned field has its thread joined in its owner's teardown, before
+  the owner drains (the plan's edge from each replica's join to the
+  owner's drain). Shipped for a root returned from the fn that built
+  it too (inventory row C52; `l12_returned_root_pinned_anchor.hl`,
+  `l12_returned_root_pinned_replicas.hl` and
+  `l12_returned_roots_pinned_replicas.hl`, the last two also under
+  AddressSanitizer): the root's instance holds a join record for every
+  replica of each of its pinned fields, replica 0 included (the
+  replica's thread and its instance, as many as the placement declares
+  replicas), not the building fn's frame, so two roots of one type
+  each join their own; the fields' joins are part of their drain in
+  the root's cascade, wherever the caller's binding ends it, in the
+  order the building frame's flush would have used (replica 0, then
+  the others from the last down). The building frame's flush owns the
+  joins only when that frame still owns the root at its exit (the
+  ownership table's handed-back column). It used to join the field
+  when the building fn returned, while the caller still held the
+  root, so a publish to the field afterwards was dropped.
 
   Lines 12 and 19 are an instance's own teardown, the dissolve
   cascade and the reclaim, and the compiler emits both from the
