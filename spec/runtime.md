@@ -1766,7 +1766,14 @@ zero_copy binding produces.
   - The owner's reclaim of a child waits for the child's posted
     delivery (`lotus_failure_defer_reclaim`), running it if it was
     posted to the reclaiming thread; a reclaim the handler itself
-    asks for runs after the handler. A failure posted from a pool
+    asks for runs after the handler. A reclaim never waits for a
+    delivery only the waiting thread can run: one reached inside a
+    handler, for a child whose delivery is still held for that
+    thread (an owner replacing a failing sibling), is deferred behind
+    that delivery too, so the field holds the new child at once, the
+    replaced child's failure is still delivered after the running
+    handler returns, and the child is reclaimed right after its own
+    handler. A failure posted from a pool
     worker's cell holds the child until that cell returns, as a
     started run does (decision line 19), so the reclaim never
     releases the child under the rest of the cell (what follows the
@@ -1803,11 +1810,13 @@ zero_copy binding produces.
   it (inventory rows C18 and R20).
 
   **Regressions.** `lifecycle_flow failure_delivery_domain`
-  (`crates/hale-codegen/tests/failure_delivery_domain.rs`) judges two
+  (`crates/hale-codegen/tests/failure_delivery_domain.rs`) judges the
   fixtures under `tests/fixtures/failure_delivery/` into one outcome
   word each, in the trace build (where the delivery's
-  `FailureDelivery` steps must all be on `main`) and under ASan with
-  chunk pooling off, in both dispatch modes:
+  `FailureDelivery` steps must all be on `main`; the sibling cases in
+  both dispatch modes) and, for the first two and the heap-carrying
+  sibling case, under ASan with chunk pooling off, in both dispatch
+  modes:
   - `fd_pinned_owner_state.hl`: a pinned child fails in a bus
     handler while its owner, on `main`, reads the state the handler
     writes in a window with no yield; the handler records its
@@ -1820,6 +1829,17 @@ zero_copy binding produces.
     `on-owner read-before-dissolve dissolved-once-each`. Before, the
     old child dissolved first and the handler, on the pool's worker,
     read its freed name (a heap-use-after-free under ASan).
+  - `fd_sibling_replace*.hl`: the owner's handler for one child
+    replaces a sibling whose own failure is posted to the owner and
+    not delivered; each run is under a deadline. The bare case and
+    its control give `handling 0`, `replacing sibling`, `replaced
+    sibling`, `handling 1`, `finished`; before the rule the bare
+    case hung after `replacing sibling`. A child carrying a heap
+    String the late handler reads (`on-owner read-before-dissolve
+    dissolved-once-each`, under ASan too), three siblings with two
+    replaced from one handler (handled in posting order, each old
+    child reclaimed once after its own handler), and the replacement
+    through a method hold the same rule.
 
   The lifecycle matrix holds the domain of every cell's
   `FailureDelivery` to the plan's: the cells whose failure is raised
@@ -1858,8 +1878,8 @@ pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 entry has to go with the fix. Each fixture also runs under the
 lifecycle trace (§ "The lifecycle trace"), held to the plan the
 table's producer (`hale_types::lifecycle::derive`) derives for its
-program, on its line's rules (three of line 19's, whose shapes the
-producer does not derive yet, to a hand-written plan).
+program, on its line's rules (three of line 19's and one of line 8's,
+whose shapes the producer does not derive yet, to a hand-written plan).
 The six started-run retention fixtures use the derived plan, including
 the edge from each run's end to its reclaim's completion. A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
@@ -1906,7 +1926,11 @@ its `KNOWN_OPEN` table.
   both complete today; so does an instantiating thread waiting for
   a pool-placed field's initialization on a worker that is itself
   waiting for that thread's decision, since the worker runs the
-  initialization in place (§ "m27 + m28a", the pool side).
+  initialization in place (§ "m27 + m28a", the pool side); and so
+  does an owner whose handler replaces a sibling with a failure
+  posted to it, since that sibling's reclaim follows its own
+  delivery, after the replacing handler returns, instead of waiting
+  for it (`l08_sibling_replaced_kept.hl`).
   **Pending:** an owner placed on a cooperative pool. Decision L0-1
   names the pool's worker as that owner's domain, and
   `spec/semantics.md` § "on_failure(c, err)" names the thread
@@ -2020,7 +2044,10 @@ its `KNOWN_OPEN` table.
   closure) is a `ClosureViolation`, and the failing child is kept
   for its owner's supervision: its region stays, the handler reads
   it, and a restart reuses it. There is no `StructuralFailure`.
-  Shipped (`l08_birth_failure_kept.hl`). A pinned locus's
+  Shipped (`l08_birth_failure_kept.hl`). A failing child its owner
+  replaces before hearing its failure is kept too, until its handler
+  has run (`l08_sibling_replaced_kept.hl`, held to a hand-written plan:
+  the producer has no field replacement, inventory row C29). A pinned locus's
   `birth_check` runs on its own thread, after `birth()` and before
   `run()`; a check's failure its owner is still holding is decided
   before `run()` starts, as for every other locus (inventory row
@@ -2224,7 +2251,10 @@ its `KNOWN_OPEN` table.
   reclaim the retired child again: it returns from the reclaim entry,
   ends its run hold, and lets the thread that owns retirement complete
   release. Failure-handler deferral happens before claiming, so its
-  later callback can enter the spine. A constructor resets the claim
+  later callback can enter the spine. That deferral also covers a
+  reclaim reached inside a handler for a child whose own failure is
+  still posted to the same thread, whose wait only that thread could
+  end (§ "Failure handling", decision L0-1). A constructor resets the claim
   for each new instance, including recycled storage. The handler
   retention regression exercises termination and flow completion under
   ASan on classic and async pools, in both dispatch modes.
