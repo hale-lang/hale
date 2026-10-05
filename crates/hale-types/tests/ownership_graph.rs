@@ -21,7 +21,11 @@ use hale_types::ownership_graph::{
     OwnershipGraph,
 };
 use hale_types::resolve::build_top_scope;
-use hale_types::{check_bundle, Bundle};
+use hale_types::Bundle;
+
+#[path = "support/entries.rs"]
+mod entries;
+use entries::check_bundle;
 
 // --- harness -------------------------------------------------------
 
@@ -634,7 +638,7 @@ const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget: th
 fn crosspool_errors(body: &str) -> Vec<(String, String)> {
     let src = crosspool_src(body);
     let prog = parse_source(&src).expect("parse failed");
-    hale_types::check_program(&prog)
+    entries::check_program(&prog)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
@@ -705,7 +709,7 @@ fn a_cross_pool_spawn_two_defaults_deep_is_refused_at_the_default() {
     let src = crosspool_src("        Ship { hull: 7 };\n        Dock { };")
         .replace("fn keep(", "locus Dock { params { h: Holder = Holder { }; } }\nfn keep(");
     let prog = parse_source(&src).expect("parse failed");
-    let errs: Vec<(String, String)> = hale_types::check_program(&prog)
+    let errs: Vec<(String, String)> = entries::check_program(&prog)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
@@ -726,7 +730,7 @@ fn a_default_no_cross_pool_context_expands_is_clean() {
         .replace("    run() { }\n}\n", "    run() { Holder { }; }\n}\n")
         .replace("Driver { }", "Driver { got: Ship { } }");
     let prog = parse_source(&src).expect("parse failed");
-    let errs: Vec<String> = hale_types::check_program(&prog)
+    let errs: Vec<String> = entries::check_program(&prog)
         .into_iter()
         .filter(|d| d.is_error() && d.message.contains("fire-and-forget"))
         .map(|d| d.message)
@@ -741,7 +745,7 @@ fn a_default_no_cross_pool_context_expands_is_clean() {
 fn arg_default_errors(decls: &str, body: &str) -> Vec<(String, String)> {
     let src = crosspool_src(body).replace("locus Driver {\n", &format!("{decls}locus Driver {{\n"));
     let prog = parse_source(&src).expect("parse failed");
-    hale_types::check_program(&prog)
+    entries::check_program(&prog)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
@@ -772,7 +776,7 @@ fn a_cross_pool_spawn_in_a_fn_argument_default_is_refused_at_the_call_that_omits
         .replace("Driver { }", "Driver { got: Ship { } }");
     let prog = parse_source(&src).expect("parse failed");
     let errs: Vec<String> =
-        hale_types::check_program(&prog).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+        entries::check_program(&prog).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
     assert!(errs.is_empty(), "a call that supplies the argument expands no default: {errs:?}");
 }
 
@@ -790,7 +794,7 @@ fn a_cross_pool_spawn_in_a_method_argument_default_is_refused_at_each_call_that_
     let src = crosspool_src("        Ship { hull: 7 };\n        self.own();")
         .replace("    run() {\n", "    fn own(s: Ship = Ship { hull: 3 }) -> Int { return s.hull; }\n    run() {\n");
     let prog = parse_source(&src).expect("parse failed");
-    let errs: Vec<(String, String)> = hale_types::check_program(&prog)
+    let errs: Vec<(String, String)> = entries::check_program(&prog)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
@@ -879,7 +883,7 @@ fn an_argument_default_is_refused_only_at_the_caller_that_crosses() {
         .replace("locus Driver {\n", &format!("{TAKE}locus Driver {{\n"))
         .replace("    run() { }\n}\n", "    run() { take(); }\n}\n");
     let prog = parse_source(&src).expect("parse failed");
-    let errs: Vec<(String, usize)> = hale_types::check_program(&prog)
+    let errs: Vec<(String, usize)> = entries::check_program(&prog)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message.clone(), d.span.start.as_usize()))
@@ -1041,7 +1045,7 @@ fn resolved_graph_resolves_an_imported_accept_type() {
     "#;
     let prog = parse_source(src).expect("parse failed");
     let renames = vec![(vec!["lib".to_string(), "Child".to_string()], "ImportedChild".to_string())];
-    let resolved = hale_types::resolved::resolve_program(&prog, &[], &renames, None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
+    let resolved = entries::resolve_program(&prog, &[], &renames, None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolve");
     let want: std::collections::BTreeSet<String> = ["ImportedChild".to_string()].into();
     assert_eq!(resolved.ownership.accepts.get("Parent"), Some(&want));
@@ -1139,7 +1143,7 @@ fn aliased_cross_pool_birth_uses_the_resolved_plan() {
     for (body, count) in [("let s = Vessel { hull: 7 };", 1), ("Vessel { hull: 7 };", 0)] {
         let src = format!("type Vessel = Ship;\n{}", crosspool_src(body));
         let prog = parse_source(&src).unwrap();
-        let errors: Vec<_> = hale_types::check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+        let errors: Vec<_> = entries::check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
         assert_eq!(errors.len(), count, "{body}: {errors:?}");
         for error in errors {
             assert!(error.message.starts_with(FIRE_AND_FORGET), "{error:?}");
