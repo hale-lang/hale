@@ -319,3 +319,43 @@ fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
     assert!(read("crates/hale-iris/build.rs").contains("identity_files("));
     assert!(read("crates/hale-cli/src/shared/stale.rs").contains("stale_hash_paths("));
 }
+
+/// The legacy rows an inventory entry's producer still shares: the
+/// identities whose own correction (I2 and I3 for `exec_digest`, I4
+/// for the stale-binary hash) retires the row. Every other legacy row
+/// names a symbol no inventory entry produces.
+const LEGACY_STILL_SHARED: &[&str] = &["exec_digest", "compute_codegen_src_hash"];
+
+#[test]
+fn every_inventory_producer_is_registered_and_no_legacy_row_duplicates_one() {
+    let mut registered = std::collections::BTreeSet::new();
+    let mut legacy = std::collections::BTreeSet::new();
+    for f in hale_graph::families() {
+        if let Some(p) = &f.producer {
+            registered.insert((p.path, p.symbol));
+        }
+        for o in f.owned {
+            registered.insert((o.path, o.symbol));
+        }
+        for l in f.legacy {
+            registered.insert((l.site.path, l.site.symbol));
+            legacy.insert((l.site.path, l.site.symbol));
+        }
+    }
+    for i in hale_graph::identity::IDENTITIES {
+        assert!(
+            registered.contains(&i.producer),
+            "`{}`: its producer {:?} is not a registered site (the `digests` family's `owned` list)",
+            i.name,
+            i.producer
+        );
+        if legacy.contains(&i.producer) {
+            assert!(
+                LEGACY_STILL_SHARED.contains(&i.producer.1),
+                "`{}`: a legacy row names its producer {:?}; an inventory entry is registered through the family's `owned` list, not a legacy row",
+                i.name,
+                i.producer
+            );
+        }
+    }
+}

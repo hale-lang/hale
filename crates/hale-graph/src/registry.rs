@@ -1791,17 +1791,11 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Digest,
         answers: "Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under.",
         inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
-        producer: Some(site(TOPOLOGY, "model_shape_hash")),
+        producer: Some(site("crates/hale-graph/src/identity.rs", "IDENTITIES")),
         legacy: &[
             legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
-            legacy(CLI_BUILD_RS, "toolchain_digest", "the replay identity: `hale_graph::identity::identity_files`, every identity-covered crate (`COVERED_CRATES`, hale-cli among them) and the manifest files (`Cargo.lock`, the ts-shim manifest), walked through the one shared walk", "phase 4 (phase 3 left it), one stated coverage with `exec_digest`: the CLI's `build` verb still owns semantic work (its snapshot's config from the flags, the `[ffi]` pickup, the identity it stamps; see `identity_files`), so the replay identity still walks the compiler sources at build time, the CLI's crate among them (at the phase-2 close)"),
             legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk", "one identity per snapshot; the stale check reads it"),
-            legacy(IRIS_BUILD_RS, "identity_files", "the DNA toolchain cache key's compiler-source half: the replay identity's selection, every identity-covered crate and the manifest files; hale-cli is covered because the cache builds a host through its `build` verb, whose Rust still owns its snapshot's config from the flags, the `[ffi]` pickup and the identity it stamps (the load and the pre-check sequence are hale-frontend's since 2.2b), until that work moves into hale-frontend","the cache key is derived from the snapshot identity"),
-            legacy(IRIS_LIB, "toolchain_hash", "the cache key itself (version, compiler sources and manifests, stdlib, embedded iris and DNA trees)", "the cache key is derived from the snapshot identity"),
-            legacy(DNA_DIGEST, "EMBEDDED_DIRS", "DNA's embedded-source identity, its own directory list", "one inventory of what each identity covers"),
-            legacy(EVIDENCE, "analysis_inputs_digest", "the evidence inputs digest (semantics version, stdlib source, compiler version, renames, the surface registry)", "same"),
             legacy(SNAPSHOT, "b.sources", "per-file FNV digests, set by the snapshot, rooted at hale.toml for every load mode, the editor's and its requests' included", "one source map per snapshot"),
-            legacy(M_OBS, "fn digest", "the observed entity-id digest, keyed by (kind, name)", "keyed by snapshot identity"),
         ],
         consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache")],
         invariants: &[
@@ -1812,7 +1806,28 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/obs_model_hash.rs", "crates/hale-cli/tests/model_diff.rs", "crates/hale-cli/tests/replay_cli.rs", "crates/hale-cli/tests/stale_dna_warning.rs", "crates/hale-cli/tests/source_map.rs"],
         spec: &["spec/model.md § Identity and versioning"],
-        owned: &[],
+        owned: &[
+            site("crates/hale-types/src/topology_projection.rs", "project_shape_hash"),
+            site(OPTIONS, "model_identity"),
+            site(TOPOLOGY, "dump_topology_over"),
+            site("crates/hale-model/src/claim_ir.rs", "semantic_digest"),
+            site("crates/hale-model/src/application.rs", "analysis_coverage_digest"),
+            site(M_DISPATCH, "digest"),
+            site(CLI_BUILD_RS, "toolchain_digest"),
+            site(IRIS_BUILD_RS, "main"),
+            site(IRIS_LIB, "toolchain_hash"),
+            site(DNA_DIGEST, "digest_of_pairs"),
+            site(EVIDENCE, "analysis_inputs_digest"),
+            site(FRONTEND, "source_map"),
+            site(M_OBS, "digest"),
+            site(SNAPSHOT, "SnapshotKey"),
+            site(SNAPSHOT, "digest"),
+            site("crates/hale-frontend/src/source.rs", "overlay_digest"),
+            site(SNAPSHOT, "load"),
+            site("crates/hale-types/src/claims.rs", "constitution_digest"),
+            site("crates/hale-cli/src/fleet.rs", "fnv"),
+            site(CG, "compile_cached_runtime_object_with"),
+        ],
         seams: &[],
     },
 ];
@@ -2101,6 +2116,47 @@ fn site_md(s: &Site) -> String {
     format!("`{}` · `{}`", s.path, s.symbol)
 }
 
+/// The identity inventory (`identity::IDENTITIES`) as the `digests`
+/// section's table: one row per identity, what it covers and what it
+/// leaves out with the stated reason.
+fn identities_md() -> String {
+    let cell = |s: &str| s.replace('|', "\\|");
+    let mut o = String::new();
+    o.push_str(
+        "**Inventory of identities** (`crates/hale-graph/src/identity.rs` · `IDENTITIES`). One row per value \
+         compared for equality as an identity. *Leaves out* names an input a reader would expect, with the \
+         stated reason; a reason that begins \"a defect\" or \"a gap\" names the step that closes it.\n\n",
+    );
+    o.push_str(
+        "| identity | identifies | computed | fold | covers | leaves out | producer | on mismatch | versioned by | frozen |\n\
+         |---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    for i in crate::identity::IDENTITIES {
+        let covers: Vec<String> = i.covers.iter().map(|c| format!("{c:?}")).collect();
+        let leaves: Vec<String> = i
+            .leaves_out
+            .iter()
+            .map(|(c, why)| format!("{c:?}: {why}"))
+            .collect();
+        o.push_str(&format!(
+            "| `{}` | {} | {} | {:?} | {} | {} | `{}` · `{}` | {} | {} | {} |\n",
+            i.name,
+            cell(i.identifies),
+            cell(i.computed),
+            i.fold,
+            covers.join(", "),
+            if leaves.is_empty() { "—".to_string() } else { cell(&leaves.join("; ")) },
+            i.producer.0,
+            i.producer.1,
+            cell(i.on_mismatch),
+            cell(i.versioned_by),
+            i.frozen.map(cell).unwrap_or_else(|| "—".into()),
+        ));
+    }
+    o.push('\n');
+    o
+}
+
 /// Render the registry as `spec/registry.md`.
 pub fn render_markdown() -> String {
     let mut o = String::new();
@@ -2174,6 +2230,9 @@ pub fn render_markdown() -> String {
             if !f.owned.is_empty() {
                 let owned: Vec<String> = f.owned.iter().map(site_md).collect();
                 o.push_str(&format!("**Also owned.** {}\n\n", owned.join("; ")));
+            }
+            if f.name == "digests" {
+                o.push_str(&identities_md());
             }
             o.push_str("**Consumers.** ");
             let cs: Vec<String> = f
