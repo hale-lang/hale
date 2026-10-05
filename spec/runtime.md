@@ -3039,8 +3039,14 @@ checks: with a finalize present, any truncation is corruption.
 strongest check first: the recording's `exec_digest` — a framed
 SHA-256 over the toolchain source hash (compiler + runtime +
 stdlib implementation, via the stale-CLI build hash), the CLI
-version, build options, and every source file's full path,
-length, and contents — must match the recompiled program exactly;
+version, build options, and every source file's path, length, and
+contents — must match the recompiled program exactly. A file's
+path is its path in the program's source map, in the map's order
+(F.40 phase 4, I3; [verification.md § Source maps and model
+semantics](verification.md)): relative to one root, the same
+whichever target loaded the program, wherever the tree is checked
+out and however the target is typed, and distinct for two files of
+one name;
 the build options are the ones the compiling command was GIVEN
 (`hale run` and `hale replay` take `hale build`'s option flags —
 2026-09-20, GH #904; `run` compiled with the defaults and
@@ -3059,10 +3065,9 @@ only). Debug information is not part of it: the DWARF line tables
 `hale build` adds by default change no behaviour, so a recording made
 by a binary from `hale build` of a file is admitted by `hale replay`
 of that file, and a built binary and `hale run` of one program carry
-one identity. A recording of a DIRECTORY build is refused: replay
-takes the entry file, whose sources are framed relative to its own
-directory, while the directory build framed them relative to the
-directory's parent. The build options include the environment's build knobs that
+one identity. A recording of a DIRECTORY build is admitted by the
+replay of its entry file: the two name each file by its source-map
+path, so they frame one program alike. The build options include the environment's build knobs that
 change the binary (see *Build-time and toolchain environment*:
 `LOTUS_ASAN`, `LOTUS_TSAN`, `LOTUS_UBSAN`, `LOTUS_LTO`,
 `LOTUS_DISABLE_PREFETCH`, `LOTUS_NO_BUS_DEVIRT`,

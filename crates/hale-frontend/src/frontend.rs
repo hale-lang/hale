@@ -617,7 +617,9 @@ pub fn link_checkable(
 /// forward slashes so a Windows-built artifact matches a Linux-built
 /// one. The snapshot seeds each site from it: `check` mints with it,
 /// and every verb that builds mints and resolves with the same map, so
-/// a site has the same seed on every path.
+/// a site has the same seed on every path. It is also the program's one
+/// naming of its files: the execution identity frames these paths, in
+/// this order (F.40 phase 4, I3).
 pub fn source_map(
     target: &Path,
     file_bases: &[(u32, PathBuf, u32)],

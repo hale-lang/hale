@@ -2276,16 +2276,14 @@ fn a_recording_of_a_built_binary_replays() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// What still refuses a DIRECTORY build's recording after I2, pinned so
-/// I3 turns it around: the source paths. A directory build frames each
-/// file relative to the directory's parent (`app/main.hl`), and replay
-/// takes the entry file, framed relative to its own directory
-/// (`main.hl`). The options half agrees — the built binary stamps what
-/// `hale run app/` stamps — so the paths are the whole difference. I3
-/// frames the snapshot's source map instead, and this test becomes one
-/// that the recording replays.
+/// F.40 phase 4, I3: a DIRECTORY build's recording replays against its
+/// entry file. The identity framed each file relative to the target's
+/// parent, so a directory build named its entry `app/main.hl` and the
+/// replay of `app/main.hl` named it `main.hl`, and the recording was
+/// refused as "different build inputs". It frames the source map's
+/// paths now, which name a file the same way whichever target loaded it.
 #[test]
-fn a_directory_builds_recording_is_refused_by_its_source_paths_until_i3() {
+fn a_directory_builds_recording_replays() {
     let dir = workdir("built_dir");
     let app = dir.join("app");
     std::fs::create_dir_all(&app).unwrap();
@@ -2310,11 +2308,86 @@ fn a_directory_builds_recording_is_refused_by_its_source_paths_until_i3() {
         .expect("hale replay");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.code() == Some(1) && stderr.contains("different build inputs"),
-        "admitted: I3 has landed, and this test is to say the recording replays: {}",
+        out.status.success() && !stderr.contains("different build inputs"),
+        "a directory build's recording is admitted against its entry: {}",
         stderr
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Record `hale run <target>` from `cwd` into `rec`; its identity.
+fn run_identity(cwd: &Path, target: &str, rec: &Path) -> [u64; 4] {
+    let out = hale()
+        .current_dir(cwd)
+        .arg("run")
+        .arg(target)
+        .env("LOTUS_OBS_RECORD", rec)
+        .output()
+        .expect("hale run");
+    assert!(
+        out.status.success() && rec.is_file(),
+        "recorded run of {target} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    recorded_exec_digest(rec)
+}
+
+const TWO_UTILS_MAIN: &str =
+    "import \"../a\" as a;\nimport \"../b\" as b;\nfn main() { let x = a::val() - b::val(); }\n";
+
+/// F.40 phase 4, I3: two imported files with one file name are two
+/// files of the identity. The frame named a file outside the entry's
+/// directory by its bare file name, so `a/util.hl` and `b/util.hl` were
+/// framed alike and told apart only by where their absolute paths
+/// sorted; the frame names each by its source-map path now.
+#[test]
+fn same_named_imports_with_their_contents_swapped_are_two_identities() {
+    let dir = workdir("same_named");
+    let one = "fn val() -> Int { return 1; }\n";
+    let two = "fn val() -> Int { return 2; }\n";
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    std::fs::write(dir.join("app/main.hl"), TWO_UTILS_MAIN).unwrap();
+    let identity = |a: &str, b: &str, tag: &str| {
+        std::fs::write(dir.join("a/util.hl"), a).unwrap();
+        std::fs::write(dir.join("b/util.hl"), b).unwrap();
+        run_identity(&dir, "app/main.hl", &dir.join(format!("{tag}.halerec")))
+    };
+    let before = identity(one, two, "before");
+    let swapped = identity(two, one, "swapped");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(before, swapped, "the program changed, so its identity must");
+}
+
+/// F.40 phase 4, I3: one program checked out at two places, run from
+/// either and with its target typed either way, has one identity. The
+/// frame followed the order of the paths as they were loaded, so a
+/// target typed relative to the working directory sorted after every
+/// absolute import and one typed absolute sorted among them: the same
+/// program had two identities, and `hale replay` of one refused a
+/// recording of the other.
+#[test]
+fn one_program_at_two_roots_has_one_identity() {
+    let dir = workdir("two_roots");
+    let roots = [dir.join("one"), dir.join("two/deeper")];
+    for r in &roots {
+        std::fs::create_dir_all(r.join("app")).unwrap();
+        std::fs::create_dir_all(r.join("a")).unwrap();
+        std::fs::create_dir_all(r.join("b")).unwrap();
+        std::fs::write(r.join("app/main.hl"), TWO_UTILS_MAIN).unwrap();
+        std::fs::write(r.join("a/util.hl"), "fn val() -> Int { return 1; }\n").unwrap();
+        std::fs::write(r.join("b/util.hl"), "fn val() -> Int { return 2; }\n").unwrap();
+    }
+    let absolute = roots[0].join("app/main.hl");
+    let ids = [
+        run_identity(&dir, absolute.to_str().unwrap(), &dir.join("abs.halerec")),
+        run_identity(&roots[0], "app/main.hl", &dir.join("rel.halerec")),
+        run_identity(&roots[1], "app/main.hl", &dir.join("other.halerec")),
+    ];
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(ids[0], ids[1], "one checkout, its target typed absolute and relative");
+    assert_eq!(ids[1], ids[2], "one program at two roots");
 }
 
 /// F.40 phase 4, I2: the `[ffi]` surface an imported package's

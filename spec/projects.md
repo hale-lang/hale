@@ -820,7 +820,9 @@ that identity's options one way — their flags, `--env`'s role table,
 which `replay --env` resolves as `run --env` does, and the `[ffi]`
 surface of the imported packages — and debug information is not
 among them, so a recording made by a binary `hale build` emitted from
-a file replays against that file.
+a file replays against that file, and one from a directory build
+against the directory's entry file: the identity names each source by
+its source-map path, the same whichever target loaded it.
 
 | Surface | Effect |
 |---|---|

@@ -9,6 +9,7 @@ use crate::shared::source::Disk;
 use crate::shared::process::dies_with_us;
 use crate::shared::options::build_config;
 use crate::shared::options::exec_digest;
+use crate::shared::options::source_frames;
 use crate::shared::options::identity_options;
 use crate::shared::options::model_identity;
 use crate::shared::options::note_unmapped_roles;
@@ -192,7 +193,7 @@ pub(crate) fn run_program(
             return ExitCode::from(1);
         }
     };
-    let digest = exec_digest(sources, target, &options_fp, identity.plan_digest);
+    let digest = exec_digest(&source_frames(&snap), &options_fp, identity.plan_digest);
     compile_and_exec(
         view,
         user_args,

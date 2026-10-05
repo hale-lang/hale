@@ -310,10 +310,9 @@ mod tests {
     /// options too.
     #[test]
     fn the_dispatch_plan_alone_moves_the_execution_identity() {
-        let entry = PathBuf::from("/w/app.hl");
-        let sources: BTreeMap<PathBuf, String> = [(entry.clone(), "fn main() { }\n".to_string())].into();
+        let files = [("app.hl", "fn main() { }\n")];
         let fp = options_fingerprint(&base());
-        let digest = |plan| crate::shared::options::exec_digest(&sources, &entry, &fp, plan);
+        let digest = |plan| crate::shared::options::exec_digest(&files, &fp, plan);
         assert_eq!(digest(1), digest(1));
         assert_ne!(digest(1), digest(2));
     }

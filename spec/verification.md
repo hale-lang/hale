@@ -1094,6 +1094,10 @@ must be byte-identical for the same sources regardless of the working
 directory it was produced from or the place the tree is checked out,
 because comparing two of them is the point.
 
+The source map is the program's one naming of its files: the
+execution identity a recording carries frames these paths, in the
+map's order ([runtime.md § Replay](runtime.md)).
+
 Each source carries a content digest, so a consumer can tell whether
 two artifacts were built from the same text, and can catch a stale
 artifact paired with edited source, without the source being shipped.
