@@ -388,6 +388,99 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule == hale_types::lifecycle::Rule::line("12", Status::Shipped)));
 }
 
+/// Line 7 on every spine (L4's fifth part): the main locus's head comes
+/// before the join of its own pinned field and that field's drain, with
+/// no pool as with one, and the emitters' reader places the head first.
+#[test]
+fn the_main_locus_head_precedes_its_pinned_fields_join() {
+    use hale_types::lifecycle::spine::EntryStep as E;
+    for (src, spine, last) in [
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_deferred_pinned_field.hl"), Spine::DeferredMainEntry, K::WaitAbort),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l17_pinned_join_eager.hl"), Spine::EagerTeardown, K::WaitAbort),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        let head: Vec<ObligationId> = p
+            .iter()
+            .filter(|(_, o)| o.site.is_none() && o.holder.spine == spine && o.kind == last)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(head.len(), 1, "{}: one {} row", spine.name(), last.name());
+        let pinned = p
+            .iter()
+            .find(|(_, o)| o.kind == K::PinnedJoin)
+            .map(|(_, o)| o.site.as_ref().expect("a site").decl.lowered.clone())
+            .expect("a pinned join");
+        for kind in [K::PinnedJoin, K::Drain] {
+            let row = one(p, &pinned, kind);
+            assert!(
+                row.edges.entry.iter().any(|pr| pr.event.obligation == head[0] && pr.rule == Rule::line("7", Status::Shipped)),
+                "{}: {pinned}'s {} waits for the head's {}",
+                spine.name(),
+                kind.name(),
+                last.name()
+            );
+        }
+        assert_eq!(p.entry_order(spine).expect("ordered"), [E::Head, E::PinnedJoins, E::Cascade], "{}", spine.name());
+    }
+}
+
+/// Line 12, C52: a pinned field's lifetime is its owner's, so its join is
+/// part of its owner's teardown, before the owner drains, a root handed
+/// back to its caller included.
+#[test]
+fn a_pinned_fields_join_precedes_its_owners_drain() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_root_pinned_anchor.hl"));
+    let p = plan(&s);
+    let join = id_of(p, one(p, "Sink", K::PinnedJoin));
+    let drain = one(p, "App", K::Drain);
+    assert!(
+        drain.edges.entry.iter().any(|pr| pr.event.obligation == join
+            && pr.event.point == Point::Completed
+            && pr.rule == Rule::line("12", Status::Shipped)),
+        "App's drain waits for Sink's join"
+    );
+}
+
+/// C52, every replica (the review of #1354): a root handed back with a
+/// `pinned(replicas = 2)` field owes one pinned join per replica, each
+/// replica its own template (`InstanceKey::replica`), and the root's
+/// drain waits for every one, which is the order the root's cascade
+/// emits from its join records. Two roots of one type returned from two
+/// calls are the same templates: the plan states its rows per template,
+/// not per call, so that each root joins its own two replicas is the
+/// run's fact (the fixture's occurrences, App 2 and Sink 4, against
+/// which the trace oracle holds the run), not a row the plan carries.
+#[test]
+fn every_replica_of_a_returned_roots_pinned_field_is_joined_before_its_drain() {
+    for src in [
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_root_pinned_replicas.hl"),
+        include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_returned_roots_pinned_replicas.hl"),
+    ] {
+        let s = snapshot(src);
+        let p = plan(&s);
+        let joins = rows(p, "Sink", K::PinnedJoin);
+        let replicas: BTreeSet<Option<u32>> = joins
+            .iter()
+            .map(|j| match &j.site.as_ref().expect("a sited row").template {
+                Template::Static(k) => k.replica,
+                Template::Dynamic { .. } => panic!("a field replica is a static template"),
+            })
+            .collect();
+        assert_eq!(replicas, BTreeSet::from([Some(0), Some(1)]), "one pinned join per replica");
+        let drain = one(p, "App", K::Drain);
+        for j in joins {
+            let join = id_of(p, j);
+            assert!(
+                drain.edges.entry.iter().any(|pr| pr.event.obligation == join
+                    && pr.event.point == Point::Completed
+                    && pr.rule == Rule::line("12", Status::Shipped)),
+                "App's drain waits for every replica's join"
+            );
+        }
+    }
+}
+
 /// Line 12 over the instance tree: an owner's fields drain in their
 /// declaration order, and each is torn down before the next is dissolved.
 #[test]
@@ -437,8 +530,10 @@ fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
 #[test]
 fn an_anchors_params_and_held_delivery_use_its_initialization_domain() {
     let source = include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_pool_owner_settle.hl");
+    // Line 3 (L4's fifth part): a pool-placed anchor's own birth runs on
+    // its pool's worker, as a pinned one's on its thread.
     for (placement, domain, birth_domain) in [
-        ("cooperative(pool = side)", "pool:side", "main"),
+        ("cooperative(pool = side)", "pool:side", "pool:side"),
         ("pinned", "pinned", "pinned"),
     ] {
         let s = snapshot(&source.replace("cooperative(pool = side)", placement));

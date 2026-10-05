@@ -1129,8 +1129,39 @@ impl<'b, 'a> Builder<'b, 'a> {
 
     /// The domain the instance's birth runs on: its pinned thread, or
     /// the instantiating thread.
+    /// Where the instance's own `birth()` runs: a pinned anchor's thread, a
+    /// pool-placed root's worker (line 3, L4's fifth part), else the
+    /// instantiating thread. A pool-placed birth is one known domain only
+    /// where the main locus is built once ([`Self::join_once`]): a later
+    /// construction's posted birth finds the pools joined, and a pool with
+    /// no worker runs the job in place (`lotus_pool_start_post`), on the
+    /// instantiating thread.
     fn birth_domain(&self, i: usize, c: &Contribution) -> Option<DomainId> {
-        if self.is_pinned(i) { c.own } else { c.it }
+        if self.is_pinned(i) {
+            c.own
+        } else if self.pool_placed(c) {
+            c.own.filter(|_| self.join_once())
+        } else {
+            c.it
+        }
+    }
+
+    /// The first join joins every pool once: no main locus is torn down
+    /// where it stands, or one is, built once. A main locus built more
+    /// than once enters its eager spine's join at each teardown, and what
+    /// its later constructions post finds the pools shut down (line 19).
+    fn join_once(&self) -> bool {
+        let main_tops: Vec<usize> = (0..self.subjects.len())
+            .filter(|&i| {
+                matches!(self.subjects[i].how, How::Top { built: Built::Statement, main_locus: true, .. })
+                    && !self.facts[i].subscribes
+            })
+            .collect();
+        match main_tops[..] {
+            [] => true,
+            [i] => self.subjects[i].bound == Bound::Once,
+            _ => false,
+        }
     }
 
     fn site(&self, i: usize) -> Option<SourceSite> {
@@ -1261,22 +1292,23 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.runs_on = self.claim(i, |c| Self::on(c.it, shipped("6")));
             self.push(o)
         });
-        // Birth: on the pinned thread, else on the instantiating thread,
-        // a pool-placed locus's domain pending (line 3).
+        // Birth: on the pinned thread; a pool-placed root's on its pool's
+        // worker, as a job the instantiating thread waits for (line 3); else
+        // on the instantiating thread.
         let birth_holder = if pinned {
             Holder { spine: Spine::PinnedMain, domain: DomainRole::Own }
         } else {
             instantiation
         };
         let mut o = self.row(i, K::Birth, birth_holder);
+        if s.placed && on_pool {
+            o.holder.domain = DomainRole::Own;
+        }
         o.multiplicity = Multiplicity::OncePerIncarnation;
         o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
         o.runs_on = self.claim(i, |c| {
-            if self.pool_placed(c) {
-                Self::on(c.it, Rule::line("3", Status::Pending { condition: NO_OPTION }))
-            } else {
-                Self::on(self.birth_domain(i, c), Rule::SHIPPED)
-            }
+            let rule = if self.pool_placed(c) { shipped("3") } else { Rule::SHIPPED };
+            Self::on(self.birth_domain(i, c), rule)
         });
         if let Some(p) = r.params_settle {
             o.edges.entry.push(after(p, Point::Completed, Rule::SHIPPED));
@@ -1862,6 +1894,12 @@ impl<'b, 'a> Builder<'b, 'a> {
             if let (Some(cd), Some(pd)) = (child.drain, parent.drain) {
                 self.get(pd).edges.entry.push(after(cd, Point::Completed, shipped("12")));
             }
+            // A pinned field's lifetime is its owner's (C52): its thread is
+            // joined in its owner's teardown, before the owner drains,
+            // whichever frame or caller tears the owner down.
+            if let (Some(cj), Some(pd)) = (child.pinned_join, parent.drain) {
+                self.get(pd).edges.entry.push(after(cj, Point::Completed, shipped("12")));
+            }
         }
         if matches!(self.subjects[i].how, How::Accepted { .. }) {
             // A resident accepted child is reclaimed by its owner's
@@ -2006,7 +2044,9 @@ impl<'b, 'a> Builder<'b, 'a> {
 
     /// The head of the main locus's own teardown, eager or deferred: the
     /// quiesce, the wait-abort and, where the program has pools, the join,
-    /// all before its fields' teardown (rule (b)). Returns the join.
+    /// all before its fields' teardown (rule (b)), its pinned fields' joins
+    /// included (line 7: a pinned thread parked in a wait is joined only
+    /// once the wait is aborted). Returns the join.
     fn root_head(&mut self, spine: Spine, i: usize, pools: bool, prior: &[Prerequisite]) -> Option<ObligationId> {
         let mut prior = prior.to_vec();
         if let Some(run) = self.rows[i].run {
@@ -2014,10 +2054,18 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         let q = self.quiesce(spine, &prior);
         let a = self.abort(spine, &prior, q);
-        if !pools {
-            return None;
+        let join = pools.then(|| self.join(spine, &prior, q, a));
+        // Line 7, on every spine: the head before the joins of the pinned
+        // threads the root's teardown joins (its pinned fields, and those
+        // of its fields built on its instantiating thread), and before
+        // their drains, which the join's mailbox shutdown begins.
+        let last = join.unwrap_or(a);
+        for c in self.own_pinned(i) {
+            for row in [self.rows[c].pinned_join, self.rows[c].drain].into_iter().flatten() {
+                self.get(row).edges.entry.push(after(last, Point::Completed, shipped("7")));
+            }
         }
-        let join = self.join(spine, &prior, q, a);
+        let join = join?;
         // Rule (b): the main locus joins the pools before its fields'
         // teardown.
         let fields: Vec<usize> =
@@ -2028,6 +2076,30 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
         }
         Some(join)
+    }
+
+    /// The pinned anchors `i`'s own teardown joins: its pinned fields, and
+    /// those of its fields built on its instantiating thread (neither
+    /// pinned nor on a pool, whose subtrees initialize on their own
+    /// domain, C49/C50).
+    fn own_pinned(&self, i: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![i];
+        let mut seen = BTreeSet::from([i]);
+        while let Some(o) = stack.pop() {
+            for c in 0..self.subjects.len() {
+                if self.subjects[c].how != How::Field || !self.owners(c).contains(&o) || !seen.insert(c) {
+                    continue;
+                }
+                if self.is_pinned(c) {
+                    out.push(c);
+                } else if !self.any(c, |x| self.is_pool(x.own)) {
+                    stack.push(c);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
     }
 
     /// Whether the template builds the root lowering deploys (the
@@ -2082,13 +2154,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         // ends after that teardown's join, at its own child's reclaim
         // (line 19). What every pool's run owes the first join is stated
         // only where the main locus is built once.
-        let main_tops: Vec<usize> =
-            eager.iter().copied().filter(|&i| matches!(self.subjects[i].how, How::Top { main_locus: true, .. })).collect();
-        let join_once = match main_tops[..] {
-            [] => true,
-            [i] => self.subjects[i].bound == Bound::Once,
-            _ => false,
-        };
+        let join_once = self.join_once();
         let statements_done: Vec<ObligationId> = eager.iter().filter_map(|&i| self.rows[i].reclaim).collect();
         for i in eager {
             let main_locus = matches!(self.subjects[i].how, How::Top { main_locus: true, .. });

@@ -1,0 +1,41 @@
+// Decision line 12, an owned field's lifetime is its owner's
+// (PinnedJoin, Drain): two roots of one type, each returned with the two
+// replicas of its pinned field (C52).
+//
+// `make` builds an App and returns it; fn main calls it twice and holds
+// both roots. Each root keeps the join records of its own replicas (the
+// records are per instance, not per type), so each root's teardown, at
+// fn main's exit, shuts down, joins and reclaims its own two replicas:
+// four drains, all after both roots were handed back, each root's two
+// together, since one root's teardown joins both of its replicas before
+// the other's begins.
+//
+// Adopted terminal outcome: `each-root-joins-its-replicas`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l12.roots"; }
+
+locus Sink {
+    params { owner: Int = 0; }
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) { println("ev sink-heard"); }
+    drain() { println("ev sink-drain " + to_string(self.owner)); }
+}
+
+main locus App {
+    params {
+        id: Int = 0;
+        sink: Sink = Sink { owner: self.id };
+    }
+    placement { sink: pinned(replicas = 2); }
+}
+
+fn make(id: Int) -> App {
+    return App { id: id };
+}
+
+fn main() {
+    let first = make(1);
+    let second = make(2);
+    println("ev handed-back");
+}

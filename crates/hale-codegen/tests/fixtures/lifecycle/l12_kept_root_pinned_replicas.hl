@@ -1,0 +1,34 @@
+// Decision line 12, an owned field's lifetime is its owner's
+// (PinnedJoin, Drain): every replica of a pinned field of a root the
+// building frame keeps (C52's control).
+//
+// `make` builds App, whose field `sink` is placed `pinned(replicas = 2)`,
+// and keeps it; the root is torn down at `make`'s exit. The building
+// frame owns the root there, so its flush entries shut down, join and
+// reclaim both replicas, and both drain before `make` returns.
+//
+// Adopted terminal outcome: `every-replica-joined-at-make-exit`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l12.kept"; }
+
+locus Sink {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) { println("ev sink-heard"); }
+    drain() { println("ev sink-drain"); }
+}
+
+main locus App {
+    params { sink: Sink = Sink { }; }
+    placement { sink: pinned(replicas = 2); }
+}
+
+fn make() {
+    let app = App { };
+    println("ev built");
+}
+
+fn main() {
+    make();
+    println("ev make-returned");
+}

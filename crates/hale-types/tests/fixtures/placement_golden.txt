@@ -3388,6 +3388,14 @@ domain	pool:io	async_io
 row	App@literal1	App	main	default
 row	App@literal1.s	Slow	pool:io	entry	off owner
 
+== crates/hale-codegen/tests/replay_canceled_run.rs#aeec1d92
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+-- App@literal1.spawner	Spawner
+row	~	Spawner	pool:side	entry	off owner
+row	~.probe	Probe	pool:side	inherited
+
 == crates/hale-codegen/tests/replay_canceled_run.rs#d5fb7b1b
 root	App	the entry
 domain	pool:side

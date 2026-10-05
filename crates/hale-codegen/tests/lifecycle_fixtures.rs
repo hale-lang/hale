@@ -235,7 +235,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l01_neg_same_pool_held.hl", line: "1", adopted: Some("delivered-once-resumed"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l01_neg_it_waits_worker_queue.hl", line: "1", adopted: Some("delivered-at-settle-queue-ran"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l02_tick_after_posted_run.hl", line: "2", adopted: None, run: RunMode::Plain, judge: outcome_line },
-    Fixture { file: "l03_pool_birth_domain.hl", line: "3", adopted: None, run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l03_pool_birth_domain.hl", line: "3", adopted: Some("birth-on-worker-run-posted"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l03_field_parents_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l03_field_parents_two_domains_nested.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: twig_born },
     Fixture { file: "l03_field_parents_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
@@ -248,6 +248,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l06_readiness_pool.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l07_pool_or_wait_teardown.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_deferred_main_entry.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
+    Fixture { file: "l07_or_wait_deferred_pinned_field.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_fall_through.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_return.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
     Fixture { file: "l07_or_wait_main_test_failure.hl", line: "7", adopted: Some("wait-aborted"), run: RunMode::Plain, judge: wait_abort },
@@ -258,6 +259,10 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l11_let_bound_drain.hl", line: "11", adopted: Some("drain-at-scope-exit"), run: RunMode::Plain, judge: drain_at_scope_exit },
     Fixture { file: "l12_pinned_fields_drain.hl", line: "12", adopted: Some("fields-drained-first"), run: RunMode::Plain, judge: fields_drained_first },
     Fixture { file: "l12_returned_root_pinned_anchor.hl", line: "12", adopted: Some("delivered"), run: RunMode::Plain, judge: returned_anchor_delivery },
+    Fixture { file: "l12_returned_root_pinned_replicas.hl", line: "12", adopted: Some("every-replica-joined-by-owner"), run: RunMode::Plain, judge: two_replicas_joined_by_owner },
+    Fixture { file: "l12_kept_root_pinned_replicas.hl", line: "12", adopted: Some("every-replica-joined-at-make-exit"), run: RunMode::Plain, judge: kept_replicas_joined },
+    Fixture { file: "l12_returned_root_pinned_single.hl", line: "12", adopted: Some("every-replica-joined-by-owner"), run: RunMode::Plain, judge: one_replica_joined_by_owner },
+    Fixture { file: "l12_returned_roots_pinned_replicas.hl", line: "12", adopted: Some("each-root-joins-its-replicas"), run: RunMode::Plain, judge: each_root_joins_its_replicas },
     Fixture { file: "l13_resume_pool_child.hl", line: "13", adopted: Some("resumed-posted"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l14_reclaim_exactly_once.hl", line: "14", adopted: Some("torn-down-once"), run: RunMode::Plain, judge: torn_down_once },
     Fixture { file: "l15_sigint_flag.hl", line: "15", adopted: Some("cooperative-drain"), run: RunMode::SigintAfter("ev ready"), judge: cooperative_drain },
@@ -291,17 +296,11 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
-    // A pinned anchor is joined when the fn that built it returns, not in
-    // its owner's teardown. Decision needed: where a returned root's
-    // anchor thread is joined, and where its thread id lives once the
-    // building fn's frame is gone.
-    ("l12_returned_root_pinned_anchor.hl", "C52", "dropped"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
 const PENDING: &[(&str, &str)] = &[
     ("l02_tick_after_posted_run.hl", "tick-before-run-returned"),
-    ("l03_pool_birth_domain.hl", "birth-inline-run-posted"),
     ("l16_eager_spine_pool_join.hl", "joined-before-teardown"),
     ("l17_pinned_join_eager.hl", "final-dropped"),
     ("l17_pinned_join_deferred.hl", "final-dropped"),
@@ -399,6 +398,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.occurrences = count(&[("Mid", 2), ("Leaf", 2)]);
             &["3"]
         }
+        // A pool-placed root's own birth, on its pool's worker.
+        "l03_pool_birth_domain.hl" => &["3"],
         "l05_accept_position.hl" => {
             p.occurrences = count(&[("Kid", 1)]);
             &["5"]
@@ -410,6 +411,15 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // completed, but neither the join nor later teardown completes.
         // Each spine's head is the plan's (the deferred main entry in a fn
         // that is not `main`, and `fn main`'s exits, each the run's exit).
+        // The deferred main entry's head, then its own pinned field's
+        // join: the aborted publish ends the process inside Pusher's run,
+        // while main is inside that join, so the run takes none of `fn
+        // main`'s exits.
+        "l07_or_wait_deferred_pinned_field.hl" => {
+            p.ends_inside = Some(Inside { decl: Some("Pusher".into()), kind: ObligationKind::Run, spine: None });
+            p.exit = Some(Spine::DeferredMainEntry);
+            &["7"]
+        }
         "l07_pool_or_wait_teardown.hl"
         | "l07_or_wait_main_fall_through.hl"
         | "l07_or_wait_deferred_main_entry.hl"
@@ -449,6 +459,11 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         "l11_let_bound_drain.hl" => &["11"],
         "l12_pinned_fields_drain.hl" => &["12"],
         "l12_returned_root_pinned_anchor.hl" => &["12"],
+        "l12_returned_root_pinned_replicas.hl" | "l12_kept_root_pinned_replicas.hl" | "l12_returned_root_pinned_single.hl" => &["12"],
+        "l12_returned_roots_pinned_replicas.hl" => {
+            p.occurrences = count(&[("App", 2), ("Sink", 4)]);
+            &["12"]
+        }
         "l13_resume_pool_child.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
             &["13"]
@@ -1112,7 +1127,7 @@ fn count(r: &Ran, line: &str) -> usize {
 
 fn wait_abort(r: &Ran) -> String {
     if r.timed_out {
-        return "hang-in-pool-join".to_string();
+        return "hang-in-join".to_string();
     }
     if r.stderr.contains("BusWaitAborted") {
         return "wait-aborted".to_string();
@@ -1198,6 +1213,62 @@ fn returned_anchor_delivery(r: &Ran) -> String {
         (Some(_), _) => "delivered-at-exit".to_string(),
         (None, _) => "dropped".to_string(),
     }
+}
+
+/// C52, every replica: the `k` replicas of a returned root's pinned field
+/// each drain once, all after `mark` (the root handed back), so the
+/// root's teardown joined every one; fewer drains is a replica whose
+/// thread was never shut down or joined.
+fn replicas_joined_by_owner(r: &Ran, k: usize, mark: &str) -> String {
+    if !r.complete() {
+        return exit_word(r);
+    }
+    let lines: Vec<&str> = r.stdout.lines().collect();
+    let Some(at) = pos(r, mark) else { return format!("no `{mark}`") };
+    let drains = |ls: &[&str]| ls.iter().filter(|l| l.starts_with("ev sink-drain")).count();
+    match (drains(&lines[..at]), drains(&lines[at..])) {
+        (0, n) if n == k => "every-replica-joined-by-owner".to_string(),
+        (0, n) => format!("{n}-of-{k}-joined-by-owner"),
+        (b, _) => format!("{b}-joined-by-the-building-frame"),
+    }
+}
+
+fn two_replicas_joined_by_owner(r: &Ran) -> String {
+    replicas_joined_by_owner(r, 2, "ev handed-back")
+}
+
+fn one_replica_joined_by_owner(r: &Ran) -> String {
+    replicas_joined_by_owner(r, 1, "ev handed-back")
+}
+
+/// C52's control: a root the building frame keeps has both replicas
+/// joined by that frame's flush, between `make`'s last line and its
+/// return.
+fn kept_replicas_joined(r: &Ran) -> String {
+    if !r.complete() {
+        return exit_word(r);
+    }
+    let lines: Vec<&str> = r.stdout.lines().collect();
+    let (Some(built), Some(back)) = (pos(r, "ev built"), pos(r, "ev make-returned")) else {
+        return "unmarked".to_string();
+    };
+    match lines[built..back].iter().filter(|l| **l == "ev sink-drain").count() {
+        2 if count(r, "ev sink-drain") == 2 => "every-replica-joined-at-make-exit".to_string(),
+        n => format!("{n}-of-2-joined-at-make-exit"),
+    }
+}
+
+/// C52, two roots of one type handed back: four drains after both are
+/// returned, each root's two adjacent (one root's teardown joins both of
+/// its replicas before the other's begins).
+fn each_root_joins_its_replicas(r: &Ran) -> String {
+    let joined = replicas_joined_by_owner(r, 4, "ev handed-back");
+    if joined != "every-replica-joined-by-owner" {
+        return joined;
+    }
+    let drains: Vec<&str> = r.stdout.lines().filter(|l| l.starts_with("ev sink-drain ")).collect();
+    let per_root = drains.chunks(2).all(|c| c[0] == c[1]) && drains[0] != drains[2];
+    if per_root { "each-root-joins-its-replicas".to_string() } else { format!("interleaved: {drains:?}") }
 }
 
 fn delivered_before_teardown(r: &Ran) -> String {
@@ -1524,7 +1595,8 @@ fn every_planned_kind_has_a_negative_control() {
 /// where the template that kept its first parent's context only claimed
 /// `Birth*2!pool:side Run*2!pool:side`, false of the occurrence on main;
 /// the side occurrence's run is canceled behind its parent's teardown
-/// and the main one's completes (`=Ended`). The edges between the
+/// and the main one's completes (`=Ended`). The pool-placed Worker's own
+/// birth claims its pool (line 3, L4's fifth part). The edges between the
 /// Parents and their fields are not held: two occurrences of each, and
 /// the trace does not say which is whose. The control, both parents on
 /// main, claims main alone. Every run is held until reclaim completes.
@@ -1532,7 +1604,7 @@ const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains.hl",
         "App: Birth!main Run!main Drain Dissolve Reclaim\n\
-         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Worker: Birth!pool:side Run!pool:side Drain Dissolve Reclaim\n\
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
@@ -1549,7 +1621,7 @@ const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains_nested.hl",
         "App: Birth!main Run!main Drain Dissolve Reclaim\n\
-         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Worker: Birth!pool:side Run!pool:side Drain Dissolve Reclaim\n\
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
@@ -1597,7 +1669,7 @@ const BODY_PLANS: &[(&str, &str)] = &[
     (
         "l03_body_literal_two_domains.hl",
         "App: Birth!main Run!main Drain Dissolve Reclaim\n\
-         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Worker: Birth!pool:side Run!pool:side Drain Dissolve Reclaim\n\
          Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
@@ -1939,6 +2011,7 @@ fixture_tests! {
     l06_readiness_pool => "l06_readiness_pool.hl",
     l07_pool_or_wait_teardown => "l07_pool_or_wait_teardown.hl",
     l07_or_wait_deferred_main_entry => "l07_or_wait_deferred_main_entry.hl",
+    l07_or_wait_deferred_pinned_field => "l07_or_wait_deferred_pinned_field.hl",
     l07_or_wait_main_fall_through => "l07_or_wait_main_fall_through.hl",
     l07_or_wait_main_return => "l07_or_wait_main_return.hl",
     l07_or_wait_main_test_failure => "l07_or_wait_main_test_failure.hl",
@@ -1949,6 +2022,10 @@ fixture_tests! {
     l11_let_bound_drain => "l11_let_bound_drain.hl",
     l12_pinned_fields_drain => "l12_pinned_fields_drain.hl",
     l12_returned_root_pinned_anchor => "l12_returned_root_pinned_anchor.hl",
+    l12_returned_root_pinned_replicas => "l12_returned_root_pinned_replicas.hl",
+    l12_kept_root_pinned_replicas => "l12_kept_root_pinned_replicas.hl",
+    l12_returned_root_pinned_single => "l12_returned_root_pinned_single.hl",
+    l12_returned_roots_pinned_replicas => "l12_returned_roots_pinned_replicas.hl",
     l13_resume_pool_child => "l13_resume_pool_child.hl",
     l14_reclaim_exactly_once => "l14_reclaim_exactly_once.hl",
     l15_sigint_flag => "l15_sigint_flag.hl",
@@ -2047,6 +2124,32 @@ fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
     assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
     assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+/// C52: the returned root's pinned field is joined and reclaimed by its
+/// owner's cascade in fn main, past the frame that built it, and nothing
+/// of it is touched after its reclaim or leaked.
+#[test]
+fn l12_returned_root_pinned_anchor_under_asan() {
+    assert_clean_under_asan("l12_returned_root_pinned_anchor.hl", "l12_returned", |r| returned_anchor_delivery(r) == "delivered");
+}
+
+/// C52, every replica: each replica of a returned root's pinned field is
+/// shut down, joined and reclaimed by the root's cascade through its join
+/// record, nothing of it touched after its reclaim and none leaked.
+#[test]
+fn l12_returned_root_pinned_replicas_under_asan() {
+    assert_clean_under_asan("l12_returned_root_pinned_replicas.hl", "l12_replicas", |r| {
+        two_replicas_joined_by_owner(r) == "every-replica-joined-by-owner"
+    });
+}
+
+/// The same for two roots of one type, each joining its own records.
+#[test]
+fn l12_returned_roots_pinned_replicas_under_asan() {
+    assert_clean_under_asan("l12_returned_roots_pinned_replicas.hl", "l12_roots", |r| {
+        each_root_joins_its_replicas(r) == "each-root-joins-its-replicas"
+    });
 }
 
 #[test]

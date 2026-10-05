@@ -68,6 +68,8 @@ fn steps(body: &str, locus: &str) -> Vec<&'static str> {
                 Some("register")
             } else if l.contains(&format!("@{locus}.birth(")) {
                 Some("birth")
+            } else if l.contains("@lotus_pool_start_post(") && l.contains(&format!("@__pool_birth_{locus}")) {
+                Some("birth-job")
             } else if l.contains("%bcheck.has.handler = ") {
                 Some("check")
             } else if l.contains("@lotus_bus_ready(") {
@@ -142,6 +144,27 @@ fn a_pinned_child_checks_its_birth_on_its_thread_before_its_run() {
         ["birth", "check", "ready", "gate", "run"],
         "the thread births, checks, readies, gates, runs"
     );
+}
+
+/// Line 3 (L4's fifth part): a root child placed on a worker pool is born
+/// on the pool's worker. The instantiating thread registers it, posts its
+/// birth as a job (`__pool_birth_Sub`: the birth, then its `birth_check`)
+/// and waits for it, then readies it, gates on a held check's decision
+/// (which stays on the thread holding the owner's params open, so the job
+/// never waits for it) and posts its run. Before, the birth and the check
+/// were inline on the instantiating thread.
+#[test]
+fn a_pool_placed_child_is_born_on_its_pools_worker() {
+    let src = format!(
+        "{}main locus App {{\n    params {{ s: Sub = Sub {{ }}; }}\n    placement {{ s: cooperative(pool = side); }}\n    on_failure(c: Sub, err: ClosureViolation) {{ }}\n}}\nfn main() {{ App {{ }}; }}\n",
+        SUB.replace(
+            "    birth() {",
+            "    closure fuse { captures: n; epoch inline; }\n    birth_check { self.n == 0 } -> violate fuse;\n    birth() {"
+        )
+    );
+    let ir = ir("pool_child", &src);
+    assert_eq!(steps(body(&ir, "main"), "Sub"), ["hold", "register", "birth-job", "ready", "gate", "run"]);
+    assert_eq!(steps(body(&ir, "__pool_birth_Sub"), "Sub"), ["birth", "check"], "the worker births and checks");
 }
 
 /// The fifth shape, a cross-pool bubble: the consumer posts a create

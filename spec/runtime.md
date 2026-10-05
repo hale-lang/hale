@@ -279,7 +279,11 @@ the model: runtime is automatic; stdlib is explicit.
   result silently. A deferred parent's own pinned entries are now
   re-ordered after its own frame entry, so the reverse-order flush
   joins + drains them while every subscriber field is alive —
-  identical semantics to the eager path.
+  identical semantics to the eager path. On both paths a main
+  locus's head (the ingress quiesce, the wait-abort, the pool join)
+  comes before the first of those joins (§ "Lifecycle obligations",
+  line 7), so a pinned field parked in an `or wait` is released
+  into the raise path before it is joined, never hanging the join.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual
@@ -952,9 +956,10 @@ or via the bus — ships as a typecheck rule (Phase 5).
 runtime ships pool-aware **bus dispatch** for now: a subscriber
 whose enclosing locus is placed on a non-`main` cooperative
 pool gets its handler invoked on that pool's worker thread.
-Lifecycle methods (`birth` / `run` / `dissolve` / `accept`)
-still run on the main thread for cooperative-pool loci —
-the codegen does NOT yet relocate them to the pool worker.
+Lifecycle methods (`dissolve` / `accept`) still run on the
+main thread for cooperative-pool loci — the codegen does NOT
+yet relocate them to the pool worker (`run` and a pool-placed
+root's own `birth` are relocated, below).
 For state mutated only inside bus handlers this is enough to
 honor the single-threaded-method invariant (the handler is
 the only writer of locus state on the pool thread). State
@@ -969,8 +974,12 @@ instantiation / scope-exit boundaries). The pool-placed field's
 initializes there (§ "m27 + m28a", the pool side): everything
 nested under it is built, registered and born on the worker, and
 a nested cooperative child's `run()` runs there inline. The
-placed field's own `accept` and `birth()` still run on the
-instantiating thread (§ "Lifecycle obligations", line 3).
+placed field's own `birth()`, with its birth-epoch closures and
+its `birth_check`, runs on the worker too, as one more job the
+instantiating thread posts after the field's registrations and
+waits for, before its readiness (§ "Lifecycle obligations", line
+3). Its `accept` and `dissolve()` still run on the instantiating
+and the teardown thread.
 
 **Runtime pool inheritance for in-method-body instantiation
 (2026-05-29).** A locus instantiated *inside a method or
@@ -1112,10 +1121,13 @@ subscriptions (routed to X), its `birth()` and a cooperative
 child's inline `run()`, and the params bracket and its settle, so
 a failure a nested child raises during the initialization is
 delivered on the worker at settle. The instantiating thread then
-finishes the instantiation (the synthetic fields, the field's own
-subscriptions and its `birth()`, still on the instantiating
-thread) and posts the field's `run()` to X behind the job, as
-before. An override written at the literal is evaluated on the
+finishes the instantiation (the synthetic fields and the field's
+own subscriptions), posts the field's own birth step (its
+`birth()`, birth-epoch closures and `birth_check`, lowered into
+`__pool_birth_<LocusName>`) to X as a second job and waits for it
+the same way (§ "Lifecycle obligations", line 3), and posts the
+field's `run()` to X behind both, as before. The three are X's
+jobs in that order: init, birth, run. An override written at the literal is evaluated on the
 instantiating thread before the post, as for a pinned locus. A
 delivery to the subtree during the initialization is X's own: it
 runs on the worker, at a yield of the initialization or after it.
@@ -1996,14 +2008,32 @@ its `KNOWN_OPEN` table, which is empty today.
   `l02_tick_after_posted_run.hl`). The options stand: run them in
   the posted wrapper after `run()` returns, or drop the post-run
   tick for a posted `run()`.
-- **Line 3, where lifecycle methods run on a pool.** **Pending:**
-  the decisions choose no option. Today a pool-placed locus's
-  `accept` and `birth()` run on the instantiating thread, its
-  `run()` on the pool's worker, and its `dissolve()` on the
-  teardown thread (`l03_pool_birth_domain.hl`); § "Placement
-  classes", Phase 4 v1 limit, says otherwise. Everything nested
-  under it is built, registered, born and run inline on the worker
-  (§ "m27 + m28a", the pool side).
+- **Line 3, where lifecycle methods run on a pool.** A placed
+  locus's own `birth()` runs on the domain the placement table gives
+  it: a pinned one's on its thread, and a pool-placed root's on its
+  pool's worker, with its birth-epoch closures and its
+  `birth_check`, after its subtree's initialization and its own
+  registrations and before its readiness. The birth spine's order is
+  unchanged; only the thread moves, and the instantiating thread
+  waits for the birth as it waits for the subtree's initialization,
+  posting it as one more job of the same kind (`__pool_birth_<L>`).
+  A pool with no worker runs the job in place: a main locus built
+  and torn down more than once joins the pools at its first
+  teardown, so a later construction's birth runs on the
+  instantiating thread, and the plan claims that birth no one
+  domain (`l19_full_ring.hl`, line 19).
+  A failure the birth raises while the owner's params are open is
+  held on the worker and decided on the instantiating thread after
+  the job, as before. Shipped (L4's fifth part,
+  `l03_pool_birth_domain.hl`: the birth and a handler that touch one
+  field run on the worker's one thread; before, the birth ran on the
+  instantiating thread beside them). A restart of that birth decided
+  at settle still runs on the settling thread (inventory rows C42 and
+  C43, line 13). **Pending:** the decisions choose no option for the rest: a
+  pool-placed locus's `accept` runs on the instantiating thread, its
+  `run()` on the pool's worker, and its `dissolve()` on the teardown
+  thread. Everything nested under it is built, registered, born and
+  run inline on the worker (§ "m27 + m28a", the pool side).
 - **Line 4, the failure route bound at birth, in every spine.**
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
@@ -2087,7 +2117,15 @@ its `KNOWN_OPEN` table, which is empty today.
   `_main_fall_through`, `_main_return`, `_main_test_failure`). Where
   a spine owes no pool join (no pool, or a target that rejects every
   pool), `fn main`'s exits keep the wait-abort after their frame's
-  pre-drain, so a handler that drain runs may still wait.
+  pre-drain, so a handler that drain runs may still wait. The same
+  holds for the pinned threads a main locus's teardown joins: on
+  every spine its head comes before its own pinned fields' joins and
+  drains, with a pool or without, as the plan places it
+  (`LifecyclePlan::entry_order`). The deferred spine used to join
+  them first, so a pinned field parked in an `or wait` hung the join
+  (`l07_or_wait_deferred_pinned_field.hl`; inventory row C14,
+  corrected by L4's fifth part); its head now runs before the first
+  of them, and the entry's own teardown does not run it again.
 - **Line 8, a birth failure's shape.** A failure in `birth()` (a
   birth-epoch closure, `birth_check`) or in `run()` (`violate`, a
   closure) is a `ClosureViolation`, and the failing child is kept
@@ -2134,14 +2172,25 @@ its `KNOWN_OPEN` table, which is empty today.
   perspective-slot cells). Before, a pinned locus's fields were
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
-  An owned field's lifetime is its owner's, so a pinned field's
-  thread is joined in its owner's teardown. Not yet true for a root
-  returned from the fn that built it (inventory row C52,
-  `l12_returned_root_pinned_anchor.hl`): its pinned field is joined
-  when that fn returns, while the caller still holds the root, so a
-  publish to the field afterwards is dropped. Where such an anchor is
-  joined, and where its thread id lives once the building fn's frame
-  is gone, is undecided.
+  An owned field's lifetime is its owner's, so every replica of a
+  pinned field has its thread joined in its owner's teardown, before
+  the owner drains (the plan's edge from each replica's join to the
+  owner's drain). Shipped for a root returned from the fn that built
+  it too (inventory row C52; `l12_returned_root_pinned_anchor.hl`,
+  `l12_returned_root_pinned_replicas.hl` and
+  `l12_returned_roots_pinned_replicas.hl`, the last two also under
+  AddressSanitizer): the root's instance holds a join record for every
+  replica of each of its pinned fields, replica 0 included (the
+  replica's thread and its instance, as many as the placement declares
+  replicas), not the building fn's frame, so two roots of one type
+  each join their own; the fields' joins are part of their drain in
+  the root's cascade, wherever the caller's binding ends it, in the
+  order the building frame's flush would have used (replica 0, then
+  the others from the last down). The building frame's flush owns the
+  joins only when that frame still owns the root at its exit (the
+  ownership table's handed-back column). It used to join the field
+  when the building fn returned, while the caller still held the
+  root, so a publish to the field afterwards was dropped.
 
   Lines 12 and 19 are an instance's own teardown, the dissolve
   cascade and the reclaim, and the compiler emits both from the
@@ -2252,15 +2301,11 @@ its `KNOWN_OPEN` table, which is empty today.
   cooperative sibling field's `dissolve()` publishes to it under
   both spines, because a locus's own pinned entries are moved after
   its frame entry (`l17_pinned_join_eager.hl`,
-  `l17_pinned_join_deferred.hl`). The join order is the compiler's,
-  not yet the plan's, and the plan and the two spines disagree on one
-  shape: for a main locus with a pinned field in a program with
-  pools, the plan places the main locus's head (the ingress quiesce,
-  the wait-abort, the pool join) before every field's drain, the
-  eager spine emits it so, and the deferred spine joins the pinned
-  field first (inventory row C14), at the exit of `fn main` or of
-  whichever fn built the main locus. The line's settlement decides
-  which.
+  `l17_pinned_join_deferred.hl`). Which pinned threads are joined
+  before which cooperative entry is the compiler's, not yet the
+  plan's. Where the head goes is settled (line 7): a main locus's
+  head precedes its own pinned fields' joins on every spine, the
+  eager and the deferred alike, and the plan states it.
 - **Line 18, the pre-drain.** Every teardown spine drains the bus
   before its first step. The pre-drain is a delivery point, not a
   witness that anything has quiesced. Not yet emitted by the eager
@@ -3003,7 +3048,14 @@ in the RECORDED order (Phase 4): dequeued cells that arrive ahead
 of their recorded turn are held per-consumer and released in
 order, with a bounded hold (1s) after which the oldest held cell
 is released and the miss counted, so a genuinely divergent replay
-reports rather than deadlocks. A run its child's reclaim canceled
+reports rather than deadlocks. A job posted to a pool is a queued
+cell of its own and so a recorded start: a consume of delivery
+identity 0 whose target is the locus it starts, matched by the gate
+against a recorded 0 slot. A pool-placed root posts three, each
+with its own slot in posting order — its initialization, its own
+birth step (decision line 3) and its `run()` — and a `run()` posted
+by any other child is one more; a replay consumes them in that
+order. A run its child's reclaim canceled
 in the queue (decision line 19) is dropped before the gate compares
 it, as the recording dropped it, with no consume; a live run the
 gate holds keeps its retention on the child and is admitted only

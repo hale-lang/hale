@@ -1,0 +1,37 @@
+// Decision line 12, an owned field's lifetime is its owner's
+// (PinnedJoin, Drain): every replica of a pinned field returned with its
+// root (C52).
+//
+// `make` builds App, whose field `sink` is placed `pinned(replicas = 2)`,
+// and returns it; fn main holds the root. The root keeps a join record
+// for each replica, so its teardown, at fn main's exit, shuts down,
+// joins and reclaims both, and both drain after the root was handed
+// back. Before the review of #1354 only replica 0 was reachable from
+// the root's field: the other replica's frame entry was gone with the
+// building frame, and its thread was never shut down or joined (one
+// drain).
+//
+// Adopted terminal outcome: `every-replica-joined-by-owner`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l12.replicas"; }
+
+locus Sink {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) { println("ev sink-heard"); }
+    drain() { println("ev sink-drain"); }
+}
+
+main locus App {
+    params { sink: Sink = Sink { }; }
+    placement { sink: pinned(replicas = 2); }
+}
+
+fn make() -> App {
+    return App { };
+}
+
+fn main() {
+    let app = make();
+    println("ev handed-back");
+}
