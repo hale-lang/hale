@@ -4,7 +4,7 @@ use crate::shared::options::PER_SEED_FLAGS;
 use std::path::PathBuf;
 use crate::verbs::help::check_usage;
 use crate::shared::options::flag_value_in;
-use crate::shared::options::resolve_env_constitution;
+use crate::shared::options::resolve_env_check;
 use super::run_impl::run_check_impl_labelled;
 use super::matrix::run_matrix;
 use super::matrix::run_workspace;
@@ -184,15 +184,16 @@ pub(crate) fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         }
     }
 
-    // `--env X` binds the constitution `[environments.X]` requires,
-    // resolved from the nearest `hale.toml` at or above the target.
-    let adopt = match &env_name {
-        None => Vec::new(),
-        Some(e) => match resolve_env_constitution(
+    // `--env X` binds the constitution `[environments.X]` requires and
+    // its role table, resolved from the nearest `hale.toml` at or above
+    // the target, as `build --env` resolves them.
+    let (adopt, roles) = match &env_name {
+        None => (Vec::new(), None),
+        Some(e) => match resolve_env_check(
             &PathBuf::from(positionals[0]),
             e,
         ) {
-            Ok(c) => c,
+            Ok((c, r)) => (c, Some(r)),
             Err(msg) => {
                 eprintln!("{}", msg);
                 return ExitCode::from(2);
@@ -204,5 +205,6 @@ pub(crate) fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         verify,
         &adopt,
         env_name.as_deref(),
+        roles.as_deref(),
     ))
 }

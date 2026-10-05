@@ -89,14 +89,19 @@ pub(crate) fn run_check_impl_env(
     gate_warnings: bool,
     adopt_env: &[String],
 ) -> u8 {
-    run_check_impl_labelled(target, gate_warnings, adopt_env, None)
+    run_check_impl_labelled(target, gate_warnings, adopt_env, None, None)
 }
 
+/// `env_roles` is the environment's role table (GH #1109), resolved by
+/// the function `build --env` uses (`options::env_roles`): the api
+/// binding the sequence generates bakes it in, so the check judges the
+/// binding the build lowers (F.40 phase 4, A1).
 pub(crate) fn run_check_impl_labelled(
     target: &Path,
     gate_warnings: bool,
     adopt_env: &[String],
     env_label: Option<&str>,
+    env_roles: Option<&str>,
 ) -> u8 {
     // F.18: a whole seed (a directory) is checked to what `build`
     // accepts — a call to a bare name nothing binds is an error here;
@@ -136,6 +141,7 @@ pub(crate) fn run_check_impl_labelled(
         name: name.to_string(),
         adopt: adopt_env.to_vec(),
     });
+    config.api_roles = env_roles.map(str::to_string);
     // F.40 phase 2.2a: one snapshot, and the check demanded from it.
     // `check` resolves cross-seed imports the same way `build` and
     // `run` do (an imported seed's bodies are in the program the

@@ -597,8 +597,16 @@ pub(crate) fn resolve_build_env(
 ) -> Result<Option<(crate::pkg::EnvSpec, Option<String>)>, String> {
     let Some(env) = options.env.clone() else { return Ok(None) };
     let (spec, base) = resolve_env_spec(target, &env)?;
-    options.api_roles = Some(crate::pkg::roles_table(&spec.roles));
+    options.api_roles = Some(env_roles(&spec));
     Ok(Some((spec, base)))
+}
+
+/// GH #1109: the role table an environment binds, the one line the api
+/// binding bakes in. `build --env`, `run --env`, `check --env` and the
+/// matrix's pair all take it from here, so the check judges the binding
+/// the build lowers (F.40 phase 4, A1).
+pub(crate) fn env_roles(spec: &crate::pkg::EnvSpec) -> String {
+    crate::pkg::roles_table(&spec.roles)
 }
 
 /// GH #1109: the config a build's snapshot is loaded with, from its
@@ -644,15 +652,16 @@ pub(crate) fn note_unmapped_roles(
     }
 }
 
-/// Which constitution does environment `env` require? Walks up from
-/// the target for the nearest `hale.toml`, so `hale check apps/a
-/// --env prod` works from anywhere in the tree.
-pub(crate) fn resolve_env_constitution(
+/// Which constitutions does environment `env` require, and which role
+/// table does it bind? Walks up from the target for the nearest
+/// `hale.toml`, so `hale check apps/a --env prod` works from anywhere
+/// in the tree.
+pub(crate) fn resolve_env_check(
     target: &Path,
     env: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, String), String> {
     let (spec, base) = resolve_env_spec(target, env)?;
-    Ok(env_adopts(&spec, &base))
+    Ok((env_adopts(&spec, &base), env_roles(&spec)))
 }
 
 /// The constitutions an environment binds: the workspace base first,
@@ -672,8 +681,8 @@ pub(crate) fn env_adopts(spec: &crate::pkg::EnvSpec, base: &Option<String>) -> V
 
 /// GH #1109: the `[environments.<env>]` section the nearest
 /// `hale.toml` at or above `target` declares, with the workspace
-/// base. `check --env` reads its constitution; `build --env` and
-/// `run --env` read that and its `roles` table.
+/// base. `check --env`, `build --env` and `run --env` read its
+/// constitution and its `roles` table.
 pub(crate) fn resolve_env_spec(
     target: &Path,
     env: &str,

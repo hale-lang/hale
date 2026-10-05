@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
 use crate::shared::frontend::collect_checkable;
+use crate::shared::options::env_roles;
 use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
@@ -120,8 +121,11 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
                     adopt.push(c.clone());
                 }
             }
+            // The pair's role table too, as `check --env` and `build
+            // --env` resolve it (F.40 phase 4, A1).
+            let roles = env_roles(spec);
             let code = run_check_impl_labelled(
-                &target, verify, &adopt, Some(env),
+                &target, verify, &adopt, Some(env), Some(&roles),
             );
             if code != 0 {
                 failed.push(format!("{} @ {}", ep, env));

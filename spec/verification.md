@@ -1027,10 +1027,12 @@ mapped there (`[]` says
 explicitly that nobody holds it), and that nothing is mapped that the
 entrypoint does not declare: an omission is indistinguishable from a
 mistake, and a misspelt key would otherwise map nobody quietly. `hale
-build --env <name>` and `hale run --env <name>` bind the same section
-to the program: they adopt its constitution as `check --env` does and
-bake its `roles` table into the api binding (`spec/semantics.md` §
-"The gate"), where `LOTUS_API_ROLES` may override it at run time.
+check --env <name>`, `hale build --env <name>` and `hale run --env
+<name>` bind the same section to the program: each adopts its
+constitution and bakes its `roles` table into the api binding
+(`spec/semantics.md` § "The gate"), where `LOTUS_API_ROLES` may
+override it at run time, so the check judges the binding the build
+lowers; `--matrix` binds each pair's section the same way.
 
 Combinations that cannot be honoured are rejected rather than
 ignored. `--matrix` runs many evaluations, so a per-evaluation

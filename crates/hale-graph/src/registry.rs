@@ -1065,7 +1065,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["@export, @gated, serve declarations", "the api binding", "roles (--env)"],
         producer: Some(site(API_GEN, "api_surface")),
         legacy: &[
-            legacy(API_GEN, "generate_api", "its one production call is the desugar sequence's (`desugar_sequence.rs`), with the snapshot's roles; codegen no longer runs it (F.40 phase 2.2b), and the snapshot's `Config` carries `api`, `api_roles` and `environment`, which `Config::digest` hashes. What remains: `Config::check` carries no roles and `hale check --env` adopts the environment's constitutions only, so the check judges a generated binding whose role source differs from the one `build --env` lowers", "`hale check --env` carries the environment's roles"),
             legacy(CHECK, "check_api_roles", "role declarations, includes and gates are judged over the AST", "a law over the surface rows"),
             legacy(V_MATRIX, "role_coverage", "re-runs the loader and reads pre-desugar programs", "reads the rows"),
         ],

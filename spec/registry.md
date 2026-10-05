@@ -30,7 +30,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
-| `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
+| `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 2 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
 | `sealability` | Layer 3 | Migrating | law | `check_sealed_access` | 1 | Which loci confine their state (`@sealed`), and which could. |
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
@@ -768,7 +768,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-syntax/src/api_gen.rs` · `generate_api` — its one production call is the desugar sequence's (`desugar_sequence.rs`), with the snapshot's roles; codegen no longer runs it (F.40 phase 2.2b), and the snapshot's `Config` carries `api`, `api_roles` and `environment`, which `Config::digest` hashes. What remains: `Config::check` carries no roles and `hale check --env` adopts the environment's constitutions only, so the check judges a generated binding whose role source differs from the one `build --env` lowers. *Removed when:* `hale check --env` carries the environment's roles.
 - `crates/hale-types/src/check.rs` · `check_api_roles` — role declarations, includes and gates are judged over the AST. *Removed when:* a law over the surface rows.
 - `crates/hale-cli/src/verbs/check/matrix.rs` · `role_coverage` — re-runs the loader and reads pre-desugar programs. *Removed when:* reads the rows.
 
