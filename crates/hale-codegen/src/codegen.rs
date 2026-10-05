@@ -20,6 +20,7 @@ use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
 use hale_types::capability::{Capability, Obligation, Transport};
+use hale_types::handler_routing::RetryBound;
 use hale_types::lifecycle::{ObligationKind, Spine};
 use hale_types::resolved::LoweringView;
 
@@ -7813,9 +7814,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, end_bb)
                     .map_err(e)?;
                 self.builder.position_at_end(restart_bb);
-                self.builder
-                    .build_call(rf.restart, &[self_arg.into()], "run.restart.call")
-                    .map_err(e)?;
+                self.emit_restart_call(rf.restart, self_arg, locus_name, "PoolRun", "run.restart.call")?;
                 self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
                 self.builder.position_at_end(end_bb);
                 self.builder
@@ -17843,17 +17842,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Stmt::Block(b) => self.lower_block(b, scope),
             Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
-            Stmt::Recovery { op, args, modifier, .. } => {
+            Stmt::Recovery { op, args, modifier, span } => {
                 // `for N` bounds how many times this child is
                 // restarted; on the failure that exhausts it the
                 // supervisor quarantines instead. It is only
                 // meaningful on the restart ops — there is nothing to
-                // repeat about quarantining or bubbling.
+                // repeat about quarantining or bubbling. The bound is
+                // the restart rows' (`HandlerRouting::retry_bound_at`,
+                // the entries the model's `retry_bound` is derived
+                // from), with the expression written where the row
+                // says, for one only known when the statement runs.
                 let bound = match modifier {
                     None => None,
                     Some(RecoveryModifier::For(e)) => match op {
                         RecoveryOp::Restart
-                        | RecoveryOp::RestartInPlace => Some(e),
+                        | RecoveryOp::RestartInPlace => {
+                            let row = self.handlers.retry_bound_at(*span).ok_or_else(|| {
+                                CodegenError::Unsupported(
+                                    "`for N`: the restart rows state no bound for this \
+                                     statement"
+                                        .into(),
+                                )
+                            })?;
+                            Some((row, e))
+                        }
                         // `quarantine(c) for d` is a DIFFERENT
                         // modifier — a duration after which the child
                         // is automatically restarted (spec/semantics
@@ -30796,7 +30808,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_call(
         &mut self,
         args: &[Expr],
-        bound: Option<&Expr>,
+        bound: Option<(RetryBound, &Expr)>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         self.lower_restart_call_kind(args, bound, scope, false)
@@ -30812,7 +30824,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_in_place_call(
         &mut self,
         args: &[Expr],
-        bound: Option<&Expr>,
+        bound: Option<(RetryBound, &Expr)>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         self.lower_restart_call_kind(args, bound, scope, true)
@@ -30821,7 +30833,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_call_kind(
         &mut self,
         args: &[Expr],
-        bound: Option<&Expr>,
+        bound: Option<(RetryBound, &Expr)>,
         scope: &Scope<'ctx>,
         in_place: bool,
     ) -> Result<BlockEnd, CodegenError> {
@@ -30864,15 +30876,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // exactly N of them, and the (N+1)th failure quarantines.
         let cont_bb = match bound {
             None => None,
-            Some(expr) => {
-                let (nval, nty) = self.lower_expr(expr, scope)?;
-                if !matches!(nty, CodegenTy::Int) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`{} for N`: the bound must be an Int; got {:?}",
-                        kind, nty
-                    )));
-                }
-                let n = nval.into_int_value();
+            Some((row, written)) => {
+                // The row's bound: a literal is its value; any other
+                // expression is the one written at the row's site,
+                // lowered here, once, as the statement runs.
+                let n = match row {
+                    RetryBound::Const(n) => i64_t.const_int(n as u64, true),
+                    RetryBound::Expr(site) => {
+                        if written.span() != site {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`{} for N`: the restart row's bound is not the \
+                                 expression this statement writes",
+                                kind
+                            )));
+                        }
+                        let (nval, nty) = self.lower_expr(written, scope)?;
+                        if !matches!(nty, CodegenTy::Int) {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`{} for N`: the bound must be an Int; got {:?}",
+                                kind, nty
+                            )));
+                        }
+                        nval.into_int_value()
+                    }
+                };
                 let rb_ptr = self
                     .builder
                     .build_struct_gep(

@@ -114,7 +114,7 @@
 //! 10    Closures Dissolve                        Shipped
 //! 11    Drain                                    Shipped
 //! 12    Drain                                    Shipped (C9, L4); Shipped (C32, L4)
-//! 13    Resume RunAdmission Run                  KnownOpen C43; KnownOpen C48
+//! 13    Resume RunAdmission Run                  KnownOpen C43; Shipped (C48, L4)
 //! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
 //! 16    PoolJoin WaitAbort                       Shipped (the capability matrix selects)
@@ -896,7 +896,7 @@ pub enum NotStarted {
     /// the caller can read.
     Acknowledged,
     /// Nothing to start: the locus declares no `run()`, and a resumed
-    /// incarnation owes none (line 13; inventory C48 enters one today).
+    /// incarnation owes none (line 13, C48).
     NoRun,
 }
 
@@ -1125,7 +1125,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::Resume, K::RunAdmission, K::Run],
         statuses: &[
             (Status::KnownOpen { inventory_row: "C43" }, "a pool-placed child's resumed run() runs inline"),
-            (Status::KnownOpen { inventory_row: "C48" }, "a resumed locus with no run() still enters Run"),
+            (Status::Shipped, "a resumed locus with no run() enters no Run (C48, L4)"),
         ],
     },
     DecisionLine {

@@ -1785,13 +1785,12 @@ impl<'b, 'a> Builder<'b, 'a> {
         o.edges.entry.push(after(delivery, Point::Completed, shipped("1")));
         self.push(o);
         // A locus that declares no run() owes none in its next
-        // incarnation (line 13); the resume enters one (inventory C48).
+        // incarnation (line 13, C48): the resume enters none (L4).
         if !self.facts[i].run && !self.is_pinned(i) {
             let mut o = self.row(i, K::Run, Holder { spine, domain: DomainRole::Own });
             o.source = Some(source);
             o.guard = PathGuard::Restart;
             o.line = Some("13");
-            o.status = Status::KnownOpen { inventory_row: "C48" };
             o.multiplicity = Multiplicity::AtMostOncePerInstance;
             o.terminals = vec![Terminal::NotStarted(NotStarted::NoRun)];
             o.edges.entry.push(after(decision, Point::Completed, Rule::SHIPPED));

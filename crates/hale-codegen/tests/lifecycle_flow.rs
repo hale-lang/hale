@@ -53,3 +53,5 @@ mod typed_body_rows;
 mod reclaim_cancel_ir;
 #[path = "reclaim_spine_ir.rs"]
 mod reclaim_spine_ir;
+#[path = "restart_spine_ir.rs"]
+mod restart_spine_ir;

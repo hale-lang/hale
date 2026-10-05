@@ -687,8 +687,26 @@ fn the_pool_join_holds_a_run_only_where_every_occurrence_is_on_a_pool() {
     assert_eq!(joined(&side_only), (true, true), "side alone: the run joined");
 }
 
+/// A restart's steps, as an emitter reads them (L4): the decision, the
+/// restart's entry, the next incarnation's birth, then its run where the
+/// locus declares one (line 13, C48); nothing torn down in between.
+#[test]
+fn a_restart_reads_decision_entry_birth_then_run() {
+    use hale_types::lifecycle::spine::RecoveryStep as R;
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/rd_restart_during_teardown.hl"));
+    let p = plan(&s);
+    assert_eq!(p.recovery_order("Kid").unwrap(), [R::Decision, R::Restart, R::Birth, R::Run]);
+    let site = p.templates("Kid").next().expect("a Kid template");
+    let pairs = p.recovery_pairs(site);
+    for pair in [(R::Decision, R::Restart), (R::Restart, R::Birth), (R::Birth, R::Run)] {
+        assert!(pairs.contains(&pair), "{pair:?} is the rows' own: {pairs:?}");
+    }
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_neg_same_pool_held.hl"));
+    assert_eq!(plan(&s).recovery_order("Late").unwrap(), [R::Decision, R::Restart, R::Birth]);
+}
+
 /// Line 13: a locus that declares no run() owes none when it resumes;
-/// the row says so, known open (C48), and owes no event.
+/// the row says so, shipped (C48, L4), and owes no event.
 #[test]
 fn a_resumed_locus_with_no_run_owes_none() {
     let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_neg_same_pool_held.hl"));
@@ -697,7 +715,7 @@ fn a_resumed_locus_with_no_run_owes_none() {
     let runs = rows(p, "Late", K::Run);
     assert!(!runs.is_empty());
     for run in runs {
-        assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::KnownOpen { inventory_row: "C48" }));
+        assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::Shipped));
         assert_eq!(run.terminals, vec![Terminal::NotStarted(NotStarted::NoRun)]);
     }
 }
