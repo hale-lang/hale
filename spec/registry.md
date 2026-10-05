@@ -19,7 +19,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Canonical | law | `check_form_shape` | 0 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
-| `stdlib_surface` | Layer 2 | Migrating | capability | `SURFACES` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as. |
+| `stdlib_surface` | Layer 2 | Migrating | capability | `SURFACES` | 4 | What each stdlib function is: its signature, its effect classes, whether it blocks, how it lowers, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Canonical | derivation | `entry_row` | 0 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Canonical | derivation | `resolve_owners` | 0 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Canonical | derivation | `build_bus_graph` | 0 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
@@ -389,9 +389,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call_expr` — 271 `["std", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`; each dispatched path's row names what its arm does (`Lower`), held equal to the arms by the parity test, but codegen does not dispatch from it yet. *Removed when:* codegen dispatches from the registry row.
-- `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call` — the statement form: the expression dispatch with the value dropped, except for 54 more `["std", ..]` literals, in the arms a statement answers differently (Unit-only primitives, the assertions, two Hale bodies) and its fallibility refusal (34 paths). *Removed when:* same.
-- `crates/hale-codegen/src/channels/mod.rs` · `lower_fallible_call` — the fallible-call dispatch, a third copy of the stdlib call shapes (150 literals). *Removed when:* same.
+- `crates/hale-codegen/src/channels/mod.rs` · `lower_fallible_call` — the `or` position's dispatch, which still matches 150 `["std", ..]` literals, a second copy of the stdlib call shapes; the statement and value positions dispatch from the row (`lower_std_call`). *Removed when:* codegen dispatches from the registry row.
 - `crates/hale-codegen/src/codegen.rs` · `value_to_string_supports` — the printable set, kept in lockstep by hand with the checker's `ty_is_printable`. *Removed when:* one predicate.
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.
 - `crates/hale-codegen/src/codegen.rs` · `declare_builtin_closure_violation_type` — a hand-maintained mirror of the checker's injected builtin types. *Removed when:* one declaration.
@@ -401,7 +399,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Invariants.**
 
 - one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature
-- every path a dispatcher lowers has a row whose lowering is what its arms do, every intrinsic or Hale-body row has an arm, a renamed row has none, and the unlowered rows are named (parity test)
+- codegen dispatches a stdlib call at statement or value position from its row, the position a parameter (`lower_std_call`): an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; the fallible dispatcher's arms agree with the rows, every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)
 - the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)
 
 **Missing data.** a missing required row is a compiler error
