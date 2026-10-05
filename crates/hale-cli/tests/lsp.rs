@@ -1397,6 +1397,18 @@ const LAWS_LIB: Files = &[(
 locus Spin {\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n        }\n    }\n}\n",
 )];
 
+/// The effects parity seed
+/// (`lsp_and_check_agree_over_a_seed_with_an_effect_contract`): an
+/// `@no_syscall` function whose body reaches `println` through a helper,
+/// the shape `user_effects.rs` holds the checker to.
+const EFFECTS: Files = &[(
+    "main.hl",
+    "fn leaf(n: Int) -> Int {\n    println(\"x\");\n    return n;\n}\n\
+@no_syscall\n\
+fn price(n: Int) -> Int {\n    return leaf(n);\n}\n\
+fn main() {\n    println(price(5));\n}\n",
+)];
+
 /// Every parity seed: its tag, its files and its library's.
 const PARITY: &[(&str, Files, Files)] = &[
     ("plain", PLAIN, &[]),
@@ -1404,6 +1416,7 @@ const PARITY: &[(&str, Files, Files)] = &[
     ("generated", GENERATED, &[]),
     ("author-leak", AUTHOR_LEAK, &[]),
     ("laws", LAWS, LAWS_LIB),
+    ("effects", EFFECTS, &[]),
 ];
 
 /// The laws parity fixture (F.40 phase 3, X1): a program that breaks a
@@ -1423,6 +1436,30 @@ fn lsp_and_check_agree_over_a_seed_with_laws() {
             "no `{want}` finding in {file}: {check:?}"
         );
     }
+}
+
+/// The effects parity fixture (F.40 phase 3, close): a function whose
+/// body breaks its `@no_syscall` contract is checked three ways (`hale
+/// check <dir>`, the editor on disk, the editor's buffers) and as `hale
+/// check <file>`, one answer: the contract's finding, at one span.
+#[test]
+fn lsp_and_check_agree_over_a_seed_with_an_effect_contract() {
+    let check = agree_three_ways("effects", EFFECTS, &[]);
+    let root = scratch_root("effects-file");
+    let dir = root.canonicalize().expect("canonical dir");
+    let (file, text) = EFFECTS[0];
+    std::fs::write(dir.join(file), text).expect("write app");
+    let (single, passed) = check_json(&dir.join(file));
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!passed, "a broken contract fails `hale check <file>`");
+    assert_eq!(single, check, "`hale check <file>` and `hale check <dir>` disagree");
+    let contract: Vec<&Finding> = check.iter().filter(|(.., m)| m.contains("must not reach `syscall`")).collect();
+    assert_eq!(contract.len(), 1, "one finding for the broken contract: {check:?}");
+    let (f, line, col, m) = contract[0];
+    // The contract's function by name: `fn price` is line 6, its name
+    // column 4.
+    assert_eq!((f.as_str(), *line, *col), ("main.hl", 6, 4), "the contract's span: {m}");
+    assert!(m.contains("price -> leaf"), "the witness chain: {m}");
 }
 
 /// The editor's two publications (F.40 phase 3, X1), over the laws
