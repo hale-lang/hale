@@ -1333,7 +1333,7 @@ fn write_harvested_programs() {
 /// fail (`bare_call_of_a_fallible_row`, the value position's arm, which a
 /// statement reaches too), and an `or` over one whose row says it cannot
 /// (`or_over_an_infallible_row`). No program builds with one, and the
-/// check refuses all but an `or` over a row with no signature yet.
+/// check refuses all but an `or` over a row whose success is `Any`.
 pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
     use hale_types::stdlib_surface::{rows, Lower};
     rows()

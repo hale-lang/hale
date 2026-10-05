@@ -638,15 +638,15 @@ std::io::fs::unlink | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str
 std::io::fs::write_bytes | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_bytes
 std::io::fs::write_file | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file
 std::io::fs::write_file_append | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file_append
-std::io::mirror::__capacity | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__capacity
-std::io::mirror::__commit | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__commit
-std::io::mirror::__consume | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__consume
-std::io::mirror::__free | lookup=io::mirror@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__free
-std::io::mirror::__len | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__len
+std::io::mirror::__capacity | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__capacity
+std::io::mirror::__commit | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__commit
+std::io::mirror::__consume | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__consume
+std::io::mirror::__free | lookup=io::mirror@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__free
+std::io::mirror::__len | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__len
 std::io::mirror::__new | lookup=io::mirror@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__new
-std::io::mirror::__readable | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__readable
+std::io::mirror::__readable | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int) -> BytesMut | ret_ty=BytesMut | or=- | parks=false | holds=false | unknown=- | suggest=__readable
 std::io::mirror::__recv_into | lookup=io::mirror@3 | locus=false | effects=syscall | sig=(Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__recv_into
-std::io::mirror::__writable | lookup=io::mirror@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__writable
+std::io::mirror::__writable | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int) -> BytesMut | ret_ty=BytesMut | or=- | parks=false | holds=false | unknown=- | suggest=__writable
 std::io::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::io::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
 std::io::sockopt::IPPROTO_IP | lookup=io::sockopt@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=IPPROTO_IP

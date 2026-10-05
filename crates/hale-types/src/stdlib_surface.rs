@@ -523,21 +523,21 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             // Double-mmap setup and teardown: mmap/munmap.
             // `__new` and `__recv_into` count their arguments. The other
-            // seven have no signature (F.40 phase 4, S6): their helper
-            // reads the arguments it needs without counting them and
-            // ignores any more, so a signature would refuse calls lowering
-            // builds.
+            // seven's helper reads the arguments it needs without counting
+            // them; their signatures are the count and types it reads, so
+            // the check refuses the extra arguments lowering ignored (F.40
+            // phase 4, S6's ruling).
             row!("__new", SYSCALL, [Int] -> Int, Intrinsic(IoMirrorNewRaw)),
-            row!("__free", SYSCALL, _, Intrinsic(IoMirrorFreeRaw)),
+            row!("__free", SYSCALL, [Int] -> Int, Intrinsic(IoMirrorFreeRaw)),
             // Datagram read straight into the ring.
             row!("__recv_into", SYSCALL, [Int, Int, Int] -> Int, Intrinsic(IoMirrorRecvIntoRaw)),
             // Cursor arithmetic over an already-mapped region.
-            row!("__commit", PURE, _, Intrinsic(IoMirrorCommitRaw)),
-            row!("__consume", PURE, _, Intrinsic(IoMirrorConsumeRaw)),
-            row!("__readable", PURE, _, Intrinsic(IoMirrorReadableRaw)),
-            row!("__writable", PURE, _, Intrinsic(IoMirrorWritableRaw)),
-            row!("__len", PURE, _, Intrinsic(IoMirrorLenRaw)),
-            row!("__capacity", PURE, _, Intrinsic(IoMirrorCapacityRaw)),
+            row!("__commit", PURE, [Int, Int] -> Int, Intrinsic(IoMirrorCommitRaw)),
+            row!("__consume", PURE, [Int, Int] -> Int, Intrinsic(IoMirrorConsumeRaw)),
+            row!("__readable", PURE, [Int] -> BytesMut, Intrinsic(IoMirrorReadableRaw)),
+            row!("__writable", PURE, [Int] -> BytesMut, Intrinsic(IoMirrorWritableRaw)),
+            row!("__len", PURE, [Int] -> Int, Intrinsic(IoMirrorLenRaw)),
+            row!("__capacity", PURE, [Int] -> Int, Intrinsic(IoMirrorCapacityRaw)),
         ],
         open_prefixes: &[],
     },

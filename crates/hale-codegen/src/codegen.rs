@@ -34187,9 +34187,10 @@ fn bare_call_of_a_fallible_row(
 
 /// An `or` over a stdlib function whose row says it cannot fail. With a
 /// signature, the check refuses the `or` ("is not fallible"), so this is
-/// an internal error naming the row. Without one (step S6 gives every
-/// dispatched function one) the check types the call `Unknown` and lets
-/// the `or` through, so this refusal is the one a checked program meets.
+/// an internal error naming the row. Without one the check types the call
+/// `Unknown` and lets the `or` through; since S6 and its ruling every
+/// public intrinsic row is signed, so only an internal row, which a
+/// stdlib seed calls and user code cannot, is left to meet this refusal.
 /// Until F.40 phase 4, S5 an id list said which of them lowering refused.
 fn or_over_an_infallible_row(segs: &[&str], at: hale_syntax::Span) -> CodegenError {
     let path = segs.join("::");
