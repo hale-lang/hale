@@ -74,6 +74,23 @@ pub fn build_ir_text(
     Ok(text)
 }
 
+/// [`build_ir_text`] from source text: `build_opts::build_source`, the
+/// text loaded as a seed of one file (F.40 phase 4, T1), with the same
+/// dump, the `.ll` removed and the binary left in place.
+#[allow(dead_code)]
+pub fn build_source_ir_text(source: &str, bin: &Path) -> Result<String, hale_codegen::CodegenError> {
+    let ll = bin.with_extension("ll");
+    let options = hale_codegen::BuildOptions {
+        dump_ir: Some(ll.clone()),
+        ..build_opts::options()
+    };
+    build_opts::build_source(source, bin, &options)?;
+    let text = std::fs::read_to_string(&ll)
+        .expect("BuildOptions::dump_ir should have written the .ll");
+    let _ = std::fs::remove_file(&ll);
+    Ok(text)
+}
+
 /// Build `program` to `bin` with AddressSanitizer instrumentation
 /// (`BuildOptions::asan`), and check the artifact really carries it.
 ///

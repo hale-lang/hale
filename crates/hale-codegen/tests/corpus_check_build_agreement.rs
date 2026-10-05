@@ -75,6 +75,11 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
+// The loaded-seed harness held to the bare-program harness over the same
+// corpus (F.40 phase 4, T1), built in this binary.
+#[path = "loaded_seed_agreement.rs"]
+mod loaded_seed_agreement;
+
 /// Does something in this program start it?
 fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
     program.items.iter().any(|i| match i {
