@@ -23,6 +23,7 @@ use hale_types::capability::{Capability, Obligation, Transport};
 use hale_types::handler_routing::RetryBound;
 use hale_types::lifecycle::{ObligationKind, Spine};
 use hale_types::resolved::LoweringView;
+use hale_types::stdlib_surface::IntrinsicId;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
 // during the codegen model-organization refactor (Round 1). Bringing
@@ -25663,9 +25664,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // of this match's catch-all.
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
-            return self
-                .lower_std_call(&segs, args, scope, StdCallPos::Statement)
-                .map(|_| ());
+            return self.lower_stdlib_path_call(&segs, args, scope);
         }
         match segs.as_slice() {
             ["time", "sleep"] => self.lower_time_sleep(args, scope),
@@ -25735,9 +25734,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             qn.segments.iter().map(|s| s.name.as_str()).collect();
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
-            return self
-                .lower_std_call(&segs, args, scope, StdCallPos::Value)
-                .map(|v| v.expect("a value position lowers to a value or an error"));
+            return self.lower_stdlib_path_call_expr(&segs, args, scope);
         }
         match segs.as_slice() {
             ["time", "monotonic"] => self.lower_time_monotonic(args),
@@ -25895,10 +25892,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     // `Ty::Unknown`; codegen resolves them here.
     //
     // No general module system in Phase 1 — `std::*` is the only
-    // recognized prefix, matched against a hardcoded namespace
-    // dispatcher. Adding a function means: declare its libc backer
-    // in `declare_builtins` (Phase 1 stdlib section), add a match
-    // arm here, and implement one `lower_std_*` method.
+    // recognized prefix, dispatched from the function's row in
+    // `hale_types::stdlib_surface` (`lower_std_call`). Adding a
+    // function means: declare its libc backer in `declare_builtins`
+    // (Phase 1 stdlib section), give its row an `IntrinsicId` and the
+    // id an arm in `lower_std_intrinsic`, and implement one
+    // `lower_std_*` method.
     // ============================================================
 
     /// GH #808: remember where the program first reaches
@@ -25936,6 +25935,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if in_user_code {
             self.ts_call_span = Some(qn.span);
         }
+    }
+
+    /// A `std::*` call at statement position: [`Cx::lower_std_call`],
+    /// its value dropped.
+    fn lower_stdlib_path_call(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.lower_std_call(segs, args, scope, StdCallPos::Statement).map(|_| ())
+    }
+
+    /// A `std::*` call at value position: [`Cx::lower_std_call`].
+    fn lower_stdlib_path_call_expr(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_std_call(segs, args, scope, StdCallPos::Value)
+            .map(|v| v.expect("a value position lowers to a value or an error"))
     }
 
     /// A `std::*` call at statement or value position, dispatched from
@@ -26071,13 +26092,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// position's, its value dropped by a statement.
     fn lower_std_intrinsic(
         &mut self,
-        id: hale_types::stdlib_surface::IntrinsicId,
+        id: IntrinsicId,
         segs: &[&str],
         args: &[Expr],
         scope: &Scope<'ctx>,
         pos: StdCallPos,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
-        use hale_types::stdlib_surface::IntrinsicId as Id;
+        use IntrinsicId as Id;
         let value = match id {
             // #353: regex. Linear-time NFA, so a match is bounded by
             // construction and usable under `@budget` / `@hot`.
@@ -26799,26 +26820,272 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoUdpLastSourcePort => {
                 self.lower_std_io_udp_last_source_port(args)
             }
-            // Lowered only under `or` (`try_lower_fallible_stdlib_path_call`):
-            // a bare call has no arm at either position.
-            Id::IoFsWriteBytes
-            | Id::IoFsWritePrivateRaw
-            | Id::IoUnixConnect
-            | Id::IoUnixConnectWait
-            | Id::IoUnixListenSocket
-            | Id::IoTcpAcceptOne
-            | Id::IoTcpConnect
-            | Id::IoTcpConnectWait
-            | Id::IoTcpListenSocket
-            | Id::IoTcpSetNodelay
-            | Id::IoTcpSetRecvTimeout
-            | Id::IoTcpSetRxTimestamps
-            | Id::IoTcpSetSendTimeout
-            | Id::IoTlsConnect
-            | Id::IoTlsSetNodelay
-            | Id::IoTlsSetRxTimestamps
-            | Id::IoTlsUpgrade
-            | Id::BytesReadF32Le
+            Id::CryptoSha1 => {
+                self.lower_std_crypto_sha1(args, scope)
+            }
+            Id::CryptoSha256 => {
+                self.lower_std_crypto_sha256(args, scope)
+            }
+            Id::CryptoHmacSha256 => {
+                self.lower_std_crypto_hmac_sha256(args, scope)
+            }
+            Id::CryptoSha512 => {
+                self.lower_std_crypto_sha512(args, scope)
+            }
+            Id::CryptoHmacSha512 => {
+                self.lower_std_crypto_hmac_sha512(args, scope)
+            }
+            Id::CryptoCrc32 => {
+                self.lower_std_crypto_crc32(args, scope)
+            }
+            Id::CryptoEcdsaP256Sign => {
+                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
+            }
+            Id::CryptoEcdsaP256Verify => {
+                self.lower_std_crypto_ecdsa_p256_verify(args, scope)
+            }
+            // m96: std::ts::* tree-sitter substrate. A statement
+            // reaches these too, its value dropped, for
+            // parse-and-discard patterns (unusual but legal).
+            Id::TsParseGo => self.lower_std_ts_parse_go(args, scope),
+            Id::TsRootNode => self.lower_std_ts_int1_to_int(
+                "lotus_ts_root_node",
+                args,
+                scope,
+                "std::ts::root_node",
+            ),
+            Id::TsNodeKind => self.lower_std_ts_int1_to_string(
+                "lotus_ts_node_kind",
+                args,
+                scope,
+                "std::ts::node_kind",
+            ),
+            Id::TsNodeText => self.lower_std_ts_int1_to_string(
+                "lotus_ts_node_text",
+                args,
+                scope,
+                "std::ts::node_text",
+            ),
+            Id::TsNodeChildCount => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_child_count",
+                args,
+                scope,
+                "std::ts::node_child_count",
+            ),
+            Id::TsNodeNamedChildCount => self
+                .lower_std_ts_int1_to_int(
+                    "lotus_ts_node_named_child_count",
+                    args,
+                    scope,
+                    "std::ts::node_named_child_count",
+                ),
+            Id::TsNodeChild => self.lower_std_ts_int2_to_int(
+                "lotus_ts_node_child",
+                args,
+                scope,
+                "std::ts::node_child",
+            ),
+            Id::TsNodeNamedChild => self.lower_std_ts_int2_to_int(
+                "lotus_ts_node_named_child",
+                args,
+                scope,
+                "std::ts::node_named_child",
+            ),
+            Id::TsNodeStartByte => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_start_byte",
+                args,
+                scope,
+                "std::ts::node_start_byte",
+            ),
+            Id::TsNodeEndByte => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_end_byte",
+                args,
+                scope,
+                "std::ts::node_end_byte",
+            ),
+            Id::TsNodeIsNamed => self.lower_std_ts_int1_to_int(
+                "lotus_ts_node_is_named",
+                args,
+                scope,
+                "std::ts::node_is_named",
+            ),
+            // m79: std::time::*. sleep is a statement; a value
+            // position has no arm for it.
+            Id::TimeSleep => match pos {
+                StdCallPos::Statement => {
+                    self.lower_time_sleep(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::TimeMonotonic => self.lower_time_monotonic(args),
+            Id::TimeMonotonicNs => self.lower_time_monotonic_ns(args),
+            // C7 (pond follow-up): wall-clock seconds-since-epoch
+            // as Int.
+            Id::TimeNow => self.lower_std_time_now(args),
+            Id::TimeTimeFromUnix => {
+                self.lower_std_time_from_unix(args, scope)
+            }
+            // GH #607: the Time-valued surface.
+            Id::TimeCurrent => self.lower_std_time_current(args),
+            Id::TimeIso8601 => self.lower_std_time_iso8601(args, scope),
+            Id::TimeUnix => self.lower_std_time_unix(args, scope),
+            Id::TimeNanos => self.lower_std_time_nanos(args, scope),
+            Id::TimeFromNanos => self.lower_std_time_from_nanos(args, scope),
+            // #353: the `can_` probe beside the fallible parse, the
+            // same pairing `str::parse_int` / `can_parse_int` has.
+            Id::TimeCanParseIso8601 => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "std::time::can_parse_iso8601 takes 1 arg, got {}",
+                        args.len()
+                    )));
+                }
+                let (v, ty) = self.lower_expr(&args[0], scope)?;
+                let s_val = self.unpack_view_if_needed(v, &ty)?;
+                let f = self
+                    .module
+                    .get_function("lotus_time_can_parse_iso8601")
+                    .expect("lotus_time_can_parse_iso8601 declared");
+                let r = self
+                    .builder
+                    .build_call(f, &[s_val.into()], "iso.can.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i32");
+                let b = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        r.into_int_value(),
+                        self.context.i32_type().const_zero(),
+                        "iso.can.bool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((b.into(), CodegenTy::Bool))
+            }
+            // std::math::* libm Float primitives. Resolves
+            // notes/hale-friction.md 2026-05-10 float-surface-gaps
+            // (the `std::math` sub-bullet). v0 cut: unary
+            // sqrt/exp/log/floor/ceil + binary pow. Each lowers to
+            // a libm call through the extern decl in
+            // declare_builtins; arg type-checked as Float.
+            Id::MathSqrt => {
+                self.lower_std_math_unary("sqrt", args, scope)
+            }
+            Id::MathExp => {
+                self.lower_std_math_unary("exp", args, scope)
+            }
+            Id::MathLog => {
+                self.lower_std_math_unary("log", args, scope)
+            }
+            Id::MathFloor => {
+                self.lower_std_math_unary("floor", args, scope)
+            }
+            Id::MathCeil => {
+                self.lower_std_math_unary("ceil", args, scope)
+            }
+            Id::MathPow => {
+                self.lower_std_math_binary("pow", args, scope)
+            }
+            // a downstream tool F.9 (2026-05-23): trig surface. Same libm
+            // pass-through shape as sqrt / exp / log.
+            Id::MathSin => {
+                self.lower_std_math_unary("sin", args, scope)
+            }
+            Id::MathCos => {
+                self.lower_std_math_unary("cos", args, scope)
+            }
+            Id::MathTan => {
+                self.lower_std_math_unary("tan", args, scope)
+            }
+            Id::MathAsin => {
+                self.lower_std_math_unary("asin", args, scope)
+            }
+            Id::MathAcos => {
+                self.lower_std_math_unary("acos", args, scope)
+            }
+            Id::MathAtan => {
+                self.lower_std_math_unary("atan", args, scope)
+            }
+            Id::MathAtan2 => {
+                self.lower_std_math_binary("atan2", args, scope)
+            }
+            // C8 (pond follow-up): IEEE 754 surface.
+            // tanh is a direct libm extern (same shape as sqrt /
+            // exp / log / floor / ceil / pow). nan / inf are
+            // nullary sentinels via lotus_math_* C wrappers (no
+            // libm dependency at link time). is_nan returns Bool
+            // through lotus_math_is_nan (canonical f != f test).
+            Id::MathTanh => {
+                self.lower_std_math_unary("tanh", args, scope)
+            }
+            Id::MathNan => self.lower_std_math_nullary_float(
+                "lotus_math_nan",
+                "nan",
+                args,
+            ),
+            Id::MathInf => self.lower_std_math_nullary_float(
+                "lotus_math_inf",
+                "inf",
+                args,
+            ),
+            Id::MathIsNan => {
+                self.lower_std_math_is_nan(args, scope)
+            }
+            // WS3.1 (2026-06-11): explicit numeric conversions in
+            // expression position. `int_to_float` is `sitofp`
+            // (widening); `float_to_int` is `fptosi` (narrowing,
+            // round-toward-zero). Before this, every numeric
+            // consumer round-tripped through ASCII (`to_string` +
+            // `parse_*`). See spec/types.md § Numeric conversions.
+            Id::MathIntToFloat => {
+                self.lower_std_math_int_to_float(args, scope)
+            }
+            Id::MathFloatToInt => {
+                self.lower_std_math_float_to_int(args, scope)
+            }
+            // Float→Int with explicit rounding mode → Int result.
+            // `trunc` truncates toward zero (alias of float_to_int);
+            // `round` rounds half away from zero. Both lower to
+            // `fptosi` (+ a compare/select shift for round) — pure
+            // LLVM, so they need no libm symbol on wasm32 (unlike
+            // `floor`/`ceil`, which are libm and return Float).
+            Id::MathTrunc => {
+                self.lower_std_math_to_int("trunc", false, args, scope)
+            }
+            Id::MathRound => {
+                self.lower_std_math_to_int("round", true, args, scope)
+            }
+            Id::ProcessPid => self.lower_std_process_pid(args),
+            Id::ProcessUid => self.lower_std_process_uid(args),
+            Id::ProcessRssBytes => self.lower_std_process_rss_bytes(args),
+            Id::ProcessDumpArenaResidency => {
+                self.lower_std_process_dump_arena_residency(args)
+            }
+            Id::ProcessDumpPoolResidency => {
+                self.lower_std_process_dump_pool_residency(args)
+            }
+            // m79: std::process::exit. Calls libc exit() with the
+            // user-supplied code, then emits unreachable + a fresh
+            // basic block so subsequent statements (dead but
+            // syntactically permitted) have somewhere to lower
+            // into. A statement; a value position has no arm for it.
+            Id::ProcessExit => match pos {
+                StdCallPos::Statement => {
+                    self.lower_std_process_exit(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            // No arm at either position: lowered only under `or`
+            // (`try_lower_fallible_stdlib_path_call`). A bare call of
+            // one the position's list refuses (`refuses_bare`) is
+            // refused as fallible, in the words the parse_int family
+            // has always had; any other answers as a path no arm
+            // lowers.
+            Id::BytesReadF32Le
             | Id::BytesReadF64Be
             | Id::BytesReadF64Le
             | Id::BytesReadI16Be
@@ -26852,9 +27119,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::BytesWriteU64Be
             | Id::BytesWriteU64Le
             | Id::BytesWriteU8
-            | Id::StrParseDecimal
-            | Id::StrRangeParseDecimal
-            | Id::StrRangeParseInt
             | Id::TarEntries
             | Id::TarEntryData
             | Id::TarEntryName
@@ -26866,25 +27130,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressGunzip
             | Id::CompressGzip
             | Id::CompressUnzstd
-            | Id::CompressZstd => return self.lower_std_unarmed(segs, args, scope, pos),
-            // S3 in progress: the ids whose arms the hand-written
-            // dispatchers still hold.
-            Id::CryptoCrc32
-            | Id::CryptoEcdsaP256Sign
-            | Id::CryptoEcdsaP256Verify
-            | Id::CryptoHmacSha256
-            | Id::CryptoHmacSha512
-            | Id::CryptoSha1
-            | Id::CryptoSha256
-            | Id::CryptoSha512
+            | Id::CompressZstd
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
             | Id::IoFsMktemp
             | Id::IoFsRename
             | Id::IoFsUnlink
+            | Id::IoFsWriteBytes
+            | Id::IoFsWritePrivateRaw
+            | Id::IoUnixConnect
+            | Id::IoUnixConnectWait
+            | Id::IoUnixListenSocket
+            | Id::IoTcpAcceptOne
+            | Id::IoTcpConnect
+            | Id::IoTcpConnectWait
+            | Id::IoTcpListenSocket
+            | Id::IoTcpSetNodelay
+            | Id::IoTcpSetRecvTimeout
+            | Id::IoTcpSetRxTimestamps
+            | Id::IoTcpSetSendTimeout
+            | Id::IoTlsConnect
+            | Id::IoTlsSetNodelay
             | Id::IoTlsSetRecvTimeout
+            | Id::IoTlsSetRxTimestamps
             | Id::IoTlsSetSendTimeout
+            | Id::IoTlsUpgrade
             | Id::IoUdpBindRaw
             | Id::IoUdpRecvRaw
             | Id::IoUdpSendRaw
@@ -26902,38 +27173,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoUdpSetOptionInt
             | Id::IoUdpSetRecvTimeout
             | Id::IoUdpSetSendTimeout
-            | Id::TsNodeChild
-            | Id::TsNodeChildCount
-            | Id::TsNodeEndByte
-            | Id::TsNodeIsNamed
-            | Id::TsNodeKind
-            | Id::TsNodeNamedChild
-            | Id::TsNodeNamedChildCount
-            | Id::TsNodeStartByte
-            | Id::TsNodeText
-            | Id::TsParseGo
-            | Id::TsRootNode
-            | Id::MathAcos
-            | Id::MathAsin
-            | Id::MathAtan
-            | Id::MathAtan2
-            | Id::MathCeil
-            | Id::MathCos
-            | Id::MathExp
-            | Id::MathFloatToInt
-            | Id::MathFloor
-            | Id::MathInf
-            | Id::MathIntToFloat
-            | Id::MathIsNan
-            | Id::MathLog
-            | Id::MathNan
-            | Id::MathPow
-            | Id::MathRound
-            | Id::MathSin
-            | Id::MathSqrt
-            | Id::MathTan
-            | Id::MathTanh
-            | Id::MathTrunc
             | Id::OsGetrandom
             | Id::ProcessKillEscalateRaw
             | Id::ProcessPipeReadRaw
@@ -26942,134 +27181,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessSpawnRaw
             | Id::ProcessTryWaitPidRaw
             | Id::ProcessWaitPidRaw
-            | Id::ProcessDumpArenaResidency
-            | Id::ProcessDumpPoolResidency
-            | Id::ProcessExit
-            | Id::ProcessPid
-            | Id::ProcessUid
-            | Id::ProcessRssBytes
             | Id::ProcessRun
+            | Id::StrParseDecimal
             | Id::StrParseFloat
             | Id::StrParseInt
+            | Id::StrRangeParseDecimal
+            | Id::StrRangeParseInt
             | Id::TimeParseIso8601
-            | Id::TimeCanParseIso8601
-            | Id::TimeCurrent
-            | Id::TimeIso8601
-            | Id::TimeParseTime
-            | Id::TimeUnix
-            | Id::TimeNanos
-            | Id::TimeFromNanos
-            | Id::TimeMonotonic
-            | Id::TimeMonotonicNs
-            | Id::TimeNow
-            | Id::TimeSleep
-            | Id::TimeTimeFromUnix => {
-                return match pos {
-                    StdCallPos::Statement => {
-                        self.lower_stdlib_path_call(segs, args, scope).map(|()| None)
-                    }
-                    StdCallPos::Value => {
-                        self.lower_stdlib_path_call_expr(segs, args, scope).map(Some)
-                    }
-                };
+            | Id::TimeParseTime => {
+                if refuses_bare(id, pos) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "`{}` returns a fallible value — address the error with \
+                         `or raise`, `or <substitute>`, or `or self.handle(err)`",
+                        segs.join("::")
+                    )));
+                }
+                return self.lower_std_unarmed(segs, args, scope, pos);
             }
         };
         value.map(Some)
-    }
-
-    /// Statement-position dispatcher for `std::*` paths: the
-    /// expression-position dispatcher's call with its value dropped.
-    /// It keeps only what a statement answers differently: the paths
-    /// the expression form has no arm for (Unit-only primitives, and
-    /// the assertions, which check for a recorded failure after the
-    /// call), two Hale-body arms whose expression twins refuse a body
-    /// that returns no value, and its own fallibility refusal. The
-    /// leading `"std"` segment is included in `segs` for symmetry with
-    /// the expression-position dispatcher.
-    fn lower_stdlib_path_call(
-        &mut self,
-        segs: &[&str],
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(), CodegenError> {
-        match segs {
-            // m79: std::time::* aliases. The legacy `time::*`
-            // dispatcher above still works; these route to the
-            // same lower_time_* implementations under the
-            // canonical `std::*` namespace.
-            ["std", "time", "sleep"] => self.lower_time_sleep(args, scope),
-            // m79: std::process::exit. Calls libc exit() with the
-            // user-supplied code, then emits unreachable + a fresh
-            // basic block so subsequent statements (dead but
-            // syntactically permitted) have somewhere to lower
-            // into.
-            ["std", "process", "exit"] => {
-                self.lower_std_process_exit(args, scope)
-            }
-            // C9: new fallible-only fs surfaces + C4: getrandom +
-            // C2: subprocess primitives. Same "use `or`" diagnostic
-            // shape as the parse_int family.
-            ["std", "io", "fs", "rename"]
-            | ["std", "io", "fs", "unlink"]
-            | ["std", "io", "fs", "mktemp"]
-            | ["std", "os", "getrandom"]
-            | ["std", "process", "run"]
-            | ["std", "process", "__spawn"]
-            | ["std", "process", "__wait_pid"]
-            | ["std", "process", "__try_wait_pid"]
-            | ["std", "process", "__signal_pid"]
-            | ["std", "process", "__kill_escalate"]
-            | ["std", "process", "__pipe_read"]
-            | ["std", "process", "__pipe_write"]
-            | ["std", "io", "file", "__open"]
-            | ["std", "io", "file", "__write_bytes"]
-            | ["std", "io", "file", "__seek"]
-            | ["std", "io", "udp", "__bind"]
-            | ["std", "io", "udp", "bind"]
-            | ["std", "io", "udp", "__send"]
-            | ["std", "io", "udp", "send"]
-            | ["std", "io", "udp", "__recv"]
-            | ["std", "io", "udp", "recv"]
-            | ["std", "io", "udp", "join_group"]
-            | ["std", "io", "udp", "leave_group"]
-            | ["std", "io", "udp", "set_multicast_ttl"]
-            | ["std", "io", "udp", "set_multicast_loop"]
-            | ["std", "io", "udp", "set_multicast_iface"]
-            | ["std", "io", "udp", "set_option_int"]
-            | ["std", "io", "udp", "set_option_bool"]
-            | ["std", "io", "udp", "get_option_int"]
-            | ["std", "io", "udp", "recv_with_source"]
-            | ["std", "io", "udp", "set_recv_timeout"]
-            | ["std", "io", "udp", "set_send_timeout"]
-            | ["std", "io", "tls", "set_recv_timeout"]
-            | ["std", "io", "tls", "set_send_timeout"] => {
-                Err(CodegenError::Unsupported(format!(
-                    "`{}` returns a fallible value — address the error with \
-                     `or raise`, `or <substitute>`, or `or self.handle(err)`",
-                    segs.join("::")
-                )))
-            }
-            // Every other path is the expression form's call, its
-            // value dropped: its arms, its refusals, and its fallback
-            // to the Hale bodies `PATH_RENAMES` names.
-            _ => {
-                // A path no dispatcher lowers keeps the statement's
-                // wording: the expression form's last arm says "in
-                // expression position", which a statement is not. This
-                // goes when the dispatch takes its position as a
-                // parameter (S3).
-                let _ = self.lower_stdlib_path_call_expr(segs, args, scope).map_err(|e| match e {
-                    CodegenError::Unsupported(m) if m.ends_with("in expression position — not implemented") => {
-                        CodegenError::Unsupported(format!(
-                            "stdlib path `{}` — not implemented",
-                            segs.join("::")
-                        ))
-                    }
-                    e => e,
-                })?;
-                Ok(())
-            }
-        }
     }
 
     /// 2026-05-16: `std::text::tokenize_words_into(s: String,
@@ -27449,335 +27579,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((res, CodegenTy::Int))
     }
 
-    /// Expression-position dispatcher for `std::*` paths.
-    fn lower_stdlib_path_call_expr(
-        &mut self,
-        segs: &[&str],
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        match segs {
-            ["std", "process", "pid"] => self.lower_std_process_pid(args),
-            ["std", "process", "uid"] => self.lower_std_process_uid(args),
-            ["std", "process", "rss_bytes"] => self.lower_std_process_rss_bytes(args),
-            ["std", "process", "dump_arena_residency"] => {
-                self.lower_std_process_dump_arena_residency(args)
-            }
-            ["std", "process", "dump_pool_residency"] => {
-                self.lower_std_process_dump_pool_residency(args)
-            }
-            ["std", "crypto", "sha1"] => {
-                self.lower_std_crypto_sha1(args, scope)
-            }
-            ["std", "crypto", "sha256"] => {
-                self.lower_std_crypto_sha256(args, scope)
-            }
-            ["std", "crypto", "hmac_sha256"] => {
-                self.lower_std_crypto_hmac_sha256(args, scope)
-            }
-            ["std", "crypto", "sha512"] => {
-                self.lower_std_crypto_sha512(args, scope)
-            }
-            ["std", "crypto", "hmac_sha512"] => {
-                self.lower_std_crypto_hmac_sha512(args, scope)
-            }
-            ["std", "crypto", "crc32"] => {
-                self.lower_std_crypto_crc32(args, scope)
-            }
-            ["std", "crypto", "ecdsa_p256_sign"] => {
-                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
-            }
-            ["std", "crypto", "ecdsa_p256_verify"] => {
-                self.lower_std_crypto_ecdsa_p256_verify(args, scope)
-            }
-            // m96: std::ts::* tree-sitter substrate. A statement
-            // reaches these too, its value dropped, for
-            // parse-and-discard patterns (unusual but legal).
-            ["std", "ts", "parse_go"] => self.lower_std_ts_parse_go(args, scope),
-            ["std", "ts", "root_node"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_root_node",
-                args,
-                scope,
-                "std::ts::root_node",
-            ),
-            ["std", "ts", "node_kind"] => self.lower_std_ts_int1_to_string(
-                "lotus_ts_node_kind",
-                args,
-                scope,
-                "std::ts::node_kind",
-            ),
-            ["std", "ts", "node_text"] => self.lower_std_ts_int1_to_string(
-                "lotus_ts_node_text",
-                args,
-                scope,
-                "std::ts::node_text",
-            ),
-            ["std", "ts", "node_child_count"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_child_count",
-                args,
-                scope,
-                "std::ts::node_child_count",
-            ),
-            ["std", "ts", "node_named_child_count"] => self
-                .lower_std_ts_int1_to_int(
-                    "lotus_ts_node_named_child_count",
-                    args,
-                    scope,
-                    "std::ts::node_named_child_count",
-                ),
-            ["std", "ts", "node_child"] => self.lower_std_ts_int2_to_int(
-                "lotus_ts_node_child",
-                args,
-                scope,
-                "std::ts::node_child",
-            ),
-            ["std", "ts", "node_named_child"] => self.lower_std_ts_int2_to_int(
-                "lotus_ts_node_named_child",
-                args,
-                scope,
-                "std::ts::node_named_child",
-            ),
-            ["std", "ts", "node_start_byte"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_start_byte",
-                args,
-                scope,
-                "std::ts::node_start_byte",
-            ),
-            ["std", "ts", "node_end_byte"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_end_byte",
-                args,
-                scope,
-                "std::ts::node_end_byte",
-            ),
-            ["std", "ts", "node_is_named"] => self.lower_std_ts_int1_to_int(
-                "lotus_ts_node_is_named",
-                args,
-                scope,
-                "std::ts::node_is_named",
-            ),
-            // m79: std::time::monotonic alias for expression position.
-            // sleep is statement-only; trying to use it in an
-            // expression falls through to the catch-all error.
-            ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
-            ["std", "time", "monotonic_ns"] => self.lower_time_monotonic_ns(args),
-            // C7 (pond follow-up): wall-clock seconds-since-epoch
-            // as Int.
-            ["std", "time", "now"] => self.lower_std_time_now(args),
-            ["std", "time", "time_from_unix"] => {
-                self.lower_std_time_from_unix(args, scope)
-            }
-            // GH #607: the Time-valued surface.
-            ["std", "time", "current"] => self.lower_std_time_current(args),
-            ["std", "time", "iso8601"] => self.lower_std_time_iso8601(args, scope),
-            ["std", "time", "unix"] => self.lower_std_time_unix(args, scope),
-            ["std", "time", "nanos"] => self.lower_std_time_nanos(args, scope),
-            ["std", "time", "from_nanos"] => self.lower_std_time_from_nanos(args, scope),
-            // #353: the `can_` probe beside the fallible parse, the
-            // same pairing `str::parse_int` / `can_parse_int` has.
-            ["std", "time", "can_parse_iso8601"] => {
-                if args.len() != 1 {
-                    return Err(CodegenError::Unsupported(format!(
-                        "std::time::can_parse_iso8601 takes 1 arg, got {}",
-                        args.len()
-                    )));
-                }
-                let (v, ty) = self.lower_expr(&args[0], scope)?;
-                let s_val = self.unpack_view_if_needed(v, &ty)?;
-                let f = self
-                    .module
-                    .get_function("lotus_time_can_parse_iso8601")
-                    .expect("lotus_time_can_parse_iso8601 declared");
-                let r = self
-                    .builder
-                    .build_call(f, &[s_val.into()], "iso.can.ret")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("returns i32");
-                let b = self
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        r.into_int_value(),
-                        self.context.i32_type().const_zero(),
-                        "iso.can.bool",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((b.into(), CodegenTy::Bool))
-            }
-            // std::math::* libm Float primitives. Resolves
-            // notes/hale-friction.md 2026-05-10 float-surface-gaps
-            // (the `std::math` sub-bullet). v0 cut: unary
-            // sqrt/exp/log/floor/ceil + binary pow. Each lowers to
-            // a libm call through the extern decl in
-            // declare_builtins; arg type-checked as Float.
-            ["std", "math", "sqrt"] => {
-                self.lower_std_math_unary("sqrt", args, scope)
-            }
-            ["std", "math", "exp"] => {
-                self.lower_std_math_unary("exp", args, scope)
-            }
-            ["std", "math", "log"] => {
-                self.lower_std_math_unary("log", args, scope)
-            }
-            ["std", "math", "floor"] => {
-                self.lower_std_math_unary("floor", args, scope)
-            }
-            ["std", "math", "ceil"] => {
-                self.lower_std_math_unary("ceil", args, scope)
-            }
-            ["std", "math", "pow"] => {
-                self.lower_std_math_binary("pow", args, scope)
-            }
-            // a downstream tool F.9 (2026-05-23): trig surface. Same libm
-            // pass-through shape as sqrt / exp / log.
-            ["std", "math", "sin"] => {
-                self.lower_std_math_unary("sin", args, scope)
-            }
-            ["std", "math", "cos"] => {
-                self.lower_std_math_unary("cos", args, scope)
-            }
-            ["std", "math", "tan"] => {
-                self.lower_std_math_unary("tan", args, scope)
-            }
-            ["std", "math", "asin"] => {
-                self.lower_std_math_unary("asin", args, scope)
-            }
-            ["std", "math", "acos"] => {
-                self.lower_std_math_unary("acos", args, scope)
-            }
-            ["std", "math", "atan"] => {
-                self.lower_std_math_unary("atan", args, scope)
-            }
-            ["std", "math", "atan2"] => {
-                self.lower_std_math_binary("atan2", args, scope)
-            }
-            // C8 (pond follow-up): IEEE 754 surface.
-            // tanh is a direct libm extern (same shape as sqrt /
-            // exp / log / floor / ceil / pow). nan / inf are
-            // nullary sentinels via lotus_math_* C wrappers (no
-            // libm dependency at link time). is_nan returns Bool
-            // through lotus_math_is_nan (canonical f != f test).
-            ["std", "math", "tanh"] => {
-                self.lower_std_math_unary("tanh", args, scope)
-            }
-            ["std", "math", "nan"] => self.lower_std_math_nullary_float(
-                "lotus_math_nan",
-                "nan",
-                args,
-            ),
-            ["std", "math", "inf"] => self.lower_std_math_nullary_float(
-                "lotus_math_inf",
-                "inf",
-                args,
-            ),
-            ["std", "math", "is_nan"] => {
-                self.lower_std_math_is_nan(args, scope)
-            }
-            // WS3.1 (2026-06-11): explicit numeric conversions in
-            // expression position. `int_to_float` is `sitofp`
-            // (widening); `float_to_int` is `fptosi` (narrowing,
-            // round-toward-zero). Before this, every numeric
-            // consumer round-tripped through ASCII (`to_string` +
-            // `parse_*`). See spec/types.md § Numeric conversions.
-            ["std", "math", "int_to_float"] => {
-                self.lower_std_math_int_to_float(args, scope)
-            }
-            ["std", "math", "float_to_int"] => {
-                self.lower_std_math_float_to_int(args, scope)
-            }
-            // Float→Int with explicit rounding mode → Int result.
-            // `trunc` truncates toward zero (alias of float_to_int);
-            // `round` rounds half away from zero. Both lower to
-            // `fptosi` (+ a compare/select shift for round) — pure
-            // LLVM, so they need no libm symbol on wasm32 (unlike
-            // `floor`/`ceil`, which are libm and return Float).
-            ["std", "math", "trunc"] => {
-                self.lower_std_math_to_int("trunc", false, args, scope)
-            }
-            ["std", "math", "round"] => {
-                self.lower_std_math_to_int("round", true, args, scope)
-            }
-            // 2026-05-17 — parse_int / parse_float are fallible-
-            // only at the expression dispatch; surface a clear
-            // "this returns fallible" diagnostic when the caller
-            // forgets the `or` clause. (Other fallible-flipped
-            // paths like fs::read_file still have a non-fallible
-            // expression-dispatch sibling for legacy reasons —
-            // this arm doesn't shadow them.) C9 added the fs
-            // surfaces; C4 added getrandom.
-            ["std", "str", "parse_int"]
-            | ["std", "str", "parse_float"]
-            | ["std", "io", "fs", "rename"]
-            | ["std", "io", "fs", "unlink"]
-            | ["std", "io", "fs", "mktemp"]
-            | ["std", "os", "getrandom"]
-            | ["std", "process", "run"]
-            | ["std", "process", "__spawn"]
-            | ["std", "process", "__wait_pid"]
-            | ["std", "process", "__try_wait_pid"]
-            | ["std", "process", "__signal_pid"]
-            | ["std", "process", "__kill_escalate"]
-            | ["std", "process", "__pipe_read"]
-            | ["std", "process", "__pipe_write"]
-            | ["std", "io", "file", "__open"]
-            | ["std", "io", "file", "__write_bytes"]
-            | ["std", "io", "file", "__seek"]
-            | ["std", "io", "udp", "__bind"]
-            | ["std", "io", "udp", "bind"]
-            | ["std", "io", "udp", "__send"]
-            | ["std", "io", "udp", "send"]
-            | ["std", "io", "udp", "__recv"]
-            | ["std", "io", "udp", "recv"]
-            | ["std", "io", "udp", "join_group"]
-            | ["std", "io", "udp", "leave_group"]
-            | ["std", "io", "udp", "set_multicast_ttl"]
-            | ["std", "io", "udp", "set_multicast_loop"]
-            | ["std", "io", "udp", "set_multicast_iface"]
-            | ["std", "io", "udp", "set_option_int"]
-            | ["std", "io", "udp", "set_option_bool"]
-            | ["std", "io", "udp", "get_option_int"]
-            | ["std", "io", "udp", "recv_with_source"]
-            | ["std", "io", "udp", "set_recv_timeout"]
-            | ["std", "io", "udp", "set_send_timeout"]
-            | ["std", "io", "tls", "set_recv_timeout"]
-            | ["std", "io", "tls", "set_send_timeout"] => {
-                Err(CodegenError::Unsupported(format!(
-                    "`{}` returns a fallible value — address the error with \
-                     `or raise`, `or <substitute>`, or `or self.handle(err)`",
-                    segs.join("::")
-                )))
-            }
-            _ => {
-                // Fallback: stdlib paths that rename to an Hale-
-                // side user fn (via hale_stdlib::PATH_RENAMES) get
-                // dispatched through user_fns. The fallible side
-                // (lower_fallible_call) already has this fallback;
-                // mirror it here for non-fallible callsites. Used
-                // by `std::io::file::at_eof(f)`, `std::io::file::
-                // read_line(f)`, etc. — the user-facing wrappers
-                // in ../../hale-stdlib/hl/file.hl.
-                if let Some(mangled) = self.mangled_for_path(segs) {
-                    if self.user_fns.contains_key(&mangled) {
-                        let result =
-                            self.lower_user_fn_call(&mangled, args, scope)?;
-                        return result.ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "stdlib path `{}` returns no value but is \
-                                 used in expression position",
-                                segs.join("::")
-                            ))
-                        });
-                    }
-                }
-                Err(CodegenError::Unsupported(format!(
-                    "stdlib path `{}` in expression position — not implemented",
-                    segs.join("::")
-                )))
-            }
-        }
-    }
-
     /// Widen an Int value to Float, or pass through if it's
     /// already Float. Used at Float-typed slot boundaries
     /// (std::math fn args, let-binding ascription, fn-arg sites)
@@ -27844,8 +27645,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     // ---- m96: std::ts (tree-sitter) lowering helpers ----
     //
-    // The path-call dispatch arms (in `lower_stdlib_path_call_expr`,
-    // which a statement reaches too) route `std::ts::*` to these
+    // The path-call dispatch arms (in `lower_std_intrinsic`, which
+    // a statement reaches too) route `std::ts::*` to these
     // helpers. Each one
     // is a thin wrapper over a `lotus_ts_*` extern declared in
     // `declare_builtins`. Tree and node handles are i64 — 1-based
@@ -33805,6 +33606,105 @@ mod tests {
 pub(crate) enum StdCallPos {
     Statement,
     Value,
+}
+
+/// The bare statement calls lowering refuses as fallible ("returns a
+/// fallible value — address the error with `or raise` ..."): C9's
+/// fallible-only fs surfaces, C4's getrandom, C2's subprocess
+/// primitives, the file and udp primitives and two tls setters. Most
+/// have no signature row, so the checker does not refuse them first.
+/// S5 replaces this list with the row's fallibility.
+const REFUSED_BARE_STATEMENT: &[IntrinsicId] = &[
+    IntrinsicId::IoFsRename,
+    IntrinsicId::IoFsUnlink,
+    IntrinsicId::IoFsMktemp,
+    IntrinsicId::OsGetrandom,
+    IntrinsicId::ProcessRun,
+    IntrinsicId::ProcessSpawnRaw,
+    IntrinsicId::ProcessWaitPidRaw,
+    IntrinsicId::ProcessTryWaitPidRaw,
+    IntrinsicId::ProcessSignalPidRaw,
+    IntrinsicId::ProcessKillEscalateRaw,
+    IntrinsicId::ProcessPipeReadRaw,
+    IntrinsicId::ProcessPipeWriteRaw,
+    IntrinsicId::IoFileOpenRaw,
+    IntrinsicId::IoFileWriteBytesRaw,
+    IntrinsicId::IoFileSeekRaw,
+    IntrinsicId::IoUdpBindRaw,
+    IntrinsicId::IoUdpBind,
+    IntrinsicId::IoUdpSendRaw,
+    IntrinsicId::IoUdpSend,
+    IntrinsicId::IoUdpRecvRaw,
+    IntrinsicId::IoUdpRecv,
+    IntrinsicId::IoUdpJoinGroup,
+    IntrinsicId::IoUdpLeaveGroup,
+    IntrinsicId::IoUdpSetMulticastTtl,
+    IntrinsicId::IoUdpSetMulticastLoop,
+    IntrinsicId::IoUdpSetMulticastIface,
+    IntrinsicId::IoUdpSetOptionInt,
+    IntrinsicId::IoUdpSetOptionBool,
+    IntrinsicId::IoUdpGetOptionInt,
+    IntrinsicId::IoUdpRecvWithSource,
+    IntrinsicId::IoUdpSetRecvTimeout,
+    IntrinsicId::IoUdpSetSendTimeout,
+    IntrinsicId::IoTlsSetRecvTimeout,
+    IntrinsicId::IoTlsSetSendTimeout,
+];
+
+/// The bare value calls lowering refuses as fallible, in the same
+/// words: the statement list and 2026-05-17's parse_int / parse_float,
+/// which are fallible-only at the expression dispatch. S5 replaces this
+/// list with the row's fallibility.
+const REFUSED_BARE_VALUE: &[IntrinsicId] = &[
+    IntrinsicId::StrParseInt,
+    IntrinsicId::StrParseFloat,
+    IntrinsicId::IoFsRename,
+    IntrinsicId::IoFsUnlink,
+    IntrinsicId::IoFsMktemp,
+    IntrinsicId::OsGetrandom,
+    IntrinsicId::ProcessRun,
+    IntrinsicId::ProcessSpawnRaw,
+    IntrinsicId::ProcessWaitPidRaw,
+    IntrinsicId::ProcessTryWaitPidRaw,
+    IntrinsicId::ProcessSignalPidRaw,
+    IntrinsicId::ProcessKillEscalateRaw,
+    IntrinsicId::ProcessPipeReadRaw,
+    IntrinsicId::ProcessPipeWriteRaw,
+    IntrinsicId::IoFileOpenRaw,
+    IntrinsicId::IoFileWriteBytesRaw,
+    IntrinsicId::IoFileSeekRaw,
+    IntrinsicId::IoUdpBindRaw,
+    IntrinsicId::IoUdpBind,
+    IntrinsicId::IoUdpSendRaw,
+    IntrinsicId::IoUdpSend,
+    IntrinsicId::IoUdpRecvRaw,
+    IntrinsicId::IoUdpRecv,
+    IntrinsicId::IoUdpJoinGroup,
+    IntrinsicId::IoUdpLeaveGroup,
+    IntrinsicId::IoUdpSetMulticastTtl,
+    IntrinsicId::IoUdpSetMulticastLoop,
+    IntrinsicId::IoUdpSetMulticastIface,
+    IntrinsicId::IoUdpSetOptionInt,
+    IntrinsicId::IoUdpSetOptionBool,
+    IntrinsicId::IoUdpGetOptionInt,
+    IntrinsicId::IoUdpRecvWithSource,
+    IntrinsicId::IoUdpSetRecvTimeout,
+    IntrinsicId::IoUdpSetSendTimeout,
+    IntrinsicId::IoTlsSetRecvTimeout,
+    IntrinsicId::IoTlsSetSendTimeout,
+];
+
+/// Whether lowering refuses a bare call of `id` at `pos` as fallible.
+/// A statement the statement list does not name was the value
+/// position's call with its value dropped (S1), so the value list
+/// refuses it too: that is how a bare `parse_int` statement is refused.
+fn refuses_bare(id: IntrinsicId, pos: StdCallPos) -> bool {
+    match pos {
+        StdCallPos::Statement => {
+            REFUSED_BARE_STATEMENT.contains(&id) || REFUSED_BARE_VALUE.contains(&id)
+        }
+        StdCallPos::Value => REFUSED_BARE_VALUE.contains(&id),
+    }
 }
 
 /// 2026-05-26 — named socket-option constants exposed via

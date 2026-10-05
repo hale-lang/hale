@@ -2788,9 +2788,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // backing libc primitive is declared here; the per-symbol
         // lowering lives in the stdlib section near
         // `lower_std_process_pid`. Adding a new stdlib function
-        // means: declare its libc backer here, add a match arm in
-        // `lower_stdlib_path_call_expr` (or the stmt sibling), and
-        // implement one `lower_std_*` method.
+        // means: declare its libc backer here, give its row an
+        // `IntrinsicId` and its id an arm in `lower_std_intrinsic`,
+        // and implement one `lower_std_*` method.
 
         // declare i32 @getpid(void)  — POSIX, backs std::process::pid()
         let getpid_ty = i32_t.fn_type(&[], false);

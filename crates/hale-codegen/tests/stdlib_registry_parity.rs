@@ -3,23 +3,27 @@
 //!
 //! `hale_types::stdlib_surface::SURFACES` holds one row per stdlib
 //! function, and since F.40 phase 4 (S2) the row says how the function
-//! lowers (`Lower`): natively by a dispatcher arm (`Intrinsic`), by an
-//! arm that calls a Hale body of the stdlib seeds by name (`HaleBody`),
-//! through `hale_stdlib::PATH_RENAMES` (`Renamed`), or not at all
-//! (`Unlowered`). The lowering itself still lives in the three
-//! hand-written dispatchers matched on `["std", ..]` literals, so until
-//! they dispatch from the row (S3, S4) this test scrapes them — through
-//! `stdlib_dispatch_coverage`'s scraper, which expands the name
-//! families — and holds the column to them, in both directions:
+//! lowers (`Lower`): natively (`Intrinsic(id)`), by a Hale body of the
+//! stdlib seeds called by name (`HaleBody`), through
+//! `hale_stdlib::PATH_RENAMES` (`Renamed`), or not at all (`Unlowered`).
 //!
-//!   - every dispatched path has a row, and the row says what its arms
-//!     do: `HaleBody(name)` when every arm that lowers it calls that
-//!     body, `Intrinsic` otherwise;
-//!   - every `Intrinsic` row has a native arm, and every `HaleBody` row
-//!     an arm calling its body;
-//!   - a `Renamed` row is in `PATH_RENAMES` and has no arm (an arm
-//!     would win over the rename);
-//!   - an `Unlowered` row has neither, and is named in [`UNLOWERED`].
+//! Since S3 the statement and value positions dispatch from the row
+//! (`lower_std_call`), so the compiler holds what this test used to
+//! scrape for them: an `Intrinsic` row's id has an arm in
+//! `lower_std_intrinsic`'s exhaustive `match id`, a `HaleBody` row is
+//! called by the body its row names, and a `Renamed` or `Unlowered` row
+//! reaches the fallback. What is left here:
+//!
+//!   - the `or` position is still the hand-written
+//!     `try_lower_fallible_stdlib_path_call` (until S4): every path it
+//!     matches has a row that says what its arm does;
+//!   - every `Intrinsic` row is lowered at some position (an id whose
+//!     arm only answers "not implemented" at both bare positions, with
+//!     no fallible arm, would compile);
+//!   - every `HaleBody` row names a function the stdlib declares;
+//!   - a `Renamed` row is in `PATH_RENAMES` and no fallible arm matches
+//!     it first; an `Unlowered` row has neither, and is named in
+//!     [`UNLOWERED`].
 //!
 //! Before the column, this file could only check that the scraped
 //! literals and the registry's names covered each other: adding a fn to
@@ -38,7 +42,7 @@ use std::path::PathBuf;
 
 use hale_types::stdlib_surface::{self as surf, Lower};
 
-use crate::stdlib_dispatch_coverage::{scrape, ArmCall, ArmKind};
+use crate::stdlib_dispatch_coverage::{scrape, ArmCall, ArmKind, Position};
 
 /// The rows no dispatcher lowers and no rename reaches, each with its
 /// reason. A new one is a public name that cannot be lowered, so it is
@@ -48,16 +52,17 @@ const UNLOWERED: &[(&str, &str)] = &[(
     "a signature row the surface never listed, with no arm and no rename (the descriptor close the seeds call is `__close`)",
 )];
 
-/// What the dispatchers do with each path: for every arm that lowers
-/// it, the call that arm makes; and whether some arm refuses it.
+/// What the arms of the given positions do with each path: for every
+/// arm that lowers it, the call that arm makes; and whether some arm
+/// refuses it.
 struct Dispatched {
     lowering: Vec<ArmCall>,
     refused: bool,
 }
 
-fn dispatched() -> BTreeMap<String, Dispatched> {
+fn dispatched(positions: &[Position]) -> BTreeMap<String, Dispatched> {
     let mut out: BTreeMap<String, Dispatched> = BTreeMap::new();
-    for s in scrape() {
+    for s in scrape().into_iter().filter(|s| positions.contains(&s.position)) {
         for (path, (kind, _)) in &s.paths {
             let d = out.entry(path.clone()).or_insert(Dispatched { lowering: Vec::new(), refused: false });
             match kind {
@@ -68,6 +73,8 @@ fn dispatched() -> BTreeMap<String, Dispatched> {
     }
     out
 }
+
+const ALL: &[Position] = &[Position::Statement, Position::Expression, Position::Fallible];
 
 fn renames() -> BTreeSet<String> {
     hale_stdlib::PATH_RENAMES.iter().map(|(path, _)| path.join("::")).collect()
@@ -97,55 +104,65 @@ fn implied(d: &Dispatched) -> Result<Option<&str>, String> {
     }
 }
 
-/// Every dispatched path has a row, and the row's lowering is what its
-/// arms do.
+/// Every path the fallible dispatcher matches has a row, and the row's
+/// lowering is what its lowering arm does (a path it only refuses
+/// needs only the row).
 #[test]
-fn every_dispatched_path_has_a_row_that_says_how_its_arms_lower() {
+fn every_fallible_arm_has_a_row_that_says_how_it_lowers() {
     let rows = rows();
     let mut wrong = Vec::new();
-    for (path, d) in dispatched() {
+    for (path, d) in dispatched(&[Position::Fallible]) {
         let Some(lower) = rows.get(&path) else {
-            wrong.push(format!("{path}: dispatched, but has no row"));
+            wrong.push(format!("{path}: dispatched under `or`, but has no row"));
             continue;
         };
+        if d.lowering.is_empty() {
+            continue;
+        }
         match (implied(&d), lower) {
             (Err(why), _) => wrong.push(format!("{path}: {why}")),
             (Ok(None), Lower::Intrinsic(_)) => {}
             (Ok(Some(body)), Lower::HaleBody(b)) if body == *b => {}
-            (Ok(arms), row) => wrong.push(format!("{path}: the row says {row:?}, the arms say {arms:?}")),
+            (Ok(arms), row) => wrong.push(format!("{path}: the row says {row:?}, the arm says {arms:?}")),
         }
     }
     assert!(
         wrong.is_empty(),
-        "the lowering column disagrees with the dispatchers ({}):\n{:#?}\n\n\
-         A natively lowered path is `Intrinsic(<its id>)`; a path whose arms call a \
+        "the lowering column disagrees with the fallible dispatcher ({}):\n{:#?}\n\n\
+         A natively lowered path is `Intrinsic(<its id>)`; a path whose arm calls a \
          Hale body by name is `HaleBody(\"<the body>\")`.",
         wrong.len(),
         wrong
     );
 }
 
-/// Every `Intrinsic` and `HaleBody` row is dispatched; `Renamed` and
-/// `Unlowered` rows are not.
+/// Every `Intrinsic` row is lowered at some position and every
+/// `HaleBody` row names a declared body; `Renamed` and `Unlowered` rows
+/// are matched by no fallible arm.
 #[test]
 fn every_rows_lowering_is_where_the_column_says() {
-    let dispatched = dispatched();
+    let lowered = dispatched(ALL);
+    let fallible = dispatched(&[Position::Fallible]);
     let renames = renames();
+    let declared = declared_names();
     let mut wrong = Vec::new();
     let mut unlowered = Vec::new();
     for (path, lower) in rows() {
-        let armed = dispatched.get(&path).is_some_and(|d| !d.lowering.is_empty());
+        let armed = lowered.get(&path).is_some_and(|d| !d.lowering.is_empty());
         match lower {
-            Lower::Intrinsic(_) | Lower::HaleBody(_) if !armed => {
-                wrong.push(format!("{path}: {lower:?}, but no dispatcher arm lowers it"))
+            Lower::Intrinsic(_) if !armed => {
+                wrong.push(format!("{path}: {lower:?}, but no position lowers it"))
+            }
+            Lower::HaleBody(body) if !declared.contains(body) => {
+                wrong.push(format!("{path}: HaleBody({body:?}), but the stdlib declares no `{body}`"))
             }
             Lower::Renamed if !renames.contains(&path) => {
                 wrong.push(format!("{path}: Renamed, but not in PATH_RENAMES"))
             }
-            Lower::Renamed if dispatched.contains_key(&path) => {
-                wrong.push(format!("{path}: Renamed, but a dispatcher arm matches it first"))
+            Lower::Renamed if fallible.contains_key(&path) => {
+                wrong.push(format!("{path}: Renamed, but a fallible arm matches it first"))
             }
-            Lower::Unlowered if dispatched.contains_key(&path) || renames.contains(&path) => {
+            Lower::Unlowered if lowered.contains_key(&path) || renames.contains(&path) => {
                 wrong.push(format!("{path}: Unlowered, but an arm or a rename reaches it"))
             }
             Lower::Unlowered => unlowered.push(path),
@@ -258,13 +275,10 @@ fn std_literals() -> BTreeSet<String> {
     out
 }
 
-/// Every name a rename row points at must actually be declared in
-/// the Hale-source stdlib. Without this, a stale row silently
-/// "lowers" a `Renamed` registry row that cannot lower.
-#[test]
-fn rename_targets_exist() {
-    let src = hale_stdlib::AP_SOURCE;
-    let declared: BTreeSet<&str> = src
+/// Every name the Hale-source stdlib declares (a fn, locus, type,
+/// interface or perspective).
+fn declared_names() -> BTreeSet<&'static str> {
+    hale_stdlib::AP_SOURCE
         .lines()
         .filter_map(|l| {
             // GH #436: skip leading decorators. A declaration may be
@@ -302,7 +316,15 @@ fn rename_targets_exist() {
             }
             None
         })
-        .collect();
+        .collect()
+}
+
+/// Every name a rename row points at must actually be declared in
+/// the Hale-source stdlib. Without this, a stale row silently
+/// "lowers" a `Renamed` registry row that cannot lower.
+#[test]
+fn rename_targets_exist() {
+    let declared = declared_names();
     // Compiler-SYNTHESIZED types: declared by codegen at lowering
     // time (`declare_builtin_parse_error_type`), not by Hale source,
     // so they are legitimately absent from AP_SOURCE.
@@ -331,12 +353,18 @@ fn rename_targets_exist() {
 /// thing everywhere, would make them pass vacuously.
 #[test]
 fn parity_check_is_not_vacuous() {
-    let dispatched = dispatched();
+    let dispatched = dispatched(ALL);
     let rows = rows();
     assert!(
         dispatched.len() > 300,
         "the dispatcher scrape found only {} paths — it is not reading the source it thinks it is",
         dispatched.len()
+    );
+    let fallible = self::dispatched(&[Position::Fallible]);
+    assert!(fallible.len() > 150, "the fallible dispatcher scrape found only {} paths", fallible.len());
+    assert!(
+        fallible.values().filter(|d| !d.lowering.is_empty()).count() > 100,
+        "the fallible dispatcher scrape found few lowering arms"
     );
     assert!(rows.len() > 400, "the table has only {} rows — unexpected", rows.len());
     let both = dispatched.keys().filter(|p| rows.contains_key(*p)).count();

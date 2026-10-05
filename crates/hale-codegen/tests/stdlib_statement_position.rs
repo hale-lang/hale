@@ -1,11 +1,14 @@
 //! F.40 phase 4, S1: a `std::` call at statement position is the
 //! expression form's call with its value dropped.
 //!
-//! `lower_stdlib_path_call` keeps only the arms a statement answers
-//! differently and its own fallibility refusal; every other path falls
-//! through to `lower_stdlib_path_call_expr`. Before, its last arm was
-//! "stdlib path `..` — not implemented", so three kinds of statement
-//! call changed, each pinned here:
+//! S1 kept in the statement dispatcher only the arms a statement
+//! answers differently and its own fallibility refusal, every other
+//! path falling through to the expression dispatcher; since S3 both
+//! positions are `lower_std_call` with the position a parameter, and an
+//! arm that does not match on it is the value position's, its value
+//! dropped. Before S1, the statement dispatcher's last arm was "stdlib
+//! path `..` — not implemented", so three kinds of statement call
+//! changed, each pinned here:
 //!
 //! 1. a path only the expression form had an arm for now lowers;
 //! 2. a function with a Hale body named by `hale_stdlib::PATH_RENAMES`
@@ -101,8 +104,9 @@ fn bare_parse_int_and_parse_float_get_the_expression_forms_refusal() {
 }
 
 /// A path no dispatcher lowers at statement position fails as it did
-/// before the fold, in the statement's words: the fall-through must not
-/// hand a statement the expression form's "in expression position".
+/// before the fold, in the statement's words, and at a value position
+/// in the value position's: "not implemented" is worded where it is
+/// produced (S3), so a statement never gets "in expression position".
 /// The four paths the checker knows and only the `or` form lowers are
 /// the ones a checked program can reach this with.
 #[test]
@@ -113,13 +117,20 @@ fn a_statement_no_dispatcher_lowers_keeps_the_statement_wording() {
         "std::io::tls::set_nodelay",
         "std::io::tls::set_rx_timestamps",
     ] {
-        let program =
-            hale_syntax::parse_source(&format!("fn main() {{\n    {path}(3, 5);\n}}\n")).expect("parses");
-        let bin = harness::unique_bin("stmt_not_implemented");
-        let err = harness::build_ir_text(&program, &bin).expect_err("no dispatcher lowers it bare");
-        let _ = std::fs::remove_file(&bin);
-        let text = format!("{err}");
+        let build = |source: String| {
+            let program = hale_syntax::parse_source(&source).expect("parses");
+            let bin = harness::unique_bin("stmt_not_implemented");
+            let err = harness::build_ir_text(&program, &bin).expect_err("no dispatcher lowers it bare");
+            let _ = std::fs::remove_file(&bin);
+            format!("{err}")
+        };
+        let text = build(format!("fn main() {{\n    {path}(3, 5);\n}}\n"));
         assert!(text.contains(&format!("stdlib path `{path}` — not implemented")), "{path}: {text}");
         assert!(!text.contains("in expression position"), "{path}: {text}");
+        let text = build(format!("fn main() {{\n    let x = {path}(3, 5);\n    println(x);\n}}\n"));
+        assert!(
+            text.contains(&format!("stdlib path `{path}` in expression position — not implemented")),
+            "{path}: {text}"
+        );
     }
 }
