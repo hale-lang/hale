@@ -23,7 +23,15 @@ paths (Rust-implemented builtins) type permissively, with their
 path-call names validated against the stdlib surface registry.
 A path-call carrying a row in that registry's signature table
 also checks its arity, its argument types and its RETURN type,
-and the return may itself be a stdlib struct (GH #771): a
+and every function the compiler lowers natively or through a named
+Hale body has one: the signature its lowering enforced (F.40 phase 4,
+S6; before, 118 had none, so any arguments passed `hale check`
+and a wrong count or type failed at build, without a location). The
+exceptions are the seven `std::io::mirror` cursor primitives, whose
+lowering does not count their arguments, and
+`std::bytes::builder::__finish` / `__snapshot`; a function the rename
+table maps onto a Hale body is checked against that body's own
+signature. The return may itself be a stdlib struct (GH #771): a
 `std::json::string_field(...)` is a `std::json::JsonString`, so a
 misspelled field on the result is a located error naming the
 public path, and passing the result where a `String` is expected
@@ -42,9 +50,10 @@ lowering used to refuse it without a span or answer "not
 implemented". Lowering keeps no list of its own: whether it refuses a
 stdlib call is that same row. The check refuses a bare call of a
 function whose row can fail, and an `or` over one whose row cannot;
-the one such call that still reaches the build is an `or` over a
-function with no signature row (the check types it permissively),
-which the build refuses for every such function with "is not a
+the one such call that still reaches the build is an `or` over one of
+those unsigned functions, or over one whose success the table cannot
+state (`std::bytes::builder::__view` / `__text_view`, a view; the check
+types both permissively), which the build refuses with "is not a
 fallible call — remove the `or` clause" (some used to read "`or` over
 unknown path call"). A stdlib function written in Hale (a body the
 stdlib's rename table names, like `std::process::adopt` or the

@@ -378,7 +378,10 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
 // filled from the per-function lowering verification (each lowering
 // fn's arg-count checks + type coercions read directly, cross-checked
 // against spec/stdlib.md); UNCERTAIN signatures are EXCLUDED, not
-// guessed (M3 stage 2, 2026-07-02).
+// guessed (M3 stage 2, 2026-07-02). Since F.40 phase 4, S6 every public
+// row has the signature its lowering enforces, save a rename (the check
+// types its call against the Hale body's own signature) and the few
+// whose comment says why they have none.
 //
 // GH #771: a type slot is a bare `SigTy` variant (`Str`, `Int`) OR
 // `Named("__JsonString")` — the tuple variant, written the way the
