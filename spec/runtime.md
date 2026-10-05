@@ -1715,7 +1715,11 @@ zero_copy binding produces.
     (`emit_restart_requested`,
     `crates/hale-codegen/src/locus/restart.rs`, refuses a restart
     while `lotus_process_draining_flag` is up). For an owner's
-    teardown nothing checks it yet.
+    teardown it is shipped where the owner's reclaim reaches the
+    child while the failure is outstanding (the reclaim wins, below),
+    and not yet where the teardown joins the child's pool first and
+    reaches its reclaim only after the delivery (inventory row C42,
+    `rd_restart_during_teardown.hl`).
   - A failure held while the owner's params are open is still
     delivered when they settle (`spec/semantics.md` §
     "on_failure(c, err)"). One subcase is open: an owner placed
@@ -1754,7 +1758,10 @@ zero_copy binding produces.
     drains and yields, a pool worker between cells, every wait that
     services its queue (a held failure's wait, a reclaim's wait for
     a started run, a readiness wait), and the two joins below. A
-    handler is never started inside another on the same thread.
+    handler is never started inside another on the same thread. A
+    failure held while its owner's params were open runs its handler
+    at the settle under the same guard, so a delivery posted to the
+    settling thread waits until that handler returns.
   - A domain that has ended consumes nothing more: its thread has
     exited, or its pool's worker has left its loop. A delivery still
     posted to it, or posted after, runs in place where it was
@@ -1773,7 +1780,15 @@ zero_copy binding produces.
     that delivery too, so the field holds the new child at once, the
     replaced child's failure is still delivered after the running
     handler returns, and the child is reclaimed right after its own
-    handler. A failure posted from a pool
+    handler. **The reclaim wins:** a reclaim that finds a failure of
+    its child outstanding marks the child's reclaim claim owed before
+    the handler decides, whether it defers behind the delivery or
+    waits for it, and the child's restart decision is refused while
+    its claim is owed or taken. A `restart` or `restart_in_place` the
+    handler asks for about that child is not performed: it is
+    reclaimed once, after its handler, and no `birth()` or `run()` of
+    it starts again. At a settle, a reclaim deferred behind a held
+    failure runs instead of the child's resume. A failure posted from a pool
     worker's cell holds the child until that cell returns, as a
     started run does (decision line 19), so the reclaim never
     releases the child under the rest of the cell (what follows the
@@ -1814,9 +1829,9 @@ zero_copy binding produces.
   fixtures under `tests/fixtures/failure_delivery/` into one outcome
   word each, in the trace build (where the delivery's
   `FailureDelivery` steps must all be on `main`; the sibling cases in
-  both dispatch modes) and, for the first two and the heap-carrying
-  sibling case, under ASan with chunk pooling off, in both dispatch
-  modes:
+  both dispatch modes) and, for the first two, the heap-carrying
+  sibling case and the restart cases, under ASan with chunk pooling
+  off, in both dispatch modes:
   - `fd_pinned_owner_state.hl`: a pinned child fails in a bus
     handler while its owner, on `main`, reads the state the handler
     writes in a window with no yield; the handler records its
@@ -1840,6 +1855,24 @@ zero_copy binding produces.
     replaced from one handler (handled in posting order, each old
     child reclaimed once after its own handler), and the replacement
     through a method hold the same rule.
+  - `fd_restart*_replaced*.hl`, the reclaim wins: a handler asks for
+    a restart of a child whose reclaim is owed (the child it was
+    handed, after replacing it, with `restart` and with
+    `restart_in_place`; a sibling it replaced while that sibling's
+    failure was posted; a child its owner replaced outside any
+    handler while its failure was posted). Each gives the old child
+    one birth, one run and one dissolve, after its handler read it,
+    and leaves the new child untouched, under ASan too. Before the
+    rule the old child was born and run again beside its dissolve,
+    and `restart_in_place` hung.
+  - `fd_settle_no_nest.hl`: a held failure's handler sleeps at its
+    owner's settle while another failure is posted to the same
+    thread; the posted handler's entry and exit lines follow the held
+    one's. Before the settle's guard they came inside it.
+  - `fd_handler_cell_no_hold.hl`, known open at inventory row R52 and
+    asserted to fail under ASan: a pool-placed child replaced while
+    its bus handler runs is freed under that handler (decision line
+    19).
 
   The lifecycle matrix holds the domain of every cell's
   `FailureDelivery` to the plan's: the cells whose failure is raised
@@ -1847,10 +1880,10 @@ zero_copy binding produces.
   (`run/root_child/pinned` and `run/root_child/cross_pool` stay in
   its ASan sample as regressions), and the join-progress fixtures
   `jp_late_failure_pinned_join.hl` and `jp_late_failure_pool_join.hl`
-  deliver on `main` inside the joins. The decision's other cases,
-  a restart asked for during the owner's teardown and a flow child's
-  dissolve-epoch failure under its run-completion reclaim, have no
-  fixture of their own yet.
+  deliver on `main` inside the joins. A restart asked for during the
+  owner's teardown is `rd_restart_during_teardown.hl` (known open,
+  C42); a flow child's dissolve-epoch failure under its
+  run-completion reclaim has no fixture of its own yet.
 
 ### Lifecycle obligations
 
@@ -2118,7 +2151,10 @@ its `KNOWN_OPEN` table.
   declares no `run()` owes none on any incarnation, and the trace
   shows none. Not yet shipped (inventory row C48): its resumed
   incarnation enters a `Run`, the empty one the desugar gives it,
-  where its first never does (`l01_neg_same_pool_held.hl`).
+  where its first never does (`l01_neg_same_pool_held.hl`). A child
+  whose held handler replaced it is not resumed: its deferred reclaim
+  runs in the resume's place, and no restart or `run()` of it starts
+  (the reclaim wins, § "Failure handling", decision L0-1).
 - **Line 14, order.** Order follows the steps the compiler emits;
   latches and pending-release records keep teardown from running
   twice (§ "Lifecycle", "Order by construction"). Shipped
@@ -2254,7 +2290,12 @@ its `KNOWN_OPEN` table.
   later callback can enter the spine. That deferral also covers a
   reclaim reached inside a handler for a child whose own failure is
   still posted to the same thread, whose wait only that thread could
-  end (§ "Failure handling", decision L0-1). A constructor resets the claim
+  end (§ "Failure handling", decision L0-1). Such a reclaim, and one
+  that waits for a delivery of its child, first marks the claim
+  owed, a third state beside clear and claimed: the first reclaim
+  entrant takes an owed claim as it takes a clear one, and a child's
+  restart decision is refused while its claim is owed or claimed (the
+  reclaim wins). A constructor resets the claim
   for each new instance, including recycled storage. The handler
   retention regression exercises termination and flow completion under
   ASan on classic and async pools, in both dispatch modes.
@@ -2273,6 +2314,15 @@ its `KNOWN_OPEN` table.
   running run, a heap-use-after-free under AddressSanitizer in both
   dispatch modes. A run whose child is never reclaimed until its
   pool joins is still ordered against the teardown by the join.
+  A bus handler's cell holds nothing (inventory row R52, known
+  open): a reclaim of a pool-placed child does not wait for its
+  running bus handler, so replacing the child while its handler runs
+  frees the storage under it, a heap-use-after-free under
+  AddressSanitizer in both dispatch modes
+  (`fd_handler_cell_no_hold.hl`, under
+  `crates/hale-codegen/tests/fixtures/failure_delivery/`). A hold per
+  dispatched cell would close it at a cost on the dispatch path the
+  row states.
   Shipped (F.40 phase 3,
   L5): the cancellation is named in the trace build on the thread
   that reclaims, inside the Reclaim's bracket, and the release build
@@ -2314,10 +2364,16 @@ its `KNOWN_OPEN` table.
   Per-child reclamation; GH #1069), so the cancellation is never an
   unconditional reclaim. Shipped for the process drain
   (`emit_restart_requested` refuses a restart while
-  `lotus_process_draining_flag` is up). Not yet shipped for an
-  owner's teardown (inventory row C42): a pool-placed child that
-  fails while `fn main`'s exit joins the pools is restarted
-  (`rd_restart_during_teardown.hl`).
+  `lotus_process_draining_flag` is up), and for a child whose reclaim
+  is owed or claimed when it reads the decision: its handler replaced
+  it, or its owner's reclaim reached it while the failure was
+  outstanding (the reclaim wins, § "Failure handling", decision
+  L0-1). Not yet shipped for an owner's teardown that reaches the
+  child through a pool join (inventory row C42): a pool-placed child
+  that fails while `fn main`'s exit joins the pools is restarted,
+  because the join runs the delivery before the cascade reaches the
+  child's reclaim, so nothing is owed or claimed when the child reads
+  the decision (`rd_restart_during_teardown.hl`).
 - **Join progress.** An owner keeps completing the outstanding
   failure decisions of its children until the children it waits
   for have quiesced, and a pool worker that supervises children

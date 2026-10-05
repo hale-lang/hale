@@ -1411,6 +1411,16 @@ after the running handler returns (handlers never run inside one
 another), and the replaced child is kept for that handler and
 reclaimed right after it.
 
+**The reclaim wins.** A decision about a child the handler has
+replaced, or whose owner's reclaim reached it while its failure was
+outstanding, is not performed: `restart(c)` and
+`restart_in_place(c)` on such a child leave it as if the handler had
+returned without asking, so it is reclaimed once, after its handler,
+and no `birth()` or `run()` of it starts again, while the new child in
+the field is untouched. (An owner's teardown that reaches the child
+through a pool join before its reclaim does not refuse it yet:
+`spec/runtime.md` § "Lifecycle obligations", "Restart during drain".)
+
 One failure cannot wait and is delivered at once: a
 **dissolve-epoch closure's**, because the child's region is
 released right after.
@@ -1440,7 +1450,9 @@ transition**, not a value store. It is lowered **break-before-make**:
 
 The old instance's drain and dissolve finish before the new instance
 is constructed, unless its own failure is still outstanding: then
-its whole teardown follows its handler (§ "on_failure(c, err)").
+its whole teardown follows its handler, and a restart that handler
+asks for about it is not performed (§ "on_failure(c, err)", "The
+reclaim wins").
 There is one storage-retention exception: when a
 queued main-thread handler performs the replacement, waiting for an
 old run inside that handler could deadlock a reply queued behind it.
