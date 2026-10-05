@@ -488,6 +488,28 @@ fn std_io_file_calls_are_checked() {
 }
 
 #[test]
+fn std_io_tcp_calls_are_checked() {
+    refused(
+        "    let fd = std::io::tcp::__connect(\"127.0.0.1\");\n    println(fd);",
+        &[("`std::io::tcp::__connect` takes 2 arguments, got 1", "std::io::tcp::__connect")],
+    );
+    refused(
+        "    let n = std::io::tcp::__send(3, std::bytes::from_string(\"x\"));\n    println(n);",
+        &[(
+            "`std::io::tcp::__send` argument 2: expected `String`, got `Bytes`",
+            "std::bytes::from_string(\"x\")",
+        )],
+    );
+    refused(
+        "    let e = std::io::tcp::__last_io_status() or 0;\n    println(e);",
+        &[(
+            "`std::io::tcp::__last_io_status` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::io::tcp::__last_io_status()",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

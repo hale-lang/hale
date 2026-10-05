@@ -689,18 +689,18 @@ std::io::stdout::write_bytes | lookup=io::stdout@3 | locus=false | effects=sysca
 std::io::tcp::Listener | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::LogEvent | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::Stream | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__accept_one
-std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close_fd
-std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__connect
-std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
-std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
-std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
-std::io::tcp::__recv | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__recv
-std::io::tcp::__recv_bytes | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes
-std::io::tcp::__send | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__send
-std::io::tcp::__send_bytes | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__send_bytes
-std::io::tcp::__set_recv_timeout_ns | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__set_recv_timeout_ns
-std::io::tcp::__shutdown_listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__shutdown_listen_socket
+std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__accept_one
+std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close_fd
+std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=__connect
+std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
+std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
+std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
+std::io::tcp::__recv | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Str | ret_ty=String | or=- | parks=true | holds=true | unknown=- | suggest=__recv
+std::io::tcp::__recv_bytes | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes
+std::io::tcp::__send | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send
+std::io::tcp::__send_bytes | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send_bytes
+std::io::tcp::__set_recv_timeout_ns | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__set_recv_timeout_ns
+std::io::tcp::__shutdown_listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__shutdown_listen_socket
 std::io::tcp::accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=accept_one
 std::io::tcp::close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close_fd
 std::io::tcp::conect | lookup=io::tcp@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::tcp::conect` — did you mean `std::io::tcp::connect`? | suggest=connect
