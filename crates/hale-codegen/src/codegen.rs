@@ -23268,6 +23268,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))?;
                 Ok((self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time))
             }
+            Expr::Literal(Literal::Quantity { value, unit }, span) => Err(
+                unit_dialect_unsupported(&format!("quantity literal `{value}{unit}`"), *span),
+            ),
             Expr::Path(qn) => {
                 // m47 + payloads: enum variant construction
                 // `EnumName::Variant`. For pure no-payload enums
@@ -33999,6 +34002,10 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
             Ok(ParamValue::Decimal(m))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
+        Expr::Literal(Literal::Quantity { value, unit }, span) => Err(unit_dialect_unsupported(
+            &format!("quantity literal `{value}{unit}`"),
+            *span,
+        )),
         _ => Err(CodegenError::Unsupported(
             "param initializer must be a literal in milestone-1 codegen".to_string(),
         )),
