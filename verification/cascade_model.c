@@ -311,8 +311,31 @@
  * Memory model: GenMC's default (release-acquire), the faithful one for
  * the runtime's orders. No GENMC-FLAGS pin.
  *
- * Run:  genmc -- verification/cascade_model.c   (or run_genmc.sh)
- *       genmc -- -DMODEL_BUG_NO_HOLD verification/cascade_model.c
+ * RUNS. The phases share no state, so each is its own exhaustive run:
+ * back to back in one execution their interleavings multiply (phase 1's
+ * 1,033 executions times phase 3's 116 and 51 is already millions, and
+ * the model as a whole did not finish in CI). run_genmc.sh runs the
+ * model once per line below, with that line's compiler flags:
+ *
+ *   GENMC-RUN: -DMODEL_PHASE=1
+ *   GENMC-RUN: -DMODEL_PHASE=2
+ *   GENMC-RUN: -DMODEL_PHASE=3
+ *
+ * On 2026-10-05, GenMC 0.17 with LLVM 18: phase 1 explores 1,033
+ * complete executions, phase 2 explores 12, and phase 3's two orders
+ * 116 and 51, each without an error, in seconds.
+ *
+ * Phase 4 (the sibling replacement: three threads) is NOT explored
+ * exhaustively: alone, it does not finish in five minutes on a 16-core
+ * host. It is compiled on every PR and run natively once, with its
+ * control (one interleaving, not a proof); the failure_delivery_domain
+ * fixtures and l08_sibling_replaced_kept carry its behaviour. Making it
+ * tractable (a smaller transcription of the service loop and the
+ * reclaim wait, or the poster's half fixed as a pre-state) is owed.
+ *
+ * Run:  verification/run_genmc.sh
+ *       genmc -- -DMODEL_PHASE=3 verification/cascade_model.c
+ *       genmc -- -DMODEL_PHASE=1 -DMODEL_BUG_NO_HOLD verification/cascade_model.c
  *
  * `lifecycle_flow cascade_model` compiles it and each control with
  * `clang -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only`, and
@@ -1522,10 +1545,29 @@ static void phase4_sibling_replaced(void) {
 int main(void) {
     pthread_mutex_init(&g_params_open_lock, NULL);
     pthread_mutex_init(&g_run_tickets_lock, NULL);
+    /* One phase per GenMC run (the GENMC-RUN lines in the header): the
+     * phases share no state, and run back to back in one execution
+     * their interleavings multiply. With no MODEL_PHASE, all of them,
+     * in order: the native run. */
+#if !defined(MODEL_PHASE) || MODEL_PHASE == 1
     phase1_construction_delivery();
+#endif
+#if !defined(MODEL_PHASE) || MODEL_PHASE == 2
     phase2_unjoined_reclaim();
+#endif
+#if !defined(MODEL_PHASE) || MODEL_PHASE == 3
     phase3_delivery_domain(0);
     phase3_delivery_domain(1);
+#endif
+#if !defined(MODEL_PHASE) || MODEL_PHASE == 4
     phase4_sibling_replaced();
+#endif
+#ifdef MODEL_PHASE
+    /* The phases this run leaves out are still compiled. */
+    (void)phase1_construction_delivery;
+    (void)phase2_unjoined_reclaim;
+    (void)phase3_delivery_domain;
+    (void)phase4_sibling_replaced;
+#endif
     return 0;
 }

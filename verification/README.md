@@ -131,6 +131,22 @@ A model that pins `--sc` **must** state in its header why, and what
 the RA result was. Silently weakening the checker is how a model stops
 meaning anything.
 
+## One run per phase
+
+A model whose phases are independent names its runs with `GENMC-RUN:`
+lines in its header, each holding that run's compiler flags:
+
+```c
+ *   GENMC-RUN: -DMODEL_PHASE=1
+ *   GENMC-RUN: -DMODEL_PHASE=2
+```
+
+`run_genmc.sh` runs the model once per line. Phases run back to back
+in one execution multiply their interleavings; phases that share no
+state lose nothing by being explored one at a time. A model with no
+such line is run once, as it is. A phase a model leaves out of its
+runs is **not verified**, and its header must say so and why.
+
 ## How to run
 
 ```sh
@@ -260,10 +276,18 @@ in the header with the assertion it is expected to fail. On
 explored 630 complete executions and 126 blocked executions of the
 positive model without an error, and the first five negative controls
 reported their expected safety failure (the delivered-before-handler
-control reports a non-atomic race). The model as it now stands has
-not been run under GenMC. `run_genmc.sh` runs only the default
-configuration; `lifecycle_flow cascade_model` compiles every
-configuration on each PR and runs the model,
+control reports a non-atomic race). With the delivery's domain the
+model has four phases, and they are checked one per run (`GENMC-RUN:`
+lines, below): the phases share no state, and back to back in one
+execution their interleavings multiply, so the model as a whole did
+not finish. On 2026-10-05 phase 1 explores 1,033 complete executions,
+phase 2 explores 12 and phase 3's two orders 116 and 51, each without
+an error. Phase 4 (the sibling replacement, three threads) is not
+explored exhaustively: alone it does not finish in five minutes. The
+negative controls have not been re-run under GenMC since the phases
+were added. `run_genmc.sh` runs the positive model's three phase
+runs; `lifecycle_flow cascade_model` compiles every configuration and
+every phase selection on each PR and runs the whole model,
 `-DMODEL_BUG_DELIVER_IN_PLACE` and `-DMODEL_BUG_SIBLING_RECLAIM_WAITS`
 natively once each.
 
