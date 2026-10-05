@@ -487,6 +487,11 @@ dynamic	<hole>	on main|unresolved declaration `chat::Room`	in the seed
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-collision/main.hl#40cf887f
 row	Bystander@main1	Bystander	main	default
 
+== crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-own-main/main.hl#153e3d51
+root	Harness	the entry
+row	Harness@literal1	Harness	main	default
+dynamic	<hole>	on main|unresolved declaration `chat::Room`	in the seed
+
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-const-missing/main.hl#9088b209
 row	Bystander@main1	Bystander	main	default
 

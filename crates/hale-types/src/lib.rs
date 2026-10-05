@@ -347,10 +347,10 @@ fn check_numbered_bundle(
     };
     let entry = entry::entry_row(bundle);
     let placement = placement::derive_placement(bundle, &top, &entry);
-    let ownership = bundle_ownership_graph(bundle, &top, &placement);
+    let ownership = bundle_ownership_graph(bundle, &top, &placement, &entry);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
+    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement, &entry);
     let target = capability::target_row(bundle);
     let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let (checked, effect_certificates) = check::check_bundle_reporting(
@@ -429,8 +429,9 @@ pub(crate) fn bundle_ownership_graph(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     placement: &placement::PlacementTable,
+    entry: &entry::EntryRow,
 ) -> ownership_graph::OwnershipGraph {
-    ownership_graph::build_ownership_graph(bundle, top, placement)
+    ownership_graph::build_ownership_graph(bundle, top, placement, entry)
 }
 
 /// The application model of a bundle no snapshot holds: the test
@@ -455,11 +456,12 @@ fn model_of_minted(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
-    let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
+    let entry = entry::entry_row(bundle);
+    let placement = placement::derive_placement(bundle, &top, &entry);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement);
-    let ownership = bundle_ownership_graph(bundle, &top, &placement);
+    let bus = bundle_bus_graph(bundle, &top, &bindings, &placement, &entry);
+    let ownership = bundle_ownership_graph(bundle, &top, &placement, &entry);
     model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership, &placement)
 }
 
@@ -473,8 +475,9 @@ pub(crate) fn bundle_bus_graph(
     top: &resolve::TopScope,
     bindings: &binding_rows::BindingRows,
     placement: &placement::PlacementTable,
+    entry: &entry::EntryRow,
 ) -> bus_graph::BusGraph {
-    bus_graph::build_bus_graph(bundle, top, bindings, placement)
+    bus_graph::build_bus_graph(bundle, top, bindings, placement, entry)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds

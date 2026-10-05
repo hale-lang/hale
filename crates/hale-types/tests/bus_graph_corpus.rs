@@ -85,7 +85,7 @@ fn graph_for_project(project: &Path) -> Option<(String, BusGraph)> {
     // graph off the same resolved scope.
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
-    let graph = build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top));
+    let graph = build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top), &hale_types::entry::entry_row(&bundle));
 
     if graph.subjects.is_empty() {
         return None;
@@ -380,7 +380,7 @@ fn build_synthetic(src: &str) -> BusGraph {
     let bundle = Bundle::new(programs);
     let _ = check_bundle(&bundle);
     let (top, _) = build_top_scope(&bundle);
-    build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top))
+    build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top), &hale_types::entry::entry_row(&bundle))
 }
 
 /// Sanity: `is_main` detection used by the gate matches the AST

@@ -185,16 +185,15 @@ pub fn mangle_with_renames(prog: &mut Program, renames: &HashMap<String, String>
     );
 }
 
-/// GH #774: does any file of this seed declare a `main locus`? See
+/// GH #774: does this seed have an entry, a top-level `main locus` of
+/// its own files (the entry row over them, F.40 phase 3; none of them
+/// is renamed yet, so none is imported)? See
 /// [`SeedBinding::declares_main`]. Seed-wide for the same reason
 /// `seed_path_heads` is: a seed's files share one namespace and one
 /// world.
 pub fn seed_declares_main(programs: &[(String, &Program)]) -> bool {
-    programs.iter().any(|(_, prog)| {
-        prog.items.iter().any(
-            |item| matches!(item, TopDecl::Locus(l) if l.is_main),
-        )
-    })
+    let refs: Vec<&Program> = programs.iter().map(|(_, prog)| *prog).collect();
+    crate::entry::entry_row_in(&refs).entry().is_some()
 }
 
 /// GH #774: what the mangler needs to know about the seed as a

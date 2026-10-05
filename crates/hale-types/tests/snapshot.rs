@@ -214,8 +214,10 @@ fn main() {
     }
     {
         let mut refs: Vec<&mut hale_syntax::ast::Program> = programs.values_mut().collect();
+        let row = hale_types::entry::entry_row_in(&refs.iter().map(|p| &**p).collect::<Vec<_>>());
         assert!(
-            hale_syntax::api_gen::generate_api(&mut refs, None).is_some(),
+            hale_syntax::api_gen::generate_api(&mut refs, row.lowering_root.as_ref().and_then(|m| m.index_in()), None)
+                .is_some(),
             "the api binding lowers"
         );
     }
@@ -331,7 +333,12 @@ fn main() { App { }; }
     let first: std::collections::BTreeSet<u32> = ids(&p).into_iter().collect();
     {
         let mut refs = vec![&mut p];
-        assert!(hale_syntax::api_gen::generate_api(&mut refs, None).is_some(), "the api binding lowers");
+        let row = hale_types::entry::entry_row_in(&[&*refs[0]]);
+        assert!(
+            hale_syntax::api_gen::generate_api(&mut refs, row.lowering_root.as_ref().and_then(|m| m.index_in()), None)
+                .is_some(),
+            "the api binding lowers"
+        );
     }
     // Two sites with one id is a panic here.
     let snap = mint([("app.hl", &mut p)], &[]);

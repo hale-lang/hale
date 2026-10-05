@@ -536,55 +536,52 @@ fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
 /// [`crate::stdlib_surface::ASYNC_IO_PARKING`] for why.
 fn placement_implied_diags(
     programs: &[&Program],
+    root: Option<&LocusDecl>,
     summary: &AllocSummary,
 ) -> Vec<Diag> {
     use crate::stdlib_surface::EffectSet;
-    // main-locus params fields placed on an async_io pool → the locus
-    // TYPE names whose methods must not block.
+    // The root's params fields placed on an async_io pool → the locus
+    // TYPE names whose methods must not block. The root is the entry
+    // row's lowering root: the pool is one lowering spawns, so an
+    // imported `main` or a second one places nothing here.
     let mut async_io_types: Vec<(String, String)> = Vec::new(); // (type, pool)
-    for p in programs {
-        for item in &p.items {
-            let TopDecl::Locus(l) = item else { continue };
-            if !l.is_main {
-                continue;
-            }
-            let mut field_ty: std::collections::BTreeMap<String, String> =
-                Default::default();
-            for m in &l.members {
-                if let LocusMember::Params(pb) = m {
-                    for prm in &pb.params {
-                        if let Some(TypeExpr::Named { path, .. }) = &prm.ty {
-                            if path.segments.len() == 1 {
-                                field_ty.insert(
-                                    prm.name.name.clone(),
-                                    path.segments[0].name.clone(),
-                                );
-                            }
+    if let Some(l) = root {
+        let mut field_ty: std::collections::BTreeMap<String, String> =
+            Default::default();
+        for m in &l.members {
+            if let LocusMember::Params(pb) = m {
+                for prm in &pb.params {
+                    if let Some(TypeExpr::Named { path, .. }) = &prm.ty {
+                        if path.segments.len() == 1 {
+                            field_ty.insert(
+                                prm.name.name.clone(),
+                                path.segments[0].name.clone(),
+                            );
                         }
                     }
                 }
             }
-            for m in &l.members {
-                if let LocusMember::Placement(pb) = m {
-                    for e in &pb.entries {
-                        let is_async = e.constraints.iter().any(|c| {
-                            matches!(c.kind, PlacementConstraint::AsyncIo)
-                        });
-                        if !is_async {
-                            continue;
-                        }
-                        let PlacementSpec::Cooperative { pool, .. } = &e.spec
-                        else {
-                            continue;
-                        };
-                        if let Some(t) = field_ty.get(&e.field.name) {
-                            async_io_types.push((
-                                t.clone(),
-                                pool.as_ref()
-                                    .map(|i| i.name.clone())
-                                    .unwrap_or_else(|| "main".to_string()),
-                            ));
-                        }
+        }
+        for m in &l.members {
+            if let LocusMember::Placement(pb) = m {
+                for e in &pb.entries {
+                    let is_async = e.constraints.iter().any(|c| {
+                        matches!(c.kind, PlacementConstraint::AsyncIo)
+                    });
+                    if !is_async {
+                        continue;
+                    }
+                    let PlacementSpec::Cooperative { pool, .. } = &e.spec
+                    else {
+                        continue;
+                    };
+                    if let Some(t) = field_ty.get(&e.field.name) {
+                        async_io_types.push((
+                            t.clone(),
+                            pool.as_ref()
+                                .map(|i| i.name.clone())
+                                .unwrap_or_else(|| "main".to_string()),
+                        ));
                     }
                 }
             }
@@ -667,10 +664,11 @@ fn placement_implied_diags(
 /// never disagree. The topology artifact serializes these beside
 /// the bundle claims: one schema of record for all law. `summary` is
 /// the `alloc_summary` family's. Programs no snapshot holds: each form
-/// carries the discipline its written argument gives it.
+/// carries the discipline its written argument gives it. The rows read
+/// no placement-implied finding, so no lowering root is read.
 pub fn certificate_rows(programs: &[&Program], summary: &AllocSummary) -> Vec<LoweredCertificate> {
     let forms = written_forms(programs);
-    effect_report_grouped(programs, summary, &forms).1.into_iter().map(|(row, _)| row).collect()
+    effect_report_grouped(programs, None, summary, &forms).1.into_iter().map(|(row, _)| row).collect()
 }
 
 /// The form rows of programs no snapshot holds and no scope was built
@@ -697,9 +695,11 @@ pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertific
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let summary = crate::alloc_summary::derive_alloc_summary(bundle);
     let (top, diags) = crate::resolve::build_top_scope(bundle);
-    let placement = crate::placement::derive_placement(bundle, &top, &crate::entry::entry_row(bundle));
+    let entry = crate::entry::entry_row(bundle);
+    let placement = crate::placement::derive_placement(bundle, &top, &entry);
     let forms = crate::form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    effect_report_grouped(&programs, &summary, &forms).1
+    let root = entry.lowering_root.as_ref().and_then(|m| m.decl(bundle));
+    effect_report_grouped(&programs, root, &summary, &forms).1
 }
 
 /// GH #476 Change 5e: the same report with each certificate's own
@@ -709,13 +709,15 @@ pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertific
 /// this, so the two can never disagree). `summary` is the
 /// `alloc_summary` family's: the check hands in its snapshot's.
 /// `forms` says which forms carry a `sync` discipline (the check's
-/// form rows).
+/// form rows). `root` is the entry row's lowering root, whose async_io
+/// pools the placement-implied findings read.
 pub(crate) fn effect_report_grouped(
     programs: &[&Program],
+    root: Option<&LocusDecl>,
     summary: &AllocSummary,
     forms: &crate::form_rows::FormRows,
 ) -> (Vec<Diag>, EffectCertificates) {
-    let (pre, p1, tail, groups) = effect_report_three_way_over(programs, summary, forms);
+    let (pre, p1, tail, groups) = effect_report_three_way_over(programs, root, summary, forms);
     let mut flat = pre;
     flat.extend(p1);
     flat.extend(tail);
@@ -727,7 +729,9 @@ pub(crate) fn effect_report_grouped(
 /// the undeclared-class validation pass (law-row validation, in
 /// root order), and the per-certificate groups. The judgment
 /// consumes the last two; `hale check`'s flat stream is their
-/// concatenation in this order.
+/// concatenation in this order. Programs no entry row was built for:
+/// no lowering root is read, so the first stratum holds no
+/// placement-implied finding (the check's flat stream carries those).
 #[doc(hidden)]
 pub fn effect_report_three_way(
     programs: &[&Program],
@@ -738,11 +742,12 @@ pub fn effect_report_three_way(
     Vec<Diag>,
     Vec<(LoweredCertificate, Vec<(Diag, bool)>)>,
 ) {
-    effect_report_three_way_over(programs, summary, &written_forms(programs))
+    effect_report_three_way_over(programs, None, summary, &written_forms(programs))
 }
 
 fn effect_report_three_way_over(
     programs: &[&Program],
+    root: Option<&LocusDecl>,
     summary: &AllocSummary,
     forms: &crate::form_rows::FormRows,
 ) -> (
@@ -789,7 +794,7 @@ fn effect_report_three_way_over(
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut sink = DiagSink::new();
-    for d in placement_implied_diags(programs, summary) {
+    for d in placement_implied_diags(programs, root, summary) {
         sink.push(d);
     }
     // #265 step 6: phase-indexed effect contracts on loci. Phase

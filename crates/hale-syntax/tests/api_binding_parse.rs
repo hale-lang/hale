@@ -76,10 +76,14 @@ fn fmt_keeps_the_entry() {
     assert_eq!(out, src);
 }
 
+/// The refusal of a program with no entry is the desugar sequence's,
+/// which knows why there is none (`hale-cli`'s
+/// `check_entry_consumers.rs`).
 #[test]
-fn the_flag_injects_the_dev_entry_and_needs_a_main_locus() {
+fn the_flag_injects_the_dev_entry() {
     let mut prog = parse_source("main locus App { }\nfn main() { App { }; }\n").expect("parses");
-    hale_syntax::api_gen::inject_api_entry(&mut prog, "unix:/run/app.sock").expect("injects");
+    let TopDecl::Locus(l) = &mut prog.items[0] else { panic!() };
+    hale_syntax::api_gen::inject_api_entry(l, "unix:/run/app.sock");
     let api = {
         let TopDecl::Locus(l) = &prog.items[0] else { panic!() };
         let Some(LocusMember::Bindings(bb)) = l.members.iter().find(|m| matches!(m, LocusMember::Bindings(_))) else { panic!("no bindings block") };
@@ -90,10 +94,6 @@ fn the_flag_injects_the_dev_entry_and_needs_a_main_locus() {
     assert_eq!(path, "/run/app.sock");
     assert_eq!(api.bound.map(|b| b.0), Some(hale_syntax::api_gen::DEV_BOUND));
     assert!(api.on_full.is_some());
-
-    let mut bare = parse_source("fn main() { println(\"hi\"); }\n").expect("parses");
-    let err = hale_syntax::api_gen::inject_api_entry(&mut bare, "/run/app.sock").expect_err("no main locus");
-    assert!(err.contains("`main locus`"), "{}", err);
 }
 
 // ---- GH #1109: roles, @gated, and the gate's knobs ------------------------

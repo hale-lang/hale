@@ -616,65 +616,49 @@ pub(crate) fn enumerate_clauses<'a>(
             segs.first().map(|a| (mangled.as_str(), a.as_str()))
         })
         .collect();
-    #[allow(clippy::too_many_arguments)]
     fn walk_items<'a>(
         items: &'a [TopDecl],
         groups: &mut Vec<&'a GroupDecl>,
-        claims: &mut Vec<ClaimDecl>,
         top_blocks: &mut Vec<&'a ClaimsBlock>,
-        has_main: &mut bool,
         consts: &mut Vec<&'a ConstitutionDecl>,
-        adopts: &mut Vec<Ident>,
         lib_adopts: &mut Vec<Ident>,
     ) {
         for item in items {
             match item {
                 TopDecl::Group(g) => groups.push(g),
                 TopDecl::Role(_) => {}
-                TopDecl::Locus(l) if l.is_main => {
-                    *has_main = true;
-                    for m in &l.members {
-                        if let LocusMember::Claims(cb) = m {
-                            claims.extend(cb.entries.iter().cloned());
-                            adopts.extend(cb.adopts.iter().cloned());
-                        }
-                    }
-                }
                 TopDecl::Claims(cb) => {
                     top_blocks.push(cb);
                     lib_adopts.extend(cb.adopts.iter().cloned());
                 }
                 TopDecl::Constitution(cd) => consts.push(cd),
-                TopDecl::Module(m) => walk_items(
-                    &m.items,
-                    groups,
-                    claims,
-                    top_blocks,
-                    has_main,
-                    consts,
-                    adopts,
-                    lib_adopts,
-                ),
+                TopDecl::Module(m) => walk_items(&m.items, groups, top_blocks, consts, lib_adopts),
                 _ => {}
             }
         }
     }
     let mut top_blocks: Vec<&ClaimsBlock> = Vec::new();
-    let mut has_main = false;
     let mut consts: Vec<&ConstitutionDecl> = Vec::new();
     let mut adopts: Vec<Ident> = Vec::new();
     let mut lib_adopts: Vec<Ident> = Vec::new();
     for p in programs {
-        walk_items(
-            &p.items,
-            &mut group_decls,
-            &mut claims,
-            &mut top_blocks,
-            &mut has_main,
-            &mut consts,
-            &mut adopts,
-            &mut lib_adopts,
-        );
+        walk_items(&p.items, &mut group_decls, &mut top_blocks, &mut consts, &mut lib_adopts);
+    }
+    // The world tier is the entry row's (`EntryRow::world`): every
+    // `main locus` the bundle declares states world law, an imported
+    // application's included (GH #733), in the witness's order, which is
+    // this walk's.
+    let entry = crate::entry::entry_row_in(programs);
+    let has_main = entry.closes_a_world();
+    for m in entry.world() {
+        let Some((at, path)) = m.index_in() else { continue };
+        let Some(l) = hale_syntax::ast::locus_at(&programs[at].items, path) else { continue };
+        for member in &l.members {
+            if let LocusMember::Claims(cb) = member {
+                claims.extend(cb.entries.iter().cloned());
+                adopts.extend(cb.adopts.iter().cloned());
+            }
+        }
     }
     // GH #409: expand adopted constitutions into this main's claim
     // set. Authoring is shared, evaluation is not — every clause is

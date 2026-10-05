@@ -567,10 +567,10 @@ fn check_numbered_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
-    let ownership = crate::bundle_ownership_graph(bundle, top, &placement);
+    let ownership = crate::bundle_ownership_graph(bundle, top, &placement, &entry);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
-    let bus = crate::bundle_bus_graph(bundle, top, &bindings, &placement);
+    let bus = crate::bundle_bus_graph(bundle, top, &bindings, &placement, &entry);
     let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
@@ -867,10 +867,10 @@ pub fn check_bundle_by_declaration(
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.
-    check_pool_affinity(bundle, &mut diags);
+    check_pool_affinity(bundle, inputs.entry, &mut diags);
     // #334 / #333: F.31 above reasons per field DECLARATION, so it
     // cannot see one instance aliased into two towers.
-    check_instance_aliasing(bundle, inputs.forms, &mut diags);
+    check_instance_aliasing(bundle, inputs.placement, inputs.forms, &mut diags);
     // F.31-followup (2026-05-28): the nested-long-running-child
     // antipattern. A non-main locus whose `run()` body has work
     // to do, holding a params field of a locus type whose own
@@ -940,6 +940,7 @@ pub fn check_bundle_by_declaration(
         // for the certificate evidence.
         let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
+            inputs.entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)),
             inputs.alloc_summary,
             inputs.forms,
         );
@@ -2975,73 +2976,62 @@ impl PoolId {
 /// * Two entries naming ONE pool with two different affinities is a
 ///   contradiction: the pool has one worker thread. An entry that
 ///   names the pool without an affinity is compatible with any.
-fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
-    // GH #825: `main locus` inside a `module { … }` declares the same
+fn check_pool_affinity(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow, diags: &mut Vec<Diag>) {
+    // Every `main locus` the bundle declares, the entry row's witness:
+    // each declaration's own block is validated, deployed or not. GH
+    // #825: a `main locus` inside a `module { … }` declares the same
     // placement block, and an affinity with no named pool is just as
     // meaningless there.
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            let TopDecl::Locus(l) = item else { return };
-            if !l.is_main {
-                return;
-            }
-            let mut declared: BTreeMap<String, (PinAffinity, Span)> =
-                BTreeMap::new();
-            for m in &l.members {
-                let LocusMember::Placement(pb) = m else { continue };
-                for entry in &pb.entries {
-                    let PlacementSpec::Cooperative { pool, affinity } =
-                        &entry.spec
-                    else {
-                        continue;
-                    };
-                    if matches!(affinity, PinAffinity::Any) {
+    for l in entry.mains.iter().filter_map(|m| m.decl(bundle)) {
+        let mut declared: BTreeMap<String, (PinAffinity, Span)> =
+            BTreeMap::new();
+        for m in &l.members {
+            let LocusMember::Placement(pb) = m else { continue };
+            for pe in &pb.entries {
+                let PlacementSpec::Cooperative { pool, affinity } = &pe.spec
+                else {
+                    continue;
+                };
+                if matches!(affinity, PinAffinity::Any) {
+                    continue;
+                }
+                let pool_name = match pool {
+                    Some(p) if p.name != "main" => p.name.clone(),
+                    _ => {
+                        diags.push(Diag::ty(
+                            pe.span,
+                            "cooperative affinity needs a named pool \
+                             (`cooperative(pool = X, cores = ...)`) — \
+                             the main pool is the program's main \
+                             thread, whose affinity belongs to the \
+                             operator, not a placement entry",
+                        ));
                         continue;
                     }
-                    let pool_name = match pool {
-                        Some(p) if p.name != "main" => p.name.clone(),
-                        _ => {
-                            diags.push(Diag::ty(
-                                entry.span,
-                                "cooperative affinity needs a named pool \
-                                 (`cooperative(pool = X, cores = ...)`) — \
-                                 the main pool is the program's main \
-                                 thread, whose affinity belongs to the \
-                                 operator, not a placement entry",
-                            ));
-                            continue;
-                        }
-                    };
-                    match declared.get(&pool_name) {
-                        None => {
-                            declared.insert(
-                                pool_name,
-                                (affinity.clone(), entry.span),
-                            );
-                        }
-                        Some((prev, _)) if prev == affinity => {}
-                        Some((_, prev_span)) => {
-                            diags.push(
-                                Diag::ty(
-                                    entry.span,
-                                    format!(
-                                        "pool `{}` is given two different \
-                                         affinities — a pool has ONE worker \
-                                         thread; declare the affinity on \
-                                         one entry (the others inherit it)",
-                                        pool_name
-                                    ),
-                                )
-                                .with_related(
-                                    *prev_span,
-                                    "first affinity declared here",
+                };
+                match declared.get(&pool_name) {
+                    None => {
+                        declared.insert(pool_name, (affinity.clone(), pe.span));
+                    }
+                    Some((prev, _)) if prev == affinity => {}
+                    Some((_, prev_span)) => {
+                        diags.push(
+                            Diag::ty(
+                                pe.span,
+                                format!(
+                                    "pool `{}` is given two different \
+                                     affinities — a pool has ONE worker \
+                                     thread; declare the affinity on \
+                                     one entry (the others inherit it)",
+                                    pool_name
                                 ),
-                            );
-                        }
+                            )
+                            .with_related(*prev_span, "first affinity declared here"),
+                        );
                     }
                 }
             }
-        });
+        }
     }
 }
 
@@ -3165,25 +3155,6 @@ fn check_placement_single_thread(
                 }
             }
         });
-    }
-}
-
-fn placement_spec_to_pool(
-    spec: &hale_syntax::ast::PlacementSpec,
-    field_name: &str,
-) -> PoolId {
-    use hale_syntax::ast::PlacementSpec;
-    match spec {
-        PlacementSpec::Cooperative { pool, .. } => {
-            let name = pool
-                .as_ref()
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "main".to_string());
-            PoolId::Cooperative(name)
-        }
-        PlacementSpec::Pinned { .. } => {
-            PoolId::Pinned(field_name.to_string())
-        }
     }
 }
 
@@ -4610,7 +4581,7 @@ fn check_main_and_bindings<'e>(
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    check_api_binding(&programs_vec, diags);
+    check_api_binding(&programs_vec, entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)), diags);
     check_api_roles(&programs_vec, &top.topics, bindings, diags);
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
@@ -4630,9 +4601,10 @@ fn check_main_and_bindings<'e>(
 /// GH #1106: the `api:` entry. The knobs the entry must carry, the
 /// one-replier rule, and what the api leaves out. The surface is the
 /// one `api_gen` emitted from, so a warning here names exactly what
-/// the binding will not serve.
-fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
-    let Some(surface) = hale_syntax::api_gen::api_surface(programs) else {
+/// the binding will not serve. `root` is the entry row's lowering root,
+/// the `main locus` the binding was generated into.
+fn check_api_binding(programs: &[&Program], root: Option<&LocusDecl>, diags: &mut Vec<Diag>) {
+    let Some(surface) = hale_syntax::api_gen::api_surface(programs, root) else {
         return;
     };
     let b = &surface.binding;
@@ -5253,20 +5225,11 @@ fn check_bus_graph(
     // GH #1106: an api binding makes every subscribed topic a command a
     // caller may publish and every published topic a stream a caller
     // may subscribe, so neither half of this lint applies under one.
-    let api_bound = bundle.programs.values().any(|p| {
-        let mut found = false;
-        walk_decls(&p.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                if l.is_main
-                    && l.members.iter().any(|m| {
-                        matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())
-                    })
-                {
-                    found = true;
-                }
-            }
-        });
-        found
+    // The binding that binds is the entry's: an imported `main`'s api
+    // entry is inert (GH #1104 piece 5), and a module-nested `main` is
+    // not the entry (F.40 phase 3, E0).
+    let api_bound = entry.entry().and_then(|m| m.decl(bundle)).is_some_and(|l| {
+        l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some()))
     });
     let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
         api_bound
@@ -16151,43 +16114,16 @@ fn lit_ty(lit: &Literal) -> Ty {
 /// creator's pool, so they are not the shape this protects.
 fn check_instance_aliasing(
     bundle: &Bundle,
+    placement: &crate::placement::PlacementTable,
     forms: &crate::form_rows::FormRows,
     diags: &mut Vec<Diag>,
 ) {
-    // GH #825: the main locus, and the aliased locus type whose
-    // state this rule asks about, are both found by name — a module
-    // changes neither.
-    let mut main: Option<&LocusDecl> = None;
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                if l.is_main {
-                    main = Some(l);
-                }
-            }
-        });
-    }
-    let Some(main) = main else { return };
-
-    let placement: BTreeMap<String, PoolId> = main
-        .members
-        .iter()
-        .find_map(|m| match m {
-            LocusMember::Placement(pb) => Some(pb),
-            _ => None,
-        })
-        .map(|pb| {
-            pb.entries
-                .iter()
-                .map(|e| {
-                    (
-                        e.field.name.clone(),
-                        placement_spec_to_pool(&e.spec, &e.field.name),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // The root lowering deploys, and where each of its params fields
+    // runs: the placement table's (F.40 phase 3). The aliased locus
+    // type whose state this rule asks about is found by name.
+    let Some(root) = placement.root.as_ref() else { return };
+    let Some(main) = root.decl.decl(bundle) else { return };
+    let placement = root_field_domains(placement);
 
     let Some(params) = main.members.iter().find_map(|m| match m {
         LocusMember::Params(pb) => Some(pb),
@@ -16278,6 +16214,39 @@ fn check_instance_aliasing(
             ));
         }
     }
+}
+
+/// Where each params field of the deployed root runs, by the placement
+/// table's domain of its rows: main and a pool by name, a pinned anchor
+/// by the root field that anchors it (one per field, whatever its
+/// replicas or alternatives). A field with no row (no locus is built
+/// there) is absent: it runs where the root does.
+fn root_field_domains(placement: &crate::placement::PlacementTable) -> BTreeMap<String, PoolId> {
+    use crate::placement::{DomainKind, InstanceKey};
+    let mut out = BTreeMap::new();
+    let Some(root) = placement.root.as_ref() else { return out };
+    let root_template = |k: &InstanceKey| {
+        placement
+            .instances
+            .get(&InstanceKey { origin: k.origin, path: Vec::new(), replica: None })
+            .and_then(|r| r.realizes.as_ref())
+            .is_some_and(|d| d.site == root.realizes.site)
+    };
+    for (k, r) in &placement.instances {
+        if k.path.len() != 1 || !root_template(k) {
+            continue;
+        }
+        let field = &k.path[0].field;
+        let pool = match &placement.domain(r.domain).kind {
+            DomainKind::Main => PoolId::Cooperative("main".to_string()),
+            DomainKind::Pool { name, .. } => PoolId::Cooperative(name.clone()),
+            DomainKind::Pinned { anchor, .. } => {
+                PoolId::Pinned(anchor.path.first().map_or_else(|| field.clone(), |s| s.field.clone()))
+            }
+        };
+        out.entry(field.clone()).or_insert(pool);
+    }
+    out
 }
 
 /// `self.<field>` references appearing as values inside a locus

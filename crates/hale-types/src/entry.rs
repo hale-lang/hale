@@ -60,16 +60,15 @@ impl MainLocus {
     /// The declaration this row names, in the bundle it was read from.
     pub fn decl<'b>(&self, bundle: &Bundle<'b>) -> Option<&'b LocusDecl> {
         let (program, path) = &self.at;
-        let mut items: &'b [TopDecl] = &bundle.programs.get(program)?.items;
-        let (last, modules) = path.split_last()?;
-        for i in modules {
-            let TopDecl::Module(m) = items.get(*i)? else { return None };
-            items = &m.items;
-        }
-        match items.get(*last)? {
-            TopDecl::Locus(l) => Some(l),
-            _ => None,
-        }
+        hale_syntax::ast::locus_at(&bundle.programs.get(program)?.items, path)
+    }
+
+    /// Where this declaration is in the programs a row built by
+    /// [`entry_row_in`] read: the program's index and the declaration's
+    /// path in it (for [`hale_syntax::ast::locus_at`]). `None` for a
+    /// bundle's row, whose programs are named by path.
+    pub fn index_in(&self) -> Option<(usize, &[usize])> {
+        Some((self.at.0.parse().ok()?, &self.at.1))
     }
 
     /// Whether the decisions let this declaration be the entry: the
@@ -137,6 +136,47 @@ impl EntryRow {
     pub fn own(&self) -> impl Iterator<Item = &MainLocus> {
         self.mains.iter().filter(|m| !m.imported)
     }
+
+    /// The world tier: the `main locus` declarations whose inline
+    /// `claims { }` are the bundle's world law. Every one the bundle
+    /// declares, in the witness's order: the entry's, a module-nested
+    /// one's, and an imported application's, whose inline claims travel
+    /// with it and are re-evaluated in the closing world (GH #733), with
+    /// the importer's own `main locus` beside it or without one. The
+    /// world is wider than the entry on purpose: decisions 1 and 2 say
+    /// which declaration the seed RUNS, and an application's law does
+    /// not stop binding because another seed runs it.
+    pub fn world(&self) -> impl Iterator<Item = &MainLocus> {
+        self.mains.iter()
+    }
+
+    /// Whether the bundle closes a world: some `main locus` states world
+    /// law in it, so a top-level `claims { }` block of the closing seed's
+    /// own is refused (the library tier is for a seed that closes none).
+    pub fn closes_a_world(&self) -> bool {
+        !self.mains.is_empty()
+    }
+}
+
+/// The row of programs no snapshot has minted yet, each program named by
+/// its index in `programs`, so [`MainLocus::index_in`] says where a
+/// declaration is. The producer's row, over the programs as they stand:
+/// what lands in the entry, or in the root lowering deploys, before the
+/// mint writes there (an environment's constitutions, `--api`'s entry,
+/// GH #1106's generated binding), and a reader handed programs and no
+/// bundle (the roles `--matrix` maps) reads there. An injection adds
+/// members to a locus and top-level items after
+/// the existing ones, never a `main locus` or a module, so what it finds
+/// is what the snapshot's row names after the mint.
+pub fn entry_row_in(programs: &[&hale_syntax::ast::Program]) -> EntryRow {
+    entry_row(&Bundle::new(programs.iter().enumerate().map(|(i, p)| (format!("{i:08}"), *p)).collect()))
+}
+
+/// The lowering root's declaration in `programs`, by [`entry_row_in`].
+pub fn lowering_root_decl<'p>(programs: &[&'p hale_syntax::ast::Program]) -> Option<&'p LocusDecl> {
+    let row = entry_row_in(programs);
+    let (at, path) = row.lowering_root.as_ref()?.index_in()?;
+    hale_syntax::ast::locus_at(&programs[at].items, path)
 }
 
 /// The `entrypoint` family's producer: one walk over the bundle's

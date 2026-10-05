@@ -198,6 +198,37 @@ impl<'a> Iterator for FlatDecls<'a> {
     }
 }
 
+/// The locus declaration at `path` in `items`: the item index at each
+/// depth, every index but the last naming a `module { }`. How a row that
+/// names a declaration by where it is (the entry row's) is followed
+/// back to it.
+pub fn locus_at<'a>(items: &'a [TopDecl], path: &[usize]) -> Option<&'a LocusDecl> {
+    let (last, modules) = path.split_last()?;
+    let mut items = items;
+    for i in modules {
+        let TopDecl::Module(m) = items.get(*i)? else { return None };
+        items = &m.items;
+    }
+    match items.get(*last)? {
+        TopDecl::Locus(l) => Some(l),
+        _ => None,
+    }
+}
+
+/// [`locus_at`], for a pass that writes into the declaration.
+pub fn locus_at_mut<'a>(items: &'a mut [TopDecl], path: &[usize]) -> Option<&'a mut LocusDecl> {
+    let (last, modules) = path.split_last()?;
+    let mut items = items;
+    for i in modules {
+        let TopDecl::Module(m) = items.get_mut(*i)? else { return None };
+        items = &mut m.items;
+    }
+    match items.get_mut(*last)? {
+        TopDecl::Locus(l) => Some(l),
+        _ => None,
+    }
+}
+
 /// [`flat_decls`] for a pass that REWRITES declarations in place.
 ///
 /// The module node is descended into rather than handed to `f`,

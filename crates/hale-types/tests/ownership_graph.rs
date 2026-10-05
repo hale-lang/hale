@@ -34,7 +34,7 @@ fn graph(src: &str) -> OwnershipGraph {
     // same resolved scope.
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
-    build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top))
+    build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top), &hale_types::entry::entry_row(&bundle))
 }
 
 /// The single site instantiating `child` inside `enclosing`.
@@ -717,7 +717,7 @@ fn corpus_graph(project: &str) -> Option<OwnershipGraph> {
     let bundle = Bundle::new(bundle_programs);
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
-    Some(build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top)))
+    Some(build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top), &hale_types::entry::entry_row(&bundle)))
 }
 
 #[test]
@@ -916,7 +916,7 @@ fn qualified_records_and_unknown_paths_are_not_locus_births() {
     let mut bundle = Bundle::new(programs);
     bundle.import_renames = renames;
     let (top, _) = build_top_scope(&bundle);
-    let g = build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top));
+    let g = build_ownership_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top), &hale_types::entry::entry_row(&bundle));
     assert!(g.sites.is_empty(), "{:?}", g.sites);
     assert_eq!(g.free_fn_sites.len(), 1, "only the actual App birth remains");
 }
