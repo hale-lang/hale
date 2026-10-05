@@ -1743,6 +1743,13 @@ impl Snapshot {
                 // Lowering reads which `main locus` it deploys from the
                 // entry row (F.40 phase 3, L4).
                 let entry = self.demand_entry().map_err(Clone::clone)?.clone();
+                // The dispatch plan's domains are the arrangement's, the
+                // projection the model's arrangement rows are made of, over
+                // the same programs, table and graph (F.40 phase 3, C5).
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                let arrangement =
+                    hale_types::arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
                 self.count("lowering_view");
                 let mut view = hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1758,6 +1765,7 @@ impl Snapshot {
                     &scope.top,
                     bus,
                     ownership,
+                    &arrangement.domains(),
                     class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;
