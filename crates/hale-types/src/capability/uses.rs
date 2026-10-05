@@ -447,7 +447,10 @@ impl<'a> Graph<'a> {
     /// additions), and a capability, or the hole, once a node holds it is
     /// never replaced. That is how the fixpoint has always run, and the
     /// worklist keeps it exactly: it runs the same passes in the same
-    /// order and skips only visits that change nothing.
+    /// order and skips only visits that change nothing. (When it replaced
+    /// the pass loop, a differential held the two equal over the corpus,
+    /// every requirement row and every use; a worklist that defers each
+    /// revisit to the next pass is not equal there.)
     ///
     /// **Why a skipped visit changes nothing.** After a node reads a
     /// callee it holds every capability the callee held then, and a hole
@@ -530,37 +533,6 @@ impl<'a> Graph<'a> {
             std::mem::swap(&mut due, &mut next);
         }
     }
-
-    /// The pass-by-pass fixpoint [`Graph::requirements`] replaced, kept
-    /// for the differential that holds the two equal (F.40 phase 4, Q2)
-    /// and removed once it has run.
-    fn requirements_by_passes(&self) -> BTreeMap<FnKey, Req> {
-        let (mut req, out) = self.direct();
-        loop {
-            let mut changed = false;
-            for (key, edges) in &out {
-                for (callee, links) in edges {
-                    let Some(from) = req.get(callee).cloned() else { continue };
-                    let r = req.get_mut(key).expect("every node has a row");
-                    for (cap, chain) in from.caps {
-                        if !r.caps.contains_key(&cap) {
-                            r.caps.insert(cap, links.iter().cloned().chain(chain).collect());
-                            changed = true;
-                        }
-                    }
-                    if r.hole.is_none() {
-                        if let Some((chain, why)) = from.hole {
-                            r.hole = Some((links.iter().cloned().chain(chain).collect(), why));
-                            changed = true;
-                        }
-                    }
-                }
-            }
-            if !changed {
-                return req;
-            }
-        }
-    }
 }
 
 /// What one call edge asks for.
@@ -590,35 +562,11 @@ fn merged(name: &str) -> bool {
 /// The use rows of the programs a bundle holds, over the bundle's
 /// allocation summary (`target_capability`'s producer for uses).
 pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
-    uses_over(bundle, summary, false)
-}
-
-/// The use rows over the pass-by-pass fixpoint the worklist replaced
-/// (`Graph::requirements_by_passes`): the reference of the differential
-/// that holds the two equal over the corpus (F.40 phase 4, Q2), removed
-/// once it has run.
-#[doc(hidden)]
-pub fn capability_uses_by_passes(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
-    uses_over(bundle, summary, true)
-}
-
-/// Both fixpoints' rows for every node of the graph, each rendered
-/// (`Debug`), in key order: what the differential compares beside the
-/// use rows (F.40 phase 4, Q2), removed with the reference.
-#[doc(hidden)]
-pub fn requirement_rows_both_ways(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> (Vec<String>, Vec<String>) {
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let g = Graph::new(summary, &bundle.import_renames, &programs);
-    let render = |req: BTreeMap<FnKey, Req>| req.iter().map(|(k, r)| format!("{k:?} {r:?}")).collect();
-    (render(g.requirements()), render(g.requirements_by_passes()))
-}
-
-fn uses_over(bundle: &crate::Bundle<'_>, summary: &AllocSummary, by_passes: bool) -> CapabilityUses {
     // The bundle's authoritative summary already includes module-nested
     // bodies and resolved function-value alternatives. Read those rows.
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let g = Graph::new(summary, &bundle.import_renames, &programs);
-    let req = if by_passes { g.requirements_by_passes() } else { g.requirements() };
+    let req = g.requirements();
     let mut uses = Vec::new();
 
     // ---- operational uses, in the program's own bodies.
