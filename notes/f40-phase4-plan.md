@@ -17,7 +17,7 @@
   - `api_surface` · `generate_api`: codegen stopped running it in phase 2 (e24fbf7e3). It has one production call site, the desugar sequence, and the snapshot's configuration already carries the api entry, the roles and the environment and digests all three. What is left of the row is that `hale check` never carries an environment's roles.
   - `claims` · `validate_law_account`: admission does not re-judge. It never evaluates a law over a model. It decodes the artifact's law rows with a private copy of the law vocabulary, re-renders their forms with a private renderer, re-aggregates the stated verdicts, and refuses an artifact whose sections disagree. That refusal is a documented contract (`spec/verification.md`, the tamper tests), so the row cannot be closed as its text says without weakening it (§8, decision 2).
   - `claims` · the matrix's `constitution_identities`: it re-runs the loader and law selection, not the scope or the bus graph.
-  
+
   And one count the phase-3 plan carried is wrong: the harness adapter `build_executable_with_options` has 470 call sites in 350 test files, not 330, and `build_executable` no longer exists.
 - **Process, from the phase-3 close:** four CI failures came from a pin or a seam count a pane's local run had not covered (the cell-read inventory, the topology baseline, the placement golden, the registry's seam counts); every one is now a step of the pane's standing footer. Two regressions (the build of `dna/host` at 52.9 s; the instantiation benches at 1.6×) lived for days because performance was measured only at the exit; §5 proposes deterministic standing checks, and §8 asks for the decision.
 
