@@ -2510,8 +2510,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // instance table for its parent lookup (post-birth()
         // placement rendered every parent as root). Parent = the
         // OUTER context (the locus/instantiation that created us),
-        // null/root from `fn main`.
-        {
+        // null/root from `fn main`. None where the target has no
+        // observation (wasm32): no probe.
+        if let Some(obs_live) = self.obs_live_check()? {
             // #328: branch-gate on `lotus_obs_live`, the same
             // dormant-cost discipline the bus publish/deliver probes
             // already use. Unconditional, this opaque call cost ~0.85ns
@@ -2520,7 +2521,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // because LLVM cannot see through it, so it must assume the
             // call clobbers memory and stops optimizing across the
             // whole instantiation path.
-            let obs_live = self.obs_live_check()?;
             let current_fn = self
                 .builder
                 .get_insert_block()

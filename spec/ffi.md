@@ -570,17 +570,19 @@ from its writers (the libc output functions `println` lowers to,
 stubs any other with `() => 0`. The runtime's thread, pool, mailbox and
 transport paths a wasm32 module cannot run (the target refuses
 `pinned`, every pool but `main` and every transport binding) are
-compiled out of it, so a module imports the loader's writers and the
-program's declared `@ffi("js")` names, and today these as well:
+compiled out of it, the runtime's own `fprintf(stderr, …)` messages
+are no-ops there, and codegen emits no observation probe for a target
+that is neither recorded nor replayed. So a module imports the loader's
+writers and the program's declared `@ffi("js")` names, and today two
+more, from generated code:
 
-- `dprintf`, `fflush`: the report of a violation no handler absorbs,
-  which the generated loader drops;
-- `fwrite`: the runtime's out-of-memory diagnostics;
-- `pthread_cond_broadcast`: the wake at a subscriber's readiness, which
-  has no waiter on wasm32;
-- `lotus_obs_locus_birth`, `lotus_obs_locus_dissolve`,
-  `lotus_obs_note_publisher`: observation probes, which do not run on
-  wasm32.
+- `dprintf`: what `eprint` and `eprintln` lower to, and the report of a
+  violation no handler absorbs;
+- `fflush`: the flush of stdout before that report.
+
+The loader has no stderr writer, so it stubs both with `() => 0`: on
+wasm32 `eprintln` writes nothing, and an unabsorbed violation's message
+is dropped before its `exit(1)` traps the module.
 
 An `@ffi("c")` name no `[ffi] csrc` defines is imported too, and runs as
 `() => 0` under the generated loader. A host that instantiates the
