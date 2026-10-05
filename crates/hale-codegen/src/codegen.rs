@@ -25934,9 +25934,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// Statement-position dispatcher for `std::*` paths. The leading
-    /// `"std"` segment is included in `segs` for symmetry with the
-    /// expression-position dispatcher.
+    /// Statement-position dispatcher for `std::*` paths: the
+    /// expression-position dispatcher's call with its value dropped.
+    /// It keeps only what a statement answers differently: the paths
+    /// the expression form has no arm for (Unit-only primitives, and
+    /// the assertions, which check for a recorded failure after the
+    /// call), two Hale-body arms whose expression twins refuse a body
+    /// that returns no value, and its own fallibility refusal. The
+    /// leading `"std"` segment is included in `segs` for symmetry with
+    /// the expression-position dispatcher.
     fn lower_stdlib_path_call(
         &mut self,
         segs: &[&str],
@@ -25944,169 +25950,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
         match segs {
-            // Statement-position calls that have a useful return
-            // value still go through the expression form; we drop
-            // the result.
-            ["std", "process", "pid"] => {
-                let _ = self.lower_std_process_pid(args)?;
-                Ok(())
-            }
-            ["std", "process", "uid"] => {
-                let _ = self.lower_std_process_uid(args)?;
-                Ok(())
-            }
-            ["std", "process", "rss_bytes"] => {
-                let _ = self.lower_std_process_rss_bytes(args)?;
-                Ok(())
-            }
-            ["std", "term", "is_tty"] => {
-                let _ = self.lower_std_term_is_tty(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "stdout", "write_bytes"] => {
-                let _ = self.lower_std_io_stdout_write_bytes(args, scope)?;
-                Ok(())
-            }
-            ["std", "term", "__raw_enable"] => {
-                let _ = self.lower_std_term_raw_toggle(args, "lotus_term_raw_enable")?;
-                Ok(())
-            }
-            ["std", "term", "__raw_disable"] => {
-                let _ = self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")?;
-                Ok(())
-            }
-            ["std", "term", "__size_packed"] => {
-                let _ = self.lower_std_term_size_packed(args)?;
-                Ok(())
-            }
-            ["std", "io", "stdin", "read_byte"] => {
-                let _ = self.lower_std_io_stdin_read_byte(args, scope)?;
-                Ok(())
-            }
-            ["std", "process", "dump_arena_residency"] => {
-                let _ = self.lower_std_process_dump_arena_residency(args)?;
-                Ok(())
-            }
-            ["std", "process", "dump_pool_residency"] => {
-                let _ = self.lower_std_process_dump_pool_residency(args)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__listen_socket"] => {
-                let _ = self.lower_std_io_tcp_listen_socket(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__accept_one"] => {
-                let _ = self.lower_std_io_tcp_accept_one(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__connect"] => {
-                let _ = self.lower_std_io_tcp_connect(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__close_fd"]
-            | ["std", "io", "tcp", "close_fd"] => {
-                let _ = self.lower_std_io_tcp_close_fd(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__shutdown_listen_socket"] => {
-                let _ = self.lower_std_io_tcp_shutdown_listen_socket(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__set_recv_timeout_ns"] => {
-                let _ = self.lower_std_io_tcp_set_recv_timeout(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "udp", "__close"]
-            | ["std", "io", "udp", "close"] => {
-                let _ = self.lower_std_io_udp_close(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "file", "__close"] => {
-                let _ = self.lower_std_io_file_close(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "file", "__at_eof"] => {
-                let _ = self.lower_std_io_file_at_eof(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "file", "__read_line"] => {
-                let _ = self.lower_std_io_file_read_line(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__send"] => {
-                let _ = self.lower_std_io_tcp_send(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__recv"] => {
-                let _ = self.lower_std_io_tcp_recv(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "read_bytes"] => {
-                let _ = self.lower_std_io_fs_read_bytes(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "__send_bytes"] => {
-                let _ = self.lower_std_io_tcp_send_bytes(args, scope)?;
-                Ok(())
-            }
-            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
-            // Statement position is unusual for these (the values
-            // are normally bound), but we wire them so a discarded
-            // call doesn't error.
-            ["std", "io", "tcp", "__recv_bytes"] => {
-                let _ = self.lower_std_io_tcp_recv_bytes(args, scope)?;
-                Ok(())
-            }
-            // Phase 1: caller-provided destination recv_into.
-            // Returns Int: > 0 bytes appended, 0 peer closed,
-            // -1 error. Non-fallible — error surfaces via the
-            // return value (mirrors POSIX read semantics).
-            ["std", "io", "tcp", "recv_into"] => {
-                let _ = self.lower_std_io_tcp_recv_into(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tcp", "recv_stamped_into"] => {
-                let _ = self.lower_std_io_tcp_recv_stamped_into(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tls", "recv_into"] => {
-                let _ = self.lower_std_io_tls_recv_into(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tls", "recv_stamped_into"] => {
-                let _ = self.lower_recv_into_common(
-                    args, scope,
-                    "lotus_tls_recv_stamped_into",
-                    "std::io::tls::recv_stamped_into",
-                )?;
-                Ok(())
-            }
-            ["std", "io", "udp", "recv_into"] => {
-                let _ = self.lower_std_io_udp_recv_into(args, scope)?;
-                Ok(())
-            }
-            // TLS substrate — same statement-position wiring as tcp.
-            ["std", "io", "tls", "send_bytes"] => {
-                let _ = self.lower_std_io_tls_send_bytes(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tls", "recv_bytes"] => {
-                let _ = self.lower_std_io_tls_recv_bytes(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "tls", "close"] => {
-                let _ = self.lower_std_io_tls_close(args, scope)?;
-                Ok(())
-            }
-            // m105: adapter-driven inbound dispatch. Called by an
-            // adapter locus's `run` method (or any code receiving
-            // wire bytes for a bus-bound subject) to fan the
-            // payload into local subscribers via the registered
-            // deserialize fn.
-            ["std", "bus", "__local_dispatch"] => {
-                let _ = self.lower_std_bus_local_dispatch(args, scope)?;
-                Ok(())
-            }
             // GH #244: SPSC observation-ring primitives
             // (statement position; emit/init/note_drop/set_tag).
             ["std", "ring", "__spsc_init"] => {
@@ -26161,336 +26004,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bus_binding_fail(args, scope)?;
                 Ok(())
             }
-            ["std", "str", "from_bytes"] => {
-                let _ = self.lower_std_str_from_bytes(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "from_string"] => {
-                let _ = self.lower_std_bytes_from_string(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "at"] => {
-                let _ = self.lower_std_bytes_at(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "find_byte"] => {
-                let _ = self.lower_std_bytes_find_byte(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "mirror", op] => {
-                let _ = self.lower_std_io_mirror(op, args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__xor_mask_into"] => {
-                let _ = self.lower_std_bytes_builder_xor_mask_into(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "slice"] => {
-                let _ = self.lower_std_bytes_slice(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "from_int"] => {
-                let _ = self.lower_std_bytes_from_int(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "concat"] => {
-                let _ = self.lower_std_bytes_concat(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "sha1"] => {
-                let _ = self.lower_std_crypto_sha1(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "sha256"] => {
-                let _ = self.lower_std_crypto_sha256(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "hmac_sha256"] => {
-                let _ = self.lower_std_crypto_hmac_sha256(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "sha512"] => {
-                let _ = self.lower_std_crypto_sha512(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "hmac_sha512"] => {
-                let _ = self.lower_std_crypto_hmac_sha512(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "crc32"] => {
-                let _ = self.lower_std_crypto_crc32(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "ecdsa_p256_sign"] => {
-                let _ = self.lower_std_crypto_ecdsa_p256_sign(args, scope)?;
-                Ok(())
-            }
-            ["std", "crypto", "ecdsa_p256_verify"] => {
-                let _ = self.lower_std_crypto_ecdsa_p256_verify(args, scope)?;
-                Ok(())
-            }
-            ["std", "text", "base64", "encode"] => {
-                let _ = self.lower_std_text_base64_encode(args, scope)?;
-                Ok(())
-            }
-            ["std", "text", "base64", "decode"] => {
-                let _ = self.lower_std_text_base64_decode(args, scope)?;
-                Ok(())
-            }
-            ["std", "text", "base64", "url_encode"] => {
-                let _ = self.lower_std_text_base64_url_encode(args, scope)?;
-                Ok(())
-            }
             ["std", "rand", "seed_from_time"] => {
                 self.lower_std_rand_seed_from_time(args)?;
-                Ok(())
-            }
-            ["std", "rand", "next_int"] => {
-                let _ = self.lower_std_rand_next_int(args, scope)?;
-                Ok(())
-            }
-            // Phase 2e: list_dir index API.
-            ["std", "io", "fs", "list_dir_count"] => {
-                let _ = self.lower_std_io_fs_list_dir_count(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "list_dir_at"] => {
-                let _ = self.lower_std_io_fs_list_dir_at(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "read_file"] => {
-                let _ = self.lower_std_io_fs_read_file(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "write_file"] => {
-                let _ = self.lower_std_io_fs_write_file(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "write_file_append"] => {
-                let _ = self.lower_std_io_fs_write_file_append(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "mkdir"] => {
-                let _ = self.lower_std_io_fs_mkdir(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "file_size"] => {
-                let _ = self.lower_std_io_fs_file_size(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "file_exists"] => {
-                let _ = self.lower_std_io_fs_file_exists(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "fs", "extension"] => {
-                let _ = self.lower_std_io_fs_extension(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "stdin", "read_line"] => {
-                let _ = self.lower_std_io_stdin_read_line(args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "stdin", "read_line_status"] => {
-                let _ = self.lower_std_io_stdin_read_line_status(args, scope)?;
-                Ok(())
-            }
-            ["std", "env", "args_count"] => {
-                let _ = self.lower_std_env_args_count(args)?;
-                Ok(())
-            }
-            ["std", "env", "arg"] => {
-                let _ = self.lower_std_env_arg(args, scope)?;
-                Ok(())
-            }
-            ["std", "env", "var"] => {
-                let _ = self.lower_std_env_var(args, scope)?;
-                Ok(())
-            }
-            ["std", "env", "var_exists"] => {
-                let _ = self.lower_std_env_var_exists(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "index_of"] => {
-                let _ = self.lower_std_str_index_of(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "range_eq"] => {
-                let _ = self.lower_std_str_range_eq(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "byte_at_unchecked"] => {
-                let _ = self.lower_std_str_byte_at_unchecked(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "range_copy"] => {
-                let _ = self.lower_std_str_range_copy(args, scope)?;
-                Ok(())
-            }
-            ["std", "json", "next_struct_or_quote"] => {
-                let _ = self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)?;
-                Ok(())
-            }
-            ["std", "json", "next_quote_or_bs"] => {
-                let _ = self.lower_json_scan("lotus_json_next_quote_or_bs", args, scope)?;
-                Ok(())
-            }
-            ["std", "json", "next_non_ws"] => {
-                let _ = self.lower_json_scan("lotus_json_next_non_ws", args, scope)?;
-                Ok(())
-            }
-            ["std", "io", "sockopt", name]
-                if SOCKOPT_NAMES.contains(name) =>
-            {
-                let _ = self.lower_std_io_sockopt_getter(name, args)?;
-                Ok(())
-            }
-            ["std", "io", "udp", "last_source_host"] => {
-                let _ = self.lower_std_io_udp_last_source_host(args)?;
-                Ok(())
-            }
-            ["std", "io", "udp", "last_source_port"] => {
-                let _ = self.lower_std_io_udp_last_source_port(args)?;
-                Ok(())
-            }
-            ["std", "str", "can_parse_float"] => {
-                let _ = self.lower_std_str_can_parse_float(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "lower"] => {
-                let _ = self.lower_std_str_case_fold(args, scope, "lower")?;
-                Ok(())
-            }
-            ["std", "str", "upper"] => {
-                let _ = self.lower_std_str_case_fold(args, scope, "upper")?;
-                Ok(())
-            }
-            ["std", "str", "trim"] => {
-                let _ = self.lower_std_str_case_fold(args, scope, "trim")?;
-                Ok(())
-            }
-            ["std", "str", "substring"] => {
-                let _ = self.lower_std_str_substring(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "replace"] => {
-                let _ = self.lower_std_str_replace(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "repeat"] => {
-                let _ = self.lower_std_str_repeat(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "pad_left"] => {
-                let _ = self.lower_std_str_pad(args, scope, "pad_left")?;
-                Ok(())
-            }
-            ["std", "str", "pad_right"] => {
-                let _ = self.lower_std_str_pad(args, scope, "pad_right")?;
-                Ok(())
-            }
-            // v1.x-15: string-builder primitive.
-            ["std", "str", "builder_new"] => {
-                let _ = self.lower_std_str_builder_new(args)?;
-                Ok(())
-            }
-            ["std", "str", "builder_append"] => {
-                let _ = self.lower_std_str_builder_append(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "builder_len"] => {
-                let _ = self.lower_std_str_builder_len(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "builder_finish"] => {
-                let _ = self.lower_std_str_builder_finish(args, scope)?;
-                Ok(())
-            }
-            // Internal C-primitive bridges for the BytesBuilder
-            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
-            // prefix marks these as not-for-user-code: user code
-            // constructs `std::bytes::BytesBuilder { }` and calls
-            // `.append() / .len() / .snapshot()` etc.; the locus's
-            // method bodies route through here.
-            ["std", "bytes", "builder", "__new"] => {
-                let _ = self.lower_std_bytes_builder_new(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append"] => {
-                let _ = self.lower_std_bytes_builder_append(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append_str"] => {
-                let _ = self.lower_std_bytes_builder_append_str(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__len"] => {
-                let _ = self.lower_std_bytes_builder_len(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__finish"] => {
-                let _ = self.lower_std_bytes_builder_finish(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__shift_front"] => {
-                let _ = self.lower_std_bytes_builder_shift_front(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__clear"] => {
-                let _ = self.lower_std_bytes_builder_clear(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__snapshot"] => {
-                let _ = self.lower_std_bytes_builder_snapshot(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__free"] => {
-                let _ = self.lower_std_bytes_builder_free(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__view"] => {
-                let _ = self.lower_std_bytes_builder_view(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append_slice"] => {
-                let _ = self.lower_std_bytes_builder_append_slice(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append_scalar"] => {
-                let _ = self.lower_std_bytes_builder_append_scalar(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append_f64"] => {
-                let _ = self.lower_std_bytes_builder_append_float(args, scope, false)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append_f32"] => {
-                let _ = self.lower_std_bytes_builder_append_float(args, scope, true)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__append_pad"] => {
-                let _ = self.lower_std_bytes_builder_append_pad(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "builder", "__text_view"] => {
-                let _ = self.lower_std_bytes_builder_text_view(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "__is_alloc_fail"] => {
-                let _ = self.lower_std_bytes_is_alloc_fail(args, scope)?;
-                Ok(())
-            }
-            ["std", "bytes", "clone"] => {
-                let _ = self.lower_std_bytes_clone(args, scope)?;
-                Ok(())
-            }
-            ["std", "str", "clone"] => {
-                let _ = self.lower_std_str_clone(args, scope)?;
                 Ok(())
             }
             // m84: parse_request also reachable in statement
             // position (rare — usually you keep the result), but
             // wire it for completeness so `std::http::parse_request(raw);`
-            // doesn't error.
+            // doesn't error. Not the expression arm's call: that one
+            // also refuses a body that returns no value; this drops
+            // whatever comes back.
             ["std", "http", "parse_request"] => {
                 let _ = self.lower_user_fn_call(
                     "__parse_http_request",
@@ -26519,7 +26042,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // through main's teardown where there is one.
             // m91: markdown → HTML (statement position rare, but
             // wired for completeness). The expression-position arm
-            // below is the canonical use.
+            // is the canonical use; it also refuses a body that
+            // returns no value, where this drops whatever comes back.
             ["std", "text", "md_to_html"] => {
                 let _ = self.lower_user_fn_call(
                     "__md_to_html",
@@ -26552,157 +26076,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )?;
                 self.emit_test_assert_failure_check()
             }
-            ["std", "str", "can_parse_int"] => {
-                let _ = self.lower_std_str_can_parse_int(args, scope)?;
-                Ok(())
-            }
-            // m96: std::ts::* tree-sitter substrate. All routes
-            // also have expression-position arms below; dropping
-            // the result here is fine for parse-and-discard
-            // patterns (which are unusual but legal).
-            ["std", "ts", "parse_go"] => {
-                let _ = self.lower_std_ts_parse_go(args, scope)?;
-                Ok(())
-            }
-            ["std", "ts", "root_node"] => {
-                let _ = self.lower_std_ts_int1_to_int(
-                    "lotus_ts_root_node",
-                    args,
-                    scope,
-                    "std::ts::root_node",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_kind"] => {
-                let _ = self.lower_std_ts_int1_to_string(
-                    "lotus_ts_node_kind",
-                    args,
-                    scope,
-                    "std::ts::node_kind",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_text"] => {
-                let _ = self.lower_std_ts_int1_to_string(
-                    "lotus_ts_node_text",
-                    args,
-                    scope,
-                    "std::ts::node_text",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_child_count"] => {
-                let _ = self.lower_std_ts_int1_to_int(
-                    "lotus_ts_node_child_count",
-                    args,
-                    scope,
-                    "std::ts::node_child_count",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_named_child_count"] => {
-                let _ = self.lower_std_ts_int1_to_int(
-                    "lotus_ts_node_named_child_count",
-                    args,
-                    scope,
-                    "std::ts::node_named_child_count",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_child"] => {
-                let _ = self.lower_std_ts_int2_to_int(
-                    "lotus_ts_node_child",
-                    args,
-                    scope,
-                    "std::ts::node_child",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_named_child"] => {
-                let _ = self.lower_std_ts_int2_to_int(
-                    "lotus_ts_node_named_child",
-                    args,
-                    scope,
-                    "std::ts::node_named_child",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_start_byte"] => {
-                let _ = self.lower_std_ts_int1_to_int(
-                    "lotus_ts_node_start_byte",
-                    args,
-                    scope,
-                    "std::ts::node_start_byte",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_end_byte"] => {
-                let _ = self.lower_std_ts_int1_to_int(
-                    "lotus_ts_node_end_byte",
-                    args,
-                    scope,
-                    "std::ts::node_end_byte",
-                )?;
-                Ok(())
-            }
-            ["std", "ts", "node_is_named"] => {
-                let _ = self.lower_std_ts_int1_to_int(
-                    "lotus_ts_node_is_named",
-                    args,
-                    scope,
-                    "std::ts::node_is_named",
-                )?;
-                Ok(())
-            }
             // m79: std::time::* aliases. The legacy `time::*`
             // dispatcher above still works; these route to the
             // same lower_time_* implementations under the
             // canonical `std::*` namespace.
             ["std", "time", "sleep"] => self.lower_time_sleep(args, scope),
-            ["std", "time", "monotonic"] => {
-                let _ = self.lower_time_monotonic(args)?;
-                Ok(())
-            }
-            ["std", "time", "monotonic_ns"] => {
-                let _ = self.lower_time_monotonic_ns(args)?;
-                Ok(())
-            }
-            ["std", "decimal", "to_float"] => {
-                let _ = self.lower_std_decimal_to_float(args, scope)?;
-                Ok(())
-            }
-            // C7 (pond follow-up): wall-clock seconds-since-epoch.
-            // Statement position discards the return; expression
-            // sibling lives in lower_stdlib_path_call_expr.
-            ["std", "time", "now"] => {
-                let _ = self.lower_std_time_now(args)?;
-                Ok(())
-            }
-            ["std", "time", "time_from_unix"] => {
-                let _ = self.lower_std_time_from_unix(args, scope)?;
-                Ok(())
-            }
-            // GH #607: the Time-valued surface, statement position.
-            ["std", "time", "current"] => {
-                let _ = self.lower_std_time_current(args)?;
-                Ok(())
-            }
-            ["std", "time", "iso8601"] => {
-                let _ = self.lower_std_time_iso8601(args, scope)?;
-                Ok(())
-            }
-            ["std", "time", "unix"] => {
-                let _ = self.lower_std_time_unix(args, scope)?;
-                Ok(())
-            }
-            ["std", "time", "nanos"] => {
-                let _ = self.lower_std_time_nanos(args, scope)?;
-                Ok(())
-            }
-            ["std", "time", "from_nanos"] => {
-                let _ = self.lower_std_time_from_nanos(args, scope)?;
-                Ok(())
-            }
             // m79: std::process::exit. Calls libc exit() with the
             // user-supplied code, then emits unreachable + a fresh
             // basic block so subsequent statements (dead but
@@ -26779,10 +26157,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     segs.join("::")
                 )))
             }
-            _ => Err(CodegenError::Unsupported(format!(
-                "stdlib path `{}` — not implemented",
-                segs.join("::")
-            ))),
+            // Every other path is the expression form's call, its
+            // value dropped: its arms, its refusals, and its fallback
+            // to the Hale bodies `PATH_RENAMES` names.
+            _ => {
+                let _ = self.lower_stdlib_path_call_expr(segs, args, scope)?;
+                Ok(())
+            }
         }
     }
 
@@ -27658,9 +27039,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_str_builder_finish(args, scope)
             }
             // Internal C-primitive bridges for the BytesBuilder
-            // locus (../../hale-stdlib/hl/bytes_builder.hl). See the
-            // statement-position dispatch above for the routing
-            // rationale.
+            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
+            // prefix marks these as not-for-user-code: user code
+            // constructs `std::bytes::BytesBuilder { }` and calls
+            // `.append() / .len() / .snapshot()` etc.; the locus's
+            // method bodies route through here.
             ["std", "bytes", "builder", "__new"] => {
                 self.lower_std_bytes_builder_new(args, scope)
             }
@@ -27984,9 +27367,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "can_parse_int"] => {
                 self.lower_std_str_can_parse_int(args, scope)
             }
-            // m96: std::ts::* tree-sitter substrate (expression
-            // position). See sibling arms in
-            // `lower_stdlib_path_call` for shape rationale.
+            // m96: std::ts::* tree-sitter substrate. A statement
+            // reaches these too, its value dropped, for
+            // parse-and-discard patterns (unusual but legal).
             ["std", "ts", "parse_go"] => self.lower_std_ts_parse_go(args, scope),
             ["std", "ts", "root_node"] => self.lower_std_ts_int1_to_int(
                 "lotus_ts_root_node",
@@ -28057,8 +27440,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "decimal", "to_float"] => self.lower_std_decimal_to_float(args, scope),
             ["std", "decimal", "format"] => self.lower_std_decimal_format(args, scope),
             // C7 (pond follow-up): wall-clock seconds-since-epoch
-            // as Int. Statement-position sibling lives in
-            // lower_stdlib_path_call.
+            // as Int.
             ["std", "time", "now"] => self.lower_std_time_now(args),
             ["std", "time", "time_from_unix"] => {
                 self.lower_std_time_from_unix(args, scope)
@@ -28362,8 +27744,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     // ---- m96: std::ts (tree-sitter) lowering helpers ----
     //
-    // The path-call dispatch arms (in `lower_stdlib_path_call`
-    // and `_expr`) route `std::ts::*` to these helpers. Each one
+    // The path-call dispatch arms (in `lower_stdlib_path_call_expr`,
+    // which a statement reaches too) route `std::ts::*` to these
+    // helpers. Each one
     // is a thin wrapper over a `lotus_ts_*` extern declared in
     // `declare_builtins`. Tree and node handles are i64 — 1-based
     // with 0 as the "absent / failed" sentinel so the Hale side
