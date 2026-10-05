@@ -8,6 +8,9 @@ use hale_syntax::sites::{for_each_site, SiteKind};
 use hale_types::snapshot::{mint, Origin};
 use hale_types::symbol::SourceFile;
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn parse(src: &str) -> hale_syntax::ast::Program {
     hale_syntax::parse_source(src).expect("parse")
 }
@@ -89,7 +92,7 @@ fn the_resolved_snapshot_seeds_by_the_bundle_and_names_the_stdlib() {
         len: src.len() as u32,
     }];
     let bundle_snap = mint([("main.hl", &mut p)], &sources);
-    let resolved = hale_types::resolved::resolve_program(&p, &sources, &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
+    let resolved = entries::resolve_files(&[("main.hl", src)])
         .expect("resolve");
     let snap = &resolved.snapshot;
     assert_eq!(

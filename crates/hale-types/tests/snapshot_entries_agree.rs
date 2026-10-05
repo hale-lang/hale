@@ -212,3 +212,131 @@ fn the_snapshot_entries_agree_with_the_bare_bundle_entries() {
         differences.join("\n"),
     );
 }
+
+/// `entries::resolve_files` names the file as the caller of the bare
+/// `resolve_program` did with its source table: over every program that
+/// parses, the bare entry over the program the sequence shaped (the
+/// program a verb checked, which is what it takes), handed a one-file
+/// table naming `main.hl`, and the snapshot of the text loaded at
+/// `main.hl`, hold the same seeds and the same sites in their views'
+/// snapshots. A program only the bare entry resolves is one the
+/// harness's gate refuses (target admission, the laws that replaced
+/// lowering's backstops), which the bare entry never ran, or one whose
+/// text does not load alone (it imports a file beside it); each is
+/// counted, not compared. One only the snapshot resolves is a difference.
+/// One difference is classified, and only by proof: the bare entry's
+/// callers handed it an empty placement table, which the intra-locus
+/// rewrite reads, so a site the snapshot's table keeps a send is a call
+/// in the bare view; the bare entry handed the snapshot's own table
+/// answering the snapshot's sites is that difference.
+#[test]
+fn the_snapshot_resolve_names_the_file_as_the_caller_does() {
+    let full = full();
+    let corpus = hale_corpus::all();
+    let (mut compared, mut gated, mut unloadable, mut both_refuse) = (0usize, 0usize, 0usize, 0usize);
+    let mut differences: Vec<String> = Vec::new();
+    let mut placement_only: Vec<String> = Vec::new();
+    for (index, p) in corpus.iter().enumerate() {
+        if !full && index % SAMPLE_STRIDE != 0 {
+            continue;
+        }
+        let Ok(mut program) = hale_syntax::parse_source(&p.source) else { continue };
+        let sequenced = answer(|| {
+            hale_types::desugar_sequence::desugar_before_check(
+                &mut [&mut program],
+                &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+            )
+        });
+        if !matches!(sequenced, Ok(Ok(_))) {
+            continue;
+        }
+        let sources = vec![hale_types::symbol::SourceFile {
+            id: 0,
+            path: "main.hl".into(),
+            digest: "0".into(),
+            base: 0,
+            len: p.source.len() as u32,
+        }];
+        let bare = |placement: &hale_types::placement::PlacementTable| {
+            answer(|| {
+                hale_types::resolved::resolve_program(
+                    &program,
+                    &sources,
+                    &[],
+                    None,
+                    None,
+                    &hale_types::form_rows::FormRows::default(),
+                    &hale_types::binding_rows::BindingRows::default(),
+                    placement,
+                    &hale_types::typed_bodies::TypedBodies::default(),
+                )
+                .map(|v| (v.snapshot.seeds.clone(), v.snapshot.sites.clone()))
+            })
+        };
+        let old = bare(&hale_types::placement::PlacementTable::default());
+        let new = answer(|| {
+            entries::resolve_files(&[("main.hl", p.source.as_str())])
+                .map(|v| (v.snapshot.seeds.clone(), v.snapshot.sites.clone()))
+        });
+        match (old, new) {
+            (Ok(Ok(o)), Ok(Ok(n))) => {
+                compared += 1;
+                if o.0 != n.0 {
+                    differences.push(format!("{}: seeds: old {:?} / new {:?}", p.origin, o.0, n.0));
+                } else if o.1 != n.1 {
+                    // The callers handed the bare entry an empty placement
+                    // table, and the intra-locus rewrite reads it: with no
+                    // off-owner field it rewrites every intra-locus publish
+                    // to a call. The snapshot's table keeps an off-owner
+                    // one on the bus. The bare entry handed the snapshot's
+                    // own table answering the snapshot's sites is that
+                    // difference and no other.
+                    let table = entries::load_files(
+                        &[("main.hl", p.source.as_str())],
+                        hale_frontend::snapshot::Config::harness(hale_frontend::snapshot::Target::host()),
+                    )
+                    .demand_placement()
+                    .ok()
+                    .cloned();
+                    if let Some(table) = table {
+                        if matches!(bare(&table), Ok(Ok(ref with)) if *with == n) {
+                            placement_only.push(p.origin.to_string());
+                            continue;
+                        }
+                    }
+                    let at = o.1.iter().zip(&n.1).position(|(a, b)| a != b).unwrap_or(o.1.len().min(n.1.len()));
+                    differences.push(format!(
+                        "{}: sites: {} old / {} new, first difference at {at}: old {:?} / new {:?}",
+                        p.origin,
+                        o.1.len(),
+                        n.1.len(),
+                        o.1.get(at),
+                        n.1.get(at)
+                    ));
+                }
+            }
+            (Ok(Ok(_)), Ok(Err(_))) => gated += 1,
+            (Ok(Ok(_)), Err(_)) => unloadable += 1,
+            (_, Ok(Ok(_))) => differences.push(format!("{}: only the snapshot resolves it", p.origin)),
+            _ => both_refuse += 1,
+        }
+    }
+    println!(
+        "snapshot resolve ({}): {compared} views compared, {gated} refused by the harness's gate alone, \
+         {unloadable} whose text does not load as a seed on its own (it imports a file the corpus \
+         holds beside it), {both_refuse} refused by both, {} sites the placement table accounts for, \
+         {} differences",
+        if full { "full" } else { "sample" },
+        placement_only.len(),
+        differences.len(),
+    );
+    for origin in &placement_only {
+        println!("  the placement table: {origin}");
+    }
+    assert!(
+        differences.is_empty(),
+        "{} programs resolve differently through the snapshot:\n{}",
+        differences.len(),
+        differences.join("\n"),
+    );
+}

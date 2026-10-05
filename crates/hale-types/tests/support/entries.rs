@@ -76,7 +76,10 @@
 //!   typed-body rows and the source table the old entry took as
 //!   arguments are not read: the snapshot derives its own from the
 //!   program (the callers passed empty rows, standing in for the ones
-//!   the snapshot now has).
+//!   the snapshot now has). A caller that hands the old entry a source
+//!   table names its file, and a bare program's snapshot has no file to
+//!   name: [`resolve_files`] loads the caller's text under the caller's
+//!   name instead, so the view's snapshot seeds each site by its file.
 //!
 //! The snapshot of a bundle (`bundle_snapshot`): the bundle's target and
 //! import renames on the config and the load, and its program. A bundle
@@ -213,14 +216,27 @@ pub fn resolve_program(
     }
 }
 
+/// `hale_types::resolved::resolve_program` for a caller that names its
+/// files: the seed of `files` loaded as [`load_files`] loads it, under
+/// `Config::harness(host)`, and its `demand_lowering` cloned out. The
+/// old entry seeded the view's sites by the caller's source table; a
+/// load has the table of the files it read, so each user site is seeded
+/// by the file it is in, under the caller's name for it.
+pub fn resolve_files(files: &[(&str, &str)]) -> Result<LoweringView, String> {
+    let snap = load_files(files, Config::harness(Target::host()));
+    match snap.demand_lowering() {
+        Ok(view) => Ok(view.clone()),
+        Err(blocked) => Err(render_blocked(blocked)),
+    }
+}
+
 /// A seed of in-memory files, loaded as `hale check <dir>` loads one:
 /// each `(name, text)` an overlay buffer at `SEED_DIR/name`, the
 /// directory loaded whole (`LoadMode::WholeSeed`) and shaped as `config`
 /// says. One file is a seed too.
 pub fn load_files(files: &[(&str, &str)], config: Config) -> Snapshot {
     let dir = PathBuf::from(SEED_DIR);
-    let buffers: BTreeMap<PathBuf, String> =
-        files.iter().map(|(name, text)| (dir.join(name), text.to_string())).collect();
+    let buffers = buffers(files);
     let entry = match files {
         [(name, _)] => dir.join(name),
         _ => dir,
@@ -229,6 +245,12 @@ pub fn load_files(files: &[(&str, &str)], config: Config) -> Snapshot {
         Ok(s) => s,
         Err(_) => panic!("the test's seed at {} does not load", entry.display()),
     }
+}
+
+/// Each of `files` an overlay buffer under [`SEED_DIR`].
+fn buffers(files: &[(&str, &str)]) -> BTreeMap<PathBuf, String> {
+    let dir = PathBuf::from(SEED_DIR);
+    files.iter().map(|(name, text)| (dir.join(name), text.to_string())).collect()
 }
 
 /// A seed directory on disk, loaded whole as `hale check <dir>` loads it.
