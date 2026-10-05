@@ -412,6 +412,25 @@ fn std_ring_calls_are_checked() {
 }
 
 #[test]
+fn std_bus_calls_are_checked() {
+    refused(
+        "    std::bus::__local_dispatch(\"subject\");",
+        &[("`std::bus::__local_dispatch` takes 2 arguments, got 1", "std::bus::__local_dispatch")],
+    );
+    refused(
+        "    std::bus::__local_dispatch(7, std::bytes::from_string(\"x\"));",
+        &[("`std::bus::__local_dispatch` argument 1: expected `String`, got `Int`", "7")],
+    );
+    refused(
+        "    let r = std::bus::__local_dispatch(\"s\", std::bytes::from_string(\"x\")) or 0;\n    println(r);",
+        &[(
+            "`std::bus::__local_dispatch` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::bus::__local_dispatch(\"s\", std::bytes::from_string(\"x\"))",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

@@ -498,7 +498,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bus"],
         fns: &[
-            row!("__local_dispatch", PUBLISH, _, Intrinsic(BusLocalDispatchRaw)),
+            row!("__local_dispatch", PUBLISH, [Str, Bytes] -> Int, Intrinsic(BusLocalDispatchRaw)),
             // GH #233: the unix transports' lifecycle primitives, called
             // by `__StdBusUnixConnectTransport` / `__StdBusUnixListenTransport`.
             internal!("__binding_fail", _, Intrinsic(BusBindingFailRaw)),

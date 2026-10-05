@@ -484,7 +484,7 @@ std::bus::Adapter | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false 
 std::bus::UnixTransport | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::__binding_fai | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fai` | suggest=-
 std::bus::__binding_fail | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fail` | suggest=-
-std::bus::__local_dispatch | lookup=bus@2 | locus=false | effects=publish | sig=- | parks=false | holds=false | unknown=- | suggest=__local_dispatch
+std::bus::__local_dispatch | lookup=bus@2 | locus=false | effects=publish | sig=(Str, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__local_dispatch
 std::bus::__transport_realize | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_realize` | suggest=-
 std::bus::__transport_reclaim | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_reclaim` | suggest=-
 std::bus::__transport_spawn_server | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_spawn_server` | suggest=-
