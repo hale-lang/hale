@@ -79,6 +79,7 @@ pub mod resource_budget;
 pub mod flows;
 mod fn_values;
 pub mod sealability;
+pub mod sealed_access;
 pub mod symbol;
 pub mod sync_inference;
 pub mod form_rows;

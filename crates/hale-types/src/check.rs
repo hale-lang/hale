@@ -848,6 +848,7 @@ pub fn check_bundle_by_declaration(
         locus_decls,
         user_fns,
         user_loci,
+        access_visits: Vec::new(),
         default_invocations: Vec::new(),
         generic_types,
         generic_loci,
@@ -876,6 +877,7 @@ pub fn check_bundle_by_declaration(
                 None => {
                     let start = cx.diags.len();
                     cx.check_top_decl(item);
+                    cx.settle_param_accesses();
                     per.push(DeclChecked { typing: cx.diags[start..].to_vec(), reveal: Vec::new() });
                 }
             }
@@ -883,6 +885,8 @@ pub fn check_bundle_by_declaration(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
+    // The walks per monomorph keep nothing: there is nothing to settle.
+    debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -5906,6 +5910,11 @@ struct Checker<'a> {
     /// The loci the bundle's programs declare: a declaration in
     /// `locus_decls` that is not one is the bundled stdlib's.
     user_loci: BTreeSet<*const LocusDecl>,
+    /// The param accesses the walk of the current top-level declaration
+    /// reached, each with where the diagnostics stood when it did; moved
+    /// into the `param_accesses` column, and judged by the sealed rule,
+    /// when the declaration's walk ends (`settle_param_accesses`).
+    access_visits: Vec<AccessVisit>,
     default_invocations: Vec<u32>,
     /// GH #877: the generic parameters of the declaration being
     /// checked — a fn's `<T>`, a generic `type`'s. They name no
@@ -6070,6 +6079,45 @@ impl ScopeStack {
 enum SealedAccess {
     Read,
     Write,
+}
+
+/// A param access the walk reached: the body it is in, the row, and how
+/// many diagnostics stood before it, which is where the sealed rule's
+/// finding for it goes.
+struct AccessVisit {
+    at: usize,
+    body: NodeId,
+    row: crate::typed_bodies::ParamAccess,
+}
+
+/// Where a walk whose findings may be discarded began: the diagnostics
+/// and the accesses it reached are discarded together
+/// (`Checker::discard_since`).
+#[derive(Clone, Copy)]
+struct WalkMark {
+    diags: usize,
+    visits: usize,
+}
+
+thread_local! {
+    /// The sealed rule as it was, decided at the access, for the
+    /// differential that holds the law over the rows to it.
+    static OLD_SEALED_RULE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with the sealed rule decided at the access, as it was before
+/// the law over the `param_accesses` rows (F.40 phase 4, W4): the
+/// differential's other side. Not for any other use.
+#[doc(hidden)]
+pub fn with_the_old_sealed_rule<R>(f: impl FnOnce() -> R) -> R {
+    OLD_SEALED_RULE.with(|c| c.set(true));
+    let r = f();
+    OLD_SEALED_RULE.with(|c| c.set(false));
+    r
+}
+
+fn old_sealed_rule() -> bool {
+    OLD_SEALED_RULE.with(|c| c.get())
 }
 
 impl<'a> Checker<'a> {
@@ -11149,12 +11197,14 @@ impl<'a> Checker<'a> {
                     // let outside code CHOOSE the signing key, which is
                     // worse than reading it.
                     self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
+                    if old_sealed_rule() {
                     self.check_sealed_access(
                         &ty,
                         f,
                         f.span,
                         SealedAccess::Write,
                     );
+                    }
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
                 }
                 LValueSeg::Index(idx) => {
@@ -11560,7 +11610,7 @@ impl<'a> Checker<'a> {
             walked += 1;
             let bindings: BTreeMap<String, Ty> =
                 generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
-            let mark = self.diags.len();
+            let mark = self.walk_mark();
             let prev_bindings = std::mem::replace(&mut self.generic_bindings, bindings);
             let prev_specializing = self.specializing.replace(m.args.clone());
             let prev_locus = self.current_locus.take();
@@ -11579,7 +11629,7 @@ impl<'a> Checker<'a> {
             self.current_locus = prev_locus;
             self.specializing = prev_specializing;
             self.generic_bindings = prev_bindings;
-            self.diags.truncate(mark);
+            self.discard_since(mark);
         }
     }
 
@@ -11659,9 +11709,11 @@ impl<'a> Checker<'a> {
     /// scope declares and `name` one of its `params`, the row names the
     /// locus whose member is being walked (the reader), the receiver's
     /// locus, both by declaration, and the access. Recorded whether or
-    /// not the locus is sealed, and on the ordinary walk only: the walk
-    /// of a generic body per monomorph keeps no diagnostic, and records
-    /// no row either.
+    /// not the locus is sealed, as a visit the declaration's walk settles
+    /// when it ends; a walk whose findings the check discards (a
+    /// receiver typed ahead of the call path that types it again, a
+    /// default typed at an invocation, a generic body walked per
+    /// monomorph) discards its visits with them.
     fn record_param_access(
         &mut self,
         rt: &Ty,
@@ -11669,9 +11721,6 @@ impl<'a> Checker<'a> {
         span: Span,
         kind: crate::typed_bodies::AccessKind,
     ) {
-        if self.specializing.is_some() {
-            return;
-        }
         let Ty::Named(locus_name) = rt else { return };
         let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name) else {
             return;
@@ -11689,11 +11738,45 @@ impl<'a> Checker<'a> {
             kind,
             span,
         };
-        // A receiver the walk types twice (a method call's) is one
-        // access.
-        let rows = &mut self.typed.body(self.body).param_accesses;
-        if !rows.contains(&row) {
-            rows.push(row);
+        self.access_visits.push(AccessVisit { at: self.diags.len(), body: self.body, row });
+    }
+
+    /// The start of a walk whose findings may be discarded.
+    fn walk_mark(&self) -> WalkMark {
+        WalkMark { diags: self.diags.len(), visits: self.access_visits.len() }
+    }
+
+    /// Discard what the walk since `mark` found: its diagnostics and the
+    /// param accesses it reached.
+    fn discard_since(&mut self, mark: WalkMark) {
+        self.diags.truncate(mark.diags);
+        self.access_visits.truncate(mark.visits);
+    }
+
+    /// The end of a top-level declaration's walk: each access it reached
+    /// becomes its body's `param_accesses` row (an access the walk
+    /// reached twice, a method call's receiver, is one row), and the
+    /// sealed rule judges the rows ([`crate::sealed_access`]), each
+    /// finding placed among the declaration's diagnostics where the walk
+    /// first reached the access.
+    fn settle_param_accesses(&mut self) {
+        let mut fresh: Vec<(usize, crate::typed_bodies::ParamAccess)> = Vec::new();
+        for visit in std::mem::take(&mut self.access_visits) {
+            let rows = &mut self.typed.body(visit.body).param_accesses;
+            if !rows.contains(&visit.row) {
+                rows.push(visit.row.clone());
+                fresh.push((visit.at, visit.row));
+            }
+        }
+        if old_sealed_rule() {
+            return;
+        }
+        let rows: Vec<crate::typed_bodies::ParamAccess> = fresh.iter().map(|(_, r)| r.clone()).collect();
+        let found = crate::sealed_access::sealed_access_law(self.top, &rows);
+        // From the last, so each insertion leaves the earlier places
+        // where they were; two at one place keep their order.
+        for (i, diag) in found.into_iter().rev() {
+            self.diags.insert(fresh[i].0, diag);
         }
     }
 
@@ -12736,9 +12819,9 @@ impl<'a> Checker<'a> {
                     .and_then(|name| self.fn_decls.get(name).copied())
             }
             Expr::Field { receiver, name, .. } => {
-                let mark = self.diags.len();
+                let mark = self.walk_mark();
                 let ty = self.check_expr(receiver);
-                self.diags.truncate(mark);
+                self.discard_since(mark);
                 let locus = match ty {
                     Ty::Named(ref n) => self.locus_decls.get(n).copied().or_else(|| {
                         let mono = self.typed.monomorphs.named(n)?;
@@ -12768,7 +12851,7 @@ impl<'a> Checker<'a> {
         if defaults.is_empty() {
             return;
         }
-        let mark = self.diags.len();
+        let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
         for default in defaults {
             let _ = self.check_expr(default);
@@ -12776,7 +12859,7 @@ impl<'a> Checker<'a> {
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer.
-        self.diags.truncate(mark);
+        self.discard_since(mark);
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -13174,7 +13257,7 @@ impl<'a> Checker<'a> {
                             | "truncate"
                     ) && !args.is_empty()
                     {
-                        let mark = self.diags.len();
+                        let mark = self.walk_mark();
                         let recv_ty = self.check_expr(&args[0]);
                         let shadowed = match &recv_ty {
                             Ty::Bounded(elem, cap) => self
@@ -13343,7 +13426,7 @@ impl<'a> Checker<'a> {
                         // the name for this receiver type (GH #892):
                         // roll back the speculative diags and let the
                         // ordinary call paths resolve it.
-                        self.diags.truncate(mark);
+                        self.discard_since(mark);
                     }
                 }
                 // M3 stage 3 (2026-07-02): generic fn call
@@ -13778,9 +13861,9 @@ impl<'a> Checker<'a> {
                                 },
                             ),
                             Expr::Field { receiver, name, .. } => {
-                                let mark = self.diags.len();
+                                let mark = self.walk_mark();
                                 let rt = self.check_expr(receiver);
-                                self.diags.truncate(mark);
+                                self.discard_since(mark);
                                 match rt {
                                     Ty::Named(tn) => {
                                         match self.top.symbols.get(&tn) {
@@ -14009,12 +14092,14 @@ impl<'a> Checker<'a> {
                 }
                 let rt = self.check_expr(receiver);
                 self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
+                if old_sealed_rule() {
                 self.check_sealed_access(
                     &rt,
                     name,
                     *span,
                     SealedAccess::Read,
                 );
+                }
                 match self.field_ty(&rt, &name.name) {
                     Some(t) => t,
                     None => {

@@ -260,6 +260,7 @@ const QUALIFIED_SUBJECTS: &str = "crates/hale-types/src/qualified_subjects.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const CLOSURE_EVENTS: &str = "crates/hale-types/src/closure_events.rs";
+const SEALED_ACCESS: &str = "crates/hale-types/src/sealed_access.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
@@ -2278,6 +2279,16 @@ pub const RULES: &[Rule] = &[
         gist: "`persists_through(...)` on a closure whose assertion accumulates nothing, so the clause keeps nothing (warning, at the clause, the witness the assertion)",
         family: "closures",
         evaluator: Some(site(CLOSURE_EVENTS, "nothing_to_keep")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/sealed-confinement",
+        title: "Sealed confinement",
+        // The typed bodies' `param_accesses` rows (the reader and the receiver by declaration, the param, read or write), and the scope's entry for the receiver: whether it is sealed, and the methods the message names.
+        reads: Reads::Rows(&["expression_typing", "top_scope"]),
+        gist: "a read or write of a `@sealed` locus's `params` from outside its own members (error, at the access, naming the methods to call instead)",
+        family: "sealability",
+        evaluator: Some(site(SEALED_ACCESS, "outside_access")),
         state: State::Canonical,
     },
 ];

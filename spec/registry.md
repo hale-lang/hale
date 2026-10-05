@@ -1533,7 +1533,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 12 |
+| `spec/verification.md` § Structural & design rules | 13 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1572,6 +1572,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/contradicting-recovery-clauses | `spec/verification.md` § Structural & design rules | Contradicting recovery clauses | an event one closure names in both `persists_through(...)` and `resets_on(...)` (error, at the `resets_on` name, the witness the `persists_through` name); `resets_on` otherwise states the default and changes nothing at run time | `closures` | `crates/hale-types/src/closure_events.rs` · `in_both_clauses` | the declaration | Canonical |
 | verification/structural/unreached-recovery-event | `spec/verification.md` § Structural & design rules | Unreached recovery event | an event a closure of the program's own seed names that no handler or recovery statement of the closed world applies to its locus (warning, at the name, the witness each handler and statement that names the locus and the events it applies); a spent `restart(c) for N` is `quarantine`; not judged in an open world, for an imported locus, or for an event a recovery applies to a child the rows cannot name | `closures` | `crates/hale-types/src/closure_events.rs` · `unreached_events` | `handler_routing`, `entrypoint` | Canonical |
 | verification/structural/persistence-without-accumulator | `spec/verification.md` § Structural & design rules | Persistence with no accumulator | `persists_through(...)` on a closure whose assertion accumulates nothing, so the clause keeps nothing (warning, at the clause, the witness the assertion) | `closures` | `crates/hale-types/src/closure_events.rs` · `nothing_to_keep` | the declaration | Canonical |
+| verification/structural/sealed-confinement | `spec/verification.md` § Structural & design rules | Sealed confinement | a read or write of a `@sealed` locus's `params` from outside its own members (error, at the access, naming the methods to call instead) | `sealability` | `crates/hale-types/src/sealed_access.rs` · `outside_access` | `expression_typing`, `top_scope` | Canonical |
 
 ## The shadow facility's allowance
 
