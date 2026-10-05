@@ -658,7 +658,7 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(CG, "lower_stdlib_path_call_expr", "271 `[\"std\", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`", "codegen dispatches from the registry row"),
             legacy(CG, "lower_stdlib_path_call", "the statement-form twin of the expression dispatch: 191 more `[\"std\", ..]` literals", "same"),
-            legacy(CG_CHANNELS, "lower_fallible_call", "the fallible-call dispatch, a third copy of the stdlib call shapes (150 literals)", "same"),
+            legacy(CG_CHANNELS, "try_lower_fallible_stdlib_path_call", "the fallible-call dispatch (`path or raise` on a stdlib path), a third copy of the stdlib call shapes: 150 more `[\"std\", ..]` literals", "same"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
             legacy(CG, "declare_builtin_closure_violation_type", "a hand-maintained mirror of the checker's injected builtin types", "one declaration"),
@@ -1047,7 +1047,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["closure declarations", "lifecycle_order (the event alphabet)"],
         producer: Some(site(CHECK, "check_locus_member")),
         legacy: &[
-            legacy("crates/hale-codegen/src/locus/closure.rs", "EpochSpec::Birth", "event names are matched ad hoc in codegen; a clause naming an event the locus never reaches is a silent no-op", "the clause joins the lifecycle table and an unreachable event is a law violation with a witness"),
+            legacy(CG, "emit_accumulator_reset_for_event", "the recovery events a closure names are matched ad hoc: `persists_through(...)` takes any identifier (`parse_recovery_event_name`), `locus/decl.rs` copies the names as strings, and this function compares them with the event being lowered, which is only ever `restart`, `restart_in_place` or `quarantine`, so a clause naming an event the locus never reaches is a silent no-op; `resets_on(...)` is read by nothing. The epoch is not ad hoc: its names are a closed enum (`EpochSpec`) the parser enforces", "the clause joins the lifecycle table and an unreachable event is a law violation with a witness"),
         ],
         consumers: &[consumer("check"), consumer("codegen")],
         invariants: &["closures are a consumer of the layer-6 alphabet (RFC §2)"],
@@ -1066,7 +1066,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["@export, @gated, serve declarations", "the api binding", "roles (--env)"],
         producer: Some(site(API_GEN, "api_surface")),
         legacy: &[
-            legacy(API_GEN, "generate_api", "run by check with no roles and by build with roles, so check's description and model never carry what build --env bakes in; codegen runs it again", "one surface per snapshot, with the configuration as an input"),
+            legacy(API_GEN, "generate_api", "its one production call is the desugar sequence's (`desugar_sequence.rs`), with the snapshot's roles; codegen no longer runs it (F.40 phase 2.2b), and the snapshot's `Config` carries `api`, `api_roles` and `environment`, which `Config::digest` hashes. What remains: `Config::check` carries no roles and `hale check --env` adopts the environment's constitutions only, so the check judges a generated binding whose role source differs from the one `build --env` lowers", "`hale check --env` carries the environment's roles"),
             legacy(CHECK, "check_api_roles", "role declarations, includes and gates are judged over the AST", "a law over the surface rows"),
             legacy(V_MATRIX, "role_coverage", "re-runs the loader and reads pre-desugar programs", "reads the rows"),
         ],
@@ -1655,8 +1655,8 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["model", "claim and constitution declarations", "evidence (certificates, budgets)", "effects"],
         producer: Some(site(JUDGMENT, "claim_law_diags")),
         legacy: &[
-            legacy(TOPO_LAW, "validate_law_account", "the CLI recomputes the law digest and re-judges certificate and document verdicts when it admits an artifact: a second law authority", "admission validates ties and reads verdicts; it re-derives none"),
-            legacy(V_MATRIX, "constitution_identities", "re-runs the loader, the scope and the bus graph to re-derive identities the artifact already carries", "reads the artifact's section"),
+            legacy(TOPO_LAW, "validate_law_account", "admitting an artifact, the CLI recomputes the law digest and compares the evidence inputs digest, decodes every law payload into a private copy of the law vocabulary (`decode_law`), re-renders the claims' forms with a private renderer that mirrors `hale-model`'s, and re-aggregates the stated verdicts (a row's from its certificates', the document's from the rows'); it evaluates no law over a model", "admission validates ties and reads verdicts; it re-derives none"),
+            legacy(V_MATRIX, "constitution_identities", "re-runs the loader (`collect_checkable`) and law selection's adoption, not the scope or the bus graph, to re-derive identities the artifact already carries", "reads the artifact's section"),
             legacy(CLAIMS, "constitution_identities", "the identity derivation the matrix calls", "one derivation, projected"),
         ],
         consumers: &[consumer("check / verify"), consumer_at("the check's laws stage (judged over the snapshot's model, after its typing stage)", SNAPSHOT, "demand_laws"), consumer("topology (law section)"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
