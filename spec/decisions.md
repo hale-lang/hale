@@ -3550,7 +3550,9 @@ explicit horizon (`%DESIGN` I8), and its facts stay typed rows.
 bare-fallible, the blocking classification and the effects fixpoint
 are derivations: they produce rows. Claims judge rows. The registry
 states which side each family is on. Structural laws are evaluated
-through `model_query` with shared witness rendering; the judgment
+through `model_query` with shared witness rendering (superseded in
+F.40 phase 4, decision 3: a structural law is a function over family
+rows whose finding is a `law::Violation`, run by the check); the judgment
 path stays for user claims; the two converge once hundreds of laws
 have been measured. `constitution Hale` remains the direction, but
 the vocabulary grows incrementally and is not a prerequisite for
