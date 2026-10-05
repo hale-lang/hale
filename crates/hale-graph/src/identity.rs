@@ -414,7 +414,6 @@ pub const IDENTITIES: &[Identity] = &[
         fold: Fold::Sha256,
         covers: &[Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests, Input::RustcVersion, Input::GitCommit, Input::CompilerVersion, Input::BuildOptions, Input::DispatchPlan, Input::UserSources, Input::SourcePaths],
         leaves_out: &[
-            (Input::BuildOptions, "a defect, corrected in I2: `debug` is fingerprinted as set by `hale build` and never by `run` or `replay`, so a built binary's recording never replays; the `[ffi]` pickup happens in `build` only, and `replay` accepts `--env` and never resolves it"),
             (Input::SourcePaths, "a defect, corrected in I3: paths are framed relative to the entry's parent and fall back to the bare file name, so a directory build's recording never matches its file and two imports of one file name share an identity; the frame follows absolute paths' order"),
         ],
         producer: ("crates/hale-cli/src/shared/options.rs", "exec_digest"),

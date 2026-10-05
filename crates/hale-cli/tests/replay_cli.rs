@@ -2202,3 +2202,230 @@ fn json_coverage_carries_the_same_counts_and_flags() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The recording header's execution identity (4×u64 at offset 56).
+fn recorded_exec_digest(rec: &Path) -> [u64; 4] {
+    let b = std::fs::read(rec).expect("recording");
+    assert!(b.len() >= 112, "truncated recording");
+    let mut out = [0u64; 4];
+    for (i, part) in out.iter_mut().enumerate() {
+        let o = 56 + i * 8;
+        *part = u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+    }
+    out
+}
+
+/// Run a binary `hale build` emitted, recording into `rec`.
+fn record_built(bin: &Path, rec: &Path) {
+    let out = Command::new(bin)
+        .env("LOTUS_OBS_RECORD", rec)
+        .output()
+        .expect("run the built binary");
+    assert!(
+        out.status.success(),
+        "the built binary failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(rec.is_file(), "the built binary recorded nothing");
+}
+
+fn build(target: &Path) {
+    let out = hale().arg("build").arg(target).output().expect("hale build");
+    assert!(
+        out.status.success(),
+        "hale build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// F.40 phase 4, I2: a recording made by a binary from `hale build`
+/// replays. `hale build` fingerprinted `debug` (the DWARF line tables
+/// it adds by default) into the execution identity and `hale run` and
+/// `hale replay` never set it, so every recording of a built binary
+/// was refused as "different build inputs". `debug` changes no
+/// behaviour and is no part of the identity: a built binary and `hale
+/// run` stamp one identity for one program, and replay admits either.
+#[test]
+fn a_recording_of_a_built_binary_replays() {
+    let dir = workdir("built");
+    let prog = dir.join("demo.hl");
+    std::fs::write(&prog, "fn main() { let x = 1 + 1; }\n").unwrap();
+    build(&prog);
+    let rec = dir.join("built.halerec");
+    record_built(&dir.join("demo"), &rec);
+
+    let ran = record(&dir, &prog);
+    assert_eq!(
+        recorded_exec_digest(&rec),
+        recorded_exec_digest(&ran),
+        "a built binary and `hale run` of one program stamp one identity"
+    );
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && !stderr.contains("different build inputs"),
+        "a built binary's recording is admitted: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What still refuses a DIRECTORY build's recording after I2, pinned so
+/// I3 turns it around: the source paths. A directory build frames each
+/// file relative to the directory's parent (`app/main.hl`), and replay
+/// takes the entry file, framed relative to its own directory
+/// (`main.hl`). The options half agrees — the built binary stamps what
+/// `hale run app/` stamps — so the paths are the whole difference. I3
+/// frames the snapshot's source map instead, and this test becomes one
+/// that the recording replays.
+#[test]
+fn a_directory_builds_recording_is_refused_by_its_source_paths_until_i3() {
+    let dir = workdir("built_dir");
+    let app = dir.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    let entry = app.join("main.hl");
+    std::fs::write(&entry, "fn main() { let x = 1 + 1; }\n").unwrap();
+    build(&app);
+    let rec = dir.join("built.halerec");
+    record_built(&app.join("app"), &rec);
+
+    let ran = record(&dir, &app);
+    assert_eq!(
+        recorded_exec_digest(&rec),
+        recorded_exec_digest(&ran),
+        "a directory build and `hale run` of the directory stamp one identity"
+    );
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&entry)
+        .output()
+        .expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.code() == Some(1) && stderr.contains("different build inputs"),
+        "admitted: I3 has landed, and this test is to say the recording replays: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F.40 phase 4, I2: the `[ffi]` surface an imported package's
+/// `hale.toml` declares is in the identity `build`, `run` and `replay`
+/// compute alike. Only `build` picked it up, so a program importing such
+/// a package was fingerprinted with `link=m` by `build` and without it
+/// by `run` and `replay`. (`run` still builds with its own flags alone;
+/// the library here is one the runtime links anyway.)
+#[test]
+fn a_manifest_ffi_surface_is_in_every_verbs_identity() {
+    let dir = workdir("ffi_identity");
+    std::fs::write(dir.join("hale.toml"), "").unwrap();
+    let lib = dir.join("vendor/mlib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("hale.toml"), "[ffi]\nlink = [\"m\"]\n").unwrap();
+    std::fs::write(lib.join("mlib.hl"), "fn twice(n: Int) -> Int { return n * 2; }\n").unwrap();
+    let app = dir.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    let prog = app.join("main.hl");
+    std::fs::write(&prog, "import \"vendor/mlib\" as mlib;\nfn main() { let x = mlib::twice(21); }\n").unwrap();
+    build(&prog);
+    let rec = dir.join("built.halerec");
+    record_built(&app.join("main"), &rec);
+
+    let ran = record(&dir, &prog);
+    assert_eq!(
+        recorded_exec_digest(&rec),
+        recorded_exec_digest(&ran),
+        "`build` and `run` fingerprint the manifest's link library alike"
+    );
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && !stderr.contains("different build inputs"),
+        "and `replay` admits the build's recording: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const TWO_ENVIRONMENTS: &str = r#"[claims]
+no_base = true
+
+[environments.a]
+source_only = true
+entrypoints = ["."]
+
+[environments.a.roles]
+ops = ["uid:1000"]
+
+[environments.b]
+source_only = true
+entrypoints = ["."]
+
+[environments.b.roles]
+ops = ["uid:2000"]
+"#;
+
+/// F.40 phase 4, I2: `hale replay --env` resolves the environment as
+/// `hale run --env` does. Its role table is part of the binary and of
+/// the identity; `replay` accepted the flag and never resolved it, so a
+/// recording made under an environment was refused by the replay that
+/// named it. Under another environment's roles, or none, the identity
+/// refuses it.
+#[test]
+fn a_recording_made_under_an_environment_replays_under_it_alone() {
+    let dir = workdir("env_identity");
+    std::fs::write(dir.join("hale.toml"), TWO_ENVIRONMENTS).unwrap();
+    // An environment deploys an entrypoint: a `main locus`.
+    let prog = dir.join("demo.hl");
+    std::fs::write(&prog, "main locus App { run() { let x = 1 + 1; } }\nfn main() { App { }; }\n").unwrap();
+    let rec = dir.join("a.halerec");
+    let out = hale()
+        .args(["run", "--env", "a"])
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .output()
+        .expect("hale run --env a");
+    assert!(
+        out.status.success() && rec.is_file(),
+        "`hale run --env a` records: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let replay = |env: Option<&str>| {
+        let mut cmd = hale();
+        cmd.arg("replay");
+        if let Some(e) = env {
+            cmd.args(["--env", e]);
+        }
+        let out = cmd.arg(&rec).arg(&prog).output().expect("hale replay");
+        (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let (code, stderr) = replay(Some("a"));
+    assert!(
+        code == Some(0) && !stderr.contains("different build inputs"),
+        "the environment it was recorded under admits it: {}",
+        stderr
+    );
+    for other in [Some("b"), None] {
+        let (code, stderr) = replay(other);
+        assert!(
+            code == Some(1) && stderr.contains("different build inputs"),
+            "{other:?}'s roles are not the recording's: {}",
+            stderr
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

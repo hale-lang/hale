@@ -70,12 +70,14 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
 /// same way (they did not: the build path never computed a digest
 /// at all — GH #476 Change 8 review).
 pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
+    // `debug` keeps its place with the constant `false` (F.40 phase 4,
+    // I2): the DWARF line tables `hale build` adds by default change no
+    // behaviour, and `run` and `replay` never add them, so fingerprinting
+    // them made every recording of a built binary "different build
+    // inputs". The constant keeps the string `run` has always stamped.
     let mut fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        o.target,
-        o.target_cpu,
-        o.dev_profile,
-        o.debug.is_some()
+        "target={:?};cpu={:?};dev={};debug=false",
+        o.target, o.target_cpu, o.dev_profile
     );
     // GH #904: the FFI surface is part of what the executable IS —
     // two builds of one source that link different C are different
@@ -271,6 +273,49 @@ mod tests {
         let mut other = base();
         other.target_glibc = Some("2.31".into());
         assert_ne!(options_fingerprint(&two), options_fingerprint(&other), "the value is part of the identity");
+    }
+
+    /// `debug` adds DWARF line tables and changes no behaviour; `hale
+    /// build` sets it and `run` and `replay` never do, so it is no part
+    /// of the identity (F.40 phase 4, I2), and the default string is
+    /// what `run` has always stamped.
+    #[test]
+    fn debug_leaves_the_identity() {
+        let plain = options_fingerprint(&base());
+        let mut o = base();
+        o.debug = Some(hale_codegen::DebugSources { files: Vec::new() });
+        assert_eq!(options_fingerprint(&o), plain);
+        assert_eq!(plain, "target=Native;cpu=Native;dev=false;debug=false");
+    }
+
+    /// The options half's covered changes each move the identity (I2):
+    /// the target, `dev`, an environment's role table, a link library.
+    #[test]
+    fn a_covered_option_moves_the_identity() {
+        let plain = options_fingerprint(&base());
+        let moved = |set: &dyn Fn(&mut BuildOptions)| {
+            let mut o = base();
+            set(&mut o);
+            options_fingerprint(&o) != plain
+        };
+        assert!(moved(&|o| o.target = hale_codegen::CompileTarget::Wasm32), "the target");
+        assert!(moved(&|o| o.dev_profile = true), "dev");
+        assert!(moved(&|o| o.api_roles = Some("ops=uid:1000".into())), "a role table");
+        assert!(moved(&|o| o.link_libs.push("m".into())), "a link library");
+    }
+
+    /// The dispatch plan's own frame moves the execution identity, with
+    /// the sources and the options held: what the end-to-end plan test
+    /// cannot isolate, since the knob that changes the plan is in the
+    /// options too.
+    #[test]
+    fn the_dispatch_plan_alone_moves_the_execution_identity() {
+        let entry = PathBuf::from("/w/app.hl");
+        let sources: BTreeMap<PathBuf, String> = [(entry.clone(), "fn main() { }\n".to_string())].into();
+        let fp = options_fingerprint(&base());
+        let digest = |plan| crate::shared::options::exec_digest(&sources, &entry, &fp, plan);
+        assert_eq!(digest(1), digest(1));
+        assert_ne!(digest(1), digest(2));
     }
 
     /// What only narrates a build, times it, chooses its warnings or its

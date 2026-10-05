@@ -1830,7 +1830,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
         producer: Some(site("crates/hale-graph/src/identity.rs", "IDENTITIES")),
         legacy: &[
-            legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
+            legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names, so a directory build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
             legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk", "one identity per snapshot; the stale check reads it"),
             legacy(SNAPSHOT, "b.sources", "per-file FNV digests, set by the snapshot, rooted at hale.toml for every load mode, the editor's and its requests' included", "one source map per snapshot"),
         ],
@@ -2234,7 +2234,7 @@ pub const SHADOW_CALL_SITES: &[(&str, usize)] = &[];
 /// fragment is the invocation collapsed to one line, so a multi-line
 /// call is seen. A new one, or a changed count, fails registry_guard.rs.
 pub const DEBUG_SCANS: &[DebugScan] = &[
-    DebugScan { path: BUILD_ENV, fragment: "format!( \"target={:?};cpu={:?};dev={};debug={}\", o.target, o.target_cpu, o.dev_profile, o.", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
+    DebugScan { path: BUILD_ENV, fragment: "format!( \"target={:?};cpu={:?};dev={};debug=false\", o.target, o.target_cpu, o.dev_profile ", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
     DebugScan { path: BUILD_ENV, fragment: "format!(\";lto={l:?}\")", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
     DebugScan { path: "crates/hale-cli/src/verbs/misc.rs", fragment: "println!(\"{:#?}\", prog)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", other)", count: 1, verdict: ScanVerdict::Renders },

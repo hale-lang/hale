@@ -116,7 +116,14 @@ hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
   compiling command was given — `hale run` and `hale replay` take
   `hale build`'s option flags — so a run recorded under `hale run
   --dev` replays under `hale replay --dev`, and a default replay
-  refuses it. A structurally compatible model with a
+  refuses it. The same holds for `--env`: a run recorded under
+  `--env prod` replays under `hale replay --env prod`. A binary from
+  `hale build` carries the identity `hale run` would give the same
+  program — the debug information a build adds is not part of it —
+  so you can record the binary you ship and replay it against its
+  source file. (A *directory* build's recording does not replay yet:
+  replay takes the entry file, and the directory's sources are named
+  differently in the identity.) A structurally compatible model with a
   changed function body is *not* the same executable — it is
   rejected, with `--allow-unverified-model` as the explicit
   override for unstamped or divergent-build recordings.
