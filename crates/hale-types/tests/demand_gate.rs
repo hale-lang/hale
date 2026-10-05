@@ -737,3 +737,135 @@ fn law_selection_runs_once_per_snapshot_on_every_verb_path() {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// One counted cell of the snapshot: its name in [`Snapshot::builds`],
+/// how many times it is built on `hale check` and on a build path for a
+/// program with a law, and the demand that reads it again (a load-time
+/// cell has none: the load made it).
+struct GateRow {
+    cell: &'static str,
+    on_check: u32,
+    on_build: u32,
+    again: fn(&Snapshot),
+}
+
+const fn row(cell: &'static str, on_check: u32, on_build: u32, again: fn(&Snapshot)) -> GateRow {
+    GateRow { cell, on_check, on_build, again }
+}
+
+/// Every cell the snapshot counts, and its count on each verb path
+/// (F.40 phase 4, standing check). This list IS the list of counted
+/// cells: `the_gate_names_every_counted_cell` fails on a cell
+/// `Snapshot::builds` reports that is not here (or a row here that names
+/// no cell), so a family or stage added to the snapshot is added with
+/// its counts or not at all. A count above one is a derivation redone
+/// for one snapshot (phase 3 found three); a count of one where it was
+/// none is work a path started paying for.
+const GATE: &[GateRow] = &[
+    // The load's own: made once, before any demand.
+    row("seed_loading", 1, 1, |_| {}),
+    row("desugar_sequence", 1, 1, |_| {}),
+    row("snapshot_identity", 1, 1, |_| {}),
+    // The families the check, its laws and the model demand.
+    row("entrypoint", 1, 1, |s| { let _ = s.demand_entry(); }),
+    row("target_capability", 1, 1, |s| { let _ = s.demand_target(); }),
+    row("top_scope", 1, 1, |s| { let _ = s.demand_scope(); }),
+    row("bindings", 1, 1, |s| { let _ = s.demand_bindings(); }),
+    row("sync_inference", 1, 1, |s| { let _ = s.demand_forms(); }),
+    row("expression_typing", 1, 1, |s| { let _ = s.demand_effect_certificates(); }),
+    row("typed_bodies", 1, 1, |s| { let _ = s.demand_typed_bodies(); }),
+    row("bus_graph", 1, 1, |s| { let _ = s.demand_bus_graph(); }),
+    row("ownership", 1, 1, |s| { let _ = s.demand_ownership_graph(); }),
+    row("handler_routing", 1, 1, |s| { let _ = s.demand_handlers(); }),
+    row("flows", 1, 1, |s| { let _ = s.demand_flows(); }),
+    row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
+    row("api_surface", 1, 1, |s| { let _ = s.demand_role_rows(); }),
+    row("alloc_summary", 1, 1, |s| { let _ = s.demand_alloc_summary(); }),
+    row("effects", 1, 1, |s| { let _ = s.demand_effects(); }),
+    row("placement", 1, 1, |s| { let _ = s.demand_placement(); }),
+    row("arrangement", 1, 1, |s| { let _ = s.demand_arrangement(); }),
+    row("dispatch", 1, 1, |s| { let _ = s.demand_dispatch_plan(); }),
+    // Lowering's: a check emits nothing, so it plans no lifecycle and
+    // builds no lowering view.
+    row("lifecycle_order", 0, 1, |s| { let _ = s.demand_lifecycle(); }),
+    row("model", 1, 1, |s| { let _ = s.demand_model(); }),
+    row("claims", 1, 1, |s| { let _ = s.demand_laws(); }),
+    row("intra_locus", 1, 1, |s| { let _ = s.demand_intra_locus(); }),
+    row("lowering_view", 0, 1, |s| { let _ = s.demand_lowering(); }),
+    // The check's two stages.
+    row("typing_stage", 1, 1, |s| { let _ = s.demand_typing(); }),
+    row("laws_stage", 1, 1, |s| { let _ = s.demand_laws(); }),
+];
+
+/// A cell `Snapshot::builds` counts that the gate has no row for fails,
+/// with what to add; so does a row naming no cell, or a cell named twice.
+#[test]
+fn the_gate_names_every_counted_cell() {
+    let program = hale_syntax::parse_source("fn main() { }").expect("parses");
+    let s = match Snapshot::from_program(program, Vec::new(), Config::build(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program shapes"),
+    };
+    let counted: Vec<&str> = s.builds().into_keys().collect();
+    let mut gated: Vec<&str> = GATE.iter().map(|r| r.cell).collect();
+    gated.sort_unstable();
+    let twice: Vec<&&str> = gated.windows(2).filter(|w| w[0] == w[1]).map(|w| &w[0]).collect();
+    assert!(twice.is_empty(), "GATE names {twice:?} twice");
+    let missing: Vec<&&str> = counted.iter().filter(|c| !gated.contains(c)).collect();
+    assert!(
+        missing.is_empty(),
+        "the snapshot counts {missing:?} (`Snapshot::builds`), and the demand gate does not assert it: add a row to \
+         GATE in crates/hale-types/tests/demand_gate.rs with its count on `hale check` and on a build path, and the \
+         demand that reads it"
+    );
+    let stale: Vec<&&str> = gated.iter().filter(|c| !counted.contains(c)).collect();
+    assert!(stale.is_empty(), "GATE names {stale:?}, which the snapshot does not count: remove the row");
+}
+
+/// Every counted cell is built as many times as GATE says on `hale
+/// check` and on a build path, for a program with a law (so the model
+/// and the laws run), however often each cell is demanded again.
+#[test]
+fn every_counted_cell_is_built_as_the_gate_says_on_a_check_and_a_build() {
+    let d = seed("gate-rows", WITH_CLAIM);
+    let paths: [(&str, Snapshot, bool); 2] = [("check", check(&d), false), ("build", build(&d), true)];
+    let mut wrong = Vec::new();
+    for (path, s, lowers) in &paths {
+        assert_clean(s);
+        // What the verb demands: the check (whose laws judge the
+        // model), and on a build path the lowering view and the model
+        // the build's identity reads.
+        s.demand_check().expect("checked");
+        if *lowers {
+            assert!(s.demand_lowering().is_ok(), "{path}: a clean program is lowered");
+        }
+        s.demand_model().expect("a clean program has a model");
+        let builds = s.builds();
+        for r in GATE {
+            let want = if *lowers { r.on_build } else { r.on_check };
+            let got = builds.get(r.cell).copied().unwrap_or(u32::MAX);
+            if got != want {
+                wrong.push(format!("{path}: `{}` built {got} times, the gate says {want}", r.cell));
+            }
+        }
+        // Then every cell the path built, read again: none is rebuilt.
+        for r in GATE {
+            if builds.get(r.cell).is_some_and(|n| *n > 0) {
+                (r.again)(s);
+            }
+        }
+        for (cell, n) in s.builds() {
+            if builds.get(cell) != Some(&n) {
+                wrong.push(format!("{path}: `{cell}` demanded again built it again ({} times)", n));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(
+        wrong.is_empty(),
+        "{}\nA cell built more than once is a derivation redone for one snapshot; one built where the gate says \
+         none is work this path now pays for. A change meant to move a count edits its GATE row, with the reason \
+         in the commit.",
+        wrong.join("\n")
+    );
+}
