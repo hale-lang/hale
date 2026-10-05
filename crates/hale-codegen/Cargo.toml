@@ -10,6 +10,10 @@ autotests = false
 
 [dependencies]
 hale-frontend = { path = "../hale-frontend" }
+# The shadow facility (`hale_graph::shadow`), for the capability
+# matrix's lowering shadow, and the workspace's one FNV fold
+# (`hale_graph::identity::fnv64`) the bus payload id is.
+hale-graph = { path = "../hale-graph" }
 hale-model = { path = "../hale-model" }
 hale-stdlib = { path = "../hale-stdlib" }
 hale-syntax = { path = "../hale-syntax" }
@@ -30,9 +34,6 @@ dynamic-llvm = ["inkwell/llvm18-0-prefer-dynamic"]
 
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
-# The shadow facility (`hale_graph::shadow`), for the capability
-# matrix's lowering shadow.
-hale-graph = { path = "../hale-graph" }
 libc = "0.2"
 
 # Each `tests/<name>.rs` below is one binary; the files an area root pulls in

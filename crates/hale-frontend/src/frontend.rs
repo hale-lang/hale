@@ -701,14 +701,7 @@ pub fn source_map(
                 .replace('\\', "/");
             let digest = sources
                 .get(path)
-                .map(|src| {
-                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-                    for b in src.as_bytes() {
-                        h ^= *b as u64;
-                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-                    }
-                    format!("{:016x}", h)
-                })
+                .map(|src| format!("{:016x}", hale_graph::identity::fnv64(src.as_bytes())))
                 .unwrap_or_else(|| "unknown".to_string());
             hale_types::symbol::SourceFile {
                 id: i as u32,

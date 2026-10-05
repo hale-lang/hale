@@ -2503,21 +2503,13 @@ pub fn validate_law_account(
     // produced under a different stdlib/analysis snapshot is
     // refused, not silently trusted (re-dump with the current
     // compiler).
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
     let canon = serde_json::to_string(&serde_json::json!({
         "issues": v["law"]["issues"],
         "rows": v["law"]["rows"],
     }))
     .map_err(|e| format!("{}: {}", label, e))?;
     let expect_law_digest =
-        format!("{:016x}", fnv1a64(canon.as_bytes()));
+        format!("{:016x}", hale_graph::identity::fnv64(canon.as_bytes()));
     if v["law"]["law_digest"].as_str()
         != Some(expect_law_digest.as_str())
     {

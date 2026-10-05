@@ -1465,24 +1465,13 @@ impl ClaimIrTable {
     /// topology but different `@effects` classes would otherwise
     /// accept each other's evidence (review round 2).
     ///
-    /// Stability: this uses the crate's own FNV-1a hasher, not
-    /// `DefaultHasher` (whose algorithm is unspecified and may
-    /// change between Rust releases).
+    /// Stability: this uses the workspace's FNV-1a fold
+    /// (`hale_graph::identity::Fnv64`), not `DefaultHasher` (whose
+    /// algorithm is unspecified and may change between Rust
+    /// releases).
     pub fn semantic_digest(&self) -> u64 {
-        use core::hash::{Hash, Hasher};
-        struct Fnv64(u64);
-        impl Hasher for Fnv64 {
-            fn finish(&self) -> u64 {
-                self.0
-            }
-            fn write(&mut self, bytes: &[u8]) {
-                for b in bytes {
-                    self.0 ^= u64::from(*b);
-                    self.0 = self.0.wrapping_mul(0x100_0000_01b3);
-                }
-            }
-        }
-        let mut h = Fnv64(0xcbf2_9ce4_8422_2325);
+        use core::hash::Hash;
+        let mut h = hale_graph::identity::Fnv64::new();
         (self.rows.len() as u64).hash(&mut h);
         for row in &self.rows {
             row.ordinal.hash(&mut h);

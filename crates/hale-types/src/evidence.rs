@@ -97,13 +97,8 @@ pub const ANALYSIS_SEMANTICS_VERSION: u32 = 7;
 /// judgment recomputes this and refuses evidence produced by a
 /// different analysis.
 pub fn analysis_inputs_digest() -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
+    let mut h = hale_graph::identity::Fnv64::new();
+    let mut eat = |bytes: &[u8]| h.write(bytes);
     eat(&ANALYSIS_SEMANTICS_VERSION.to_le_bytes());
     eat(hale_stdlib::AP_SOURCE.as_bytes());
     eat(env!("CARGO_PKG_VERSION").as_bytes());
@@ -130,7 +125,7 @@ pub fn analysis_inputs_digest() -> u64 {
         }
         eat(b"\x1e");
     }
-    h
+    h.finish()
 }
 
 /// Derive the sidecar for one bundle's lowered law table.

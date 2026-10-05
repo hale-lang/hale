@@ -306,6 +306,89 @@ fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
     assert!(read("crates/hale-cli/src/shared/stale.rs").contains("identity_files("));
 }
 
+/// Where the 64-bit FNV offset basis may be written in a crate's `src`
+/// or its build script, each with the reason. The goal is the one
+/// fold's home: every FNV identity feeds its bytes to
+/// `hale_graph::identity::Fnv64` (F.40 phase 4, I6), so a new
+/// hand-rolled digest is either an inventory entry that calls the fold
+/// or a non-identity use listed here with its reason.
+const FNV_BASIS_ALLOWED: &[(&str, &str)] = &[(
+    "crates/hale-graph/src/identity.rs",
+    "the one fold (`Fnv64::BASIS`) and its known-answer test",
+)];
+
+/// Every file under `dir`, recursively.
+fn every_file(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            every_file(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+fn writes_fnv_basis(line: &str) -> bool {
+    !line.trim_start().starts_with("//")
+        && line.to_ascii_lowercase().replace('_', "").contains("0xcbf29ce484222325")
+}
+
+#[test]
+fn the_basis_scan_sees_every_spelling_and_skips_comments() {
+    assert!(writes_fnv_basis("    let mut h: u64 = 0xcbf29ce484222325;"));
+    assert!(writes_fnv_basis("    let mut h: u64 = 0xcbf2_9ce4_8422_2325;"));
+    assert!(writes_fnv_basis("    Digest(0xCBF2_9CE4_8422_2325)"));
+    assert!(!writes_fnv_basis("//!  * **hash** — FNV-1a/64 (offset 0xcbf29ce484222325, prime"));
+    assert!(!writes_fnv_basis("    let mut h = Fnv64::new();"));
+}
+
+/// A seam cannot say this: the registry's matcher counts one literal
+/// spelling, and the basis is written with and without digit
+/// separators, in either case. So the scan normalizes each line
+/// (lower case, no `_`) and skips comments, which may name the
+/// constant (the topic hash's doc says which C function it mirrors).
+#[test]
+fn the_fnv_basis_is_written_only_where_the_one_fold_lives() {
+    let root = root();
+    let mut files = Vec::new();
+    for e in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+        let krate = e.path();
+        every_file(&krate.join("src"), &mut files);
+        if krate.join("build.rs").is_file() {
+            files.push(krate.join("build.rs"));
+        }
+    }
+    assert!(files.len() > 200, "the scan is vacuous: {} files", files.len());
+    let mut found = std::collections::BTreeSet::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        if text.lines().any(writes_fnv_basis) {
+            found.insert(f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"));
+        }
+    }
+    let allowed: std::collections::BTreeSet<String> =
+        FNV_BASIS_ALLOWED.iter().map(|(f, _)| f.to_string()).collect();
+    let unlisted: Vec<&String> = found.difference(&allowed).collect();
+    assert!(
+        unlisted.is_empty(),
+        "a hand-rolled FNV fold: {unlisted:?} writes the offset basis. Feed the bytes to \
+         hale_graph::identity::Fnv64 (or fnv64) and, if the value is compared to decide that two \
+         things are the same, add the identity to IDENTITIES; a use that is no identity goes in \
+         FNV_BASIS_ALLOWED with the reason."
+    );
+    let stale: Vec<&String> = allowed.difference(&found).collect();
+    assert!(stale.is_empty(), "FNV_BASIS_ALLOWED lists a file that no longer writes the basis: {stale:?}");
+    for (f, why) in FNV_BASIS_ALLOWED {
+        assert!(!why.trim().is_empty(), "{f} is allowed without a reason");
+    }
+}
+
 /// The legacy rows an inventory entry's producer still shares: the
 /// identities whose own correction retires the row. None is left since
 /// I4 retired the stale-binary hash's; every legacy row names a symbol

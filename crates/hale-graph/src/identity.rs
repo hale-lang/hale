@@ -158,29 +158,81 @@ pub fn identity_files(workspace_root: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// 64-bit FNV-1a: the workspace's one fold (F.40 phase 4, I6). Every
+/// FNV identity feeds its bytes here, so what tells two identities
+/// apart is the bytes each frames, never a copy of the arithmetic; a
+/// hand-rolled copy of the offset basis anywhere else in a crate's
+/// `src` or build script fails `identity_coverage.rs`.
+///
+/// It implements [`Hasher`](core::hash::Hasher) by overriding `write`
+/// and `finish` only, so a `Hash`-driven digest (`claim_table_digest`)
+/// frames its fields by the trait's defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fnv64(u64);
+
+impl Fnv64 {
+    /// The 64-bit FNV offset basis.
+    pub const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    /// The 64-bit FNV prime.
+    pub const PRIME: u64 = 0x100_0000_01b3;
+
+    pub const fn new() -> Self {
+        Fnv64(Self::BASIS)
+    }
+
+    /// Fold `bytes` in, one at a time: xor, then multiply.
+    pub fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    pub fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for Fnv64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::hash::Hasher for Fnv64 {
+    fn write(&mut self, bytes: &[u8]) {
+        Fnv64::write(self, bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        Fnv64::finish(self)
+    }
+}
+
+/// [`Fnv64`] over one byte string.
+pub fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h = Fnv64::new();
+    h.write(bytes);
+    h.finish()
+}
+
 /// A 64-bit FNV-1a fold over `(relative path, NUL, contents, NUL)` for
 /// every file, in the order given: the cache key's fold. A renamed,
 /// added or removed file moves it, as does one changed byte.
 pub fn fold_files(root: &Path, files: &[PathBuf]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
+    let mut h = Fnv64::new();
     for f in files {
         let rel = f
             .strip_prefix(root)
             .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
-        eat(rel.as_bytes());
-        eat(&[0]);
-        eat(&std::fs::read(f).unwrap_or_default());
-        eat(&[0]);
+        h.write(rel.as_bytes());
+        h.write(&[0]);
+        h.write(&std::fs::read(f).unwrap_or_default());
+        h.write(&[0]);
     }
-    h
+    h.finish()
 }
 
 /// How an identity folds what it covers.
@@ -188,7 +240,7 @@ pub fn fold_files(root: &Path, files: &[PathBuf]) -> u64 {
 pub enum Fold {
     /// A length-framed SHA-256.
     Sha256,
-    /// 64-bit FNV-1a, in one of its framings.
+    /// 64-bit FNV-1a ([`Fnv64`], the one fold), in one of its framings.
     Fnv64,
     /// `std`'s `DefaultHasher` (SipHash; its algorithm is unspecified,
     /// so the value is stable for one toolchain only).
@@ -640,6 +692,19 @@ pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The published FNV-1a/64 values, and the `Hasher` face folds the
+    /// same bytes as the inherent one.
+    #[test]
+    fn the_fold_is_fnv1a_64() {
+        assert_eq!(fnv64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv64(b"foobar"), 0x8594_4171_f739_67e8);
+        let mut split = Fnv64::new();
+        split.write(b"foo");
+        core::hash::Hasher::write(&mut split, b"bar");
+        assert_eq!(core::hash::Hasher::finish(&split), fnv64(b"foobar"));
+    }
 
     #[test]
     fn a_covered_change_moves_the_fold_and_order_is_by_path() {

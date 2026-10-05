@@ -104,13 +104,8 @@ fn toolchain_hash_of<'b>(
     build_options: &str,
     files: impl Iterator<Item = (&'b str, &'b str)>,
 ) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
+    let mut h = hale_graph::identity::Fnv64::new();
+    let mut eat = |bytes: &[u8]| h.write(bytes);
     eat(version.as_bytes());
     eat(&[0]);
     eat(compiler.as_bytes());
@@ -123,7 +118,7 @@ fn toolchain_hash_of<'b>(
         eat(content.as_bytes());
         eat(&[0]);
     }
-    h
+    h.finish()
 }
 
 /// `$XDG_CACHE_HOME/hale/iris/<hash>` (or `~/.cache/hale/iris/<hash>`),

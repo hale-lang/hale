@@ -853,14 +853,7 @@ pub fn derive_application_model_over(
     // contract; a field change on a literal endpoint's type changes
     // its contract; renaming a type without structural change does
     // not.
-    let fnv = |s: &str| -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in s.as_bytes() {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    };
+    let fnv = |s: &str| -> u64 { hale_graph::identity::fnv64(s.as_bytes()) };
     // Structural shape of a payload TYPE (by raw post-merge name),
     // through the SAME renderer topics use. A non-bare-struct
     // payload has no canonical shape; its contract falls back to an
