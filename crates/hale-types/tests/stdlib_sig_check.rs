@@ -660,6 +660,28 @@ fn std_test_calls_are_checked() {
 }
 
 #[test]
+fn std_text_calls_are_checked() {
+    refused(
+        "    let h = std::text::md_to_html(\"# a\", true);\n    println(h);",
+        &[("`std::text::md_to_html` takes 1 argument, got 2", "std::text::md_to_html")],
+    );
+    refused(
+        "    let h = std::text::md_to_html(std::bytes::from_string(\"# a\"));\n    println(h);",
+        &[(
+            "`std::text::md_to_html` argument 1: expected `String`, got `Bytes`",
+            "std::bytes::from_string(\"# a\")",
+        )],
+    );
+    refused(
+        "    let h = std::text::md_to_html(\"# a\") or \"\";\n    println(h);",
+        &[(
+            "`std::text::md_to_html` is not fallible (it returns `String`); drop the `or` clause",
+            "std::text::md_to_html(\"# a\")",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

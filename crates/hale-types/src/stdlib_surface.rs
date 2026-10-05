@@ -1283,7 +1283,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("is_digit", PURE, [Int] -> Bool, Intrinsic(TextIsDigit)),
             row!("is_whitespace", PURE, [Int] -> Bool, Intrinsic(TextIsWhitespace)),
             row!("is_word_char", PURE, [Int] -> Bool, Intrinsic(TextIsWordChar)),
-            row!("md_to_html", PURE, _, HaleBody("__md_to_html")),
+            row!("md_to_html", PURE, [Str] -> Str, HaleBody("__md_to_html")),
             row!("tokenize_words_into", PURE, [Str, Any] -> Unit, Intrinsic(TextTokenizeWordsInto)),
         ],
         open_prefixes: &[],

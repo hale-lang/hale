@@ -983,7 +983,7 @@ std::text::is_alpha | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> 
 std::text::is_digit | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_digit
 std::text::is_whitespace | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_whitespace
 std::text::is_word_char | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_word_char
-std::text::md_to_html | lookup=text@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=md_to_html
+std::text::md_to_html | lookup=text@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=md_to_html
 std::text::tokenize_words_into | lookup=text@2 | locus=false | effects=pure | sig=(Str, Any) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=tokenize_words_into
 std::time::can_parse_iso8601 | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=can_parse_iso8601
 std::time::current | lookup=time@2 | locus=false | effects=time | sig=() -> Time | ret_ty=Time | or=- | parks=false | holds=false | unknown=- | suggest=current
