@@ -49,6 +49,7 @@ use crate::stdlib::io_stdin::IoStdinStdlib;
 use crate::stdlib::io_tcp::IoTcpStdlib;
 use crate::stdlib::io_tls::IoTlsStdlib;
 use crate::stdlib::io_udp::IoUdpStdlib;
+use crate::stdlib::io_unix::IoUnixStdlib;
 use crate::stdlib::math::MathStdlib;
 use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::rand::RandStdlib;
@@ -27364,6 +27365,141 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoEcdsaP256Sign => {
                 self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
             }
+            // Per-path wrappers for the fs/tcp surfaces flipped to
+            // `fallible(IoError)`. Each helper evaluates args, calls
+            // the underlying C primitive, and feeds the sentinel
+            // result + path into `complete_io_fallible_call` to build
+            // the lazy-IoError branch.
+            Id::IoFsReadFile => self.lower_std_io_fs_read_file_fallible(args, scope),
+            Id::IoFsReadBytes => self.lower_std_io_fs_read_bytes_fallible(args, scope),
+            Id::IoFsWriteBytes => {
+                self.lower_std_io_fs_write_bytes_fallible(args, scope, "lotus_fs_write_file")
+            }
+            Id::IoFsWritePrivateRaw => {
+                self.lower_std_io_fs_write_bytes_fallible(args, scope, "lotus_fs_write_private")
+            }
+            Id::IoFsWriteFile => self.lower_std_io_fs_write_file_fallible(
+                args, scope, "lotus_fs_write_file",
+            ),
+            Id::IoFsWriteFileAppend => self.lower_std_io_fs_write_file_fallible(
+                args, scope, "lotus_fs_write_file_append",
+            ),
+            Id::IoFsFileSize => self.lower_std_io_fs_file_size_fallible(args, scope),
+            Id::IoFsMkdir => self.lower_std_io_fs_mkdir_fallible(args, scope),
+            // C9 (pond/logfmt + pond/agent/sandbox).
+            Id::IoFsRename => self.lower_std_io_fs_rename_fallible(args, scope),
+            Id::IoFsUnlink => self.lower_std_io_fs_unlink_fallible(args, scope),
+            Id::IoFsMktemp => self.lower_std_io_fs_mktemp_fallible(args, scope),
+            Id::IoFsListDirCount => self.lower_std_io_fs_list_dir_count_fallible(args, scope),
+            Id::IoFsListDirAt => self.lower_std_io_fs_list_dir_at_fallible(args, scope),
+            Id::IoTcpListenSocket => self.lower_std_io_tcp_listen_socket_fallible(args, scope),
+            Id::IoTcpConnect => self.lower_std_io_tcp_connect_fallible(args, scope),
+            Id::IoTcpConnectWait => self.lower_std_io_tcp_connect_wait_fallible(args, scope),
+            Id::IoTcpAcceptOne => self.lower_std_io_tcp_accept_one_fallible(args, scope),
+            // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
+            Id::IoUnixListenSocket => self.lower_std_io_unix_listen_socket_fallible(args, scope),
+            Id::IoUnixConnect => self.lower_std_io_unix_connect_fallible(args, scope),
+            Id::IoUnixConnectWait => self.lower_std_io_unix_connect_wait_fallible(args, scope),
+            // TLS: connect handshakes + system trust verification,
+            // so the failure surface is rich enough to warrant
+            // `fallible(IoError)`. send_bytes / recv_bytes / close
+            // stay non-fallible (Int 0/-1 returns) to mirror the
+            // tcp shape.
+            Id::IoTlsConnect => self.lower_std_io_tls_connect_fallible(args, scope),
+            // upgrade wraps an already-connected fd in a TLS session
+            // (STARTTLS-style); same fallible(IoError) surface as
+            // connect since it handshakes + optionally verifies.
+            Id::IoTlsUpgrade => self.lower_std_io_tls_upgrade_fallible(args, scope),
+            // UDP primitives: `__bind` returns Int fd, `__send`
+            // returns (), `__recv` returns Bytes.
+            Id::IoUdpBindRaw | Id::IoUdpBind => self.lower_std_io_udp_bind_fallible(args, scope),
+            Id::IoUdpSendRaw | Id::IoUdpSend => self.lower_std_io_udp_send_fallible(args, scope),
+            Id::IoUdpRecvRaw | Id::IoUdpRecv => self.lower_std_io_udp_recv_fallible(args, scope),
+            // 2026-05-26: UDP multicast (P1) + setsockopt
+            // pass-through (P2).
+            Id::IoUdpJoinGroup => self.lower_std_io_udp_join_group_fallible(args, scope),
+            Id::IoUdpLeaveGroup => self.lower_std_io_udp_leave_group_fallible(args, scope),
+            Id::IoUdpSetMulticastTtl => {
+                self.lower_std_io_udp_set_multicast_ttl_fallible(args, scope)
+            }
+            Id::IoUdpSetMulticastLoop => {
+                self.lower_std_io_udp_set_multicast_loop_fallible(args, scope)
+            }
+            Id::IoUdpSetMulticastIface => {
+                self.lower_std_io_udp_set_multicast_iface_fallible(args, scope)
+            }
+            Id::IoUdpSetOptionInt => self.lower_std_io_udp_set_option_int_fallible(args, scope),
+            Id::IoUdpSetOptionBool => self.lower_std_io_udp_set_option_bool_fallible(args, scope),
+            Id::IoUdpGetOptionInt => self.lower_std_io_udp_get_option_int_fallible(args, scope),
+            Id::IoUdpRecvWithSource => {
+                self.lower_std_io_udp_recv_with_source_fallible(args, scope)
+            }
+            Id::IoUdpSetRecvTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_udp_set_recv_timeout_ns",
+                "set_recv_timeout",
+            ),
+            Id::IoUdpSetSendTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_udp_set_send_timeout_ns",
+                "set_send_timeout",
+            ),
+            // 2026-05-27 — TCP send/recv timeouts. Same helper
+            // as udp; the C side shares the underlying
+            // sock_set_timeout_ns. Sole reason for a separate
+            // path-call site (vs. one shared `std::io::sock`
+            // namespace) is the typecheck-level fd-type
+            // discrimination: a tcp fd shouldn't accept a udp-
+            // shaped op.
+            Id::IoTcpSetRecvTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tcp_set_recv_timeout_ns",
+                "set_recv_timeout",
+            ),
+            Id::IoTcpSetSendTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tcp_set_send_timeout_ns",
+                "set_send_timeout",
+            ),
+            // 2026-06-13 — TCP_NODELAY (Nagle off). The headline
+            // socket-option gap: latency-sensitive TCP protocols
+            // need to disable Nagle and could not from Hale before.
+            Id::IoTcpSetNodelay => self.lower_std_io_tcp_set_nodelay(args, scope),
+            // 2026-06-13 — recv_stamped (#1): one-time SO_TIMESTAMPNS
+            // opt-in so recv_stamped_into reads the kernel RX timestamp
+            // with no per-recv syscall.
+            Id::IoTcpSetRxTimestamps => self.lower_std_io_tcp_set_rx_timestamps(args, scope),
+            // TLS fast-path siblings — same fd+Bool helper; the C side
+            // resolves the handle to the underlying socket fd (2026-06-14).
+            Id::IoTlsSetNodelay => self.lower_tcp_set_bool_opt_fallible(
+                args, scope, "lotus_tls_set_nodelay", "set_nodelay",
+            ),
+            Id::IoTlsSetRxTimestamps => self.lower_tcp_set_bool_opt_fallible(
+                args, scope, "lotus_tls_set_rx_timestamps", "set_rx_timestamps",
+            ),
+            // TLS siblings — same helper; the first arg is a TLS handle, the
+            // C side resolves it to the connection's underlying fd. Bounds a
+            // blocking SSL_read so a half-open connection is detected
+            // (WsClient liveness fix) rather than hanging forever.
+            Id::IoTlsSetRecvTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tls_set_recv_timeout_ns",
+                "set_recv_timeout",
+            ),
+            Id::IoTlsSetSendTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tls_set_send_timeout_ns",
+                "set_send_timeout",
+            ),
+            // File primitives: only the `__`-prefixed forms map
+            // here. The user-facing `open` / `write_bytes` / `seek`
+            // resolve via STDLIB_FN_RENAMES to the Hale-level
+            // wrappers in ../../hale-stdlib/hl/file.hl that bridge
+            // File ↔ fd (open returns a File, write_bytes/seek
+            // take a File).
+            Id::IoFileOpenRaw => self.lower_std_io_file_open_fallible(args, scope),
+            Id::IoFileWriteBytesRaw => self.lower_std_io_file_write_bytes_fallible(args, scope),
+            Id::IoFileSeekRaw => self.lower_std_io_file_seek_fallible(args, scope),
             // Not moved yet (S4): the old dispatcher's literals still
             // lower or refuse these.
             Id::BytesBuilderAppendRaw
@@ -27387,60 +27523,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::EnvArgsCount
             | Id::EnvVar
             | Id::EnvVarExists
-            | Id::IoFileOpenRaw
-            | Id::IoFileSeekRaw
-            | Id::IoFileWriteBytesRaw
             | Id::IoFsFileExists
-            | Id::IoFsFileSize
-            | Id::IoFsListDirAt
-            | Id::IoFsListDirCount
-            | Id::IoFsMkdir
-            | Id::IoFsMktemp
-            | Id::IoFsReadBytes
-            | Id::IoFsReadFile
-            | Id::IoFsRename
-            | Id::IoFsUnlink
-            | Id::IoFsWriteBytes
-            | Id::IoFsWriteFile
-            | Id::IoFsWriteFileAppend
-            | Id::IoFsWritePrivateRaw
             | Id::IoStdinReadLine
             | Id::IoStdinReadLineStatus
-            | Id::IoTcpAcceptOne
             | Id::IoTcpCloseFd
-            | Id::IoTcpConnect
-            | Id::IoTcpConnectWait
-            | Id::IoTcpListenSocket
-            | Id::IoTcpSetNodelay
-            | Id::IoTcpSetRecvTimeout
-            | Id::IoTcpSetRxTimestamps
-            | Id::IoTcpSetSendTimeout
-            | Id::IoTlsConnect
-            | Id::IoTlsSetNodelay
-            | Id::IoTlsSetRecvTimeout
-            | Id::IoTlsSetRxTimestamps
-            | Id::IoTlsSetSendTimeout
-            | Id::IoTlsUpgrade
-            | Id::IoUdpBind
-            | Id::IoUdpBindRaw
-            | Id::IoUdpGetOptionInt
-            | Id::IoUdpJoinGroup
-            | Id::IoUdpLeaveGroup
-            | Id::IoUdpRecv
-            | Id::IoUdpRecvRaw
-            | Id::IoUdpRecvWithSource
-            | Id::IoUdpSend
-            | Id::IoUdpSendRaw
-            | Id::IoUdpSetMulticastIface
-            | Id::IoUdpSetMulticastLoop
-            | Id::IoUdpSetMulticastTtl
-            | Id::IoUdpSetOptionBool
-            | Id::IoUdpSetOptionInt
-            | Id::IoUdpSetRecvTimeout
-            | Id::IoUdpSetSendTimeout
-            | Id::IoUnixConnect
-            | Id::IoUnixConnectWait
-            | Id::IoUnixListenSocket
             | Id::MathAcos
             | Id::MathAsin
             | Id::MathAtan
