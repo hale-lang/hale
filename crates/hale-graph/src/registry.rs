@@ -170,6 +170,11 @@ pub struct Family {
 #[derive(Debug, Clone, Copy)]
 pub struct Rule {
     pub id: &'static str,
+    /// The spec's bold title for the rule, verbatim (a wrapped title
+    /// joined on single spaces, its bold markers dropped):
+    /// `rule_lists_match_the_spec` compares it, so a renumbering or a
+    /// retitling in the spec fails the build until the registry follows.
+    pub title: &'static str,
     pub gist: &'static str,
     pub family: &'static str,
     pub evaluator: Option<Site>,
@@ -1832,12 +1837,37 @@ pub const FAMILIES: &[Family] = &[
     },
 ];
 
-/// The spec's numbered rules and their evaluators. A registered rule
+/// A list of rules the spec states, identified by its file and heading.
+/// A rule's `id` is `<key>/<n>`: `n` is the spec's number for a
+/// numbered list, and a slug of the bold title for a table's row.
+#[derive(Debug, Clone, Copy)]
+pub struct RuleList {
+    pub key: &'static str,
+    /// The spec file, relative to the repository root.
+    pub spec: &'static str,
+    /// The heading's text, without its `#` marks.
+    pub heading: &'static str,
+    /// The heading's level (the number of `#`).
+    pub level: usize,
+}
+
+/// The rule lists the spec states and the registry holds in full:
+/// `rule_lists_match_the_spec` (registry_rules_match_spec.rs) reads each
+/// section and fails on a rule one side lacks.
+pub const RULE_LISTS: &[RuleList] = &[RuleList {
+    key: "semantics/placement",
+    spec: "spec/semantics.md",
+    heading: "Type-check rules",
+    level: 3,
+}];
+
+/// The spec's rules and their evaluators. A registered rule
 /// whose evaluator is `None` fails the build (registry_guard.rs),
 /// unless it is `Reserved`.
 pub const RULES: &[Rule] = &[
     Rule {
         id: "semantics/placement/1",
+        title: "`placement { }` is `main locus` only.",
         gist: "`placement { }` is main-locus-only",
         family: "placement",
         evaluator: Some(site(PARSER, "`placement` block is only valid inside")),
@@ -1845,6 +1875,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/2",
+        title: "Keys reference main-locus `params` field names.",
         gist: "keys name main-locus params fields",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1852,6 +1883,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/3",
+        title: "Field values are locus types.",
         gist: "field values are locus types",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1859,6 +1891,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/4",
+        title: "At most one placement entry per field.",
         gist: "at most one entry per field",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1866,6 +1899,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/5",
+        title: "Pool names use snake_case Idents.",
         gist: "pool names are identifiers; `main` always exists",
         family: "placement",
         evaluator: Some(site(PARSER, "parse_placement_block")),
@@ -1873,6 +1907,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/6",
+        title: "Locus-pinning compatibility.",
         gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_features")),
@@ -1880,6 +1915,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/7",
+        title: "Dead bus receiver (error).",
         gist: "dead bus receiver on a cooperative pool is an error",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
@@ -1887,6 +1923,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/8",
+        title: "Blocking syscall on a cooperative pool (warning).",
         gist: "a blocking syscall on a cooperative pool is a warning",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
@@ -1894,6 +1931,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/9",
+        title: "Orphan bus topic (warning).",
         gist: "orphan bus topic (closed world)",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_graph")),
@@ -1901,6 +1939,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/10",
+        title: "Bus cycles.",
         gist: "bus cycles: a queued cycle warns, an unconditional intra-locus cycle of direct calls is an error",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_cycles")),
@@ -1908,6 +1947,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/11",
+        title: "Bus backpressure (warning).",
         gist: "bus backpressure heuristic",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_backpressure")),
@@ -1915,6 +1955,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/12",
+        title: "Bus subject type-mismatch (error).",
         gist: "one literal subject, one payload type",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_subject_types")),
@@ -1922,6 +1963,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/13",
+        title: "Empty / degenerate `pinned(cores = …)` (error).",
         gist: "degenerate `pinned(cores = ..)` is an error",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1929,6 +1971,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/14",
+        title: "`topology { }` consistency + `pinned(node/l3)` resolution (error).",
         gist: "topology consistency and node/l3 resolution",
         family: "placement",
         evaluator: Some(site(CHECK, "check_topology_block")),
@@ -1936,6 +1979,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/15",
+        title: "`replicas = K` (error on `K < 1`; pinned-only).",
         gist: "`replicas = K`: K >= 1, pinned only",
         family: "placement",
         evaluator: Some(site(CHECK, "check_placement_block")),
@@ -1943,6 +1987,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/16",
+        title: "Pool affinity (2026-08-12).",
         gist: "pool affinity agrees per pool",
         family: "placement",
         evaluator: Some(site(CHECK, "check_pool_affinity")),
@@ -1950,6 +1995,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/17",
+        title: "A `pinned` placement forbids a loop (error).",
         gist: "a pinned locus is not instantiated in a loop",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "pinned_root_in_a_loop")),
@@ -1957,6 +2003,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/18",
+        title: "Every entry is consumed by exactly one instantiation (error).",
         gist: "every placement entry is consumed exactly once",
         family: "placement",
         evaluator: Some(site(LOWERING_LAWS, "placement_entry_consumed")),
@@ -1964,6 +2011,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/19",
+        title: "Uncarriable bus payload (error).",
         gist: "a bus payload is carriable",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_payload_carriable")),
@@ -1971,6 +2019,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/20",
+        title: "Unowned subscriber (error).",
         gist: "a subscriber born in a bus handler is owned",
         family: "ownership",
         evaluator: Some(site(CHECK, "check_unowned_subscriber_locus")),
