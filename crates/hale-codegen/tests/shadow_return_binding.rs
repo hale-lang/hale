@@ -35,6 +35,8 @@
 //! a block tail inside an expression block. Resolving by name covered
 //! them by coincidence; the walk has to cover them by resolution.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 use std::process::Command;
 
@@ -50,7 +52,7 @@ struct Run {
 
 fn run(name: &str, src: &str) -> Run {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let errors: Vec<String> = hale_types::check_program(&program)
+    let errors: Vec<String> = entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)

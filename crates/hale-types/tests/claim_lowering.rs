@@ -10,11 +10,13 @@
 //!     selection selected — over fixtures AND the whole corpus
 //!     (where the lowering must also be total and lawful).
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_model::{ClaimIr, ClaimOrigin, CountCmpIr, QuantDimIr, SetIr};
 use hale_types::claim_lowering::lower_claims;
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::Bundle;
 
 fn lower(src: &str) -> (hale_model::ClaimIrTable, hale_model::ApplicationModel)

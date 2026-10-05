@@ -10,9 +10,11 @@
 //! evaluator's name comparison and the model's typed identity gave
 //! different answers.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::verdict::Verdict;
 use hale_types::Bundle;

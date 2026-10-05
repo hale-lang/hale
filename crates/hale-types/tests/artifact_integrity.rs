@@ -20,9 +20,12 @@
 //! `artifact_digest` covers the whole body and is the final key, so
 //! everything preceding it is exactly what was hashed.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
-use hale_types::topology::{dump_topology, verify_artifact_digest};
+use hale_types::topology::verify_artifact_digest;
+use entries::dump_topology;
 use hale_types::Bundle;
 
 const SRC: &str = r#"

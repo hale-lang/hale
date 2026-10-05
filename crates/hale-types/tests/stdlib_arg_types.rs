@@ -27,13 +27,15 @@
 //! targets of `split_into` / `join` / `tokenize_words_into` — are
 //! pinned permissive below so tightening one is a deliberate act.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 /// Errors only, with spans, so a pin can assert the diagnostic is
 /// LOCATED rather than a spanless whole-program gripe.
 fn errors(src: &str) -> Vec<(String, (u32, u32))> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message, (d.span.start.0, d.span.end.0)))

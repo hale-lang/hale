@@ -25,8 +25,11 @@
 //! things that do work: a top-level `const` (in scope inside every
 //! locus of the seed) or a `params` field with a default.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::{check_bundle_opts_whole_program, check_program, Bundle};
+use hale_types::Bundle;
+use entries::{check_bundle_opts_whole_program, check_program};
 use std::collections::BTreeMap;
 
 /// The GH #747 locus-member-const diagnostics raised for `src`, as

@@ -13,6 +13,8 @@
 //! reports (+1, since 0 means unstamped), a locus type and a topic
 //! both carry them, and a harness-built binary still reads 0.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -332,7 +334,7 @@ fn main() { App { }; }
         let mut programs = std::collections::BTreeMap::new();
         programs.insert("main.hl".to_string(), &program);
         let bundle = hale_types::Bundle::new(programs);
-        let m = hale_types::model_builder::derive_application_model(
+        let m = entries::derive_application_model(
             &bundle,
         );
         hale_model::obs_ids::digest(&hale_model::obs_ids::obs_entity_ids(

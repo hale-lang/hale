@@ -64,6 +64,8 @@
 //! program `hale build` accepts. It is NOT ignored, because it only
 //! builds the programs the strict rule refuses — a handful, not 1400.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -174,7 +176,7 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     // `check_program` holds the whole-program rules since GH #911 B1,
     // so this reads the corpus exactly as `hale check <dir>` reads a
     // seed — which is the comparison the ratchet is for.
-    if hale_types::check_program(&program).iter().any(|d| d.is_error()) {
+    if entries::check_program(&program).iter().any(|d| d.is_error()) {
         return Verdict::Skipped("the checker rejects it");
     }
     // Cross-seed: the sibling seed is not in this fragment.
@@ -445,7 +447,7 @@ fn an_entry_point_less_program_is_built() {
              has one, so it proves nothing:\n{}",
             src
         );
-        let errors: Vec<String> = hale_types::check_program(&program)
+        let errors: Vec<String> = entries::check_program(&program)
             .into_iter()
             .filter(|d| d.is_error())
             .map(|d| d.message)
@@ -494,7 +496,7 @@ fn permissive_check(
     let mut programs: BTreeMap<String, &hale_syntax::ast::Program> =
         BTreeMap::new();
     programs.insert(String::new(), program);
-    hale_types::check_bundle_opts(&hale_types::Bundle::new(programs), false)
+    entries::check_bundle_opts(&hale_types::Bundle::new(programs), false)
 }
 
 /// The bare name in ``call to `X`: no free fn, generic fn or
@@ -575,7 +577,7 @@ fn strict_check_refuses_nothing_the_build_accepts() {
         programs.insert(String::new(), &program);
         let bundle = hale_types::Bundle::new(programs);
         let names: BTreeSet<String> =
-            hale_types::check_bundle_opts_scoped(&bundle, false, true, true)
+            entries::check_bundle_opts_scoped(&bundle, false, true, true)
                 .iter()
                 .filter(|d| d.is_error())
                 .filter_map(|d| strict_callee_name(&d.message))
@@ -970,7 +972,7 @@ fn build_and_run_probe(src: &str, tag: &str) -> Result<String, String> {
         let msgs: Vec<&str> = ds.iter().map(|d| d.message.as_str()).collect();
         format!("does not parse: {}", msgs.join("; "))
     })?;
-    let errs: Vec<String> = hale_types::check_program(&program)
+    let errs: Vec<String> = entries::check_program(&program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.message.clone())

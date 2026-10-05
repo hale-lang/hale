@@ -12,13 +12,16 @@
 //! - the walk's bound, cross-seed and wildcard facts are columns of the
 //!   graph's wire rows.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::Program;
 use hale_syntax::parse_source;
 use hale_types::bus_graph::{build_bus_graph, BusGraph};
 use hale_types::resolve::build_top_scope;
-use hale_types::{check_program, Bundle};
+use hale_types::Bundle;
+use entries::check_program;
 
 fn check(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");
@@ -434,7 +437,7 @@ fn a_send_by_name_meets_a_subscription_by_literal_subject() {
 fn check_unminted(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");
     let bundle = Bundle::new(BTreeMap::from([("main.hl".to_string(), &prog)]));
-    hale_types::check_bundle(&bundle).into_iter().map(|d| d.message).collect()
+    entries::check_bundle(&bundle).into_iter().map(|d| d.message).collect()
 }
 
 const SELF_RECURSION_BY_NAME: &str = r#"

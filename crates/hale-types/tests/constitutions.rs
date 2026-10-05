@@ -12,11 +12,13 @@
 //! entrypoint's own closed world. One text, N evaluations, N worlds —
 //! the soundness argument is unchanged.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn diags(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse failed");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| d.message)
@@ -582,7 +584,7 @@ main locus App {
     // table is what every consumer judges, so it is the stronger
     // place to assert de-duplication anyway.
     let model =
-        hale_types::model_builder::derive_application_model(&bundle);
+        entries::derive_application_model(&bundle);
     let table =
         hale_types::claim_lowering::lower_claims(&bundle, &model);
     assert_eq!(

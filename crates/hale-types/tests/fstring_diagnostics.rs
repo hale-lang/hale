@@ -11,11 +11,13 @@
 //! whatever declaration happened to be at the top of the file. The
 //! author was told their type declaration was wrong.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn diags(src: &str) -> Vec<hale_syntax::error::Diag> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
 }
 
 fn errors(src: &str) -> Vec<String> {

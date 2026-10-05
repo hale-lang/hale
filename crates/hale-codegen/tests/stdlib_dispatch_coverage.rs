@@ -30,6 +30,8 @@
 //! checked program can reach are allowances, each kind with its reason
 //! and each list held to the code (`the_allowances_are_what_the_code_says`).
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -1147,7 +1149,7 @@ pub fn harvested() -> Vec<(String, String)> {
             continue;
         }
         let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
-        if hale_types::check_program(&program).iter().any(|d| d.is_error()) {
+        if entries::check_program(&program).iter().any(|d| d.is_error()) {
             continue;
         }
         let has_entry = program.items.iter().any(|i| match i {

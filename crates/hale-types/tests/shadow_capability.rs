@@ -30,6 +30,8 @@
 //! `fixtures/shadow_capability.txt`. Regenerate with
 //! `HALE_SHADOW_REGEN=1`, then classify by hand.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -150,7 +152,7 @@ fn check(program: &Program, target: &ConfiguredTarget) -> Option<Checked> {
     let mut bundle = Bundle::new(programs);
     bundle.snapshot = ids;
     bundle.target = target.clone();
-    let diags = hale_types::check_bundle_opts_whole_program(&bundle, false);
+    let diags = entries::check_bundle_opts_whole_program(&bundle, false);
     let (known, _) = hale_types::resolve::build_top_scope(&bundle);
     drop(bundle);
     Some(Checked { diags, known, program: p })

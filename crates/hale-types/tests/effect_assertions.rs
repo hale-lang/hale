@@ -4,9 +4,12 @@
 //! CHAIN naming the path (the thing `@budget`'s fixpoint couldn't
 //! produce), and a clean program passes.
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn diags_for(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()
@@ -814,7 +817,7 @@ fn qualified_names_parse_inside_an_effects_set() {
 
 fn full_diags(src: &str) -> Vec<hale_syntax::Diag> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
 }
 
 /// The assertion half survives the stack: a syscall three frames down

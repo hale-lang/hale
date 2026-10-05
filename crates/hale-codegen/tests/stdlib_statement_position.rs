@@ -18,12 +18,15 @@
 //! 3. `std::str::parse_int` and `parse_float`, bare, get the expression
 //!    form's fallibility refusal.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
+
 #[path = "support/harness.rs"]
 mod harness;
 
 fn checks_clean(source: &str) -> &str {
     let program = hale_syntax::parse_source(source).expect("parses");
-    let errors: Vec<String> = hale_types::check_program(&program)
+    let errors: Vec<String> = entries::check_program(&program)
         .iter()
         .filter(|d| d.is_error())
         .map(|d| format!("{d:?}"))

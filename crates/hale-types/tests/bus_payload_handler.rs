@@ -8,7 +8,9 @@
 //! mismatch cross-site — and its message steered users toward the
 //! unchecked `topic` construct.
 
-use hale_types::check_program;
+#[path = "support/entries.rs"]
+mod entries;
+use entries::check_program;
 
 fn errors(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");

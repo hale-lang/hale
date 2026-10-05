@@ -22,6 +22,8 @@
 //!      it produces a trailer-finalized artifact that replays with
 //!      zero order divergence.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -43,7 +45,7 @@ fn build(name: &str, src: &str) -> PathBuf {
     let mut programs = std::collections::BTreeMap::new();
     programs.insert(name.to_string(), &program);
     let bundle = hale_types::Bundle::new(programs);
-    let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    let model_hash = entries::model_shape_hash(&bundle);
     let bin = harness::unique_bin(&format!("hale_test_trunc_{}", name));
     let options = BuildOptions {
         model_hash: Some(model_hash),

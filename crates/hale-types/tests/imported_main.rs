@@ -3,9 +3,11 @@
 //! such a locus `imported`; here the mark is set by hand on a merged
 //! bundle, which is the shape `hale build` checks.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::ast::TopDecl;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 // The imported seed's `fn main` is renamed as the rename pass would
 // (`lib::main`), so the bundle has one entry point.

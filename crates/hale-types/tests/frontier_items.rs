@@ -1,9 +1,12 @@
 //! GH #265 frontier items: cross-actor causality, supervision
 //! coverage, secret taint, inferred manifest, symbolic cost.
 
+#[path = "support/entries.rs"]
+mod entries;
+
 fn diags_for(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()

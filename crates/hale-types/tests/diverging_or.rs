@@ -15,11 +15,13 @@
 //! still requires a substitute, because the block CAN fall through and
 //! then genuinely does need a value.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn errs(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()

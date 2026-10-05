@@ -13,8 +13,10 @@
 //! now, so `... or 0` is a substitute mismatch at check time and
 //! `... or discard` / `or handler(err)` are the admitted shapes.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 
 fn diags(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

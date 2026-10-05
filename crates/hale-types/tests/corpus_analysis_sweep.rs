@@ -16,6 +16,8 @@
 //! program in the repo, where an expected-output test costs one
 //! transcription per program and covers exactly one.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeSet;
 
 fn corpus() -> Vec<hale_corpus::Program> {
@@ -37,7 +39,7 @@ fn analysis_never_panics_on_the_corpus() {
         };
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
             || {
-                let _ = hale_types::check_program(&program);
+                let _ = entries::check_program(&program);
             },
         ));
         if caught.is_err() {
@@ -65,11 +67,11 @@ fn analysis_is_deterministic_on_the_corpus() {
         let Ok(program) = hale_syntax::parse_source(&p.source) else {
             continue;
         };
-        let a: Vec<String> = hale_types::check_program(&program)
+        let a: Vec<String> = entries::check_program(&program)
             .into_iter()
             .map(|d| d.message)
             .collect();
-        let b: Vec<String> = hale_types::check_program(&program)
+        let b: Vec<String> = entries::check_program(&program)
             .into_iter()
             .map(|d| d.message)
             .collect();

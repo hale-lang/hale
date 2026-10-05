@@ -9,10 +9,12 @@
 //! invocation, so a site collapsed into a per-function total has
 //! already lost the thing that decides the verdict.
 
+#[path = "support/entries.rs"]
+mod entries;
 use std::collections::BTreeMap;
 
 use hale_model::CostDimension;
-use hale_types::model_builder::derive_application_model;
+use entries::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 

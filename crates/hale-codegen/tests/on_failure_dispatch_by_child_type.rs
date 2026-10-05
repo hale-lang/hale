@@ -13,6 +13,8 @@
 //! Each program below fails both children in turn and prints which
 //! handler ran and which child it was handed.
 
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 use std::process::Command;
 
 
@@ -273,7 +275,7 @@ fn main() {
 
 fn assert_generic_handler_output(src: &str, expected: &str) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let diagnostics = hale_types::check_program(&program);
+    let diagnostics = entries::check_program(&program);
     assert!(diagnostics.is_empty(), "check: {diagnostics:?}");
     for asan in [false, true] {
         let bin = harness::unique_bin("hale_generic_failure_children");

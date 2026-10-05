@@ -28,6 +28,8 @@
 //! Rust — it is a nominal type nobody declared, which silently
 //! reopens the permissive behavior this file exists to close.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 use hale_types::stdlib_surface::{rows, SigTy};
 
@@ -35,7 +37,7 @@ use hale_types::stdlib_surface::{rows, SigTy};
 /// diagnostic is LOCATED and not a spanless whole-program gripe.
 fn errors(src: &str) -> Vec<(String, (u32, u32))> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .filter(|d| d.is_error())
         .map(|d| (d.message, (d.span.start.0, d.span.end.0)))

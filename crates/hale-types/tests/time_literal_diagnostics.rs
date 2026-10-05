@@ -2,11 +2,13 @@
 //! is the author's error, and the arithmetic an instant admits is
 //! exactly a shift by a `Duration` and a difference of two instants.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn errors(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    entries::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
 }
 
 #[test]

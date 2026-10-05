@@ -8,8 +8,10 @@
 //! answered with that builtin's call shape instead of an edit-distance
 //! guess.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
-use hale_types::check_program;
+use entries::check_program;
 use hale_types::stdlib_surface::BUILTIN_SPELLINGS;
 
 fn msgs(src: &str) -> Vec<String> {

@@ -3,11 +3,13 @@
 //! standalone-library evaluation. The cross-seed travel-and-recheck
 //! path lives in `hale-cli/tests/xseed_library_claims.rs`.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn diags(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program)
+    entries::check_program(&program)
         .into_iter()
         .map(|d| d.message)
         .collect()

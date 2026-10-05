@@ -7,11 +7,13 @@
 //! the standing sweep, so the next one is found by a test rather than
 //! by a downstream report.
 
+#[path = "support/entries.rs"]
+mod entries;
 use hale_syntax::parse_source;
 
 fn violates(src: &str) -> bool {
     let program = parse_source(src).expect("parse");
-    hale_types::check_program(&program).iter().any(|d| {
+    entries::check_program(&program).iter().any(|d| {
         d.message.contains("effect assertion violated")
             || d.message.contains("causal set violated")
     })
