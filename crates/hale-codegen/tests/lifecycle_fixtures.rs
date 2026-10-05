@@ -277,6 +277,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
     Fixture { file: "l19_started_run_retained.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
     Fixture { file: "l19_started_run_retained_async.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_handler_cell_retained.hl", line: "19", adopted: Some("handler-held"), run: RunMode::Plain, judge: handler_held },
     Fixture { file: "l19_started_run_publishes_back.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
     Fixture { file: "l19_started_run_publishes_back_async.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
     Fixture { file: "l19_handler_replaces_started_run.hl", line: "19", adopted: Some("answered-after-handler"), run: RunMode::Plain, judge: answered_after_handler },
@@ -520,6 +521,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // The placed child's started run and the inline replacement
         // both end before their own physical reclaim (line 19).
         "l19_started_run_retained.hl" | "l19_started_run_retained_async.hl"
+        // The placed subscriber's running handler, likewise (R52).
+        | "l19_handler_cell_retained.hl"
         => {
             p.occurrences = count(&[("Kid", 2)]);
             &["19"]
@@ -790,6 +793,17 @@ const CONTROLS: &[Control] = &[
         skip: "RunHold",
         plan: None,
         fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Run.Ended not reached",
+        baseline_passes: true,
+    },
+    // R52: without the handler's hold, the old subscriber's reclaim
+    // completes while its bus handler is still running.
+    Control {
+        name: "handler_hold_removed",
+        covers: ObligationKind::Handler,
+        fixture: "l19_handler_cell_retained.hl",
+        skip: "HandlerHold",
+        plan: None,
+        fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Handler.Ended not reached",
         baseline_passes: true,
     },
     Control {
@@ -1356,6 +1370,22 @@ fn run_held(r: &Ran) -> String {
     }
 }
 
+/// The old child's bus handler read its own name (R52), and each child
+/// was torn down once.
+fn handler_printed(r: &Ran) -> bool {
+    count(r, "ev handler 0 kid-0-name") == 1 && count(r, "ev kid-dissolve 0") == 1 && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// The running handler returned, reading its own subscriber, and the
+/// trace's plan holds its end before its subscriber's reclaim completes.
+fn handler_held(r: &Ran) -> String {
+    match (handler_printed(r), r.code) {
+        (true, Some(0)) => "handler-held".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
 /// As [`started_printed`], and App's handler heard the run's note on
 /// main before the reassignment completed: inside the reclaim's wait.
 fn answered_in_wait_printed(r: &Ran) -> bool {
@@ -1797,8 +1827,12 @@ const SPINES: &[Spine] = &[
 /// either path ([`LifecyclePlan::shutdown_spine`]).
 const EVERY_SPINE: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
 
+/// A bus handler is no step of its spine: it runs once per delivered
+/// cell, between the readiness and the drain, any number of times (R52).
 fn read(spine: Spine, kind: ObligationKind) -> bool {
-    !RECOVERY_KINDS.contains(&kind) && (SPINES.contains(&spine) || EVERY_SPINE.contains(&kind))
+    !RECOVERY_KINDS.contains(&kind)
+        && kind != ObligationKind::Handler
+        && (SPINES.contains(&spine) || EVERY_SPINE.contains(&kind))
 }
 
 /// Spines whose emitted steps depart from the plan today, each classified
@@ -1810,6 +1844,8 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l19_started_run_retained.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_started_run_retained_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_handler_cell_retained.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_started_run_publishes_back.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
@@ -2040,7 +2076,8 @@ fixture_tests! {
     l19_cross_pool_queued_run_canceled => "l19_cross_pool_queued_run_canceled.hl",
     l19_started_run_retained => "l19_started_run_retained.hl",
     l19_started_run_retained_async => "l19_started_run_retained_async.hl",
-    l19_started_run_publishes_back => "l19_started_run_publishes_back.hl",
+    l19_handler_cell_retained => "l19_handler_cell_retained.hl",
+    l19_started_run_publishes_back =>"l19_started_run_publishes_back.hl",
     l19_started_run_publishes_back_async => "l19_started_run_publishes_back_async.hl",
     l19_handler_replaces_started_run => "l19_handler_replaces_started_run.hl",
     l19_handler_replaces_started_run_async => "l19_handler_replaces_started_run_async.hl",
@@ -2154,6 +2191,12 @@ fn l12_returned_roots_pinned_replicas_under_asan() {
 #[test]
 fn l19_started_run_retained_under_asan() {
     assert_clean_under_asan("l19_started_run_retained.hl", "l19_started", started_printed);
+}
+
+/// R52: the old subscriber's storage outlives its running handler.
+#[test]
+fn l19_handler_cell_retained_under_asan() {
+    assert_clean_under_asan("l19_handler_cell_retained.hl", "l19_handler_cell", handler_printed);
 }
 
 #[test]
@@ -2359,6 +2402,7 @@ control_tests! {
     cancellation_completion_omitted,
     queued_run_cancel_unnamed,
     run_hold_wait_removed,
+    handler_hold_removed,
     restart_completion_omitted,
     resume_completion_omitted,
     wait_abort_removed,

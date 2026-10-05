@@ -543,10 +543,10 @@ fn known_open(file: &str) -> Option<(&'static str, &'static str)> {
 /// The trace build: today's word where the fixture is known open, the
 /// adopted one otherwise; and where the delivery ran.
 fn assert_traced(file: &str) {
-    assert_traced_in(file, false);
+    let _ = assert_traced_in(file, false);
 }
 
-fn assert_traced_in(file: &str, no_bus_devirt: bool) {
+fn assert_traced_in(file: &str, no_bus_devirt: bool) -> Ran {
     let bin = build(file, false, no_bus_devirt);
     let ran = run_bin(&bin, &[]);
     let _ = std::fs::remove_file(&bin);
@@ -569,6 +569,7 @@ fn assert_traced_in(file: &str, no_bus_devirt: bool) {
             assert!(domains.iter().all(|(_, d)| d.starts_with(on)), "{file}: the delivery ran on {domains:?}, not {on}");
         }
     }
+    ran
 }
 
 /// Under AddressSanitizer, with chunk pooling off (GH #816), in both
@@ -767,9 +768,29 @@ fn a_reclaim_waiting_for_a_handler_runs_what_the_handler_waits_for() {
 #[test]
 fn a_reclaim_of_a_flooded_subscriber_ends_its_workers_carried_hold() {
     for no_bus_devirt in [false, true] {
-        assert_traced_in("fd_handler_cell_flooded.hl", no_bus_devirt);
+        let ran = assert_traced_in("fd_handler_cell_flooded.hl", no_bus_devirt);
+        assert_a_handler_per_cell(&ran, 100);
     }
     assert_asan("fd_handler_cell_flooded.hl");
+}
+
+/// A carried hold covers many handlers, and the trace still names each
+/// (R52): every subject's `Handler` entries each have an end, one
+/// subscriber ran at least `at_least` of them, and the trace's laws hold.
+fn assert_a_handler_per_cell(r: &Ran, at_least: usize) {
+    let mut per_subject: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    for e in r.trace.events.iter().filter(|e| e.kind == ObligationKind::Handler) {
+        let n = per_subject.entry(format!("{:?}", e.subject)).or_default();
+        if e.point == Point::Entered {
+            n.0 += 1;
+        } else if e.point.satisfies(Point::Ended) {
+            n.1 += 1;
+        }
+    }
+    assert!(per_subject.values().all(|(entered, ended)| entered == ended), "a handler without its end: {per_subject:?}");
+    assert!(per_subject.values().any(|(entered, _)| *entered >= at_least), "fewer handlers traced than ran: {per_subject:?}");
+    let laws = trace::laws(&r.trace, true);
+    assert!(laws.is_empty(), "the trace's laws: {laws:?}");
 }
 
 /// Two subscribers on one worker, their cells interleaved: each cell ends
@@ -778,7 +799,8 @@ fn a_reclaim_of_a_flooded_subscriber_ends_its_workers_carried_hold() {
 #[test]
 fn a_carried_hold_ends_at_another_subscribers_cell() {
     for no_bus_devirt in [false, true] {
-        assert_traced_in("fd_handler_cell_interleaved.hl", no_bus_devirt);
+        let ran = assert_traced_in("fd_handler_cell_interleaved.hl", no_bus_devirt);
+        assert_a_handler_per_cell(&ran, 50);
     }
     assert_asan("fd_handler_cell_interleaved.hl");
 }

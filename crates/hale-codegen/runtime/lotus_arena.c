@@ -9158,6 +9158,18 @@ static void lotus_run_ticket_free(lotus_run_ticket_t *t) {
  * waiting for it proceeds. Frees the ticket. */
 static void lotus_run_hold_release(lotus_run_ticket_t *t) {
     if (!t) return;
+#ifdef LOTUS_LIFECYCLE_TRACE
+    /* A handler's end, named while its hold still stands, so a reclaim
+     * that waited for it completes after it in the trace. */
+    if (t->handler == 2) lotus_lc_ev("Handler", "Completed", t->child, "PoolRun", NULL);
+    if (t->handler == 3)
+        lotus_lc_ev("Handler", "Terminal(CanceledAfterStart)", t->child, "PoolRun", NULL);
+    /* The negative control's handler ticket was never linked. */
+    if (t->handler && t->canceled) {
+        free(t);
+        return;
+    }
+#endif
     pthread_mutex_lock(&g_run_tickets_lock);
     lotus_run_ticket_unlink(t);
     if (g_run_hold_waiters) pthread_cond_broadcast(&g_run_holds_cv);
@@ -9193,10 +9205,17 @@ static void lotus_run_hold_release(lotus_run_ticket_t *t) {
  *
  * Linked held under one lock, so no cancel sees it unheld; nothing to
  * admit, since nothing queued it. `LOTUS_LIFECYCLE_SKIP=HandlerHold` in
- * the trace build takes none (the negative control). */
+ * the trace build links none (the negative control): the ticket only
+ * names the handler's entry and end, marked `canceled`, which a handler
+ * ticket is otherwise never. */
 static lotus_run_ticket_t *lotus_handler_hold_take(void *child, void *pool) {
 #ifdef LOTUS_LIFECYCLE_TRACE
-    if (lotus_lc_skips("HandlerHold")) return NULL;
+    if (lotus_lc_skips("HandlerHold")) {
+        lotus_run_ticket_t *t = (lotus_run_ticket_t *)malloc(sizeof *t);
+        if (!t) lotus_held_oom("holding a bus handler's subscriber");
+        *t = (lotus_run_ticket_t){ child, 1, 1, pool, NULL, NULL, 1 };
+        return t;
+    }
 #endif
     lotus_run_ticket_t *t = t_handler_hold_spare;
     if (t) {
@@ -9218,11 +9237,14 @@ static lotus_run_ticket_t *lotus_handler_hold_take(void *child, void *pool) {
     return t;
 }
 
-/* The held handler is about to be called. Only the trace build keeps
- * the handler's state past "a handler's hold". */
+/* The held handler is about to be called: the trace's entry. Only the
+ * trace build reads the handler's state past "a handler's hold". */
 static inline void lotus_handler_hold_started(lotus_run_ticket_t *t) {
 #ifdef LOTUS_LIFECYCLE_TRACE
-    if (t && t->handler == 1) t->handler = 2;
+    if (t && t->handler == 1) {
+        t->handler = 2;
+        lotus_lc_ev("Handler", "Entered", t->child, "PoolRun", NULL);
+    }
 #else
     (void)t;
 #endif
@@ -9270,15 +9292,20 @@ static void lotus_handler_carry_end(void) {
 }
 
 /* The handler has returned (its delivery region already gone): carry
- * its hold to the next cell, or end it (bounds 4 and 5). */
+ * its hold to the next cell, or end it (bounds 4 and 5). Either way the
+ * trace names the handler's end here, the hold still standing. */
 static inline void lotus_handler_hold_settle(lotus_run_ticket_t *t) {
 #ifdef LOTUS_LIFECYCLE_TRACE
-    /* The negative control takes no hold. */
-    if (!t) return;
+    /* The negative control's ticket was never linked: never carried. */
+    if (t->canceled) {
+        lotus_run_hold_release(t);
+        return;
+    }
 #endif
     if (++t->carried < LOTUS_HANDLER_CARRY_MAX
         && !__atomic_load_n(&t->wanted, __ATOMIC_ACQUIRE)) {
 #ifdef LOTUS_LIFECYCLE_TRACE
+        lotus_lc_ev("Handler", "Completed", t->child, "PoolRun", NULL);
         t->handler = 1;
 #endif
         t_handler_carry = t;
