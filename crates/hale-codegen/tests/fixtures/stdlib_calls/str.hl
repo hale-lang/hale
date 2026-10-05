@@ -1,0 +1,30 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::str` at statement
+// position, and `cp_size` at expression position, where the rest of the
+// line S shadow set never calls them. Never run; `stdlib_call_fixtures`
+// builds it to IR.
+
+fn main() {
+    let s = "Hello";
+    std::str::byte_at_unchecked(s, 0);
+    std::str::can_parse_float("1.5");
+    std::str::can_parse_int("1");
+    std::str::clone(s);
+    std::str::from_bytes(std::bytes::from_string(s));
+    std::str::index_of(s, "l");
+    std::str::lower(s);
+    std::str::upper(s);
+    std::str::pad_left(s, 8, " ");
+    std::str::pad_right(s, 8, " ");
+    std::str::range_copy(s, 0, 2, 0);
+    std::str::range_eq(s, 0, 2, "He");
+    std::str::repeat(s, 2);
+    std::str::replace(s, "l", "L");
+    std::str::substring(s, 0, 2);
+    std::str::trim(s);
+    std::str::builder_new();
+    let b = std::str::builder_new();
+    std::str::builder_len(b);
+    std::str::builder_finish(b);
+    let size = std::str::cp_size(s, 0);
+    println(size);
+}

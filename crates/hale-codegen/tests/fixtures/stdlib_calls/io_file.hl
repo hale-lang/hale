@@ -1,0 +1,16 @@
+// Build-only call fixture (F.40 phase 4, S0): the `std::io::file` fd
+// primitives the `File` locus is written over, at each position they
+// are dispatched from. Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let fd = std::io::file::__open("/tmp/s0-fixture", "r") or - 1;
+    std::io::file::__write_bytes(fd, std::bytes::from_string("x")) or raise;
+    std::io::file::__seek(fd, 0) or raise;
+    std::io::file::__read_line(fd);
+    std::io::file::__at_eof(fd);
+    let line = std::io::file::__read_line(fd);
+    let eof = std::io::file::__at_eof(fd);
+    let closed = std::io::file::__close(fd);
+    std::io::file::__close(fd);
+    println(closed, line, eof);
+}

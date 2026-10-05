@@ -1,0 +1,14 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::term` at the
+// positions the rest of the line S shadow set does not reach. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    std::term::is_tty(1);
+    std::term::__size_packed();
+    std::term::__raw_enable();
+    std::term::__raw_disable();
+    let packed = std::term::__size_packed();
+    let enabled = std::term::__raw_enable();
+    let disabled = std::term::__raw_disable();
+    println(packed + enabled + disabled);
+}

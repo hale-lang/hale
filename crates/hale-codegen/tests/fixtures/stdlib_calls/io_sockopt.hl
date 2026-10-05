@@ -1,0 +1,54 @@
+// Build-only call fixture (F.40 phase 4, S0): every `std::io::sockopt`
+// constant getter at statement and at expression position, so the line
+// S IR shadow reaches each name the `SOCKOPT_NAMES` guard admits. Never
+// run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    std::io::sockopt::IPPROTO_IP();
+    std::io::sockopt::IPPROTO_IPV6();
+    std::io::sockopt::IPPROTO_TCP();
+    std::io::sockopt::IPPROTO_UDP();
+    std::io::sockopt::IP_ADD_MEMBERSHIP();
+    std::io::sockopt::IP_DROP_MEMBERSHIP();
+    std::io::sockopt::IP_MTU_DISCOVER();
+    std::io::sockopt::IP_MULTICAST_IF();
+    std::io::sockopt::IP_MULTICAST_LOOP();
+    std::io::sockopt::IP_MULTICAST_TTL();
+    std::io::sockopt::IP_PKTINFO();
+    std::io::sockopt::IP_PMTUDISC_DO();
+    std::io::sockopt::IP_PMTUDISC_DONT();
+    std::io::sockopt::IP_PMTUDISC_PROBE();
+    std::io::sockopt::IP_PMTUDISC_WANT();
+    std::io::sockopt::IP_TOS();
+    std::io::sockopt::IP_TTL();
+    std::io::sockopt::SOL_SOCKET();
+    std::io::sockopt::SO_BINDTODEVICE();
+    std::io::sockopt::SO_BROADCAST();
+    std::io::sockopt::SO_KEEPALIVE();
+    std::io::sockopt::SO_LINGER();
+    std::io::sockopt::SO_PRIORITY();
+    std::io::sockopt::SO_RCVBUF();
+    std::io::sockopt::SO_RCVTIMEO();
+    std::io::sockopt::SO_REUSEADDR();
+    std::io::sockopt::SO_REUSEPORT();
+    std::io::sockopt::SO_SNDBUF();
+    std::io::sockopt::SO_SNDTIMEO();
+    std::io::sockopt::TCP_NODELAY();
+    let ip = std::io::sockopt::IPPROTO_IP() + std::io::sockopt::IPPROTO_IPV6()
+        + std::io::sockopt::IPPROTO_TCP() + std::io::sockopt::IPPROTO_UDP();
+    let mc = std::io::sockopt::IP_ADD_MEMBERSHIP() + std::io::sockopt::IP_DROP_MEMBERSHIP()
+        + std::io::sockopt::IP_MTU_DISCOVER() + std::io::sockopt::IP_MULTICAST_IF()
+        + std::io::sockopt::IP_MULTICAST_LOOP() + std::io::sockopt::IP_MULTICAST_TTL()
+        + std::io::sockopt::IP_PKTINFO();
+    let pmtu = std::io::sockopt::IP_PMTUDISC_DO() + std::io::sockopt::IP_PMTUDISC_DONT()
+        + std::io::sockopt::IP_PMTUDISC_PROBE() + std::io::sockopt::IP_PMTUDISC_WANT()
+        + std::io::sockopt::IP_TOS() + std::io::sockopt::IP_TTL();
+    let so = std::io::sockopt::SOL_SOCKET() + std::io::sockopt::SO_BINDTODEVICE()
+        + std::io::sockopt::SO_BROADCAST() + std::io::sockopt::SO_KEEPALIVE()
+        + std::io::sockopt::SO_LINGER() + std::io::sockopt::SO_PRIORITY()
+        + std::io::sockopt::SO_RCVBUF() + std::io::sockopt::SO_RCVTIMEO();
+    let so2 = std::io::sockopt::SO_REUSEADDR() + std::io::sockopt::SO_REUSEPORT()
+        + std::io::sockopt::SO_SNDBUF() + std::io::sockopt::SO_SNDTIMEO()
+        + std::io::sockopt::TCP_NODELAY();
+    println(ip + mc + pmtu + so + so2);
+}

@@ -1,0 +1,9 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::io::fs` at the
+// positions the rest of the line S shadow set does not reach. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    std::io::fs::extension("a.txt");
+    std::io::fs::file_exists("a.txt");
+    std::io::fs::__write_private("/tmp/s0-fixture", std::bytes::from_string("x")) or discard;
+}

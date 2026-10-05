@@ -1,0 +1,13 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::text` at the
+// positions the rest of the line S shadow set does not reach. Never run;
+// `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    std::text::base64::encode(std::bytes::from_string("x"));
+    std::text::base64::url_encode(std::bytes::from_string("x"));
+    std::text::base64::decode("eA==");
+    std::text::md_to_html("# x");
+    let a = std::text::is_alnum(97);
+    let w = std::text::is_word_char(95);
+    println(a, w);
+}
