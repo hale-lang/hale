@@ -313,6 +313,11 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             x.decl == decl(o) && x.kind == o.kind && (o.site.is_some() || x.spine == Some(o.holder.spine))
         })
     };
+    // An owed row whose completion waits for an event the run never
+    // reaches is entered and never ends (a run that exits inside a body
+    // literal's teardown, in its owner's run()): what waits for its end is
+    // cut with it.
+    let mut unended = vec![false; n];
     loop {
         let mut changed = false;
         for i in 0..n {
@@ -320,16 +325,19 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                 continue;
             }
             let o = &plan.obligations[i];
-            let cut = o.edges.entry.iter().filter(|p| focus.holds(p.rule)).any(|p| {
+            let never = |p: &super::Prerequisite| {
                 let j = p.event.obligation.0 as usize;
                 match state[j] {
                     State::Cut => true,
-                    State::Owed => inside(&plan.obligations[j]) && p.event.point != Point::Entered,
+                    State::Owed => (inside(&plan.obligations[j]) || unended[j]) && p.event.point != Point::Entered,
                     State::Off | State::Unchecked => false,
                 }
-            });
-            if cut {
+            };
+            if o.edges.entry.iter().filter(|p| focus.holds(p.rule)).any(never) {
                 state[i] = State::Cut;
+                changed = true;
+            } else if !unended[i] && o.edges.completion.iter().filter(|p| focus.holds(p.rule)).any(never) {
+                unended[i] = true;
                 changed = true;
             }
         }

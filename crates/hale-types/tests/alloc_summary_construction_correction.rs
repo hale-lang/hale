@@ -598,7 +598,7 @@ fn own_entries_run_to_exit_programs() {
         }
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
     }
-    assert_eq!(moved, 79, "the run-to-exit programs among the targets");
+    assert_eq!(moved, 80, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [

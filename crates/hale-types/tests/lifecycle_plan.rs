@@ -955,6 +955,51 @@ fn a_flow_child_is_reclaimed_at_its_runs_end_before_its_owner() {
     }
 }
 
+/// C13: a literal a statement of a lifecycle body builds is torn down
+/// where its statement ends, so that body's row ends after the literal's
+/// reclaim. A let-bound literal and a method's statement literal tie no
+/// row of their locus's to their teardown. A run that ends inside the
+/// literal's dissolve has not reached its owner's run end, and owes
+/// nothing that waits for it (`03c-closure-bubbled`).
+#[test]
+fn a_body_ends_after_the_teardown_of_its_statements_literals() {
+    use hale_types::lifecycle::project::{expected, Focus, Inside, RunPath};
+    let s = snapshot(
+        "locus KidB { run() { } }\nlocus KidR { run() { } }\nlocus KidD { run() { } }\nlocus KidX { run() { } }\n\
+         locus KidM { run() { } }\nlocus KidL { run() { } }\n\
+         locus Host {\n    birth() { KidB { }; }\n    run() { KidR { }; let l = KidL { }; self.work(); }\n\
+         \x20   drain() { KidD { }; }\n    dissolve() { KidX { }; }\n    fn work() { KidM { }; }\n}\n\
+         fn main() { Host { }; }\n",
+    );
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let after_reclaim = |host: K, kid: &str| {
+        let reclaim = id_of(p, one(p, kid, K::Reclaim));
+        one(p, "Host", host).edges.completion.iter().any(|pr| pr.event == hale_types::lifecycle::Event { obligation: reclaim, point: Point::Completed })
+    };
+    for (host, kid) in [(K::Birth, "KidB"), (K::Run, "KidR"), (K::Drain, "KidD"), (K::Dissolve, "KidX")] {
+        assert!(after_reclaim(host, kid), "Host's {} ends after {kid}'s reclaim", host.name());
+    }
+    for kid in ["KidM", "KidL"] {
+        for host in [K::Birth, K::Run, K::Drain, K::Dissolve] {
+            assert!(!after_reclaim(host, kid), "{kid}'s teardown orders no end of Host's {}", host.name());
+        }
+    }
+    let owed = |inside: Option<Inside>| -> BTreeSet<String> {
+        let mut path = RunPath::default();
+        path.occurrences.insert("KidR".to_string(), 1);
+        path.ends_inside = inside;
+        expected(p, Focus::Lines(&[]), &path).expect("on the path").owed.iter().map(|o| o.label()).collect()
+    };
+    let through = owed(None);
+    assert!(through.contains("Host.Drain") && through.contains("Host.Dissolve"), "{through:?}");
+    let cut = owed(Some(Inside { decl: Some("KidR".to_string()), kind: K::Dissolve, spine: None }));
+    assert!(cut.contains("Host.Run"), "the run is entered: {cut:?}");
+    for label in ["KidR.Reclaim", "Host.Drain", "Host.Dissolve", "Host.Reclaim"] {
+        assert!(!cut.contains(label), "{label} waits for the run's end: {cut:?}");
+    }
+}
+
 /// Line 19 holds a started run against cross-pool field replacement as
 /// well as queued cancellation. The replacement's inline run obeys the
 /// same reclaim edge, so the trace projection can hold both instances

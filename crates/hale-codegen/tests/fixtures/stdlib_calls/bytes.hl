@@ -60,9 +60,9 @@ fn main() {
 
     let ring = std::io::mirror::__new(4096);
     let w = std::io::mirror::__writable(ring);
-    // The writers lower to a Unit success while their signature rows say
-    // Int, so neither `let v = .. or 0` (refused by lowering) nor `or
-    // discard` (refused by the checker) passes both: `or raise` does.
+    // The writers at statement position: the offset past the write each
+    // returns is discarded, as any statement's value is
+    // (`tests/hale/bytes_writer_offset_test.hl` chains it).
     std::bytes::write_f32_le(w, 0, 1.5) or raise;
     std::bytes::write_f64_be(w, 0, 1.5) or raise;
     std::bytes::write_f64_le(w, 0, 1.5) or raise;

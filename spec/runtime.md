@@ -1477,7 +1477,12 @@ bytes for a bound subject) can use this too.
 fixed-slot ring over CALLER-PROVIDED memory, exposed as lotus
 primitives (`lotus_spsc_init` / `_emit` / `_note_drop` /
 `_set_tag_b` / `_read`) and the raw all-Int Hale surface
-`std::ring::__spsc_*`. Built for observation planes (the iris
+`std::ring::__spsc_*`, every address an `Int`: statements
+`__spsc_init(desc, data_off, tag_a, tag_b)`,
+`__spsc_emit(seg_base, desc, ring_slots, w0, w1)`,
+`__spsc_note_drop(desc)` and `__spsc_set_tag_b(desc, v)`, and
+`__spsc_read(seg_base, desc, ring_slots, cursor_io, overruns_io,
+out, max) -> Int`, the records copied. Built for observation planes (the iris
 observer attaches to these rings inside an shm segment,
 read-only, from a foreign process), so the layout is a STABLE
 documented contract:
@@ -1964,7 +1969,11 @@ the edge from each run's end to its reclaim's completion. A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
-teardown at the literal. An owner's Reclaim entry follows its children's
+teardown at the literal. Any other literal a statement of a lifecycle
+body builds is torn down where its statement ends, so that body's row
+completes after the literal's reclaim: a run that exits inside the
+teardown has not reached the body's end and owes nothing that waits
+for it. An owner's Reclaim entry follows its children's
 Dissolve completion; its Reclaim completion follows their Reclaim
 completion. This permits retained storage while preserving physical
 release from children to owner.
