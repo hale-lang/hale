@@ -98,36 +98,85 @@ fn the_writer_set_is_read_from_the_loader() {
     assert!(writers.iter().all(|w| w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')), "{writers:?}");
 }
 
-/// The known-open table is current: one program reaching every path
-/// that still imports a name outside the set (a locus's birth and
-/// dissolve, a publish, readiness, a reclaim, a builder whose append
-/// can violate) imports each of them, from the callers the table
-/// allows. An entry no longer imported fails here, so the fix that
-/// closes it removes the entry.
+/// A program reaching a locus's birth and dissolve, a publish,
+/// readiness, a reclaim and a builder whose append can violate.
+const REACHES_EVERY_PATH: &str = r#"
+    type Ping { n: Int; }
+    locus Receiver {
+        bus { subscribe "ping" as on_ping of type Ping; }
+        fn on_ping(p: Ping) { println("got ", p.n); }
+    }
+    locus Sender {
+        bus { publish "ping" of type Ping; }
+        birth() { "ping" <- Ping { n: 1 }; }
+    }
+    fn main() {
+        Receiver { };
+        Sender { };
+        let b = std::bytes::BytesBuilder { };
+        b.append_u32_le(7);
+        println("len=", len(b.view()));
+    }
+"#;
+
+/// The lines of IR that call an observation probe or load its flag.
+fn observation_lines(ir: &str) -> Vec<&str> {
+    ir.lines()
+        .filter(|l| l.contains("@lotus_obs_") && (l.contains(" call ") || l.contains(" load ")))
+        .collect()
+}
+
+/// No observation probe is emitted where the target has no
+/// observation (`ObservationIdentity` omitted on wasm32): the module
+/// neither calls a `lotus_obs_*` probe nor loads `lotus_obs_live` (an
+/// undefined data symbol there, read at address 0), so it imports none
+/// of them. The native build of the same program, the control, emits
+/// the probes behind the flag as before.
+#[test]
+fn no_observation_probe_is_emitted_for_wasm32() {
+    if !toolchain("no_observation_probe_is_emitted_for_wasm32") {
+        return;
+    }
+    let program = hale_syntax::parse_source(REACHES_EVERY_PATH).expect("parses");
+    let ir_of = |target: CompileTarget, ext: &str| {
+        let out = harness::unique_bin("hale_backstop_obs").with_extension(ext);
+        let ll = out.with_extension(format!("{ext}.ll"));
+        let opts = BuildOptions { target, dump_ir: Some(ll.clone()), ..build_opts::options() };
+        build_executable_with_options(&program, &out, &[], &opts).unwrap_or_else(|e| panic!("{ext} build: {e}"));
+        let ir = std::fs::read_to_string(&ll).expect("the IR");
+        let bytes = std::fs::read(&out).expect("the output");
+        let _ = std::fs::remove_file(&ll);
+        (out, ir, bytes)
+    };
+
+    let (native, ir, _) = ir_of(CompileTarget::Native, "native");
+    let _ = std::fs::remove_file(&native);
+    let probes = observation_lines(&ir);
+    for want in ["@lotus_obs_live", "@lotus_obs_locus_birth", "@lotus_obs_locus_dissolve", "@lotus_obs_note_publisher"] {
+        assert!(probes.iter().any(|l| l.contains(want)), "the native control reaches {want}:\n{probes:#?}");
+    }
+
+    let (wasm, ir, bytes) = ir_of(CompileTarget::Wasm32, "wasm");
+    let held = wasm_module::backstop("observation", &program, &wasm);
+    cleanup(&wasm);
+    held.unwrap_or_else(|e| panic!("{e}"));
+    let probes = observation_lines(&ir);
+    assert!(probes.is_empty(), "a wasm32 module emits no observation probe:\n{probes:#?}");
+    let imports: Vec<String> =
+        wasm_module::imports(&bytes).expect("a wasm module").into_iter().map(|i| i.name).collect();
+    assert!(!imports.iter().any(|i| i.starts_with("lotus_obs_")), "{imports:?}");
+}
+
+/// The known-open table is current: [`REACHES_EVERY_PATH`] imports
+/// each name still in it, from the callers the table allows. An entry
+/// no longer imported fails here, so the fix that closes it removes the
+/// entry.
 #[test]
 fn every_known_open_import_is_still_imported() {
     if !toolchain("every_known_open_import_is_still_imported") {
         return;
     }
-    let src = r#"
-        type Ping { n: Int; }
-        locus Receiver {
-            bus { subscribe "ping" as on_ping of type Ping; }
-            fn on_ping(p: Ping) { println("got ", p.n); }
-        }
-        locus Sender {
-            bus { publish "ping" of type Ping; }
-            birth() { "ping" <- Ping { n: 1 }; }
-        }
-        fn main() {
-            Receiver { };
-            Sender { };
-            let b = std::bytes::BytesBuilder { };
-            b.append_u32_le(7);
-            println("len=", len(b.view()));
-        }
-    "#;
-    let (program, wasm) = build("known_open", src);
+    let (program, wasm) = build("known_open", REACHES_EVERY_PATH);
     let bytes = std::fs::read(&wasm).expect("the module");
     let held = wasm_module::backstop("known_open", &program, &wasm);
     cleanup(&wasm);

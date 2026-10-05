@@ -6035,9 +6035,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// when we're already past it, so the value dominates every
     /// later publish site; subsequent uses in the same fn reuse
     /// the i1.
+    ///
+    /// `None` where the target's cells omit observation
+    /// (`ObservationIdentity`; wasm32): no observation runtime is
+    /// linked there, so the caller emits no probe, and nothing loads
+    /// the flag, an undefined data symbol in that module (P3 T7).
     pub(crate) fn obs_live_check(
         &mut self,
-    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+    ) -> Result<Option<inkwell::values::IntValue<'ctx>>, CodegenError> {
+        if !self.cells.emits(Obligation::ObservationIdentity) {
+            return Ok(None);
+        }
         let func = self
             .builder
             .get_insert_block()
@@ -6046,7 +6054,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some((_, v)) =
             self.obs_live_cache.iter().find(|(f, _)| *f == func)
         {
-            return Ok(*v);
+            return Ok(Some(*v));
         }
         let entry_bb = func.get_first_basic_block().expect("fn entry block");
         let cur_bb = self.builder.get_insert_block();
@@ -6086,7 +6094,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         self.obs_live_cache.push((func, live));
-        Ok(live)
+        Ok(Some(live))
     }
 
     pub(crate) fn flush_dissolve_frame(&mut self) -> Result<(), CodegenError> {
@@ -15765,7 +15773,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // IS the delivery — and passes the subscriber's self for
         // attribution; the publish probe passes the publisher's.
         // The first probe call also creates the topic's manifest row.
-        {
+        // None where the target has no observation (wasm32).
+        if let Some(obs_live) = self.obs_live_check()? {
             let (subject, payload_ty) = target;
             let func = self
                 .builder
@@ -15774,7 +15783,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .expect("inside a function");
             let ptr_t = self.context.ptr_type(AddressSpace::default());
             let i64_t = self.context.i64_type();
-            let obs_live = self.obs_live_check()?;
             let subj_val = self.global_string(&subject);
             let payload_size_iv = self
                 .user_types

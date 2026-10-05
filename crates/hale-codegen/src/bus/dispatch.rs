@@ -390,10 +390,10 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         // bus_dispatch). Branch on the obs TU's
         // `lotus_obs_live` flag instead: an
         // unobserved publish pays one predictable load+branch,
-        // and the call only fires when observation is live.
-        {
+        // and the call only fires when observation is live. None
+        // where the target has no observation (wasm32).
+        if let Some(wanted) = self.obs_live_check()? {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let wanted = self.obs_live_check()?;
             let func = self
                 .builder
                 .get_insert_block()
@@ -1558,23 +1558,30 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     // publisher self EXPLICITLY (better than the TLS
                     // fallback); the deliver probe fires per matched
                     // target, enqueue-time-equivalent (the direct
-                    // call IS the delivery).
-                    let obs_live = self.obs_live_check()?;
+                    // call IS the delivery). None where the target has
+                    // no observation (wasm32): neither probe.
+                    //
                     // Round 3: the publish's seq token flows to every
                     // deliver probe through a stack slot (the probes
                     // live in separate conditional blocks; mem2reg
                     // promotes it).
-                    let obs_tok_slot = self.alloca_in_entry(
-                        self.context.i64_type().into(),
-                        "bus.direct.obs.tok",
-                    )?;
-                    self.builder
-                        .build_store(
-                            obs_tok_slot,
-                            self.context.i64_type().const_zero(),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    {
+                    let obs = match self.obs_live_check()? {
+                        Some(obs_live) => {
+                            let obs_tok_slot = self.alloca_in_entry(
+                                self.context.i64_type().into(),
+                                "bus.direct.obs.tok",
+                            )?;
+                            self.builder
+                                .build_store(
+                                    obs_tok_slot,
+                                    self.context.i64_type().const_zero(),
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            Some((obs_live, obs_tok_slot))
+                        }
+                        None => None,
+                    };
+                    if let Some((obs_live, obs_tok_slot)) = obs {
                         let ptr_t =
                             self.context.ptr_type(AddressSpace::default());
                         let pub_bb = self.context.append_basic_block(
@@ -1758,7 +1765,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     // P17: BUS_DELIVER per matched target (the direct
                     // call IS the delivery). Same obs_live gate; `sp`
                     // is the subscriber's self for locus attribution.
-                    {
+                    if let Some((obs_live, obs_tok_slot)) = obs {
                         let dlv_bb = self.context.append_basic_block(
                             current_fn,
                             "bus.direct.obs.dlv",

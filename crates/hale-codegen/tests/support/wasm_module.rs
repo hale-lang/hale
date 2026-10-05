@@ -375,17 +375,10 @@ pub struct KnownOpen {
 const UNABSORBED_REPORT: &str = "generated code: the report of a violation no handler absorbs \
      (`fflush(stdout)`, `dprintf(2, ...)`, `exit(1)`) calls libc directly; it runs on wasm32 whenever \
      such a violation happens, and the loader's `() => 0` drops the message";
-const OBSERVATION_PROBE: &str = "generated code: the observation probes, behind `lotus_obs_live`. \
-     lotus_obs.c is not linked into a wasm32 module and Record/Replay are refused there, so the flag \
-     (an undefined data symbol `--allow-undefined` resolves to address 0) reads 0 and the probes do \
-     not run; the calls are codegen's, so the runtime's C cannot compile them out";
 
 pub const KNOWN_OPEN: &[KnownOpen] = &[
     KnownOpen { name: "dprintf", callers: None, why: UNABSORBED_REPORT },
     KnownOpen { name: "fflush", callers: None, why: UNABSORBED_REPORT },
-    KnownOpen { name: "lotus_obs_locus_birth", callers: None, why: OBSERVATION_PROBE },
-    KnownOpen { name: "lotus_obs_locus_dissolve", callers: None, why: OBSERVATION_PROBE },
-    KnownOpen { name: "lotus_obs_note_publisher", callers: None, why: OBSERVATION_PROBE },
 ];
 
 /// The import backstop over one module a test built, named `origin`:
