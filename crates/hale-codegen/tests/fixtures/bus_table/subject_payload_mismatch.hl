@@ -1,0 +1,27 @@
+// The subject-to-payload table's read, the positive control: a
+// computed-subject publish inside its declared pattern that would reach
+// a subscriber declared for another payload is refused, never delivered
+// and reinterpreted. `Sink` records `io.tcp.orders` as an `Order`
+// subject when it registers; `Wire` then publishes a `LogEv` there.
+// Expected outcome: no delivery, and the process ends on the
+// `BusPayloadMismatch` panic.
+
+type Order { id: Int; qty: Int; }
+type LogEv { a: Int; b: Int; }
+
+locus Sink {
+    bus { subscribe "io.tcp.orders" as on_order of type Order; }
+    fn on_order(o: Order) { println("ev delivered " + to_string(o.id)); }
+}
+
+locus Wire {
+    params { target: String = "io.tcp.orders"; }
+    bus { publish "io.tcp.**" of type LogEv; }
+    run() { self.target <- LogEv { a: 111111, b: 222222 }; }
+}
+
+main locus App {
+    params { s: Sink = Sink { }; w: Wire = Wire { }; }
+}
+
+fn main() { App { }; }

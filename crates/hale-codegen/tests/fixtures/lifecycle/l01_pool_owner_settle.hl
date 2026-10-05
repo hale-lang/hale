@@ -1,8 +1,7 @@
 // Decision line 1, construction-time delivery for an owner placed on a
-// cooperative pool (ConstructionDelivery). Pending: decision L0-1 names
-// the pool's worker as the owner's domain, spec/semantics.md names the
-// thread settling the parent, and the construction-time decision has
-// not chosen between them.
+// cooperative pool (ConstructionDelivery). Decision L0-1 names the
+// pool's worker as the owner's domain and spec/semantics.md the thread
+// settling the parent: for this owner both are the worker.
 //
 // `Owner` is placed on pool `side`; its child `Boom` fails while
 // Owner's params are open. Owner's params initialize, and settle, on
@@ -10,11 +9,11 @@
 // worker runs the handler; Owner's own birth() follows on the
 // instantiating thread (main). Until C50 closed, the params settled on
 // main, which ran the handler.
-// The fixture pins what is observable from the program: one delivery,
-// at settle, before Owner's birth(). The thread it ran on is L5's
-// assertion (`failure_delivery_domain`).
+// The fixture pins one delivery, at settle, before Owner's birth(), and
+// its trace holds the delivery to the worker; the handler's own thread
+// is `failure_delivery_domain`'s (`fd_pool_owner_worker.hl`).
 //
-// Expected terminal outcome today: `outcome: delivered-at-settle`.
+// Expected terminal outcome: `outcome: delivered-at-settle`.
 
 locus Boom {
     params { name: String = ""; }

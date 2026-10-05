@@ -1,0 +1,241 @@
+// The subject-to-payload table grows while another thread reads it
+// (F.40 phase 3, L1 5 of 5; the twin of inventory R50). `a`, a pinned
+// anchor, publishes to a computed subject for 300 ms from its own
+// thread, and every such publish reads the whole table, checking that
+// no subscription the subject reaches expects another payload. Once `a`
+// has started, `b`, a second pinned anchor, initializes its subtree on
+// its own thread: eight loci of sixteen subscriptions apiece, each to a
+// subject of its own, so the table records 128 subjects and grows four
+// times while `a` reads it.
+// Expected outcome: `ev published`, then `ev done`, exit 0, and nothing
+// an AddressSanitizer build reports.
+
+fn gate() -> String {
+    return "/tmp/hale-subj-pay-" + to_string(std::process::pid());
+}
+
+fn publishing() -> Int {
+    let deadline = std::time::monotonic_ns() + 5000000000;
+    while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < deadline {
+        std::time::sleep(1ms);
+    }
+    return 1;
+}
+
+type P { n: Int; }
+
+locus Pub {
+    params { target: String = "x.none"; sent: Int = 0; }
+    bus { publish "x.**" of type P; }
+    run() {
+        std::io::fs::write_file(gate(), "go") or discard;
+        let until = std::time::monotonic_ns() + 300000000;
+        while std::time::monotonic_ns() < until {
+            self.target <- P { n: 1 };
+            self.sent = self.sent + 1;
+        }
+        println("ev published");
+    }
+}
+
+locus S1 {
+    bus {
+        subscribe "y.1.a" as h of type P;
+        subscribe "y.1.b" as h of type P;
+        subscribe "y.1.c" as h of type P;
+        subscribe "y.1.d" as h of type P;
+        subscribe "y.1.e" as h of type P;
+        subscribe "y.1.f" as h of type P;
+        subscribe "y.1.g" as h of type P;
+        subscribe "y.1.h" as h of type P;
+        subscribe "y.1.i" as h of type P;
+        subscribe "y.1.j" as h of type P;
+        subscribe "y.1.k" as h of type P;
+        subscribe "y.1.l" as h of type P;
+        subscribe "y.1.m" as h of type P;
+        subscribe "y.1.n" as h of type P;
+        subscribe "y.1.o" as h of type P;
+        subscribe "y.1.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S2 {
+    bus {
+        subscribe "y.2.a" as h of type P;
+        subscribe "y.2.b" as h of type P;
+        subscribe "y.2.c" as h of type P;
+        subscribe "y.2.d" as h of type P;
+        subscribe "y.2.e" as h of type P;
+        subscribe "y.2.f" as h of type P;
+        subscribe "y.2.g" as h of type P;
+        subscribe "y.2.h" as h of type P;
+        subscribe "y.2.i" as h of type P;
+        subscribe "y.2.j" as h of type P;
+        subscribe "y.2.k" as h of type P;
+        subscribe "y.2.l" as h of type P;
+        subscribe "y.2.m" as h of type P;
+        subscribe "y.2.n" as h of type P;
+        subscribe "y.2.o" as h of type P;
+        subscribe "y.2.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S3 {
+    bus {
+        subscribe "y.3.a" as h of type P;
+        subscribe "y.3.b" as h of type P;
+        subscribe "y.3.c" as h of type P;
+        subscribe "y.3.d" as h of type P;
+        subscribe "y.3.e" as h of type P;
+        subscribe "y.3.f" as h of type P;
+        subscribe "y.3.g" as h of type P;
+        subscribe "y.3.h" as h of type P;
+        subscribe "y.3.i" as h of type P;
+        subscribe "y.3.j" as h of type P;
+        subscribe "y.3.k" as h of type P;
+        subscribe "y.3.l" as h of type P;
+        subscribe "y.3.m" as h of type P;
+        subscribe "y.3.n" as h of type P;
+        subscribe "y.3.o" as h of type P;
+        subscribe "y.3.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S4 {
+    bus {
+        subscribe "y.4.a" as h of type P;
+        subscribe "y.4.b" as h of type P;
+        subscribe "y.4.c" as h of type P;
+        subscribe "y.4.d" as h of type P;
+        subscribe "y.4.e" as h of type P;
+        subscribe "y.4.f" as h of type P;
+        subscribe "y.4.g" as h of type P;
+        subscribe "y.4.h" as h of type P;
+        subscribe "y.4.i" as h of type P;
+        subscribe "y.4.j" as h of type P;
+        subscribe "y.4.k" as h of type P;
+        subscribe "y.4.l" as h of type P;
+        subscribe "y.4.m" as h of type P;
+        subscribe "y.4.n" as h of type P;
+        subscribe "y.4.o" as h of type P;
+        subscribe "y.4.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S5 {
+    bus {
+        subscribe "y.5.a" as h of type P;
+        subscribe "y.5.b" as h of type P;
+        subscribe "y.5.c" as h of type P;
+        subscribe "y.5.d" as h of type P;
+        subscribe "y.5.e" as h of type P;
+        subscribe "y.5.f" as h of type P;
+        subscribe "y.5.g" as h of type P;
+        subscribe "y.5.h" as h of type P;
+        subscribe "y.5.i" as h of type P;
+        subscribe "y.5.j" as h of type P;
+        subscribe "y.5.k" as h of type P;
+        subscribe "y.5.l" as h of type P;
+        subscribe "y.5.m" as h of type P;
+        subscribe "y.5.n" as h of type P;
+        subscribe "y.5.o" as h of type P;
+        subscribe "y.5.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S6 {
+    bus {
+        subscribe "y.6.a" as h of type P;
+        subscribe "y.6.b" as h of type P;
+        subscribe "y.6.c" as h of type P;
+        subscribe "y.6.d" as h of type P;
+        subscribe "y.6.e" as h of type P;
+        subscribe "y.6.f" as h of type P;
+        subscribe "y.6.g" as h of type P;
+        subscribe "y.6.h" as h of type P;
+        subscribe "y.6.i" as h of type P;
+        subscribe "y.6.j" as h of type P;
+        subscribe "y.6.k" as h of type P;
+        subscribe "y.6.l" as h of type P;
+        subscribe "y.6.m" as h of type P;
+        subscribe "y.6.n" as h of type P;
+        subscribe "y.6.o" as h of type P;
+        subscribe "y.6.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S7 {
+    bus {
+        subscribe "y.7.a" as h of type P;
+        subscribe "y.7.b" as h of type P;
+        subscribe "y.7.c" as h of type P;
+        subscribe "y.7.d" as h of type P;
+        subscribe "y.7.e" as h of type P;
+        subscribe "y.7.f" as h of type P;
+        subscribe "y.7.g" as h of type P;
+        subscribe "y.7.h" as h of type P;
+        subscribe "y.7.i" as h of type P;
+        subscribe "y.7.j" as h of type P;
+        subscribe "y.7.k" as h of type P;
+        subscribe "y.7.l" as h of type P;
+        subscribe "y.7.m" as h of type P;
+        subscribe "y.7.n" as h of type P;
+        subscribe "y.7.o" as h of type P;
+        subscribe "y.7.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus S8 {
+    bus {
+        subscribe "y.8.a" as h of type P;
+        subscribe "y.8.b" as h of type P;
+        subscribe "y.8.c" as h of type P;
+        subscribe "y.8.d" as h of type P;
+        subscribe "y.8.e" as h of type P;
+        subscribe "y.8.f" as h of type P;
+        subscribe "y.8.g" as h of type P;
+        subscribe "y.8.h" as h of type P;
+        subscribe "y.8.i" as h of type P;
+        subscribe "y.8.j" as h of type P;
+        subscribe "y.8.k" as h of type P;
+        subscribe "y.8.l" as h of type P;
+        subscribe "y.8.m" as h of type P;
+        subscribe "y.8.n" as h of type P;
+        subscribe "y.8.o" as h of type P;
+        subscribe "y.8.p" as h of type P;
+    }
+    fn h(p: P) { }
+}
+
+locus Anchor {
+    params {
+        go: Int = publishing();
+        s1: S1 = S1 { };
+        s2: S2 = S2 { };
+        s3: S3 = S3 { };
+        s4: S4 = S4 { };
+        s5: S5 = S5 { };
+        s6: S6 = S6 { };
+        s7: S7 = S7 { };
+        s8: S8 = S8 { };
+    }
+}
+
+main locus App {
+    params { a: Pub = Pub { }; b: Anchor = Anchor { }; }
+    placement { a: pinned; b: pinned; }
+    run() {
+        std::time::sleep(500ms);
+        println("ev done");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

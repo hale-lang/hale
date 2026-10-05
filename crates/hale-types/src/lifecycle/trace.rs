@@ -171,7 +171,8 @@ pub struct Owed {
     /// The end it reaches: `Completed`, a named terminal, or `Ended`
     /// (any end: some subjects complete and some do not).
     pub ends: Point,
-    /// A domain claim: every event of it ran on a thread whose label
+    /// A domain claim: every event of it but a not-started end (named
+    /// where the step was canceled or refused) ran on a thread whose label
     /// starts with one of these (`main`, `pool:side`, `pinned`). One,
     /// or several where its occurrences are built under parents on
     /// different domains, each on its own parent's.
@@ -341,7 +342,13 @@ impl Expected {
                     _ => {}
                 }
                 if let Some(claim) = &owed.domain {
-                    let claimed = |e: &&&TraceEvent| claim.iter().any(|c| e.domain.starts_with(c.as_str()));
+                    // A step that never started ran nowhere: its not-started
+                    // end is named where it was canceled or refused (line
+                    // 19), which a cancellation's own claim says.
+                    let claimed = |e: &&&TraceEvent| {
+                        matches!(e.point, Point::Terminal(Terminal::NotStarted(_)))
+                            || claim.iter().any(|c| e.domain.starts_with(c.as_str()))
+                    };
                     if let Some(e) = g.entered.iter().chain(&g.ends).find(|e| !claimed(e)) {
                         out.push(Violation::Domain {
                             owed: label.clone(),

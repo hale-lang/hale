@@ -231,7 +231,7 @@ impl Ran {
 
 const FIXTURES: &[Fixture] = &[
     Fixture { file: "l01_held_failure_settle.hl", line: "1", adopted: Some("delivered-at-settle"), run: RunMode::Plain, judge: outcome_line },
-    Fixture { file: "l01_pool_owner_settle.hl", line: "1", adopted: None, run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l01_pool_owner_settle.hl", line: "1", adopted: Some("delivered-at-settle"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l01_neg_same_pool_held.hl", line: "1", adopted: Some("delivered-once-resumed"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l01_neg_it_waits_worker_queue.hl", line: "1", adopted: Some("delivered-at-settle-queue-ran"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l02_tick_after_posted_run.hl", line: "2", adopted: None, run: RunMode::Plain, judge: outcome_line },
@@ -300,7 +300,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
 
 /// Fixtures on a pending line: (file, today's outcome).
 const PENDING: &[(&str, &str)] = &[
-    ("l01_pool_owner_settle.hl", "delivered-at-settle"),
     ("l02_tick_after_posted_run.hl", "tick-before-run-returned"),
     ("l03_pool_birth_domain.hl", "birth-inline-run-posted"),
     ("l16_eager_spine_pool_join.hl", "joined-before-teardown"),
@@ -313,35 +312,6 @@ const PENDING: &[(&str, &str)] = &[
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
-    // R19 across pools: the run queued on `side` is canceled by the
-    // reclaim on main, inside its bracket. The replacement's run is the
-    // judge's, since one plan step cannot owe two ends.
-    (
-        "l19_cross_pool_queued_run_canceled.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Holder: Birth Drain Dissolve Reclaim
-         Kid*2: Birth Drain Dissolve Reclaim
-         Kid: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
-    ),
-    // R19's other half: a run admitted after the worker's last check is
-    // canceled by its child's reclaim; once the canceled cells fill the
-    // ring, a post is refused for the pool's shutdown, named with no
-    // cancellation. The judge counts the two ends.
-    (
-        "l19_full_ring.hl",
-        "App*200: Birth Drain Dissolve Reclaim
-         Kid*200: Birth Drain Dissolve Reclaim
-         Kid*+: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
-    ),
-    (
-        "l19_empty_ring_last_check.hl",
-        "App*2: Birth Drain Dissolve Reclaim
-         Kid*2: Birth Drain Dissolve Reclaim
-         Kid: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
-    ),
     // Line 8 under L0-1: App's handler for one Kid replaces another
     // whose failure is posted to App; that Kid's reclaim (the one Kid
     // torn down on the Reclaim spine) follows its own delivery, on main.
@@ -376,7 +346,7 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
     let count = |pairs: &[(&str, u32)]| -> BTreeMap<String, u32> { pairs.iter().map(|(d, n)| (d.to_string(), *n)).collect() };
     let mut p = RunPath::default();
     let lines: &'static [&'static str] = match file {
-        "l01_held_failure_settle.hl" => {
+        "l01_held_failure_settle.hl" | "l01_pool_owner_settle.hl" => {
             p.failures.push(fails("Boom", FailureSource::Run, true, false, 0));
             &["1"]
         }
@@ -504,6 +474,29 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.canceled.insert("Kid".to_string(), 2);
             &["19"]
         }
+        // R19a across pools: the old Kid's run, queued on `side`, is
+        // canceled by its reclaim on main; the replacement's runs. One
+        // declaration, two ends.
+        "l19_cross_pool_queued_run_canceled.hl" => {
+            p.occurrences = count(&[("Kid", 2)]);
+            p.canceled = count(&[("Kid", 1)]);
+            &["19"]
+        }
+        // A main locus built 200 times, each torn down where it stands:
+        // the first Kid's run completes; the next 64 are admitted to the
+        // 64-cell ring and canceled by their children's reclaims on main;
+        // the rest are refused, named with no cancellation.
+        "l19_full_ring.hl" => {
+            p.occurrences = count(&[("App", 200), ("Kid", 200)]);
+            p.canceled = count(&[("Kid", 64)]);
+            &["19"]
+        }
+        // Built twice: the first Kid's run completes, the second's is
+        // admitted after the worker's last check and canceled on main.
+        "l19_empty_ring_last_check.hl" => {
+            p.canceled = count(&[("Kid", 1)]);
+            &["19"]
+        }
         "l19_resumed_run_at_shutdown.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
             &["19"]
@@ -536,27 +529,16 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
 
 /// Fixtures with a plan the producer does not derive yet, held to their
 /// hand-written one alone: (file, what the producer does not state).
-/// Each needs a fact a
-/// run path cannot carry or a row the producer does not emit: R19a's
-/// cancellation at a reclaim off the run's pool, the instances of one
-/// declaration whose runs end differently in one run (the trace names
-/// an instance by its declaration), and a main locus built more than
-/// once, each literal with its own teardown.
-const UNDERIVED: &[(&str, &str)] = &[
-    (
-        "l19_cross_pool_queued_run_canceled.hl",
-        "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
-    ),
-    (
-        "l19_full_ring.hl",
-        "200 App literals, each torn down where it stands; Kid's runs complete once, then are canceled on main or refused",
-    ),
-    ("l19_empty_ring_last_check.hl", "two App literals; the first Kid's run completes, the second's is canceled on main"),
-    (
-        "l08_sibling_replaced_kept.hl",
-        "C29: the producer has no field replacement, so not where the replaced Kid's reclaim sits: after its own delivery",
-    ),
-];
+/// Each needs a row the producer does not emit. The line-19 fixtures
+/// that were here are derived: R19a's cancellation at a reclaim off the
+/// run's pool, the occurrences of one declaration whose runs end
+/// differently, and a main locus built more than once, its eager spine's
+/// steps owed at each of its teardowns. So are the deferred main-entry,
+/// return and test-failure process spines (L4 part 3).
+const UNDERIVED: &[(&str, &str)] = &[(
+    "l08_sibling_replaced_kept.hl",
+    "C29: the producer has no field replacement, so not where the replaced Kid's reclaim sits: after its own delivery",
+)];
 
 /// The plan the producer derives for a fixture's program, on its run's
 /// path: what the trace oracle holds the run to. `None` for a fixture

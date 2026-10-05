@@ -1,0 +1,73 @@
+// Decisions L0-1 and line 1 for an owner placed on a cooperative pool:
+// its handler runs on the pool's worker, whatever thread the child fails
+// on. `Owner` is placed on pool `side`, so its params initialize and
+// settle on the worker (inventory C50), which records its own thread
+// first. `Boom`, built in those params, fails in its run() while they
+// are open: the failure is held and delivered at the settle (line 1).
+// `Kid`, built there too, fails later on main, when `App.run()` calls
+// into it: the failure is posted to the worker and awaited (L0-1). Each
+// handler compares the thread it runs on with the worker's.
+// Expected outcome: both handlers run on the owner's worker, once each,
+// and the second failure was raised off it.
+
+@ffi("c") fn pthread_self() -> Int;
+
+locus Boom {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() { violate fuse; }
+}
+
+locus Kid {
+    params { n: Int = 0; }
+    closure fuse { captures: n; epoch inline; }
+    fn poke() { violate fuse; }
+}
+
+locus Owner {
+    params {
+        worker: Int = pthread_self();
+        boom: Boom = Boom { name: "b" };
+        kid: Kid = Kid { };
+        held_on: Int = 0;
+        posted_on: Int = 0;
+        heard: Int = 0;
+    }
+    on_failure(c: Boom, err: ClosureViolation) {
+        self.held_on = pthread_self();
+        self.heard = self.heard + 1;
+    }
+    on_failure(c: Kid, err: ClosureViolation) {
+        self.posted_on = pthread_self();
+        self.heard = self.heard + 1;
+    }
+}
+
+main locus App {
+    params { o: Owner = Owner { }; }
+    placement { o: cooperative(pool = side); }
+    run() {
+        let mine = pthread_self();
+        let deadline = std::time::monotonic_ns() + 8000000000;
+        while self.o.heard == 0 && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
+        self.o.kid.poke();
+        while self.o.heard < 2 && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
+        let worker = self.o.worker;
+        if mine != worker {
+            println("ev raised-off-worker");
+        }
+        if self.o.held_on == worker {
+            println("ev held-on-worker");
+        } else {
+            println("ev held-off-worker");
+        }
+        if self.o.posted_on == worker {
+            println("ev posted-on-worker");
+        } else {
+            println("ev posted-off-worker");
+        }
+        println("ev heard " + to_string(self.o.heard));
+    }
+}
+
+fn main() { App { }; }

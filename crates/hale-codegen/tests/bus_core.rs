@@ -1,4 +1,4 @@
-//! The `bus_core` integration-test binary: 20 test files of this area, kept
+//! The `bus_core` integration-test binary: 21 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -41,6 +41,8 @@ mod bus_publish_stack_alloca;
 mod bus_registration_table;
 #[path = "bus_routing_keys.rs"]
 mod bus_routing_keys;
+#[path = "bus_subject_payload_table.rs"]
+mod bus_subject_payload_table;
 #[path = "bus_subscriber.rs"]
 mod bus_subscriber;
 #[path = "bus_wildcards.rs"]

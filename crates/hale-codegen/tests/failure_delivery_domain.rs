@@ -47,6 +47,11 @@
 //!     decision is not performed. The word counts the old child's births,
 //!     runs and dissolves, whether its handler read its heap name before
 //!     it dissolved, and the new child's counts.
+//!   * `fd_pool_owner_worker.hl`: the owner is placed on a pool (decision
+//!     line 1's pool-placed owner). One child fails while the owner's
+//!     params are open on the worker (held to the settle), another later
+//!     on main (posted). The word names the thread each handler ran on
+//!     against the worker's, read with `pthread_self` inside the handler.
 //!
 //! [`KNOWN_OPEN`] gives each fixture's word today, with the row it
 //! departs at; the test asserts it, so the protocol that delivers on the
@@ -87,6 +92,25 @@ const ADOPTED: &[(&str, &str)] = &[
     ("fd_restart_replaced_by_owner.hl", RECLAIM_WINS),
     ("fd_settle_no_nest.hl", "ev held-enter / ev held-exit / ev posted-enter / ev posted-exit / ev finished"),
     ("fd_handler_cell_no_hold.hl", "read-whole"),
+    ("fd_pool_owner_worker.hl", "raised-off-worker held-on-worker posted-on-worker heard-2"),
+];
+
+/// The domain each traced fixture's deliveries are traced on, and the
+/// declarations whose deliveries those are.
+const DELIVERED_ON: &[(&str, &str, &[&str])] = &[
+    ("fd_pinned_owner_state.hl", "main", &["Kid"]),
+    ("fd_reclaim_under_delivery.hl", "main", &["Kid"]),
+    ("fd_sibling_replace.hl", "main", &["Kid"]),
+    ("fd_sibling_replace_control.hl", "main", &["Kid"]),
+    ("fd_sibling_replace_heap.hl", "main", &["Kid"]),
+    ("fd_sibling_replace_three.hl", "main", &["Kid"]),
+    ("fd_sibling_replace_method.hl", "main", &["Kid"]),
+    ("fd_restart_replaced.hl", "main", &["Kid"]),
+    ("fd_restart_in_place_replaced.hl", "main", &["Kid"]),
+    ("fd_restart_sibling_replaced.hl", "main", &["Kid"]),
+    ("fd_restart_replaced_by_owner.hl", "main", &["Kid"]),
+    ("fd_settle_no_nest.hl", "main", &["Kid"]),
+    ("fd_pool_owner_worker.hl", "pool:side", &["Boom", "Kid"]),
 ];
 
 /// A restart asked for about a child whose reclaim is owed: the old child
@@ -352,6 +376,24 @@ fn handler_cell(r: &Ran) -> String {
     if count(r, "ev handler-read kid-1-name") == 1 { "read-whole".into() } else { "read-torn".into() }
 }
 
+/// `fd_pool_owner_worker.hl`: whether the posted failure was raised off
+/// the worker, the thread each handler ran on, how many ran.
+fn pool_owner_worker(r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return w;
+    }
+    let raised = if count(r, "ev raised-off-worker") == 1 { "raised-off-worker" } else { "raised-on-worker" };
+    let on = |what: &str| -> String {
+        match (count(r, &format!("ev {what}-on-worker")), count(r, &format!("ev {what}-off-worker"))) {
+            (1, 0) => format!("{what}-on-worker"),
+            (0, 1) => format!("{what}-off-worker"),
+            _ => format!("{what}-unheard"),
+        }
+    };
+    let heard = r.stdout.lines().find_map(|l| l.strip_prefix("ev heard ")).unwrap_or("?");
+    format!("{raised} {} {} heard-{heard}", on("held"), on("posted"))
+}
+
 fn judge(file: &str, r: &Ran) -> String {
     match file {
         "fd_handler_cell_no_hold.hl" => handler_cell(r),
@@ -361,6 +403,7 @@ fn judge(file: &str, r: &Ran) -> String {
         "fd_sibling_replace_heap.hl" => sibling_heap(r),
         "fd_sibling_replace_three.hl" => sibling_three(r),
         f if f.starts_with("fd_sibling_replace") || f == "fd_settle_no_nest.hl" => output(r),
+        "fd_pool_owner_worker.hl" => pool_owner_worker(r),
         _ => panic!("{file} has no judge"),
     }
 }
@@ -379,14 +422,15 @@ fn sanitizer_hits(r: &Ran) -> Vec<&'static str> {
     SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect()
 }
 
-/// The domains `Kid`'s failure delivery ran on, entry and end alike.
-fn delivery_domains(r: &Ran) -> Vec<String> {
+/// The domains the failure deliveries of `decls` ran on, entry and end
+/// alike, each with its declaration.
+fn delivery_domains(r: &Ran, decls: &[&str]) -> Vec<(String, String)> {
     r.trace
         .events
         .iter()
-        .filter(|e| e.kind == ObligationKind::FailureDelivery && e.decl.as_deref() == Some("Kid"))
+        .filter(|e| e.kind == ObligationKind::FailureDelivery && e.decl.as_deref().is_some_and(|d| decls.contains(&d)))
         .filter(|e| matches!(e.point, Point::Entered | Point::Completed))
-        .map(|e| e.domain.clone())
+        .map(|e| (e.decl.clone().unwrap_or_default(), e.domain.clone()))
         .collect()
 }
 
@@ -413,7 +457,8 @@ fn assert_traced_in(file: &str, no_bus_devirt: bool) {
     let ran = run_bin(&bin, &[]);
     let _ = std::fs::remove_file(&bin);
     let got = judge(file, &ran);
-    let domains = delivery_domains(&ran);
+    let (_, on, decls) = DELIVERED_ON.iter().find(|(f, ..)| *f == file).unwrap_or_else(|| panic!("{file}: no domain"));
+    let domains = delivery_domains(&ran, decls);
     eprintln!("{file}, no_bus_devirt={no_bus_devirt}: {got}; FailureDelivery on {domains:?}\n{}", report(&ran));
     match known_open(file) {
         Some((row, today)) => assert_eq!(
@@ -424,7 +469,10 @@ fn assert_traced_in(file: &str, no_bus_devirt: bool) {
         ),
         None => {
             assert_eq!(got, adopted(file), "{file}, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
-            assert!(!domains.is_empty() && domains.iter().all(|d| d == "main"), "{file}: the delivery ran on {domains:?}, not main");
+            for decl in *decls {
+                assert!(domains.iter().any(|(d, _)| d == decl), "{file}: no delivery of {decl} traced: {domains:?}");
+            }
+            assert!(domains.iter().all(|(_, d)| d.starts_with(on)), "{file}: the delivery ran on {domains:?}, not {on}");
         }
     }
 }
@@ -491,14 +539,24 @@ fn an_owner_never_reclaims_a_child_under_its_failure_delivery() {
     assert_traced("fd_reclaim_under_delivery.hl");
 }
 
-/// Both fixtures under AddressSanitizer, with chunk pooling off (GH
-/// #816), in both dispatch modes: the adopted word and nothing reported.
-/// Before the protocol, the reclaim fixture's handler read the old
-/// child's freed arena (a heap-use-after-free).
+/// Decision line 1's pool-placed owner, and L0-1 for it: the held
+/// delivery at its settle and a later one posted from main both run on
+/// the pool's worker.
 #[test]
-fn both_fixtures_hold_under_asan_in_both_dispatch_modes() {
+fn a_pool_placed_owners_handler_runs_on_its_worker() {
+    assert_traced("fd_pool_owner_worker.hl");
+}
+
+/// The three domain fixtures under AddressSanitizer, with chunk pooling
+/// off (GH #816), in both dispatch modes: the adopted word and nothing
+/// reported (the other fixtures' own tests run theirs, and the known-open
+/// one is asserted to fail). Before the protocol, the reclaim fixture's
+/// handler read the old child's freed arena (a heap-use-after-free).
+#[test]
+fn the_domain_fixtures_hold_under_asan_in_both_dispatch_modes() {
     assert_asan("fd_pinned_owner_state.hl");
     assert_asan("fd_reclaim_under_delivery.hl");
+    assert_asan("fd_pool_owner_worker.hl");
 }
 
 /// The review's reproducer: the owner's handler for `a` replaces `b`

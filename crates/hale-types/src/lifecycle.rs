@@ -102,7 +102,7 @@
 //!
 //! ```text
 //! line  kinds                                    status
-//! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
+//! 1     ConstructionDelivery ParamsSettle        Shipped; Shipped (pool-placed owner, on its worker, L5)
 //! 2     Closures Run                             Pending (no option chosen)
 //! 3     Accept Birth Run Dissolve                Pending (no option chosen)
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
@@ -122,7 +122,7 @@
 //! 18    PreDrain                                 KnownOpen C13
 //! 19    RunAdmission Run Cancellation            Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
-//! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
+//! JP    JoinProgress FailureDelivery             Shipped (pinned join, L5); Shipped (pool joins, an ended domain, L5)
 //! ```
 //!
 //! **Line 16** is P3's: the obligations a target owes come from the
@@ -136,15 +136,16 @@
 //! **Pending, and why.** Line 17 prefers the deferred spine's join order everywhere, on the
 //! condition that the teardown delivery contract's final-publish
 //! guarantees (GH #253) survive every eager, deferred and declaration
-//! permutation; it is settled only once that is shown. Line 1's
-//! pool-placed owner subcase waits for the construction-time domain:
-//! decision L0-1 names the pool's worker as that owner's domain, and
-//! `spec/semantics.md` names the thread settling the parent. Lines 2
-//! and 3 have no option chosen: the wave-2 decisions treat lines 1–3
+//! permutation; it is settled only once that is shown. Lines 2 and 3
+//! have no option chosen: the wave-2 decisions treat lines 1–3
 //! as one protocol (construction, readiness and failure delivery,
 //! settled by events) without choosing (a) or (b) for the post-run
 //! tick on a posted `run()` or for where lifecycle methods run on a
-//! pool, so their rows record the shipped domains and wait.
+//! pool, so their rows record the shipped domains and wait. Line 1's
+//! pool-placed owner waited too, for its construction-time domain, until
+//! the two names for it agreed: the pool's worker is where such an
+//! owner's params settle and where L5 posts its later failures, and
+//! `fd_pool_owner_worker.hl` holds both handlers there.
 
 pub mod derive;
 pub mod project;
@@ -256,6 +257,11 @@ pub struct Obligation {
     /// obligation (a pool join, a wait-abort, a pre-drain, the process
     /// drain), which a spine owes the process.
     pub site: Option<SourceSite>,
+    /// For a process-level obligation a spine owes at each teardown of
+    /// one template's occurrence (the eager spine's steps, at each
+    /// statement literal it follows): that template. `None` for once per
+    /// process, and for an instance's own row.
+    pub per_occurrence_of: Option<SourceSite>,
     pub kind: ObligationKind,
     /// For [`ObligationKind::Closures`] and a failure raised by one:
     /// the epoch.
@@ -1023,7 +1029,6 @@ pub struct DecisionLine {
 
 use ObligationKind as K;
 
-const POOL_OWNER: &str = "the construction-time domain for an owner placed on a cooperative pool: decision L0-1 names the pool's worker, spec/semantics.md the settling thread";
 const NO_OPTION: &str = "the wave-2 decisions frame lines 1-3 as one protocol and choose no option for this line";
 
 /// The decision lines and the kinds each binds. The module docs carry
@@ -1035,7 +1040,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::ConstructionDelivery, K::ParamsSettle],
         statuses: &[
             (Status::Shipped, "an owner on the instantiating thread's domain"),
-            (Status::Pending { condition: POOL_OWNER }, "an owner placed on a cooperative pool"),
+            (
+                Status::Shipped,
+                "an owner placed on a cooperative pool: its params settle, and its handler runs, on the pool's worker (L5)",
+            ),
         ],
     },
     DecisionLine {
@@ -1203,8 +1211,11 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "join progress",
         kinds: &[K::JoinProgress, K::FailureDelivery],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "C18" }, "a pinned join pumps no queue"),
-            (Status::KnownOpen { inventory_row: "R20" }, "the pool joins pump no queue"),
+            (Status::Shipped, "the pinned join runs the failures posted to the joining thread until the thread's domain ends (C18, L5)"),
+            (
+                Status::Shipped,
+                "each pool join does the same until its worker's domain ends; a failure posted to an ended domain runs where it is raised (R20, L5)",
+            ),
         ],
     },
 ];
@@ -1249,7 +1260,7 @@ mod tests {
             .filter(|l| l.statuses.iter().any(|(s, _)| matches!(s, Status::Pending { .. })))
             .map(|l| l.line)
             .collect();
-        assert_eq!(pending, BTreeSet::from(["1", "2", "3", "17"]));
+        assert_eq!(pending, BTreeSet::from(["2", "3", "17"]));
     }
 
     /// Every obligation a teardown spine's cells select is a kind of the

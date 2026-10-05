@@ -1752,7 +1752,15 @@ enforced — not merely required at the declaration site:
 
 Both are runtime checks on the computed path only; a literal
 subject is bound to its declaration at compile time and pays
-nothing for either.
+nothing for either. The payload check reads the subjects every
+subscription recorded when it registered, which may be on any
+thread (a pinned or pool anchor initializes its subtree on its
+own). A send reads them with no lock while another thread may be
+recording more; a subscription recorded while the read is under way
+is not checked by that send. (The runtime's subject-to-payload table
+has the registration table's publication scheme: rows that never
+move, behind an array published as a pointer and a count, appended
+under a lock, a replaced array kept until teardown.)
 
 They are not stylistic. Without them the computed string reached
 dispatch verbatim, so a subject outside the declared pattern was
