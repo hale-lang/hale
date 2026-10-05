@@ -920,6 +920,9 @@ pub fn check_bundle_by_declaration(
             omitted: &typed.omitted_args,
         },
     ));
+    // F.40 phase 4, W3: the recovery events a closure's
+    // `persists_through(...)` / `resets_on(...)` clauses name.
+    diags.extend(crate::closure_events::closure_event_laws(bundle));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.

@@ -259,6 +259,7 @@ const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
 const QUALIFIED_SUBJECTS: &str = "crates/hale-types/src/qualified_subjects.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
+const CLOSURE_EVENTS: &str = "crates/hale-types/src/closure_events.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
@@ -2210,6 +2211,26 @@ pub const RULES: &[Rule] = &[
         gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen)",
         family: "forms",
         evaluator: Some(site(CG, "try_lower_capacity_slot_method_call")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/recovery-event-alphabet",
+        title: "Recovery event alphabet",
+        // The closure's clause, as the parser typed it: each name, and the event it is when it is in the alphabet.
+        reads: Reads::Declaration,
+        gist: "a name in `persists_through(...)` or `resets_on(...)` outside `restart`, `restart_in_place`, `quarantine` (error, at the name, a misspelling one edit away suggesting the event)",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "outside_the_alphabet")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/persist-through-dissolve",
+        title: "Persisting through dissolve",
+        // The closure's `persists_through(...)` clause, as written.
+        reads: Reads::Declaration,
+        gist: "`dissolve` in `persists_through(...)`, which can mean nothing: an accumulator does not outlive its locus's dissolve (error, at the name)",
+        family: "closures",
+        evaluator: Some(site(CLOSURE_EVENTS, "persists_through_dissolve")),
         state: State::Canonical,
     },
 ];

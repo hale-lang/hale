@@ -1647,6 +1647,8 @@ state), and zeroization.
 | **`ring_layout` geometry** | a *cross-field* inconsistency that would let a record header land out of bounds or silently corrupt the reader: a header scalar or the cursor overrunning `data_at`, two fields overlapping, a non-power-of-two `align`, a `pad_sentinel` too wide for the `len_prefix`, a `len_prefix` width `> align`, a non-8-aligned `atomic_u64` cursor, or (producer side) a `buffer_size:` that isn't a multiple of `align` | error | `check_ring_layout` + `check_main_and_bindings` |
 | **Foreign-ring payload shape** | a `layout:`-bound topic whose payload is neither flat-shapeable (typed mode — read by direct cast, needs a fixed byte layout) nor `BytesView` (raw-frame mode — a bounded view per record, for heterogeneous rings); e.g. a struct with `String` / `Bytes` / variable-size fields. Enforced regardless of `where zero_copy` | error | `check_main_and_bindings` |
 | **Cell slot-of-origin** | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from | error | codegen |
+| **Recovery event alphabet** | a name in a closure's `persists_through(...)` or `resets_on(...)` that is not a recovery event: the alphabet is closed, `restart`, `restart_in_place` and `quarantine`; the message names it at the name, and suggests the event a misspelling one edit away means | error | `outside_the_alphabet` (closure events) |
+| **Persisting through dissolve** | `dissolve` in a closure's `persists_through(...)`: an accumulator does not outlive its locus's dissolve, so the clause can mean nothing | error | `persists_through_dissolve` (closure events) |
 
 CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the

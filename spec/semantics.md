@@ -4230,6 +4230,33 @@ keeps the substrate honest about which window the counter
 belongs to without forcing the user to maintain a `last_reset_at`
 field or a parallel pre-fire hook.
 
+### Recovery events (`persists_through`, `resets_on`)
+
+A closure's accumulators (`sum`, `count`, `mean`) are zeroed when its
+locus goes through a recovery event, unless the closure persists
+through that event:
+
+```hale,fragment
+closure within_band {
+    sum(self.delta) ~~ 0 within 100;
+    epoch tick;
+    persists_through(quarantine);
+}
+```
+
+The recovery events are a closed alphabet, the recovery statements a
+parent applies to a failed child: `restart`, `restart_in_place` and
+`quarantine` (a spent `restart(c) for N` bound quarantines, and is the
+`quarantine` event). The check holds each name a clause writes to it:
+
+- A name outside the alphabet is an error at the name, which names
+  the alphabet; a misspelling one edit away from an event suggests it
+  (`verification.md` § Structural & design rules, *Recovery event
+  alphabet*).
+- `dissolve` in `persists_through(...)` is an error: an accumulator
+  does not outlive its locus's dissolve, so the clause can mean
+  nothing (*Persisting through dissolve*).
+
 ## Inline closure violation
 
 (F.27, v1.x-VIOLATE.) Inline closures provide a pull-only

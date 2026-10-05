@@ -1526,7 +1526,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 7 |
+| `spec/verification.md` § Structural & design rules | 9 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1560,6 +1560,8 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/ring-layout-geometry | `spec/verification.md` § Structural & design rules | `ring_layout` geometry | a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings` | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | the declaration | Canonical |
 | verification/structural/foreign-ring-payload-shape | `spec/verification.md` § Structural & design rules | Foreign-ring payload shape | a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error) | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | `top_scope` | Canonical |
 | verification/structural/cell-slot-of-origin | `spec/verification.md` § Structural & design rules | Cell slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | the declaration | Canonical |
+| verification/structural/recovery-event-alphabet | `spec/verification.md` § Structural & design rules | Recovery event alphabet | a name in `persists_through(...)` or `resets_on(...)` outside `restart`, `restart_in_place`, `quarantine` (error, at the name, a misspelling one edit away suggesting the event) | `closures` | `crates/hale-types/src/closure_events.rs` · `outside_the_alphabet` | the declaration | Canonical |
+| verification/structural/persist-through-dissolve | `spec/verification.md` § Structural & design rules | Persisting through dissolve | `dissolve` in `persists_through(...)`, which can mean nothing: an accumulator does not outlive its locus's dissolve (error, at the name) | `closures` | `crates/hale-types/src/closure_events.rs` · `persists_through_dissolve` | the declaration | Canonical |
 
 ## The shadow facility's allowance
 
