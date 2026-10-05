@@ -107,7 +107,7 @@ impl LawSelection {
 /// What it deliberately does NOT do is judge. Verdicts — and the
 /// validation diagnostics that precede them — come from the
 /// judgment engines over the canonical model
-/// (`judgment::claim_law_diags`). Before Change 9 both halves lived
+/// (`judgment::claim_law_diags_over`). Before Change 9 both halves lived
 /// here AND in the engines, and `hale check` read this copy while
 /// the artifact read the other.
 ///

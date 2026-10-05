@@ -1,8 +1,11 @@
 //! The check's and the model's test entries, through the snapshot
 //! (F.40 phase 4, T3).
 //!
-//! `hale_types` exports entry points that check or model a bundle no
-//! snapshot holds and build the top scope for themselves
+//! `hale_types` exported entry points that check or model a bundle no
+//! snapshot holds and build the top scope for themselves (the ones no
+//! test or production caller still reaches have left `src`:
+//! `resolve_program`, `check_bundle_for_build`, and the bundle forms of
+//! `claim_law_diags` and `model_shape_hash`)
 //! (`check_program`, `check_bundle`, `check_bundle_opts`,
 //! `check_bundle_opts_whole_program`, `check_bundle_opts_scoped`,
 //! `check_bundle_for_build`, `derive_application_model`, `effect_certificates`, `resolve_program`,

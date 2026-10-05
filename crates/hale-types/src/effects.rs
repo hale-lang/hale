@@ -650,8 +650,8 @@ fn written_forms(programs: &[&Program]) -> crate::form_rows::FormRows {
 pub type EffectCertificates = Vec<(LoweredCertificate, Vec<(Diag, bool)>)>;
 
 /// The certificate report of a bundle no snapshot holds and no check
-/// ran over (the tests', `claim_law_diags`, the artifact's bundle
-/// entry): the engine's one run for that caller, over the form rows
+/// ran over (the tests', the artifact's bundle entry): the engine's one
+/// run for that caller, over the form rows
 /// built here. A snapshot's comes from its check
 /// (`Snapshot::demand_effect_certificates`).
 pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertificates {

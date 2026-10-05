@@ -26,7 +26,7 @@
 //!
 //! The row carries the handler's snapshot identity (a `SiteId`, looked
 //! up in the snapshot the caller hands in) as a column, not as its key:
-//! every entry point and `resolve_program` mint it, but a test that
+//! every entry point and the lowering view mint it, but a test that
 //! builds a bundle without minting has none there. A reader holding a
 //! declaration joins it to its row by that identity
 //! ([`HandlerRow::is_row_of`]); the span is the fallback for the

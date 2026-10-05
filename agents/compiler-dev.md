@@ -85,9 +85,11 @@ hale-ts-shim  staticlib; no dependents; linked by path
 5. **Model**: `model_builder::derive_application_model_over`, on
    demand (`Snapshot::demand_model`), over the snapshot's scope, bus
    graph, ownership graph and handler rows.
-6. **Judgment**: `judgment::claim_law_diags`, from the check path
+6. **Judgment**: `judgment::claim_law_diags_over`, from the check path
    only when no non-`Claim` error exists and claims are present.
-7. **The resolved program**: `hale_types::resolved::resolve_program`
+7. **The resolved program**: `hale_types::resolved::rewrite_intra_locus`
+   then `resolve_rewritten`, the snapshot's `intra_locus` and
+   `lowering_view` families
    (the two lowering rewrites, kept as relations, the stdlib merge,
    the snapshot mint with the bundle's source map, the ownership,
    handler-routing and bus tables; the envelope keeps the renames and
@@ -103,7 +105,7 @@ hale-ts-shim  staticlib; no dependents; linked by path
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
    (source, flags) key into a cache, linked by clang.
 
-Inside `resolve_program` (hale-types), in order: the two lowering rewrites in
+Inside those two (hale-types), in order: the two lowering rewrites in
 `hale-syntax/src/desugar.rs`, `desugar_intra_locus_topics` and
 `desugar_topics`, **which run after check, so the checker sees topic
 references as written**: they are not desugars (each erases a
@@ -126,7 +128,8 @@ lowering still derives for itself is listed in `spec/registry.md`
 as legacy rows with their removal conditions.
 
 `hale build` derives the model to stamp its identity into the binary
-(`model_identity`, `topology::model_shape_hash`); `hale check` builds
+(`model_identity`, `topology_projection::project_shape_hash` over its
+snapshot's model); `hale check` builds
 one only when claims exist (`HALE_MODEL_TRACE=1` shows derivations).
 `HALE_TIME=1` prints build phase times. No interpreter: `hale run`
 compiles to a temp binary and execs it.

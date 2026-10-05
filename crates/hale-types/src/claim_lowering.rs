@@ -705,7 +705,7 @@ pub fn lower_claims_over(
                     // Change 5h: routed to the BUDGET bucket. The
                     // quantitative engine used to say this in
                     // check; it no longer runs there, so this issue
-                    // is now the only voice and `claim_law_diags`
+                    // is now the only voice and `claim_law_diags_over`
                     // emits it.
                     budget_issues_out.push((
                         format!(
@@ -829,7 +829,7 @@ pub fn lower_claims_over(
     // Change 5h: a misspelt `@budget(<class>)` dimension. Its old
     // reporter was the quantitative engine, which no longer runs on
     // the check path — so unlike the certificate issues above, this
-    // one has no other voice and `claim_law_diags` emits it.
+    // one has no other voice and `claim_law_diags_over` emits it.
     for (message, span) in budget_issues {
         let pid = intern(recs, span);
         table.issues.push(LoweringIssue {

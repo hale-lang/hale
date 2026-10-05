@@ -198,18 +198,6 @@ pub const TOPOLOGY_SCHEMA: &str = "1.19";
 /// `holds`).
 pub const MODEL_SEMANTICS: u32 = 2;
 
-/// The model identity alone (downstream handoff P26, 2026-08-12):
-/// the same `shape_hash` `dump_topology` stamps, for embedding in
-/// the built binary's observation segment, for a bundle no snapshot
-/// holds. It is the model half's digest read from the model
-/// ([`crate::topology_projection::project_shape_hash`], the function
-/// the artifact's own stamp is asserted equal to), not scraped out of a
-/// rendered artifact. A verb reads its snapshot's model instead
-/// (`model_identity` in the CLI).
-pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
-    crate::topology_projection::project_shape_hash(&crate::derive_application_model(bundle))
-}
-
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON), for a bundle no snapshot holds: the model is
 /// derived here ([`crate::derive_application_model`]). `hale check`

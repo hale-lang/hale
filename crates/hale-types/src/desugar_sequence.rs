@@ -97,7 +97,7 @@ pub fn desugar_before_check(
     let surface = hale_syntax::api_gen::generate_api(programs, root, seq.api_roles);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does
-    // not parse is reported where it is appended (`resolve_program`);
+    // not parse is reported where it is appended (`resolve_rewritten`);
     // here the passes run without it.
     let stdlib = bundled_stdlib().ok();
     shape(programs, seq, stdlib.as_slice());

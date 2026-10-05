@@ -253,27 +253,11 @@ pub fn check_bundle_opts_whole_program(
     check_bundle_opts_scoped(bundle, allow_unowned_subscriber, true, true)
 }
 
-/// What a build refuses: the whole-program check, and the borrow rule
-/// (GH #730, #1048) — a handle stored by name into a locus-carrying
-/// field, or kept by a method (`Router.add`), is never the holder's to
-/// reclaim, so it must outlive the holder. `hale check` runs the same
-/// rule beside its own reports; here it gates `build`, `run` and `test`,
-/// so a program `check` refuses never builds into a dangling handle.
-/// It runs after the model half, which it does not gate.
-pub fn check_bundle_for_build(
-    bundle: &Bundle<'_>,
-    allow_unowned_subscriber: bool,
-) -> Vec<Diag> {
-    let mut diags = check_bundle_opts_whole_program(bundle, allow_unowned_subscriber);
-    // No snapshot holds the bundle: the accept relation the borrow rule
-    // reads is the bundle's own ownership rows.
-    diags.extend(build_rule_diags(bundle, &ownership_graph::OwnershipRows::of(bundle)));
-    diags
-}
-
 /// The rules a build refuses beside the check, after it: the borrow
-/// rule (GH #730, #1048), an error on every build path, as it is in
-/// `hale check`. The snapshot's check appends them for a build's config
+/// rule (GH #730, #1048) — a handle stored by name into a
+/// locus-carrying field, or kept by a method (`Router.add`), is never
+/// the holder's to reclaim, so it must outlive the holder — an error on
+/// every build path, as it is in `hale check`. The snapshot's check appends them for a build's config
 /// (`Config::build_rules`). A bare fallible call (GH #738) is the
 /// check's own: the `bare_fallible` law runs with the typing.
 /// `ownership` is the rows of the bundle's ownership graph
@@ -405,7 +389,7 @@ fn check_numbered_bundle(
     //
     // So the model half runs only once the resolver and the checker
     // agree the program denotes something ([`denotes_a_model`]).
-    // The claim surface gate is `judgment::claim_law_diags`'s; the
+    // The claim surface gate is `judgment::has_claim_surface`; the
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
@@ -431,8 +415,7 @@ fn check_numbered_bundle(
 /// Law selection over a bundle no snapshot holds, which names no
 /// deployment environment: what the test entries' check, its laws and
 /// the artifact's bundle entry read ([`check_bundle_opts_scoped`],
-/// [`check::check_bundle`], [`judgment::claim_law_diags`],
-/// [`topology::dump_topology`]), once per entry. Every verb reads its
+/// [`check::check_bundle`], [`topology::dump_topology`]), once per entry. Every verb reads its
 /// snapshot's (`Snapshot::demand_law_selection`).
 pub fn bundle_law_selection(bundle: &Bundle<'_>) -> claims::LawSelection {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
@@ -470,8 +453,8 @@ pub(crate) fn bundle_flow_rows(bundle: &Bundle<'_>) -> flows::FlowRows {
 }
 
 /// The application model of a bundle no snapshot holds: the test
-/// entry's ([`judgment::claim_law_diags`], the hale-types tests, the
-/// artifact's bundle entry `topology::dump_topology`). It builds the
+/// entry's (the hale-types tests, the artifact's bundle entry
+/// `topology::dump_topology`). It builds the
 /// families the frontend's snapshot demands for the model — the scope,
 /// the bus graph and the ownership graph over the checked programs, the
 /// handler rows, the effect rows — once each, and derives over them
