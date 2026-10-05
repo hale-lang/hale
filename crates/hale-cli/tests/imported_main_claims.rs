@@ -105,6 +105,28 @@ fn a_violating_path_is_rejected_directly_and_through_an_import() {
     );
 }
 
+/// The world is wider than the entry: an importer with a `main locus`
+/// of its own is the entry, and the imported application's inline claim
+/// is still the law of the world it closes (the entry row's `world`
+/// column lists every `main locus` the bundle declares). The claim that
+/// fires with the imported main alone fires here too.
+#[test]
+fn an_importer_with_its_own_main_still_runs_the_imported_mains_claims() {
+    let out = check("app-bad-own-main");
+    assert!(
+        out.contains("claim `guests_sign_only_via_rooms` violated"),
+        "the imported application's inline claim must fire beside the \
+         importer's own main:\n{}",
+        out
+    );
+    assert!(
+        out.contains("Participant::run") && out.contains("SessionSigner::stamp"),
+        "the witness must name the crossing path:\n{}",
+        out
+    );
+    assert!(!out.contains("__lib_"), "no mangled symbol may leak:\n{}", out);
+}
+
 /// An unknown group is still an unknown group — through an import it
 /// must not become vacuously true.
 #[test]

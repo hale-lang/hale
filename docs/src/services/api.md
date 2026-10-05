@@ -100,8 +100,10 @@ hale run --api /run/app.sock app.hl
 ```
 
 puts the same entry on the main locus with the dev defaults. It
-needs a `main locus` to put it on; a bare `fn main` program is
-refused with the rule. The path may be a param the program computed
+needs a `main locus` of your own to put it on; a bare `fn main`
+program is refused with the rule, and so is one whose only `main
+locus` comes from an import, since a library's bindings never bind
+in your program. The path may be a param the program computed
 (`api: unix(self.socket, …)` with `App { socket: … }` in `main`), so a
 service can listen at one socket per record under `XDG_RUNTIME_DIR`;
 `LOTUS_API` overrides whatever the entry says. A socket a live

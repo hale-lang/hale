@@ -948,16 +948,16 @@ struct OwnershipWalk {
 /// instantiations and their birth context, projection and singleton
 /// facts, plus declaration identities and the closed-world entry flag.
 /// This is the single source of truth `build_ownership_graph` consumes.
-fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
+fn collect_ownership_walk(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow) -> OwnershipWalk {
     // Closed-world gate, mirroring `build_bus_graph`'s
-    // `has_entry_point`: a bare top-level `fn main` OR a `main locus`
-    // makes the ownership DAG complete (no dynamic attach construct).
-    let has_entry_point = bundle.programs.values().any(|p| {
-        p.items.iter().any(|i| {
-            matches!(i, TopDecl::Locus(l) if l.is_main)
-                || matches!(i, TopDecl::Fn(f) if f.name.name == "main")
-        })
-    });
+    // `has_entry_point`: a bare top-level `fn main` OR an entry (the
+    // entry row's) makes the ownership DAG complete (no dynamic attach
+    // construct).
+    let has_entry_point = entry.entry().is_some()
+        || bundle
+            .programs
+            .values()
+            .any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main")));
 
     // The child an `accept` names is resolved by the one resolver the
     // handler rows use, so an alias, generic arguments or a `std::` path
@@ -1228,8 +1228,9 @@ pub fn build_ownership_graph(
     bundle: &Bundle<'_>,
     _top: &TopScope,
     placement: &crate::placement::PlacementTable,
+    entry: &crate::entry::EntryRow,
 ) -> OwnershipGraph {
-    let walk = collect_ownership_walk(bundle);
+    let walk = collect_ownership_walk(bundle, entry);
     let domains = placement.domains_by_type();
     let births = walk.facts.values().flat_map(|f| &f.instantiates)
         .chain(&walk.free_fn_sites).chain(&walk.binding_sites).map(|site| BirthRow {

@@ -537,9 +537,13 @@ pub fn resolve_rewritten(
         // The scope's diagnostics are dropped: the checker reported
         // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
-        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement);
+        // The closed world is the entry row's, over the merged program:
+        // the same declarations the checked bundle holds, so the same
+        // entry.
+        let entry = crate::entry::entry_row(&bundle);
+        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top, placement, &entry);
         let bubble = graph.bubble_plans();
-        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement);
+        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, bindings, placement, &entry);
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
         // on its subject, which the rewrite named by topic and the

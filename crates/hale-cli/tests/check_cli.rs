@@ -13,6 +13,8 @@ mod check_arg_parsing;
 mod check_borrow_lifetime;
 #[path = "check_entry_decisions.rs"]
 mod check_entry_decisions;
+#[path = "check_entry_consumers.rs"]
+mod check_entry_consumers;
 #[path = "check_flows.rs"]
 mod check_flows;
 #[path = "check_lowering_laws.rs"]

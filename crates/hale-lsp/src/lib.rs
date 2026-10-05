@@ -2568,68 +2568,57 @@ fn placement(
     Some(placement_of(&snap))
 }
 
-/// `hale/placement` over one snapshot: the main locus of the program
-/// the snapshot scoped, its params and its `placement` block. A seed
-/// with a hole has no scope, and no main locus to read.
+/// `hale/placement` over one snapshot: the `main locus` lowering
+/// deploys (the entry row's lowering root, F.40 phase 3: never an
+/// imported library's, a module-nested one included), its params and
+/// its `placement` block. A seed with a hole has no scope, and no main
+/// locus to read.
 fn placement_of(snap: &Snapshot) -> Value {
     if snap.demand_scope().is_err() {
         return json!({ "fields": [], "parseErrors": true });
     }
-    use hale_syntax::ast::{LocusMember, TopDecl};
-    for prog in snap.programs().values() {
-        for item in &prog.items {
-            let TopDecl::Locus(l) = item else { continue };
-            if !l.is_main {
-                continue;
-            }
-            let mut placements: BTreeMap<String, String> = BTreeMap::new();
-            let mut params: Vec<(String, String)> = Vec::new();
-            for m in &l.members {
-                match m {
-                    LocusMember::Placement(pb) => {
-                        for e in &pb.entries {
-                            placements.insert(
-                                e.field.name.clone(),
-                                placement_spec_str(e),
-                            );
-                        }
-                    }
-                    LocusMember::Params(ps) => {
-                        for pd in &ps.params {
-                            let ty = pd
-                                .ty
-                                .as_ref()
-                                .map(type_expr_str)
-                                .unwrap_or_else(|| "?".to_string());
-                            params.push((pd.name.name.clone(), ty));
-                        }
-                    }
-                    _ => {}
+    use hale_syntax::ast::LocusMember;
+    let bundle = snap.bundle();
+    let root = snap.demand_entry().ok().and_then(|row| row.lowering_root.as_ref()).and_then(|m| m.decl(&bundle));
+    let Some(l) = root else {
+        return json!({ "fields": [], "noMainLocus": true });
+    };
+    let mut placements: BTreeMap<String, String> = BTreeMap::new();
+    let mut params: Vec<(String, String)> = Vec::new();
+    for m in &l.members {
+        match m {
+            LocusMember::Placement(pb) => {
+                for e in &pb.entries {
+                    placements.insert(e.field.name.clone(), placement_spec_str(e));
                 }
             }
-            let fields: Vec<Value> = params
-                .iter()
-                .map(|(name, ty)| {
-                    json!({
-                        "field": name,
-                        "locus": ty,
-                        "placement": placements
-                            .get(name)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                "cooperative(pool = main)".to_string()
-                            }),
-                        "explicit": placements.contains_key(name),
-                    })
-                })
-                .collect();
-            return json!({
-                "mainLocus": l.name.name,
-                "fields": fields
-            });
+            LocusMember::Params(ps) => {
+                for pd in &ps.params {
+                    let ty = pd.ty.as_ref().map(type_expr_str).unwrap_or_else(|| "?".to_string());
+                    params.push((pd.name.name.clone(), ty));
+                }
+            }
+            _ => {}
         }
     }
-    json!({ "fields": [], "noMainLocus": true })
+    let fields: Vec<Value> = params
+        .iter()
+        .map(|(name, ty)| {
+            json!({
+                "field": name,
+                "locus": ty,
+                "placement": placements
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| "cooperative(pool = main)".to_string()),
+                "explicit": placements.contains_key(name),
+            })
+        })
+        .collect();
+    json!({
+        "mainLocus": l.name.name,
+        "fields": fields
+    })
 }
 
 pub fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
@@ -2914,6 +2903,36 @@ fn main() { App { }; }\n";
             Ok(s) => s,
             Err(_) => panic!("the editor's load of {} failed", file.display()),
         }
+    }
+
+    /// F.40 phase 3: `hale/placement` shows the `main locus` lowering
+    /// deploys, the entry row's lowering root: the seed's own (never an
+    /// imported library's, whose placement places nothing here), a
+    /// module-nested one included. Before the row it showed the first
+    /// top-level `main locus` of the merged program, so a seed whose only
+    /// `main` is imported showed the library's, and a nested root showed
+    /// nothing.
+    #[test]
+    fn the_placement_view_is_the_deployed_roots() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_placement_root_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let seed = |name: &str, src: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("main.hl"), src).unwrap();
+            dir.join(name).join("main.hl")
+        };
+        seed("alib", "main locus Head { params { n: Int = 0; } }\nfn main() { Head { }; }\n");
+        let own = seed("own", "import \"../alib\" as lib;\nmain locus Own { params { m: Int = 0; } }\nfn main() { Own { }; }\n");
+        let bare = seed("bare", "import \"../alib\" as lib;\nfn main() { }\n");
+        let nested = seed("nested", "module inner {\n    main locus App { params { k: Int = 0; } }\n}\nfn main() { }\n");
+        let v = placement_of(&load(&own));
+        assert_eq!(v["mainLocus"], "Own", "{v}");
+        assert_eq!(v["fields"][0]["field"], "m", "{v}");
+        let v = placement_of(&load(&bare));
+        assert_eq!(v["noMainLocus"], true, "an imported main is deployed by nothing here: {v}");
+        let v = placement_of(&load(&nested));
+        assert_eq!(v["mainLocus"], "App", "the nested root lowering deploys: {v}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// F.40 phase 2.3: a request demands the families it reads and

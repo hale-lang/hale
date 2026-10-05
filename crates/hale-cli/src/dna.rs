@@ -1086,29 +1086,27 @@ fn locate(app_dir: &Path) -> Result<App, String> {
     Ok(App { root, seed, seed_rel, main_file, main_name, project })
 }
 
-/// The seed's main locus — its file and name — parsing every .hl in it;
-/// none when no file declares one.
+/// The seed's entry — its file and name — by the entry row over every
+/// .hl in it that parses (F.40 phase 3, as `seed_entry_kind` reads it:
+/// no import is resolved, and none holds the entry); none when no file
+/// declares a top-level `main locus`.
 fn main_of(seed: &Path) -> Result<Option<(PathBuf, String)>, String> {
-    let mut found = None;
     let mut entries: Vec<PathBuf> = fs::read_dir(seed)
         .map_err(|e| format!("{}: {e}", seed.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("hl"))
         .collect();
     entries.sort();
-    for p in &entries {
-        let src = fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut parsed: Vec<(PathBuf, hale_syntax::ast::Program)> = Vec::new();
+    for p in entries {
+        let src = fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         if let Ok(prog) = hale_syntax::parse_source(&src) {
-            for item in &prog.items {
-                if let hale_syntax::ast::TopDecl::Locus(l) = item {
-                    if l.is_main {
-                        found = Some((p.clone(), l.name.name.clone()));
-                    }
-                }
-            }
+            parsed.push((p, prog));
         }
     }
-    Ok(found)
+    let programs: Vec<&hale_syntax::ast::Program> = parsed.iter().map(|(_, prog)| prog).collect();
+    let row = hale_types::entry::entry_row_in(&programs);
+    Ok(row.entry().and_then(|m| Some((parsed[m.index_in()?.0].0.clone(), m.name.clone()))))
 }
 
 /// GH #1090: `init` on a repository rather than one application — a

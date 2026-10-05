@@ -253,6 +253,11 @@ That's a warning, not an error: a locus that owns its pool may block
 on purpose. Writing `@no_block` on the handler says "I mean it" and
 upgrades the check to an enforced error.
 
+The pools it reads are the ones the build spawns: those of the `main
+locus` it deploys, a `main locus` inside a `module { }` included. A
+second `main locus` (already an error) and an imported library's
+spawn nothing, so their `placement { }` blocks imply nothing.
+
 ### What parks doesn't stall
 
 Waiting is only a stall if it holds the worker, and on an `async_io`

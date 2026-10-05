@@ -77,18 +77,24 @@ pub fn desugar_before_check(
     for p in programs.iter_mut() {
         hale_syntax::json_gen::generate_json_parsers(p);
     }
+    // The api binding joins the root lowering deploys as a param on a
+    // pool of its own, so it is that root's: the entry row's lowering
+    // root, read over the programs as they stand (F.40 phase 3), never
+    // an imported library's `main locus`, and the entry once lowering
+    // deploys the entry (L4). `--api` puts its entry there, and a seed
+    // with no root is refused, saying why.
+    let row = {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        crate::entry::entry_row_in(&ro)
+    };
+    let root = row.lowering_root.as_ref().and_then(|m| m.index_in());
     if let Some(path) = seq.api {
-        // The entry goes on the main locus, wherever the bundle holds
-        // it; a bundle with none is refused by the injection itself.
-        let at = programs
-            .iter()
-            .position(|p| p.items.iter().any(|i| matches!(i, TopDecl::Locus(l) if l.is_main)))
-            .unwrap_or(0);
-        if let Some(p) = programs.get_mut(at) {
-            hale_syntax::api_gen::inject_api_entry(p, path)?;
-        }
+        let (at, item) = root.ok_or_else(|| api_refusal(row.no_entry()))?;
+        let l = hale_syntax::ast::locus_at_mut(&mut programs[at].items, item)
+            .expect("the entry row names a locus of these programs");
+        hale_syntax::api_gen::inject_api_entry(l, path);
     }
-    let surface = hale_syntax::api_gen::generate_api(programs, seq.api_roles);
+    let surface = hale_syntax::api_gen::generate_api(programs, root, seq.api_roles);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does
     // not parse is reported where it is appended (`resolve_program`);
@@ -96,6 +102,20 @@ pub fn desugar_before_check(
     let stdlib = bundled_stdlib().ok();
     shape(programs, seq, stdlib.as_slice());
     Ok(surface)
+}
+
+/// Why `--api` has nowhere to put its entry: lowering deploys no `main
+/// locus` of the seed's own (`why` is the row's account of the entry).
+fn api_refusal(why: Option<crate::entry::NoEntry>) -> String {
+    match why {
+        Some(crate::entry::NoEntry::NoMain) => "--api needs a `main locus` to bind: the api entry lives in its \
+                                               `bindings { }` block, and this program has only a bare `fn main`"
+            .to_string(),
+        _ => "--api needs the seed's own `main locus` to bind: the api entry lives in its \
+              `bindings { }` block, and the only `main locus` here is an imported library's, \
+              whose bindings are inert"
+            .to_string(),
+    }
 }
 
 /// The passes that shape a declaration, in order. `context` is read and
