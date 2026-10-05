@@ -165,11 +165,12 @@ fn tranche2_io_fs_checks_fire() {
 
 #[test]
 fn bare_fallible_calls_are_the_law_s_errors_and_type_permissively() {
-    // Stdlib fallible path-calls are dual-mode at codegen: the bare
-    // (no `or`) legacy form returns a direct value (read_file → the
-    // String, write_file → an Int status). The checker types the bare
-    // call permissively, so its uses report nothing; the call itself is
-    // the `bare_fallible` law's error (GH #738), one per call.
+    // A bare (no `or`) stdlib fallible call — once a legacy form that
+    // returned a direct value (read_file → the String, write_file → an
+    // Int status), gone from lowering since F.40 phase 4, S5. The checker
+    // types the bare call permissively, so its uses report nothing; the
+    // call itself is the `bare_fallible` law's error (GH #738), one per
+    // call.
     let m = msgs(
         r#"
         fn main() {

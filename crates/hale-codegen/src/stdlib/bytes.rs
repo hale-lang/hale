@@ -146,11 +146,6 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
-    fn lower_std_bytes_at(
-        &mut self,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_bytes_slice(
         &mut self,
         args: &[Expr],
@@ -1544,74 +1539,6 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::Bytes))
-    }
-
-    /// Phase 2g: lower `std::bytes::at(b: Bytes, i: Int) -> Int`.
-    /// Byte-as-Int accessor — returns the i-th byte's unsigned
-    /// value (0..255) sign-extended into i64. Returns -1 if i is
-    /// out of range. Pairs with std::bytes::slice and std::bytes::
-    /// from_string for binary protocol parsing.
-    fn lower_std_bytes_at(
-        &mut self,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 2 {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::at takes 2 args (b, i), got {}",
-                args.len()
-            )));
-        }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
-        if i_ty != CodegenTy::Int {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::at: i must be Int, got {:?}",
-                i_ty
-            )));
-        }
-        // BytesMut (a raw {ptr,len} window — e.g. MirrorRing.readable())
-        // reads via the _raw sibling; Bytes/BytesView via the handle path.
-        if b_ty == CodegenTy::BytesMut {
-            let (base, cap) = self.bytesmut_base_len(b_val)?;
-            let f = self
-                .module
-                .get_function("lotus_bytes_at_raw")
-                .expect("lotus_bytes_at_raw declared");
-            let ret = self
-                .builder
-                .build_call(f, &[base.into(), cap.into(), i_val.into()], "bytes_at_raw.ret")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value()
-                .left()
-                .expect("returns i64");
-            return Ok((ret, CodegenTy::Int));
-        }
-        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-            let hint = if matches!(b_ty, CodegenTy::String) {
-                " — use `std::bytes::from_string(s)` to convert"
-            } else {
-                ""
-            };
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::at: b must be Bytes, got {:?}{}",
-                b_ty, hint
-            )));
-        }
-        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
-        let f = self
-            .module
-            .get_function("lotus_bytes_at")
-            .expect("lotus_bytes_at declared");
-        let call = self
-            .builder
-            .build_call(f, &[b_val.into(), i_val.into()], "bytes_at.ret")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let ret = call
-            .try_as_basic_value()
-            .left()
-            .expect("returns i64");
-        Ok((ret, CodegenTy::Int))
     }
 
     /// Extract `{base ptr, len i64}` from a BytesMut struct value (the

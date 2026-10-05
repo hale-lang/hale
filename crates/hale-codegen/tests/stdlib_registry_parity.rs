@@ -131,13 +131,14 @@ fn every_rows_lowering_is_where_the_column_says() {
 /// id whose row is not fallible has one: the rest are its last arm, which
 /// refuses (`or_over_an_infallible_row`). At a bare position the arm
 /// that refuses (`bare_call_of_a_fallible_row`) is every id whose row is
-/// fallible, and no other. The exceptions are the arms the rulings after
-/// this one remove, named in `stdlib_dispatch_coverage`; an id outside
-/// them that disagrees is a finding, not a repair.
+/// fallible, and no other, and no fallible row has a bare arm that lowers.
+/// The exception is the arm a later ruling removes, named in
+/// `stdlib_dispatch_coverage`; an id outside it that disagrees is a
+/// finding, not a repair.
 #[test]
 fn which_calls_lowering_refuses_is_the_rows_fallibility() {
     use crate::stdlib_dispatch_coverage::{
-        fallible_id_arms, id_arms, Branch, DEAD_BARE_OF_FALLIBLE_ROWS, OR_LOWERS_AN_INFALLIBLE_ROW,
+        fallible_id_arms, id_arms, Branch, OR_LOWERS_AN_INFALLIBLE_ROW,
     };
     let mut fallible = BTreeSet::new();
     let mut path_of = BTreeMap::new();
@@ -177,11 +178,10 @@ fn which_calls_lowering_refuses_is_the_rows_fallibility() {
             };
         }
     }
-    let unrefused: Vec<&String> = fallible
-        .difference(&bare_refuses)
-        .filter(|id| !(excepted(DEAD_BARE_OF_FALLIBLE_ROWS, id) && bare_lowers.contains(*id)))
-        .collect();
+    let unrefused: Vec<&String> = fallible.difference(&bare_refuses).collect();
     assert!(unrefused.is_empty(), "fallible rows a bare call does not refuse: {unrefused:?}");
+    let lowered_bare: Vec<&String> = fallible.intersection(&bare_lowers).collect();
+    assert!(lowered_bare.is_empty(), "fallible rows with a bare arm that lowers: {lowered_bare:?}");
     let wrongly: Vec<&String> = bare_refuses.difference(&fallible).collect();
     assert!(wrongly.is_empty(), "rows that cannot fail, refused bare as fallible: {wrongly:?}");
     assert!(bare_refuses.len() > 100 && or_refuses.len() > 200, "the scrape found the refusal arms");

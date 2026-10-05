@@ -271,7 +271,7 @@ fn a_bytes_generic_argument_round_trips_at_run_time() {
                fn main() {\n    \
                let inner = Box_Bytes { item: std::bytes::from_string(\"abcd\") };\n    \
                let h = Holder { b: inner };\n    \
-               println(\"b0=\", std::bytes::at(h.b.item, 0));\n}\n";
+               println(\"b0=\", std::bytes::at(h.b.item, 0) or -1);\n}\n";
     let program = hale_syntax::parse_source(src).expect("parses");
     let bin = harness::unique_bin("hale_vg_bytes_monomorph");
     build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("a Bytes monomorph must build");

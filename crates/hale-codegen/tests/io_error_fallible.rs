@@ -248,7 +248,7 @@ fn str_bytes_mismatch_diagnostic_suggests_converter() {
 fn bytes_str_mismatch_diagnostic_suggests_converter() {
     let src = r#"
         fn main() {
-            let n = std::bytes::at("hi", 0);
+            let n = std::bytes::at("hi", 0) or 0;
             println(n);
         }
     "#;

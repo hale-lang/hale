@@ -70,9 +70,9 @@ fn recv_bytes_preserves_nul_in_payload() {
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
             let b = s.recv_bytes(32) or raise;
             println("len=", len(b));
-            println("b0=", std::bytes::at(b, 0));
-            println("b3=", std::bytes::at(b, 3));
-            println("b7=", std::bytes::at(b, 7));
+            println("b0=", std::bytes::at(b, 0) or -1);
+            println("b3=", std::bytes::at(b, 3) or -1);
+            println("b7=", std::bytes::at(b, 7) or -1);
         }}
         "#,
         port
@@ -128,10 +128,10 @@ fn bytes_at_out_of_range_returns_minus_one() {
     let src = r#"
         fn main() {
             let b = std::bytes::from_string("ab");
-            println("at0=", std::bytes::at(b, 0));
-            println("at1=", std::bytes::at(b, 1));
-            println("at2=", std::bytes::at(b, 2));
-            println("atneg=", std::bytes::at(b, -1));
+            println("at0=", std::bytes::at(b, 0) or -1);
+            println("at1=", std::bytes::at(b, 1) or -1);
+            println("at2=", std::bytes::at(b, 2) or -1);
+            println("atneg=", std::bytes::at(b, -1) or -1);
         }
     "#;
     let bin = build_hale("at_oob", src);
@@ -154,8 +154,8 @@ fn bytes_slice_returns_subrange() {
             let b = std::bytes::from_string("abcdef");
             let mid = std::bytes::slice(b, 1, 4);
             println("midlen=", len(mid));
-            println("mid0=", std::bytes::at(mid, 0));
-            println("mid2=", std::bytes::at(mid, 2));
+            println("mid0=", std::bytes::at(mid, 0) or -1);
+            println("mid2=", std::bytes::at(mid, 2) or -1);
             let clamped = std::bytes::slice(b, 4, 100);
             println("clamp_len=", len(clamped));
             let empty = std::bytes::slice(b, 3, 3);

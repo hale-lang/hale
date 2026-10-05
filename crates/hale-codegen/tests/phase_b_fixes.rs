@@ -58,9 +58,9 @@ fn b2_bytes_literal_lex_roundtrip() {
         fn main() {
             let b = b"ab\x00c";
             println("len=", len(b));
-            println("b0=", std::bytes::at(b, 0));
-            println("b2=", std::bytes::at(b, 2));
-            println("b3=", std::bytes::at(b, 3));
+            println("b0=", std::bytes::at(b, 0) or -1);
+            println("b2=", std::bytes::at(b, 2) or -1);
+            println("b3=", std::bytes::at(b, 3) or -1);
         }
     "#;
     let bin = build("b2_bytes_lit", src);
@@ -82,9 +82,9 @@ fn b2_bytes_literal_full_range_xnn() {
     let src = r#"
         fn main() {
             let b = b"\xff\x80\x7f";
-            println("b0=", std::bytes::at(b, 0));
-            println("b1=", std::bytes::at(b, 1));
-            println("b2=", std::bytes::at(b, 2));
+            println("b0=", std::bytes::at(b, 0) or -1);
+            println("b1=", std::bytes::at(b, 1) or -1);
+            println("b2=", std::bytes::at(b, 2) or -1);
         }
     "#;
     let bin = build("b2_bytes_lit_high", src);

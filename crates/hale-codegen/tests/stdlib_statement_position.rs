@@ -157,6 +157,39 @@ fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
     assert_eq!(span, None);
 }
 
+/// F.40 phase 4, S5 (a classified correction): the nine fallible rows
+/// that kept a bare arm no checked program reaches (it returned the value
+/// directly, -1 or an Int status) have none. A bare call built without the
+/// check is the same internal error as every other fallible row's.
+#[test]
+fn the_fallible_rows_dead_bare_arms_are_gone() {
+    for (path, args) in [
+        ("std::bytes::at", "std::bytes::from_string(\"ab\"), 0"),
+        ("std::io::fs::file_size", "\"/x\""),
+        ("std::io::fs::list_dir_at", "\"/x\", 0"),
+        ("std::io::fs::list_dir_count", "\"/x\""),
+        ("std::io::fs::mkdir", "\"/x\""),
+        ("std::io::fs::read_bytes", "\"/x\""),
+        ("std::io::fs::read_file", "\"/x\""),
+        ("std::io::fs::write_file", "\"/x\", \"y\""),
+        ("std::io::fs::write_file_append", "\"/x\", \"y\""),
+    ] {
+        let err = hale_types::stdlib_surface::signature_for(&path.split("::").collect::<Vec<_>>())
+            .and_then(|s| s.fallible)
+            .expect("a fallible row");
+        let source = format!("fn main() {{\n    let v = {path}({args});\n}}\n");
+        let (text, _) = lowering_error(&source, "dead_bare_arm");
+        assert_eq!(
+            text,
+            format!(
+                "unsupported in codegen v0: internal error: a bare call of `{path}` reached lowering \
+                 at value position, but its row says it can fail ({err}), and `hale check` refuses \
+                 that call (GH #738): this build skipped the check"
+            ),
+        );
+    }
+}
+
 /// A path no arm lowers at statement position fails in the statement's
 /// words, and at a value position in the value position's: "not
 /// implemented" is worded where it is produced (S3), so a statement never

@@ -50,7 +50,7 @@ fn list_dir_count_returns_entry_count() {
     let src = format!(
         r#"
         fn main() {{
-            let n = std::io::fs::list_dir_count("{}");
+            let n = std::io::fs::list_dir_count("{}") or 0;
             println("count=", n);
         }}
         "#,
@@ -77,10 +77,10 @@ fn list_dir_at_walks_entries_in_order() {
         r#"
         fn main() {{
             let p = "{}";
-            let n = std::io::fs::list_dir_count(p);
+            let n = std::io::fs::list_dir_count(p) or 0;
             let mut i = 0;
             while i < n {{
-                let name = std::io::fs::list_dir_at(p, i);
+                let name = std::io::fs::list_dir_at(p, i) or "";
                 println("e", i, "=", name);
                 i = i + 1;
             }}
@@ -110,7 +110,7 @@ fn list_dir_at_walks_entries_in_order() {
 fn list_dir_count_on_missing_dir_returns_zero() {
     let src = r#"
         fn main() {
-            let n = std::io::fs::list_dir_count("/tmp/hale_definitely_missing_xyz123_dir");
+            let n = std::io::fs::list_dir_count("/tmp/hale_definitely_missing_xyz123_dir") or 0;
             println("count=", n);
         }
     "#;
@@ -127,13 +127,13 @@ fn list_dir_at_out_of_range_returns_empty_string() {
         r#"
         fn main() {{
             let p = "{}";
-            let n = std::io::fs::list_dir_count(p);
+            let n = std::io::fs::list_dir_count(p) or 0;
             println("n=", n);
-            let valid = std::io::fs::list_dir_at(p, 0);
+            let valid = std::io::fs::list_dir_at(p, 0) or "";
             println("valid_len=", len(valid));
-            let oob = std::io::fs::list_dir_at(p, 5);
+            let oob = std::io::fs::list_dir_at(p, 5) or "";
             println("oob_len=", len(oob));
-            let neg = std::io::fs::list_dir_at(p, -1);
+            let neg = std::io::fs::list_dir_at(p, -1) or "";
             println("neg_len=", len(neg));
         }}
         "#,

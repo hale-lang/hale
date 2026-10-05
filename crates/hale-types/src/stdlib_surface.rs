@@ -138,12 +138,10 @@ pub fn signature_for(segs: &[&str]) -> Option<&'static Sig> {
 }
 
 impl Sig {
-    /// Type of a BARE (no `or`) call. Stdlib fallible path-calls
-    /// are dual-mode at codegen: with `or` they take the fallible
-    /// ABI; without, they're the legacy direct form whose return
-    /// differs per fn (read_file → the String, write_file → an Int
-    /// status). We don't model the legacy zoo — bare fallible calls
-    /// stay Unknown (the status quo), while `or` positions get the
+    /// Type of a BARE (no `or`) call. A bare call of a fallible row is
+    /// the bare-fallible law's error, and lowering has no bare form of
+    /// one (F.40 phase 4, S5), so it types Unknown and the call reports
+    /// that one error and no type mismatch, while `or` positions get the
     /// precise types via `or_types` (consulted by the Or arm).
     pub fn ret_ty(&self) -> Ty {
         match self.fallible {
@@ -761,9 +759,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("write_file", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFile)),
             row!("__write_private", SYSCALL, [Str, Bytes] -> Unit ! "IoError", Intrinsic(IoFsWritePrivateRaw)),
             // GH #535 (DNA F.9): the `or` form lowers through the same
-            // fallible channel as write_file (Unit success); the BARE legacy
-            // call returns an Int status and stays typed Unknown like every
-            // bare fallible row. The row used to say Int and the checker
+            // fallible channel as write_file (Unit success); a bare call
+            // types Unknown like every bare fallible row (its Int-status
+            // bare form left lowering at F.40 phase 4, S5). The row used to say Int and the checker
             // admitted `let n = ... or 0`, which codegen then refused with a
             // message about something else.
             row!("write_file_append", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFileAppend)),

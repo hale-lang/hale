@@ -1317,9 +1317,8 @@ fn write_harvested_programs() {
 /// statement reaches too), and an `or` over one whose row says it cannot
 /// (`or_over_an_infallible_row`). No program builds with one, and the
 /// check refuses all but an `or` over a row with no signature yet. The
-/// rows' exceptions are the arms the rulings after S5's second remove: a
-/// fallible row whose bare arm still lowers ([`DEAD_BARE_OF_FALLIBLE_ROWS`])
-/// and the one infallible row an `or` still lowers.
+/// rows' one exception is the arm a later ruling of S5 removes: the
+/// infallible row an `or` still lowers.
 pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
     use hale_types::stdlib_surface::{rows, Lower};
     rows()
@@ -1329,9 +1328,8 @@ pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
             let fallible = f.sig.is_some_and(|s| s.fallible.is_some());
             (path, if fallible { Position::Expression } else { Position::Fallible })
         })
-        .filter(|(path, position)| match position {
-            Position::Expression => !DEAD_BARE_OF_FALLIBLE_ROWS.contains(&path.as_str()),
-            _ => !OR_LOWERS_AN_INFALLIBLE_ROW.contains(&path.as_str()),
+        .filter(|(path, position)| {
+            *position == Position::Expression || !OR_LOWERS_AN_INFALLIBLE_ROW.contains(&path.as_str())
         })
         .collect()
 }
@@ -1361,32 +1359,6 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
     ("std::test::__passes", Position::Expression, &["__test_fail_trailer"]),
 ];
 
-/// No pair reaches "not implemented" (the third kind the plan allowed
-/// for): every arm the scrape finds lowers or refuses by its own arm.
-///
-/// NOT ONE OF THE PLAN'S KINDS, so listed apart (S0's stop rule): the
-/// bare arms of paths whose signature row is fallible. The checker
-/// refuses a bare call of a fallible signature (GH #738: "`..` can fail
-/// (..) and this call says nothing about it"), so these expression arms
-/// are dead for every checked program, and `hale build` checks first.
-/// They are the plan's "9 fallible rows that keep a dead bare arm",
-/// which S5 removes; until then the IR shadow cannot reach them. Each
-/// had a statement twin too, 18 dead arms in all; S1 folded the twins
-/// into the expression arm, which a bare statement call of one reaches
-/// with its value dropped. The test derives the list from the rows and
-/// holds it equal.
-pub const DEAD_BARE_OF_FALLIBLE_ROWS: &[&str] = &[
-    "std::bytes::at",
-    "std::io::fs::file_size",
-    "std::io::fs::list_dir_at",
-    "std::io::fs::list_dir_count",
-    "std::io::fs::mkdir",
-    "std::io::fs::read_bytes",
-    "std::io::fs::read_file",
-    "std::io::fs::write_file",
-    "std::io::fs::write_file_append",
-];
-
 /// Every allowed pair, with the kind it is allowed as.
 fn allowances() -> BTreeMap<(String, Position), &'static str> {
     let mut out = BTreeMap::new();
@@ -1396,18 +1368,15 @@ fn allowances() -> BTreeMap<(String, Position), &'static str> {
     for (p, position, _) in INTERNAL {
         out.insert((p.to_string(), *position), "internal");
     }
-    for p in DEAD_BARE_OF_FALLIBLE_ROWS {
-        out.insert((p.to_string(), Position::Expression), "dead bare arm of a fallible row");
-    }
     out
 }
 
 /// The allowances say what the code says: the refused pairs are exactly
 /// the refusal arms' pairs, which are the rows' fallibility; each internal
 /// path is refused to a user's program and called, at its position, by
-/// the stdlib declarations named, all lowered in every build; the dead
-/// bare arms are exactly the lowering arms at a bare position of a path
-/// whose signature row is fallible.
+/// the stdlib declarations named, all lowered in every build. No pair
+/// reaches "not implemented", and since S5 no fallible row keeps a bare
+/// arm that lowers (the nine dead ones are gone).
 #[test]
 fn the_allowances_are_what_the_code_says() {
     let all = pairs(&scrape());
@@ -1417,23 +1386,6 @@ fn the_allowances_are_what_the_code_says() {
     let refused_rows: BTreeSet<(String, Position)> =
         allowed.iter().filter(|(_, why)| **why == "refused by lowering").map(|(p, _)| p.clone()).collect();
     assert_eq!(refused_rows, refused_scraped, "the refusal arms drifted from the rows' fallibility");
-
-    let dead_derived: BTreeSet<(String, Position)> = all
-        .iter()
-        .filter(|((path, position), k)| {
-            k.0 == ArmKind::Lowers
-                && *position != Position::Fallible
-                && hale_types::stdlib_surface::signature_for(&path.split("::").collect::<Vec<_>>())
-                    .is_some_and(|s| s.fallible.is_some())
-        })
-        .map(|(p, _)| p.clone())
-        .collect();
-    let dead_listed: BTreeSet<(String, Position)> = allowed
-        .iter()
-        .filter(|(_, why)| **why == "dead bare arm of a fallible row")
-        .map(|(p, _)| p.clone())
-        .collect();
-    assert_eq!(dead_listed, dead_derived, "the dead bare arms drifted from the signature rows");
 
     let seeds = stdlib_calls();
     let ir = harness::build_ir_text(

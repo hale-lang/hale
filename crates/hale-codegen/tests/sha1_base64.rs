@@ -29,11 +29,11 @@ fn sha1_known_test_vectors() {
         fn main() {
             let abc = std::bytes::from_string("abc");
             let d = std::crypto::sha1(abc);
-            println("b0=", std::bytes::at(d, 0));
-            println("b1=", std::bytes::at(d, 1));
-            println("b2=", std::bytes::at(d, 2));
-            println("b3=", std::bytes::at(d, 3));
-            println("b19=", std::bytes::at(d, 19));
+            println("b0=", std::bytes::at(d, 0) or -1);
+            println("b1=", std::bytes::at(d, 1) or -1);
+            println("b2=", std::bytes::at(d, 2) or -1);
+            println("b3=", std::bytes::at(d, 3) or -1);
+            println("b19=", std::bytes::at(d, 19) or -1);
         }
     "#;
     let bin = build("abc", src);

@@ -26530,9 +26530,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::BytesFromString => {
                 self.lower_std_bytes_from_string(args, scope)
             }
-            Id::BytesAt => {
-                self.lower_std_bytes_at(args, scope)
-            }
             Id::BytesFindByte => {
                 self.lower_std_bytes_find_byte(args, scope)
             }
@@ -26631,31 +26628,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::IoFileReadLineRaw => {
                 self.lower_std_io_file_read_line(args, scope)
-            }
-            Id::IoFsReadBytes => {
-                self.lower_std_io_fs_read_bytes(args, scope)
-            }
-            // Phase 2e: list_dir index API.
-            Id::IoFsListDirCount => {
-                self.lower_std_io_fs_list_dir_count(args, scope)
-            }
-            Id::IoFsListDirAt => {
-                self.lower_std_io_fs_list_dir_at(args, scope)
-            }
-            Id::IoFsReadFile => {
-                self.lower_std_io_fs_read_file(args, scope)
-            }
-            Id::IoFsWriteFile => {
-                self.lower_std_io_fs_write_file(args, scope)
-            }
-            Id::IoFsWriteFileAppend => {
-                self.lower_std_io_fs_write_file_append(args, scope)
-            }
-            Id::IoFsMkdir => {
-                self.lower_std_io_fs_mkdir(args, scope)
-            }
-            Id::IoFsFileSize => {
-                self.lower_std_io_fs_file_size(args, scope)
             }
             Id::IoFsFileExists => {
                 self.lower_std_io_fs_file_exists(args, scope)
@@ -27093,7 +27065,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // skipped the check (`bare_call_of_a_fallible_row`).
             // `stdlib_registry_parity` holds this arm to the rows: it is
             // every id whose row is fallible.
-            Id::BytesReadF32Le
+            Id::BytesAt
+            | Id::BytesReadF32Le
             | Id::BytesReadF64Be
             | Id::BytesReadF64Le
             | Id::BytesReadI16Be
@@ -27142,10 +27115,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
+            | Id::IoFsFileSize
+            | Id::IoFsListDirAt
+            | Id::IoFsListDirCount
+            | Id::IoFsMkdir
             | Id::IoFsMktemp
+            | Id::IoFsReadBytes
+            | Id::IoFsReadFile
             | Id::IoFsRename
             | Id::IoFsUnlink
             | Id::IoFsWriteBytes
+            | Id::IoFsWriteFile
+            | Id::IoFsWriteFileAppend
             | Id::IoFsWritePrivateRaw
             | Id::IoUnixConnect
             | Id::IoUnixConnectWait
