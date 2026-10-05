@@ -383,14 +383,6 @@ const OBSERVATION_PROBE: &str = "generated code: the observation probes, behind 
 pub const KNOWN_OPEN: &[KnownOpen] = &[
     KnownOpen { name: "dprintf", callers: None, why: UNABSORBED_REPORT },
     KnownOpen { name: "fflush", callers: None, why: UNABSORBED_REPORT },
-    KnownOpen {
-        name: "fwrite",
-        callers: Some(&["lotus_bus_hold_delivery", "lotus_bus_park_if_unready", "lotus_reclaim_defer", "lotus_replay_gate_cell"]),
-        why: "the runtime's out-of-memory diagnostics before abort(): the shim's fprintf is an inline \
-              no-op, but clang rewrites `fprintf(stderr, \"<literal>\")` into an fwrite nothing defines \
-              (the arena is compiled without -fno-builtin). It runs on wasm32 when malloc fails. \
-              (lotus_replay_gate_cell's runs only under replay, which wasm32 refuses.)",
-    },
     KnownOpen { name: "lotus_obs_locus_birth", callers: None, why: OBSERVATION_PROBE },
     KnownOpen { name: "lotus_obs_locus_dissolve", callers: None, why: OBSERVATION_PROBE },
     KnownOpen { name: "lotus_obs_note_publisher", callers: None, why: OBSERVATION_PROBE },

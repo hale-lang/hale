@@ -2882,6 +2882,10 @@ fn link_wasm(
     // Compile arena core + bundled libc to wasm32 objects. The libc uses
     // -fno-builtin so its byte-loop mem*/str* aren't re-emitted as
     // recursive calls; -mbulk-memory lowers mem* to wasm intrinsics.
+    // The arena uses -fno-builtin-fprintf so its `fprintf(stderr, …)`
+    // stays the shim's (an inline no-op) instead of being rewritten to
+    // an `fwrite` nothing defines, which the link would keep as a host
+    // import (P3 T7).
     let arena_o = dir.join("arena.o");
     let libc_o = dir.join("libc.o");
     // Resolve the toolchain binaries (bare or `-18`).
@@ -2908,7 +2912,7 @@ fn link_wasm(
         }
         Ok(())
     };
-    cc(&arena_c, &arena_o, &[])?;
+    cc(&arena_c, &arena_o, &["-fno-builtin-fprintf"])?;
     cc(&libc_c, &libc_o, &["-fno-builtin"])?;
 
     // Link with wasm-ld, exporting `main` as the program entry (+ memory
