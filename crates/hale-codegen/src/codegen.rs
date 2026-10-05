@@ -26580,9 +26580,245 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::BytesBuilderTextViewRaw => {
                 self.lower_std_bytes_builder_text_view(args, scope)
             }
+            // #3 MirrorRing primitives (backing the std::io::MirrorRing
+            // locus), by the primitive's name.
+            Id::IoMirrorNewRaw
+            | Id::IoMirrorFreeRaw
+            | Id::IoMirrorRecvIntoRaw
+            | Id::IoMirrorCommitRaw
+            | Id::IoMirrorConsumeRaw
+            | Id::IoMirrorReadableRaw
+            | Id::IoMirrorWritableRaw
+            | Id::IoMirrorLenRaw
+            | Id::IoMirrorCapacityRaw => {
+                self.lower_std_io_mirror(segs[3], args, scope)
+            }
+            // File primitives — `__`-prefixed only; user-facing
+            // names route via STDLIB_FN_RENAMES to file.hl wrappers.
+            Id::IoFileCloseRaw => {
+                self.lower_std_io_file_close(args, scope)
+            }
+            Id::IoFileAtEofRaw => {
+                self.lower_std_io_file_at_eof(args, scope)
+            }
+            Id::IoFileReadLineRaw => {
+                self.lower_std_io_file_read_line(args, scope)
+            }
+            Id::IoFsReadBytes => {
+                self.lower_std_io_fs_read_bytes(args, scope)
+            }
+            // Phase 2e: list_dir index API.
+            Id::IoFsListDirCount => {
+                self.lower_std_io_fs_list_dir_count(args, scope)
+            }
+            Id::IoFsListDirAt => {
+                self.lower_std_io_fs_list_dir_at(args, scope)
+            }
+            Id::IoFsReadFile => {
+                self.lower_std_io_fs_read_file(args, scope)
+            }
+            Id::IoFsWriteFile => {
+                self.lower_std_io_fs_write_file(args, scope)
+            }
+            Id::IoFsWriteFileAppend => {
+                self.lower_std_io_fs_write_file_append(args, scope)
+            }
+            Id::IoFsMkdir => {
+                self.lower_std_io_fs_mkdir(args, scope)
+            }
+            Id::IoFsFileSize => {
+                self.lower_std_io_fs_file_size(args, scope)
+            }
+            Id::IoFsFileExists => {
+                self.lower_std_io_fs_file_exists(args, scope)
+            }
+            Id::IoFsExtension => {
+                self.lower_std_io_fs_extension(args, scope)
+            }
+            Id::IoStdinReadByte => {
+                self.lower_std_io_stdin_read_byte(args, scope)
+            }
+            Id::IoStdinReadLine => {
+                self.lower_std_io_stdin_read_line(args, scope)
+            }
+            Id::IoStdinReadLineStatus => {
+                self.lower_std_io_stdin_read_line_status(args, scope)
+            }
+            Id::IoStdoutWriteBytes => {
+                self.lower_std_io_stdout_write_bytes(args, scope)
+            }
+            // GH #1108: the api binding's caller identity.
+            Id::IoUnixPeerUid => self.lower_std_io_unix_peer("uid", args, scope),
+            Id::IoUnixPeerGid => self.lower_std_io_unix_peer("gid", args, scope),
+            Id::IoUnixPeerPid => self.lower_std_io_unix_peer("pid", args, scope),
+            // GH #1109: the static role table's name spellings.
+            Id::IoUnixUserId => self.lower_std_io_unix_name_id("user_id", args, scope),
+            Id::IoUnixGroupId => self.lower_std_io_unix_name_id("group_id", args, scope),
+            Id::IoUnixPeerGroupsCount => self.lower_std_io_unix_peer("groups_count", args, scope),
+            Id::IoUnixPeerGroupAt => self.lower_std_io_unix_peer_group_at(args, scope),
+            Id::IoTcpListenSocketRaw => {
+                self.lower_std_io_tcp_listen_socket(args, scope)
+            }
+            Id::IoTcpAcceptOneRaw => {
+                self.lower_std_io_tcp_accept_one(args, scope)
+            }
+            Id::IoTcpConnectRaw => {
+                self.lower_std_io_tcp_connect(args, scope)
+            }
+            Id::IoTcpCloseFdRaw
+            | Id::IoTcpCloseFd => {
+                self.lower_std_io_tcp_close_fd(args, scope)
+            }
+            Id::IoTcpShutdownListenSocketRaw => {
+                self.lower_std_io_tcp_shutdown_listen_socket(args, scope)
+            }
+            Id::IoTcpSetRecvTimeoutNsRaw => {
+                self.lower_std_io_tcp_set_recv_timeout(args, scope)
+            }
+            Id::IoTcpSendRaw => {
+                self.lower_std_io_tcp_send(args, scope)
+            }
+            Id::IoTcpRecvRaw => {
+                self.lower_std_io_tcp_recv(args, scope)
+            }
+            Id::IoTcpSendBytesRaw => {
+                self.lower_std_io_tcp_send_bytes(args, scope)
+            }
+            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
+            Id::IoTcpRecvBytesRaw => {
+                self.lower_std_io_tcp_recv_bytes(args, scope)
+            }
+            Id::IoTcpRecvInto => {
+                self.lower_std_io_tcp_recv_into(args, scope)
+            }
+            Id::IoTcpRecvStampedInto => {
+                self.lower_std_io_tcp_recv_stamped_into(args, scope)
+            }
+            Id::IoTcpLastRecvKernelNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_recv_kernel_ns",
+                    "last_recv_kernel_ns",
+                ),
+            Id::IoTcpLastRecvUserNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_recv_user_ns",
+                    "last_recv_user_ns",
+                ),
+            // #209 — status pair backing the fallible Stream methods.
+            Id::IoTcpLastIoStatusRaw => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_io_status",
+                    "__last_io_status",
+                ),
+            Id::IoTcpIoErrorKindRaw => {
+                self.lower_std_io_tcp_io_error_kind(args, scope)
+            }
+            // 2026-05-26 — named socket-option constants. Each
+            // resolves to a zero-arg call into the matching C
+            // getter, which returns the platform's numeric
+            // value for that level / option name.
+            Id::IoSockoptIpprotoIp
+            | Id::IoSockoptIpprotoIpv6
+            | Id::IoSockoptIpprotoTcp
+            | Id::IoSockoptIpprotoUdp
+            | Id::IoSockoptIpAddMembership
+            | Id::IoSockoptIpDropMembership
+            | Id::IoSockoptIpMtuDiscover
+            | Id::IoSockoptIpMulticastIf
+            | Id::IoSockoptIpMulticastLoop
+            | Id::IoSockoptIpMulticastTtl
+            | Id::IoSockoptIpPktinfo
+            | Id::IoSockoptIpPmtudiscDo
+            | Id::IoSockoptIpPmtudiscDont
+            | Id::IoSockoptIpPmtudiscProbe
+            | Id::IoSockoptIpPmtudiscWant
+            | Id::IoSockoptIpTos
+            | Id::IoSockoptIpTtl
+            | Id::IoSockoptSolSocket
+            | Id::IoSockoptSoBindtodevice
+            | Id::IoSockoptSoBroadcast
+            | Id::IoSockoptSoKeepalive
+            | Id::IoSockoptSoLinger
+            | Id::IoSockoptSoPriority
+            | Id::IoSockoptSoRcvbuf
+            | Id::IoSockoptSoRcvtimeo
+            | Id::IoSockoptSoReuseaddr
+            | Id::IoSockoptSoReuseport
+            | Id::IoSockoptSoSndbuf
+            | Id::IoSockoptSoSndtimeo
+            | Id::IoSockoptTcpNodelay => {
+                self.lower_std_io_sockopt_getter(segs[3], args)
+            }
+            // TLS substrate (system OpenSSL): non-fallible
+            // send_bytes / recv_bytes / close mirror the tcp
+            // shape. connect is in the fallible dispatcher.
+            Id::IoTlsSendBytes => {
+                self.lower_std_io_tls_send_bytes(args, scope)
+            }
+            Id::IoTlsRecvBytes => {
+                self.lower_std_io_tls_recv_bytes(args, scope)
+            }
+            Id::IoTlsClose => {
+                self.lower_std_io_tls_close(args, scope)
+            }
+            Id::IoTlsRecvInto => {
+                self.lower_std_io_tls_recv_into(args, scope)
+            }
+            Id::IoTlsRecvStampedInto => self.lower_recv_into_common(
+                args, scope,
+                "lotus_tls_recv_stamped_into",
+                "std::io::tls::recv_stamped_into",
+            ),
+            Id::IoTlsLastRecvKernelNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tls_last_recv_kernel_ns",
+                    "last_recv_kernel_ns",
+                ),
+            Id::IoTlsLastRecvUserNs => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tls_last_recv_user_ns",
+                    "last_recv_user_ns",
+                ),
+            Id::IoUdpCloseRaw
+            | Id::IoUdpClose => {
+                self.lower_std_io_udp_close(args, scope)
+            }
+            Id::IoUdpRecvInto => {
+                self.lower_std_io_udp_recv_into(args, scope)
+            }
+            // 2026-05-26 — UDP P4: getters for the source IP +
+            // port of the last `recv_with_source` on this thread.
+            Id::IoUdpLastSourceHost => {
+                self.lower_std_io_udp_last_source_host(args)
+            }
+            Id::IoUdpLastSourcePort => {
+                self.lower_std_io_udp_last_source_port(args)
+            }
             // Lowered only under `or` (`try_lower_fallible_stdlib_path_call`):
             // a bare call has no arm at either position.
-            Id::BytesReadF32Le
+            Id::IoFsWriteBytes
+            | Id::IoFsWritePrivateRaw
+            | Id::IoUnixConnect
+            | Id::IoUnixConnectWait
+            | Id::IoUnixListenSocket
+            | Id::IoTcpAcceptOne
+            | Id::IoTcpConnect
+            | Id::IoTcpConnectWait
+            | Id::IoTcpListenSocket
+            | Id::IoTcpSetNodelay
+            | Id::IoTcpSetRecvTimeout
+            | Id::IoTcpSetRxTimestamps
+            | Id::IoTcpSetSendTimeout
+            | Id::IoTlsConnect
+            | Id::IoTlsSetNodelay
+            | Id::IoTlsSetRxTimestamps
+            | Id::IoTlsUpgrade
+            | Id::BytesReadF32Le
             | Id::BytesReadF64Be
             | Id::BytesReadF64Le
             | Id::BytesReadI16Be
@@ -26633,16 +26869,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressZstd => return self.lower_std_unarmed(segs, args, scope, pos),
             // S3 in progress: the ids whose arms the hand-written
             // dispatchers still hold.
-            Id::IoMirrorNewRaw
-            | Id::IoMirrorFreeRaw
-            | Id::IoMirrorRecvIntoRaw
-            | Id::IoMirrorCommitRaw
-            | Id::IoMirrorConsumeRaw
-            | Id::IoMirrorReadableRaw
-            | Id::IoMirrorWritableRaw
-            | Id::IoMirrorLenRaw
-            | Id::IoMirrorCapacityRaw
-            | Id::CryptoCrc32
+            Id::CryptoCrc32
             | Id::CryptoEcdsaP256Sign
             | Id::CryptoEcdsaP256Verify
             | Id::CryptoHmacSha256
@@ -26650,122 +26877,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CryptoSha1
             | Id::CryptoSha256
             | Id::CryptoSha512
-            | Id::IoFileAtEofRaw
-            | Id::IoFileCloseRaw
             | Id::IoFileOpenRaw
-            | Id::IoFileReadLineRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
-            | Id::IoFsExtension
-            | Id::IoFsFileExists
-            | Id::IoFsFileSize
-            | Id::IoFsListDirAt
-            | Id::IoFsListDirCount
-            | Id::IoFsMkdir
             | Id::IoFsMktemp
-            | Id::IoFsReadBytes
-            | Id::IoFsReadFile
             | Id::IoFsRename
             | Id::IoFsUnlink
-            | Id::IoFsWriteBytes
-            | Id::IoFsWriteFile
-            | Id::IoFsWritePrivateRaw
-            | Id::IoFsWriteFileAppend
-            | Id::IoStdinReadByte
-            | Id::IoStdinReadLine
-            | Id::IoStdinReadLineStatus
-            | Id::IoStdoutWriteBytes
-            | Id::IoUnixConnect
-            | Id::IoUnixConnectWait
-            | Id::IoUnixGroupId
-            | Id::IoUnixListenSocket
-            | Id::IoUnixPeerGid
-            | Id::IoUnixPeerGroupAt
-            | Id::IoUnixPeerGroupsCount
-            | Id::IoUnixPeerPid
-            | Id::IoUnixPeerUid
-            | Id::IoUnixUserId
-            | Id::IoTcpAcceptOneRaw
-            | Id::IoTcpCloseFdRaw
-            | Id::IoTcpConnectRaw
-            | Id::IoTcpIoErrorKindRaw
-            | Id::IoTcpLastIoStatusRaw
-            | Id::IoTcpListenSocketRaw
-            | Id::IoTcpRecvRaw
-            | Id::IoTcpRecvBytesRaw
-            | Id::IoTcpSendRaw
-            | Id::IoTcpSendBytesRaw
-            | Id::IoTcpSetRecvTimeoutNsRaw
-            | Id::IoTcpShutdownListenSocketRaw
-            | Id::IoTcpAcceptOne
-            | Id::IoTcpCloseFd
-            | Id::IoTcpConnect
-            | Id::IoTcpConnectWait
-            | Id::IoTcpLastRecvKernelNs
-            | Id::IoTcpLastRecvUserNs
-            | Id::IoTcpListenSocket
-            | Id::IoTcpRecvInto
-            | Id::IoTcpRecvStampedInto
-            | Id::IoTcpSetNodelay
-            | Id::IoTcpSetRecvTimeout
-            | Id::IoTcpSetRxTimestamps
-            | Id::IoTcpSetSendTimeout
-            | Id::IoSockoptIpprotoIp
-            | Id::IoSockoptIpprotoIpv6
-            | Id::IoSockoptIpprotoTcp
-            | Id::IoSockoptIpprotoUdp
-            | Id::IoSockoptIpAddMembership
-            | Id::IoSockoptIpDropMembership
-            | Id::IoSockoptIpMtuDiscover
-            | Id::IoSockoptIpMulticastIf
-            | Id::IoSockoptIpMulticastLoop
-            | Id::IoSockoptIpMulticastTtl
-            | Id::IoSockoptIpPktinfo
-            | Id::IoSockoptIpPmtudiscDo
-            | Id::IoSockoptIpPmtudiscDont
-            | Id::IoSockoptIpPmtudiscProbe
-            | Id::IoSockoptIpPmtudiscWant
-            | Id::IoSockoptIpTos
-            | Id::IoSockoptIpTtl
-            | Id::IoSockoptSolSocket
-            | Id::IoSockoptSoBindtodevice
-            | Id::IoSockoptSoBroadcast
-            | Id::IoSockoptSoKeepalive
-            | Id::IoSockoptSoLinger
-            | Id::IoSockoptSoPriority
-            | Id::IoSockoptSoRcvbuf
-            | Id::IoSockoptSoRcvtimeo
-            | Id::IoSockoptSoReuseaddr
-            | Id::IoSockoptSoReuseport
-            | Id::IoSockoptSoSndbuf
-            | Id::IoSockoptSoSndtimeo
-            | Id::IoSockoptTcpNodelay
-            | Id::IoTlsClose
-            | Id::IoTlsConnect
-            | Id::IoTlsLastRecvKernelNs
-            | Id::IoTlsLastRecvUserNs
-            | Id::IoTlsRecvBytes
-            | Id::IoTlsRecvInto
-            | Id::IoTlsRecvStampedInto
-            | Id::IoTlsSendBytes
-            | Id::IoTlsSetNodelay
             | Id::IoTlsSetRecvTimeout
-            | Id::IoTlsSetRxTimestamps
             | Id::IoTlsSetSendTimeout
-            | Id::IoTlsUpgrade
             | Id::IoUdpBindRaw
-            | Id::IoUdpCloseRaw
             | Id::IoUdpRecvRaw
             | Id::IoUdpSendRaw
             | Id::IoUdpBind
-            | Id::IoUdpClose
             | Id::IoUdpGetOptionInt
             | Id::IoUdpJoinGroup
-            | Id::IoUdpLastSourceHost
-            | Id::IoUdpLastSourcePort
             | Id::IoUdpLeaveGroup
             | Id::IoUdpRecv
-            | Id::IoUdpRecvInto
             | Id::IoUdpRecvWithSource
             | Id::IoUdpSend
             | Id::IoUdpSetMulticastIface
@@ -27333,139 +27460,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "process", "pid"] => self.lower_std_process_pid(args),
             ["std", "process", "uid"] => self.lower_std_process_uid(args),
             ["std", "process", "rss_bytes"] => self.lower_std_process_rss_bytes(args),
-            ["std", "io", "stdout", "write_bytes"] => {
-                self.lower_std_io_stdout_write_bytes(args, scope)
-            }
-            ["std", "io", "stdin", "read_byte"] => {
-                self.lower_std_io_stdin_read_byte(args, scope)
-            }
             ["std", "process", "dump_arena_residency"] => {
                 self.lower_std_process_dump_arena_residency(args)
             }
             ["std", "process", "dump_pool_residency"] => {
                 self.lower_std_process_dump_pool_residency(args)
-            }
-            // GH #1108: the api binding's caller identity.
-            ["std", "io", "unix", "peer_uid"] => self.lower_std_io_unix_peer("uid", args, scope),
-            ["std", "io", "unix", "peer_gid"] => self.lower_std_io_unix_peer("gid", args, scope),
-            ["std", "io", "unix", "peer_pid"] => self.lower_std_io_unix_peer("pid", args, scope),
-            // GH #1109: the static role table's name spellings.
-            ["std", "io", "unix", "user_id"] => self.lower_std_io_unix_name_id("user_id", args, scope),
-            ["std", "io", "unix", "group_id"] => self.lower_std_io_unix_name_id("group_id", args, scope),
-            ["std", "io", "unix", "peer_groups_count"] => self.lower_std_io_unix_peer("groups_count", args, scope),
-            ["std", "io", "unix", "peer_group_at"] => self.lower_std_io_unix_peer_group_at(args, scope),
-            ["std", "io", "tcp", "__listen_socket"] => {
-                self.lower_std_io_tcp_listen_socket(args, scope)
-            }
-            ["std", "io", "tcp", "__accept_one"] => {
-                self.lower_std_io_tcp_accept_one(args, scope)
-            }
-            ["std", "io", "tcp", "__connect"] => {
-                self.lower_std_io_tcp_connect(args, scope)
-            }
-            ["std", "io", "tcp", "__close_fd"]
-            | ["std", "io", "tcp", "close_fd"] => {
-                self.lower_std_io_tcp_close_fd(args, scope)
-            }
-            ["std", "io", "tcp", "__shutdown_listen_socket"] => {
-                self.lower_std_io_tcp_shutdown_listen_socket(args, scope)
-            }
-            ["std", "io", "tcp", "__set_recv_timeout_ns"] => {
-                self.lower_std_io_tcp_set_recv_timeout(args, scope)
-            }
-            ["std", "io", "udp", "__close"]
-            | ["std", "io", "udp", "close"] => {
-                self.lower_std_io_udp_close(args, scope)
-            }
-            // File primitives — `__`-prefixed only; user-facing
-            // names route via STDLIB_FN_RENAMES to file.hl wrappers.
-            ["std", "io", "file", "__close"] => {
-                self.lower_std_io_file_close(args, scope)
-            }
-            ["std", "io", "file", "__at_eof"] => {
-                self.lower_std_io_file_at_eof(args, scope)
-            }
-            ["std", "io", "file", "__read_line"] => {
-                self.lower_std_io_file_read_line(args, scope)
-            }
-            ["std", "io", "tcp", "__send"] => {
-                self.lower_std_io_tcp_send(args, scope)
-            }
-            ["std", "io", "tcp", "__recv"] => {
-                self.lower_std_io_tcp_recv(args, scope)
-            }
-            ["std", "io", "fs", "read_bytes"] => {
-                self.lower_std_io_fs_read_bytes(args, scope)
-            }
-            ["std", "io", "tcp", "__send_bytes"] => {
-                self.lower_std_io_tcp_send_bytes(args, scope)
-            }
-            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
-            ["std", "io", "tcp", "__recv_bytes"] => {
-                self.lower_std_io_tcp_recv_bytes(args, scope)
-            }
-            // TLS substrate (system OpenSSL): non-fallible
-            // send_bytes / recv_bytes / close mirror the tcp
-            // shape. connect is in the fallible dispatcher above.
-            ["std", "io", "tls", "send_bytes"] => {
-                self.lower_std_io_tls_send_bytes(args, scope)
-            }
-            ["std", "io", "tls", "recv_bytes"] => {
-                self.lower_std_io_tls_recv_bytes(args, scope)
-            }
-            ["std", "io", "tls", "close"] => {
-                self.lower_std_io_tls_close(args, scope)
-            }
-            ["std", "io", "tcp", "recv_into"] => {
-                self.lower_std_io_tcp_recv_into(args, scope)
-            }
-            ["std", "io", "tcp", "recv_stamped_into"] => {
-                self.lower_std_io_tcp_recv_stamped_into(args, scope)
-            }
-            ["std", "io", "tcp", "last_recv_kernel_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tcp_last_recv_kernel_ns",
-                    "last_recv_kernel_ns",
-                ),
-            ["std", "io", "tcp", "last_recv_user_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tcp_last_recv_user_ns",
-                    "last_recv_user_ns",
-                ),
-            // #209 — status pair backing the fallible Stream methods.
-            ["std", "io", "tcp", "__last_io_status"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tcp_last_io_status",
-                    "__last_io_status",
-                ),
-            ["std", "io", "tcp", "__io_error_kind"] => {
-                self.lower_std_io_tcp_io_error_kind(args, scope)
-            }
-            ["std", "io", "tls", "recv_into"] => {
-                self.lower_std_io_tls_recv_into(args, scope)
-            }
-            ["std", "io", "tls", "recv_stamped_into"] => self.lower_recv_into_common(
-                args, scope,
-                "lotus_tls_recv_stamped_into",
-                "std::io::tls::recv_stamped_into",
-            ),
-            ["std", "io", "tls", "last_recv_kernel_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tls_last_recv_kernel_ns",
-                    "last_recv_kernel_ns",
-                ),
-            ["std", "io", "tls", "last_recv_user_ns"] => self
-                .lower_std_io_tcp_last_recv_ns(
-                    args,
-                    "lotus_tls_last_recv_user_ns",
-                    "last_recv_user_ns",
-                ),
-            ["std", "io", "udp", "recv_into"] => {
-                self.lower_std_io_udp_recv_into(args, scope)
             }
             ["std", "crypto", "sha1"] => {
                 self.lower_std_crypto_sha1(args, scope)
@@ -27490,61 +27489,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "crypto", "ecdsa_p256_verify"] => {
                 self.lower_std_crypto_ecdsa_p256_verify(args, scope)
-            }
-            // Phase 2e: list_dir index API.
-            ["std", "io", "fs", "list_dir_count"] => {
-                self.lower_std_io_fs_list_dir_count(args, scope)
-            }
-            ["std", "io", "fs", "list_dir_at"] => {
-                self.lower_std_io_fs_list_dir_at(args, scope)
-            }
-            ["std", "io", "fs", "read_file"] => {
-                self.lower_std_io_fs_read_file(args, scope)
-            }
-            ["std", "io", "fs", "write_file"] => {
-                self.lower_std_io_fs_write_file(args, scope)
-            }
-            ["std", "io", "fs", "write_file_append"] => {
-                self.lower_std_io_fs_write_file_append(args, scope)
-            }
-            ["std", "io", "fs", "mkdir"] => {
-                self.lower_std_io_fs_mkdir(args, scope)
-            }
-            ["std", "io", "fs", "file_size"] => {
-                self.lower_std_io_fs_file_size(args, scope)
-            }
-            ["std", "io", "fs", "file_exists"] => {
-                self.lower_std_io_fs_file_exists(args, scope)
-            }
-            ["std", "io", "fs", "extension"] => {
-                self.lower_std_io_fs_extension(args, scope)
-            }
-            ["std", "io", "stdin", "read_line"] => {
-                self.lower_std_io_stdin_read_line(args, scope)
-            }
-            ["std", "io", "stdin", "read_line_status"] => {
-                self.lower_std_io_stdin_read_line_status(args, scope)
-            }
-            // 2026-05-26 — named socket-option constants. Each
-            // resolves to a zero-arg call into the matching C
-            // getter, which returns the platform's numeric
-            // value for that level / option name.
-            ["std", "io", "sockopt", name]
-                if SOCKOPT_NAMES.contains(name) =>
-            {
-                self.lower_std_io_sockopt_getter(name, args)
-            }
-            // #3 MirrorRing primitives (backing the std::io::MirrorRing locus).
-            ["std", "io", "mirror", op] => {
-                self.lower_std_io_mirror(op, args, scope)
-            }
-            // 2026-05-26 — UDP P4: getters for the source IP +
-            // port of the last `recv_with_source` on this thread.
-            ["std", "io", "udp", "last_source_host"] => {
-                self.lower_std_io_udp_last_source_host(args)
-            }
-            ["std", "io", "udp", "last_source_port"] => {
-                self.lower_std_io_udp_last_source_port(args)
             }
             // m96: std::ts::* tree-sitter substrate. A statement
             // reaches these too, its value dropped, for
@@ -33868,8 +33812,9 @@ pub(crate) enum StdCallPos {
 /// from a C getter (so platform-correct: Linux SOL_SOCKET=1,
 /// macOS SOL_SOCKET=0xffff, etc.). Keep alphabetized; add new
 /// entries here AND in `lotus_arena.c`'s LOTUS_SOCKOPT_GETTER
-/// block. Used by both the extern-declaration loop and the
-/// path-call dispatch matcher.
+/// block. Used by the extern-declaration loop; a call dispatches from
+/// the `std::io::sockopt` rows, which name the same set (held equal by
+/// `stdlib::sockopt`'s test).
 pub(crate) const SOCKOPT_NAMES: &[&str] = &[
     "IPPROTO_IP",
     "IPPROTO_IPV6",

@@ -288,40 +288,6 @@ fn arm_call(body: &[&str]) -> ArmCall {
     }
 }
 
-/// What a family pattern (a pattern whose last segment binds a name)
-/// accepts, read from where the name is decided.
-#[derive(Default)]
-struct Families {
-    /// `SOCKOPT_NAMES` in codegen.rs.
-    sockopt: Vec<String>,
-    /// The string arms of `lower_std_io_mirror`'s `match op`.
-    mirror: Vec<String>,
-}
-
-fn families() -> Families {
-    let src = crate_file("src/codegen.rs");
-    let code = mask(&src, false);
-    let at = code.find("const SOCKOPT_NAMES: &[&str] = &[").expect("SOCKOPT_NAMES");
-    let end = at + code[at..].find("];").expect("SOCKOPT_NAMES ends");
-    let sockopt = string_literals(&code[at..end]);
-    let mirror_src = crate_file("src/stdlib/mirror.rs");
-    let mirror_code = mask(&mirror_src, false);
-    // The impl's definition is the second `fn lower_std_io_mirror(`
-    // (the first is the trait's declaration, which has no body).
-    let impl_at = mirror_code.rfind("fn lower_std_io_mirror(").expect("mirror impl");
-    let (o, c) = fn_body(&mirror_code[impl_at..], "lower_std_io_mirror");
-    let body = &mirror_code[impl_at + o..impl_at + c];
-    let m = body.find("match op {").expect("mirror's match op");
-    let indent = line_indent(body, m) + 4;
-    let mut mirror = Vec::new();
-    for line in body[m..].lines().skip(1) {
-        if indent_of(line) == indent && line.trim_start().starts_with('"') {
-            mirror.extend(string_literals(line.split("=>").next().unwrap()));
-        }
-    }
-    Families { sockopt, mirror }
-}
-
 fn string_literals(s: &str) -> Vec<String> {
     s.split('"').skip(1).step_by(2).map(str::to_string).collect()
 }
@@ -419,8 +385,9 @@ fn parse_head(head: &str) -> (Vec<Vec<Seg>>, Option<String>) {
 }
 
 /// The paths one pattern accepts, its family expanded through what
-/// decides the bound name.
-fn expand(pattern: &[Seg], guard: Option<&str>, fam: &Families) -> Vec<String> {
+/// decides the bound name. (The `io::sockopt` and `io::mirror` families
+/// are rows since S3, each name an id.)
+fn expand(pattern: &[Seg], guard: Option<&str>) -> Vec<String> {
     let lits: Vec<&str> = pattern
         .iter()
         .filter_map(|s| match s {
@@ -447,8 +414,6 @@ fn expand(pattern: &[Seg], guard: Option<&str>, fam: &Families) -> Vec<String> {
                 .map(str::to_string)
                 .collect()
         }
-        ("std::io::sockopt", Some(g)) if g.contains("SOCKOPT_NAMES.contains") => fam.sockopt.clone(),
-        ("std::io::mirror", None) => fam.mirror.clone(),
         _ => panic!("a family pattern this scrape does not know how to expand: {pattern:?} if {guard:?}"),
     };
     assert!(!leaves.is_empty(), "family `{ns}::*` expanded to nothing");
@@ -671,7 +636,6 @@ fn row_dispatch() -> RowDispatch {
 }
 
 pub fn scrape() -> Vec<Scraped> {
-    let fam = families();
     let rd = row_dispatch();
     [Position::Statement, Position::Expression, Position::Fallible]
         .into_iter()
@@ -699,7 +663,7 @@ pub fn scrape() -> Vec<Scraped> {
                     if p.iter().any(|s| matches!(s, Seg::Bind(_))) {
                         family_patterns += 1;
                     }
-                    for path in expand(p, arm.guard.as_deref(), &fam) {
+                    for path in expand(p, arm.guard.as_deref()) {
                         if paths.contains_key(&path) {
                             shadowed.push((path, arm.line));
                         } else {
