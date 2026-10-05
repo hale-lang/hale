@@ -607,10 +607,10 @@ std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block 
 std::io | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__at_eof
-std::io::file::__close | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close
+std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__at_eof
+std::io::file::__close | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close
 std::io::file::__open | lookup=io::file@3 | locus=false | effects=syscall | sig=(Str, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__open
-std::io::file::__read_line | lookup=io::file@3 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__read_line
+std::io::file::__read_line | lookup=io::file@3 | locus=false | effects=syscall|block | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=__read_line
 std::io::file::__seek | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__seek
 std::io::file::__write_bytes | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__write_bytes
 std::io::file::at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=at_eof

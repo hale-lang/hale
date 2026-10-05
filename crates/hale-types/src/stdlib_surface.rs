@@ -733,13 +733,13 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "file"],
         fns: &[
-            row!("__at_eof", SYSCALL, _, Intrinsic(IoFileAtEofRaw)),
-            row!("__close", SYSCALL, _, Intrinsic(IoFileCloseRaw)),
+            row!("__at_eof", SYSCALL, [Int] -> Bool, Intrinsic(IoFileAtEofRaw)),
+            row!("__close", SYSCALL, [Int] -> Int, Intrinsic(IoFileCloseRaw)),
             // The three primitives `file.hl`'s `File` wraps lower only under
             // an `or`, so their rows say they can fail and a bare call is
             // the checker's (F.40 phase 4, S5).
             row!("__open", SYSCALL, [Str, Str] -> Int ! "IoError", Intrinsic(IoFileOpenRaw)),
-            row!("__read_line", SYSCALL | BLOCK, _, Intrinsic(IoFileReadLineRaw)),
+            row!("__read_line", SYSCALL | BLOCK, [Int] -> Str, Intrinsic(IoFileReadLineRaw)),
             row!("__seek", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoFileSeekRaw)),
             row!("__write_bytes", SYSCALL, [Int, Bytes] -> Unit ! "IoError", Intrinsic(IoFileWriteBytesRaw)),
             row!("at_eof", SYSCALL, [Int] -> Bool, Renamed),

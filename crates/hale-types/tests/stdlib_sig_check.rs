@@ -469,6 +469,25 @@ fn std_decimal_calls_are_checked() {
 }
 
 #[test]
+fn std_io_file_calls_are_checked() {
+    refused(
+        "    let s = std::io::file::__read_line(3, 80);\n    println(s);",
+        &[("`std::io::file::__read_line` takes 1 argument, got 2", "std::io::file::__read_line")],
+    );
+    refused(
+        "    let e = std::io::file::__at_eof(\"/tmp/x\");\n    println(e);",
+        &[("`std::io::file::__at_eof` argument 1: expected `Int`, got `String`", "\"/tmp/x\"")],
+    );
+    refused(
+        "    let r = std::io::file::__close(3) or 0;\n    println(r);",
+        &[(
+            "`std::io::file::__close` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::io::file::__close(3)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
