@@ -1127,6 +1127,7 @@ pub const FAMILIES: &[Family] = &[
             "form, not params (I1): the description names what the program is, never where one copy listens",
             "perspective-invariant (I5)",
             "the role rows have one producer (F.40 phase 4, A4: `roles::role_rows`), over the programs after the sequence, with or without an `api:` entry, demanded once per snapshot (`Snapshot::demand_role_rows`, the `api_surface` count), not gated on the typing; a bundle no snapshot holds builds its own. Their columns: each `role` declaration (`RoleDeclRow`: the name and its span, each `includes` with its span, the declaration's span and site), two declarations of one name kept as two rows; each `@gated` site (`GateRow`: its kind, a free fn, a locus fn, a perspective fn, a contract member with its direction or a `publish` member by its identity, the declaration it sits on, the locus with its ordinal among the bundle's locus declarations, the bus graph's `decls` index, and whether it is imported, the member, the role and its span, the site's span); the role source (`RoleSource`: the last `roles:` clause, the entry it is named in, what it names and that locus's `fn holds` as written); and whether the row's root is served",
+            "the ten role rules are registered rules (rows of `spec/verification.md`'s structural table) whose findings are `law::Violation`s, one walk judging the ten and reporting them in the order it reaches them (`law::diags`), a related location a finding carried being its witness step (phase 4, W5)",
             "the role rules are a law over the rows (`roles::role_laws`), one function per rule, reading what another family owns from its owner: which handler of which declaration subscribes to which topic and which sites publish it from the bus graph, the bound topics from the binding rows, a topic's wire key from the topic rows; the role source's `fn holds` is read as written, since the rule is stated over the written signature and the scope holds resolved types",
             "the roles an environment maps are a projection of the rows (`RoleRows::declared_roles`, `vocabulary`); the binding is generated inside the sequence, before the rows exist, so the surface computes its list with the one function in `hale-syntax` (`api_gen::role_vocabulary`, which `declared_roles` reads too), held equal to the rows' projection over the corpus, `tests/hale` and the DNA seeds",
         ],
@@ -2341,6 +2342,106 @@ pub const RULES: &[Rule] = &[
         gist: "a locus whose params defaults construct one of its own kind by value, by a literal or a fresh-factory call (error, at the param that closes the cycle)",
         family: "law_backstops",
         evaluator: Some(site(LOWERING_LAWS, "self_containing_locus")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-declared-once",
+        title: "Role declared once",
+        // The role rows' declarations, in walk order.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a `role` declared twice (error, at the second, the witness the first)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "declared_twice")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-declared",
+        title: "Declared role",
+        // The role rows' declarations, `includes` and gates; a `publish`'s gate is joined to the bus graph's publish rows by the declaration and the publish's identity.
+        reads: Reads::Rows(&["api_surface", "bus_graph"]),
+        gist: "a role a site names that nothing declares, `owner` aside (error, at the name)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "undeclared")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-includes-acyclic",
+        title: "Acyclic role includes",
+        // The role rows' declarations and their `includes`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a role reachable from its own `includes` chain (error, at the role's name)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "role_cycle")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gate-on-a-free-fn",
+        title: "Gate on a free fn",
+        // The role rows' gates of kind `FreeFn`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "`@gated(role:)` on a free fn (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_free_fn")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gate-on-a-plain-method",
+        title: "Gate on a plain method",
+        // The role rows' method gates, against the bus graph's subscriptions of the same declaration.
+        reads: Reads::Rows(&["api_surface", "bus_graph"]),
+        gist: "`@gated(role:)` on a locus fn no `subscribe` line of its locus names (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_plain_method")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gate-on-a-bound-topic",
+        title: "Gate on a bound topic",
+        // The role rows' method gates, the bus graph's subscriptions, the binding rows' bound topics, joined on the topic rows' wire subject.
+        reads: Reads::Rows(&["api_surface", "bus_graph", "bindings", "topics"]),
+        gist: "a gated handler whose topic is bound to a transport in `bindings { }` (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_bound_topic")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/gates-agree-per-topic",
+        title: "Gates agree per topic",
+        // The role rows' gates, the bus graph's subscriptions and publishes, grouped by the topic rows' wire subject.
+        reads: Reads::Rows(&["api_surface", "bus_graph", "topics"]),
+        gist: "subscribers or publishers of one topic stating different gates (error, at the first gated site, listing every site)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gates_disagree")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-source-is-a-locus",
+        title: "Role source is a locus",
+        // The role rows' source: the locus its `roles:` names, and whether the bundle declares one.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "an api entry's `roles:` naming no locus of the bundle (error, at the clause)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "source_is_no_locus")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-source-has-holds",
+        title: "Role source has holds",
+        // The role rows' source locus and its first `fn holds`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a role source's locus with no `fn holds` (error, at the clause)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "source_has_no_holds")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/role-source-signature",
+        title: "Role source signature",
+        // The role rows' source `fn holds`, its parameter and return types as written (the rule is stated over the written signature).
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "a role source's `fn holds` that is not `std::api::RoleSource`'s (error, at the fn's name, the witness the api entry)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "holds_is_not_a_role_source")),
         state: State::Canonical,
     },
 ];
