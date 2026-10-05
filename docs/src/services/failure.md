@@ -117,6 +117,22 @@ later default. The failing child stays alive until then, even if
 its `run()` has already ended, and a restart the handler asks for
 happens as soon as the handler returns.
 
+A handler runs where its locus runs, never on the failing child's
+thread. When the child is pinned to its own thread or placed on
+another pool, its failure is handed to the parent's thread, and the
+child waits there for the handler's answer before it restarts,
+carries on or ends. The parent hears it at its next yield (a
+`sleep`, a wait, its queue's next message), or while it joins the
+child at shutdown, so the handler is never running beside the
+parent's own code on a second thread, and what it writes to `self`
+needs no lock. The parent does not tear the child down under a
+handler that is still hearing it. A handler can even replace a
+*different* child whose failure is still waiting
+(`self.b = Kid { … }` while handling `a`): the field takes the new
+child at once, and the replaced one is kept until its own failure
+has been heard, after the current handler returns (handlers never
+run inside each other), then torn down.
+
 The recovery primitives:
 
 - **absorb** — just return; the failure is noted and contained.

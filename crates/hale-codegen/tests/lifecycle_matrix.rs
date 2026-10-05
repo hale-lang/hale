@@ -96,8 +96,9 @@
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
 //! it has been seen to show, and a run shows exactly one of them. The
-//! remaining cells concern in-place failure delivery off the owner's
-//! domain (C36). Pinned field drains (C9) and contract-field ordering
+//! one remaining cell is a failure raised at teardown after its owner's
+//! pool worker has ended, delivered where it is raised (C36's residue,
+//! join progress). Pinned field drains (C9) and contract-field ordering
 //! (C32) follow the plan since L4's cascade. Nested pinned and pool
 //! initialization retains its anchor's domain (C49/C50).
 //!
@@ -396,27 +397,15 @@ type Profile = &'static [&'static str];
 /// entry goes with the fix. An `asan:` departure is owed only where ASan
 /// ran.
 const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
-    // L5's: a failure raised off the owner's thread.
-    ("run/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
-    ("run/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
-    ("run/root_child/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_SIDE]]),
-    ("handler/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
-    ("handler/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
-    ("handler/root_child/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_SIDE]]),
-    // `handler/grandchild/cross_pool` left with C50: `Mid`'s subtree
-    // initializes on the pool's worker, `Subj`'s inline `run()` and the
-    // handler its publication reaches included, so the failure is
-    // delivered there, `Mid`'s domain. It ran on main while that tree
-    // was built on main.
-    ("drain/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
-    ("drain/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
+    // L5's fourth part closed C36's other ten cells ({run, handler,
+    // drain, birth} × {root_child, replica}/pinned and {run, handler}/
+    // root_child/cross_pool): a failure raised off its owner's domain is
+    // posted there and awaited (decision L0-1). This one is teardown's:
     // `Subj`, a field of the pool-placed `Mid`, drains on the teardown
-    // thread, `main`, where its owner's handler hears it in place.
-    ("drain/grandchild/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
-    // C38 closed (L4's birth spine): the pinned thread runs the
-    // birth_check, and the owner hears it, in place on that thread.
-    ("birth/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
-    ("birth/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
+    // thread, `main`, after the pool join has ended `side`'s worker, so
+    // `Mid`'s domain consumes nothing more and the delivery runs where it
+    // is raised (join progress: shutdown never drops it).
+    ("drain/grandchild/cross_pool", &[("C36", ENDED_DOMAIN)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
 ];
 
 /// Cells a fixed defect is held to, sampled with ASan on every PR: a
@@ -424,18 +413,19 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
 /// [`KNOWN_OPEN`]. R19 (L5's first part): a child's run() posted to the
 /// worker that tears its owner down started on the reclaimed struct, or
 /// a subscriber's was freed unrun and unnamed; each is now canceled by
-/// the teardown, `NotStarted(Acknowledged)` ([`run_canceled`]).
+/// the teardown, `NotStarted(Acknowledged)` ([`run_canceled`]). C36
+/// (L5's fourth part): a failure raised on a pinned thread or a pool
+/// worker ran its owner's handler in place there; it is now posted to
+/// the owner's domain, one cell for each.
 const REGRESSIONS: &[&str] = &[
     "birth/accepted_child/pool", "handler/root_child/pool",
     "run/grandchild/cross_pool", "none/grandchild/cross_pool",
     "handler/grandchild/cross_pool", "handler/grandchild/pinned",
     "params_settle/grandchild/pinned", "params_settle/iface_field/main",
+    "run/root_child/pinned", "run/root_child/cross_pool",
 ];
 
-const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
-const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main";
-const RAN_ON_PINNED_2: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:2, claimed main";
-const RAN_ON_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pool:side, claimed main";
+const ENDED_DOMAIN: &str = "the owner's domain, a pool's worker, has ended at the pool join before the teardown thread drains its child, so the delivery runs in place on the teardown thread, as a failure posted to an ended domain does (decision L0-1, join progress)";
 const RAN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on main, claimed pool:side";
 
 // ===================================================================
