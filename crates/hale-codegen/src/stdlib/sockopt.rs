@@ -1,8 +1,9 @@
 //! `std::io::sockopt::*` path-call lowering. One generic getter
 //! routes the ~30 named-constant surface (IPPROTO_*, IP_*, SO_*,
 //! SOL_SOCKET) to per-constant C primitives. The constant list
-//! `SOCKOPT_NAMES` lives in `codegen.rs` because it's consulted at
-//! declare-builtins time too.
+//! `SOCKOPT_NAMES` lives in `codegen.rs`, where declare-builtins
+//! declares a getter for each; a call is dispatched from its
+//! `std::io::sockopt` row.
 
 use hale_syntax::ast::Expr;
 use inkwell::values::BasicValueEnum;
@@ -82,5 +83,17 @@ mod tests {
             hale_types::stdlib_surface::unknown_fn_error(&["std", "io", "sockopt", &bogus]).is_some(),
             "the namespace is tabled, so a name codegen does not lower is refused"
         );
+    }
+
+    /// The other direction: a call dispatches from its row (F.40 phase
+    /// 4, S3), and the row's arm calls the getter declare-builtins
+    /// declared for the name, so every row is a name of the list.
+    #[test]
+    fn every_sockopt_row_has_a_declared_getter() {
+        let rows: Vec<&str> = hale_types::stdlib_surface::rows()
+            .filter(|(s, _)| s.ns == ["io", "sockopt"])
+            .map(|(_, f)| f.name)
+            .collect();
+        assert_eq!(rows, SOCKOPT_NAMES, "the `std::io::sockopt` rows and `SOCKOPT_NAMES` differ");
     }
 }

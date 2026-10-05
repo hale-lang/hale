@@ -673,9 +673,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one, and how it lowers: an intrinsic id, a Hale body by name, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
         producer: Some(site(STDLIB_SURFACE, "SURFACES")),
         legacy: &[
-            legacy(CG, "lower_stdlib_path_call_expr", "271 `[\"std\", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`; each dispatched path's row names what its arm does (`Lower`), held equal to the arms by the parity test, but codegen does not dispatch from it yet", "codegen dispatches from the registry row"),
-            legacy(CG, "lower_stdlib_path_call", "the statement form: the expression dispatch with the value dropped, except for 54 more `[\"std\", ..]` literals, in the arms a statement answers differently (Unit-only primitives, the assertions, two Hale bodies) and its fallibility refusal (34 paths)", "same"),
-            legacy(CG_CHANNELS, "try_lower_fallible_stdlib_path_call", "the fallible-call dispatch (`path or raise` on a stdlib path), a third copy of the stdlib call shapes: 150 more `[\"std\", ..]` literals", "same"),
+            legacy(CG_CHANNELS, "try_lower_fallible_stdlib_path_call", "the `or` position's dispatch, which still matches 150 `[\"std\", ..]` literals, a second copy of the stdlib call shapes; the statement and value positions dispatch from the row (`lower_std_call`)", "codegen dispatches from the registry row"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
             legacy(CG, "declare_builtin_closure_violation_type", "a hand-maintained mirror of the checker's injected builtin types", "one declaration"),
@@ -683,7 +681,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("effects", EFFECTS, "effects_for"), consumer_at("frontier", FRONTIER, "effects_for"), consumer("codegen"), consumer("lsp (hover, completion)"), consumer("doc")],
         invariants: &[
             "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature",
-            "every path a dispatcher lowers has a row whose lowering is what its arms do, every intrinsic or Hale-body row has an arm, a renamed row has none, and the unlowered rows are named (parity test)",
+            "codegen dispatches a stdlib call at statement or value position from its row, the position a parameter (`lower_std_call`): an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; the fallible dispatcher's arms agree with the rows, every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
             "the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)",
         ],
         missing: Missing::Error,
