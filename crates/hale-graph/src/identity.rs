@@ -4,7 +4,7 @@
 //! replay identity (`HALE_TOOLCHAIN_SHA256`, `crates/hale-cli/build.rs`),
 //! the toolchain cache key the DNA host and observer are cached under
 //! (`HALE_COMPILER_SRC_HASH`, `crates/hale-iris/build.rs`), and the
-//! stale-binary hash (`HALE_CODEGEN_SRC_HASH`, the same script and
+//! stale-binary hash (`HALE_STALE_SRC_HASH`, the same script and
 //! `crates/hale-cli/src/shared/stale.rs`). Each walked its own list
 //! of directories with its own walk, and none of the lists named
 //! `hale-model`, so a model-shape change did not bust a cached host or
@@ -138,25 +138,6 @@ pub fn manifest_files(workspace_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The files the stale-binary hash covers: `codegen.rs`, the C runtime's
-/// `lotus_arena.c`, and every `.hl` seed of the stdlib. One list for
-/// `build.rs` (`HALE_CODEGEN_SRC_HASH`) and `stale.rs` (its run-time
-/// recomputation), with the same path strings.
-pub fn stale_hash_paths(codegen_dir: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![
-        codegen_dir.join("src").join("codegen.rs"),
-        codegen_dir.join("runtime").join("lotus_arena.c"),
-    ];
-    let mut seeds = Vec::new();
-    walk_sources(
-        &codegen_dir.join("..").join("hale-stdlib").join("hl"),
-        &mut seeds,
-    );
-    seeds.retain(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"));
-    paths.extend(seeds);
-    paths
-}
-
 /// Every source file of the covered crates plus `extra`, in path
 /// order.
 pub fn covered_files(workspace_root: &Path, extra: &[&str]) -> Vec<PathBuf> {
@@ -167,10 +148,10 @@ pub fn covered_files(workspace_root: &Path, extra: &[&str]) -> Vec<PathBuf> {
     files
 }
 
-/// What the replay identity and the toolchain cache key hash: every
-/// source file of the covered crates, then the manifest files, in
-/// that order. One selection for both, so neither can leave out an
-/// input the other covers.
+/// What the replay identity, the toolchain cache key and the
+/// stale-binary hash hash: every source file of the covered crates,
+/// then the manifest files, in that order. One selection for all
+/// three, so none can leave out an input another covers.
 pub fn identity_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut files = covered_files(workspace_root, &[]);
     files.extend(manifest_files(workspace_root));
@@ -437,20 +418,19 @@ pub const IDENTITIES: &[Identity] = &[
         frozen: None,
     },
     Identity {
-        name: "codegen_src_hash",
-        identifies: "the stale-binary warning's hash: the binary was built from the codegen, runtime and stdlib files now on disk",
-        computed: "compiler build (`HALE_CODEGEN_SRC_HASH`, hale-cli/build.rs) and every check, verify, build, run, test, dna and inputs invocation in a development checkout (`compute_codegen_src_hash`)",
-        fold: Fold::DefaultHasher,
-        covers: &[Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds],
+        name: "stale_src_hash",
+        identifies: "the stale-binary warning's hash: the binary was built from the identity-covered sources now on disk, the selection `toolchain_digest` and `compiler_src_hash` fold",
+        computed: "compiler build (`HALE_STALE_SRC_HASH`, hale-cli/build.rs), and on a check, verify, build, run, test, dna or inputs invocation in a development checkout only when a covered file or its directory is newer than the binary (`stale_sources`: otherwise it stats and reads nothing)",
+        fold: Fold::Fnv64,
+        covers: &[Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests],
         leaves_out: &[
-            (Input::CompilerSources, "a gap, closed in I4: it folds one of codegen's source files (`codegen.rs`) and none of the other covered crates'"),
-            (Input::RuntimeC, "a gap, closed in I4: it folds one of the runtime's C files (`lotus_arena.c`), no other C file or header"),
-            (Input::Manifests, "a gap, closed in I4"),
+            (Input::RustcVersion, "by design: a warning that the sources on disk are not the binary's; another rustc over the same sources is no edit"),
+            (Input::GitCommit, "by design: the commit names no source the files do not"),
         ],
-        producer: ("crates/hale-cli/src/shared/stale.rs", "compute_codegen_src_hash"),
+        producer: ("crates/hale-cli/src/shared/stale.rs", "stale_sources"),
         consumers: &["`check_stale_cli`"],
         on_mismatch: "a warning on stderr",
-        versioned_by: "none: its selection is `stale_hash_paths`; a change of coverage is a change of that function",
+        versioned_by: "none: the shared selection (`identity_files`) and the shared fold; a change of coverage is a change of that selection",
         frozen: None,
     },
     Identity {

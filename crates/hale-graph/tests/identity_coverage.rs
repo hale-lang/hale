@@ -76,14 +76,11 @@ fn the_identities_take_the_list_and_the_walk_from_hale_graph() {
     ] {
         let text = read(rel);
         assert!(
-            text.contains("hale_graph::identity::stale_hash_paths("),
-            "{rel}: the stale hash takes its path list from hale_graph::identity"
+            text.contains("hale_graph::identity::identity_files(")
+                && text.contains("hale_graph::identity::fold_files("),
+            "{rel}: the stale hash folds hale_graph::identity's selection with its fold, at build and at run time"
         );
     }
-    assert!(
-        !root().join("crates/hale-codegen/runtime/stdlib").exists(),
-        "codegen/runtime/stdlib exists again; stale_hash_paths must say which tree is the stdlib"
-    );
 }
 
 #[test]
@@ -115,11 +112,6 @@ fn every_covered_directory_exists_and_every_covered_crate_contributes() {
         hale_graph::identity::manifest_files(&root).len(),
         hale_graph::identity::MANIFEST_FILES.len(),
         "a manifest file the identity names does not exist"
-    );
-    let stale = hale_graph::identity::stale_hash_paths(&root.join("crates/hale-codegen"));
-    assert!(
-        stale.len() > 3 && stale.iter().all(|p| p.is_file()),
-        "the stale hash's paths exist: {stale:?}"
     );
 }
 
@@ -294,7 +286,7 @@ fn covered_classes(i: &hale_graph::identity::Identity) -> std::collections::BTre
 fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
     let root = root();
     let selected = classes_of(&hale_graph::identity::identity_files(&root));
-    for name in ["toolchain_digest", "compiler_src_hash"] {
+    for name in ["toolchain_digest", "compiler_src_hash", "stale_src_hash"] {
         assert_eq!(
             covered_classes(identity(name)),
             selected,
@@ -307,24 +299,18 @@ fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
         selected,
         "`exec_digest` frames `toolchain_digest`: it covers what that does"
     );
-    let stale = classes_of(&hale_graph::identity::stale_hash_paths(&root.join("crates/hale-codegen")));
-    assert_eq!(
-        covered_classes(identity("codegen_src_hash")),
-        stale,
-        "`codegen_src_hash` folds `stale_hash_paths`: its `covers` must name the classes that list holds"
-    );
     // The two build scripts and the stale check call the selection the
     // entry says they fold.
     assert!(read("crates/hale-cli/build.rs").contains("identity_files("));
     assert!(read("crates/hale-iris/build.rs").contains("identity_files("));
-    assert!(read("crates/hale-cli/src/shared/stale.rs").contains("stale_hash_paths("));
+    assert!(read("crates/hale-cli/src/shared/stale.rs").contains("identity_files("));
 }
 
 /// The legacy rows an inventory entry's producer still shares: the
-/// identities whose own correction (I4 for the stale-binary hash)
-/// retires the row. Every other legacy row names a symbol no inventory
-/// entry produces.
-const LEGACY_STILL_SHARED: &[&str] = &["compute_codegen_src_hash"];
+/// identities whose own correction retires the row. None is left since
+/// I4 retired the stale-binary hash's; every legacy row names a symbol
+/// no inventory entry produces.
+const LEGACY_STILL_SHARED: &[&str] = &[];
 
 #[test]
 fn every_inventory_producer_is_registered_and_no_legacy_row_duplicates_one() {

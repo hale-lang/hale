@@ -11,7 +11,7 @@ for the language as users write it. **Hale** is the language;
 
 - Work in a git worktree, not the main checkout, with its own
   `CARGO_TARGET_DIR`. Build scripts bake absolute paths
-  (`HALE_CODEGEN_DIR` in `crates/hale-cli/build.rs`,
+  (`HALE_STALE_ROOT` in `crates/hale-cli/build.rs`,
   `CARGO_MANIFEST_DIR` in `hale-corpus` and the ts-shim locator), so
   a shared target dir makes one checkout's binary read another tree.
 - **LLVM 18 only**: `llvm-config-18` on PATH or
@@ -259,19 +259,18 @@ The `hale` binary carries source that only a rebuild refreshes:
 
 The stale-binary warning (`check_stale_cli`, `main.rs`) runs on
 every source-reading command (`check`, `verify`, `build`, `run`,
-`test`, `dna`, `inputs`) and has two halves: it hashes `codegen.rs`
-and `runtime/lotus_arena.c` (its `runtime/stdlib` probe names a
-directory that no longer exists), and since GH #785 it digests the
-workspace's `dna/**` against what the binary embeds
-(`hale_dna::EMBEDDED_DIGEST`), so an edited `dna/core` that was never
-rebuilt in is announced before a fixture runs the old one. The
-codegen half's hint says `cargo build -p hale-cli`, which is wrong
-here; rebuild the workspace. Edits anywhere else will not trip it.
+`test`, `dna`, `inputs`) and has two halves: it holds every
+identity-covered source (`hale_graph::identity::identity_files`: the
+covered crates' `src`, `runtime` and `hl`, the lock file and the
+ts-shim manifest) against the fold `build.rs` baked (F.40 phase 4,
+I4), statting each file and reading them only when one is newer than
+the binary; and since GH #785 it digests the workspace's `dna/**`
+against what the binary embeds (`hale_dna::EMBEDDED_DIGEST`), so an
+edited `dna/core` that was never rebuilt in is announced before a
+fixture runs the old one. Edits outside those trees will not trip it.
 `HALE_SKIP_STALE_CHECK=1` silences both. The replay identity
-`HALE_TOOLCHAIN_SHA256` walks `hale-syntax`, `hale-types`,
-`hale-codegen` and `hale-cli` plus rustc and `git HEAD`;
-`hale-stdlib` and `hale-model` are outside it (verify whether
-intended).
+`HALE_TOOLCHAIN_SHA256` frames the same selection plus rustc and
+`git HEAD`.
 
 ## Tests
 
