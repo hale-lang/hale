@@ -1587,7 +1587,7 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
         assert_eq!(diag_keys(&typing[own.len()..]), diag_keys(&tail), "{tag}: the rules, then the advisory");
         // The model is the typing's, before the `bare_fallible` law the
         // typing stage carries with it: a law's finding hides no law.
-        let mut fallible = s.with_env(|| hale_types::bare_fallible::bare_fallible_calls(s.demand_typed_bodies().expect("the table")));
+        let mut fallible = hale_types::bare_fallible::bare_fallible_calls(s.demand_typed_bodies().expect("the table"));
         hale_types::finish_check_diags(&mut fallible);
         let fallible = diag_keys(&fallible);
         let typed: Vec<hale_syntax::Diag> = own.iter().filter(|d| !fallible.contains(&diag_key(d))).cloned().collect();
@@ -1595,7 +1595,9 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
         if hale_types::denotes_a_model(&typed) && hale_types::judgment::has_claim_surface(&bundle) {
             let model = s.demand_model().expect("a model");
             let effects = s.demand_effect_certificates().expect("the report");
-            claims = s.with_env(|| hale_types::judgment::claim_law_diags_over(&bundle, model, effects, s.demand_alloc_summary().expect("the summary")));
+            let summary = s.demand_alloc_summary().expect("the summary");
+            let laws = s.demand_law_selection().expect("the selection");
+            claims = hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary, laws);
             laws_judged += 1;
         }
         let mut finished = claims.clone();

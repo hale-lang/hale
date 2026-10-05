@@ -606,7 +606,7 @@ pub const IDENTITIES: &[Identity] = &[
     Identity {
         name: "constitution_digest",
         identifies: "two constitutions have the same normalized closure: their bases (deduplicated) and entries, rendered as forms",
-        computed: "check and artifact emission (`constitution_identities`)",
+        computed: "law selection, once per snapshot, projected for the artifact and the matrix (`LawSelection::identities`)",
         fold: Fold::Fnv64,
         covers: &[Input::Constitutions],
         leaves_out: &[(Input::SourcePaths, "by design: the closure's text, not where it was declared")],

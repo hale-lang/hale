@@ -220,6 +220,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         &crate::derive_application_model(bundle),
         &crate::effects::effect_certificates(bundle),
         &alloc_summary::derive_alloc_summary(bundle),
+        &crate::bundle_law_selection(bundle),
     )
 }
 
@@ -237,13 +238,17 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
 /// direction; Change 9 deleted the legacy gathering that had stayed
 /// behind as the corpus differential's comparison arm). `effects` is
 /// the effects certificate report of the same check, which the law
-/// evidence reads, and `summary` the allocation summary that check read
-/// (`demand_alloc_summary`).
+/// evidence reads, `summary` the allocation summary that check read
+/// (`demand_alloc_summary`), and `laws` the law selection that check
+/// reported (`demand_law_selection`): the law rows' clauses, the
+/// constitution identities projected from its adoption and the
+/// environment it was made for.
 pub fn dump_topology_over(
     bundle: &Bundle<'_>,
     app_model: &hale_model::ApplicationModel,
     effects: &crate::effects::EffectCertificates,
     summary: &alloc_summary::AllocSummary,
+    laws: &crate::claims::LawSelection,
 ) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
@@ -396,14 +401,12 @@ pub fn dump_topology_over(
     // results) — and since Change 9 that same judgment is what
     // `hale check` reports, so the document and the checker cannot
     // disagree about a law. Law SELECTION still comes from the
-    // claim surface, which is where adoption is settled; this call
-    // takes the constitution identities from it and nothing else.
-    let identities = crate::claims::constitution_identities(
-        &programs,
-        &bundle.import_renames,
-    );
+    // claim surface, which is where adoption is settled: the check's
+    // selection, handed in, whose adoption projects to the
+    // constitution identities.
+    let identities = laws.identities(&programs);
     let vmodel = app_model;
-    let law_table = crate::claim_lowering::lower_claims(bundle, vmodel);
+    let law_table = crate::claim_lowering::lower_claims_over(bundle, vmodel, laws);
     let law_evidence = crate::evidence::derive_certificate_evidence_over(
         bundle, &law_table, vmodel, effects, summary,
     );
@@ -1382,8 +1385,9 @@ pub fn dump_topology_over(
     // environment labels selecting identical law produce equivalent
     // certificates on the `closure` alone — but the prose promised
     // this section says WHICH deployment was certified, and only the
-    // label can say that.
-    if let Some(env) = crate::claims::current_environment() {
+    // label can say that. It is the selection's: the environment the
+    // law was selected for.
+    if let Some(env) = &laws.environment {
         out.push_str(&format!(
             "    \"environment\": {},\n",
             quote(&env)

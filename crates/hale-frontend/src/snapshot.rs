@@ -20,6 +20,10 @@
 //! - [`Snapshot::demand_flows`]: the flow rows over the checked
 //!   programs, which the check, the lifecycle plan, the lowering view,
 //!   the editor's dependents relation and `check --flows` read.
+//! - [`Snapshot::demand_law_selection`]: law selection over the programs
+//!   after the sequence, for the configuration's environment: the check
+//!   reports its diagnostics, the laws stage lowers its clauses, and the
+//!   artifact projects its adoption to the constitution identities.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
 //!   over the checked programs and the stdlib's analysis copy, which
 //!   the check's effects certificate engine and the effect rows read.
@@ -82,6 +86,7 @@ use hale_types::arrangement::Arrangement;
 use hale_types::capability::uses::CapabilityUses;
 use hale_types::capability::TargetRow;
 use hale_types::binding_rows::BindingRows;
+use hale_types::claims::LawSelection;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
@@ -111,7 +116,9 @@ use crate::source::SourceProvider;
 /// The names are the registry's (`spec/registry.md`). `bus_graph`,
 /// `ownership` and `handler_routing` count the checked programs' graphs,
 /// the model's inputs; `flows` the flow rows, which the check, the
-/// lifecycle plan and the lowering view read; `arrangement` the
+/// lifecycle plan and the lowering view read; `law_selection` law
+/// selection, which the check, the laws stage and the artifact read
+/// ([`Snapshot::demand_law_selection`]); `arrangement` the
 /// placement table's projection onto the user's declarations, which the
 /// model and the lowering view read ([`Snapshot::demand_arrangement`]);
 /// `intra_locus` is the intra-locus rewrite, whose
@@ -126,7 +133,7 @@ use crate::source::SourceProvider;
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
 /// carried to lowering.
-pub const FAMILIES: [&str; 23] = [
+pub const FAMILIES: [&str; 24] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -141,6 +148,7 @@ pub const FAMILIES: [&str; 23] = [
     "ownership",
     "handler_routing",
     "flows",
+    "law_selection",
     "alloc_summary",
     "effects",
     "placement",
@@ -422,10 +430,6 @@ pub struct EditorScope<'a> {
 
 /// One load's inputs, and the families derived from them.
 pub struct Snapshot {
-    /// The environment this snapshot's claims are checked for and its
-    /// artifact is labelled with; bound around each demand and each
-    /// serialization by [`Snapshot::with_env`].
-    env: hale_types::claims::EnvBinding,
     key: SnapshotKey,
     config: Config,
     files: Vec<PathBuf>,
@@ -483,6 +487,7 @@ pub struct Snapshot {
     /// Shared with the effect rows, which hold the summary their walk
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
+    law_selection: OnceCell<Result<LawSelection, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
     arrangement: OnceCell<Result<Arrangement, Blocked>>,
@@ -626,23 +631,9 @@ impl Snapshot {
         config: Config,
         loaded: Loaded,
     ) -> Result<Snapshot, LoadError> {
-        // GH #409: the claims name the environment they were checked
-        // for; its label travels beside the evaluation. The binding is
-        // the snapshot's own and is scoped around each demand and each
-        // serialization ([`Snapshot::with_env`]), never left on the
-        // thread for the next snapshot to read.
-        let env = hale_types::claims::EnvBinding {
-            name: config.environment.as_ref().map(|e| e.name.clone()),
-            injected: config
-                .environment
-                .as_ref()
-                .map(|e| e.adopt.clone())
-                .unwrap_or_default(),
-        };
         let builds: [Cell<u32>; FAMILIES.len()] = Default::default();
         let mut snap = Snapshot {
             key,
-            env,
             config,
             files: loaded.files,
             own_files: loaded.own_files,
@@ -674,6 +665,7 @@ impl Snapshot {
             handlers: OnceCell::new(),
             flows: OnceCell::new(),
             alloc_summary: OnceCell::new(),
+            law_selection: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
             arrangement: OnceCell::new(),
@@ -953,15 +945,6 @@ impl Snapshot {
         b
     }
 
-    /// Run `f` with this snapshot's environment bound: what a demand
-    /// runs under, and what a caller serializing this snapshot's
-    /// artifact (`hale check --dump-topology`) wraps the serialization
-    /// in, so the label and the claims' explanations are this
-    /// snapshot's whatever was loaded since.
-    pub fn with_env<R>(&self, f: impl FnOnce() -> R) -> R {
-        hale_types::claims::with_env_binding(&self.env, f)
-    }
-
     /// How many times each family's producer ran for this snapshot,
     /// and each stage of the check: every family of [`FAMILIES`] and
     /// every stage of [`STAGES`], zero when never demanded.
@@ -1192,6 +1175,7 @@ impl Snapshot {
             placement: self.demand_placement().map_err(Clone::clone)?,
             target: self.demand_target().map_err(Clone::clone)?,
             uses: self.demand_capability_uses().map_err(Clone::clone)?,
+            laws: self.demand_law_selection().map_err(Clone::clone)?,
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered
@@ -1400,6 +1384,37 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// Law selection ([`hale_types::claims::select_laws`], F.40 phase 4,
+    /// A2): the clauses the programs' claims and constitutions select,
+    /// the groups they resolve, the constitutions the entry adopts and
+    /// their closure, and selection's diagnostics, over the programs
+    /// after the sequence, for the configuration's environment (its
+    /// label, and the constitutions it injected, which a diagnostic names).
+    /// The check reports its diagnostics (`CheckInputs::laws`), the laws
+    /// stage lowers its clauses, and the artifact projects its adoption
+    /// to the constitution identities and carries its environment.
+    /// Not gated on the typing: it reads clause text, adoption and
+    /// membership, never types, so a program that does not typecheck
+    /// still answers it. A seed with a hole is not a program, and its
+    /// selection is blocked with its scope.
+    pub fn demand_law_selection(&self) -> Result<&LawSelection, &Blocked> {
+        self.law_selection
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "law_selection", ..self.hole_blocked() });
+                }
+                self.count("law_selection");
+                let env = hale_types::claims::EnvBinding {
+                    name: self.config.environment.as_ref().map(|e| e.name.clone()),
+                    injected: self.config.environment.as_ref().map(|e| e.adopt.clone()).unwrap_or_default(),
+                };
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::claims::select_laws(&programs, &bundle.import_renames, &env))
+            })
+            .as_ref()
+    }
+
     /// The effect rows over the checked programs: one fixpoint, with
     /// the stdlib's analysis copy beside them and cross-seed calls
     /// resolved through the import renames. Per fn: the resolved call
@@ -1578,7 +1593,7 @@ impl Snapshot {
     /// claim's.
     pub fn demand_model(&self) -> Result<&ApplicationModel, &Blocked> {
         self.model
-            .get_or_init(|| self.with_env(|| {
+            .get_or_init(|| {
                 let typed = self.typing().map_err(Clone::clone)?;
                 if !hale_types::denotes_a_model(typed) {
                     return Err(Blocked {
@@ -1607,7 +1622,7 @@ impl Snapshot {
                     &self.bundle(),
                     &inputs,
                 ))
-            }))
+            })
             .as_ref()
     }
 
@@ -1623,7 +1638,7 @@ impl Snapshot {
 
     fn typing_stage(&self) -> Result<&(Checked, usize), &Blocked> {
         self.typing_stage
-            .get_or_init(|| self.with_env(|| {
+            .get_or_init(|| {
                 let mut diags = self.typing().map_err(Clone::clone)?.to_vec();
                 self.count("typing_stage");
                 // The `bare_fallible` law, with the typing diagnostics:
@@ -1643,7 +1658,7 @@ impl Snapshot {
                     diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, true));
                 }
                 Ok((Checked { diags }, own))
-            }))
+            })
             .as_ref()
     }
 
@@ -1655,7 +1670,7 @@ impl Snapshot {
     /// Blocked with the typing.
     pub fn demand_laws(&self) -> Result<&Checked, &Blocked> {
         self.laws
-            .get_or_init(|| self.with_env(|| {
+            .get_or_init(|| {
                 let typed = self.typing().map_err(Clone::clone)?;
                 let (stage, own) = self.typing_stage().map_err(Clone::clone)?;
                 self.count("laws_stage");
@@ -1668,12 +1683,13 @@ impl Snapshot {
                         self.count("claims");
                         let effects = self.demand_effect_certificates().map_err(Clone::clone)?;
                         let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
-                        diags = hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary);
+                        let laws = self.demand_law_selection().map_err(Clone::clone)?;
+                        diags = hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary, laws);
                     }
                 }
                 hale_types::finish_check_diags_after(&stage.diags[..*own], &mut diags);
                 Ok(Checked { diags })
-            }))
+            })
             .as_ref()
     }
 
@@ -1743,7 +1759,7 @@ impl Snapshot {
             ownership: &ownership,
             omitted: self.demand_typed_bodies().map_err(Clone::clone)?.omitted_args(),
         };
-        let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
+        let mut diags = hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs);
         hale_types::finish_check_diags(&mut diags);
         Ok(diags)
     }

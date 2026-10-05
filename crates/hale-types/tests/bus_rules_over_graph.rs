@@ -511,6 +511,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
     let target = hale_types::capability::target_row(&bundle);
     let uses = hale_types::capability::uses::derive_capability_uses(&bundle, &alloc_summary);
+    let laws = hale_types::bundle_law_selection(&bundle);
     let inputs = CheckInputs {
         top: &top,
         handlers: &handlers,
@@ -526,6 +527,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         placement: &placement,
         target: &target,
         uses: &uses,
+        laws: &laws,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags
