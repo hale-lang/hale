@@ -644,6 +644,26 @@ pub const IDENTITIES: &[Identity] = &[
     },
 ];
 
+/// The embedded DNA trees: the directories the toolchain embeds, with
+/// the extensions each contributes, listed NON-recursively
+/// (`dna/core/pond/README.md` neither). `embedded_dna_digest` is the
+/// identity it selects for, and its value is persisted in users' trees
+/// (`vendor/dna` provenance), so an entry added or removed moves a
+/// value that must not move without a version. `hale-dna` and its
+/// build script read this one list.
+pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
+    ("dna/core", &["hl"]),
+    ("dna/host", &["hl"]),
+    ("dna/operations", &["hl"]),
+    ("dna/organization_runtime", &["hl"]),
+    ("dna/organization_source", &["hl"]),
+    ("dna/core/pond/db", &["hl"]),
+    ("dna/core/pond/pq", &["hl"]),
+    ("dna/core/pond/realtime/nats", &["hl"]),
+    ("dna/core/legs", &["hl"]),
+    ("dna/ui", &["hl", "html"]),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

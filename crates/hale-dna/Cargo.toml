@@ -5,3 +5,7 @@ edition.workspace = true
 description = "The DNA core (dna/core) embedded so the toolchain can materialize it (GH #527 B6, #528)"
 
 [dependencies]
+hale-graph = { path = "../hale-graph" }
+
+[build-dependencies]
+hale-graph = { path = "../hale-graph" }
