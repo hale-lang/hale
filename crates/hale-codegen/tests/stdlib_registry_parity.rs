@@ -24,7 +24,8 @@
 //!   - a `Renamed` row is in `PATH_RENAMES`; an `Unlowered` row has
 //!     neither an arm nor a rename, and is named in [`UNLOWERED`];
 //!   - an all-literal `["std", ..]` path that codegen's source still
-//!     spells names a row or a locus path (none does today).
+//!     spells names a row or a locus path (none does today; the registry
+//!     guard holds codegen's `["std",` literals to its allowance).
 //!
 //! Before the column, this file could only check that the scraped
 //! literals and the registry's names covered each other: adding a fn to
@@ -326,5 +327,7 @@ fn parity_check_is_not_vacuous() {
     assert!(hale_arms > 40, "only {hale_arms} arms call a Hale body by name");
     // Every position dispatches from the row (S3, S4), so codegen spells
     // no all-literal `["std", ..]` path and `std_literals` finds none: the
-    // literal test above has nothing to check until one returns.
+    // literal test above has nothing to check until one returns, and the
+    // registry guard (`std_path_literals_in_codegen_are_the_registry_allowance`)
+    // refuses one outside its allowance first.
 }

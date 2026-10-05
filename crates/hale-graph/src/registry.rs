@@ -656,7 +656,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one, and how it lowers: an intrinsic id, a Hale body by name, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
         producer: Some(site(STDLIB_SURFACE, "SURFACES")),
         legacy: &[
-            legacy(CG_CHANNELS, "lower_fallible_call", "the `or` position's dispatch, which still matches 150 `[\"std\", ..]` literals, a second copy of the stdlib call shapes; the statement and value positions dispatch from the row (`lower_std_call`)", "codegen dispatches from the registry row"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
             legacy(CG, "declare_builtin_closure_violation_type", "a hand-maintained mirror of the checker's injected builtin types", "one declaration"),
@@ -664,11 +663,12 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("effects", EFFECTS, "effects_for"), consumer_at("frontier", FRONTIER, "effects_for"), consumer("codegen"), consumer("lsp (hover, completion)"), consumer("doc")],
         invariants: &[
             "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature",
-            "codegen dispatches a stdlib call at statement or value position from its row, the position a parameter (`lower_std_call`): an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; the fallible dispatcher's arms agree with the rows, every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
+            "codegen dispatches every stdlib call from its row, at all three positions: at statement or value position the position is a parameter (`lower_std_call`), an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; under `or` (`lower_std_fallible_call`) the id picks its arm in an exhaustive match of its own beside it (`lower_std_intrinsic_fallible`), because what it produces is the call's success value and its error path, and any other row is not a stdlib fallible call; the three refusal lists (a bare call of a fallible function at statement and at value position, an `or` over one that is not fallible) are id lists until the row's fallibility replaces them; every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
+            "no `[\"std\",` path literal in `crates/hale-codegen/src` outside `CODEGEN_STD_PATH_LITERALS`, the registry's allowance with its reason per file (registry_guard.rs: `std_path_literals_in_codegen_are_the_registry_allowance`): a stdlib call's lowering is an arm of a match on its row's id, never a match on its path",
             "the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs"],
+        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs", "crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)"],
         spec: &["spec/stdlib.md"],
         owned: &[],
         seams: &[],
@@ -1974,6 +1974,20 @@ pub const RULES: &[Rule] = &[
 /// migration that runs one outside a test lists its file here first.
 pub const SHADOW_CALL_SITES: &[(&str, usize)] = &[];
 
+/// The `["std",` path literals `crates/hale-codegen/src` may hold (F.40
+/// phase 4's exit: "no stdlib path literal in codegen outside the one
+/// `match` on intrinsic ids, held by a seam"), each a source file, its
+/// count and the reason it is not a dispatch. Since S4 every stdlib call
+/// dispatches from its row's id, so a literal outside this allowance is
+/// a lowering deciding on a path the row should say: it fails
+/// registry_guard.rs, as does a different count. A comment line, and
+/// what follows `//` on a line, is not counted.
+pub const CODEGEN_STD_PATH_LITERALS: &[(&str, usize, &str)] = &[(
+    "crates/hale-codegen/src/stdlib/sockopt.rs",
+    2,
+    "its unit test's probes of `unknown_fn_error`, a path built around a variable name to ask the checker's question; neither dispatches",
+)];
+
 /// Every Debug rendering with no prose around it (a `?}` placeholder in a
 /// formatting macro whose template holds no space: a value, never a
 /// message) in hale-syntax, hale-types, hale-model, hale-codegen,
@@ -2253,6 +2267,18 @@ pub fn render_markdown() -> String {
         }
         o.push('\n');
     }
+    o.push_str("## Stdlib path literals in codegen\n\n");
+    o.push_str(
+        "Every stdlib call lowers from its row: an intrinsic's id picks its arm in an exhaustive \
+         match, at statement, value and `or` position. A `[\"std\",` path literal in \
+         `crates/hale-codegen/src` is a lowering that decides on a path instead, so the ones that \
+         remain are this allowance, each with its reason, or fail `registry_guard.rs`.\n\n",
+    );
+    o.push_str("| path | literals | reason |\n|---|---|---|\n");
+    for (path, n, why) in CODEGEN_STD_PATH_LITERALS {
+        o.push_str(&format!("| `{path}` | {n} | {} |\n", why.replace('|', "\\|")));
+    }
+    o.push('\n');
     o.push_str("## Frozen Debug renderings\n\n");
     o.push_str(
         "Every Debug rendering with no prose around it (a `?}` placeholder in a formatting \

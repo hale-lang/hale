@@ -450,6 +450,73 @@ fn the_shadow_facility_is_called_only_where_the_registry_allows() {
     );
 }
 
+/// How many `["std",` path literals `text` holds outside comments: a line
+/// that starts `//` (a doc comment too) does not count, nor does what
+/// follows `//` on a line.
+fn std_path_literals(text: &str) -> usize {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .map(|l| l.split("//").next().unwrap_or(l).matches("[\"std\",").count())
+        .sum()
+}
+
+#[test]
+fn std_path_literals_are_counted_outside_comments() {
+    assert_eq!(std_path_literals("match segs {\n    [\"std\", \"io\", \"fs\", \"mkdir\"] => 1,\n"), 1);
+    assert_eq!(std_path_literals("f(&[\"std\", \"io\"]); g(&[\"std\", \"os\"]);\n"), 2);
+    assert_eq!(std_path_literals("/// `[\"std\", ..]` in a doc\n// [\"std\", \"x\"]\nlet a = 1; // [\"std\", \"y\"]\n"), 0);
+    assert_eq!(std_path_literals("let p = [\"std\"];\n"), 0);
+}
+
+/// No stdlib path literal in codegen outside the registry's allowance
+/// (F.40 phase 4's exit): every stdlib call lowers from its row's id, at
+/// statement, value and `or` position, so a `["std",` literal in
+/// `crates/hale-codegen/src` is a lowering deciding on a path. A seam
+/// cannot hold this: a seam is counted in every crate, and the rows
+/// themselves, `PATH_RENAMES` and the per-function lists of hale-types
+/// spell stdlib paths by design.
+#[test]
+fn std_path_literals_in_codegen_are_the_registry_allowance() {
+    let root = workspace_root();
+    let allowed: BTreeMap<&str, usize> =
+        hale_graph::CODEGEN_STD_PATH_LITERALS.iter().map(|(p, n, _)| (*p, *n)).collect();
+    let sources = rust_sources(&root, "hale-codegen");
+    let mut violations = Vec::new();
+    let mut found = 0usize;
+    for (rel, text) in &sources {
+        let n = std_path_literals(text);
+        found += n;
+        match allowed.get(rel.as_str()) {
+            Some(&k) if k == n => {}
+            Some(&k) => violations.push(format!("{rel} holds {n} `[\"std\",` literal(s); the registry allows {k}")),
+            None if n == 0 => {}
+            None => violations.push(format!("{rel} holds {n} `[\"std\",` literal(s), which the registry does not allow")),
+        }
+    }
+    for (rel, _, why) in hale_graph::CODEGEN_STD_PATH_LITERALS {
+        if !root.join(rel).is_file() {
+            violations.push(format!("the registry allows {rel}, which does not exist"));
+        }
+        assert!(!why.is_empty(), "{rel}: an allowance carries its reason");
+    }
+    assert!(
+        sources.len() >= 40 && sources.iter().any(|(r, _)| r == "crates/hale-codegen/src/codegen.rs") && found >= 1,
+        "the stdlib-literal scan is vacuous ({} codegen source files, {found} literals)",
+        sources.len()
+    );
+    assert!(
+        violations.is_empty(),
+        "{} file(s) of crates/hale-codegen/src differ from the registry's allowance of stdlib path literals:\n{}\n\n\
+         A stdlib call lowers from its row (`hale_types::stdlib_surface::row`): an intrinsic's id \
+         picks its arm in `lower_std_intrinsic` or `lower_std_intrinsic_fallible`, and a refusal is \
+         an id list. Matching on a `[\"std\", ..]` path decides in lowering what the row should say. \
+         A literal that is not a dispatch is listed in CODEGEN_STD_PATH_LITERALS \
+         (crates/hale-graph/src/registry.rs) with its count and reason; then regenerate spec/registry.md.",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
 /// Every formatting-macro invocation in `text` whose template holds a
 /// `?}` placeholder and no space, collapsed to one line (its first 90
 /// characters), nested invocations included. Parentheses inside string
