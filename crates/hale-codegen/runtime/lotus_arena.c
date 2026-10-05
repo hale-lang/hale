@@ -2076,6 +2076,14 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
         pthread_mutex_unlock(&g_params_open_lock);
         return r;
     }
+#ifdef __wasm__
+    /* Never reached on wasm32: the parent is open on another thread
+     * only for a pinned child or a pool worker's, and both are refused
+     * there (PinnedThreads, PoolThreads × wasm32 = Reject), so the
+     * module's one thread is every node's opener. Compiled out so the
+     * module does not import pthread_cond_wait (P3 T7). */
+    __builtin_trap();
+#else
     node->waiters++;
     while (node->state != LOTUS_DELIVERED) {
         /* A pool worker waiting here may be what the deciding thread
@@ -2092,6 +2100,7 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
     if (--node->waiters == 0) free(node);
     pthread_mutex_unlock(&g_params_open_lock);
     return 1;
+#endif
 }
 
 void lotus_params_settle(void *parent) {
@@ -4187,11 +4196,22 @@ probe_restart:;
  *
  * The pair must bracket every access to m->slots / m->cap on
  * the lockfree path — set, get, has, remove, iteration. */
+/* The contention yields below wait for ANOTHER thread's grow or
+ * in-flight op: this thread never reaches one, since it grows only
+ * after leaving its op and resets the phase before returning. wasm32
+ * has no other thread (PinnedThreads, PoolThreads and the adapter's
+ * thread are refused there), so the yield is compiled out and the
+ * module does not import sched_yield (P3 T7). */
+#ifdef __wasm__
+#define LOTUS_LF_YIELD() ((void)0)
+#else
+#define LOTUS_LF_YIELD() sched_yield()
+#endif
 static inline void lotus_hashmap_lf_enter(lotus_hashmap_t *m) {
     for (;;) {
         int phase = __atomic_load_n(&m->lf_grow_phase, __ATOMIC_ACQUIRE);
         if (phase != 0) {
-            sched_yield();
+            LOTUS_LF_YIELD();
             continue;
         }
         __atomic_fetch_add(&m->lf_writers_in_flight, 1, __ATOMIC_ACQUIRE);
@@ -4202,7 +4222,7 @@ static inline void lotus_hashmap_lf_enter(lotus_hashmap_t *m) {
         phase = __atomic_load_n(&m->lf_grow_phase, __ATOMIC_ACQUIRE);
         if (phase != 0) {
             __atomic_fetch_sub(&m->lf_writers_in_flight, 1, __ATOMIC_RELEASE);
-            sched_yield();
+            LOTUS_LF_YIELD();
             continue;
         }
         return;
@@ -4280,7 +4300,7 @@ static void lotus_hashmap_grow_lockfree(lotus_hashmap_t *m) {
      * via the lf_enter re-check; existing ops drain quickly
      * (they hold the counter across a few CAS / memcpy). */
     while (__atomic_load_n(&m->lf_writers_in_flight, __ATOMIC_ACQUIRE) > 0) {
-        sched_yield();
+        LOTUS_LF_YIELD();
     }
     size_t old_cap = m->cap;
     char *old_slots = m->slots;
@@ -8131,6 +8151,17 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
                         const void *payload_src,
                         size_t payload_size) {
     if (!mb) return;
+#ifdef __wasm__
+    /* No mailbox exists on wasm32: a mailbox is a pinned subscriber's,
+     * and `pinned` is refused there (PinnedThreads × wasm32 = Reject;
+     * an adapter, which runs pinned, is refused with it), so `mb` is
+     * NULL above. Compiled out so the module does not import the
+     * mailbox's condvars (P3 T7). */
+    (void)handler;
+    (void)self_ptr;
+    (void)payload_src;
+    (void)payload_size;
+#else
     /* Two-tier payload storage; see queue_enqueue for the design
      * rationale. Build the cell once, up front, so the lock-free enqueue
      * is a single plain struct copy under the slot's seq release. */
@@ -8235,6 +8266,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
         mb->overflow_tail = node;
         return;
     }
+#endif /* __wasm__ */
 }
 
 LOTUS_HOT_ALIGN
@@ -9398,6 +9430,18 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
                                       size_t payload_size,
                                       int run) {
     if (!p) return;
+#ifdef __wasm__
+    /* No pool exists on wasm32: a pool other than `main` is refused
+     * (PoolThreads × wasm32 = Reject, and AsyncIoPool with it), and
+     * `main` registers none, so `p` is NULL above. Compiled out so the
+     * module does not import the pool's condvars and wake fd (P3 T7);
+     * with it goes the only run ticket a post takes. */
+    (void)handler;
+    (void)self_ptr;
+    (void)payload_src;
+    (void)payload_size;
+    (void)run;
+#else
     /* Two-tier payload storage; see queue_enqueue for the design
      * rationale. Build the cell once, up front, so the lock-free enqueue
      * is a single plain struct copy under the slot's seq release. */
@@ -9489,6 +9533,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
         p->overflow_tail = node;
         return;
     }
+#endif /* __wasm__ */
 }
 
 /* A child's run(), posted by the compiled instantiation:
@@ -9904,6 +9949,15 @@ static int lotus_run_holds_outstanding(void *child, lotus_run_ticket_t *own,
  * coroutine parked on that same worker, could never end; that aborts,
  * named, instead of hanging. */
 static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
+#ifdef __wasm__
+    /* No run is ever held on wasm32: a run ticket is taken only by a
+     * pool's post, and no pool exists there (PoolThreads × wasm32 =
+     * Reject; see lotus_coop_pool_post_cell), so the wait is never
+     * reached. Compiled out so the module does not import the async
+     * pool's coroutine park, swapcontext (P3 T7). */
+    (void)child;
+    (void)own;
+#else
 #ifdef LOTUS_LIFECYCLE_TRACE
     /* A negative control removes the wait: the reclaim releases the
      * arena under the running run, as before the hold. */
@@ -9936,9 +9990,6 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
                     "parked on its own worker (decision line 19)\n");
             abort();
         }
-#ifndef __wasm__
-        /* wasm has no pool worker, so no run is ever held there and the
-         * wait is never reached; its pthread shim has no timed wait. */
         pthread_mutex_lock(&g_run_tickets_lock);
         struct timespec until;
         clock_gettime(CLOCK_REALTIME, &until);
@@ -9951,7 +10002,6 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
         pthread_cond_timedwait(&g_run_holds_cv, &g_run_tickets_lock, &until);
         g_run_hold_waiters--;
         pthread_mutex_unlock(&g_run_tickets_lock);
-#endif
         lotus_bus_queue_drain(g_bus_queue_for_remote);
         lotus_mailbox_drain_pending(lotus_mailbox_get_current());
     }
@@ -9963,6 +10013,7 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
             break;
         }
     }
+#endif /* __wasm__ */
 }
 
 /* Enable async_io mode for a pool: opens an epoll fd. Idempotent;
@@ -12444,7 +12495,15 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
     /* Bounded as the queue is: a publisher waits at the queue's cap
      * for the birth to complete, unless waiting could hold up the
      * readiness step it waits for (`lotus_bus_ready_may_wait`). It
-     * still parks behind every earlier cell. */
+     * still parks behind every earlier cell.
+     *
+     * Never on wasm32: `pinned` is refused there (PinnedThreads ×
+     * wasm32 = Reject), so every window is held by the subscriber's
+     * birth thread, which is the module's one thread, and
+     * `lotus_bus_ready_may_wait` never lets the birth thread wait.
+     * Compiled out so the module does not import pthread_cond_wait
+     * (P3 T7). */
+#ifndef __wasm__
     if (u && u->parked >= bus_queue_max_cap()) {
         __atomic_add_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
         while (u && u->parked >= bus_queue_max_cap()
@@ -12454,6 +12513,7 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
         }
         __atomic_sub_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
     }
+#endif
     if (!u) {
         pthread_mutex_unlock(&g_bus_ready_lock);
         return 0;
@@ -20478,6 +20538,14 @@ void lotus_bus_remote_fanout(const char *subject,
                              const void *payload,
                              size_t payload_size) {
     if (!subject) return;
+#ifdef __wasm__
+    /* No remote entry exists on wasm32 (RemoteTransport × wasm32 =
+     * Reject; see lotus_bus_remote_destroy_all), so there is nothing to
+     * fan out to. Compiled out so the module does not import the
+     * transports' send/sendto/write (P3 T7). */
+    (void)payload;
+    (void)payload_size;
+#else
     /* GH #1058: `payload` is the publisher thread's TLS wire buffer
      * (g_tls_bus_wire_buf), which stays valid only while nothing runs
      * between its encode and its last read. An adapter entry breaks
@@ -20508,6 +20576,7 @@ void lotus_bus_remote_fanout(const char *subject,
     }
     lotus_bus_remote_fanout_entries(subject, payload, payload_size);
     free(owned);
+#endif /* __wasm__ */
 }
 
 static void lotus_bus_remote_fanout_entries(const char *subject,
@@ -24315,6 +24384,14 @@ void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
 }
 
 void lotus_bus_remote_destroy_all(void) {
+#ifndef __wasm__
+    /* wasm32 has no remote entry and no injector to tear down: every
+     * transport is refused there (RemoteTransport × wasm32 = Reject,
+     * and BindingConfig is omitted), so nothing registers an entry or
+     * starts its reader thread, and the replay injector starts only
+     * under `hale replay` (Replay × wasm32 = Refused). Compiled out so
+     * the module does not import the reader-thread join and the
+     * sockets' shutdown/close/unlink (P3 T7). */
     /* GH #296 phase 5b: stop and join the ingress injector FIRST —
      * it dispatches into the queues this teardown is about to
      * drain and dissolve. */
@@ -24436,6 +24513,7 @@ void lotus_bus_remote_destroy_all(void) {
     g_bus_remote_entries = NULL;
     g_bus_remote_count   = 0;
     g_bus_remote_cap     = 0;
+#endif /* !__wasm__ */
 
     /* m70: tear down the lazy payload arena (used by deserialize
      * to allocate String byte storage that survives the reader-
