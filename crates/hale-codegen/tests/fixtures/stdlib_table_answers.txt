@@ -489,26 +489,26 @@ std::bus::__transport_realize | lookup=bus@2 | locus=false | effects=- | sig=- |
 std::bus::__transport_reclaim | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_reclaim` | suggest=-
 std::bus::__transport_spawn_server | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_spawn_server` | suggest=-
 std::bytes::BytesBuilder | lookup=bytes@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::bytes::__is_alloc_fail | lookup=bytes@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__is_alloc_fail
+std::bytes::__is_alloc_fail | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__is_alloc_fail
 std::bytes::at | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Int) -> Int ! IndexError | ret_ty=? | or=(Int, IndexError) | parks=false | holds=false | unknown=- | suggest=-
 std::bytes::builder::__apend | lookup=bytes::builder@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bytes::builder::__apend` — did you mean `std::bytes::builder::__append`? | suggest=__append
-std::bytes::builder::__append | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append
-std::bytes::builder::__append_f32 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_f32
-std::bytes::builder::__append_f64 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_f64
-std::bytes::builder::__append_pad | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_pad
-std::bytes::builder::__append_scalar | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_scalar
-std::bytes::builder::__append_slice | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_slice
-std::bytes::builder::__append_str | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__append_str
-std::bytes::builder::__clear | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__clear
+std::bytes::builder::__append | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append
+std::bytes::builder::__append_f32 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Float, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_f32
+std::bytes::builder::__append_f64 | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Float, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_f64
+std::bytes::builder::__append_pad | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_pad
+std::bytes::builder::__append_scalar | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_scalar
+std::bytes::builder::__append_slice | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_slice
+std::bytes::builder::__append_str | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__append_str
+std::bytes::builder::__clear | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__clear
 std::bytes::builder::__finish | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__finish
-std::bytes::builder::__free | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__free
-std::bytes::builder::__len | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__len
-std::bytes::builder::__new | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__new
-std::bytes::builder::__shift_front | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__shift_front
+std::bytes::builder::__free | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__free
+std::bytes::builder::__len | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__len
+std::bytes::builder::__new | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__new
+std::bytes::builder::__shift_front | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__shift_front
 std::bytes::builder::__snapshot | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__snapshot
-std::bytes::builder::__text_view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__text_view
-std::bytes::builder::__view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__view
-std::bytes::builder::__xor_mask_into | lookup=bytes::builder@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=__xor_mask_into
+std::bytes::builder::__text_view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Any | ret_ty=? | or=- | parks=false | holds=false | unknown=- | suggest=__text_view
+std::bytes::builder::__view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Any | ret_ty=? | or=- | parks=false | holds=false | unknown=- | suggest=__view
+std::bytes::builder::__xor_mask_into | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__xor_mask_into
 std::bytes::clone | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=clone
 std::bytes::concat | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=concat
 std::bytes::find_byte | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find_byte

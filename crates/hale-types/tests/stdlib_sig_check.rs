@@ -370,6 +370,29 @@ fn std_io_mirror_calls_are_checked() {
 }
 
 #[test]
+fn std_bytes_calls_are_checked() {
+    refused(
+        "    let h = std::bytes::builder::__new();\n    println(h);",
+        &[("`std::bytes::builder::__new` takes 1 argument, got 0", "std::bytes::builder::__new")],
+    );
+    refused(
+        "    let h = std::bytes::builder::__new(64);\n    let ok = std::bytes::builder::__append_str(h, 7);\n    println(ok);",
+        &[("`std::bytes::builder::__append_str` argument 2: expected `String`, got `Int`", "7")],
+    );
+    refused(
+        "    let f = std::bytes::__is_alloc_fail(\"x\");\n    println(f);",
+        &[("`std::bytes::__is_alloc_fail` argument 1: expected `Bytes`, got `String`", "\"x\"")],
+    );
+    refused(
+        "    let n = std::bytes::builder::__len(0) or 0;\n    println(n);",
+        &[(
+            "`std::bytes::builder::__len` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::bytes::builder::__len(0)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

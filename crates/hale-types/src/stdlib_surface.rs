@@ -541,7 +541,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bytes"],
         fns: &[
-            row!("__is_alloc_fail", PURE, _, Intrinsic(BytesIsAllocFailRaw)),
+            row!("__is_alloc_fail", PURE, [Bytes] -> Int, Intrinsic(BytesIsAllocFailRaw)),
             // std::bytes — reads accept Bytes/BytesView/BytesMut; writes
             // require a BytesMut window (accepts() stays permissive on the
             // family, favoring no-false-error over full strictness).
@@ -592,23 +592,30 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bytes", "builder"],
         fns: &[
-            row!("__append", PURE, _, Intrinsic(BytesBuilderAppendRaw)),
-            row!("__append_f32", PURE, _, Intrinsic(BytesBuilderAppendF32Raw)),
-            row!("__append_f64", PURE, _, Intrinsic(BytesBuilderAppendF64Raw)),
-            row!("__append_pad", PURE, _, Intrinsic(BytesBuilderAppendPadRaw)),
-            row!("__append_scalar", PURE, _, Intrinsic(BytesBuilderAppendScalarRaw)),
-            row!("__append_slice", PURE, _, Intrinsic(BytesBuilderAppendSliceRaw)),
-            row!("__append_str", PURE, _, Intrinsic(BytesBuilderAppendStrRaw)),
-            row!("__clear", PURE, _, Intrinsic(BytesBuilderClearRaw)),
+            // The `BytesBuilder` locus's primitives (F.40 phase 4, S6: the
+            // signatures their helpers enforce). The handle is the C
+            // builder's pointer as an Int; `__text_view` and `__view`
+            // return a StringView and a BytesView, which a signature cannot
+            // state, so their success is `Any`. `__finish` and `__snapshot`
+            // (`(Int) -> Bytes`) stay unsigned: the stdlib call fixture
+            // prints their value, which the check refuses for a `Bytes`.
+            row!("__append", PURE, [Int, Bytes] -> Int, Intrinsic(BytesBuilderAppendRaw)),
+            row!("__append_f32", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF32Raw)),
+            row!("__append_f64", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF64Raw)),
+            row!("__append_pad", PURE, [Int, Int] -> Int, Intrinsic(BytesBuilderAppendPadRaw)),
+            row!("__append_scalar", PURE, [Int, Int, Int, Int] -> Int, Intrinsic(BytesBuilderAppendScalarRaw)),
+            row!("__append_slice", PURE, [Int, Bytes, Int, Int] -> Int, Intrinsic(BytesBuilderAppendSliceRaw)),
+            row!("__append_str", PURE, [Int, Str] -> Int, Intrinsic(BytesBuilderAppendStrRaw)),
+            row!("__clear", PURE, [Int] -> Int, Intrinsic(BytesBuilderClearRaw)),
             row!("__finish", PURE, _, Intrinsic(BytesBuilderFinishRaw)),
-            row!("__free", PURE, _, Intrinsic(BytesBuilderFreeRaw)),
-            row!("__len", PURE, _, Intrinsic(BytesBuilderLenRaw)),
-            row!("__new", PURE, _, Intrinsic(BytesBuilderNewRaw)),
-            row!("__shift_front", PURE, _, Intrinsic(BytesBuilderShiftFrontRaw)),
+            row!("__free", PURE, [Int] -> Int, Intrinsic(BytesBuilderFreeRaw)),
+            row!("__len", PURE, [Int] -> Int, Intrinsic(BytesBuilderLenRaw)),
+            row!("__new", PURE, [Int] -> Int, Intrinsic(BytesBuilderNewRaw)),
+            row!("__shift_front", PURE, [Int, Int] -> Int, Intrinsic(BytesBuilderShiftFrontRaw)),
             row!("__snapshot", PURE, _, Intrinsic(BytesBuilderSnapshotRaw)),
-            row!("__text_view", PURE, _, Intrinsic(BytesBuilderTextViewRaw)),
-            row!("__view", PURE, _, Intrinsic(BytesBuilderViewRaw)),
-            row!("__xor_mask_into", PURE, _, Intrinsic(BytesBuilderXorMaskIntoRaw)),
+            row!("__text_view", PURE, [Int] -> Any, Intrinsic(BytesBuilderTextViewRaw)),
+            row!("__view", PURE, [Int] -> Any, Intrinsic(BytesBuilderViewRaw)),
+            row!("__xor_mask_into", PURE, [Int, Bytes, Int] -> Int, Intrinsic(BytesBuilderXorMaskIntoRaw)),
         ],
         open_prefixes: &[],
     },
