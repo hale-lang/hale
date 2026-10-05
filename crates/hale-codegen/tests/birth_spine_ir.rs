@@ -201,3 +201,48 @@ fn main() { World { }; }
     assert!(accept < push && push < birth, "accept, the push, then birth:\n{dispatch}");
     assert_eq!(dispatch.matches("\n  br ").count(), 0, "one block: the order is the text's");
 }
+
+/// `n` declarations, each with a field literal, two body literals in a
+/// method and a statement literal in a fn with an early return: every
+/// reader of the plan's orders (a literal's birth spine, a declaration's
+/// reclaim, cascade and restart, a frame teardown's entry order) is
+/// asked once per literal, declaration or exit.
+fn many_literals(n: usize) -> String {
+    let mut src = SUB.to_string();
+    let mut fields = String::new();
+    let mut calls = String::new();
+    for i in 0..n {
+        src.push_str(&format!(
+            "locus L{i} {{ params {{ s: Sub = Sub {{ }}; }} run() {{ }} }}\n\
+             locus B{i} {{ fn make() {{ L{i} {{ }}; L{i} {{ }}; }} }}\n\
+             fn build{i}(k: Int) {{ if k > 0 {{ L{i} {{ }}; return; }} L{i} {{ }}; }}\n"
+        ));
+        fields.push_str(&format!("l{i}: L{i} = L{i} {{ }}; "));
+        calls.push_str(&format!("let b{i} = B{i} {{ }}; b{i}.make(); build{i}({i}); "));
+    }
+    src.push_str(&format!("main locus App {{ params {{ {fields}}} run() {{ {calls}}} }}\nfn main() {{ App {{ }}; }}\n"));
+    src
+}
+
+/// The plan's orders are computed once per build (F.40 phase 3, close: a
+/// build-time regression). The emitters read them from the index the
+/// lowering builds from the plan, so the passes the spine readers make
+/// over the plan do not grow with the program's literals, declarations
+/// or exits: a reader that recomputed per call would make more for the
+/// larger program.
+#[test]
+fn the_plans_orders_are_computed_once_per_build() {
+    use hale_types::lifecycle::spine::plan_passes;
+    let passes = |name: &str, n: usize| {
+        let before = plan_passes();
+        ir(name, &many_literals(n));
+        plan_passes() - before
+    };
+    let small = passes("passes_small", 2);
+    let large = passes("passes_large", 12);
+    assert!(small > 0, "the lowering reads the plan's orders on the thread that builds");
+    assert_eq!(small, large, "the spine readers' passes over the plan grew with the program");
+    // The index's one pass, and each spine's process and entry orders.
+    let bound = 1 + 2 * hale_types::lifecycle::Spine::ALL.len() as u64;
+    assert!(small <= bound, "{small} passes over the plan for one build, more than {bound}");
+}

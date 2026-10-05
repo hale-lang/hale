@@ -167,9 +167,11 @@ impl FormRows {
     }
 
     /// The discipline declaration `l` gets: its row's effective one. A
-    /// declaration with no row (one no snapshot inferred over: the
-    /// stdlib's, merged into the program lowering walks) gets its
-    /// written configuration's.
+    /// declaration with no row (one in a bundle no row set holds) gets
+    /// its written configuration's. Lowering does not ask this: its view
+    /// holds a row for every declaration it lowers (the merged stdlib's
+    /// as written), and it reads the row ([`FormRows::of`]), refusing a
+    /// declaration with none.
     pub fn effective(&self, l: &LocusDecl) -> Discipline {
         match self.of(l) {
             Some(row) => row.effective,
@@ -194,7 +196,7 @@ impl FormRows {
 
     /// Declaration `l`'s fixed capacity: its row's `cap`. A declaration
     /// with no row reads its written argument, as [`FormRows::effective`]
-    /// does.
+    /// does (and, like it, lowering does not ask this).
     pub fn cap(&self, l: &LocusDecl) -> Option<u64> {
         match self.of(l) {
             Some(row) => row.cap,

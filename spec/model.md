@@ -76,7 +76,14 @@ from `crates/hale-graph/src/registry.rs` and held byte-equal by a test
 - its **consumers**, named, so a new reader is a registry change
   before it is a code change;
 - its **invariants** and **missing-data policy**: whether a missing
-  row is a compiler error or a hole with a stated policy;
+  row is a compiler error or a hole with a stated policy; and, for a
+  family lowering reads, which of two things each of lowering's reads
+  is: **required** (the snapshot always provides the row, so a missing
+  one is a `CodegenError` naming the family and the row, pinned by a
+  test that removes it from a lowering view) or **total** (absence is
+  itself the fact, and the registry says what no row means), never a
+  default or a second derivation; `lowering_reads_are_classified`
+  holds every family lowering reads to one of the two;
 - its **focused tests**, the ones a contributor runs to know a change
   to that family is right;
 - where the **spec** states the contract.

@@ -55,6 +55,7 @@ use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
 /// it (`None` when it denotes no declared locus, or when it is a
 /// template's clause). Two instantiations of one generic share the
 /// written key and resolve apart.
+#[derive(Clone)]
 pub struct FlowClause {
     pub owner: String,
     pub param: String,
@@ -66,6 +67,7 @@ pub struct FlowClause {
 }
 
 /// A generic owner's clause, before substitution.
+#[derive(Clone)]
 pub struct TemplateClause {
     /// The owner's identity: a specialization is a clone of its
     /// template's declaration and keeps it.
@@ -78,6 +80,7 @@ pub struct TemplateClause {
 }
 
 /// A flow type and every clause that makes it one, in source order.
+#[derive(Clone)]
 pub struct Flow {
     /// The child type as written (its path joined by `::`).
     pub child: String,
@@ -101,6 +104,7 @@ pub struct Flow {
 ///
 /// A body that never returns is long-running; the converse does not
 /// hold (`run() { std::time::sleep(1m); }` is long-running and returns).
+#[derive(Clone)]
 pub struct RunRow {
     /// The locus as declared, and where: a declaration is found by its
     /// name and span ([`FlowRows::run_of`]).
@@ -114,6 +118,7 @@ pub struct RunRow {
 /// The `flows` family's rows, with what a template clause is resolved
 /// against once a specialization substitutes it: the declared loci and
 /// aliases, and the bundle's import renames. Derefs to the rows.
+#[derive(Clone)]
 pub struct FlowRows {
     flows: Vec<Flow>,
     /// One run row per locus declaration, a module's included, in

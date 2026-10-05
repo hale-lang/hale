@@ -3,7 +3,7 @@
 //! the site, rather than typing it again.
 
 use hale_codegen::{build_resolved, CodegenError};
-use hale_types::form_rows::FormRows;
+use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_types::typed_bodies::TypedBodies;
 
 #[path = "support/harness.rs"]
@@ -11,22 +11,15 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-/// Resolve `src` with no typed-body table and lower it: every site that
-/// reads a row has none.
+/// The harness's view of `src` with its typed-body table taken out, and
+/// lowered: every site that reads a row has none.
 fn lower_without_a_table(tag: &str, src: &str) -> Result<(), CodegenError> {
     let program = hale_syntax::parse_source(src).expect("parses");
-    let view = hale_types::resolved::resolve_program(
-        &program,
-        &[],
-        &[],
-        None,
-        None,
-        &FormRows::default(),
-        &hale_types::binding_rows::BindingRows::default(),
-        &hale_types::placement::PlacementTable::default(),
-        &TypedBodies::default(),
-    )
-    .expect("resolves");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let mut view = snap.demand_lowering().unwrap_or_else(|b| panic!("lowering blocked: {:?}", b.refused)).clone();
+    view.typed = TypedBodies::default();
     let bin = harness::unique_bin(&format!("typed_body_rows_{tag}"));
     let built = build_resolved(&view, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);

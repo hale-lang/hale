@@ -765,6 +765,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
             "lotus_held_failure_count",
         );
+        // The reclaim's "nothing outstanding" words (decision line 19):
+        // the compiled reclaim reads them before a runtime call whose
+        // own first test they are, and skips the call when it would
+        // answer at once. Hidden: the runtime is linked into the same
+        // executable, so a read is one PC-relative load, not a GOT
+        // load and then the word.
+        for name in ["lotus_run_tickets_live", "lotus_reclaim_records_live", "lotus_owner_domain_count"] {
+            let g = self.module.add_global(self.context.i64_type(), None, name);
+            g.set_visibility(inkwell::GlobalVisibility::Hidden);
+        }
         // GH #1033: the Bytes companion, same signature.
         self.module.add_function(
             "lotus_bytes_field_replace_fixup",

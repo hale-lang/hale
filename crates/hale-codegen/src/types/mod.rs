@@ -1139,12 +1139,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         match verdict {
             Some(v) => Ok(v.is_ok()),
-            None => Err(CodegenError::Unsupported(format!(
-                "locus `{}` against interface `{}`: the conformance column holds \
-                 no row for the pair (a specialization the monomorph table does \
-                 not name), so its storage cannot be routed",
-                locus_name, iface_name
-            ))),
+            None => Err(CodegenError::missing_row(
+                "surfaces",
+                format!(
+                    "locus `{}` against interface `{}`: the conformance column holds \
+                     no row for the pair (a specialization the monomorph table does \
+                     not name), so its storage cannot be routed",
+                    locus_name, iface_name
+                ),
+                None,
+            )),
         }
     }
 

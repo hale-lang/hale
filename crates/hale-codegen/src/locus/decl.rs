@@ -1020,6 +1020,20 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     None
                 };
                 idx += 1;
+                // The declaration's form row: the view holds one for every
+                // `@form` declaration it lowers (the snapshot's, the merged
+                // stdlib's as written), found by identity, a monomorph by
+                // its template's. A declaration with none is refused, never
+                // laid out from its written arguments.
+                let form_row = |family: &str| {
+                    self.forms.of(l).ok_or_else(|| {
+                        CodegenError::missing_row(
+                            family,
+                            format!("the `@form` declaration `{}` has no form row", l.name.name),
+                            Some(l.name.span),
+                        )
+                    })
+                };
                 let ring_buffer_cap = if matches!(
                     form,
                     Some(SlotForm::RingBuffer) | Some(SlotForm::LruCache)
@@ -1029,7 +1043,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     // @form(ring_buffer) / @form(lru_cache). (The
                     // `ring_buffer_cap` field name predates lru but
                     // carries the same fixed-cap role.)
-                    self.forms.cap(l)
+                    form_row("forms")?.cap
                 } else {
                     None
                 };
@@ -1041,7 +1055,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 // written value; an argument naming no discipline
                 // gets none.
                 let sync_mode = if matches!(form, Some(SlotForm::Hashmap)) {
-                    match self.forms.effective(l) {
+                    let row = form_row("sync_inference")?;
+                    match row.effective {
                         Discipline::None => SyncMode::None,
                         Discipline::Serialized => SyncMode::Serialized,
                         Discipline::Striped => SyncMode::Striped,
@@ -1049,7 +1064,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             // F.32-1γ-v1: lockfree requires
                             // `cap = N` (validated by typecheck);
                             // the form row's `cap`.
-                            let cap = self.forms.cap(l).unwrap_or(0);
+                            let cap = row.cap.unwrap_or(0);
                             SyncMode::Lockfree { fixed_cap: cap }
                         }
                     }
@@ -1303,7 +1318,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 projection_class,
                 schedule_class,
                 capacity_slots,
-                arena_elidable: self.locus_elision(&l.name.name).arena,
+                arena_elidable: self.locus_elision(&l.name.name)?.arena,
                 empty_lifecycle: std::collections::BTreeSet::new(),
             },
         );
@@ -2102,13 +2117,17 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let rows: Vec<hale_types::handler_routing::HandlerRow> =
             self.handlers.handlers_of_instance(l.id, &l.name.name).cloned().collect();
         if rows.len() != failure_decls {
-            return Err(CodegenError::Unsupported(format!(
-                "locus `{}` declares {} on_failure handler(s) but the \
-                 handler routing has {} row(s) for its declaration",
-                l.name.name,
-                failure_decls,
-                rows.len(),
-            )));
+            return Err(CodegenError::missing_row(
+                "handler_routing",
+                format!(
+                    "locus `{}` declares {} on_failure handler(s) but the \
+                     handler routing has {} row(s) for its declaration",
+                    l.name.name,
+                    failure_decls,
+                    rows.len(),
+                ),
+                Some(l.name.span),
+            ));
         }
         let mut failure_handlers: BTreeMap<
             hale_types::handler_routing::SiteId,
@@ -2123,11 +2142,15 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 .find(|r| r.is_row_of(fd))
                 .and_then(|r| Some((r, r.id?)))
             else {
-                return Err(CodegenError::Unsupported(format!(
-                    "locus `{}` declares an on_failure handler the handler \
-                     routing has no minted row for",
-                    l.name.name
-                )));
+                return Err(CodegenError::missing_row(
+                    "handler_routing",
+                    format!(
+                        "locus `{}` declares an on_failure handler the handler \
+                         routing has no minted row for",
+                        l.name.name
+                    ),
+                    Some(fd.span),
+                ));
             };
             let child_locus_name = match &row.child {
                 ChildRef::Locus(n) => n.clone(),

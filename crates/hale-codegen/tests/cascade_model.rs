@@ -1,7 +1,11 @@
 //! `verification/cascade_model.c`, the GenMC model of the failure
-//! cascade (F.40 phase 3, L5), held to compile on every PR, since GenMC
-//! itself is not in CI: the model and each of its negative controls
-//! pass `clang -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only`.
+//! cascade (F.40 phase 3, L5), held to compile on every PR: the model
+//! and each of its negative controls pass `clang -std=c11 -Wall -Wextra
+//! -Werror -pthread -fsyntax-only`. GenMC itself runs in CI's `genmc`
+//! job, on a substrate change, over the positive model only: phases 1
+//! to 3 explored exhaustively, one run each (the model's `GENMC-RUN`
+//! lines). Phase 4 is not explored (it does not finish), nor is any
+//! control: the two native runs below are the only runs a control gets.
 //!
 //! The model is also an ordinary threaded C program, so it runs natively
 //! too. One native run is one interleaving, not the proof GenMC's

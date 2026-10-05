@@ -134,16 +134,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .entry(id)
                         .map(|e| e.owner.clone())
                         .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "locus `{}` is instantiated at an \
-                                 expression the ownership pre-pass gave \
-                                 no owner (expression #{}). Every \
-                                 locus-producing expression is decided \
-                                 before lowering — see spec/decisions.md \
-                                 F.39 — so this is a compiler defect, not \
-                                 a program error.",
-                                locus_name, id.0
-                            ))
+                            CodegenError::missing_row(
+                                "ownership",
+                                format!(
+                                    "locus `{}` is instantiated at an \
+                                     expression the ownership pre-pass gave \
+                                     no owner (expression #{}). Every \
+                                     locus-producing expression is decided \
+                                     before lowering — see spec/decisions.md \
+                                     F.39 — so this is a compiler defect, not \
+                                     a program error.",
+                                    locus_name, id.0
+                                ),
+                                None,
+                            )
                         })?,
                     Some(crate::ownership::Site::Unindexed(sp)) => {
                         return Err(CodegenError::Unsupported(format!(
@@ -414,7 +418,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (`Holder<T>` lowered as `Holder_Int`) reads its template's
         // accept rows, asked for by the template's identity and
         // specialized by the instantiation's substitution
-        // (`specialized_accepts`, filled at synthesis).
+        // (`specialized_accepts`, filled at synthesis). Total: no accept
+        // row means the enclosing locus does not accept the child, and
+        // no bubble plan below means no ancestor owns it either.
         let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
             match self.specialized_accepts.get(&cs.locus_name) {
                 Some(accepts) => accepts.contains(locus_name),
@@ -518,10 +524,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                      decision of lowering's."
                 );
                 let span = own_site_id.and_then(|id| self.owner_table.entry(id)).map(|e| e.span);
-                return Err(match span {
-                    Some(span) => CodegenError::UnsupportedAt(msg, span),
-                    None => CodegenError::Unsupported(msg),
-                });
+                return Err(CodegenError::missing_row("law_backstops", msg, span));
             }
             // Restore the cooperative-pool context we swapped in above
             // (the normal path restores it at fn exit; we early-return).
@@ -713,13 +716,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .get(&cs.locus_name)
                         .cloned()
                         .expect("enclosing locus declared");
-                    let fidx = *encl_info
-                        .owner_forward_field_idxs
-                        .get(locus_name)
-                        .expect(
-                            "threaded bubble: enclosing carries \
-                             __owner_for_<child>",
-                        );
+                    // The forwarding set (the bubble plans' `forwarding`)
+                    // declares the field; a threaded plan whose set does
+                    // not hold this child is a view without the row.
+                    let fidx = *encl_info.owner_forward_field_idxs.get(locus_name).ok_or_else(|| {
+                        CodegenError::missing_row(
+                            "ownership",
+                            format!(
+                                "the bubble plan threads `{locus_name}` through `{}`, whose forwarding set \
+                                 does not hold it (no `__owner_for_{locus_name}` field)",
+                                cs.locus_name
+                            ),
+                            None,
+                        )
+                    })?;
                     let ptr_t = self.context.ptr_type(AddressSpace::default());
                     let slot = self
                         .builder
@@ -2331,7 +2341,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // run on the thread its nested handlers run on. A target without
         // threads runs its pools' cells on the one thread it has.
         let on_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
-        let pool_init = if on_pinned || !self.cells.behaviour(hale_types::capability::Capability::PoolThreads).is_lower() {
+        let pool_init = if on_pinned || !self.cells.behaviour(hale_types::capability::Capability::PoolThreads)?.is_lower() {
             None
         } else {
             pool_anchor.clone()
@@ -2398,8 +2408,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // route to it. `Sup { n: 0 }` in a hot loop stays as it was.
         // Whether it has a handler at all is the routing rows' answer,
         // asked by its declaration's identity (a monomorph's are its
-        // template's).
-        let settles_failures = self.handlers.handlers_of_decl(info.decl).next().is_some()
+        // template's). Total: no row means the locus declares no handler.
+        let settles_failures =self.handlers.handlers_of_decl(info.decl).next().is_some()
             && (info
                 .fields
                 .iter()
@@ -4290,7 +4300,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // registered, run() not yet entered) is exactly the
             // boot/run boundary the runtime snapshot needs. Runs on
             // the main thread; no-op outside replay/feed.
-            if is_main_locus && self.cells.emits(hale_types::capability::Obligation::ReplayIngress) {
+            if is_main_locus && self.cells.emits(hale_types::capability::Obligation::ReplayIngress)? {
                 let start_fn = self
                     .module
                     .get_function("lotus_replay_start_ingress")
@@ -4630,7 +4640,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // it). Step over the spine then, as the owner cascades do
             // (GH #1036): its dissolve() ran once and its arena is gone.
             let eager_skip_bb = self.emit_reclaimed_child_skip(
-                &info, self_ptr, locus_name, "self", "eager", false,
+                &info, self_ptr, locus_name, locus_name, "self", "eager",
             )?;
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()

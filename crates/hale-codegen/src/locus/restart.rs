@@ -61,6 +61,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let names: Vec<String> = self.user_loci.keys().cloned().collect();
         for name in names {
+            // Total: no row in the failure column means no failure can
+            // originate in the locus (no closure, `birth_check` or
+            // `violate`), so it gets no restart points.
             if !self.handlers.can_fail(&name) {
                 continue;
             }
@@ -210,7 +213,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ok = self.builder.build_and(ok, live, "restart.ok").map_err(e)?;
         let clear = self.emit_reclaim_clear(info, self_ptr)?;
         ok = self.builder.build_and(ok, clear, "restart.ok").map_err(e)?;
-        if self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
+        if self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
             let draining = self.emit_process_draining_load("restart.process_draining")?;
             let not_draining = self
                 .builder
@@ -416,6 +419,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The locus types some handler restarts in place: a question
         // over the routing rows' recovery ops, whose walk reaches every
         // statement (an `if` or `match` used as a value included).
+        // Total: no handler row restarting it in place means none does.
         if !self.handlers.restarts_in_place(locus_name) {
             return Ok(());
         }
@@ -527,12 +531,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(&name)
                 .cloned()
                 .expect("restart fns are declared for user loci");
-            let plan = self.lifecycle.ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "`{name}`: the lowering view carries no lifecycle plan, and the restart is read from it"
-                ))
-            })?;
-            let order = plan.recovery_order(&name).map_err(CodegenError::Unsupported)?;
+            let order = self.spines.recovery_order(&name).map_err(CodegenError::Unsupported)?;
             self.define_restart_fn(&name, &info, fns.restart, &order)?;
             self.define_resume_fn(&name, &info, fns, &order)?;
         }

@@ -224,6 +224,91 @@ fn every_declaration_reads_one_birth_order_over_the_corpus() {
     assert!(broken.is_empty(), "{} broken:\n{}", broken.len(), broken.join("\n"));
 }
 
+/// The index the emitters read (`SpineIndex`, F.40 phase 3, close)
+/// answers what the plan's readers compute, over every corpus program:
+/// each declaration's birth order over every pair of birth kinds in both
+/// orders and over all of them (`order_by` reads only which of two kinds
+/// comes first, so equal answers there are equal answers for every list
+/// of kinds), its reclaim, cascade and restart orders, whether it owes
+/// readiness, and each spine's process and entry orders. A declaration
+/// the plan has no template of is asked too. On the corpus most of those
+/// answers are the producer's order however the pairs fall, so the
+/// index's pair sets are held to a reference too, formed here from the
+/// plan's per-template readers.
+#[test]
+fn the_index_answers_what_the_plans_readers_compute_over_the_corpus() {
+    use hale_types::lifecycle::spine::SpineIndex;
+    use hale_types::lifecycle::SourceSite;
+    /// Per declaration, the union of its templates' pairs, and every
+    /// template's.
+    fn reference<T: Ord + Copy>(
+        plan: &LifecyclePlan,
+        lowered: &str,
+        of: impl Fn(&SourceSite) -> BTreeSet<(T, T)>,
+    ) -> (BTreeSet<(T, T)>, BTreeSet<(T, T)>) {
+        let own = plan.templates(lowered).flat_map(&of).collect();
+        let every = plan.instances.iter().flat_map(|i| of(&i.site)).collect();
+        (own, every)
+    }
+    let mut decls = 0;
+    let mut broken: Vec<String> = Vec::new();
+    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
+        let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
+        let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(false, false)) else { continue };
+        let Ok(plan) = s.demand_lifecycle() else { continue };
+        let ix = SpineIndex::new(plan);
+        let mut differ = |what: String, same: bool| {
+            if !same {
+                broken.push(format!("{}: {what}", p.origin));
+            }
+        };
+        let names: BTreeSet<&str> =
+            plan.instances.iter().map(|i| i.site.decl.lowered.as_str()).chain(["__NoTemplateOfThis"]).collect();
+        for name in names {
+            decls += 1;
+            let birth = |s: &SourceSite| {
+                let seq: Vec<K> = plan.birth_spine(s).iter().map(|st| st.kind).collect();
+                (0..seq.len())
+                    .flat_map(|i| {
+                        let a = seq[i];
+                        seq[i + 1..].iter().map(move |&b| (a, b))
+                    })
+                    .collect::<BTreeSet<_>>()
+            };
+            let (own, every) = reference(plan, name, birth);
+            differ(format!("{name}: birth pairs"), ix.birth_pairs(name) == (&own, &every));
+            let (own, every) = reference(plan, name, |s| plan.reclaim_pairs(s));
+            differ(format!("{name}: reclaim pairs"), ix.reclaim_pairs(name) == (&own, &every));
+            let (own, every) = reference(plan, name, |s| plan.cascade_pairs(s));
+            differ(format!("{name}: cascade pairs"), ix.cascade_pairs(name) == (&own, &every));
+            let (own, every) = reference(plan, name, |s| plan.recovery_pairs(s));
+            differ(format!("{name}: recovery pairs"), ix.recovery_pairs(name) == (&own, &every));
+            let mut lists: Vec<Vec<K>> = vec![BIRTH_KINDS.to_vec()];
+            for a in BIRTH_KINDS {
+                for b in BIRTH_KINDS {
+                    if a != b {
+                        lists.push(vec![*a, *b]);
+                    }
+                }
+            }
+            for kinds in &lists {
+                differ(format!("{name}: birth order of {kinds:?}"), ix.birth_order(name, kinds) == plan.birth_order(name, kinds));
+            }
+            differ(format!("{name}: reclaim order"), ix.reclaim_order(name) == plan.reclaim_order(name));
+            differ(format!("{name}: cascade order"), ix.cascade_order(name) == plan.cascade_order(name));
+            differ(format!("{name}: recovery order"), ix.recovery_order(name) == plan.recovery_order(name));
+            let readiness = plan.templates(name).any(|s| plan.birth_spine(s).iter().any(|st| st.kind == K::Readiness));
+            differ(format!("{name}: readiness"), ix.owes_readiness(name) == readiness);
+        }
+        for &spine in Spine::ALL {
+            differ(format!("{}: process order", spine.name()), ix.process_order(spine) == plan.process_order(spine));
+            differ(format!("{}: entry order", spine.name()), ix.entry_order(spine) == plan.entry_order(spine));
+        }
+    }
+    assert!(decls > 100, "the corpus shrank to {decls} declarations");
+    assert!(broken.is_empty(), "{} answer(s) differ:\n{}", broken.len(), broken.join("\n"));
+}
+
 /// The reader's order on the shapes the birth spine has: registration,
 /// then the birth, then readiness (line 6); a pinned locus's thread
 /// births, runs, drains and dissolves it; an accepted child is accepted

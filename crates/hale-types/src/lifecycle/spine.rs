@@ -29,7 +29,8 @@
 //! takes, held or not, its restart performed or not.
 //! [`LifecyclePlan::recovery_order`] is what an emitter of a restart
 //! reads: the decision, the restart, and the incarnation it begins
-//! ([`RecoveryStep`]).
+//! ([`RecoveryStep`]). The lowering reads those orders from a
+//! [`SpineIndex`], which computes each once per plan.
 //!
 //! **The law.** The steps an emitter emits for a spine are exactly the
 //! plan's ordered obligations for it: the trace build (L2) records each
@@ -226,6 +227,7 @@ impl LifecyclePlan {
     /// spine (a known-open row is one the code does not emit). An error
     /// names two kinds the edges order both ways.
     pub fn process_order(&self, spine: Spine) -> Result<Vec<SpineStep>, String> {
+        count_pass();
         let rows: Vec<ObligationId> = self
             .iter()
             .filter(|(_, o)| o.site.is_none() && o.holder.spine == spine && o.guard == PathGuard::Normal && o.source.is_none())
@@ -275,6 +277,7 @@ impl LifecyclePlan {
     /// two steps the plan orders both ways.
     pub fn entry_order(&self, spine: Spine) -> Result<Vec<EntryStep>, String> {
         use EntryStep as E;
+        count_pass();
         let head: BTreeSet<ObligationId> = self
             .iter()
             .filter(|(_, o)| {
@@ -333,7 +336,29 @@ impl LifecyclePlan {
     /// no failure takes, whichever spine holds each (the instantiation,
     /// a pinned locus's thread, the posted run), in the plan's order.
     pub fn birth_spine(&self, site: &SourceSite) -> Vec<SpineStep> {
-        self.ordered(&[PathGuard::Normal], |o| BIRTH_KINDS.contains(&o.kind) && o.site.as_ref() == Some(site))
+        self.birth_spine_of(&self.site_rows(site))
+    }
+
+    /// [`LifecyclePlan::birth_spine`] over `rows`, its site's rows.
+    fn birth_spine_of(&self, rows: &[ObligationId]) -> Vec<SpineStep> {
+        let chosen = self
+            .rows(rows)
+            .filter(|(_, o)| o.guard == PathGuard::Normal && o.source.is_none() && BIRTH_KINDS.contains(&o.kind))
+            .map(|(id, _)| id)
+            .collect();
+        self.in_order(chosen)
+    }
+
+    /// `site`'s rows in the producer's order: a pass over the plan, which
+    /// [`SpineIndex`] makes once for every site.
+    fn site_rows(&self, site: &SourceSite) -> Vec<ObligationId> {
+        count_pass();
+        self.iter().filter(|(_, o)| o.site.as_ref() == Some(site)).map(|(id, _)| id).collect()
+    }
+
+    /// `ids` with their rows.
+    fn rows<'a>(&'a self, ids: &'a [ObligationId]) -> impl Iterator<Item = (ObligationId, &'a super::Obligation)> + 'a {
+        ids.iter().map(move |&id| (id, &self.obligations[id.0 as usize]))
     }
 
     /// The order the plan places `kinds` in on the birth spine of the
@@ -357,6 +382,7 @@ impl LifecyclePlan {
             out
         };
         let own = pairs(&mut self.templates(lowered));
+        count_pass();
         let every = pairs(&mut self.instances.iter().map(|i| &i.site));
         order_by(lowered, kinds, &own, &every, BIRTH_KINDS, |k| k.name())
     }
@@ -377,6 +403,7 @@ impl LifecyclePlan {
             out
         };
         let own = pairs(&mut self.templates(lowered));
+        count_pass();
         let every = pairs(&mut self.instances.iter().map(|i| &i.site));
         order_by(lowered, RECLAIM_STEPS, &own, &every, RECLAIM_STEPS, |s| s.name())
     }
@@ -396,18 +423,40 @@ impl LifecyclePlan {
             out
         };
         let own = pairs(&mut self.templates(lowered));
+        count_pass();
         let every = pairs(&mut self.instances.iter().map(|i| &i.site));
         order_by(lowered, CASCADE_STEPS, &own, &every, CASCADE_STEPS, |s| s.name())
     }
 
     /// The pairs of cascade steps one owner template's rows order.
     pub fn cascade_pairs(&self, site: &SourceSite) -> BTreeSet<(CascadeStep, CascadeStep)> {
+        // Line 10's test: a field's dissolve waits for the owner's to
+        // complete, read by a pass over the plan.
+        let fields_after = |dissolve: ObligationId| {
+            let after_mine = Event { obligation: dissolve, point: Point::Completed };
+            self.obligations.iter().any(|o| {
+                o.kind == ObligationKind::Dissolve
+                    && o.site.as_ref() != Some(site)
+                    && o.edges.entry.iter().any(|p| p.event == after_mine)
+            })
+        };
+        self.cascade_pairs_of(site, &self.site_rows(site), fields_after)
+    }
+
+    /// [`LifecyclePlan::cascade_pairs`] over `rows`, `site`'s rows;
+    /// `fields_after` answers whether a dissolve row of another site waits
+    /// for the owner's dissolve (that id) to complete.
+    fn cascade_pairs_of(
+        &self,
+        site: &SourceSite,
+        rows: &[ObligationId],
+        fields_after: impl Fn(ObligationId) -> bool,
+    ) -> BTreeSet<(CascadeStep, CascadeStep)> {
         use CascadeStep as C;
         let mut out = BTreeSet::new();
         let row = |kind: ObligationKind| {
-            self.iter().find(|(_, o)| {
-                o.kind == kind && o.site.as_ref() == Some(site) && o.guard == PathGuard::Normal && o.source.is_none()
-            })
+            self.rows(rows)
+                .find(|(_, o)| o.kind == kind && o.guard == PathGuard::Normal && o.source.is_none())
         };
         let (Some((drain, d)), Some((dissolve, ds))) = (row(ObligationKind::Drain), row(ObligationKind::Dissolve)) else {
             return out;
@@ -438,12 +487,7 @@ impl LifecyclePlan {
             out.insert((C::Drain, C::Dissolve));
         }
         // Line 10: a field is dissolved once its owner's dissolve completes.
-        let after_mine = Event { obligation: dissolve, point: Point::Completed };
-        if self.obligations.iter().any(|o| {
-            o.kind == ObligationKind::Dissolve
-                && o.site.as_ref() != Some(site)
-                && o.edges.entry.iter().any(|p| p.event == after_mine)
-        }) {
+        if fields_after(dissolve) {
             out.insert((C::Dissolve, C::FieldDissolves));
         }
         // Line 14: a field's dissolve completes before its owner enters
@@ -509,11 +553,16 @@ impl LifecyclePlan {
     /// [`LifecyclePlan::reclaim_order`] takes from other templates or the
     /// producer's order).
     pub fn reclaim_pairs(&self, site: &SourceSite) -> BTreeSet<(ReclaimStep, ReclaimStep)> {
+        self.reclaim_pairs_of(site, &self.site_rows(site))
+    }
+
+    /// [`LifecyclePlan::reclaim_pairs`] over `rows`, `site`'s rows.
+    fn reclaim_pairs_of(&self, site: &SourceSite, rows: &[ObligationId]) -> BTreeSet<(ReclaimStep, ReclaimStep)> {
         use ReclaimStep as R;
         let mut out = BTreeSet::new();
         let mine = |kind: ObligationKind| {
-            self.iter()
-                .filter(move |(_, o)| o.kind == kind && o.site.as_ref() == Some(site) && o.source.is_none())
+            self.rows(rows)
+                .filter(move |(_, o)| o.kind == kind && o.source.is_none())
                 .filter(|(_, o)| matches!(o.guard, PathGuard::Normal | PathGuard::DrainInFlight))
         };
         let Some((reclaim, row)) = mine(ObligationKind::Reclaim).next() else { return out };
@@ -680,24 +729,28 @@ impl LifecyclePlan {
             out
         };
         let own = pairs(&mut self.templates(lowered));
+        count_pass();
         let every = pairs(&mut self.instances.iter().map(|i| &i.site));
-        let mut steps = vec![RecoveryStep::Decision, RecoveryStep::Restart, RecoveryStep::Birth];
         let mut templates = self.templates(lowered).peekable();
-        if templates.peek().is_none() || templates.any(|s| self.incarnation_row(s, ObligationKind::Run).is_some()) {
-            steps.push(RecoveryStep::Run);
-        }
-        order_by(lowered, &steps, &own, &every, RECOVERY_STEPS, |s| s.name())
+        let run = templates.peek().is_none()
+            || templates.any(|s| self.incarnation_row(&self.site_rows(s), ObligationKind::Run).is_some());
+        order_by(lowered, &recovery_steps(run), &own, &every, RECOVERY_STEPS, |s| s.name())
     }
 
     /// The pairs of restart steps one template's rows order: the restart
     /// after the decision completes (line RD); the restart's next
     /// incarnation after it, its birth first; its run after its birth.
     pub fn recovery_pairs(&self, site: &SourceSite) -> BTreeSet<(RecoveryStep, RecoveryStep)> {
+        self.recovery_pairs_of(&self.site_rows(site))
+    }
+
+    /// [`LifecyclePlan::recovery_pairs`] over `rows`, its site's rows.
+    fn recovery_pairs_of(&self, rows: &[ObligationId]) -> BTreeSet<(RecoveryStep, RecoveryStep)> {
         use RecoveryStep as R;
         let mut out = BTreeSet::new();
         let restarts: Vec<&super::Obligation> = self
-            .iter()
-            .filter(|(_, o)| o.kind == ObligationKind::Restart && o.guard == PathGuard::Restart && o.site.as_ref() == Some(site))
+            .rows(rows)
+            .filter(|(_, o)| o.kind == ObligationKind::Restart && o.guard == PathGuard::Restart)
             .map(|(_, o)| o)
             .collect();
         let decided = |o: &super::Obligation| {
@@ -709,13 +762,13 @@ impl LifecyclePlan {
         if restarts.iter().any(|o| decided(o)) {
             out.insert((R::Decision, R::Restart));
         }
-        let Some((birth, _)) = self.incarnation_row(site, ObligationKind::Birth) else { return out };
+        let Some((birth, _)) = self.incarnation_row(rows, ObligationKind::Birth) else { return out };
         // A restart begins the next incarnation, which owes again every
         // row owed once per incarnation.
         if !restarts.is_empty() {
             out.insert((R::Restart, R::Birth));
         }
-        if let Some((_, run)) = self.incarnation_row(site, ObligationKind::Run) {
+        if let Some((_, run)) = self.incarnation_row(rows, ObligationKind::Run) {
             if run.edges.entry.iter().any(|p| p.event == Event { obligation: birth, point: Point::Completed }) {
                 out.insert((R::Birth, R::Run));
             }
@@ -723,12 +776,11 @@ impl LifecyclePlan {
         out
     }
 
-    /// `site`'s row of `kind` owed once per incarnation, on the path no
-    /// failure takes.
-    fn incarnation_row(&self, site: &SourceSite, kind: ObligationKind) -> Option<(ObligationId, &super::Obligation)> {
-        self.iter().find(|(_, o)| {
+    /// The row of `kind` among a site's `rows` owed once per incarnation,
+    /// on the path no failure takes.
+    fn incarnation_row<'a>(&'a self, rows: &'a [ObligationId], kind: ObligationKind) -> Option<(ObligationId, &'a super::Obligation)> {
+        self.rows(rows).find(|(_, o)| {
             o.kind == kind
-                && o.site.as_ref() == Some(site)
                 && o.guard == PathGuard::Normal
                 && o.source.is_none()
                 && o.multiplicity == super::Multiplicity::OncePerIncarnation
@@ -820,5 +872,215 @@ impl LifecyclePlan {
             out.push(SpineStep { obligation: id, kind: self.obligations[id.0 as usize].kind });
         }
         out
+    }
+}
+
+/// A restart's steps: `Run` among them where `run`.
+fn recovery_steps(run: bool) -> Vec<RecoveryStep> {
+    let mut steps = vec![RecoveryStep::Decision, RecoveryStep::Restart, RecoveryStep::Birth];
+    if run {
+        steps.push(RecoveryStep::Run);
+    }
+    steps
+}
+
+thread_local! {
+    static PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_pass() {
+    PASSES.with(|n| n.set(n.get() + 1));
+}
+
+/// How many passes over a plan's obligations the spine readers have made
+/// on this thread: one per site a [`LifecyclePlan`] reader scans for and
+/// one per plan-wide pair set it computes, and one per
+/// [`SpineIndex::new`]. What a guard reads to hold that an emitter asks
+/// the index, whose cost does not grow with the literals it lowers.
+pub fn plan_passes() -> u64 {
+    PASSES.with(|n| n.get())
+}
+
+/// Pairs of steps of one order: per declaration, by lowered name, its
+/// templates'; and every template's.
+#[derive(Debug)]
+struct Pairs<T> {
+    own: BTreeMap<String, BTreeSet<(T, T)>>,
+    every: BTreeSet<(T, T)>,
+    /// A declaration with no template's own pairs.
+    none: BTreeSet<(T, T)>,
+}
+
+impl<T: Ord + Copy> Pairs<T> {
+    fn new() -> Self {
+        Pairs { own: BTreeMap::new(), every: BTreeSet::new(), none: BTreeSet::new() }
+    }
+
+    fn add(&mut self, lowered: &str, pairs: impl IntoIterator<Item = (T, T)>) {
+        let own = self.own.entry(lowered.to_string()).or_default();
+        for p in pairs {
+            own.insert(p);
+            self.every.insert(p);
+        }
+    }
+
+    fn own(&self, lowered: &str) -> &BTreeSet<(T, T)> {
+        self.own.get(lowered).unwrap_or(&self.none)
+    }
+
+    fn of(&self, lowered: &str) -> (&BTreeSet<(T, T)>, &BTreeSet<(T, T)>) {
+        (self.own(lowered), &self.every)
+    }
+}
+
+/// The plan's orders as the emitters read them, computed once per plan
+/// (F.40 phase 3, close). [`LifecyclePlan::birth_order`],
+/// [`LifecyclePlan::reclaim_order`], [`LifecyclePlan::cascade_order`] and
+/// [`LifecyclePlan::recovery_order`] compute, on every call, the pair set
+/// over every template of the plan, each template's spine a scan of its
+/// obligations; an emitter asks once per literal or declaration. The
+/// index makes one pass: each site's rows found once, each template's
+/// pairs read once, each declaration's and the plan's sets formed once.
+/// Its answers are the plan's readers', for every input
+/// (`lifecycle_plan.rs` holds that over the corpus). It is not part of
+/// the plan's value: the lowering builds it from the plan it reads.
+#[derive(Debug)]
+pub struct SpineIndex {
+    birth: Pairs<ObligationKind>,
+    reclaim: Pairs<ReclaimStep>,
+    cascade: Pairs<CascadeStep>,
+    recovery: Pairs<RecoveryStep>,
+    /// The declarations some template of which owes readiness.
+    readiness: BTreeSet<String>,
+    /// The declarations some template of which owes a `run()` per
+    /// incarnation.
+    incarnation_run: BTreeSet<String>,
+    /// Per spine, [`LifecyclePlan::process_order`] and
+    /// [`LifecyclePlan::entry_order`]: a frame's teardown asks on every
+    /// exit it lowers.
+    process: BTreeMap<Spine, Result<Vec<SpineStep>, String>>,
+    entry: BTreeMap<Spine, Result<Vec<EntryStep>, String>>,
+}
+
+impl SpineIndex {
+    pub fn new(plan: &LifecyclePlan) -> SpineIndex {
+        count_pass();
+        // Each site's rows, in the producer's order, and each row's
+        // dissolve rows waiting on it (line 10's test).
+        let mut at: BTreeMap<(&super::DeclRef, &super::Template), Vec<ObligationId>> = BTreeMap::new();
+        let mut dissolve_waiters: BTreeMap<ObligationId, Vec<ObligationId>> = BTreeMap::new();
+        for (id, o) in plan.iter() {
+            if let Some(s) = &o.site {
+                at.entry((&s.decl, &s.template)).or_default().push(id);
+            }
+            if o.kind == ObligationKind::Dissolve {
+                for p in &o.edges.entry {
+                    dissolve_waiters.entry(p.event.obligation).or_default().push(id);
+                }
+            }
+        }
+        let mut ix = SpineIndex {
+            birth: Pairs::new(),
+            reclaim: Pairs::new(),
+            cascade: Pairs::new(),
+            recovery: Pairs::new(),
+            readiness: BTreeSet::new(),
+            incarnation_run: BTreeSet::new(),
+            process: Spine::ALL.iter().map(|&s| (s, plan.process_order(s))).collect(),
+            entry: Spine::ALL.iter().map(|&s| (s, plan.entry_order(s))).collect(),
+        };
+        for inst in &plan.instances {
+            let site = &inst.site;
+            let lowered = site.decl.lowered.as_str();
+            let rows: &[ObligationId] = at.get(&(&site.decl, &site.template)).map_or(&[], Vec::as_slice);
+            let seq: Vec<ObligationKind> = plan.birth_spine_of(rows).iter().map(|s| s.kind).collect();
+            if seq.contains(&ObligationKind::Readiness) {
+                ix.readiness.insert(lowered.to_string());
+            }
+            ix.birth.add(lowered, seq.iter().enumerate().flat_map(|(i, &a)| seq[i + 1..].iter().map(move |&b| (a, b))));
+            ix.reclaim.add(lowered, plan.reclaim_pairs_of(site, rows));
+            let fields_after = |dissolve: ObligationId| {
+                let after_mine = Event { obligation: dissolve, point: Point::Completed };
+                dissolve_waiters.get(&dissolve).is_some_and(|ws| {
+                    ws.iter().any(|&w| {
+                        let o = &plan.obligations[w.0 as usize];
+                        o.site.as_ref() != Some(site) && o.edges.entry.iter().any(|p| p.event == after_mine)
+                    })
+                })
+            };
+            ix.cascade.add(lowered, plan.cascade_pairs_of(site, rows, fields_after));
+            ix.recovery.add(lowered, plan.recovery_pairs_of(rows));
+            if plan.incarnation_row(rows, ObligationKind::Run).is_some() {
+                ix.incarnation_run.insert(lowered.to_string());
+            }
+        }
+        ix
+    }
+
+    /// [`LifecyclePlan::birth_order`].
+    pub fn birth_order(&self, lowered: &str, kinds: &[ObligationKind]) -> Result<Vec<ObligationKind>, String> {
+        order_by(lowered, kinds, self.birth.own(lowered), &self.birth.every, BIRTH_KINDS, |k| k.name())
+    }
+
+    /// [`LifecyclePlan::reclaim_order`].
+    pub fn reclaim_order(&self, lowered: &str) -> Result<Vec<ReclaimStep>, String> {
+        order_by(lowered, RECLAIM_STEPS, self.reclaim.own(lowered), &self.reclaim.every, RECLAIM_STEPS, |s| s.name())
+    }
+
+    /// [`LifecyclePlan::cascade_order`].
+    pub fn cascade_order(&self, lowered: &str) -> Result<Vec<CascadeStep>, String> {
+        order_by(lowered, CASCADE_STEPS, self.cascade.own(lowered), &self.cascade.every, CASCADE_STEPS, |s| s.name())
+    }
+
+    /// [`LifecyclePlan::recovery_order`].
+    pub fn recovery_order(&self, lowered: &str) -> Result<Vec<RecoveryStep>, String> {
+        let run = !self.recovery.own.contains_key(lowered) || self.incarnation_run.contains(lowered);
+        order_by(lowered, &recovery_steps(run), self.recovery.own(lowered), &self.recovery.every, RECOVERY_STEPS, |s| {
+            s.name()
+        })
+    }
+
+    /// Whether some template of the declaration lowered as `lowered`
+    /// owes readiness on its birth spine ([`LifecyclePlan::birth_spine`]).
+    pub fn owes_readiness(&self, lowered: &str) -> bool {
+        self.readiness.contains(lowered)
+    }
+
+    /// The pairs each order reads for the declaration lowered as
+    /// `lowered`: its templates' (empty where it has none), then every
+    /// template's. Birth pairs are those of each template's
+    /// [`LifecyclePlan::birth_spine`]; the rest, each template's
+    /// [`LifecyclePlan::reclaim_pairs`], [`LifecyclePlan::cascade_pairs`]
+    /// and [`LifecyclePlan::recovery_pairs`].
+    pub fn birth_pairs(
+        &self,
+        lowered: &str,
+    ) -> (&BTreeSet<(ObligationKind, ObligationKind)>, &BTreeSet<(ObligationKind, ObligationKind)>) {
+        self.birth.of(lowered)
+    }
+
+    pub fn reclaim_pairs(&self, lowered: &str) -> (&BTreeSet<(ReclaimStep, ReclaimStep)>, &BTreeSet<(ReclaimStep, ReclaimStep)>) {
+        self.reclaim.of(lowered)
+    }
+
+    pub fn cascade_pairs(&self, lowered: &str) -> (&BTreeSet<(CascadeStep, CascadeStep)>, &BTreeSet<(CascadeStep, CascadeStep)>) {
+        self.cascade.of(lowered)
+    }
+
+    pub fn recovery_pairs(
+        &self,
+        lowered: &str,
+    ) -> (&BTreeSet<(RecoveryStep, RecoveryStep)>, &BTreeSet<(RecoveryStep, RecoveryStep)>) {
+        self.recovery.of(lowered)
+    }
+
+    /// [`LifecyclePlan::process_order`].
+    pub fn process_order(&self, spine: Spine) -> Result<Vec<SpineStep>, String> {
+        self.process[&spine].clone()
+    }
+
+    /// [`LifecyclePlan::entry_order`].
+    pub fn entry_order(&self, spine: Spine) -> Result<Vec<EntryStep>, String> {
+        self.entry[&spine].clone()
     }
 }

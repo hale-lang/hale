@@ -570,6 +570,30 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+impl CodegenError {
+    /// A row lowering requires, absent from the lowering view (F.40 phase
+    /// 3's exit). The snapshot provides the row for every program that
+    /// reaches lowering, so its absence is a compiler defect: refused here,
+    /// naming the family (`hale_graph::registry`'s name) and the row, and
+    /// never answered by a default or a second derivation. `at` is the
+    /// site, where the read has one.
+    pub(crate) fn missing_row(family: &str, row: impl std::fmt::Display, at: Option<hale_syntax::Span>) -> Self {
+        let msg = format!("the lowering view holds no required `{family}` row: {row}");
+        match at {
+            Some(span) => CodegenError::UnsupportedAt(msg, span),
+            None => CodegenError::Unsupported(msg),
+        }
+    }
+}
+
+/// A capability-matrix cell the view's column does not hold: a missing
+/// required row of the `target_capability` family.
+impl From<hale_types::capability::MissingCell> for CodegenError {
+    fn from(m: hale_types::capability::MissingCell) -> Self {
+        CodegenError::missing_row("target_capability", m.0, None)
+    }
+}
+
 /// Stage-1 FFI (2026-05-22): per-build link surface declared by
 /// `@ffi("c")` consumers. `link_libs` accumulate as `-l<name>` on
 /// the clang link line; `csrc_files` compile alongside the C
@@ -1074,13 +1098,13 @@ fn compile_cached_runtime_object_with(
 /// The `main locus` lowering deploys: the entry row's entry
 /// (`hale_types::entry::EntryRow::entry`), found in lowering's program by
 /// its site (a user site is the node of the same index in the merged
-/// program, as the placement table's root is). A view with no row (a bare
-/// program's) or a row with no entry deploys none.
+/// program, as the placement table's root is). Total: a row with no entry
+/// (a program with no `main locus` of its own) deploys none.
 fn entry_locus<'p>(
-    entry: Option<&hale_types::entry::EntryRow>,
+    entry: &hale_types::entry::EntryRow,
     program: &'p Program,
 ) -> Option<&'p hale_syntax::ast::LocusDecl> {
-    let site = entry?.entry()?.site?;
+    let site = entry.entry()?.site?;
     hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
         TopDecl::Locus(l) if l.id.0 == site.index => Some(l),
         _ => None,
@@ -1089,14 +1113,11 @@ fn entry_locus<'p>(
 
 /// The `fn main` lowering emits as the process's entry point: the entry
 /// row's column (`hale_types::entry::EntryRow::fn_main`), found among
-/// lowering's top-level declarations by its site. A view with no row (a
-/// bare program's) applies the row's own definition
-/// (`hale_types::entry::top_level_fn_main`) to the program.
-fn entry_fn<'p>(entry: Option<&hale_types::entry::EntryRow>, program: &'p Program) -> Option<&'p FnDecl> {
-    let Some(row) = entry else {
-        return hale_types::entry::top_level_fn_main(&program.items).map(|(_, f)| f);
-    };
-    let site = row.fn_main.as_ref()?.site?;
+/// lowering's top-level declarations by its site. Total: a row with no
+/// `fn main` column is a program with none, which lowering refuses as such
+/// (or, exporting only, inverts); the row is never re-derived here.
+fn entry_fn<'p>(entry: &hale_types::entry::EntryRow, program: &'p Program) -> Option<&'p FnDecl> {
+    let site = entry.fn_main.as_ref()?.site?;
     program.items.iter().find_map(|item| match item {
         TopDecl::Fn(f) if f.id.0 == site.index => Some(f),
         _ => None,
@@ -1202,7 +1223,7 @@ pub fn build_resolved(
     // "is clang installed?". (It used to be asked inside `link_wasm`,
     // after the runtime had been compiled.)
     if !options.link_libs.is_empty() {
-        let cell = resolved.cells.behaviour(hale_types::capability::Capability::LinkLibrary);
+        let cell = resolved.cells.behaviour(hale_types::capability::Capability::LinkLibrary)?;
         if let Some(r) = cell.refusal() {
             let libs = hale_types::capability::libs_hole(&options.link_libs);
             return Err(CodegenError::CapabilityRefused(r.render(&cell.witness, &[("libs", &libs)]), None));
@@ -1242,6 +1263,21 @@ pub fn build_resolved(
         import_renames,
         ..
     } = resolved;
+    // The snapshot hands every view it lowers its lifecycle plan and its
+    // entry row (`demand_lifecycle`, `demand_entry`): every spine's
+    // emitter reads the plan, and every comparison against the main locus
+    // and the `fn main` lowering emits read the row. A view without one is
+    // a compiler defect, refused before anything is lowered.
+    let lifecycle = resolved.lifecycle().ok_or_else(|| {
+        CodegenError::missing_row("lifecycle_order", "the program's lifecycle plan, which every spine is emitted from", None)
+    })?;
+    let entry = resolved.entry().ok_or_else(|| {
+        CodegenError::missing_row(
+            "entrypoint",
+            "the program's entry row, which names the `main locus` lowering deploys and the `fn main` it emits",
+            None,
+        )
+    })?;
 
     // Every platform question below asks the TARGET, not the host. These
     // agree today (Native == host) and the answers are unchanged; the
@@ -1313,8 +1349,10 @@ pub fn build_resolved(
     //     but the statically-baked `no_pinned` enqueue sites can't
     //     be un-baked at runtime — so the compile-time union here
     //     must stay the superset.
+    // Total: no domain off main and no binding row of the entry means no
+    // thread crosses the bus boundary.
     let program_has_offthread =
-        resolved.placement.places_off_main() || resolved.bindings.binds_on_main(resolved.entry());
+        resolved.placement.places_off_main() || resolved.bindings.binds_on_main(Some(entry));
 
     // Static-bus-dispatch devirtualization plan (build #1b), derived in
     // the resolved program from the bus graph over the merged and
@@ -1343,7 +1381,9 @@ pub fn build_resolved(
     // populates), so both are collected in one pass. Direct-INLINE
     // (slice-3): the subscriber (locus, handler) list per direct
     // subject, so the publish site can resolve+dedup the handler
-    // FunctionValue and bake a single-handler direct call.
+    // FunctionValue and bake a single-handler direct call. Total: a
+    // subject with no static row in the plan dispatches dynamically, at
+    // its publish and its register alike.
     let mut bus_devirt_ids: std::collections::BTreeMap<String, u32> =
         std::collections::BTreeMap::new();
     let mut bus_devirt_direct: std::collections::BTreeSet<String> =
@@ -1462,7 +1502,8 @@ pub fn build_resolved(
     // at every statement boundary, scope exit, `yield` and sleep
     // slice, so a compute-only program would pay the call thousands of
     // times for nothing. The verdict is the resolved program's row
-    // (`hale_types::bus_inert`), read here and derived nowhere else.
+    // (`hale_types::bus_inert`), read here and derived nowhere else. A
+    // verdict every view carries, never absent: `false` keeps every drain.
     let bus_inert = resolved.bus_inert;
 
     let mut cx = Cx {
@@ -1499,9 +1540,10 @@ pub fn build_resolved(
         specialized_locus_decls: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
-        lifecycle: resolved.lifecycle(),
-        entry_locus: entry_locus(resolved.entry(), merged),
-        entry_fn: entry_fn(resolved.entry(), merged),
+        lifecycle,
+        spines: hale_types::lifecycle::spine::SpineIndex::new(lifecycle),
+        entry_locus: entry_locus(entry, merged),
+        entry_fn: entry_fn(entry, merged),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -2071,7 +2113,7 @@ pub fn build_resolved(
         // a runnable `.wasm`. No native libs / no clang link line. The
         // module's fixed exports are `ExportSurface`'s lowering data.
         let Some(hale_types::capability::Lowering::Exports(fixed)) =
-            cx.cells.lowering(Capability::ExportSurface)
+            cx.cells.lowering(Capability::ExportSurface)?
         else {
             return Err(CodegenError::Unsupported(format!(
                 "a {} target's export surface is not a module's export list",
@@ -3394,8 +3436,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
     /// The view's lifecycle plan (`LoweringView::lifecycle`): the
     /// emitters read each spine's obligations, in order, from it
-    /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
-    pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
+    /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4). A required
+    /// row: a view without one is refused before lowering starts.
+    pub(crate) lifecycle: &'p hale_types::lifecycle::LifecyclePlan,
+    /// The plan's orders (`SpineIndex`), computed once from `lifecycle`:
+    /// what the emitters of a literal or a declaration read, so lowering
+    /// one does not pass over the whole plan.
+    pub(crate) spines: hale_types::lifecycle::spine::SpineIndex,
     /// The `main locus` lowering deploys, read from the view's entry row
     /// (`LoweringView::entry`, its entry) and found in lowering's program
     /// by identity: every comparison against "the main locus" reads it
@@ -4109,7 +4156,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
     /// GH #383: fn name -> (locus it freshly returns, the let-binding
-    /// it returns if any). See `fresh_factories`.
+    /// it returns if any). See `fresh_factories`. Total: a fn with no
+    /// row is no fresh factory, so its call hands back no fresh locus.
     pub(crate) fresh_locus_factories:
         &'p std::collections::BTreeMap<String, (String, Option<String>)>,
     /// GH #767: fn name -> stack bytes already handed to array
@@ -6029,14 +6077,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// before the frame's pre-drain) or the flush's (the pre-drain and
     /// those after it), each where the target's cells select it.
     fn emit_process_rows(&mut self, spine: Spine, flush: bool, pre_drain: bool) -> Result<(), CodegenError> {
-        let plan = self.lifecycle.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "the lowering view carries no lifecycle plan, and the {} spine's process obligations are read from it",
-                spine.name()
-            ))
-        })?;
+        let plan = self.lifecycle;
         let mut in_flush = false;
-        for step in plan.process_order(spine).map_err(CodegenError::Unsupported)? {
+        for step in self.spines.process_order(spine).map_err(CodegenError::Unsupported)? {
             // A known-open row (the eager spine's pre-drain, C13) is not
             // emitted, and divides nothing.
             if matches!(plan.obligations[step.obligation.0 as usize].status, hale_types::lifecycle::Status::KnownOpen { .. }) {
@@ -6048,15 +6091,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             match step.kind {
                 ObligationKind::PreDrain if pre_drain => self.lc_step("PreDrain", None, None, |cx| cx.emit_bus_drain())?,
-                ObligationKind::IngressQuiesce if self.cells.emits(Obligation::IngressQuiesce) => {
+                ObligationKind::IngressQuiesce if self.cells.emits(Obligation::IngressQuiesce)? => {
                     self.emit_bus_ingress_quiesce()?
                 }
                 ObligationKind::PoolJoin
-                    if self.cells.emits(Obligation::PoolJoin) && !self.deployment.main_cooperative_pools.is_empty() =>
+                    if self.cells.emits(Obligation::PoolJoin)? && !self.deployment.main_cooperative_pools.is_empty() =>
                 {
                     self.emit_coop_pool_shutdown_all()?
                 }
-                ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort) => self.emit_bus_wait_abort_all()?,
+                ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort)? => self.emit_bus_wait_abort_all()?,
                 // Omitted by the target's cells, elided, or no runtime
                 // call (the join's progress).
                 _ => {}
@@ -6096,7 +6139,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn obs_live_check(
         &mut self,
     ) -> Result<Option<inkwell::values::IntValue<'ctx>>, CodegenError> {
-        if !self.cells.emits(Obligation::ObservationIdentity) {
+        if !self.cells.emits(Obligation::ObservationIdentity)? {
             return Ok(None);
         }
         let func = self
@@ -6405,8 +6448,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// cannot emit: a cascade before the head or before the joins.
     pub(crate) fn head_before_pinned_joins(&self, spine: Spine) -> Result<bool, CodegenError> {
         use hale_types::lifecycle::spine::EntryStep;
-        let Some(plan) = self.lifecycle else { return Ok(true) };
-        let order = plan.entry_order(spine).map_err(CodegenError::Unsupported)?;
+        let order = self.spines.entry_order(spine).map_err(CodegenError::Unsupported)?;
         let at = |s: EntryStep| order.iter().position(|&x| x == s);
         if at(EntryStep::Cascade) < at(EntryStep::Head) || at(EntryStep::Cascade) < at(EntryStep::PinnedJoins) {
             return Err(CodegenError::Unsupported(format!(
@@ -6884,16 +6926,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             // Check the shared claim before reading __arena. The winner
             // may be on another worker, including one finishing run().
-            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
-            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "reclaim.pending")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value().left().expect("i64").into_int_value();
-            let pending = self.builder.build_int_compare(
-                inkwell::IntPredicate::NE, pending, i64_t.const_zero(), "reclaim.retired",
-            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let ready_bb = self.context.append_basic_block(reclaim, "reclaim.ready");
-            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_reclaim_pending(self_arg, Some(claim_ptr), "reclaim.pending", ret_bb, ready_bb)?;
             self.builder.position_at_end(ready_bb);
             // A child whose failure its parent is still holding (the
             // parent's params are not settled — spec/semantics.md §
@@ -7217,16 +7251,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let claim_ptr = self.builder.build_struct_gep(
                 info.struct_ty, self_arg, info.reclaim_claimed_field_idx, "drain.claim.ptr",
             ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let pending = self.module.get_function("lotus_reclaim_pending").expect("pending declared");
-            let pending = self.builder.build_call(pending, &[self_arg.into(), claim_ptr.into()], "drain.pending")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value().left().expect("i64").into_int_value();
-            let pending = self.builder.build_int_compare(
-                inkwell::IntPredicate::NE, pending, self.context.i64_type().const_zero(), "drain.retired",
-            ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let ready_bb = self.context.append_basic_block(drain, "drain.ready");
-            self.builder.build_conditional_branch(pending, ret_bb, ready_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.emit_reclaim_pending(self_arg, Some(claim_ptr), "drain.pending", ret_bb, ready_bb)?;
             self.builder.position_at_end(ready_bb);
             let arena_ptr = self
                 .builder
@@ -8364,7 +8390,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // test has to see the same set.
                 let has_exports = self
                     .cells
-                    .behaviour(Capability::EntryInversion(hale_types::capability::Inversion::ExportOnly))
+                    .behaviour(Capability::EntryInversion(hale_types::capability::Inversion::ExportOnly))?
                     .is_lower()
                     && hale_syntax::ast::flat_decls(&self.program.items).any(
                         |item| {
@@ -8461,7 +8487,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // sends. The actual `lotus_bus_register_shm_ring` IR
         // calls are emitted later by `emit_bindings_prelude` in
         // main's prelude.
-        self.collect_shm_ring_subjects();
+        self.collect_shm_ring_subjects()?;
 
         // Phase 3 (2026-05-25, spec/semantics.md § "Phase 3:
         // routing keys"): pre-pass over top-level topic decls to
@@ -8476,7 +8502,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // name, which the params-init loop in
         // `lower_locus_instantiation` reads for the entry
         // (`is_entry_locus`) to override the per-field placement.
-        self.collect_main_placement();
+        self.collect_main_placement()?;
 
         // Pass A0: declare every user-defined `type` so locus
         // params, fn signatures, and struct literals can reference
@@ -9017,7 +9043,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // target's export surface is a module's export list beside its
         // fixed exports (`ExportSurface`'s lowering data).
         if matches!(
-            self.cells.lowering(Capability::ExportSurface),
+            self.cells.lowering(Capability::ExportSurface)?,
             Some(hale_types::capability::Lowering::Exports(_))
         ) {
             self.synthesize_wasm_export_wrappers(&user_fn_decls)?;
@@ -9088,7 +9114,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // a no-op concept in the browser. The host loader owns output.
         // It installs SIGPIPE's disposition too: the `SignalInstall`
         // obligation, omitted where no signal reaches the program.
-        if self.cells.emits(Obligation::SignalInstall) {
+        if self.cells.emits(Obligation::SignalInstall)? {
             let io_init = self
                 .module
                 .get_function("lotus_io_init")
@@ -9234,7 +9260,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the host, which meant a macOS-hosted build of a Linux
                 // artifact would have silently dropped the enable call.
                 if self.deployment.async_io_pools.contains(name)
-                    && self.cells.behaviour(Capability::AsyncIoPool).is_lower()
+                    && self.cells.behaviour(Capability::AsyncIoPool)?.is_lower()
                 {
                     self.builder
                         .build_call(
@@ -9317,7 +9343,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // row on the consumer. Cheap: one strdup'd table entry
         // per topic, consulted lazily if/when observation
         // initializes.
-        if self.cells.emits(Obligation::ObservationIdentity) {
+        if self.cells.emits(Obligation::ObservationIdentity)? {
             // #399: subject and shape both come from the SHARED
             // identity implementation (`hale_types::topic_identity`),
             // which the topology artifact also exports — the manifest
@@ -9327,23 +9353,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rows key by the joined dot-path, so a parented topic's
             // shape registered under its bare subject was never found
             // and its manifest row hashed the empty shape.
-            let shapes: Vec<(String, String)> = self
-                .program
-                .items
-                .iter()
-                .filter_map(|it| match it {
-                    TopDecl::Topic(t) => {
-                        let subj = self.topic_wire(&t.name.name);
-                        let shape = hale_types::topic_identity::
-                            canonical_topic_shape(
-                                &self.program.items,
-                                t,
-                            );
-                        Some((subj, shape))
-                    }
-                    _ => None,
-                })
-                .collect();
+            let mut shapes: Vec<(String, String)> = Vec::new();
+            for it in &self.program.items {
+                let TopDecl::Topic(t) = it else { continue };
+                let subj = self.topic_row(&t.name.name, Some(t.name.span))?.wire.clone();
+                let shape = hale_types::topic_identity::canonical_topic_shape(&self.program.items, t);
+                shapes.push((subj, shape));
+            }
             if !shapes.is_empty() {
                 let shape_fn = self
                     .module
@@ -9468,7 +9484,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // identity fields, which the setters have already published.
         // Still before any user code. No-op when neither
         // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
-        if self.cells.emits(Obligation::ObservationIdentity) {
+        if self.cells.emits(Obligation::ObservationIdentity)? {
             let eager_fn = self
                 .module
                 .get_function("lotus_obs_eager_init")
@@ -9495,7 +9511,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // adapter-driven (a later slice), never cross-process sockets.
         // The transport half is the `BindingConfig` obligation, the
         // drain installer between its two parts `SignalInstall`.
-        if self.cells.emits(Obligation::BindingConfig) {
+        if self.cells.emits(Obligation::BindingConfig)? {
             // GH #529 prep (DNA F.12): tell the runtime how to derive a
             // keyed topic's key from an inbound payload, so a listen
             // binding delivers to `where key == …` subscribers exactly
@@ -9528,7 +9544,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // is known only once every body has lowered, so the
         // argument is a private global whose initializer the end
         // of `lower_program` writes.
-        if self.cells.emits(Obligation::SignalInstall) {
+        if self.cells.emits(Obligation::SignalInstall)? {
             let i64_t = self.context.i64_type();
             let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
             reads.set_linkage(inkwell::module::Linkage::Private);
@@ -9545,7 +9561,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_call(install, &[observes.into()], "drain.install")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
-        if self.cells.emits(Obligation::BindingConfig) {
+        if self.cells.emits(Obligation::BindingConfig)? {
             let load_cfg_fn = self
                 .module
                 .get_function("lotus_bus_load_config")
@@ -9655,6 +9671,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
+        // Every reclaim site has lowered: a reclaim function two or more
+        // of them call keeps its body out of line.
+        self.settle_reclaim_fn_inlining();
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
         // GH #1077: the loci that can answer a drain, now every body
@@ -9703,7 +9722,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// misses and Sends fall through to the normal dispatch
     /// path (which fails at codegen time for publisher-only
     /// programs).
-    fn collect_shm_ring_subjects(&mut self) {
+    fn collect_shm_ring_subjects(&mut self) -> Result<(), CodegenError> {
         // A root whose entry has no row is the prelude's error to name.
         for (entry, row) in self.root_bindings().unwrap_or_default() {
             if row.transport != Transport::ShmRing {
@@ -9717,10 +9736,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // (the size_of lookup at codegen). For now a
             // single-segment TypeExpr only; post-v1 can
             // widen.
-            let payload_name = self
-                .topics
-                .named(&entry.topic.name)
-                .and_then(|row| single_segment_type_name(&row.payload))
+            let payload_name = single_segment_type_name(&self.topic_row(&entry.topic.name, Some(entry.topic.span))?.payload)
                 .unwrap_or_default();
             // Proposal B: resolve `layout: Name` to its
             // decl (validated upstream in hale-types) so
@@ -9746,6 +9762,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 },
             );
         }
+        Ok(())
     }
 
     /// Phase 3 (2026-05-25): walk top-level topic decls and
@@ -9822,10 +9839,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// entry decides one in every template), so the first template's
     /// rows answer for a field. Fields no entry decides keep the
     /// locus's own default class (Cooperative under F.31).
-    fn collect_main_placement(&mut self) {
+    fn collect_main_placement(&mut self) -> Result<(), CodegenError> {
         use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
-        let Some(root) = table.root.as_ref() else { return };
+        // Total where the entry row names no `main locus`: no root, and
+        // nothing deployed. A root the entry names is a required row.
+        let Some(root) = table.root.as_ref() else {
+            return match self.entry_locus {
+                Some(l) => Err(CodegenError::missing_row(
+                    "placement",
+                    format!("the placement table has no root for the entry `{}`", l.name.name),
+                    Some(l.name.span),
+                )),
+                None => Ok(()),
+            };
+        };
         // The root's placement entries, by their sites: a user site is
         // the node of the same index in lowering's program.
         let root_id = NodeId(root.realizes.site.id.index);
@@ -9867,6 +9895,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         for (field, (_, rows)) in fields {
             let (_, first) = rows[0];
+            // A row the table could not resolve a declaration for is a
+            // hole: its type joins no thread set.
             let realized = first.realizes.as_ref().map(|d| d.lowered.clone());
             let class = match &table.domain(first.domain).kind {
                 DomainKind::Main => ScheduleClass::Cooperative,
@@ -9896,8 +9926,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     } else {
                         // The entry's written selector decides how the
                         // affinity is emitted: one core, or a set.
+                        // The deciding entry is the root's own, found by
+                        // its site: a required join, never read as a set.
                         let entry = match &first.decided_by {
-                            Decision::Entry { entry, .. } => entries.get(&entry.id.index).copied(),
+                            Decision::Entry { entry, .. } => Some(entries.get(&entry.id.index).copied().ok_or_else(|| {
+                                CodegenError::missing_row(
+                                    "placement",
+                                    format!("the entry that places `{field}` is not in the root's `placement {{ }}` block"),
+                                    None,
+                                )
+                            })?),
                             _ => None,
                         };
                         let single = matches!(
@@ -9933,6 +9971,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.deployment.pinned_locus_types.extend(r.realizes.as_ref().map(|d| d.lowered.clone()));
             }
         }
+        Ok(())
     }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
@@ -10243,10 +10282,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let LocusMember::Bindings(b) = m else { continue };
             for entry in &b.entries {
                 let row = rows.for_entry(entry).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "binding for topic `{}`: the lowering view holds no binding row for this entry",
-                        entry.topic.name
-                    ))
+                    CodegenError::missing_row(
+                        "bindings",
+                        format!("the binding for topic `{}` has no row", entry.topic.name),
+                        Some(entry.topic.span),
+                    )
                 })?;
                 out.push((entry, row));
             }
@@ -11448,7 +11488,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Whether `locus` is a flow (spec/semantics.md, "Flow and resident
     /// children"): a concrete clause of the flow row names it, or a
     /// generic owner's clause does once specialized for a specialization
-    /// lowering created.
+    /// lowering created. Total: no clause naming `locus` means it is not a
+    /// flow, a resident child its owner's cascade tears down.
     pub(crate) fn is_flow(&self, locus: &str) -> bool {
         hale_types::flows::is_flow(self.flows, locus)
             || self.specialized_flows.iter().any(|(_, child)| child == locus)
@@ -11464,6 +11505,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .named(name)
             .map(|row| row.wire.clone())
             .unwrap_or_else(|| name.to_string())
+    }
+
+    /// The row of the topic declared as `name`, where lowering holds a
+    /// declaration's name (a topic declaration, a binding entry's topic, a
+    /// rewritten send's) rather than a subject that may already be a wire:
+    /// a required row, refused when absent.
+    fn topic_row(&self, name: &str, at: Option<hale_syntax::Span>) -> Result<&'p hale_types::topic_identity::TopicRow, CodegenError> {
+        self.topics
+            .named(name)
+            .ok_or_else(|| CodegenError::missing_row("topics", format!("the topic `{name}` has no row"), at))
     }
 
     fn emit_arena_destroy(&mut self) -> Result<(), CodegenError> {
@@ -12360,12 +12411,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(Typed::Known(row)) => row,
             Some(Typed::Hole(h)) => return Err(CodegenError::UnsupportedAt(h.reason.clone(), h.span)),
             None => {
-                return Err(CodegenError::UnsupportedAt(
+                return Err(CodegenError::missing_row(
+                    "generics",
                     format!(
                         "generic fn `{}`: this call has no typed-body row: the checker did not walk it",
                         name
                     ),
-                    call_span,
+                    Some(call_span),
                 ))
             }
         };
@@ -12375,13 +12427,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map(|t| self.generic_type_arg(t))
             .collect::<Result<Vec<TypeExpr>, CodegenError>>()?;
         let mono = self.typed.monomorphs().of(row.template, &row.type_args).ok_or_else(|| {
-            CodegenError::UnsupportedAt(
+            CodegenError::missing_row(
+                "generics",
                 format!(
                     "generic fn `{}`: the monomorph table names no specialization for this call's \
                      type arguments",
                     name
                 ),
-                call_span,
+                Some(call_span),
             )
         })?;
         Ok((args, mono.name.clone(), (row.template, row.type_args.clone())))
@@ -13318,7 +13371,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (Int/Float/Duration `+` is arithmetic, not String concat) AND
         // interprocedural (calls to other proven-non-allocating fns don't
         // allocate). Fallible fns are excluded there (the `fail E` path
-        // arena-allocs a payload).
+        // arena-allocs a payload). Total: a fn the rows do not prove
+        // non-allocating keeps its scratch.
         let non_allocating = self.alloc_routing.is_nonalloc(&f.name.name);
         self.user_fns.insert(
             f.name.name.clone(),
@@ -13763,11 +13817,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The marshalling is `ForeignAbi(js)`'s lowering data on the
         // target; a target that rejects the ABI never lowers the
         // declaration (the admission refuses it first).
-        let ffi_js = f.ffi.as_ref().is_some_and(|a| {
-            hale_types::capability::Abi::of(&a.abi) == Some(hale_types::capability::Abi::Js)
-                && self.cells.lowering(Capability::ForeignAbi(hale_types::capability::Abi::Js))
+        let ffi_js = match f.ffi.as_ref() {
+            Some(a) if hale_types::capability::Abi::of(&a.abi) == Some(hale_types::capability::Abi::Js) => {
+                self.cells.lowering(Capability::ForeignAbi(hale_types::capability::Abi::Js))?
                     == Some(hale_types::capability::Lowering::IntAsF64)
-        });
+            }
+            _ => false,
+        };
         let mut param_tys = Vec::with_capacity(f.params.len());
         let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
             Vec::with_capacity(f.params.len());
@@ -14157,6 +14213,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.current_user_fn_caller_arena = Some(caller_arena_alloca);
         self.current_user_fn_arena = Some(fn_arena_alloca);
+        // Total: a fn the rows do not call scratch-local allocates into its
+        // caller's arena.
         self.current_user_fn_scratch_local =
             !sig.non_allocating && self.alloc_routing.is_scratch_local(&f.name.name);
         // GH #375: publish the caller's arena to the caller-arena
@@ -14205,13 +14263,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The decision is the fn's row (`alloc_routing.caller_arena_publish`,
         // a structural walk for a call or a struct literal anywhere in the
         // body); a generic fn's monomorph, which the view does not hold,
-        // takes the same producer over its synthesized declaration.
-        let body_can_read_tls = self
-            .alloc_routing
-            .caller_arena_publish
-            .get(&f.name.name)
-            .copied()
-            .unwrap_or_else(|| self.alloc_routing.specialize_fn(f));
+        // takes the same producer over its synthesized declaration, as a
+        // locus monomorph's elision rows do. Any other fn with no row is
+        // refused: the view holds one for every fn declaration it lowers.
+        let body_can_read_tls = match self.alloc_routing.caller_arena_publish.get(&f.name.name) {
+            Some(&publish) => publish,
+            None if self
+                .typed
+                .monomorphs()
+                .named(&f.name.name)
+                .is_some_and(|m| m.kind == hale_types::typed_bodies::TemplateKind::Fn) =>
+            {
+                self.alloc_routing.specialize_fn(f)
+            }
+            None => {
+                return Err(CodegenError::missing_row(
+                    "alloc_summary",
+                    format!("fn `{}` has no caller-arena row", f.name.name),
+                    Some(f.name.span),
+                ))
+            }
+        };
         if body_can_read_tls {
             let ptr_t2 = self.context.ptr_type(AddressSpace::default());
             let ca = self
@@ -15878,20 +15950,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (nothing to confine). The subject is the topic's wire, the
     /// registration-side string every other dispatch flavor probes with,
     /// so the fused manifest row is shared.
-    fn intra_locus_rewrite(&self, id: NodeId, args: &[Expr]) -> Option<(String, String)> {
+    /// Total in the relation: a call it records no row for is the call
+    /// the author wrote. The rewritten send's topic is a declaration's
+    /// name, so its topic row is required.
+    fn intra_locus_rewrite(&self, id: NodeId, args: &[Expr]) -> Result<Option<(String, String)>, CodegenError> {
         if id.is_none() {
-            return None;
+            return Ok(None);
         }
-        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)?;
+        let Some(row) = self.intra_locus.iter().find(|r| r.send.0 == id.0) else { return Ok(None) };
         if !args.iter().any(|a| matches!(a, Expr::Struct { .. })) {
-            return None;
+            return Ok(None);
         }
-        let payload = self
-            .topics
-            .named(&row.subject)
-            .and_then(|t| single_segment_type_name(&t.payload))
-            .unwrap_or_default();
-        Some((self.topic_wire(&row.subject), payload))
+        let topic = self.topic_row(&row.subject, None)?;
+        let payload = single_segment_type_name(&topic.payload).unwrap_or_default();
+        Ok(Some((topic.wire.clone(), payload)))
     }
 
     /// A rewritten send can run in a helper reached during birth. Preserve
@@ -15904,9 +15976,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)
-            .expect("the caller identified a rewritten send");
-        let subject = Expr::Literal(Literal::String(self.topic_wire(&row.subject)), callee.span());
+        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0).ok_or_else(|| {
+            CodegenError::missing_row("bus_graph", "the intra-locus relation has no row for this rewritten send", Some(callee.span()))
+        })?;
+        let wire = self.topic_row(&row.subject, Some(callee.span()))?.wire.clone();
+        let subject = Expr::Literal(Literal::String(wire), callee.span());
         let value = args.first().expect("a rewritten send has its payload argument");
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
             .expect("a publish is inside a function");
@@ -15935,7 +16009,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
         self.builder.build_unconditional_branch(join).map_err(e)?;
         self.builder.position_at_end(direct);
-        if let Some(target) = self.intra_locus_rewrite(id, args) {
+        if let Some(target) = self.intra_locus_rewrite(id, args)? {
             self.lower_reclaimed_publish_call(callee, args, target, scope)?;
         } else {
             let Expr::Field { receiver, name, .. } = callee else {
@@ -17026,7 +17100,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // replaced (`LoweringView::intra_locus`), and the
                     // call keeps the send's id, so the relation names
                     // this call; the payload is dead the moment the
-                    // synchronous handler returns.
+                    // synchronous handler returns. Total: a call the
+                    // relation names no row for is the call the author
+                    // wrote.
                     Expr::Field { .. }
                         if !call_id.is_none() && self.intra_locus.iter().any(|r| r.send.0 == call_id.0) =>
                     {
@@ -17138,12 +17214,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // defaults, it would answer "not returned, not moved",
                 // the answers that dissolve the value.
                 let facts = *self.owner_table.binding_facts(*id).ok_or_else(|| {
-                    CodegenError::UnsupportedAt(
+                    CodegenError::missing_row(
+                        "ownership",
                         format!(
                             "no binding-facts row for `{}`: the resolved program did not mint this site",
                             name.name
                         ),
-                        *span,
+                        Some(*span),
                     )
                 })?;
                 let saved_override_for_returned = self.current_arena_override;
@@ -18078,10 +18155,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         RecoveryOp::Restart
                         | RecoveryOp::RestartInPlace => {
                             let row = self.handlers.retry_bound_at(*span).ok_or_else(|| {
-                                CodegenError::Unsupported(
-                                    "`for N`: the restart rows state no bound for this \
-                                     statement"
-                                        .into(),
+                                CodegenError::missing_row(
+                                    "restart",
+                                    "`for N`: the restart rows state no bound for this statement",
+                                    Some(*span),
                                 )
                             })?;
                             Some((row, e))
@@ -23013,17 +23090,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             crate::ownership::TempVerdict::Nobody
                         )
                     {
-                        return Err(CodegenError::Unsupported(format!(
-                            "the call to `{}` produces locus `{}` and the \
-                             ownership pre-pass gave it no owner. Every \
-                             locus-producing expression is decided before \
-                             lowering — see spec/decisions.md F.39 — so \
-                             this is a compiler defect, not a program \
-                             error.",
-                            self.callee_fn_name(callee)
-                                .unwrap_or_else(|| "?".to_string()),
-                            lname
-                        )));
+                        return Err(CodegenError::missing_row(
+                            "ownership",
+                            format!(
+                                "the call to `{}` produces locus `{}` and the \
+                                 ownership pre-pass gave it no owner. Every \
+                                 locus-producing expression is decided before \
+                                 lowering — see spec/decisions.md F.39 — so \
+                                 this is a compiler defect, not a program \
+                                 error.",
+                                self.callee_fn_name(callee)
+                                    .unwrap_or_else(|| "?".to_string()),
+                                lname
+                            ),
+                            None,
+                        ));
                     }
                     if wants_temp
                         && ty == CodegenTy::LocusRef(lname.clone())
@@ -33147,19 +33228,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The elision rows of the locus `name`: the view's
     /// (`AllocRouting::loci`), or, for a monomorph lowering synthesized,
-    /// the specialization's.
-    pub(crate) fn locus_elision(&self, name: &str) -> &hale_types::alloc_routing::LocusElision {
-        self.alloc_routing
-            .loci
-            .get(name)
-            .or_else(|| self.specialized_elision.get(name))
-            .unwrap_or_else(|| panic!("no elision rows for locus `{name}`"))
+    /// the specialization's. A required row: the view holds one for every
+    /// locus declaration it lowers.
+    pub(crate) fn locus_elision(&self, name: &str) -> Result<&hale_types::alloc_routing::LocusElision, CodegenError> {
+        self.alloc_routing.loci.get(name).or_else(|| self.specialized_elision.get(name)).ok_or_else(|| {
+            CodegenError::missing_row("alloc_summary", format!("no elision rows for locus `{name}`"), None)
+        })
     }
 
     /// Whether member `idx` of the locus `name` (a lifecycle hook, `fn`
     /// method or mode) lowers without its per-call scratch subregion.
-    pub(crate) fn member_scratch_elided(&self, name: &str, idx: usize) -> bool {
-        self.locus_elision(name).scratch.get(&idx).copied().unwrap_or(false)
+    /// Total within the locus's rows: a member with no entry keeps its
+    /// scratch.
+    pub(crate) fn member_scratch_elided(&self, name: &str, idx: usize) -> Result<bool, CodegenError> {
+        Ok(self.locus_elision(name)?.scratch.get(&idx).copied().unwrap_or(false))
     }
 
     /// The epilogue every early exit from a locus method body emits
@@ -33237,7 +33319,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         delta: i64,
     ) -> Result<(), CodegenError> {
-        if !self.cells.emits(Obligation::DrainObserver) {
+        if !self.cells.emits(Obligation::DrainObserver)? {
             return Ok(());
         }
         let i64_t = self.context.i64_type();

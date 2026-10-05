@@ -8,7 +8,14 @@
 //! follow both functions for roots, nested fields, replicas, pinned and
 //! pool-placed fields, accepted children and elided arenas. The companion
 //! `reclaim_cancel_ir` tests verify that the wait dominates every physical
-//! release and that cancellation dominates every callback handoff.
+//! release and that cancellation dominates every callback handoff, and pin
+//! the guard in front of each runtime call: a step with nothing to do (no
+//! run linked, nothing retired) is skipped on the words the function's
+//! own first test reads, so a step here is located by its call, which
+//! stays on the guard's other edge. The sequence is emitted once per
+//! type: a site outside the type's own spine function calls the type's
+//! `__reclaim_site_<L>_<spine>` or `__reclaim_field_<L>_<spine>`, so a
+//! reclaim found there is counted at each call, under the caller's name.
 //!
 //! The dissolve cascade over the instance tree is pinned beside it, in
 //! the order the plan places it (`LifecyclePlan::cascade_order` and
@@ -202,10 +209,29 @@ fn reclaims(ir: &str, locus: &str) -> Vec<(String, Vec<&'static str>)> {
             steps.extend(["wait", "flush"]);
             if !arenas.is_empty() { steps.push("arena"); }
             steps.push("struct");
-            out.push((f.name.clone(), steps));
+            for at in reclaiming(&fs, &f.name) {
+                out.push((at, steps.clone()));
+            }
         }
     }
     out
+}
+
+/// The functions a reclaim found in `name` is a reclaim of: `name`
+/// itself, or, for a type's site or field function (the sequence every
+/// site outside the type's own spine function calls), one entry per
+/// call of it, under the calling function's name.
+fn reclaiming(fs: &[Func], name: &str) -> Vec<String> {
+    if !name.starts_with("__reclaim_site_") && !name.starts_with("__reclaim_field_") {
+        return vec![name.to_string()];
+    }
+    let call = format!("@{name}(");
+    let at: Vec<String> = fs
+        .iter()
+        .flat_map(|g| g.find(|l| l.contains(" call ") && l.contains(&call)).into_iter().map(|_| g.name.clone()))
+        .collect();
+    assert!(!at.is_empty(), "{name}: no site calls it");
+    at
 }
 
 const FULL: &[&str] = &["guard", "children", "cancel", "retain", "wait", "flush", "arena", "struct"];
@@ -357,14 +383,16 @@ fn main() { App { }; }
     let ir = ir("contract_field", src);
     let fs = functions(&ir);
     let half = |n: u32| format!("%App.k.contract.half.ptr && getelementptr inbounds [2 x ptr] && i32 0, i32 {n}");
-    for name in ["main", "__reclaim_App"] {
+    // fn main reclaims App through App's site function; __reclaim_App
+    // holds its own.
+    for (name, reclaim) in [("main", "call void @__reclaim_site_App_"), ("__reclaim_App", "%App.storage.release.done = ")] {
         let f = func(&fs, name);
         let marks = [
             ("field drain", half(0)),
             ("drain", "call void @App.drain(".to_string()),
             ("dissolve", "call void @App.dissolve(".to_string()),
             ("field rest", half(1)),
-            ("reclaim", "%App.storage.release.done = ".to_string()),
+            ("reclaim", reclaim.to_string()),
         ];
         assert_eq!(ordered(f, &marks), ["field drain", "drain", "dissolve", "field rest", "reclaim"], "{name}");
     }

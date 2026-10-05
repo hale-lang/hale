@@ -3525,9 +3525,12 @@ friction on the wrong one, which is what made
    violations.
 5. **Unknown is not missing.** A hole is a declared unknown with a
    stated policy. A missing required row at lowering — an
-   instantiation with no owner, a site with no dispatch decision — is
+   instantiation with no owner, a binding entry with no row — is
    a compiler error. Codegen never guesses and never manufactures a
-   hole.
+   hole. Where absence is itself the fact (a subject no dispatch plan
+   names dispatches dynamically; a locus no restart row names cannot
+   fail), the read is a total answer, said where it is read; the
+   registry states which each family's reads are (phase 3's exit).
 6. **Lowering reads and never decides:** lowering does not rediscover
    source-level semantic decisions the resolved program is supposed
    to provide. Target-specific emission choices and walking a typed
