@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::imports::{resolve_import, ImportTarget};
@@ -770,19 +769,15 @@ pub(crate) fn resolve_env_spec(
 ///     differ);
 ///   - the CLI crate version;
 ///   - the build options that alter emitted code;
-///   - every source file's FULL normalized path, byte length, and
-///     contents, each length-framed (no concatenation ambiguity).
+///   - every source file's source-map path and contents
+///     ([`source_frames`]), each length-framed (no concatenation
+///     ambiguity), in the source map's order.
 ///
 /// Structural `shape_hash` says "same model"; this says "same build
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
-pub(crate) fn exec_digest(
-    sources: &BTreeMap<PathBuf, String>,
-    entry: &Path,
-    options_fp: &str,
-    plan_digest: u64,
-) -> [u64; 4] {
+pub(crate) fn exec_digest(files: &[(&str, &str)], options_fp: &str, plan_digest: u64) -> [u64; 4] {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
         buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
@@ -805,21 +800,9 @@ pub(crate) fn exec_digest(
     // replay against a program whose bus behaves differently. The
     // plan's digest is framed here so the boundary is a refusal.
     frame(&plan_digest.to_le_bytes(), &mut buf);
-    buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
-    // Logical (entry-relative) source ids: identical trees checked
-    // out under different roots are the same build inputs.
-    let base = entry.parent().map(Path::to_path_buf);
-    for (path, src) in sources {
-        let logical = base
-            .as_deref()
-            .and_then(|b| path.strip_prefix(b).ok())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
-        frame(logical.as_bytes(), &mut buf);
+    buf.extend_from_slice(&(files.len() as u64).to_le_bytes());
+    for (path, src) in files {
+        frame(path.as_bytes(), &mut buf);
         frame(src.as_bytes(), &mut buf);
     }
     let d = openssl::sha::sha256(&buf);
@@ -831,6 +814,24 @@ pub(crate) fn exec_digest(
         out[0] = 1;
     }
     out
+}
+
+/// The sources [`exec_digest`] frames: each file of the snapshot's
+/// source map, by its source-map path, with its text, in the map's order
+/// (F.40 phase 4, I3). The source map is the program's one naming of its
+/// files — relative to one root, the same whichever target loaded them
+/// and wherever the tree is checked out — so the identity has no path
+/// logic of its own: a directory build and the replay of its entry file
+/// frame one program alike, and two imports with one file name are two
+/// paths.
+pub(crate) fn source_frames(snap: &hale_frontend::snapshot::Snapshot) -> Vec<(&str, &str)> {
+    snap.source_map()
+        .iter()
+        .zip(snap.file_bases())
+        .map(|(file, (_, path, _))| {
+            (file.path.as_str(), snap.sources().get(path).map_or("", String::as_str))
+        })
+        .collect()
 }
 
 /// What a build stamps as its identity beside the sources, all of it

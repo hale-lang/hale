@@ -21,6 +21,7 @@ use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 use crate::shared::options::resolve_build_env;
+use crate::shared::options::source_frames;
 use crate::shared::options::take_output_flag;
 use hale_frontend::snapshot::{LoadError, Snapshot};
 pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
@@ -394,8 +395,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     options.model_hash = Some(identity.model_hash);
     options.obs_entity_ids = identity.obs_ids;
     options.exec_digest = Some(exec_digest(
-        sources,
-        target,
+        &source_frames(&snap),
         &build_env::options_fingerprint(&options),
         identity.plan_digest,
     ));

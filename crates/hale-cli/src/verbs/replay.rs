@@ -6,6 +6,7 @@ use crate::shared::options::VALUE_FLAGS;
 use crate::build_env;
 use crate::shared::options::build_config;
 use crate::shared::options::exec_digest;
+use crate::shared::options::source_frames;
 use crate::shared::options::identity_options;
 use crate::shared::options::model_identity;
 use crate::shared::options::parse_exec_build_options;
@@ -285,7 +286,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     };
     let model_hash = identity.model_hash;
     let obs_ids = identity.obs_ids;
-    let digest = exec_digest(sources, &prog, &options_fp, identity.plan_digest);
+    let digest = exec_digest(&source_frames(&snap), &options_fp, identity.plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
     // replay class cannot be suppressed OR injected — replaying or

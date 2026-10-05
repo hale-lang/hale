@@ -1210,7 +1210,10 @@ The pieces worth knowing:
 - **`provenance`.** Byte-offset spans (`[start, end]`) for every
   user edge and decl, each with the `source` id of the file it
   sits in (the `sources` rows carry each file's path and digest) —
-  the "where to edit" data, unhashed by design.
+  the "where to edit" data, unhashed by design. A path is never
+  absolute: it is relative to the nearest `hale.toml` when every
+  file is under it, and otherwise to the deepest directory holding
+  them all, so one tree checked out anywhere gives one artifact.
 - **`lowered`.** Every fn-grained certificate — each `@effects`
   assert, each `@phase_effects` phase contract, each `@budget` —
   as the claim form it is pointwise sugar for, with the verdict of

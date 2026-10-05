@@ -91,8 +91,9 @@ everything after it is the program's own argv, which is why `hale run
 of the execution identity a recording carries, and `hale replay` takes
 the same set: a run recorded under `--dev` replays under `hale replay
 --dev`, and a default replay refuses it (`--env` likewise). A binary
-from `hale build` of a file stamps the identity `hale run` would, so
-its recordings replay too. The flags that report on a
+from `hale build` stamps the identity `hale run` would, so its
+recordings replay too — a directory build's against the directory's
+entry file. The flags that report on a
 build rather than change it (`--locality-report`, `--target-cache`,
 `--strict`, `--wrap-main`, `-o`) belong to `build` alone and are refused by
 name.

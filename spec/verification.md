@@ -1092,14 +1092,23 @@ them. A consumer composing artifacts from separately compiled
 applications cannot turn `[1204, 1231]` into a location, so no
 cross-artifact witness could say where to look.
 
-Paths are relative to the **workspace** (the nearest ancestor holding
-a `hale.toml`, else the deepest common ancestor of every source) and
-are canonicalized before being made relative. Both matter: an
-absolute path makes the artifact machine-specific, and rooting at the
-target alone leaves an imported seed — which usually lives outside it
-— absolute anyway. The artifact must be byte-identical for the same
-sources regardless of the working directory it was produced from,
+Every path is relative to one root, and no path is absolute. The root
+is the **workspace** — the nearest ancestor of the target holding a
+`hale.toml` — when every source is under it, and otherwise the deepest
+common ancestor of every source: an application in `app/` with its own
+`hale.toml` importing `../lib` names its files `app/main.hl` and
+`lib/…`. Paths are canonicalized before being made relative, so a
+target typed relative to the working directory is named as one typed
+absolute. Both matter: an absolute path makes the artifact
+machine-specific, and rooting at the target alone leaves an imported
+seed — which usually lives outside it — absolute anyway. The artifact
+must be byte-identical for the same sources regardless of the working
+directory it was produced from or the place the tree is checked out,
 because comparing two of them is the point.
+
+The source map is the program's one naming of its files: the
+execution identity a recording carries frames these paths, in the
+map's order ([runtime.md § Replay](runtime.md)).
 
 Each source carries a content digest, so a consumer can tell whether
 two artifacts were built from the same text, and can catch a stale

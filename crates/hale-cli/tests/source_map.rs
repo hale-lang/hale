@@ -266,6 +266,98 @@ fn source_paths_are_workspace_relative() {
     );
 }
 
+fn source_paths(artifact: &str) -> Vec<String> {
+    let v: serde_json::Value =
+        serde_json::from_str(artifact).expect("artifact parses");
+    v["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|s| s["path"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// An application with its own `hale.toml` importing a library beside
+/// it, above the manifest's directory.
+const APP_ABOVE: &str = r#"
+import "../lib" as lb;
+main locus App { params { b: lb::Billing = lb::Billing { }; } }
+fn main() { App { }; }
+"#;
+
+fn app_importing_above(r: &Path) {
+    write(r, "lib/lib.hl", LIB);
+    write(r, "app/main.hl", APP_ABOVE);
+    write(r, "app/hale.toml", "[deps]\n");
+}
+
+/// F.40 phase 4, I3: a file outside the `hale.toml` root is named
+/// relative to the deepest common ancestor of every source, as every
+/// other file of the program is. It used to keep its absolute path, so
+/// the artifact differed from machine to machine.
+#[test]
+fn an_import_above_the_manifest_root_is_named_relatively() {
+    let r = root("above");
+    app_importing_above(&r);
+    let paths = source_paths(&dump_from(&r, "app/main.hl"));
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(
+        paths,
+        ["app/main.hl", "lib/lib.hl"],
+        "every file under one root, the root being the common ancestor \
+         when a file sits outside the `hale.toml` directory"
+    );
+}
+
+/// F.40 phase 4, I3: one tree checked out at two places is one artifact,
+/// byte for byte, whether or not a file sits outside its `hale.toml`
+/// root.
+#[test]
+fn one_tree_checked_out_at_two_roots_has_one_artifact() {
+    let scratch = root("two_roots");
+    let (a, b) = (scratch.join("one"), scratch.join("two/deeper"));
+    for r in [&a, &b] {
+        app_importing_above(&r.join("above"));
+        write(&r.join("under"), "lib/lib.hl", LIB);
+        write(&r.join("under"), "apps/api/main.hl", APP);
+        write(&r.join("under"), "hale.toml", "[deps]\n");
+    }
+    let dumps = |r: &Path| {
+        (
+            dump_from(r, "above/app/main.hl"),
+            dump_from(r, "under/apps/api"),
+        )
+    };
+    let (da, db) = (dumps(&a), dumps(&b));
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(da.0.contains("\"sources\""), "an artifact: {}", da.0);
+    assert_eq!(
+        da.0, db.0,
+        "an import above the manifest root: one artifact at two roots"
+    );
+    assert_eq!(da.1, db.1, "a program under its root: one artifact at two roots");
+}
+
+/// F.40 phase 4, I3: a program whose files are all under its `hale.toml`
+/// root keeps the paths it had, and so does a program with no manifest,
+/// however its target is typed.
+#[test]
+fn a_program_under_its_root_keeps_its_paths() {
+    let r = workspace("kept");
+    let under = source_paths(&dump_from(&r, "apps/api"));
+    write(&r, "loose/solo/main.hl", "fn main() { let x = 1 + 1; }\n");
+    std::fs::remove_file(r.join("hale.toml")).expect("rm manifest");
+    let relative = source_paths(&dump_from(&r, "loose/solo/main.hl"));
+    let absolute = source_paths(&dump_from(
+        Path::new("/"),
+        r.join("loose/solo/main.hl").to_str().expect("utf8"),
+    ));
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(under, ["apps/api/main.hl", "lib/lib.hl"]);
+    assert_eq!(relative, ["main.hl"], "no manifest, a relative target");
+    assert_eq!(absolute, ["main.hl"], "no manifest, an absolute target");
+}
+
 /// A content digest lets a consumer tell whether two artifacts were
 /// built from the same text, and catches a stale artifact paired with
 /// edited source — without shipping the source.

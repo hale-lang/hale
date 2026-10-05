@@ -367,7 +367,9 @@ under: they are part of the execution identity, so a recording from
 by `hale replay --dev`, and one made under `--env prod` needs `hale
 replay --env prod`. A binary from `hale build app.hl`, run with
 `LOTUS_OBS_RECORD` set, records a run that `hale replay ... app.hl`
-admits: a build and `hale run` give one program one identity.
+admits: a build and `hale run` give one program one identity. So does
+a directory build: the recording of `myapp/myapp` replays under
+`hale replay ... myapp/main.hl`.
 
 The full story — admission by executable identity, the
 safe-by-default effect gate (`--allow-live-effects`), env-value
