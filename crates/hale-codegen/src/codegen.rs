@@ -39,6 +39,7 @@ use crate::locus::method::LocusMethodBodies;
 use crate::stdlib::bus::BusStdlib;
 use crate::stdlib::ring::RingStdlib;
 use crate::stdlib::bytes::BytesStdlib;
+use crate::stdlib::compress::{CompressStdlib, TarArg, TarRet, TarStdlib};
 use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::decimal::DecimalStdlib;
 use crate::stdlib::env::EnvStdlib;
@@ -48,6 +49,7 @@ use crate::stdlib::io_stdin::IoStdinStdlib;
 use crate::stdlib::io_tcp::IoTcpStdlib;
 use crate::stdlib::io_tls::IoTlsStdlib;
 use crate::stdlib::io_udp::IoUdpStdlib;
+use crate::stdlib::io_unix::IoUnixStdlib;
 use crate::stdlib::math::MathStdlib;
 use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::rand::RandStdlib;
@@ -1309,15 +1311,15 @@ pub fn build_resolved(
     let program_has_offthread =
         resolved.placement.places_off_main() || resolved.bindings.binds_on_main(Some(entry));
 
-    // Static-bus-dispatch devirtualization plan (build #1b), derived in
-    // the resolved program from the bus graph over the merged and
-    // topic-desugared program (F.40 phase 1.5): every subject is the
-    // wire string the register/publish sites see, and the stdlib's
-    // wildcard subscribers (`log.**`) are in the graph the gates were
-    // judged over. The flavor ladder is `DispatchPlan`'s — the same
-    // procedure the model's `DispatchPlan::derive` runs, and whose
-    // digest the execution identity folds in. A build with no entry
-    // point is open world and its plan all dynamic.
+    // Static-bus-dispatch devirtualization plan (build #1b): the
+    // snapshot's one plan (F.40 phase 4, S9), derived once from the bus
+    // graph's gates keyed by wire subject, the string the
+    // register/publish sites see, with the stdlib's wildcard
+    // subscribers (`log.**`) among the sites the gates were judged
+    // over. The flavor ladder is `DispatchPlan`'s; the model holds the
+    // same plan, projected, and the execution identity folds in its
+    // digest. A build with no entry point is open world and its plan
+    // all dynamic.
     // `LOTUS_NO_BUS_DEVIRT=1` forces the empty plan — the
     // differential-test control arm.
     let plan = if options.no_bus_devirt {
@@ -5000,14 +5002,12 @@ pub(crate) struct LocusInfo<'ctx> {
     /// a counter. Slot fields live on the locus struct after
     /// the user fields, before the synthetic flags.
     pub(crate) accumulators_per_closure: BTreeMap<String, Vec<AccumulatorSlot>>,
-    /// m46: per-closure list of recovery-event names listed in
-    /// `persists_through(...)`. Default is reset (zero the
-    /// accumulators on the event); a name in this list opts that
-    /// closure's accumulators out of reset for that event.
-    /// Recognized event names: `restart`, `restart_in_place`,
-    /// `quarantine`, `dissolve`. (`replace` from the spec example
-    /// awaits perspective hot-load.)
-    pub(crate) persists_through_per_closure: BTreeMap<String, Vec<String>>,
+    /// m46: per-closure list of the recovery events its
+    /// `persists_through(...)` clauses name, typed by the parser
+    /// (F.40 phase 4, W3). Default is reset (zero the accumulators
+    /// on the event); an event in this list opts that closure's
+    /// accumulators out of reset for that event.
+    pub(crate) persists_through_per_closure: BTreeMap<String, Vec<RecoveryEvent>>,
     /// F.34 (v1.x-WINDOWED): per-closure list of locus field names
     /// to zero AFTER the assertion fires at a `duration(N)` epoch
     /// boundary. Only populated for closures that pair `epoch
@@ -15225,6 +15225,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        self.lower_user_fn_call_from(name, None, None, args, scope)
+    }
+
+    /// [`Cx::lower_user_fn_call`], for a caller that has already lowered
+    /// the first argument (`first`, which `args` then omits) and so took
+    /// the call site's arena before it did (`caller_arena`):
+    /// `lower_std_hale_body_by_receiver`, which lowers a receiver once to
+    /// learn the body its type picks. With neither, it is the plain call.
+    fn lower_user_fn_call_from(
+        &mut self,
+        name: &str,
+        caller_arena: Option<PointerValue<'ctx>>,
+        first: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let sig = self
             .user_fns
             .get(name)
@@ -15232,7 +15248,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .ok_or_else(|| {
                 CodegenError::Unsupported(format!("call to unknown fn `{}`", name))
             })?;
-        if sig.is_ffi {
+        if sig.is_ffi && first.is_none() {
             return self.lower_ffi_fn_call(name, &sig, args, scope);
         }
         if sig.fallible.is_some() {
@@ -15242,23 +15258,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name
             )));
         }
-        if args.len() > sig.params.len() {
+        // The arguments the call has: the pre-lowered first one, then `args`.
+        let skip = usize::from(first.is_some());
+        let given = args.len() + skip;
+        if given > sig.params.len() {
             return Err(CodegenError::Unsupported(format!(
                 "fn `{}` expects at most {} args, got {}",
                 name,
                 sig.params.len(),
-                args.len()
+                given
             )));
         }
         // Verify each missing positional slot has a default.
         for (i, default) in sig.defaults.iter().enumerate() {
-            if i >= args.len() && default.is_none() {
+            if i >= given && default.is_none() {
                 return Err(CodegenError::Unsupported(format!(
                     "fn `{}`: required param at position {} not \
                      provided (only {} args given)",
                     name,
                     i,
-                    args.len()
+                    given
                 )));
             }
         }
@@ -15272,13 +15291,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // to allocate (e.g. building a string) and we want the
         // arena snapshot to be the call site's arena, not whatever
         // intermediate state the arg-lowering walks into.
-        let caller_arena_at_call = self.current_arena_ptr()?;
+        let caller_arena_at_call = match caller_arena {
+            Some(arena) => arena,
+            None => self.current_arena_ptr()?,
+        };
         let mut llvm_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(sig.params.len() + 1);
         llvm_args.push(caller_arena_at_call.into());
+        let mut first = first;
         for i in 0..sig.params.len() {
-            let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+            let (v, ty) = if let Some(lowered) = first.take() {
+                lowered
+            } else if i < given {
+                self.lower_expr(&args[i - skip], scope)?
             } else {
                 // Default expressions evaluate at the call site.
                 // For const/literal defaults that's a constant; for
@@ -25606,7 +25631,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // of this match's catch-all.
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
-            return self.lower_stdlib_path_call(&segs, args, scope);
+            return self.lower_stdlib_path_call(&segs, qn.span, args, scope);
         }
         match segs.as_slice() {
             ["time", "sleep"] => self.lower_time_sleep(args, scope),
@@ -25676,7 +25701,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             qn.segments.iter().map(|s| s.name.as_str()).collect();
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
-            return self.lower_stdlib_path_call_expr(&segs, args, scope);
+            return self.lower_stdlib_path_call_expr(&segs, qn.span, args, scope);
         }
         match segs.as_slice() {
             ["time", "monotonic"] => self.lower_time_monotonic(args),
@@ -25884,20 +25909,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_stdlib_path_call(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
-        self.lower_std_call(segs, args, scope, StdCallPos::Statement).map(|_| ())
+        self.lower_std_call(segs, at, args, scope, StdCallPos::Statement).map(|_| ())
     }
 
     /// A `std::*` call at value position: [`Cx::lower_std_call`].
     fn lower_stdlib_path_call_expr(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        self.lower_std_call(segs, args, scope, StdCallPos::Value)
+        self.lower_std_call(segs, at, args, scope, StdCallPos::Value)
             .map(|v| v.expect("a value position lowers to a value or an error"))
     }
 
@@ -25906,19 +25933,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// picks its arm, a Hale body is called by the name the row gives,
     /// and a path with neither answers as [`Cx::lower_std_unarmed`]
     /// does. A statement drops the value: `None` is a statement that
-    /// produced none. The `or` position is
-    /// `try_lower_fallible_stdlib_path_call`'s.
+    /// produced none. The `or` position is [`Cx::lower_std_fallible_call`]'s.
+    /// `at` is the callee path's span, for an error the check should
+    /// have reported first.
     fn lower_std_call(
         &mut self,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
         pos: StdCallPos,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         use hale_types::stdlib_surface::Lower;
         match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
-            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic(id, segs, args, scope, pos),
+            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic(id, segs, at, args, scope, pos),
             Some(Lower::HaleBody(body)) => self.lower_std_hale_body(body, segs, args, scope, pos),
+            Some(Lower::HaleBodyByReceiver(bodies)) => {
+                self.lower_std_hale_body_by_receiver(bodies, segs, args, scope).map(Some)
+            }
             Some(Lower::Renamed) | Some(Lower::Unlowered) | None => {
                 self.lower_std_unarmed(segs, args, scope, pos)
             }
@@ -25926,10 +25958,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// A stdlib call no arm lowers at `pos`: the Hale body
-    /// `hale_stdlib::PATH_RENAMES` names for the path, which must
-    /// return a value (`std::io::file::at_eof(f)` and the other
-    /// user-facing wrappers in `../../hale-stdlib/hl/file.hl`), or "not
-    /// implemented" in the position's words.
+    /// `hale_stdlib::PATH_RENAMES` names for the path
+    /// (`std::io::file::at_eof(f)` and the other user-facing wrappers in
+    /// `../../hale-stdlib/hl/file.hl`), or "not implemented" in the
+    /// position's words. A statement calls a body that returns nothing
+    /// and is done (`std::process::adopt`, F.40 phase 4, S5); a value
+    /// position needs a value back.
     fn lower_std_unarmed(
         &mut self,
         segs: &[&str],
@@ -25940,13 +25974,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(mangled) = self.mangled_for_path(segs) {
             if self.user_fns.contains_key(&mangled) {
                 let result = self.lower_user_fn_call(&mangled, args, scope)?;
-                return result.map(Some).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
+                return match (result, pos) {
+                    (Some(value), _) => Ok(Some(value)),
+                    (None, StdCallPos::Statement) => Ok(None),
+                    (None, StdCallPos::Value) => Err(CodegenError::Unsupported(format!(
                         "stdlib path `{}` returns no value but is \
                          used in expression position",
                         segs.join("::")
-                    ))
-                });
+                    ))),
+                };
             }
         }
         Err(CodegenError::Unsupported(match pos {
@@ -25976,22 +26012,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The bodies a statement calls itself, dropping whatever comes
         // back: `std::http::parse_request` and `std::text::md_to_html`
         // (whose value position also refuses a body that returns
-        // none), and the five that return no value, below.
+        // none), and the four that return no value, below.
+        // (`std::process::adopt` was one until F.40 phase 4, S5; it is a
+        // rename now, which a statement calls the same way.)
         const STATEMENT_BODIES: &[&str] = &[
             "__parse_http_request",
             "__md_to_html",
             "__write_http_response",
-            "__std_process_adopt",
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
         ];
-        // The bodies that return no value (m85's response writer,
-        // GH #716's `adopt`, m87's assertions): a value position has no
-        // arm for them.
+        // The bodies that return no value (m85's response writer, m87's
+        // assertions): a value position has no arm for them.
         const NO_VALUE_BODIES: &[&str] = &[
             "__write_http_response",
-            "__std_process_adopt",
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
@@ -26028,6 +26063,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// A stdlib function overloaded on its first argument
+    /// (`Lower::HaleBodyByReceiver`): the receiver is lowered once, its
+    /// type picks the body the row pairs with it, and that body is called
+    /// with the receiver's value. `std::http::header(r, name)` reads a
+    /// Request's or a Response's header block (ws-echo; C11 added the
+    /// Response side). Until F.40 phase 4, S5 an arm chose the body by
+    /// lowering the receiver, and the call lowered it again.
+    fn lower_std_hale_body_by_receiver(
+        &mut self,
+        bodies: &[(&str, &str)],
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let path = segs.join("::");
+        let Some((receiver, rest)) = args.split_first() else {
+            return Err(CodegenError::Unsupported(format!(
+                "{path} expects a receiver first; got no arguments"
+            )));
+        };
+        // The call site's arena, captured before any argument is lowered,
+        // as `lower_user_fn_call` captures it.
+        let caller_arena = self.current_arena_ptr()?;
+        let (value, ty) = self.lower_expr(receiver, scope)?;
+        let body = match &ty {
+            CodegenTy::TypeRef(name) => bodies.iter().find(|(t, _)| t == name).map(|(_, b)| *b),
+            _ => None,
+        };
+        let Some(body) = body else {
+            // The receivers by their public names (`Request`), as the user
+            // spells them.
+            let names: Vec<&str> = bodies
+                .iter()
+                .map(|(t, _)| {
+                    hale_stdlib::PATH_RENAMES
+                        .iter()
+                        .find(|(_, m)| m == t)
+                        .and_then(|(p, _)| p.last().copied())
+                        .unwrap_or(t)
+                })
+                .collect();
+            return Err(CodegenError::Unsupported(format!(
+                "{path} receiver must be {}; got {:?}",
+                names.join(" or "),
+                ty
+            )));
+        };
+        let result =
+            self.lower_user_fn_call_from(body, Some(caller_arena), Some((value, ty)), rest, scope)?;
+        result.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "stdlib path `{path}` returns no value but is used in expression position"
+            ))
+        })
+    }
+
     /// A natively lowered stdlib function, by its id. Exhaustive: an id
     /// without an arm does not compile. An arm whose two positions
     /// answer differently matches on `pos`; every other arm is the value
@@ -26036,6 +26127,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         id: IntrinsicId,
         segs: &[&str],
+        at: hale_syntax::Span,
         args: &[Expr],
         scope: &Scope<'ctx>,
         pos: StdCallPos,
@@ -26222,53 +26314,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::EnvVar => self.lower_std_env_var(args, scope),
             Id::EnvVarExists => {
                 self.lower_std_env_var_exists(args, scope)
-            }
-            // Per-receiver header lookup. ws-echo added the
-            // Request-side surface; C11 (pond follow-up) extended
-            // it to Responses so server code can read back the
-            // headers it attached via `Response.headers` and so
-            // pond/http/client can lift its private `__find_header`
-            // walker into the stdlib. Dispatch forks on the type
-            // of the first argument: a Request receiver routes to
-            // `__http_request_header`; a Response receiver routes
-            // to `__http_response_header`. Both Hale fns are
-            // thin wrappers over the shared `__http_find_header_in_block`
-            // walker. We peek the type by lowering args[0] once;
-            // `lower_user_fn_call` will lower it again to build
-            // the actual call. For the typical Ident receiver
-            // (`std::http::header(r, name)`), the duplicate
-            // lowering is just an extra load — semantically
-            // equivalent.
-            Id::HttpHeader => {
-                if args.is_empty() {
-                    return Err(CodegenError::Unsupported(
-                        "std::http::header expects 2 args (receiver, name); got 0".to_string(),
-                    ));
-                }
-                let (_, recv_ty) = self.lower_expr(&args[0], scope)?;
-                let callee = match &recv_ty {
-                    CodegenTy::TypeRef(n) if n == "__StdHttpRequest" => {
-                        "__http_request_header"
-                    }
-                    CodegenTy::TypeRef(n) if n == "__StdHttpResponse" => {
-                        "__http_response_header"
-                    }
-                    other => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "std::http::header receiver must be Request or \
-                             Response; got {:?}",
-                            other
-                        )));
-                    }
-                };
-                let result = self.lower_user_fn_call(callee, args, scope)?;
-                result.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "std::http::header returns String but called \
-                         in a position that expects no value"
-                            .to_string(),
-                    )
-                })
             }
             Id::JsonNextStructOrQuote => {
                 self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
@@ -26465,9 +26510,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::BytesFromString => {
                 self.lower_std_bytes_from_string(args, scope)
             }
-            Id::BytesAt => {
-                self.lower_std_bytes_at(args, scope)
-            }
             Id::BytesFindByte => {
                 self.lower_std_bytes_find_byte(args, scope)
             }
@@ -26566,31 +26608,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::IoFileReadLineRaw => {
                 self.lower_std_io_file_read_line(args, scope)
-            }
-            Id::IoFsReadBytes => {
-                self.lower_std_io_fs_read_bytes(args, scope)
-            }
-            // Phase 2e: list_dir index API.
-            Id::IoFsListDirCount => {
-                self.lower_std_io_fs_list_dir_count(args, scope)
-            }
-            Id::IoFsListDirAt => {
-                self.lower_std_io_fs_list_dir_at(args, scope)
-            }
-            Id::IoFsReadFile => {
-                self.lower_std_io_fs_read_file(args, scope)
-            }
-            Id::IoFsWriteFile => {
-                self.lower_std_io_fs_write_file(args, scope)
-            }
-            Id::IoFsWriteFileAppend => {
-                self.lower_std_io_fs_write_file_append(args, scope)
-            }
-            Id::IoFsMkdir => {
-                self.lower_std_io_fs_mkdir(args, scope)
-            }
-            Id::IoFsFileSize => {
-                self.lower_std_io_fs_file_size(args, scope)
             }
             Id::IoFsFileExists => {
                 self.lower_std_io_fs_file_exists(args, scope)
@@ -26779,9 +26796,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::CryptoCrc32 => {
                 self.lower_std_crypto_crc32(args, scope)
-            }
-            Id::CryptoEcdsaP256Sign => {
-                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
             }
             Id::CryptoEcdsaP256Verify => {
                 self.lower_std_crypto_ecdsa_p256_verify(args, scope)
@@ -27021,13 +27035,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
             },
-            // No arm at either position: lowered only under `or`
-            // (`try_lower_fallible_stdlib_path_call`). A bare call of
-            // one the position's list refuses (`refuses_bare`) is
-            // refused as fallible, in the words the parse_int family
-            // has always had; any other answers as a path no arm
-            // lowers.
-            Id::BytesReadF32Le
+            // No arm at either bare position: the functions whose row
+            // says they can fail, lowered only under `or`
+            // (`lower_std_intrinsic_fallible`). The check refuses a bare
+            // call of one, so lowering meets it only in a build that
+            // skipped the check (`bare_call_of_a_fallible_row`).
+            // `stdlib_registry_parity` holds this arm to the rows: it is
+            // every id whose row is fallible.
+            Id::BytesAt
+            | Id::BytesReadF32Le
             | Id::BytesReadF64Be
             | Id::BytesReadF64Le
             | Id::BytesReadI16Be
@@ -27073,13 +27089,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressGzip
             | Id::CompressUnzstd
             | Id::CompressZstd
+            | Id::CryptoEcdsaP256Sign
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
+            | Id::IoFsFileSize
+            | Id::IoFsListDirAt
+            | Id::IoFsListDirCount
+            | Id::IoFsMkdir
             | Id::IoFsMktemp
+            | Id::IoFsReadBytes
+            | Id::IoFsReadFile
             | Id::IoFsRename
             | Id::IoFsUnlink
             | Id::IoFsWriteBytes
+            | Id::IoFsWriteFile
+            | Id::IoFsWriteFileAppend
             | Id::IoFsWritePrivateRaw
             | Id::IoUnixConnect
             | Id::IoUnixConnectWait
@@ -27130,18 +27155,571 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrRangeParseDecimal
             | Id::StrRangeParseInt
             | Id::TimeParseIso8601
-            | Id::TimeParseTime => {
-                if refuses_bare(id, pos) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`{}` returns a fallible value — address the error with \
-                         `or raise`, `or <substitute>`, or `or self.handle(err)`",
-                        segs.join("::")
-                    )));
-                }
-                return self.lower_std_unarmed(segs, args, scope, pos);
-            }
+            | Id::TimeParseTime => return Err(bare_call_of_a_fallible_row(segs, at, pos)),
         };
         value.map(Some)
+    }
+
+    /// A `std::*` call under `or` (`lower_fallible_call`), dispatched from
+    /// its row: an intrinsic's id picks its arm in
+    /// [`Cx::lower_std_intrinsic_fallible`]. `Ok(None)` says the call is
+    /// not a stdlib fallible call (a Hale body, a rename, an unlowered row
+    /// or a path with no row), and the caller resolves the path as a
+    /// function (`mangled_for_path`) or refuses it as an unknown path call.
+    pub(crate) fn lower_std_fallible_call(
+        &mut self,
+        segs: &[&str],
+        at: hale_syntax::Span,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        use hale_types::stdlib_surface::Lower;
+        match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
+            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic_fallible(id, segs, at, args, scope),
+            Some(Lower::HaleBody(_))
+            | Some(Lower::HaleBodyByReceiver(_))
+            | Some(Lower::Renamed)
+            | Some(Lower::Unlowered)
+            | None => Ok(None),
+        }
+    }
+
+    /// A natively lowered stdlib function under `or`, by its id: the call,
+    /// its success value and its error path. Exhaustive, beside
+    /// [`Cx::lower_std_intrinsic`] rather than in it because the two
+    /// positions produce different things (a value, or a
+    /// `FallibleCallResult`) and few ids lower at both. Each helper
+    /// evaluates the arguments, calls the C primitive, and builds the
+    /// error branch from its sentinel (`complete_io_fallible_call` for the
+    /// fs/tcp surfaces flipped to `fallible(IoError)`).
+    fn lower_std_intrinsic_fallible(
+        &mut self,
+        id: IntrinsicId,
+        segs: &[&str],
+        at: hale_syntax::Span,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        use IntrinsicId as Id;
+        let lowered = match id {
+            // GH #254: std::tar (ustar) one-shot surface.
+            Id::TarEntries => self.lower_std_tar_fallible(
+                "lotus_tar_entries", "std::tar::entries",
+                &[TarArg::Bytes], TarRet::Int, args, scope,
+            ),
+            Id::TarEntryName => self.lower_std_tar_fallible(
+                "lotus_tar_entry_name", "std::tar::entry_name",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
+            ),
+            Id::TarEntrySize => self.lower_std_tar_fallible(
+                "lotus_tar_entry_size", "std::tar::entry_size",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Int, args, scope,
+            ),
+            Id::TarEntryType => self.lower_std_tar_fallible(
+                "lotus_tar_entry_type", "std::tar::entry_type",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
+            ),
+            Id::TarEntryData => self.lower_std_tar_fallible(
+                "lotus_tar_entry_data", "std::tar::entry_data",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Bytes, args, scope,
+            ),
+            Id::TarPack => self.lower_std_tar_fallible(
+                "lotus_tar_pack", "std::tar::pack",
+                &[TarArg::Bytes, TarArg::Str, TarArg::Bytes], TarRet::Bytes,
+                args, scope,
+            ),
+            Id::TarPackDir => self.lower_std_tar_fallible(
+                "lotus_tar_pack_dir", "std::tar::pack_dir",
+                &[TarArg::Bytes, TarArg::Str], TarRet::Bytes, args, scope,
+            ),
+            Id::TarFinish => self.lower_std_tar_fallible(
+                "lotus_tar_finish", "std::tar::finish",
+                &[TarArg::Bytes], TarRet::Bytes, args, scope,
+            ),
+            // GH #254: std::compress one-shot surface.
+            Id::CompressGzip => self.lower_std_compress_fallible(
+                "lotus_compress_gzip", "std::compress::gzip",
+                args, scope,
+            ),
+            Id::CompressGunzip => self.lower_std_compress_fallible(
+                "lotus_compress_gunzip", "std::compress::gunzip",
+                args, scope,
+            ),
+            Id::CompressZstd => self.lower_std_compress_fallible(
+                "lotus_compress_zstd", "std::compress::zstd",
+                args, scope,
+            ),
+            Id::CompressUnzstd => self.lower_std_compress_fallible(
+                "lotus_compress_unzstd", "std::compress::unzstd",
+                args, scope,
+            ),
+            Id::BytesAt => self.lower_std_bytes_at_fallible(args, scope),
+            // shm-ring-interop Proposal A: binary-pack readers
+            // `read_<type>_<endian>(b, off) -> Int|Float
+            // fallible(IndexError)`. The helper reads the width, the
+            // signedness and the byte order off the name (`segs[2]`).
+            Id::BytesReadF32Le
+            | Id::BytesReadF64Be
+            | Id::BytesReadF64Le
+            | Id::BytesReadI16Be
+            | Id::BytesReadI16Le
+            | Id::BytesReadI32Be
+            | Id::BytesReadI32Le
+            | Id::BytesReadI64Be
+            | Id::BytesReadI64Le
+            | Id::BytesReadI8
+            | Id::BytesReadU16Be
+            | Id::BytesReadU16Le
+            | Id::BytesReadU32Be
+            | Id::BytesReadU32Le
+            | Id::BytesReadU64Be
+            | Id::BytesReadU64Le
+            | Id::BytesReadU8 => self.lower_std_bytes_read(segs[2], args, scope),
+            // A1 zero-copy write: `write_<type>_<endian>(w, off, val) -> ()
+            // fallible(IndexError)`, the name read the same way.
+            Id::BytesWriteF32Le
+            | Id::BytesWriteF64Be
+            | Id::BytesWriteF64Le
+            | Id::BytesWriteI16Be
+            | Id::BytesWriteI16Le
+            | Id::BytesWriteI32Be
+            | Id::BytesWriteI32Le
+            | Id::BytesWriteI64Be
+            | Id::BytesWriteI64Le
+            | Id::BytesWriteI8
+            | Id::BytesWriteU16Be
+            | Id::BytesWriteU16Le
+            | Id::BytesWriteU32Be
+            | Id::BytesWriteU32Le
+            | Id::BytesWriteU64Be
+            | Id::BytesWriteU64Le
+            | Id::BytesWriteU8 => self.lower_std_bytes_write(segs[2], args, scope),
+            // #353: the INVERSE of `time_from_unix`.
+            //
+            // Formatting was never missing — a Time renders as
+            // ISO-8601 text (`to_string`, `println`, `iso8601`).
+            // Parsing had no counterpart, so a timestamp could be
+            // produced and never read back.
+            //
+            // UTC only. A timezone database is megabytes and the wasm
+            // target carries whatever ships; local time additionally
+            // reads TZ, an `env` effect rather than a pure
+            // computation. Local parsing can arrive later as a
+            // distinct, effectful call rather than be smuggled in.
+            Id::TimeParseIso8601 => self.lower_std_time_parse_iso8601_fallible(args, scope),
+            // GH #607: the same parse, yielding the instant itself.
+            Id::TimeParseTime => self.lower_std_time_parse_time_fallible(args, scope),
+            Id::StrParseInt => self.lower_std_str_parse_int_fallible(args, scope),
+            Id::StrParseFloat => self.lower_std_str_parse_float_fallible(args, scope),
+            Id::StrParseDecimal => self.lower_std_str_parse_decimal_fallible(args, scope),
+            // 2026-05-26: range-bounded variants for allocation-
+            // free JSON walks. Take (json, start, end_exclusive)
+            // instead of an owned substring.
+            Id::StrRangeParseInt => self.lower_std_str_range_parse_int_fallible(args, scope),
+            Id::StrRangeParseDecimal => {
+                self.lower_std_str_range_parse_decimal_fallible(args, scope)
+            }
+            // C4 (pond/crypto follow-up): CSPRNG getrandom.
+            Id::OsGetrandom => self.lower_std_os_getrandom_fallible(args, scope),
+            // 2026-06-04: ECDSA P-256 signing → fallible(CryptoError),
+            // its one mode since F.40 phase 4, S5.
+            Id::CryptoEcdsaP256Sign => {
+                self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
+            }
+            // Per-path wrappers for the fs/tcp surfaces flipped to
+            // `fallible(IoError)`. Each helper evaluates args, calls
+            // the underlying C primitive, and feeds the sentinel
+            // result + path into `complete_io_fallible_call` to build
+            // the lazy-IoError branch.
+            Id::IoFsReadFile => self.lower_std_io_fs_read_file_fallible(args, scope),
+            Id::IoFsReadBytes => self.lower_std_io_fs_read_bytes_fallible(args, scope),
+            Id::IoFsWriteBytes => {
+                self.lower_std_io_fs_write_bytes_fallible(args, scope, "lotus_fs_write_file")
+            }
+            Id::IoFsWritePrivateRaw => {
+                self.lower_std_io_fs_write_bytes_fallible(args, scope, "lotus_fs_write_private")
+            }
+            Id::IoFsWriteFile => self.lower_std_io_fs_write_file_fallible(
+                args, scope, "lotus_fs_write_file",
+            ),
+            Id::IoFsWriteFileAppend => self.lower_std_io_fs_write_file_fallible(
+                args, scope, "lotus_fs_write_file_append",
+            ),
+            Id::IoFsFileSize => self.lower_std_io_fs_file_size_fallible(args, scope),
+            Id::IoFsMkdir => self.lower_std_io_fs_mkdir_fallible(args, scope),
+            // C9 (pond/logfmt + pond/agent/sandbox).
+            Id::IoFsRename => self.lower_std_io_fs_rename_fallible(args, scope),
+            Id::IoFsUnlink => self.lower_std_io_fs_unlink_fallible(args, scope),
+            Id::IoFsMktemp => self.lower_std_io_fs_mktemp_fallible(args, scope),
+            Id::IoFsListDirCount => self.lower_std_io_fs_list_dir_count_fallible(args, scope),
+            Id::IoFsListDirAt => self.lower_std_io_fs_list_dir_at_fallible(args, scope),
+            Id::IoTcpListenSocket => self.lower_std_io_tcp_listen_socket_fallible(args, scope),
+            Id::IoTcpConnect => self.lower_std_io_tcp_connect_fallible(args, scope),
+            Id::IoTcpConnectWait => self.lower_std_io_tcp_connect_wait_fallible(args, scope),
+            Id::IoTcpAcceptOne => self.lower_std_io_tcp_accept_one_fallible(args, scope),
+            // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
+            Id::IoUnixListenSocket => self.lower_std_io_unix_listen_socket_fallible(args, scope),
+            Id::IoUnixConnect => self.lower_std_io_unix_connect_fallible(args, scope),
+            Id::IoUnixConnectWait => self.lower_std_io_unix_connect_wait_fallible(args, scope),
+            // TLS: connect handshakes + system trust verification,
+            // so the failure surface is rich enough to warrant
+            // `fallible(IoError)`. send_bytes / recv_bytes / close
+            // stay non-fallible (Int 0/-1 returns) to mirror the
+            // tcp shape.
+            Id::IoTlsConnect => self.lower_std_io_tls_connect_fallible(args, scope),
+            // upgrade wraps an already-connected fd in a TLS session
+            // (STARTTLS-style); same fallible(IoError) surface as
+            // connect since it handshakes + optionally verifies.
+            Id::IoTlsUpgrade => self.lower_std_io_tls_upgrade_fallible(args, scope),
+            // UDP primitives: `__bind` returns Int fd, `__send`
+            // returns (), `__recv` returns Bytes.
+            Id::IoUdpBindRaw | Id::IoUdpBind => self.lower_std_io_udp_bind_fallible(args, scope),
+            Id::IoUdpSendRaw | Id::IoUdpSend => self.lower_std_io_udp_send_fallible(args, scope),
+            Id::IoUdpRecvRaw | Id::IoUdpRecv => self.lower_std_io_udp_recv_fallible(args, scope),
+            // 2026-05-26: UDP multicast (P1) + setsockopt
+            // pass-through (P2).
+            Id::IoUdpJoinGroup => self.lower_std_io_udp_join_group_fallible(args, scope),
+            Id::IoUdpLeaveGroup => self.lower_std_io_udp_leave_group_fallible(args, scope),
+            Id::IoUdpSetMulticastTtl => {
+                self.lower_std_io_udp_set_multicast_ttl_fallible(args, scope)
+            }
+            Id::IoUdpSetMulticastLoop => {
+                self.lower_std_io_udp_set_multicast_loop_fallible(args, scope)
+            }
+            Id::IoUdpSetMulticastIface => {
+                self.lower_std_io_udp_set_multicast_iface_fallible(args, scope)
+            }
+            Id::IoUdpSetOptionInt => self.lower_std_io_udp_set_option_int_fallible(args, scope),
+            Id::IoUdpSetOptionBool => self.lower_std_io_udp_set_option_bool_fallible(args, scope),
+            Id::IoUdpGetOptionInt => self.lower_std_io_udp_get_option_int_fallible(args, scope),
+            Id::IoUdpRecvWithSource => {
+                self.lower_std_io_udp_recv_with_source_fallible(args, scope)
+            }
+            Id::IoUdpSetRecvTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_udp_set_recv_timeout_ns",
+                "set_recv_timeout",
+            ),
+            Id::IoUdpSetSendTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_udp_set_send_timeout_ns",
+                "set_send_timeout",
+            ),
+            // 2026-05-27 — TCP send/recv timeouts. Same helper
+            // as udp; the C side shares the underlying
+            // sock_set_timeout_ns. Sole reason for a separate
+            // path-call site (vs. one shared `std::io::sock`
+            // namespace) is the typecheck-level fd-type
+            // discrimination: a tcp fd shouldn't accept a udp-
+            // shaped op.
+            Id::IoTcpSetRecvTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tcp_set_recv_timeout_ns",
+                "set_recv_timeout",
+            ),
+            Id::IoTcpSetSendTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tcp_set_send_timeout_ns",
+                "set_send_timeout",
+            ),
+            // 2026-06-13 — TCP_NODELAY (Nagle off). The headline
+            // socket-option gap: latency-sensitive TCP protocols
+            // need to disable Nagle and could not from Hale before.
+            Id::IoTcpSetNodelay => self.lower_std_io_tcp_set_nodelay(args, scope),
+            // 2026-06-13 — recv_stamped (#1): one-time SO_TIMESTAMPNS
+            // opt-in so recv_stamped_into reads the kernel RX timestamp
+            // with no per-recv syscall.
+            Id::IoTcpSetRxTimestamps => self.lower_std_io_tcp_set_rx_timestamps(args, scope),
+            // TLS fast-path siblings — same fd+Bool helper; the C side
+            // resolves the handle to the underlying socket fd (2026-06-14).
+            Id::IoTlsSetNodelay => self.lower_tcp_set_bool_opt_fallible(
+                args, scope, "lotus_tls_set_nodelay", "set_nodelay",
+            ),
+            Id::IoTlsSetRxTimestamps => self.lower_tcp_set_bool_opt_fallible(
+                args, scope, "lotus_tls_set_rx_timestamps", "set_rx_timestamps",
+            ),
+            // TLS siblings — same helper; the first arg is a TLS handle, the
+            // C side resolves it to the connection's underlying fd. Bounds a
+            // blocking SSL_read so a half-open connection is detected
+            // (WsClient liveness fix) rather than hanging forever.
+            Id::IoTlsSetRecvTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tls_set_recv_timeout_ns",
+                "set_recv_timeout",
+            ),
+            Id::IoTlsSetSendTimeout => self.lower_std_io_udp_set_timeout_fallible(
+                args, scope,
+                "lotus_tls_set_send_timeout_ns",
+                "set_send_timeout",
+            ),
+            // File primitives: only the `__`-prefixed forms map
+            // here. The user-facing `open` / `write_bytes` / `seek`
+            // resolve via STDLIB_FN_RENAMES to the Hale-level
+            // wrappers in ../../hale-stdlib/hl/file.hl that bridge
+            // File ↔ fd (open returns a File, write_bytes/seek
+            // take a File).
+            Id::IoFileOpenRaw => self.lower_std_io_file_open_fallible(args, scope),
+            Id::IoFileWriteBytesRaw => self.lower_std_io_file_write_bytes_fallible(args, scope),
+            Id::IoFileSeekRaw => self.lower_std_io_file_seek_fallible(args, scope),
+            // C2 (pond/subprocess): synchronous run + async
+            // lifecycle primitives. `run` is user-facing; the
+            // `__*` variants are stdlib internals consumed by
+            // process.hl's spawn/wait/kill wrappers.
+            Id::ProcessRun => self.lower_std_process_run_fallible(args, scope),
+            Id::ProcessSpawnRaw => self.lower_std_process_spawn_fallible(args, scope),
+            Id::ProcessWaitPidRaw => self.lower_std_process_wait_pid_fallible(args, scope),
+            Id::ProcessKillEscalateRaw => {
+                self.lower_std_process_kill_escalate_fallible(args, scope)
+            }
+            Id::ProcessTryWaitPidRaw => self.lower_std_process_try_wait_pid_fallible(args, scope),
+            Id::ProcessSignalPidRaw => self.lower_std_process_signal_pid_fallible(args, scope),
+            Id::ProcessPipeReadRaw => self.lower_std_process_pipe_read_fallible(args, scope),
+            Id::ProcessPipeWriteRaw => self.lower_std_process_pipe_write_fallible(args, scope),
+            // No arm under `or`: the functions whose row says they cannot
+            // fail (`or_over_an_infallible_row`). `stdlib_registry_parity`
+            // holds this arm to the rows: it is every id whose row is not
+            // fallible.
+            Id::BusBindingFailRaw
+            | Id::BusLocalDispatchRaw
+            | Id::BusTransportRealizeRaw
+            | Id::BusTransportReclaimRaw
+            | Id::BusTransportSpawnServerRaw
+            | Id::BytesBuilderAppendF32Raw
+            | Id::BytesBuilderAppendF64Raw
+            | Id::BytesBuilderAppendPadRaw
+            | Id::BytesBuilderAppendRaw
+            | Id::BytesBuilderAppendScalarRaw
+            | Id::BytesBuilderAppendSliceRaw
+            | Id::BytesBuilderAppendStrRaw
+            | Id::BytesBuilderClearRaw
+            | Id::BytesBuilderFinishRaw
+            | Id::BytesBuilderFreeRaw
+            | Id::BytesBuilderLenRaw
+            | Id::BytesBuilderNewRaw
+            | Id::BytesBuilderShiftFrontRaw
+            | Id::BytesBuilderSnapshotRaw
+            | Id::BytesBuilderTextViewRaw
+            | Id::BytesBuilderViewRaw
+            | Id::BytesBuilderXorMaskIntoRaw
+            | Id::BytesClone
+            | Id::BytesConcat
+            | Id::BytesFindByte
+            | Id::BytesFromInt
+            | Id::BytesFromString
+            | Id::BytesIsAllocFailRaw
+            | Id::BytesSlice
+            | Id::CryptoCrc32
+            | Id::CryptoEcdsaP256Verify
+            | Id::CryptoHmacSha256
+            | Id::CryptoHmacSha512
+            | Id::CryptoSha1
+            | Id::CryptoSha256
+            | Id::CryptoSha512
+            | Id::DecimalFormat
+            | Id::DecimalToFloat
+            | Id::DiagHeapAllocCount
+            | Id::DiagSyscallCount
+            | Id::EnvArg
+            | Id::EnvArgOr
+            | Id::EnvArgsCount
+            | Id::EnvVar
+            | Id::EnvVarExists
+            | Id::IoFileAtEofRaw
+            | Id::IoFileCloseRaw
+            | Id::IoFileReadLineRaw
+            | Id::IoFsExtension
+            | Id::IoFsFileExists
+            | Id::IoMirrorCapacityRaw
+            | Id::IoMirrorCommitRaw
+            | Id::IoMirrorConsumeRaw
+            | Id::IoMirrorFreeRaw
+            | Id::IoMirrorLenRaw
+            | Id::IoMirrorNewRaw
+            | Id::IoMirrorReadableRaw
+            | Id::IoMirrorRecvIntoRaw
+            | Id::IoMirrorWritableRaw
+            | Id::IoSockoptIpAddMembership
+            | Id::IoSockoptIpDropMembership
+            | Id::IoSockoptIpMtuDiscover
+            | Id::IoSockoptIpMulticastIf
+            | Id::IoSockoptIpMulticastLoop
+            | Id::IoSockoptIpMulticastTtl
+            | Id::IoSockoptIpPktinfo
+            | Id::IoSockoptIpPmtudiscDo
+            | Id::IoSockoptIpPmtudiscDont
+            | Id::IoSockoptIpPmtudiscProbe
+            | Id::IoSockoptIpPmtudiscWant
+            | Id::IoSockoptIpprotoIp
+            | Id::IoSockoptIpprotoIpv6
+            | Id::IoSockoptIpprotoTcp
+            | Id::IoSockoptIpprotoUdp
+            | Id::IoSockoptIpTos
+            | Id::IoSockoptIpTtl
+            | Id::IoSockoptSoBindtodevice
+            | Id::IoSockoptSoBroadcast
+            | Id::IoSockoptSoKeepalive
+            | Id::IoSockoptSoLinger
+            | Id::IoSockoptSolSocket
+            | Id::IoSockoptSoPriority
+            | Id::IoSockoptSoRcvbuf
+            | Id::IoSockoptSoRcvtimeo
+            | Id::IoSockoptSoReuseaddr
+            | Id::IoSockoptSoReuseport
+            | Id::IoSockoptSoSndbuf
+            | Id::IoSockoptSoSndtimeo
+            | Id::IoSockoptTcpNodelay
+            | Id::IoStdinReadByte
+            | Id::IoStdinReadLine
+            | Id::IoStdinReadLineStatus
+            | Id::IoStdoutWriteBytes
+            | Id::IoTcpAcceptOneRaw
+            | Id::IoTcpCloseFd
+            | Id::IoTcpCloseFdRaw
+            | Id::IoTcpConnectRaw
+            | Id::IoTcpIoErrorKindRaw
+            | Id::IoTcpLastIoStatusRaw
+            | Id::IoTcpLastRecvKernelNs
+            | Id::IoTcpLastRecvUserNs
+            | Id::IoTcpListenSocketRaw
+            | Id::IoTcpRecvBytesRaw
+            | Id::IoTcpRecvInto
+            | Id::IoTcpRecvRaw
+            | Id::IoTcpRecvStampedInto
+            | Id::IoTcpSendBytesRaw
+            | Id::IoTcpSendRaw
+            | Id::IoTcpSetRecvTimeoutNsRaw
+            | Id::IoTcpShutdownListenSocketRaw
+            | Id::IoTlsClose
+            | Id::IoTlsLastRecvKernelNs
+            | Id::IoTlsLastRecvUserNs
+            | Id::IoTlsRecvBytes
+            | Id::IoTlsRecvInto
+            | Id::IoTlsRecvStampedInto
+            | Id::IoTlsSendBytes
+            | Id::IoUdpClose
+            | Id::IoUdpCloseRaw
+            | Id::IoUdpLastSourceHost
+            | Id::IoUdpLastSourcePort
+            | Id::IoUdpRecvInto
+            | Id::IoUnixGroupId
+            | Id::IoUnixPeerGid
+            | Id::IoUnixPeerGroupAt
+            | Id::IoUnixPeerGroupsCount
+            | Id::IoUnixPeerPid
+            | Id::IoUnixPeerUid
+            | Id::IoUnixUserId
+            | Id::JsonNextNonWs
+            | Id::JsonNextQuoteOrBs
+            | Id::JsonNextStructOrQuote
+            | Id::MathAcos
+            | Id::MathAsin
+            | Id::MathAtan
+            | Id::MathAtan2
+            | Id::MathCeil
+            | Id::MathCos
+            | Id::MathExp
+            | Id::MathFloatToInt
+            | Id::MathFloor
+            | Id::MathInf
+            | Id::MathIntToFloat
+            | Id::MathIsNan
+            | Id::MathLog
+            | Id::MathNan
+            | Id::MathPow
+            | Id::MathRound
+            | Id::MathSin
+            | Id::MathSqrt
+            | Id::MathTan
+            | Id::MathTanh
+            | Id::MathTrunc
+            | Id::ProcessDumpArenaResidency
+            | Id::ProcessDumpPoolResidency
+            | Id::ProcessExit
+            | Id::ProcessPid
+            | Id::ProcessRssBytes
+            | Id::ProcessUid
+            | Id::RandNextInt
+            | Id::RandSeedFromTime
+            | Id::RegexFind
+            | Id::RegexMatches
+            | Id::RegexValid
+            | Id::RingSpscEmitRaw
+            | Id::RingSpscInitRaw
+            | Id::RingSpscNoteDropRaw
+            | Id::RingSpscReadRaw
+            | Id::RingSpscSetTagBRaw
+            | Id::ShmLastRecordKernelNs
+            | Id::ShmLastRecordSeq
+            | Id::ShmLastRecordUserNs
+            | Id::StrBuilderAppend
+            | Id::StrBuilderFinish
+            | Id::StrBuilderLen
+            | Id::StrBuilderNew
+            | Id::StrByteAtUnchecked
+            | Id::StrCanParseFloat
+            | Id::StrCanParseInt
+            | Id::StrClone
+            | Id::StrContains
+            | Id::StrCpAt
+            | Id::StrCpCount
+            | Id::StrCpSize
+            | Id::StrEndsWith
+            | Id::StrFromBytes
+            | Id::StrIndexOf
+            | Id::StrJoin
+            | Id::StrLower
+            | Id::StrPadLeft
+            | Id::StrPadRight
+            | Id::StrRangeCopy
+            | Id::StrRangeEq
+            | Id::StrRepeat
+            | Id::StrReplace
+            | Id::StrSplitInto
+            | Id::StrStartsWith
+            | Id::StrSubstring
+            | Id::StrTrim
+            | Id::StrUpper
+            | Id::TermIsTty
+            | Id::TermRawDisableRaw
+            | Id::TermRawEnableRaw
+            | Id::TermSizePackedRaw
+            | Id::TestFailedRaw
+            | Id::TestNoteFailRaw
+            | Id::TestNotePassRaw
+            | Id::TestPassesRaw
+            | Id::TextBase64Decode
+            | Id::TextBase64Encode
+            | Id::TextBase64UrlEncode
+            | Id::TextIsAlnum
+            | Id::TextIsAlpha
+            | Id::TextIsDigit
+            | Id::TextIsWhitespace
+            | Id::TextIsWordChar
+            | Id::TextTokenizeWordsInto
+            | Id::TimeCanParseIso8601
+            | Id::TimeCurrent
+            | Id::TimeFromNanos
+            | Id::TimeIso8601
+            | Id::TimeMonotonic
+            | Id::TimeMonotonicNs
+            | Id::TimeNanos
+            | Id::TimeNow
+            | Id::TimeSleep
+            | Id::TimeTimeFromUnix
+            | Id::TimeUnix
+            | Id::TsNodeChild
+            | Id::TsNodeChildCount
+            | Id::TsNodeEndByte
+            | Id::TsNodeIsNamed
+            | Id::TsNodeKind
+            | Id::TsNodeNamedChild
+            | Id::TsNodeNamedChildCount
+            | Id::TsNodeStartByte
+            | Id::TsNodeText
+            | Id::TsParseGo
+            | Id::TsRootNode => return Err(or_over_an_infallible_row(segs, at)),
+        };
+        lowered.map(Some)
     }
 
     /// 2026-05-16: `std::text::tokenize_words_into(s: String,
@@ -29856,7 +30434,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
-        event: &str,
+        event: RecoveryEvent,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
         let groups: Vec<(String, Vec<AccumulatorSlot>)> = info
@@ -29868,8 +30446,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let persists = info
                 .persists_through_per_closure
                 .get(&closure_name)
-                .map(|v| v.iter().any(|e| e == event))
-                .unwrap_or(false);
+                .is_some_and(|v| v.contains(&event));
             if persists {
                 continue;
             }
@@ -29880,7 +30457,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     slot,
                     &format!(
                         "{}.{}.acc[{}].reset.{}",
-                        locus_name, closure_name, i, event
+                        locus_name, closure_name, i, event.name()
                     ),
                 )?;
             }
@@ -30382,7 +30959,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
         in_place: bool,
     ) -> Result<BlockEnd, CodegenError> {
-        let kind = if in_place { "restart_in_place" } else { "restart" };
+        let event = if in_place { RecoveryEvent::RestartInPlace } else { RecoveryEvent::Restart };
+        let kind = event.name();
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "{}() takes exactly one argument, got {}",
@@ -30552,7 +31130,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `persists_through(...)` clause names this recovery
         // event. Default = reset.
         self.emit_accumulator_reset_for_event(
-            &info, child_ptr, kind, &locus_name,
+            &info, child_ptr, event, &locus_name,
         )?;
         // Rejoin the quarantine branch when a bound was declared, so
         // whatever follows the recovery statement sees one successor.
@@ -30651,9 +31229,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         // m46: zero each closure's accumulators unless its
-        // `persists_through(...)` clause names "quarantine".
+        // `persists_through(...)` clause names `quarantine`.
         self.emit_accumulator_reset_for_event(
-            info, child_ptr, "quarantine", locus_name,
+            info, child_ptr, RecoveryEvent::Quarantine, locus_name,
         )?;
         Ok(())
     }
@@ -33543,109 +34121,66 @@ mod tests {
 /// Where a `std::*` call sits, for [`Cx::lower_std_call`]: a statement
 /// (`lower_stmt_at`'s path-call statement, through `lower_path_call`) or
 /// a value (`lower_expr`, through `lower_path_call_expr`). A call under
-/// `or` is the fallible dispatcher's.
+/// `or` has a match of its own, [`Cx::lower_std_intrinsic_fallible`]: what
+/// it produces is the call's success value and its error path, not a
+/// value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StdCallPos {
     Statement,
     Value,
 }
 
-/// The bare statement calls lowering refuses as fallible ("returns a
-/// fallible value — address the error with `or raise` ..."): C9's
-/// fallible-only fs surfaces, C4's getrandom, C2's subprocess
-/// primitives, the file and udp primitives and two tls setters. Most
-/// have no signature row, so the checker does not refuse them first.
-/// S5 replaces this list with the row's fallibility.
-const REFUSED_BARE_STATEMENT: &[IntrinsicId] = &[
-    IntrinsicId::IoFsRename,
-    IntrinsicId::IoFsUnlink,
-    IntrinsicId::IoFsMktemp,
-    IntrinsicId::OsGetrandom,
-    IntrinsicId::ProcessRun,
-    IntrinsicId::ProcessSpawnRaw,
-    IntrinsicId::ProcessWaitPidRaw,
-    IntrinsicId::ProcessTryWaitPidRaw,
-    IntrinsicId::ProcessSignalPidRaw,
-    IntrinsicId::ProcessKillEscalateRaw,
-    IntrinsicId::ProcessPipeReadRaw,
-    IntrinsicId::ProcessPipeWriteRaw,
-    IntrinsicId::IoFileOpenRaw,
-    IntrinsicId::IoFileWriteBytesRaw,
-    IntrinsicId::IoFileSeekRaw,
-    IntrinsicId::IoUdpBindRaw,
-    IntrinsicId::IoUdpBind,
-    IntrinsicId::IoUdpSendRaw,
-    IntrinsicId::IoUdpSend,
-    IntrinsicId::IoUdpRecvRaw,
-    IntrinsicId::IoUdpRecv,
-    IntrinsicId::IoUdpJoinGroup,
-    IntrinsicId::IoUdpLeaveGroup,
-    IntrinsicId::IoUdpSetMulticastTtl,
-    IntrinsicId::IoUdpSetMulticastLoop,
-    IntrinsicId::IoUdpSetMulticastIface,
-    IntrinsicId::IoUdpSetOptionInt,
-    IntrinsicId::IoUdpSetOptionBool,
-    IntrinsicId::IoUdpGetOptionInt,
-    IntrinsicId::IoUdpRecvWithSource,
-    IntrinsicId::IoUdpSetRecvTimeout,
-    IntrinsicId::IoUdpSetSendTimeout,
-    IntrinsicId::IoTlsSetRecvTimeout,
-    IntrinsicId::IoTlsSetSendTimeout,
-];
+/// A bare call of a stdlib function whose row says it can fail. The check
+/// refuses it (a bare fallible call, GH #738), so lowering meets one only
+/// in a build that skipped the check, and its answer is an internal error
+/// naming the row, not a refusal of its own. Until F.40 phase 4, S5 two id
+/// lists said which bare calls lowering refused.
+fn bare_call_of_a_fallible_row(
+    segs: &[&str],
+    at: hale_syntax::Span,
+    pos: StdCallPos,
+) -> CodegenError {
+    let err = hale_types::stdlib_surface::signature_for(segs)
+        .and_then(|s| s.fallible)
+        .map(|e| format!(" ({e})"))
+        .unwrap_or_default();
+    let pos = match pos {
+        StdCallPos::Statement => "statement",
+        StdCallPos::Value => "value",
+    };
+    CodegenError::UnsupportedAt(
+        format!(
+            "internal error: a bare call of `{}` reached lowering at {pos} \
+             position, but its row says it can fail{err}, and `hale check` \
+             refuses that call (GH #738): this build skipped the check",
+            segs.join("::")
+        ),
+        at,
+    )
+}
 
-/// The bare value calls lowering refuses as fallible, in the same
-/// words: the statement list and 2026-05-17's parse_int / parse_float,
-/// which are fallible-only at the expression dispatch. S5 replaces this
-/// list with the row's fallibility.
-const REFUSED_BARE_VALUE: &[IntrinsicId] = &[
-    IntrinsicId::StrParseInt,
-    IntrinsicId::StrParseFloat,
-    IntrinsicId::IoFsRename,
-    IntrinsicId::IoFsUnlink,
-    IntrinsicId::IoFsMktemp,
-    IntrinsicId::OsGetrandom,
-    IntrinsicId::ProcessRun,
-    IntrinsicId::ProcessSpawnRaw,
-    IntrinsicId::ProcessWaitPidRaw,
-    IntrinsicId::ProcessTryWaitPidRaw,
-    IntrinsicId::ProcessSignalPidRaw,
-    IntrinsicId::ProcessKillEscalateRaw,
-    IntrinsicId::ProcessPipeReadRaw,
-    IntrinsicId::ProcessPipeWriteRaw,
-    IntrinsicId::IoFileOpenRaw,
-    IntrinsicId::IoFileWriteBytesRaw,
-    IntrinsicId::IoFileSeekRaw,
-    IntrinsicId::IoUdpBindRaw,
-    IntrinsicId::IoUdpBind,
-    IntrinsicId::IoUdpSendRaw,
-    IntrinsicId::IoUdpSend,
-    IntrinsicId::IoUdpRecvRaw,
-    IntrinsicId::IoUdpRecv,
-    IntrinsicId::IoUdpJoinGroup,
-    IntrinsicId::IoUdpLeaveGroup,
-    IntrinsicId::IoUdpSetMulticastTtl,
-    IntrinsicId::IoUdpSetMulticastLoop,
-    IntrinsicId::IoUdpSetMulticastIface,
-    IntrinsicId::IoUdpSetOptionInt,
-    IntrinsicId::IoUdpSetOptionBool,
-    IntrinsicId::IoUdpGetOptionInt,
-    IntrinsicId::IoUdpRecvWithSource,
-    IntrinsicId::IoUdpSetRecvTimeout,
-    IntrinsicId::IoUdpSetSendTimeout,
-    IntrinsicId::IoTlsSetRecvTimeout,
-    IntrinsicId::IoTlsSetSendTimeout,
-];
-
-/// Whether lowering refuses a bare call of `id` at `pos` as fallible.
-/// A statement the statement list does not name was the value
-/// position's call with its value dropped (S1), so the value list
-/// refuses it too: that is how a bare `parse_int` statement is refused.
-fn refuses_bare(id: IntrinsicId, pos: StdCallPos) -> bool {
-    match pos {
-        StdCallPos::Statement => {
-            REFUSED_BARE_STATEMENT.contains(&id) || REFUSED_BARE_VALUE.contains(&id)
-        }
-        StdCallPos::Value => REFUSED_BARE_VALUE.contains(&id),
+/// An `or` over a stdlib function whose row says it cannot fail. With a
+/// signature, the check refuses the `or` ("is not fallible"), so this is
+/// an internal error naming the row. Without one (step S6 gives every
+/// dispatched function one) the check types the call `Unknown` and lets
+/// the `or` through, so this refusal is the one a checked program meets.
+/// Until F.40 phase 4, S5 an id list said which of them lowering refused.
+fn or_over_an_infallible_row(segs: &[&str], at: hale_syntax::Span) -> CodegenError {
+    let path = segs.join("::");
+    match hale_types::stdlib_surface::signature_for(segs) {
+        Some(_) => CodegenError::UnsupportedAt(
+            format!(
+                "internal error: an `or` over `{path}` reached lowering, but \
+                 its row says it cannot fail, and `hale check` refuses that \
+                 `or`: this build skipped the check"
+            ),
+            at,
+        ),
+        None => CodegenError::Unsupported(format!(
+            "`{path}` is not a fallible call — remove the `or` clause. \
+             Returns its value directly; failures (if any) use the \
+             sentinel-with-discriminator idiom or are infallible."
+        )),
     }
 }
 

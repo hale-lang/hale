@@ -138,12 +138,10 @@ pub fn signature_for(segs: &[&str]) -> Option<&'static Sig> {
 }
 
 impl Sig {
-    /// Type of a BARE (no `or`) call. Stdlib fallible path-calls
-    /// are dual-mode at codegen: with `or` they take the fallible
-    /// ABI; without, they're the legacy direct form whose return
-    /// differs per fn (read_file → the String, write_file → an Int
-    /// status). We don't model the legacy zoo — bare fallible calls
-    /// stay Unknown (the status quo), while `or` positions get the
+    /// Type of a BARE (no `or`) call. A bare call of a fallible row is
+    /// the bare-fallible law's error, and lowering has no bare form of
+    /// one (F.40 phase 4, S5), so it types Unknown and the call reports
+    /// that one error and no type mismatch, while `or` positions get the
     /// precise types via `or_types` (consulted by the Or arm).
     pub fn ret_ty(&self) -> Ty {
         match self.fallible {
@@ -205,10 +203,9 @@ pub enum Visibility {
     /// Called only by the stdlib's own seeds, and invisible to
     /// [`unknown_fn_error`] (a call from user code is an unknown
     /// function), [`effects_for`], [`suggest`] and the catalogue: the
-    /// paths a dispatcher has an arm for and the surface never listed,
-    /// plus `std::io::file::close`, a signature row the surface never
-    /// listed and nothing lowers. An internal row carries
-    /// [`EffectSet::UNCLASSIFIED`], which no query reads.
+    /// paths a dispatcher has an arm for and the surface never listed.
+    /// An internal row carries [`EffectSet::UNCLASSIFIED`], which no
+    /// query reads.
     Internal,
 }
 
@@ -222,6 +219,11 @@ pub enum Lower {
     /// rename enters the call graph, and the body's effects would then
     /// be inferred rather than read from the row.
     HaleBody(&'static str),
+    /// An overload on the first argument: one Hale body per receiver
+    /// type, each pair `(type name, body)` naming the receiver's mangled
+    /// type (`__StdHttpRequest`) and the body that serves it. Lowering
+    /// lowers the receiver once and calls the body its type picks.
+    HaleBodyByReceiver(&'static [(&'static str, &'static str)]),
     /// Reached through `hale_stdlib::PATH_RENAMES` by the dispatchers'
     /// fallback.
     Renamed,
@@ -453,6 +455,9 @@ macro_rules! lower {
     (HaleBody($body:literal)) => {
         Lower::HaleBody($body)
     };
+    (HaleBodyByReceiver([$(($ty:literal, $body:literal)),+ $(,)?])) => {
+        Lower::HaleBodyByReceiver(&[$(($ty, $body)),+])
+    };
     (Renamed) => {
         Lower::Renamed
     };
@@ -638,7 +643,9 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["crypto"],
         fns: &[
             row!("crc32", PURE, [Bytes] -> Int, Intrinsic(CryptoCrc32)),
-            row!("ecdsa_p256_sign", PURE, _, Intrinsic(CryptoEcdsaP256Sign)),
+            // One mode, fallible (F.40 phase 4, S5): the bare form that
+            // answered an empty Bytes on a bad key is gone.
+            row!("ecdsa_p256_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEcdsaP256Sign)),
             row!("ecdsa_p256_verify", PURE, _, Intrinsic(CryptoEcdsaP256Verify)),
             row!("hmac_sha256", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha256)),
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
@@ -691,7 +698,13 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("build_context", PURE, _, Renamed),
             row!("get", SYSCALL | BLOCK, _, Renamed),
-            row!("header", PURE, _, Intrinsic(HttpHeader)),
+            // The header of a Request or of a Response: the receiver's type
+            // picks the body (F.40 phase 4, S5; an arm chose it from the
+            // receiver's lowered type until then, lowering it twice).
+            row!("header", PURE, _, HaleBodyByReceiver([
+                ("__StdHttpRequest", "__http_request_header"),
+                ("__StdHttpResponse", "__http_response_header"),
+            ])),
             row!("is_route", PURE, _, Renamed),
             // GH #771: the one non-json member of the same class — also
             // dispatch-routed, also a struct return.
@@ -710,21 +723,19 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("__at_eof", SYSCALL, _, Intrinsic(IoFileAtEofRaw)),
             row!("__close", SYSCALL, _, Intrinsic(IoFileCloseRaw)),
-            row!("__open", SYSCALL, _, Intrinsic(IoFileOpenRaw)),
+            // The three primitives `file.hl`'s `File` wraps lower only under
+            // an `or`, so their rows say they can fail and a bare call is
+            // the checker's (F.40 phase 4, S5).
+            row!("__open", SYSCALL, [Str, Str] -> Int ! "IoError", Intrinsic(IoFileOpenRaw)),
             row!("__read_line", SYSCALL | BLOCK, _, Intrinsic(IoFileReadLineRaw)),
-            row!("__seek", SYSCALL, _, Intrinsic(IoFileSeekRaw)),
-            row!("__write_bytes", SYSCALL, _, Intrinsic(IoFileWriteBytesRaw)),
+            row!("__seek", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoFileSeekRaw)),
+            row!("__write_bytes", SYSCALL, [Int, Bytes] -> Unit ! "IoError", Intrinsic(IoFileWriteBytesRaw)),
             row!("at_eof", SYSCALL, [Int] -> Bool, Renamed),
             row!("open", SYSCALL, [Str, Str] -> Int ! "IoError", Renamed),
             row!("read_line", SYSCALL | BLOCK, [Int] -> Str, Renamed),
             row!("seek", SYSCALL, [Int, Int] -> Unit ! "IoError", Renamed),
             row!("write_bytes", SYSCALL, [Int, Bytes] -> Unit ! "IoError", Renamed),
             row!("write_line", SYSCALL, _, Renamed),
-            // A signature row the surface never listed, and nothing
-            // lowers: a call is an unknown function (did you mean
-            // `__close`?) whose arity and argument the signature still
-            // checks. Kept as it was by the fold (F.40 phase 4, S2).
-            internal!("close", [Int] -> Int, Unlowered),
         ],
         open_prefixes: &[],
     },
@@ -744,8 +755,9 @@ pub const SURFACES: &[NsSurface] = &[
             // std::json/std::http rows and process write_stdin/read_std*
             // (routed through Hale-stdlib __ fns — codegen never validates
             // their args, so there's no ground truth to table);
-            // io::file::write_line, io::tcp set_recv/send_timeout (lowering
-            // ambiguous); io::fs::list_dir (spec-only); the 7 spec'd
+            // io::file::write_line (lowering ambiguous; the tcp timeout
+            // setters, once here too, have their rows since F.40 phase 4,
+            // S5); io::fs::list_dir (spec-only); the 7 spec'd
             // std::io::tls fns with NO lowering (recv_stamped_into,
             // last_recv_*, set_*) — names-only keeps them permissive.
             // Handle args are plain Int FDs at the path-call level (the
@@ -757,9 +769,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("write_file", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFile)),
             row!("__write_private", SYSCALL, [Str, Bytes] -> Unit ! "IoError", Intrinsic(IoFsWritePrivateRaw)),
             // GH #535 (DNA F.9): the `or` form lowers through the same
-            // fallible channel as write_file (Unit success); the BARE legacy
-            // call returns an Int status and stays typed Unknown like every
-            // bare fallible row. The row used to say Int and the checker
+            // fallible channel as write_file (Unit success); a bare call
+            // types Unknown like every bare fallible row (its Int-status
+            // bare form left lowering at F.40 phase 4, S5). The row used to say Int and the checker
             // admitted `let n = ... or 0`, which codegen then refused with a
             // message about something else.
             row!("write_file_append", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFileAppend)),
@@ -842,9 +854,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("recv_stamped_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTcpRecvStampedInto)),
             row!("send_fd", SYSCALL, _, Renamed),
             row!("set_nodelay", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTcpSetNodelay)),
-            row!("set_recv_timeout", SYSCALL, _, Intrinsic(IoTcpSetRecvTimeout)),
+            row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetRecvTimeout)),
             row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTcpSetRxTimestamps)),
-            row!("set_send_timeout", SYSCALL, _, Intrinsic(IoTcpSetSendTimeout)),
+            row!("set_send_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetSendTimeout)),
         ],
         open_prefixes: &[],
     },
@@ -906,10 +918,10 @@ pub const SURFACES: &[NsSurface] = &[
             // closed if every member of it is.
             row!("recv_stamped_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvStampedInto)),
             row!("send_bytes", SYSCALL, [Int, Bytes] -> Int, Intrinsic(IoTlsSendBytes)),
-            row!("set_nodelay", SYSCALL, _, Intrinsic(IoTlsSetNodelay)),
-            row!("set_recv_timeout", SYSCALL, _, Intrinsic(IoTlsSetRecvTimeout)),
-            row!("set_rx_timestamps", SYSCALL, _, Intrinsic(IoTlsSetRxTimestamps)),
-            row!("set_send_timeout", SYSCALL, _, Intrinsic(IoTlsSetSendTimeout)),
+            row!("set_nodelay", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTlsSetNodelay)),
+            row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTlsSetRecvTimeout)),
+            row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTlsSetRxTimestamps)),
+            row!("set_send_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTlsSetSendTimeout)),
             row!("upgrade", SYSCALL | BLOCK, [Int, Str, Bool] -> Int ! "IoError", Intrinsic(IoTlsUpgrade)),
         ],
         open_prefixes: &[],
@@ -917,10 +929,10 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "udp"],
         fns: &[
-            row!("__bind", SYSCALL, _, Intrinsic(IoUdpBindRaw)),
+            row!("__bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBindRaw)),
             row!("__close", SYSCALL, _, Intrinsic(IoUdpCloseRaw)),
-            row!("__recv", SYSCALL | BLOCK, _, Intrinsic(IoUdpRecvRaw)),
-            row!("__send", SYSCALL, _, Intrinsic(IoUdpSendRaw)),
+            row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvRaw)),
+            row!("__send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSendRaw)),
             row!("bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBind)),
             row!("close", SYSCALL, [Int] -> Int, Intrinsic(IoUdpClose)),
             row!("get_option_int", SYSCALL, [Int, Int, Int] -> Int ! "IoError", Intrinsic(IoUdpGetOptionInt)),
@@ -1077,18 +1089,26 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["process"],
         fns: &[
-            row!("__kill_escalate", SYSCALL, _, Intrinsic(ProcessKillEscalateRaw)),
-            row!("__pipe_read", SYSCALL | BLOCK, _, Intrinsic(ProcessPipeReadRaw)),
-            row!("__pipe_write", SYSCALL, _, Intrinsic(ProcessPipeWriteRaw)),
-            row!("__signal_pid", SYSCALL, _, Intrinsic(ProcessSignalPidRaw)),
-            row!("__spawn", SYSCALL, _, Intrinsic(ProcessSpawnRaw)),
-            row!("__try_wait_pid", SYSCALL, _, Intrinsic(ProcessTryWaitPidRaw)),
-            row!("__wait_pid", SYSCALL | BLOCK, _, Intrinsic(ProcessWaitPidRaw)),
+            // The primitives `process.hl` wraps lower only under an `or`, so
+            // their rows say they can fail (F.40 phase 4, S5). The handles
+            // `__spawn` and the two waits return (`__StdProcessSpawnHandle`,
+            // `__StdProcessWaitOutcome`) have no public spelling, so their
+            // success is `Any`, as `run`'s is.
+            row!("__kill_escalate", SYSCALL, [Int] -> Unit ! "IoError", Intrinsic(ProcessKillEscalateRaw)),
+            row!("__pipe_read", SYSCALL | BLOCK, [Int] -> Str ! "IoError", Intrinsic(ProcessPipeReadRaw)),
+            row!("__pipe_write", SYSCALL, [Int, Str] -> Int ! "IoError", Intrinsic(ProcessPipeWriteRaw)),
+            row!("__signal_pid", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(ProcessSignalPidRaw)),
+            row!("__spawn", SYSCALL, [Str] -> Any ! "IoError", Intrinsic(ProcessSpawnRaw)),
+            row!("__try_wait_pid", SYSCALL, [Int] -> Any ! "IoError", Intrinsic(ProcessTryWaitPidRaw)),
+            row!("__wait_pid", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Intrinsic(ProcessWaitPidRaw)),
             // GH #716: adopt closes the outgoing handle's fds and
             // TERM/KILL-reaps its process, so it carries the same
             // syscall class as kill — not PURE, despite reading like
             // an assignment.
-            row!("adopt", SYSCALL, _, HaleBody("__std_process_adopt")),
+            // Reached through its rename like the other `process.hl`
+            // wrappers: a statement calls a body that returns nothing (F.40
+            // phase 4, S5; a hand-kept statement branch until then).
+            row!("adopt", SYSCALL, _, Renamed),
             row!("dump_arena_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
             row!("dump_pool_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
             row!("exit", SYSCALL, [Int] -> Unit, Intrinsic(ProcessExit)),
@@ -1412,7 +1432,6 @@ pub enum IntrinsicId {
     EnvArgsCount,
     EnvVar,
     EnvVarExists,
-    HttpHeader,
     IoFileAtEofRaw,
     IoFileCloseRaw,
     IoFileOpenRaw,

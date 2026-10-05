@@ -76,14 +76,11 @@ fn the_identities_take_the_list_and_the_walk_from_hale_graph() {
     ] {
         let text = read(rel);
         assert!(
-            text.contains("hale_graph::identity::stale_hash_paths("),
-            "{rel}: the stale hash takes its path list from hale_graph::identity"
+            text.contains("hale_graph::identity::identity_files(")
+                && text.contains("hale_graph::identity::fold_files("),
+            "{rel}: the stale hash folds hale_graph::identity's selection with its fold, at build and at run time"
         );
     }
-    assert!(
-        !root().join("crates/hale-codegen/runtime/stdlib").exists(),
-        "codegen/runtime/stdlib exists again; stale_hash_paths must say which tree is the stdlib"
-    );
 }
 
 #[test]
@@ -115,11 +112,6 @@ fn every_covered_directory_exists_and_every_covered_crate_contributes() {
         hale_graph::identity::manifest_files(&root).len(),
         hale_graph::identity::MANIFEST_FILES.len(),
         "a manifest file the identity names does not exist"
-    );
-    let stale = hale_graph::identity::stale_hash_paths(&root.join("crates/hale-codegen"));
-    assert!(
-        stale.len() > 3 && stale.iter().all(|p| p.is_file()),
-        "the stale hash's paths exist: {stale:?}"
     );
 }
 
@@ -294,7 +286,7 @@ fn covered_classes(i: &hale_graph::identity::Identity) -> std::collections::BTre
 fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
     let root = root();
     let selected = classes_of(&hale_graph::identity::identity_files(&root));
-    for name in ["toolchain_digest", "compiler_src_hash"] {
+    for name in ["toolchain_digest", "compiler_src_hash", "stale_src_hash"] {
         assert_eq!(
             covered_classes(identity(name)),
             selected,
@@ -307,24 +299,101 @@ fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
         selected,
         "`exec_digest` frames `toolchain_digest`: it covers what that does"
     );
-    let stale = classes_of(&hale_graph::identity::stale_hash_paths(&root.join("crates/hale-codegen")));
-    assert_eq!(
-        covered_classes(identity("codegen_src_hash")),
-        stale,
-        "`codegen_src_hash` folds `stale_hash_paths`: its `covers` must name the classes that list holds"
-    );
     // The two build scripts and the stale check call the selection the
     // entry says they fold.
     assert!(read("crates/hale-cli/build.rs").contains("identity_files("));
     assert!(read("crates/hale-iris/build.rs").contains("identity_files("));
-    assert!(read("crates/hale-cli/src/shared/stale.rs").contains("stale_hash_paths("));
+    assert!(read("crates/hale-cli/src/shared/stale.rs").contains("identity_files("));
+}
+
+/// Where the 64-bit FNV offset basis may be written in a crate's `src`
+/// or its build script, each with the reason. The goal is the one
+/// fold's home: every FNV identity feeds its bytes to
+/// `hale_graph::identity::Fnv64` (F.40 phase 4, I6), so a new
+/// hand-rolled digest is either an inventory entry that calls the fold
+/// or a non-identity use listed here with its reason.
+const FNV_BASIS_ALLOWED: &[(&str, &str)] = &[(
+    "crates/hale-graph/src/identity.rs",
+    "the one fold (`Fnv64::BASIS`) and its known-answer test",
+)];
+
+/// Every file under `dir`, recursively.
+fn every_file(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            every_file(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+fn writes_fnv_basis(line: &str) -> bool {
+    !line.trim_start().starts_with("//")
+        && line.to_ascii_lowercase().replace('_', "").contains("0xcbf29ce484222325")
+}
+
+#[test]
+fn the_basis_scan_sees_every_spelling_and_skips_comments() {
+    assert!(writes_fnv_basis("    let mut h: u64 = 0xcbf29ce484222325;"));
+    assert!(writes_fnv_basis("    let mut h: u64 = 0xcbf2_9ce4_8422_2325;"));
+    assert!(writes_fnv_basis("    Digest(0xCBF2_9CE4_8422_2325)"));
+    assert!(!writes_fnv_basis("//!  * **hash** — FNV-1a/64 (offset 0xcbf29ce484222325, prime"));
+    assert!(!writes_fnv_basis("    let mut h = Fnv64::new();"));
+}
+
+/// A seam cannot say this: the registry's matcher counts one literal
+/// spelling, and the basis is written with and without digit
+/// separators, in either case. So the scan normalizes each line
+/// (lower case, no `_`) and skips comments, which may name the
+/// constant (the topic hash's doc says which C function it mirrors).
+#[test]
+fn the_fnv_basis_is_written_only_where_the_one_fold_lives() {
+    let root = root();
+    let mut files = Vec::new();
+    for e in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+        let krate = e.path();
+        every_file(&krate.join("src"), &mut files);
+        if krate.join("build.rs").is_file() {
+            files.push(krate.join("build.rs"));
+        }
+    }
+    assert!(files.len() > 200, "the scan is vacuous: {} files", files.len());
+    let mut found = std::collections::BTreeSet::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        if text.lines().any(writes_fnv_basis) {
+            found.insert(f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"));
+        }
+    }
+    let allowed: std::collections::BTreeSet<String> =
+        FNV_BASIS_ALLOWED.iter().map(|(f, _)| f.to_string()).collect();
+    let unlisted: Vec<&String> = found.difference(&allowed).collect();
+    assert!(
+        unlisted.is_empty(),
+        "a hand-rolled FNV fold: {unlisted:?} writes the offset basis. Feed the bytes to \
+         hale_graph::identity::Fnv64 (or fnv64) and, if the value is compared to decide that two \
+         things are the same, add the identity to IDENTITIES; a use that is no identity goes in \
+         FNV_BASIS_ALLOWED with the reason."
+    );
+    let stale: Vec<&String> = allowed.difference(&found).collect();
+    assert!(stale.is_empty(), "FNV_BASIS_ALLOWED lists a file that no longer writes the basis: {stale:?}");
+    for (f, why) in FNV_BASIS_ALLOWED {
+        assert!(!why.trim().is_empty(), "{f} is allowed without a reason");
+    }
 }
 
 /// The legacy rows an inventory entry's producer still shares: the
-/// identities whose own correction (I4 for the stale-binary hash)
-/// retires the row. Every other legacy row names a symbol no inventory
-/// entry produces.
-const LEGACY_STILL_SHARED: &[&str] = &["compute_codegen_src_hash"];
+/// identities whose own correction retires the row. None is left since
+/// I4 retired the stale-binary hash's; every legacy row names a symbol
+/// no inventory entry produces.
+const LEGACY_STILL_SHARED: &[&str] = &[];
 
 #[test]
 fn every_inventory_producer_is_registered_and_no_legacy_row_duplicates_one() {

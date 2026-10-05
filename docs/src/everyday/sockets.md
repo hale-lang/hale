@@ -102,7 +102,11 @@ connect until then.
 This is **client-side only** — there is no TLS *server* in the
 stdlib. `set_recv_timeout(h, d)` bounds a read; with one set,
 `recv_into` returns the `-2` "timed out, retryable" sentinel so a
-long-lived client can run keep-alive work instead of hanging.
+long-lived client can run keep-alive work instead of hanging. Like
+every socket setter here (the tcp and tls timeouts, `set_nodelay`,
+`set_rx_timestamps`), it can fail, so it takes an `or`:
+`std::io::tls::set_recv_timeout(h, 5s) or raise`. A bare call is a
+compile error that says so.
 
 ## Tuning sockets — `std::io::sockopt`
 

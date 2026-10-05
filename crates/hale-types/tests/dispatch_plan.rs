@@ -1,7 +1,9 @@
 //! GH #476 Change 8 — the derived dispatch plan.
 //!
-//! `DispatchPlan::derive(&ApplicationModel)` is where the lowering
-//! decision lives: gate facts × arrangement → one flavor per
+//! `DispatchPlan::from_gates` is where the lowering decision lives,
+//! read here through the plan the model holds (`Analyses::dispatch_plan`,
+//! the program's one plan projected onto the model's subjects): gate
+//! facts × arrangement → one flavor per
 //! subject, plus #464's stage-0 survey field (`same_domain`). The
 //! obligations pinned here:
 //!
@@ -32,7 +34,7 @@ fn plan_of(src: &str) -> DispatchPlan {
     let bundle = Bundle::new(programs);
     let m = derive_application_model(&bundle);
     m.validate().expect("derived model is lawful");
-    DispatchPlan::derive(&m)
+    m.analyses.dispatch_plan
 }
 
 fn model_of(src: &str) -> hale_model::ApplicationModel {
@@ -198,7 +200,7 @@ fn main() { Sub { }; Pub { }; }
         "every instance here is born in `fn main` — the arrangement \
          names none of them, and the capability account must admit it"
     );
-    let p = DispatchPlan::derive(&m);
+    let p = &m.analyses.dispatch_plan;
     let row = p.subjects.iter().find(|s| s.subject == "evt").unwrap();
     assert!(
         row.publisher_domains.is_empty()
@@ -409,7 +411,7 @@ fn main() { App { }; }
         "fixture premise: the dynamic birth is holed out"
     );
 
-    let p = DispatchPlan::derive(&m);
+    let p = &m.analyses.dispatch_plan;
     let row = p.subjects.iter().find(|s| s.subject == "evt").unwrap();
     assert!(
         row.subscriber_domains.is_empty(),
@@ -671,7 +673,7 @@ fn main() { App { }; }
             .unwrap_or_else(|| panic!("an imported `{written}`: {:?}", m.entities.loci));
         assert_ne!(decl.name, decl.display, "`{written}` is an imported seed's locus");
     }
-    let plan = DispatchPlan::derive(m);
+    let plan = &m.analyses.dispatch_plan;
     let row = plan.subjects.iter().find(|p| p.subject == "relay.tick").expect("the subject's row");
     assert_eq!(row.publisher_domains, ["main"], "{row:?}");
     assert_eq!(row.subscriber_domains, ["main"], "{row:?}");

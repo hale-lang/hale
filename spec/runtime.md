@@ -454,9 +454,14 @@ their own loop.
 subject's dispatch receives — `dynamic` (runtime hash lookup),
 `static_bucket` (compile-time subject id, dispatch still queued),
 `static_direct` (synchronous direct calls to every subscriber) —
-is a CONCLUSION derived from the canonical model, not a fact
-declared anywhere in the program. `DispatchPlan::derive(
-&ApplicationModel)` owns that derivation: the bus graph's
+is a CONCLUSION, not a fact declared anywhere in the program. A
+program has one plan, derived once (`DispatchPlan::from_gates`) from
+one gate set: the bus graph's sites, each keyed by its wire subject,
+and the bundled stdlib's sites after them (the logger's `log.**` and
+its sinks, which every program's lowering dispatches). Lowering
+lowers that plan, the execution identity frames its digest, and the
+canonical model holds it restricted to the subjects the program's own
+bus sites name and the loci the program declares. The bus graph's
 per-subject eligibility gates decide the flavor (a single ladder,
 `DispatchFlavor::of`, which the backend calls rather than
 re-deciding; `static_direct` takes three legs: every publisher and
@@ -477,8 +482,8 @@ display name, so a locus of an imported seed has its domains like
 any other (before F.40 phase 3's C5 they were found by the display
 name, which demangles an imported locus and never met the gates'
 spelling, and every such row printed no domain). Plan subjects are
-WIRE subjects; `hale model dump` prints the plan and the
-same-domain count.
+WIRE subjects; `hale model dump` prints the model's restriction of
+the plan and its same-domain count.
 
 The gates' placement leg reads the placement table (F.40 phase 3,
 P1): a type is same-thread only when every instance of it runs on
@@ -1641,11 +1646,17 @@ zero_copy binding produces.
   miscompilation) — those terminate the process directly
   without the ClosureViolation routing path. See
   decisions §F.9.
-- **Recovery-event interaction.** `persists_through(...)` and
-  `resets_on(...)` clauses are honored at recovery time; the
-  accumulator is preserved or zeroed per declaration. The
-  exploded flag itself persists across `restart_in_place` and
-  `quarantine` (per default; future `clear_violation_on(...)`
+- **Recovery-event interaction.** At each recovery event a
+  parent applies to the locus (`restart`, `restart_in_place`,
+  `quarantine`; a spent `restart(c) for N` bound is
+  `quarantine`), the runtime zeroes the accumulators of every
+  closure whose `persists_through(...)` does not name that
+  event, and keeps those of the closures that do. Nothing reads
+  `resets_on(...)` at run time: it states the default, and the
+  check holds it to the alphabet and refuses an event a closure
+  names in both clauses (`spec/semantics.md` § Recovery events).
+  The exploded flag itself persists across `restart_in_place`
+  and `quarantine` (per default; future `clear_violation_on(...)`
   clause may override).
 
 ### Perspective infrastructure
@@ -3936,7 +3947,7 @@ build.
 | `HALE_MCP_ROOT` | none | `hale mcp`: every path a tool call names must resolve under this directory. | unset: no restriction |
 | `HALE_MODEL_TRACE` | none | Print the model builder's and the fleet lowering's demand-proof line on stderr (`1` turns it on). | off |
 | `HALE_REPLAY_TEST_HOLD` | none | A test hook: `hale replay` waits, between admitting a recording and starting it, until this path exists, so a test can replace the recording at a chosen moment. | unset |
-| `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from. | off |
+| `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from: every source of the identity-covered crates, the lock file and the ts-shim manifest (statted on each invocation, read only when one is newer than the binary), and the `dna/` tree it embeds. | off |
 | `HALE_STALE_DNA_ROOT` | none | The tree the stale-DNA check compares the embedded DNA against; the regression test's way to hand it a tree it may edit. | the workspace the binary was built from |
 | `HALE_TEST_JOBS` | none | How many workers `hale test` runs when `-j` is not given. | one per available core |
 | `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`) after its run and prints where, instead of removing it. | remove |

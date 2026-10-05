@@ -145,6 +145,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
          annotation must not derive an ApplicationModel on the LSP's path"
     );
     assert_eq!(builds["claims"], 0);
+    assert_eq!(builds["dispatch"], 0, "nor its dispatch plan");
     assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
     // Both stages ran (the allocation advisory is the editor's typing
@@ -241,6 +242,12 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
             assert_eq!(s.builds()[family], 1, "the check and the model demand `{family}`");
         }
         assert_eq!(s.builds()["effects"], 1, "the model reads the effect rows: one fixpoint for the check with a law");
+        // The model's dispatch plan is the snapshot's, derived from the
+        // checked graph and the stdlib's per-process rows: a check pays
+        // for no lowering view, so no merge of the stdlib (F.40 phase 4,
+        // S9).
+        assert_eq!(s.builds()["dispatch"], 1, "the model holds the snapshot's dispatch plan");
+        assert_eq!(s.builds()["lowering_view"], 0, "the plan needs no lowering view");
         s.demand_bus_graph().expect("the graph the model read");
         s.demand_ownership_graph().expect("the graph the model read");
         s.demand_handlers().expect("the rows the model read");
@@ -321,6 +328,9 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 // The model's arrangement rows and lowering's dispatch
                 // domains are one projection (F.40 phase 4, Q1).
                 "arrangement",
+                // One dispatch plan: the model holds it projected and
+                // lowering lowers it (F.40 phase 4, S9).
+                "dispatch",
                 // The check reads it, and the laws stage the same one
                 // (F.40 phase 4, A2).
                 "law_selection",
@@ -358,10 +368,16 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     assert_eq!(builds["model"], 0, "nothing asked for the model yet");
     assert_eq!(builds["effects"], 0, "nor for the effect rows it reads");
     assert_eq!(builds["arrangement"], 1, "lowering's dispatch domains are the arrangement's");
+    assert_eq!(builds["dispatch"], 1, "lowering's plan is the snapshot's");
+    let lowered = &s.demand_lowering().unwrap().plan;
     s.demand_model().expect("the build's identity reads the model");
     assert_eq!(s.builds()["model"], 1);
     assert_eq!(s.builds()["effects"], 1);
     assert_eq!(s.builds()["arrangement"], 1, "the model reads the projection lowering read (F.40 phase 4, Q1)");
+    // The model holds the plan lowering lowered: `from_gates` ran once
+    // for both (F.40 phase 4, S9).
+    assert_eq!(s.builds()["dispatch"], 1, "the model reads the plan lowering read");
+    assert_eq!(lowered.digest(), s.demand_dispatch_plan().unwrap().digest());
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }

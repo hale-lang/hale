@@ -55,6 +55,9 @@ const HELD_FD_LOCUS_PATHS: &[&str] =
 const FD_ACQUIRING_PATHS: &[&str] = &[
     "std::io::file::open",
     "std::io::tcp::connect",
+    // GH #1030's waiting dial, a descriptor like `connect`'s (missed when
+    // it was added; F.40 phase 4, S5).
+    "std::io::tcp::connect_wait",
     "std::io::tcp::listen_socket",
     "std::io::tcp::__listen_socket",
     "std::io::tcp::accept_one",
@@ -441,6 +444,22 @@ mod tests {
         "#;
         let b = budget(src);
         assert_eq!(b.fd_open_sites, 2, "expected 2 fd-open sites (open + connect)");
+    }
+
+    /// F.40 phase 4, S5 (a classified correction): the tcp `connect_wait`
+    /// acquires a descriptor as `connect` does, and as the unix one was
+    /// already counted; a program that calls it counts one more site.
+    #[test]
+    fn counts_tcp_connect_wait_as_an_fd_open_site() {
+        let src = r#"
+            fn dial() {
+                let c = std::io::tcp::connect_wait("127.0.0.1", 80, 1s) or raise;
+                let u = std::io::unix::connect_wait("/tmp/s.sock", 1s) or raise;
+            }
+            fn main() { }
+        "#;
+        let b = budget(src);
+        assert_eq!(b.fd_open_sites, 2, "expected 2 fd-open sites (tcp + unix connect_wait)");
     }
 
     #[test]

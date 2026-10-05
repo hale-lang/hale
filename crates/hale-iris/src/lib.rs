@@ -73,61 +73,63 @@ pub const WEBROOT: &str = "iris/render/web";
 
 /// FNV-1a over what the cached binaries were built from: the crate
 /// version, the compiler's own source (`HALE_COMPILER_SRC_HASH`, from
-/// `build.rs`: front end, type checker, codegen and the runtime C, the
-/// CLI whose `build` verb makes the host, and the manifests), the
-/// embedded stdlib, and every embedded iris and DNA byte. A change to
-/// any of them rebuilds; two toolchains that agree on all of them share
-/// a cache.
-pub fn toolchain_hash() -> u64 {
+/// `build.rs`: the identity-covered crates, the stdlib's seeds among
+/// them, and the manifests), the options the cache's `hale build` builds
+/// with, and every embedded iris and DNA byte. A change to any of them
+/// rebuilds; two toolchains that agree on all of them share a cache.
+///
+/// `build_options` is the execution identity's options fingerprint of
+/// the build the cache runs (F.40 phase 4, I5): that build is a `hale
+/// build` subprocess, which inherits this process's environment and
+/// turns its knobs (`HALE_DEV`, a sanitizer, LTO, ...) into options, so
+/// a host built under one set is never served to another. The CLI
+/// computes it, by the function the execution identity uses, from the
+/// environment the subprocess inherits.
+pub fn toolchain_hash(build_options: &str) -> u64 {
     toolchain_hash_of(
         env!("CARGO_PKG_VERSION"),
         env!("HALE_COMPILER_SRC_HASH"),
-        hale_stdlib::AP_FILES.iter().copied(),
+        build_options,
         all_files(),
     )
 }
 
-fn toolchain_hash_of<'a, 'b>(
+/// The stdlib is folded once, as files of the compiler's source
+/// selection (`HALE_COMPILER_SRC_HASH` covers `crates/hale-stdlib/hl`);
+/// it was folded a second time here from `hale_stdlib::AP_FILES` until
+/// F.40 phase 4, I5.
+fn toolchain_hash_of<'b>(
     version: &str,
     compiler: &str,
-    stdlib: impl Iterator<Item = (&'a str, &'a str)>,
+    build_options: &str,
     files: impl Iterator<Item = (&'b str, &'b str)>,
 ) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
+    let mut h = hale_graph::identity::Fnv64::new();
+    let mut eat = |bytes: &[u8]| h.write(bytes);
     eat(version.as_bytes());
     eat(&[0]);
     eat(compiler.as_bytes());
     eat(&[0]);
-    for (path, content) in stdlib {
-        eat(b"std/");
-        eat(path.as_bytes());
-        eat(&[0]);
-        eat(content.as_bytes());
-        eat(&[0]);
-    }
+    eat(build_options.as_bytes());
+    eat(&[0]);
     for (path, content) in files {
         eat(path.as_bytes());
         eat(&[0]);
         eat(content.as_bytes());
         eat(&[0]);
     }
-    h
+    h.finish()
 }
 
 /// `$XDG_CACHE_HOME/hale/iris/<hash>` (or `~/.cache/hale/iris/<hash>`),
-/// the same root the runtime objects and the LSP's stdlib copy use.
-pub fn cache_dir() -> Option<PathBuf> {
+/// the same root the runtime objects and the LSP's stdlib copy use; the
+/// hash is [`toolchain_hash`] of `build_options`.
+pub fn cache_dir(build_options: &str) -> Option<PathBuf> {
     let root = match std::env::var_os("XDG_CACHE_HOME") {
         Some(x) if !x.is_empty() => PathBuf::from(x),
         _ => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
     };
-    Some(root.join("hale").join("iris").join(format!("{:016x}", toolchain_hash())))
+    Some(root.join("hale").join("iris").join(format!("{:016x}", toolchain_hash(build_options))))
 }
 
 /// Write every embedded file under `root` unless it is already there
@@ -161,9 +163,10 @@ pub fn materialize_into(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Materialize into the cache directory and return it.
-pub fn materialize() -> io::Result<PathBuf> {
-    let dir = cache_dir().ok_or_else(|| {
+/// Materialize into the cache directory for `build_options` (see
+/// [`toolchain_hash`]) and return it.
+pub fn materialize(build_options: &str) -> io::Result<PathBuf> {
+    let dir = cache_dir(build_options).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "no cache directory: neither XDG_CACHE_HOME nor HOME is set")
     })?;
     materialize_into(&dir)?;
@@ -196,41 +199,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn hash_with(compiler: &str, stdlib: &[(&str, &str)]) -> u64 {
-        toolchain_hash_of("0.0.0", compiler, stdlib.iter().copied(), all_files())
+    /// The default build's options fingerprint (`build_env.rs`'s pinned
+    /// string).
+    const DEFAULT_OPTIONS: &str = "target=Native;cpu=Native;dev=false;debug=false";
+
+    fn hash_with(compiler: &str, build_options: &str) -> u64 {
+        toolchain_hash_of("0.0.0", compiler, build_options, all_files())
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// The key's compiler half, `HALE_COMPILER_SRC_HASH`, as `build.rs`
+    /// folds it over a tree whose stdlib seeds are `stdlib`.
+    fn key_over(tag: &str, stdlib: &[(&str, &str)]) -> u64 {
+        use hale_graph::identity::{fold_files, identity_files};
+        let root = std::env::temp_dir().join(format!("hale-iris-key-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let hl = root.join("crates/hale-stdlib/hl");
+        std::fs::create_dir_all(&hl).unwrap();
+        for (name, content) in stdlib {
+            std::fs::write(hl.join(name), content).unwrap();
+        }
+        let compiler = format!("{:016x}", fold_files(&root, &identity_files(&root)));
+        let _ = std::fs::remove_dir_all(&root);
+        hash_with(&compiler, DEFAULT_OPTIONS)
     }
 
     /// A stdlib edit that leaves the version alone must still move the
-    /// key: the cached host was compiled against the old stdlib.
+    /// key: the cached host was compiled against the old stdlib. The
+    /// stdlib is folded once, as files of the compiler's selection (F.40
+    /// phase 4, I5), so the edit moves the key through that half: every
+    /// seed the binary embeds is a file the selection holds, with the
+    /// same bytes.
     #[test]
     fn a_stdlib_byte_change_moves_the_key() {
+        let root = workspace_root();
+        let selected = hale_graph::identity::identity_files(&root);
+        for (name, content) in hale_stdlib::AP_FILES {
+            let file = root.join("crates/hale-stdlib/hl").join(name);
+            assert!(selected.contains(&file), "the stdlib seed {name} is not in the compiler's selection");
+            assert_eq!(&std::fs::read_to_string(&file).unwrap(), content, "{name} is the embedded seed");
+        }
         let base: Vec<(&str, &str)> = hale_stdlib::AP_FILES.to_vec();
-        let same = hash_with("c", &base);
-        assert_eq!(same, hash_with("c", &base), "the key is deterministic");
+        let same = key_over("same", &base);
+        assert_eq!(same, key_over("again", &base), "the key is deterministic");
         let edited = format!("{} ", base[0].1);
         let mut changed = base.clone();
         changed[0].1 = &edited;
-        assert_ne!(same, hash_with("c", &changed), "one appended byte in one stdlib file");
+        assert_ne!(same, key_over("changed", &changed), "one appended byte in one stdlib file");
         let mut renamed = base.clone();
         renamed[0].0 = "renamed.hl";
-        assert_ne!(same, hash_with("c", &renamed), "a stdlib file's name is part of the key");
-        assert_ne!(same, hash_with("c", &base[1..]), "a stdlib file dropped");
+        assert_ne!(same, key_over("renamed", &renamed), "a stdlib file's name is part of the key");
+        assert_ne!(same, key_over("dropped", &base[1..]), "a stdlib file dropped");
     }
 
     /// The compiler's own source moves the key too (codegen, the
     /// runtime C): the cached host is a binary it produced.
     #[test]
     fn a_compiler_change_moves_the_key() {
-        let std: Vec<(&str, &str)> = hale_stdlib::AP_FILES.to_vec();
-        assert_ne!(hash_with("0000000000000001", &std), hash_with("0000000000000002", &std));
+        assert_ne!(hash_with("0000000000000001", DEFAULT_OPTIONS), hash_with("0000000000000002", DEFAULT_OPTIONS));
         let built = env!("HALE_COMPILER_SRC_HASH");
         assert_eq!(built.len(), 16, "a 64-bit hex id from build.rs: {built}");
         assert!(built.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(
-            toolchain_hash(),
-            toolchain_hash_of(env!("CARGO_PKG_VERSION"), built, std.iter().copied(), all_files()),
+            toolchain_hash(DEFAULT_OPTIONS),
+            toolchain_hash_of(env!("CARGO_PKG_VERSION"), built, DEFAULT_OPTIONS, all_files()),
             "the shipped key is composed of exactly these inputs"
         );
+    }
+
+    /// The options the cache's build inherits are part of the key (F.40
+    /// phase 4, I5): a knob that moves the fingerprint moves the key, so
+    /// a host built under a sanitizer or `HALE_DEV` is not served to a
+    /// build without it; the same fingerprint gives the key it gave.
+    #[test]
+    fn a_build_knob_moves_the_key_and_the_same_options_keep_it() {
+        let plain = toolchain_hash(DEFAULT_OPTIONS);
+        assert_eq!(plain, toolchain_hash(DEFAULT_OPTIONS), "the unchanged environment keeps its key");
+        let mut seen = std::collections::BTreeSet::from([plain]);
+        for knob in [";asan", ";tsan", ";ubsan", ";lto=Thin"] {
+            let options = format!("{DEFAULT_OPTIONS}{knob}");
+            assert!(seen.insert(toolchain_hash(&options)), "{knob} leaves the key where another build has it");
+        }
+        let dev = DEFAULT_OPTIONS.replace("dev=false", "dev=true");
+        assert!(seen.insert(toolchain_hash(&dev)), "HALE_DEV leaves the key where it was");
     }
 
     #[test]
@@ -266,6 +320,6 @@ mod tests {
 
     #[test]
     fn hash_is_stable_within_a_build() {
-        assert_eq!(toolchain_hash(), toolchain_hash());
+        assert_eq!(toolchain_hash(DEFAULT_OPTIONS), toolchain_hash(DEFAULT_OPTIONS));
     }
 }

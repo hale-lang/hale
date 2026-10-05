@@ -10,11 +10,15 @@
 //! picks its arm in `lower_std_intrinsic`'s `match id`, whose arms and
 //! position branches this file scrapes ([`id_arms`]), a Hale-body row is
 //! lowered by `lower_std_hale_body` (its two lists scraped), and the
-//! bare refusals are two id lists (`REFUSED_BARE_STATEMENT`,
-//! `REFUSED_BARE_VALUE`). The `or` position is still the hand-written
-//! `try_lower_fallible_stdlib_path_call`, scraped for its `["std", ..]`
-//! literals until S4 folds it in. `stdlib_registry_parity` reads the
-//! same scrape, with what each arm calls ([`ArmCall`]).
+//! bare refusal is the arm that calls `bare_call_of_a_fallible_row`.
+//! Since S4 the `or` position dispatches from the row too
+//! (`lower_std_fallible_call`): an id picks its arm in
+//! `lower_std_intrinsic_fallible`'s `match id` ([`fallible_id_arms`]),
+//! and its refusal is the arm that calls `or_over_an_infallible_row`.
+//! Since S5 the two refusals are the rows' fallibility, not id lists
+//! ([`refused_by_the_rows`]). No position matches a `["std", ..]` literal
+//! any more. `stdlib_registry_parity` reads the same scrape, with what
+//! each arm calls ([`ArmCall`]).
 //!
 //! A *pair* is a (path, position): a stdlib call path an arm lowers or
 //! refuses, and the position it does so at. The *shadow set* is what
@@ -59,8 +63,8 @@ mod harness;
 /// * `lower_or_expr` (`channels/mod.rs`, reached from the `Stmt::Expr(
 ///   Expr::Or ..)` statement and from `lower_expr`'s `Expr::Or`) calls
 ///   `lower_fallible_call`, whose `Expr::Path` callee goes to
-///   `try_lower_fallible_stdlib_path_call`: the call directly under an
-///   `or`, wherever the `or` stands.
+///   `try_lower_fallible_stdlib_path_call`, `lower_std_fallible_call`:
+///   the call directly under an `or`, wherever the `or` stands.
 /// * Every other call — an argument, a `let` value, a block's tail
 ///   (`lower_block` and `lower_block_as_expr` both lower the tail with
 ///   `lower_expr`), a value-producing `match` arm — goes through
@@ -83,11 +87,6 @@ impl Position {
         }
     }
 }
-
-/// The dispatchers still matched on `["std", ..]` literals: the
-/// function, the file it is in, the position it serves.
-const DISPATCHERS: &[(&str, &str, Position)] =
-    &[("try_lower_fallible_stdlib_path_call", "src/channels/mod.rs", Position::Fallible)];
 
 /// The position whose arm lowers a call the walk found at `position`: a
 /// statement call of a path with no statement branch is the value
@@ -232,55 +231,28 @@ fn fn_body(code: &str, name: &str) -> (usize, usize) {
     panic!("unbalanced body of `fn {name}`");
 }
 
-/// One segment of a slice pattern.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Seg {
-    Lit(String),
-    Bind(String),
-}
-
-/// One arm of a dispatcher's top-level `match segs`.
+/// One arm of the row dispatch at one position: the paths of the ids
+/// (or Hale bodies) it names, or of a refusal list.
 #[derive(Clone, Debug)]
 pub struct Arm {
-    /// 1-indexed line of the arm's first pattern in its file.
+    /// 1-indexed line of the arm in `codegen.rs`.
     pub line: usize,
-    patterns: Vec<Vec<Seg>>,
-    guard: Option<String>,
-    /// The arm's value is an `Err(..)`: one of the refusal lists.
+    paths: Vec<String>,
+    /// One of the refusal lists.
     pub refuses: bool,
     /// What the arm's body calls to lower the path.
     pub calls: ArmCall,
 }
 
-/// How an arm lowers its path: a Hale body of the stdlib seeds, named
-/// by a literal (`self.lower_user_fn_call("__md_to_html", ..)`), or
-/// anything else (a native helper, inline IR, or a body whose name the
-/// arm computes).
+/// How an arm lowers its path: a Hale body of the stdlib seeds, called
+/// by the name its row gives (`lower_std_hale_body`), one of several the
+/// receiver's type picks (`lower_std_hale_body_by_receiver`, S5), or
+/// natively (an intrinsic's arm).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArmCall {
     HaleBody(String),
+    HaleBodyByReceiver(Vec<String>),
     Native,
-}
-
-/// The call an arm's body (its lines, comments masked) makes.
-fn arm_call(body: &[&str]) -> ArmCall {
-    let text = body.join("\n");
-    let mut named = BTreeSet::new();
-    let mut computed = false;
-    for (at, _) in text.match_indices("lower_user_fn_call(") {
-        let arg = text[at + "lower_user_fn_call(".len()..].trim_start();
-        match arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
-            Some(name) => {
-                named.insert(name.to_string());
-            }
-            None => computed = true,
-        }
-    }
-    match (named.len(), computed) {
-        (0, _) | (_, true) => ArmCall::Native,
-        (1, false) => ArmCall::HaleBody(named.into_iter().next().unwrap()),
-        _ => panic!("an arm calls two Hale bodies: {named:?}"),
-    }
 }
 
 fn string_literals(s: &str) -> Vec<String> {
@@ -296,125 +268,6 @@ fn line_indent(text: &str, at: usize) -> usize {
     indent_of(&text[start..])
 }
 
-/// The arms of one dispatcher, in source order.
-pub fn arms_of(name: &str, file: &str) -> Vec<Arm> {
-    let src = crate_file(file);
-    let no_comments = mask(&src, false);
-    let code = mask(&src, true);
-    let (open, close) = fn_body(&code, name);
-    let body = &no_comments[open..close];
-    let first_line = src[..open].matches('\n').count() + 1;
-    let m = body.find("match segs {").unwrap_or_else(|| panic!("`{name}` matches on `segs`"));
-    let arm_indent = line_indent(body, m) + 4;
-    let lines: Vec<&str> = body.lines().collect();
-    let mut arms = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let l = lines[i];
-        if indent_of(l) != arm_indent || !l.trim_start().starts_with("[\"std\"") {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let mut head = String::new();
-        loop {
-            let l = lines[i];
-            if let Some(k) = l.find("=>") {
-                head.push_str(&l[..k]);
-                head.push(' ');
-                let rest = l[k + 2..].trim_start().trim_start_matches('{').trim_start();
-                let rest = if rest.is_empty() {
-                    lines.get(i + 1).map_or("", |n| n.trim_start())
-                } else {
-                    rest
-                };
-                let (patterns, guard) = parse_head(&head);
-                // The body runs to the next line at the arm's indent
-                // that opens an arm (a pattern, or the `_` arm).
-                let end = (i + 1..lines.len())
-                    .find(|&j| {
-                        let t = lines[j].trim_start();
-                        indent_of(lines[j]) == arm_indent && (t.starts_with('[') || t.starts_with("_ "))
-                    })
-                    .unwrap_or(lines.len());
-                let mut body_lines = vec![&l[k + 2..]];
-                body_lines.extend_from_slice(&lines[i + 1..end]);
-                arms.push(Arm {
-                    line: first_line + start,
-                    patterns,
-                    guard,
-                    refuses: rest.starts_with("Err("),
-                    calls: arm_call(&body_lines),
-                });
-                break;
-            }
-            head.push_str(l);
-            head.push(' ');
-            i += 1;
-        }
-        i += 1;
-    }
-    arms
-}
-
-fn parse_head(head: &str) -> (Vec<Vec<Seg>>, Option<String>) {
-    let mut patterns = Vec::new();
-    let mut rest = head;
-    while let Some(o) = rest.find('[') {
-        let c = o + rest[o..].find(']').expect("a pattern closes");
-        let segs = rest[o + 1..c]
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| match s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                Some(lit) => Seg::Lit(lit.to_string()),
-                None => Seg::Bind(s.to_string()),
-            })
-            .collect();
-        patterns.push(segs);
-        rest = &rest[c + 1..];
-    }
-    let guard = rest.trim();
-    let guard = guard.strip_prefix("if ").map(|g| g.trim().to_string());
-    (patterns, guard)
-}
-
-/// The paths one pattern accepts, its family expanded through what
-/// decides the bound name. (The `io::sockopt` and `io::mirror` families
-/// are rows since S3, each name an id.)
-fn expand(pattern: &[Seg], guard: Option<&str>) -> Vec<String> {
-    let lits: Vec<&str> = pattern
-        .iter()
-        .filter_map(|s| match s {
-            Seg::Lit(l) => Some(l.as_str()),
-            Seg::Bind(_) => None,
-        })
-        .collect();
-    if lits.len() == pattern.len() {
-        return vec![lits.join("::")];
-    }
-    let ns = lits.join("::");
-    let leaves: Vec<String> = match (ns.as_str(), guard) {
-        // `["std", "bytes", n] if n.starts_with("read_")` (and
-        // `write_`): `lower_std_bytes_read`/`_write` parse the name, so
-        // the family is what the registry lists under the prefix.
-        (_, Some(g)) if g.contains(".starts_with(\"") => {
-            let prefix = g.split('"').nth(1).expect("a prefix literal");
-            let surface_ns: Vec<&str> = lits[1..].to_vec();
-            hale_types::stdlib_surface::SURFACES
-                .iter()
-                .filter(|s| s.ns == surface_ns.as_slice())
-                .flat_map(|s| s.public().map(|e| e.name))
-                .filter(|n| n.starts_with(prefix))
-                .map(str::to_string)
-                .collect()
-        }
-        _ => panic!("a family pattern this scrape does not know how to expand: {pattern:?} if {guard:?}"),
-    };
-    assert!(!leaves.is_empty(), "family `{ns}::*` expanded to nothing");
-    leaves.into_iter().map(|l| format!("{ns}::{l}")).collect()
-}
-
 /// What an arm does with a path: lower it, or refuse it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArmKind {
@@ -426,37 +279,41 @@ pub enum ArmKind {
 pub struct Scraped {
     pub position: Position,
     pub arms: Vec<Arm>,
-    /// Every path a pattern names (families expanded), with the kind of
-    /// the FIRST arm matching it (the one `match` takes) and its line.
+    /// Every path an arm names, with the kind of the FIRST arm naming it
+    /// (the one that answers) and its line.
     pub paths: BTreeMap<String, (ArmKind, usize)>,
     /// What that arm calls, for each path.
     pub calls: BTreeMap<String, ArmCall>,
-    /// Patterns whose every path an earlier arm already matched: dead.
+    /// Paths an earlier arm already named: an arm no call reaches.
     pub shadowed: Vec<(String, usize)>,
-    pub patterns: usize,
-    pub family_patterns: usize,
 }
 
 // ---------------------------------------------------------------------
-// The row dispatch (S3): `lower_std_call` looks the path's row up, and
-// an intrinsic's id picks its arm in `lower_std_intrinsic`'s `match id`
-// while a Hale body is called by the name the row gives
-// (`lower_std_hale_body`). Its arms are scraped into arms of the
-// statement and expression positions, as the legacy dispatchers' were.
+// The row dispatch (S3, S4): `lower_std_call` looks the path's row up,
+// and an intrinsic's id picks its arm in `lower_std_intrinsic`'s
+// `match id` while a Hale body is called by the name the row gives
+// (`lower_std_hale_body`); under `or`, `lower_std_fallible_call` looks
+// it up and the id picks its arm in `lower_std_intrinsic_fallible`'s.
+// Their arms are scraped into arms of the three positions, as the
+// legacy dispatchers' were.
 // ---------------------------------------------------------------------
 
 /// What an arm of `lower_std_intrinsic` does at one position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Branch {
+pub enum Branch {
     /// It lowers the call.
     Lowers,
-    /// It answers as a path no arm lowers (`lower_std_unarmed`), or
-    /// refuses a bare call of a fallible one (`refuses_bare`).
+    /// It answers as a path no arm lowers (`lower_std_unarmed`).
     Unarmed,
+    /// It refuses a bare call of a function whose row is fallible
+    /// (`bare_call_of_a_fallible_row`).
+    Refuses,
 }
 
 fn branch(text: &str) -> Branch {
-    if text.contains("lower_std_unarmed(") {
+    if text.contains("bare_call_of_a_fallible_row(") {
+        Branch::Refuses
+    } else if text.contains("lower_std_unarmed(") {
         Branch::Unarmed
     } else {
         Branch::Lowers
@@ -464,25 +321,56 @@ fn branch(text: &str) -> Branch {
 }
 
 /// One arm of `lower_std_intrinsic`'s `match id`.
-struct IdArm {
-    line: usize,
-    ids: Vec<String>,
+pub struct IdArm {
+    pub line: usize,
+    pub ids: Vec<String>,
     /// The statement branch, when the arm matches on `pos`; `None` when
     /// a statement drops the value position's answer.
-    statement: Option<Branch>,
-    value: Branch,
+    pub statement: Option<Branch>,
+    pub value: Branch,
 }
 
-/// The arms of `lower_std_intrinsic`'s `match id`, in source order. The
-/// match has no `_` arm: every id is named by exactly one arm.
-fn id_arms() -> Vec<IdArm> {
+/// The arms of `lower_std_intrinsic`'s `match id`, with their positions'
+/// branches.
+pub fn id_arms() -> Vec<IdArm> {
+    match_id_arms("lower_std_intrinsic")
+        .into_iter()
+        .map(|(line, ids, text)| {
+            let (statement, value) = if text.contains("match pos") {
+                let s = text.find("StdCallPos::Statement =>").expect("a statement branch");
+                let v = text.find("StdCallPos::Value =>").expect("a value branch");
+                assert!(s < v, "line {line}: the statement branch comes first");
+                (Some(branch(&text[s..v])), branch(&text[v..]))
+            } else {
+                (None, branch(&text))
+            };
+            IdArm { line, ids, statement, value }
+        })
+        .collect()
+}
+
+/// The arms of `lower_std_intrinsic_fallible`'s `match id`, each with
+/// whether it lowers the call under `or`: the arm that refuses an `or`
+/// over a function whose row cannot fail (`or_over_an_infallible_row`)
+/// lowers nothing.
+pub fn fallible_id_arms() -> Vec<(usize, Vec<String>, bool)> {
+    match_id_arms("lower_std_intrinsic_fallible")
+        .into_iter()
+        .map(|(line, ids, text)| (line, ids, !text.contains("or_over_an_infallible_row(")))
+        .collect()
+}
+
+/// The arms of `fn func`'s `match id` in `codegen.rs`, in source order:
+/// each arm's line, its ids and its body's text. The match has no `_`
+/// arm: every id is named by exactly one arm.
+fn match_id_arms(func: &str) -> Vec<(usize, Vec<String>, String)> {
     let src = crate_file("src/codegen.rs");
     let no_comments = mask(&src, false);
     let code = mask(&src, true);
-    let (open, close) = fn_body(&code, "lower_std_intrinsic");
+    let (open, close) = fn_body(&code, func);
     let body = &no_comments[open..close];
     let first_line = src[..open].matches('\n').count() + 1;
-    let m = body.find("match id {").expect("`lower_std_intrinsic` matches on `id`");
+    let m = body.find("match id {").unwrap_or_else(|| panic!("`{func}` matches on `id`"));
     let arm_indent = line_indent(body, m) + 4;
     let lines: Vec<&str> = body.lines().collect();
     let ends_match = |l: &str| indent_of(l) < arm_indent && !l.trim().is_empty();
@@ -492,7 +380,7 @@ fn id_arms() -> Vec<IdArm> {
     while i < lines.len() && !ends_match(lines[i]) {
         let l = lines[i];
         if indent_of(l) == arm_indent && l.trim_start().starts_with('_') {
-            panic!("`lower_std_intrinsic` has a `_` arm (line {}): an id without an arm would compile", first_line + i);
+            panic!("`{func}` has a `_` arm (line {}): an id without an arm would compile", first_line + i);
         }
         if !is_head(l) {
             i += 1;
@@ -517,15 +405,7 @@ fn id_arms() -> Vec<IdArm> {
             .split('|')
             .map(|p| p.trim().strip_prefix("Id::").unwrap_or_else(|| panic!("not an id pattern: {p}")).to_string())
             .collect();
-        let (statement, value) = if text.contains("match pos") {
-            let s = text.find("StdCallPos::Statement =>").expect("a statement branch");
-            let v = text.find("StdCallPos::Value =>").expect("a value branch");
-            assert!(s < v, "line {}: the statement branch comes first", first_line + start);
-            (Some(branch(&text[s..v])), branch(&text[v..]))
-        } else {
-            (None, branch(&text))
-        };
-        arms.push(IdArm { line: first_line + start, ids, statement, value });
+        arms.push((first_line + start, ids, text));
         i = end;
     }
     arms
@@ -562,57 +442,37 @@ fn const_list_in(func: &str, name: &str) -> (Vec<String>, usize) {
     (string_literals(&body[at..end]), fn_line(&src, &code, func))
 }
 
-/// The ids of the module-level `const name: &[IntrinsicId]`, and the
-/// line it is on.
-fn id_list(name: &str) -> (Vec<String>, usize) {
-    let src = crate_file("src/codegen.rs");
-    let code = mask(&src, false);
-    let at = code.find(&format!("const {name}: &[IntrinsicId] = &[")).unwrap_or_else(|| panic!("no `{name}`"));
-    let end = at + code[at..].find("];").expect("the list closes");
-    let ids = code[at..end]
-        .split("IntrinsicId::")
-        .skip(1)
-        .map(|s| s.split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap().to_string())
-        .collect();
-    (ids, src[..at].matches('\n').count() + 1)
-}
-
-/// The row dispatch's arms at the statement and expression positions.
+/// The row dispatch's arms at the statement, expression and fallible
+/// positions.
 struct RowDispatch {
     statement: Vec<Arm>,
     expression: Vec<Arm>,
+    fallible: Vec<Arm>,
 }
 
 fn row_dispatch() -> RowDispatch {
     let paths = intrinsic_paths();
-    let mut rd = RowDispatch { statement: Vec::new(), expression: Vec::new() };
+    let mut rd = RowDispatch { statement: Vec::new(), expression: Vec::new(), fallible: Vec::new() };
     let mut named = BTreeSet::new();
     let arm = |line: usize, paths: &[&String], refuses: bool, calls: ArmCall| Arm {
         line,
-        patterns: paths.iter().map(|p| p.split("::").map(|s| Seg::Lit(s.to_string())).collect()).collect(),
-        guard: None,
+        paths: paths.iter().map(|p| p.to_string()).collect(),
         refuses,
         calls,
     };
     let path_of = |id: &String| paths.get(id).unwrap_or_else(|| panic!("`Id::{id}` has no row"));
-    // The refusals: a refused id's arm answers as a path no arm lowers
-    // once `refuses_bare` has not refused it, so the lists are its pairs.
-    for (list, position) in [("REFUSED_BARE_STATEMENT", Position::Statement), ("REFUSED_BARE_VALUE", Position::Expression)] {
-        let (ids, line) = id_list(list);
-        let ps: Vec<&String> = ids.iter().map(path_of).collect();
-        let a = arm(line, &ps, true, ArmCall::Native);
-        match position {
-            Position::Statement => rd.statement.push(a),
-            _ => rd.expression.push(a),
-        }
-    }
+    // A bare refusal (S5) is the value position's arm, which a statement
+    // reaches with its value dropped: an expression pair, as every arm
+    // with no statement branch is.
     for a in id_arms() {
         for id in &a.ids {
             assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic`");
         }
         let ps: Vec<&String> = a.ids.iter().map(path_of).collect();
-        if a.value == Branch::Lowers {
-            rd.expression.push(arm(a.line, &ps, false, ArmCall::Native));
+        match a.value {
+            Branch::Lowers => rd.expression.push(arm(a.line, &ps, false, ArmCall::Native)),
+            Branch::Refuses => rd.expression.push(arm(a.line, &ps, true, ArmCall::Native)),
+            Branch::Unarmed => {}
         }
         if a.statement == Some(Branch::Lowers) {
             rd.statement.push(arm(a.line, &ps, false, ArmCall::Native));
@@ -620,17 +480,42 @@ fn row_dispatch() -> RowDispatch {
     }
     let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
     assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic` names: {unnamed:?}");
+    // The `or` position (S4): an arm that lowers is a pair, and so is the
+    // arm that refuses an `or` over a function that cannot fail (S5).
+    let mut named = BTreeSet::new();
+    for (line, ids, lowers) in fallible_id_arms() {
+        for id in &ids {
+            assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic_fallible`");
+        }
+        let ps: Vec<&String> = ids.iter().map(path_of).collect();
+        rd.fallible.push(arm(line, &ps, !lowers, ArmCall::Native));
+    }
+    let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
+    assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic_fallible` names: {unnamed:?}");
     let (statement_bodies, line) = const_list_in("lower_std_hale_body", "STATEMENT_BODIES");
     let (no_value_bodies, _) = const_list_in("lower_std_hale_body", "NO_VALUE_BODIES");
+    let by_receiver_line = {
+        let src = crate_file("src/codegen.rs");
+        fn_line(&src, &mask(&src, true), "lower_std_hale_body_by_receiver")
+    };
     for (s, f) in hale_types::stdlib_surface::rows() {
-        let hale_types::stdlib_surface::Lower::HaleBody(body) = f.lower else { continue };
         let path = format!("std::{}::{}", s.ns.join("::"), f.name);
-        let call = ArmCall::HaleBody(body.to_string());
-        if !no_value_bodies.iter().any(|b| b == body) {
-            rd.expression.push(arm(line, &[&path], false, call.clone()));
-        }
-        if statement_bodies.iter().any(|b| b == body) {
-            rd.statement.push(arm(line, &[&path], false, call));
+        match f.lower {
+            hale_types::stdlib_surface::Lower::HaleBody(body) => {
+                let call = ArmCall::HaleBody(body.to_string());
+                if !no_value_bodies.iter().any(|b| b == body) {
+                    rd.expression.push(arm(line, &[&path], false, call.clone()));
+                }
+                if statement_bodies.iter().any(|b| b == body) {
+                    rd.statement.push(arm(line, &[&path], false, call));
+                }
+            }
+            // A value, which a statement drops: an expression pair.
+            hale_types::stdlib_surface::Lower::HaleBodyByReceiver(bodies) => {
+                let call = ArmCall::HaleBodyByReceiver(bodies.iter().map(|(_, b)| b.to_string()).collect());
+                rd.expression.push(arm(by_receiver_line, &[&path], false, call));
+            }
+            _ => {}
         }
     }
     rd
@@ -641,36 +526,26 @@ pub fn scrape() -> Vec<Scraped> {
     [Position::Statement, Position::Expression, Position::Fallible]
         .into_iter()
         .map(|position| {
-            let mut arms = match position {
+            let arms = match position {
                 Position::Statement => rd.statement.clone(),
                 Position::Expression => rd.expression.clone(),
-                Position::Fallible => Vec::new(),
+                Position::Fallible => rd.fallible.clone(),
             };
-            if let Some(&(name, file, _)) = DISPATCHERS.iter().find(|d| d.2 == position) {
-                arms.extend(arms_of(name, file));
-            }
             let mut paths = BTreeMap::new();
             let mut calls = BTreeMap::new();
             let mut shadowed = Vec::new();
-            let (mut patterns, mut family_patterns) = (0, 0);
             for arm in &arms {
                 let kind = if arm.refuses { ArmKind::Refuses } else { ArmKind::Lowers };
-                for p in &arm.patterns {
-                    patterns += 1;
-                    if p.iter().any(|s| matches!(s, Seg::Bind(_))) {
-                        family_patterns += 1;
-                    }
-                    for path in expand(p, arm.guard.as_deref()) {
-                        if paths.contains_key(&path) {
-                            shadowed.push((path, arm.line));
-                        } else {
-                            calls.insert(path.clone(), arm.calls.clone());
-                            paths.insert(path, (kind, arm.line));
-                        }
+                for path in &arm.paths {
+                    if paths.contains_key(path) {
+                        shadowed.push((path.clone(), arm.line));
+                    } else {
+                        calls.insert(path.clone(), arm.calls.clone());
+                        paths.insert(path.clone(), (kind, arm.line));
                     }
                 }
             }
-            Scraped { position, arms, paths, calls, shadowed, patterns, family_patterns }
+            Scraped { position, arms, paths, calls, shadowed }
         })
         .collect()
 }
@@ -1391,14 +1266,18 @@ fn the_scrape_and_the_walk_are_not_vacuous() {
         Some(ArmKind::Refuses)
     );
     assert_eq!(
-        all.get(&("std::process::run".to_string(), Position::Statement)).map(|k| k.0),
+        all.get(&("std::tar::pack".to_string(), Position::Expression)).map(|k| k.0),
         Some(ArmKind::Refuses)
     );
+    assert_eq!(
+        all.get(&("std::math::sqrt".to_string(), Position::Fallible)).map(|k| k.0),
+        Some(ArmKind::Refuses)
+    );
+    assert!(!all.contains_key(&("std::process::run".to_string(), Position::Statement)));
     assert!(!all.contains_key(&("std::str::parse_int".to_string(), Position::Statement)));
     assert_eq!(all.get(&("std::json::valid".to_string(), Position::Expression)).map(|k| k.0), Some(ArmKind::Lowers));
     assert_eq!(all.get(&("std::test::assert".to_string(), Position::Statement)).map(|k| k.0), Some(ArmKind::Lowers));
     assert!(!all.contains_key(&("std::test::assert".to_string(), Position::Expression)));
-    assert!(!all.contains_key(&("std::tar::pack".to_string(), Position::Expression)));
     let statement = &statement_scrape(&scraped).paths;
     assert_eq!(lowered_at("std::time::sleep", Position::Statement, statement), Position::Statement);
     assert_eq!(lowered_at("std::ring::__spsc_emit", Position::Statement, statement), Position::Statement);
@@ -1449,130 +1328,23 @@ fn write_harvested_programs() {
 // the reason from the code, each list held to what it claims.
 // ---------------------------------------------------------------------
 
-/// Allowance 1, refused by lowering. The paths of the statement and
-/// value positions' fallibility refusal lists (`REFUSED_BARE_STATEMENT`
-/// and `REFUSED_BARE_VALUE`, read by `refuses_bare`: "returns a fallible
-/// value — address the error with `or raise` .."): a bare call of a
-/// path lowering treats as fallible is refused at both positions, so no
-/// program builds with one. Most have no signature row, so the checker
-/// does not refuse them first.
-const REFUSED_BARE: &[&str] = &[
-    "std::io::file::__open",
-    "std::io::file::__seek",
-    "std::io::file::__write_bytes",
-    "std::io::fs::mktemp",
-    "std::io::fs::rename",
-    "std::io::fs::unlink",
-    "std::io::tls::set_recv_timeout",
-    "std::io::tls::set_send_timeout",
-    "std::io::udp::__bind",
-    "std::io::udp::__recv",
-    "std::io::udp::__send",
-    "std::io::udp::bind",
-    "std::io::udp::get_option_int",
-    "std::io::udp::join_group",
-    "std::io::udp::leave_group",
-    "std::io::udp::recv",
-    "std::io::udp::recv_with_source",
-    "std::io::udp::send",
-    "std::io::udp::set_multicast_iface",
-    "std::io::udp::set_multicast_loop",
-    "std::io::udp::set_multicast_ttl",
-    "std::io::udp::set_option_bool",
-    "std::io::udp::set_option_int",
-    "std::io::udp::set_recv_timeout",
-    "std::io::udp::set_send_timeout",
-    "std::os::getrandom",
-    "std::process::__kill_escalate",
-    "std::process::__pipe_read",
-    "std::process::__pipe_write",
-    "std::process::__signal_pid",
-    "std::process::__spawn",
-    "std::process::__try_wait_pid",
-    "std::process::__wait_pid",
-    "std::process::run",
-];
-
-/// Allowance 1, refused by lowering, expression position only: the
-/// value list also refuses the two parsers, which the statement list
-/// does not name, so a bare statement call of one is refused by the
-/// value list (`refuses_bare`) and covers this same pair.
-const REFUSED_BARE_EXPRESSION_ONLY: &[&str] = &["std::str::parse_float", "std::str::parse_int"];
-
-/// Allowance 1, refused by lowering. The fallible dispatcher's list
-/// (`try_lower_fallible_stdlib_path_call`'s `Err(".. is not a fallible
-/// call — remove the `or` clause ..")` arm): an `or` over a path that
-/// returns its value directly is refused, so no program builds with one.
-const REFUSED_UNDER_OR: &[&str] = &[
-    "std::bytes::__is_alloc_fail",
-    "std::bytes::builder::__append",
-    "std::bytes::builder::__append_slice",
-    "std::bytes::builder::__append_str",
-    "std::bytes::builder::__clear",
-    "std::bytes::builder::__finish",
-    "std::bytes::builder::__free",
-    "std::bytes::builder::__len",
-    "std::bytes::builder::__new",
-    "std::bytes::builder::__shift_front",
-    "std::bytes::builder::__snapshot",
-    "std::bytes::builder::__text_view",
-    "std::bytes::builder::__view",
-    "std::bytes::clone",
-    "std::bytes::from_string",
-    "std::bytes::slice",
-    "std::env::arg",
-    "std::env::arg_or",
-    "std::env::args_count",
-    "std::env::var",
-    "std::env::var_exists",
-    "std::io::fs::file_exists",
-    "std::io::stdin::read_line",
-    "std::io::stdin::read_line_status",
-    "std::io::tcp::close_fd",
-    "std::math::acos",
-    "std::math::asin",
-    "std::math::atan",
-    "std::math::atan2",
-    "std::math::ceil",
-    "std::math::cos",
-    "std::math::exp",
-    "std::math::floor",
-    "std::math::inf",
-    "std::math::is_nan",
-    "std::math::log",
-    "std::math::nan",
-    "std::math::pow",
-    "std::math::sin",
-    "std::math::sqrt",
-    "std::math::tan",
-    "std::math::tanh",
-    "std::process::pid",
-    "std::str::builder_append",
-    "std::str::builder_finish",
-    "std::str::builder_len",
-    "std::str::builder_new",
-    "std::str::can_parse_float",
-    "std::str::can_parse_int",
-    "std::str::clone",
-    "std::str::from_bytes",
-    "std::str::index_of",
-    "std::str::lower",
-    "std::str::pad_left",
-    "std::str::pad_right",
-    "std::str::repeat",
-    "std::str::replace",
-    "std::str::substring",
-    "std::str::trim",
-    "std::str::upper",
-    "std::text::is_alnum",
-    "std::text::is_alpha",
-    "std::text::is_digit",
-    "std::text::is_whitespace",
-    "std::text::is_word_char",
-    "std::text::tokenize_words_into",
-    "std::time::monotonic",
-    "std::time::sleep",
-];
+/// Allowance 1, refused by lowering, read from the rows (S5; until then
+/// three hand-kept lists): a bare call of a function whose row says it can
+/// fail (`bare_call_of_a_fallible_row`, the value position's arm, which a
+/// statement reaches too), and an `or` over one whose row says it cannot
+/// (`or_over_an_infallible_row`). No program builds with one, and the
+/// check refuses all but an `or` over a row with no signature yet.
+pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
+    use hale_types::stdlib_surface::{rows, Lower};
+    rows()
+        .filter(|(_, f)| matches!(f.lower, Lower::Intrinsic(_)))
+        .map(|(s, f)| {
+            let path = format!("std::{}::{}", s.ns.join("::"), f.name);
+            let fallible = f.sig.is_some_and(|s| s.fallible.is_some());
+            (path, if fallible { Position::Expression } else { Position::Fallible })
+        })
+        .collect()
+}
 
 /// Allowance 2, internal: paths the checker refuses from a user's
 /// program ("unknown stdlib function": they are in no registry row, and
@@ -1594,86 +1366,33 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
     ("std::test::__passes", Position::Expression, &["__test_fail_trailer"]),
 ];
 
-/// No pair reaches "not implemented" (the third kind the plan allowed
-/// for): every arm the scrape finds lowers or refuses by its own arm.
-///
-/// NOT ONE OF THE PLAN'S KINDS, so listed apart (S0's stop rule): the
-/// bare arms of paths whose signature row is fallible. The checker
-/// refuses a bare call of a fallible signature (GH #738: "`..` can fail
-/// (..) and this call says nothing about it"), so these expression arms
-/// are dead for every checked program, and `hale build` checks first.
-/// They are the plan's "9 fallible rows that keep a dead bare arm",
-/// which S5 removes; until then the IR shadow cannot reach them. Each
-/// had a statement twin too, 18 dead arms in all; S1 folded the twins
-/// into the expression arm, which a bare statement call of one reaches
-/// with its value dropped. The test derives the list from the rows and
-/// holds it equal.
-const DEAD_BARE_OF_FALLIBLE_ROWS: &[&str] = &[
-    "std::bytes::at",
-    "std::io::fs::file_size",
-    "std::io::fs::list_dir_at",
-    "std::io::fs::list_dir_count",
-    "std::io::fs::mkdir",
-    "std::io::fs::read_bytes",
-    "std::io::fs::read_file",
-    "std::io::fs::write_file",
-    "std::io::fs::write_file_append",
-];
-
 /// Every allowed pair, with the kind it is allowed as.
 fn allowances() -> BTreeMap<(String, Position), &'static str> {
     let mut out = BTreeMap::new();
-    for p in REFUSED_BARE {
-        out.insert((p.to_string(), Position::Statement), "refused by lowering");
-        out.insert((p.to_string(), Position::Expression), "refused by lowering");
-    }
-    for p in REFUSED_BARE_EXPRESSION_ONLY {
-        out.insert((p.to_string(), Position::Expression), "refused by lowering");
-    }
-    for p in REFUSED_UNDER_OR {
-        out.insert((p.to_string(), Position::Fallible), "refused by lowering");
+    for pair in refused_by_the_rows() {
+        out.insert(pair, "refused by lowering");
     }
     for (p, position, _) in INTERNAL {
         out.insert((p.to_string(), *position), "internal");
     }
-    for p in DEAD_BARE_OF_FALLIBLE_ROWS {
-        out.insert((p.to_string(), Position::Expression), "dead bare arm of a fallible row");
-    }
     out
 }
 
-/// The allowance lists say what the code says: the refused pairs are
-/// exactly the refusal arms' pairs; each internal path is refused to a
-/// user's program and called, at its position, by the stdlib
-/// declarations named, all lowered in every build; the dead bare arms
-/// are exactly the lowering arms at a bare position of a path whose
-/// signature row is fallible.
+/// The allowances say what the code says: the refused pairs are exactly
+/// the refusal arms' pairs, which are the rows' fallibility; each internal
+/// path is refused to a user's program and called, at its position, by
+/// the stdlib declarations named, all lowered in every build. No pair
+/// reaches "not implemented", and since S5 no fallible row keeps a bare
+/// arm that lowers (the nine dead ones are gone).
 #[test]
 fn the_allowances_are_what_the_code_says() {
     let all = pairs(&scrape());
     let allowed = allowances();
     let refused_scraped: BTreeSet<(String, Position)> =
         all.iter().filter(|(_, k)| k.0 == ArmKind::Refuses).map(|(p, _)| p.clone()).collect();
-    let refused_listed: BTreeSet<(String, Position)> =
+    let refused_rows: BTreeSet<(String, Position)> =
         allowed.iter().filter(|(_, why)| **why == "refused by lowering").map(|(p, _)| p.clone()).collect();
-    assert_eq!(refused_listed, refused_scraped, "the refusal allowances drifted from the refusal arms");
-
-    let dead_derived: BTreeSet<(String, Position)> = all
-        .iter()
-        .filter(|((path, position), k)| {
-            k.0 == ArmKind::Lowers
-                && *position != Position::Fallible
-                && hale_types::stdlib_surface::signature_for(&path.split("::").collect::<Vec<_>>())
-                    .is_some_and(|s| s.fallible.is_some())
-        })
-        .map(|(p, _)| p.clone())
-        .collect();
-    let dead_listed: BTreeSet<(String, Position)> = allowed
-        .iter()
-        .filter(|(_, why)| **why == "dead bare arm of a fallible row")
-        .map(|(p, _)| p.clone())
-        .collect();
-    assert_eq!(dead_listed, dead_derived, "the dead bare arms drifted from the signature rows");
+    assert_eq!(refused_rows, refused_scraped, "the refusal arms drifted from the rows' fallibility");
 
     let seeds = stdlib_calls();
     let ir = harness::build_source_ir_text(
@@ -1746,22 +1465,11 @@ fn every_dispatch_pair_is_reached_by_the_shadow_set() {
 fn report_the_dispatchers_and_the_coverage() {
     let scraped = scrape();
     let mut by_path: BTreeMap<String, BTreeSet<Position>> = BTreeMap::new();
-    let mut by_literal: BTreeMap<String, BTreeSet<Position>> = BTreeMap::new();
     for s in &scraped {
-        let literal: BTreeSet<String> = s
-            .arms
-            .iter()
-            .flat_map(|a| a.patterns.iter())
-            .filter(|p| p.iter().all(|seg| matches!(seg, Seg::Lit(_))))
-            .map(|p| p.iter().map(|seg| if let Seg::Lit(l) = seg { l.as_str() } else { "" }).collect::<Vec<_>>().join("::"))
-            .collect();
         eprintln!(
-            "{:<11} {:>3} patterns ({} family) in {:>3} arms; {:>3} literal paths, {:>3} with families expanded ({} refused); {} shadowed patterns {:?}",
+            "{:<11} {:>3} arms; {:>3} paths ({} refused); {} shadowed {:?}",
             s.position.word(),
-            s.patterns,
-            s.family_patterns,
             s.arms.len(),
-            literal.len(),
             s.paths.len(),
             s.paths.values().filter(|k| k.0 == ArmKind::Refuses).count(),
             s.shadowed.len(),
@@ -1770,15 +1478,10 @@ fn report_the_dispatchers_and_the_coverage() {
         for p in s.paths.keys() {
             by_path.entry(p.clone()).or_default().insert(s.position);
         }
-        for p in literal {
-            by_literal.entry(p).or_default().insert(s.position);
-        }
     }
-    for (what, m) in [("literal", &by_literal), ("expanded", &by_path)] {
-        let multi = m.values().filter(|ps| ps.len() >= 2).count();
-        let all3 = m.values().filter(|ps| ps.len() == 3).count();
-        eprintln!("{what}: union {} paths; {} in two or more dispatchers ({} in all three)", m.len(), multi, all3);
-    }
+    let multi = by_path.values().filter(|ps| ps.len() >= 2).count();
+    let all3 = by_path.values().filter(|ps| ps.len() == 3).count();
+    eprintln!("union {} paths; {} at two or more positions ({} at all three)", by_path.len(), multi, all3);
     let all = pairs(&scraped);
     let set = shadow_set();
     let mut per_source: BTreeMap<Source, usize> = BTreeMap::new();

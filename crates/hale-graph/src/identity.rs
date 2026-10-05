@@ -4,7 +4,7 @@
 //! replay identity (`HALE_TOOLCHAIN_SHA256`, `crates/hale-cli/build.rs`),
 //! the toolchain cache key the DNA host and observer are cached under
 //! (`HALE_COMPILER_SRC_HASH`, `crates/hale-iris/build.rs`), and the
-//! stale-binary hash (`HALE_CODEGEN_SRC_HASH`, the same script and
+//! stale-binary hash (`HALE_STALE_SRC_HASH`, the same script and
 //! `crates/hale-cli/src/shared/stale.rs`). Each walked its own list
 //! of directories with its own walk, and none of the lists named
 //! `hale-model`, so a model-shape change did not bust a cached host or
@@ -138,25 +138,6 @@ pub fn manifest_files(workspace_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The files the stale-binary hash covers: `codegen.rs`, the C runtime's
-/// `lotus_arena.c`, and every `.hl` seed of the stdlib. One list for
-/// `build.rs` (`HALE_CODEGEN_SRC_HASH`) and `stale.rs` (its run-time
-/// recomputation), with the same path strings.
-pub fn stale_hash_paths(codegen_dir: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![
-        codegen_dir.join("src").join("codegen.rs"),
-        codegen_dir.join("runtime").join("lotus_arena.c"),
-    ];
-    let mut seeds = Vec::new();
-    walk_sources(
-        &codegen_dir.join("..").join("hale-stdlib").join("hl"),
-        &mut seeds,
-    );
-    seeds.retain(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"));
-    paths.extend(seeds);
-    paths
-}
-
 /// Every source file of the covered crates plus `extra`, in path
 /// order.
 pub fn covered_files(workspace_root: &Path, extra: &[&str]) -> Vec<PathBuf> {
@@ -167,39 +148,91 @@ pub fn covered_files(workspace_root: &Path, extra: &[&str]) -> Vec<PathBuf> {
     files
 }
 
-/// What the replay identity and the toolchain cache key hash: every
-/// source file of the covered crates, then the manifest files, in
-/// that order. One selection for both, so neither can leave out an
-/// input the other covers.
+/// What the replay identity, the toolchain cache key and the
+/// stale-binary hash hash: every source file of the covered crates,
+/// then the manifest files, in that order. One selection for all
+/// three, so none can leave out an input another covers.
 pub fn identity_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut files = covered_files(workspace_root, &[]);
     files.extend(manifest_files(workspace_root));
     files
 }
 
+/// 64-bit FNV-1a: the workspace's one fold (F.40 phase 4, I6). Every
+/// FNV identity feeds its bytes here, so what tells two identities
+/// apart is the bytes each frames, never a copy of the arithmetic; a
+/// hand-rolled copy of the offset basis anywhere else in a crate's
+/// `src` or build script fails `identity_coverage.rs`.
+///
+/// It implements [`Hasher`](core::hash::Hasher) by overriding `write`
+/// and `finish` only, so a `Hash`-driven digest (`claim_table_digest`)
+/// frames its fields by the trait's defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fnv64(u64);
+
+impl Fnv64 {
+    /// The 64-bit FNV offset basis.
+    pub const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    /// The 64-bit FNV prime.
+    pub const PRIME: u64 = 0x100_0000_01b3;
+
+    pub const fn new() -> Self {
+        Fnv64(Self::BASIS)
+    }
+
+    /// Fold `bytes` in, one at a time: xor, then multiply.
+    pub fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    pub fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for Fnv64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::hash::Hasher for Fnv64 {
+    fn write(&mut self, bytes: &[u8]) {
+        Fnv64::write(self, bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        Fnv64::finish(self)
+    }
+}
+
+/// [`Fnv64`] over one byte string.
+pub fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h = Fnv64::new();
+    h.write(bytes);
+    h.finish()
+}
+
 /// A 64-bit FNV-1a fold over `(relative path, NUL, contents, NUL)` for
 /// every file, in the order given: the cache key's fold. A renamed,
 /// added or removed file moves it, as does one changed byte.
 pub fn fold_files(root: &Path, files: &[PathBuf]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
+    let mut h = Fnv64::new();
     for f in files {
         let rel = f
             .strip_prefix(root)
             .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
-        eat(rel.as_bytes());
-        eat(&[0]);
-        eat(&std::fs::read(f).unwrap_or_default());
-        eat(&[0]);
+        h.write(rel.as_bytes());
+        h.write(&[0]);
+        h.write(&std::fs::read(f).unwrap_or_default());
+        h.write(&[0]);
     }
-    h
+    h.finish()
 }
 
 /// How an identity folds what it covers.
@@ -207,7 +240,7 @@ pub fn fold_files(root: &Path, files: &[PathBuf]) -> u64 {
 pub enum Fold {
     /// A length-framed SHA-256.
     Sha256,
-    /// 64-bit FNV-1a, in one of its framings.
+    /// 64-bit FNV-1a ([`Fnv64`], the one fold), in one of its framings.
     Fnv64,
     /// `std`'s `DefaultHasher` (SipHash; its algorithm is unspecified,
     /// so the value is stable for one toolchain only).
@@ -437,20 +470,19 @@ pub const IDENTITIES: &[Identity] = &[
         frozen: None,
     },
     Identity {
-        name: "codegen_src_hash",
-        identifies: "the stale-binary warning's hash: the binary was built from the codegen, runtime and stdlib files now on disk",
-        computed: "compiler build (`HALE_CODEGEN_SRC_HASH`, hale-cli/build.rs) and every check, verify, build, run, test, dna and inputs invocation in a development checkout (`compute_codegen_src_hash`)",
-        fold: Fold::DefaultHasher,
-        covers: &[Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds],
+        name: "stale_src_hash",
+        identifies: "the stale-binary warning's hash: the binary was built from the identity-covered sources now on disk, the selection `toolchain_digest` and `compiler_src_hash` fold",
+        computed: "compiler build (`HALE_STALE_SRC_HASH`, hale-cli/build.rs), and on a check, verify, build, run, test, dna or inputs invocation in a development checkout only when a covered file or its directory is newer than the binary (`stale_sources`: otherwise it stats and reads nothing)",
+        fold: Fold::Fnv64,
+        covers: &[Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests],
         leaves_out: &[
-            (Input::CompilerSources, "a gap, closed in I4: it folds one of codegen's source files (`codegen.rs`) and none of the other covered crates'"),
-            (Input::RuntimeC, "a gap, closed in I4: it folds one of the runtime's C files (`lotus_arena.c`), no other C file or header"),
-            (Input::Manifests, "a gap, closed in I4"),
+            (Input::RustcVersion, "by design: a warning that the sources on disk are not the binary's; another rustc over the same sources is no edit"),
+            (Input::GitCommit, "by design: the commit names no source the files do not"),
         ],
-        producer: ("crates/hale-cli/src/shared/stale.rs", "compute_codegen_src_hash"),
+        producer: ("crates/hale-cli/src/shared/stale.rs", "stale_sources"),
         consumers: &["`check_stale_cli`"],
         on_mismatch: "a warning on stderr",
-        versioned_by: "none: its selection is `stale_hash_paths`; a change of coverage is a change of that function",
+        versioned_by: "none: the shared selection (`identity_files`) and the shared fold; a change of coverage is a change of that selection",
         frozen: None,
     },
     Identity {
@@ -462,7 +494,7 @@ pub const IDENTITIES: &[Identity] = &[
         leaves_out: &[
             (Input::RustcVersion, "by design: two binaries of one source build one host"),
             (Input::GitCommit, "by design: the commit names no source the files do not"),
-            (Input::BuildOptions, "a gap, closed in I5: the build knobs the cache's `hale build` subprocess inherits from the environment (`HALE_DEV`, `LOTUS_NO_DEBUGINFO`, a sanitizer) are in no key"),
+            (Input::BuildOptions, "by design: this is the compiler half; `toolchain_hash` frames the options the cache's build inherits beside it"),
         ],
         producer: ("crates/hale-iris/build.rs", "main"),
         consumers: &["`toolchain_hash`"],
@@ -472,19 +504,18 @@ pub const IDENTITIES: &[Identity] = &[
     },
     Identity {
         name: "toolchain_hash",
-        identifies: "the DNA host cache's key: the compiler's sources, the stdlib and the embedded iris and DNA trees are the ones the cached host was built from",
+        identifies: "the DNA host cache's key: the compiler's sources (the stdlib among them, folded once), the options its `hale build` subprocess builds with, and the embedded iris and DNA trees are the ones the cached host was built from",
         computed: "hale iris, hale dna (per invocation)",
         fold: Fold::Fnv64,
-        covers: &[Input::CompilerVersion, Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests, Input::EmbeddedDna, Input::EmbeddedIris],
+        covers: &[Input::CompilerVersion, Input::CompilerSources, Input::RuntimeC, Input::StdlibSeeds, Input::Manifests, Input::BuildOptions, Input::EmbeddedDna, Input::EmbeddedIris],
         leaves_out: &[
-            (Input::BuildOptions, "a gap, closed in I5: the environment's build knobs are in no key, so a host cached under a sanitizer or `HALE_DEV` is served to a run without it"),
-            (Input::StdlibSeeds, "a gap, closed in I5: the stdlib is folded twice, once in `compiler_src_hash` and once as the embedded `AP_FILES`"),
+            (Input::BuildOptions, "by design: the options are the execution identity's fingerprint of the environment the subprocess inherits (`host_cache_options`), so what that fingerprint leaves out (the DWARF switch `LOTUS_NO_DEBUGINFO`, a narration or a timing, the C warnings, the linker, the cache's place) is no part of the key either"),
             (Input::RustcVersion, "by design: see `compiler_src_hash`"),
         ],
         producer: ("crates/hale-iris/src/lib.rs", "toolchain_hash"),
         consumers: &["the DNA host cache directory (`~/.cache/hale/iris/<hash>`)"],
         on_mismatch: "the cache directory is new; the host is rebuilt",
-        versioned_by: "moves with the version, the compiler's sources and every embedded byte",
+        versioned_by: "moves with the version, the compiler's sources, the inherited options and every embedded byte",
         frozen: None,
     },
     Identity {
@@ -661,6 +692,19 @@ pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The published FNV-1a/64 values, and the `Hasher` face folds the
+    /// same bytes as the inherent one.
+    #[test]
+    fn the_fold_is_fnv1a_64() {
+        assert_eq!(fnv64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv64(b"foobar"), 0x8594_4171_f739_67e8);
+        let mut split = Fnv64::new();
+        split.write(b"foo");
+        core::hash::Hasher::write(&mut split, b"bar");
+        assert_eq!(core::hash::Hasher::finish(&split), fnv64(b"foobar"));
+    }
 
     #[test]
     fn a_covered_change_moves_the_fold_and_order_is_by_path() {

@@ -138,8 +138,11 @@ pub struct LoweringView {
     /// rows only: the checker's wire rows, holes, declarations and edges
     /// are the snapshot's graph's.
     pub bus: BusGraph,
-    /// Lowering's dispatch plan, derived from `bus`'s gates with an
-    /// empty domain map: the flavor each subject is lowered to.
+    /// The program's dispatch plan, the snapshot's (F.40 phase 4, S9):
+    /// derived once from the gates `bus`'s are (`bus_graph::
+    /// derive_dispatch_gates`) and the arrangement's domains, the flavor
+    /// each subject is lowered to. The model holds the same plan,
+    /// projected.
     pub plan: DispatchPlan,
     /// Every send the intra-locus rewrite replaced with a direct call:
     /// the relation that keeps the publish in the program's account
@@ -388,11 +391,11 @@ pub fn rewrite_intra_locus(
 /// the correspondence, the stdlib's after them. `scratch_local`
 /// is the snapshot's allocation summary's scratch-local set
 /// (`AllocSummary::scratch_local`), classified over the declarations the
-/// merged program holds; the routing rows read it. `domains`
-/// is the dispatch plan's domain map, the arrangement's
-/// ([`crate::arrangement::Arrangement::domains`] over the snapshot's
-/// programs, placement table and ownership graph): the map the model's
-/// plan is derived with. `class` is the
+/// merged program holds; the routing rows read it. `plan` is the
+/// snapshot's dispatch plan (`Snapshot::demand_dispatch_plan`, F.40
+/// phase 4, S9): the one plan, derived once from the snapshot's gates
+/// and the arrangement's domains, which the view carries to lowering
+/// and the model holds projected; the view derives none. `class` is the
 /// effective target's column of the capability matrix, the cells the
 /// view hands lowering. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
@@ -415,7 +418,7 @@ pub fn resolve_rewritten(
     handlers: &crate::handler_routing::HandlerRouting,
     flows: &crate::flows::FlowRows,
     scratch_local: &std::collections::BTreeSet<String>,
-    domains: &BTreeMap<&str, Vec<String>>,
+    plan: &DispatchPlan,
     class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
@@ -549,16 +552,16 @@ pub fn resolve_rewritten(
     // graph is. The bundle's one program keeps the name codegen gave
     // it, so nothing keyed by program name moves.
     //
-    // F.40 phase 1.5: and the bus graph and lowering's dispatch plan.
-    // The graph is the snapshot's rows read through the correspondence
-    // (F.40 phase 3, C5, `bus_graph::lowering_bus_graph`): each user site
-    // keyed by the wire literal the topic rewrite gave it — the string
-    // the register and publish sites see — and after them the stdlib's,
-    // the one part derived here, over the merged program's tail and the
-    // snapshot's scope, so the gates are sound against its wildcard
-    // subscribers (`log.**`). A program with no entry point is open
-    // world: every subject is ineligible, and the plan is all dynamic.
-    let (ownership, bubble, bus, plan) = {
+    // F.40 phase 1.5: and the bus graph. The graph is the snapshot's
+    // rows read through the correspondence (F.40 phase 3, C5,
+    // `bus_graph::lowering_bus_graph`): each user site keyed by the wire
+    // literal the topic rewrite gave it — the string the register and
+    // publish sites see — and after them the stdlib's, the one part
+    // derived here, over the merged program's tail and the snapshot's
+    // scope. The dispatch plan is not derived here (F.40 phase 4, S9):
+    // the snapshot's gates are this graph's, without the merge
+    // (`bus_graph::derive_dispatch_gates`), and its plan is handed in.
+    let (ownership, bubble, bus) = {
         let bundle = merged_bundle(&merged, import_renames, &snapshot);
         // The closed world is the snapshot's rows', the entry row's over
         // the checked bundle: the merged program holds the same
@@ -600,17 +603,9 @@ pub fn resolve_rewritten(
                 info.written_topics.push((rw.site, rw.written.clone()));
             }
         }
-        // The gates are the ones the rewritten program was judged by,
-        // as before: the relation is recorded, not yet read.
-        //
-        // The flavor is a function of the gates alone; the domains are
-        // the arrangement's, the map the model's plan is derived with
-        // too (F.40 phase 3, C5), and fill the `same_domain` survey
-        // column. No lowering reads it until #464's flavors, so the
-        // plan's digest does not cover it.
-        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(&bus.dispatch_gates(), domains);
-        (graph, bubble, bus, plan)
+        (graph, bubble, bus)
     };
+    let plan = plan.clone();
 
     // F.40 phase 1.4: the handler rows, with the child type resolved the
     // way lowering resolves it. They are the snapshot's rows read through

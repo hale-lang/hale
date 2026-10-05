@@ -40,9 +40,11 @@ pub mod entry;
 pub mod evidence;
 pub mod frontier;
 pub mod check;
+pub mod closure_events;
 pub mod correspondence;
 pub mod handler_routing;
 pub mod lifecycle;
+pub mod law;
 pub mod lowering_laws;
 pub mod claim_lowering;
 pub mod claims;
@@ -77,6 +79,7 @@ pub mod resource_budget;
 pub mod flows;
 mod fn_values;
 pub mod sealability;
+pub mod sealed_access;
 pub mod symbol;
 pub mod sync_inference;
 pub mod form_rows;
@@ -506,8 +509,8 @@ pub(crate) fn bundle_intra_locus(
 /// [`derive_application_model`] over the scope, the rows, the
 /// allocation summary, the form rows, the bus graph, the binding rows,
 /// the ownership graph and the placement table its caller already built:
-/// the effect rows and the table's arrangement the model reads beside
-/// them are built here.
+/// the effect rows, the table's arrangement and the dispatch plan the
+/// model reads beside them are built here, by the snapshot's producers.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -522,6 +525,8 @@ fn model_over_scope(
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     let arrangement = arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
+    let gates = bus_graph::derive_dispatch_gates(bus_graph, top, placement);
+    let dispatch_plan = hale_model::dispatch_plan::DispatchPlan::from_gates(&gates, &arrangement.domains());
     model_builder::derive_application_model_over(
         bundle,
         &model_builder::ModelInputs {
@@ -534,6 +539,7 @@ fn model_over_scope(
             bindings,
             placement,
             arrangement: &arrangement,
+            dispatch_plan: &dispatch_plan,
         },
     )
 }

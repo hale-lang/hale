@@ -4351,7 +4351,13 @@ pub fn judge_certificates(
             });
             continue;
         };
-        let mut verdict = Verdict::Holds;
+        // The row's verdict is the model's aggregation over its
+        // certificates — the same function admission recomputes it
+        // with from the artifact.
+        let verdict = verdict_of(hale_model::certificate_row_verdict(
+            ev.certs.iter().map(|c| c.result),
+            invalid_class,
+        ));
         // The source-space discriminator (round 5): every diag
         // accumulated BEFORE this loop is claim-space (bundle);
         // evidence diags carry their record's own variant — a
@@ -4359,10 +4365,6 @@ pub fn judge_certificates(
         // numbers must never be re-resolved against bundle files.
         let mut foreign: Vec<bool> = vec![false; diags.len()];
         for cert in ev.certs.iter() {
-            let v = verdict_of(cert.result);
-            if severity(v) > severity(verdict) {
-                verdict = v;
-            }
             for (msg, pid) in &cert.diags {
                 let is_foreign = matches!(
                     evidence.provenance.records.get(pid.index()),
@@ -4374,9 +4376,6 @@ pub fn judge_certificates(
                 foreign.push(is_foreign);
             }
         }
-        if invalid_class {
-            verdict = Verdict::Invalid;
-        }
         out.push(Judged {
             ordinal: row.ordinal,
             verdict,
@@ -4385,15 +4384,6 @@ pub fn judge_certificates(
         });
     }
     out
-}
-
-fn severity(v: Verdict) -> u8 {
-    match v {
-        Verdict::Holds => 0,
-        Verdict::Uncertified => 1,
-        Verdict::Violated => 2,
-        Verdict::Invalid => 3,
-    }
 }
 
 /// GH #476 Change 9 — the CHECK path's claim diagnostics, from the

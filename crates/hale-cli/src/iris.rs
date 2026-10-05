@@ -26,7 +26,7 @@ use std::process::{Command, ExitCode, Stdio};
 /// Materialize the sources; build a seed if its binary is missing.
 /// Returns the binary path.
 fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
-    let root = hale_iris::materialize().map_err(|e| format!("hale iris: cannot materialize sources: {e}"))?;
+    let root = hale_iris::materialize(&crate::build_env::host_cache_options()).map_err(|e| format!("hale iris: cannot materialize sources: {e}"))?;
     let bin_path = ensure_built_in(&root, seed, bin, "the observer")?;
     Ok((root, bin_path))
 }
@@ -178,7 +178,7 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("       hale iris --where | --build-only");
             ExitCode::SUCCESS
         }
-        Some("--where") => match hale_iris::cache_dir() {
+        Some("--where") => match hale_iris::cache_dir(&crate::build_env::host_cache_options()) {
             Some(d) => {
                 println!("{}", d.display());
                 ExitCode::SUCCESS

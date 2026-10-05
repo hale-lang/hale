@@ -68,18 +68,13 @@ pub struct ObsEntityId {
 /// and uses the ids only on a match. No match, no join; that is a
 /// detectable refusal instead of a silent misattribution.
 pub fn digest(rows: &[ObsEntityId]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-    };
+    let mut fold = hale_graph::identity::Fnv64::new();
     for r in rows {
-        eat(&[r.kind as u8]);
-        eat(r.name.as_bytes());
-        eat(&r.id.to_le_bytes());
+        fold.write(&[r.kind as u8]);
+        fold.write(r.name.as_bytes());
+        fold.write(&r.id.to_le_bytes());
     }
+    let h = fold.finish();
     // Never 0: that value means "unstamped" in the header.
     if h == 0 {
         1

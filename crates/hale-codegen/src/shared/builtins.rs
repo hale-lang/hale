@@ -3648,7 +3648,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declarations let codegen emit calls into them.
 
         // IoError synthesis helpers (used by the fallible-fs/tcp
-        // dispatcher in `try_lower_fallible_stdlib_path_call`).
+        // arms of `lower_std_intrinsic_fallible`).
         // declare i32 @lotus_get_errno(void)
         let get_errno_ty = i32_t.fn_type(&[], false);
         self.module

@@ -339,6 +339,7 @@ pub fn model_of(snap: &Snapshot, sources: &[SourceFile]) -> ApplicationModel {
         bindings: snap.demand_bindings().unwrap_or_else(|b| blocked(b)),
         placement: snap.demand_placement().unwrap_or_else(|b| blocked(b)),
         arrangement: snap.demand_arrangement().unwrap_or_else(|b| blocked(b)),
+        dispatch_plan: snap.demand_dispatch_plan().unwrap_or_else(|b| blocked(b)),
     };
     hale_types::model_builder::derive_application_model_over(&view, &inputs)
 }

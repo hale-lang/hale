@@ -1647,6 +1647,12 @@ state), and zeroization.
 | **`ring_layout` geometry** | a *cross-field* inconsistency that would let a record header land out of bounds or silently corrupt the reader: a header scalar or the cursor overrunning `data_at`, two fields overlapping, a non-power-of-two `align`, a `pad_sentinel` too wide for the `len_prefix`, a `len_prefix` width `> align`, a non-8-aligned `atomic_u64` cursor, or (producer side) a `buffer_size:` that isn't a multiple of `align` | error | `check_ring_layout` + `check_main_and_bindings` |
 | **Foreign-ring payload shape** | a `layout:`-bound topic whose payload is neither flat-shapeable (typed mode — read by direct cast, needs a fixed byte layout) nor `BytesView` (raw-frame mode — a bounded view per record, for heterogeneous rings); e.g. a struct with `String` / `Bytes` / variable-size fields. Enforced regardless of `where zero_copy` | error | `check_main_and_bindings` |
 | **Cell slot-of-origin** | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from | error | codegen |
+| **Recovery event alphabet** | a name in a closure's `persists_through(...)` or `resets_on(...)` that is not a recovery event: the alphabet is closed, `restart`, `restart_in_place` and `quarantine`; the message names it at the name, and suggests the event a misspelling one edit away means | error | `outside_the_alphabet` (closure events) |
+| **Persisting through dissolve** | `dissolve` in a closure's `persists_through(...)`: an accumulator does not outlive its locus's dissolve, so the clause can mean nothing | error | `persists_through_dissolve` (closure events) |
+| **Contradicting recovery clauses** | a recovery event one closure names in both `persists_through(...)` and `resets_on(...)`: the two contradict each other. Reported at the `resets_on` name, with the `persists_through` name as its witness | error | `in_both_clauses` (closure events) |
+| **Unreached recovery event** | in a closed world (the program has an entry), a recovery event a closure of the program's own seed names that no handler and no recovery statement applies to its locus, read from the handler rows (a spent `restart(c) for N` bound is `quarantine`). The witness is each handler and statement that names the locus, with the events it applies, or the locus when none does. Not judged for an imported locus, nor for an event some recovery applies to a child the rows cannot name (a generic supervisor's type parameter, or a receiver that is not a declared param) | warning | `unreached_events` (closure events) |
+| **Persistence with no accumulator** | `persists_through(...)` on a closure whose assertion has no `sum`, `count` or `mean`: there is nothing to keep. Reported at the clause, with the assertion as its witness | warning | `nothing_to_keep` (closure events) |
+| **Sealed confinement** | a read or a write of a `@sealed` locus's `params` field from outside that locus's own members (`self.signer.key` in its parent), naming the methods to call instead; see § "Secrets — confine, classify, claim". Judged over the param-access rows the checker records for every access through a locus-typed receiver, sealed or not, which the `--sealable` survey reads too | error | `outside_access` (sealed access) |
 
 CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the
@@ -2441,6 +2447,12 @@ assume the others in a build:
   when a count exceeds a declared ceiling); and **fd-leak detection**
   `--warn-resource-leak` (an fd-acquiring call whose result is stored
   resident in an unbounded context). See `notes/resource-budgets.md`.
+  The fd-opening calls are `std::io::file::open`, `std::io::tcp`'s
+  `connect`, `connect_wait`, `listen_socket` and `accept_one` (and the
+  last two's `__` primitives), and `std::io::unix`'s `connect`,
+  `connect_wait` and `listen_socket`; the tcp `connect_wait` was
+  missing until F.40 phase 4, S5, so a program that calls it counts one
+  more site per call.
 
   The budget counts the resource, not the declaration that asks for it,
   and reads the threads and pools from the placement table (F.40 phase

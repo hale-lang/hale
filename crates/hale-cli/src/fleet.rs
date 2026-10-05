@@ -1614,12 +1614,7 @@ fn q(s: &str) -> String {
 }
 
 fn fnv(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{:016x}", h)
+    format!("{:016x}", hale_graph::identity::fnv64(s.as_bytes()))
 }
 
 /// GH #476 Change 4 — lower the plan's claim rows to `ClaimIr`.

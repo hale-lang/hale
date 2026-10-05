@@ -558,7 +558,10 @@ sealability: 4 of 5 loci can be `@sealed` today
     Exposed — 1 external access(es): Exposed.k
 ```
 
-Empty means sealing that locus is a no-op. In practice most loci
+Empty means sealing that locus is a no-op. The survey reads what the
+check itself typed, so it counts the same accesses sealing would refuse,
+including those that reach an imported seed's locus by its qualified
+name (`lib::Counter { }`). In practice most loci
 already qualify: when the survey landed, 148 of 151 loci across this
 repo's own corpus did. The ones that didn't share a shape — a parent reading a child's *result* field
 instead of calling a method, which the no-locus-return rule already

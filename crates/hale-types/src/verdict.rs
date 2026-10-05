@@ -64,3 +64,28 @@ impl Verdict {
         matches!(self, Verdict::Holds)
     }
 }
+
+/// The model's spelling of the same four states, which its verdict
+/// aggregation (`hale_model::certificate_row_verdict`,
+/// `hale_model::document_verdict`) is written over.
+impl From<Verdict> for hale_model::VerdictIr {
+    fn from(v: Verdict) -> Self {
+        match v {
+            Verdict::Holds => hale_model::VerdictIr::Holds,
+            Verdict::Violated => hale_model::VerdictIr::Violated,
+            Verdict::Uncertified => hale_model::VerdictIr::Uncertified,
+            Verdict::Invalid => hale_model::VerdictIr::Invalid,
+        }
+    }
+}
+
+impl From<hale_model::VerdictIr> for Verdict {
+    fn from(v: hale_model::VerdictIr) -> Self {
+        match v {
+            hale_model::VerdictIr::Holds => Verdict::Holds,
+            hale_model::VerdictIr::Violated => Verdict::Violated,
+            hale_model::VerdictIr::Uncertified => Verdict::Uncertified,
+            hale_model::VerdictIr::Invalid => Verdict::Invalid,
+        }
+    }
+}

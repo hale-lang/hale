@@ -1,12 +1,13 @@
 // Build-only call fixture (F.40 phase 4, S0): `std::crypto` at statement
 // position, and the two digests the rest of the line S shadow set calls
 // only through the stdlib, at expression position. Never run;
-// `stdlib_call_fixtures` builds it to IR.
+// `stdlib_call_fixtures` builds it to IR. `ecdsa_p256_sign` can fail, so
+// it takes an `or` (S5): the empty Bytes its bare call used to answer.
 
 fn main() {
     let b = std::bytes::from_string("message");
     std::crypto::crc32(b);
-    std::crypto::ecdsa_p256_sign(b, b);
+    let sig = std::crypto::ecdsa_p256_sign(b, b) or b"";
     std::crypto::ecdsa_p256_verify(b, b, b);
     std::crypto::hmac_sha256(b, b);
     std::crypto::hmac_sha512(b, b);
@@ -15,5 +16,5 @@ fn main() {
     std::crypto::sha512(b);
     let mac = std::crypto::hmac_sha512(b, b);
     let digest = std::crypto::sha512(b);
-    println(len(mac) + len(digest));
+    println(len(mac) + len(digest) + len(sig));
 }
