@@ -1318,7 +1318,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 projection_class,
                 schedule_class,
                 capacity_slots,
-                arena_elidable: self.locus_elision(&l.name.name).arena,
+                arena_elidable: self.locus_elision(&l.name.name)?.arena,
                 empty_lifecycle: std::collections::BTreeSet::new(),
             },
         );

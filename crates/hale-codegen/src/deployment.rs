@@ -81,6 +81,8 @@ pub struct DeploymentPlan {
     /// subscriber (`LoweringView::route_anchors`, from the placement
     /// table): each gets a mailbox even when it subscribes to nothing
     /// itself, so its descendants' subscriptions route to its thread
-    /// (U-6).
+    /// (U-6). Total: an anchor not in the set has no nested subscriber.
+    /// The sets above are total too: a type in none of them is placed by
+    /// no entry and runs where its owner does.
     pub route_anchor_types: BTreeSet<String>,
 }

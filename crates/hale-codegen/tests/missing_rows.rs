@@ -255,3 +255,49 @@ fn sync_inference_a_hashmap_without_its_row_is_refused_at_its_declaration() {
     assert!(msg.contains("has no form row"), "{msg}");
     assert_eq!(at(src, span.expect("located")), "RegistryL");
 }
+
+/// `topics`: where lowering holds a topic declaration's name (its
+/// observation shape, a binding entry's topic, a rewritten send's), the
+/// wire subject and payload are the topic's row; a topic with no row is
+/// refused at its name, never registered under its name as a subject.
+#[test]
+fn topics_a_declared_topic_without_its_row_is_refused_at_its_name() {
+    let src = "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"evt\"; }\n\
+               locus Rx {\n    bus { subscribe Evt as on_evt; }\n    fn on_evt(t: T) { println(t.n); }\n}\n\
+               fn main() { let r = Rx { }; Evt <- T { n: 1 }; }\n";
+    let (msg, span) = refused_without("topics", src, "topics", |v| {
+        v.top.topics = hale_types::topic_identity::TopicRows::default()
+    });
+    assert!(msg.contains("the topic `Evt` has no row"), "{msg}");
+    assert_eq!(at(src, span.expect("located")), "Evt");
+}
+
+/// `placement`: the deployment plan is the placement table's root, the
+/// entry the entry row names; a table with no root for it is refused at
+/// the entry, never deployed as if nothing were placed.
+#[test]
+fn placement_an_entry_without_its_root_row_is_refused_at_the_entry() {
+    let src = "locus Worker {\n    run() { println(\"w\"); }\n}\n\
+               main locus App {\n    params { w: Worker = Worker { }; }\n    placement { w: pinned; }\n}\n\
+               fn main() { App { }; }\n";
+    let (msg, span) = refused_without("placement", src, "placement", |v| {
+        v.placement = hale_types::placement::PlacementTable::default()
+    });
+    assert!(msg.contains("no root"), "{msg}");
+    assert_eq!(at(src, span.expect("located")), "App");
+}
+
+/// `alloc_summary`: a locus's arena and its members' scratch are elided
+/// by its elision rows, and a free fn's caller-arena publish by its row;
+/// a declaration with none is refused, never lowered on a guess (the
+/// locus's read was a panic).
+#[test]
+fn alloc_summary_a_declaration_without_its_routing_rows_is_refused() {
+    let src = "locus C {\n    params { n: Int = 0; }\n    fn bump() { self.n = self.n + 1; }\n}\n\
+               main locus App {\n    params { c: C = C { }; }\n    run() { self.c.bump(); }\n}\n\
+               fn main() { App { }; }\n";
+    let (msg, _) = refused_without("alloc_summary", src, "alloc_summary", |v| {
+        v.alloc_routing = hale_types::alloc_routing::AllocRouting::default()
+    });
+    assert!(msg.contains("no elision rows") || msg.contains("no caller-arena row"), "{msg}");
+}

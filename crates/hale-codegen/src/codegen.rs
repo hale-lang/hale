@@ -1349,6 +1349,8 @@ pub fn build_resolved(
     //     but the statically-baked `no_pinned` enqueue sites can't
     //     be un-baked at runtime — so the compile-time union here
     //     must stay the superset.
+    // Total: no domain off main and no binding row of the entry means no
+    // thread crosses the bus boundary.
     let program_has_offthread =
         resolved.placement.places_off_main() || resolved.bindings.binds_on_main(Some(entry));
 
@@ -8496,7 +8498,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // sends. The actual `lotus_bus_register_shm_ring` IR
         // calls are emitted later by `emit_bindings_prelude` in
         // main's prelude.
-        self.collect_shm_ring_subjects();
+        self.collect_shm_ring_subjects()?;
 
         // Phase 3 (2026-05-25, spec/semantics.md § "Phase 3:
         // routing keys"): pre-pass over top-level topic decls to
@@ -8511,7 +8513,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // name, which the params-init loop in
         // `lower_locus_instantiation` reads for the entry
         // (`is_entry_locus`) to override the per-field placement.
-        self.collect_main_placement();
+        self.collect_main_placement()?;
 
         // Pass A0: declare every user-defined `type` so locus
         // params, fn signatures, and struct literals can reference
@@ -9362,23 +9364,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rows key by the joined dot-path, so a parented topic's
             // shape registered under its bare subject was never found
             // and its manifest row hashed the empty shape.
-            let shapes: Vec<(String, String)> = self
-                .program
-                .items
-                .iter()
-                .filter_map(|it| match it {
-                    TopDecl::Topic(t) => {
-                        let subj = self.topic_wire(&t.name.name);
-                        let shape = hale_types::topic_identity::
-                            canonical_topic_shape(
-                                &self.program.items,
-                                t,
-                            );
-                        Some((subj, shape))
-                    }
-                    _ => None,
-                })
-                .collect();
+            let mut shapes: Vec<(String, String)> = Vec::new();
+            for it in &self.program.items {
+                let TopDecl::Topic(t) = it else { continue };
+                let subj = self.topic_row(&t.name.name, Some(t.name.span))?.wire.clone();
+                let shape = hale_types::topic_identity::canonical_topic_shape(&self.program.items, t);
+                shapes.push((subj, shape));
+            }
             if !shapes.is_empty() {
                 let shape_fn = self
                     .module
@@ -9738,7 +9730,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// misses and Sends fall through to the normal dispatch
     /// path (which fails at codegen time for publisher-only
     /// programs).
-    fn collect_shm_ring_subjects(&mut self) {
+    fn collect_shm_ring_subjects(&mut self) -> Result<(), CodegenError> {
         // A root whose entry has no row is the prelude's error to name.
         for (entry, row) in self.root_bindings().unwrap_or_default() {
             if row.transport != Transport::ShmRing {
@@ -9752,10 +9744,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // (the size_of lookup at codegen). For now a
             // single-segment TypeExpr only; post-v1 can
             // widen.
-            let payload_name = self
-                .topics
-                .named(&entry.topic.name)
-                .and_then(|row| single_segment_type_name(&row.payload))
+            let payload_name = single_segment_type_name(&self.topic_row(&entry.topic.name, Some(entry.topic.span))?.payload)
                 .unwrap_or_default();
             // Proposal B: resolve `layout: Name` to its
             // decl (validated upstream in hale-types) so
@@ -9781,6 +9770,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 },
             );
         }
+        Ok(())
     }
 
     /// Phase 3 (2026-05-25): walk top-level topic decls and
@@ -9857,10 +9847,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// entry decides one in every template), so the first template's
     /// rows answer for a field. Fields no entry decides keep the
     /// locus's own default class (Cooperative under F.31).
-    fn collect_main_placement(&mut self) {
+    fn collect_main_placement(&mut self) -> Result<(), CodegenError> {
         use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
-        let Some(root) = table.root.as_ref() else { return };
+        // Total where the entry row names no `main locus`: no root, and
+        // nothing deployed. A root the entry names is a required row.
+        let Some(root) = table.root.as_ref() else {
+            return match self.entry_locus {
+                Some(l) => Err(CodegenError::missing_row(
+                    "placement",
+                    format!("the placement table has no root for the entry `{}`", l.name.name),
+                    Some(l.name.span),
+                )),
+                None => Ok(()),
+            };
+        };
         // The root's placement entries, by their sites: a user site is
         // the node of the same index in lowering's program.
         let root_id = NodeId(root.realizes.site.id.index);
@@ -9902,6 +9903,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         for (field, (_, rows)) in fields {
             let (_, first) = rows[0];
+            // A row the table could not resolve a declaration for is a
+            // hole: its type joins no thread set.
             let realized = first.realizes.as_ref().map(|d| d.lowered.clone());
             let class = match &table.domain(first.domain).kind {
                 DomainKind::Main => ScheduleClass::Cooperative,
@@ -9931,8 +9934,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     } else {
                         // The entry's written selector decides how the
                         // affinity is emitted: one core, or a set.
+                        // The deciding entry is the root's own, found by
+                        // its site: a required join, never read as a set.
                         let entry = match &first.decided_by {
-                            Decision::Entry { entry, .. } => entries.get(&entry.id.index).copied(),
+                            Decision::Entry { entry, .. } => Some(entries.get(&entry.id.index).copied().ok_or_else(|| {
+                                CodegenError::missing_row(
+                                    "placement",
+                                    format!("the entry that places `{field}` is not in the root's `placement {{ }}` block"),
+                                    None,
+                                )
+                            })?),
                             _ => None,
                         };
                         let single = matches!(
@@ -9968,6 +9979,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.deployment.pinned_locus_types.extend(r.realizes.as_ref().map(|d| d.lowered.clone()));
             }
         }
+        Ok(())
     }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
@@ -11501,6 +11513,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .named(name)
             .map(|row| row.wire.clone())
             .unwrap_or_else(|| name.to_string())
+    }
+
+    /// The row of the topic declared as `name`, where lowering holds a
+    /// declaration's name (a topic declaration, a binding entry's topic, a
+    /// rewritten send's) rather than a subject that may already be a wire:
+    /// a required row, refused when absent.
+    fn topic_row(&self, name: &str, at: Option<hale_syntax::Span>) -> Result<&'p hale_types::topic_identity::TopicRow, CodegenError> {
+        self.topics
+            .named(name)
+            .ok_or_else(|| CodegenError::missing_row("topics", format!("the topic `{name}` has no row"), at))
     }
 
     fn emit_arena_destroy(&mut self) -> Result<(), CodegenError> {
@@ -13357,7 +13379,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (Int/Float/Duration `+` is arithmetic, not String concat) AND
         // interprocedural (calls to other proven-non-allocating fns don't
         // allocate). Fallible fns are excluded there (the `fail E` path
-        // arena-allocs a payload).
+        // arena-allocs a payload). Total: a fn the rows do not prove
+        // non-allocating keeps its scratch.
         let non_allocating = self.alloc_routing.is_nonalloc(&f.name.name);
         self.user_fns.insert(
             f.name.name.clone(),
@@ -14198,6 +14221,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.current_user_fn_caller_arena = Some(caller_arena_alloca);
         self.current_user_fn_arena = Some(fn_arena_alloca);
+        // Total: a fn the rows do not call scratch-local allocates into its
+        // caller's arena.
         self.current_user_fn_scratch_local =
             !sig.non_allocating && self.alloc_routing.is_scratch_local(&f.name.name);
         // GH #375: publish the caller's arena to the caller-arena
@@ -14246,13 +14271,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The decision is the fn's row (`alloc_routing.caller_arena_publish`,
         // a structural walk for a call or a struct literal anywhere in the
         // body); a generic fn's monomorph, which the view does not hold,
-        // takes the same producer over its synthesized declaration.
-        let body_can_read_tls = self
-            .alloc_routing
-            .caller_arena_publish
-            .get(&f.name.name)
-            .copied()
-            .unwrap_or_else(|| self.alloc_routing.specialize_fn(f));
+        // takes the same producer over its synthesized declaration, as a
+        // locus monomorph's elision rows do. Any other fn with no row is
+        // refused: the view holds one for every fn declaration it lowers.
+        let body_can_read_tls = match self.alloc_routing.caller_arena_publish.get(&f.name.name) {
+            Some(&publish) => publish,
+            None if self
+                .typed
+                .monomorphs()
+                .named(&f.name.name)
+                .is_some_and(|m| m.kind == hale_types::typed_bodies::TemplateKind::Fn) =>
+            {
+                self.alloc_routing.specialize_fn(f)
+            }
+            None => {
+                return Err(CodegenError::missing_row(
+                    "alloc_summary",
+                    format!("fn `{}` has no caller-arena row", f.name.name),
+                    Some(f.name.span),
+                ))
+            }
+        };
         if body_can_read_tls {
             let ptr_t2 = self.context.ptr_type(AddressSpace::default());
             let ca = self
@@ -15919,20 +15958,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (nothing to confine). The subject is the topic's wire, the
     /// registration-side string every other dispatch flavor probes with,
     /// so the fused manifest row is shared.
-    fn intra_locus_rewrite(&self, id: NodeId, args: &[Expr]) -> Option<(String, String)> {
+    /// Total in the relation: a call it records no row for is the call
+    /// the author wrote. The rewritten send's topic is a declaration's
+    /// name, so its topic row is required.
+    fn intra_locus_rewrite(&self, id: NodeId, args: &[Expr]) -> Result<Option<(String, String)>, CodegenError> {
         if id.is_none() {
-            return None;
+            return Ok(None);
         }
-        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)?;
+        let Some(row) = self.intra_locus.iter().find(|r| r.send.0 == id.0) else { return Ok(None) };
         if !args.iter().any(|a| matches!(a, Expr::Struct { .. })) {
-            return None;
+            return Ok(None);
         }
-        let payload = self
-            .topics
-            .named(&row.subject)
-            .and_then(|t| single_segment_type_name(&t.payload))
-            .unwrap_or_default();
-        Some((self.topic_wire(&row.subject), payload))
+        let topic = self.topic_row(&row.subject, None)?;
+        let payload = single_segment_type_name(&topic.payload).unwrap_or_default();
+        Ok(Some((topic.wire.clone(), payload)))
     }
 
     /// A rewritten send can run in a helper reached during birth. Preserve
@@ -15945,9 +15984,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)
-            .expect("the caller identified a rewritten send");
-        let subject = Expr::Literal(Literal::String(self.topic_wire(&row.subject)), callee.span());
+        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0).ok_or_else(|| {
+            CodegenError::missing_row("bus_graph", "the intra-locus relation has no row for this rewritten send", Some(callee.span()))
+        })?;
+        let wire = self.topic_row(&row.subject, Some(callee.span()))?.wire.clone();
+        let subject = Expr::Literal(Literal::String(wire), callee.span());
         let value = args.first().expect("a rewritten send has its payload argument");
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
             .expect("a publish is inside a function");
@@ -15976,7 +16017,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
         self.builder.build_unconditional_branch(join).map_err(e)?;
         self.builder.position_at_end(direct);
-        if let Some(target) = self.intra_locus_rewrite(id, args) {
+        if let Some(target) = self.intra_locus_rewrite(id, args)? {
             self.lower_reclaimed_publish_call(callee, args, target, scope)?;
         } else {
             let Expr::Field { receiver, name, .. } = callee else {
@@ -17067,7 +17108,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // replaced (`LoweringView::intra_locus`), and the
                     // call keeps the send's id, so the relation names
                     // this call; the payload is dead the moment the
-                    // synchronous handler returns.
+                    // synchronous handler returns. Total: a call the
+                    // relation names no row for is the call the author
+                    // wrote.
                     Expr::Field { .. }
                         if !call_id.is_none() && self.intra_locus.iter().any(|r| r.send.0 == call_id.0) =>
                     {
@@ -33193,19 +33236,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The elision rows of the locus `name`: the view's
     /// (`AllocRouting::loci`), or, for a monomorph lowering synthesized,
-    /// the specialization's.
-    pub(crate) fn locus_elision(&self, name: &str) -> &hale_types::alloc_routing::LocusElision {
-        self.alloc_routing
-            .loci
-            .get(name)
-            .or_else(|| self.specialized_elision.get(name))
-            .unwrap_or_else(|| panic!("no elision rows for locus `{name}`"))
+    /// the specialization's. A required row: the view holds one for every
+    /// locus declaration it lowers.
+    pub(crate) fn locus_elision(&self, name: &str) -> Result<&hale_types::alloc_routing::LocusElision, CodegenError> {
+        self.alloc_routing.loci.get(name).or_else(|| self.specialized_elision.get(name)).ok_or_else(|| {
+            CodegenError::missing_row("alloc_summary", format!("no elision rows for locus `{name}`"), None)
+        })
     }
 
     /// Whether member `idx` of the locus `name` (a lifecycle hook, `fn`
     /// method or mode) lowers without its per-call scratch subregion.
-    pub(crate) fn member_scratch_elided(&self, name: &str, idx: usize) -> bool {
-        self.locus_elision(name).scratch.get(&idx).copied().unwrap_or(false)
+    /// Total within the locus's rows: a member with no entry keeps its
+    /// scratch.
+    pub(crate) fn member_scratch_elided(&self, name: &str, idx: usize) -> Result<bool, CodegenError> {
+        Ok(self.locus_elision(name)?.scratch.get(&idx).copied().unwrap_or(false))
     }
 
     /// The epilogue every early exit from a locus method body emits

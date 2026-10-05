@@ -89,7 +89,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // ref classify non-allocating; method calls on it stay
                 // conservative, so a hook that calls into the child keeps
                 // its scratch. The verdict is the hook's elision row.
-                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx);
+                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx)?;
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
@@ -711,7 +711,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // `current_method_scratch` None routes the (absent)
                 // allocations to `self.__arena` and no-ops destroy/close.
                 // The verdict is the method's elision row.
-                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx);
+                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx)?;
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
@@ -1031,7 +1031,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // Stage-1 scratch elision (mode body) — same gate as fn
                 // members: non-allocating body + by-value scalar/Unit ret,
                 // the mode's elision row.
-                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx);
+                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx)?;
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
