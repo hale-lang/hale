@@ -23,6 +23,15 @@
 //! program once and wrapping it is deliberate: two hand-written
 //! copies drift, and a drifted control proves nothing.
 //!
+//! Where the wrapped text holds the seed's only `main locus`, the
+//! module variant has no entry, and the check says so (F.40 phase 3,
+//! L4: a `main locus` inside a module is not the entry, decision 2).
+//! That refusal is one more diagnostic, never a replacement, so the
+//! comparison is over every message: the module variant reports all of
+//! the control's, and the refusal is its one addition. The one message
+//! of the control's it does not get is rule 9's orphan-topic warning,
+//! which only a program with an entry is judged for (E0).
+//!
 //! The programs are plain escaped string literals rather than raw
 //! strings on purpose — `hale-corpus` harvests raw-string literals
 //! out of test files into the corpus-wide properties, and these are
@@ -63,21 +72,59 @@ fn in_module(decls: &str) -> String {
 
 const MAIN: &str = "fn main() { App { }; }\n";
 
+/// The refusal of a seed whose only `main locus`, `App`, is in `module
+/// inner`.
+const REFUSED: &str = "the entry must be top-level: `main locus App` inside `module inner` is not the \
+                       program's entry, and nothing else in the seed is — move it out of the module";
+
+/// Rule 9's orphan-topic warnings: judged only in a closed world, a
+/// program with an entry, which a seed whose only `main locus` is
+/// module-nested is not (decision 2, F.40 phase 3, E0).
+fn closed_world_only(d: &(bool, String)) -> bool {
+    !d.0 && d.1.starts_with("bus topic `")
+}
+
 /// Check `decls` at the top level and inside a module, and return
-/// the messages matching `needle` from each.
+/// the messages matching `needle` from each. Every message is compared
+/// first: the module variant reports each of the control's (as many
+/// times), and, where `decls` holds the seed's only `main locus`, the
+/// refusal as its one addition, an error; otherwise nothing more. The
+/// one message of the control's a seed with no entry does not get is
+/// rule 9's orphan warning ([`closed_world_only`]).
 fn control_and_nested(
     decls: &str,
     needle: &str,
 ) -> (Vec<(bool, String)>, Vec<(bool, String)>) {
-    let flat = format!("{}\n{}", decls, MAIN);
-    let nested = format!("{}\n{}", in_module(decls), MAIN);
-    let pick = |src: &str| -> Vec<(bool, String)> {
-        diags(src)
-            .into_iter()
-            .filter(|(_, m)| m.contains(needle))
-            .collect()
+    let flat = diags(&format!("{}\n{}", decls, MAIN));
+    let nested = diags(&format!("{}\n{}", in_module(decls), MAIN));
+    let only_main = decls.contains("main locus");
+    let mut added = nested.clone();
+    for d in flat.iter().filter(|d| !(only_main && closed_world_only(d))) {
+        let at = added.iter().position(|n| n == d).unwrap_or_else(|| {
+            panic!(
+                "the module variant must report every message of the \
+                 control's; missing {:?}\ncontrol: {:?}\nmodule: {:?}",
+                d, flat, nested
+            )
+        });
+        added.remove(at);
+    }
+    let want: Vec<(bool, String)> = if only_main {
+        vec![(true, REFUSED.to_string())]
+    } else {
+        Vec::new()
     };
-    (pick(&flat), pick(&nested))
+    assert_eq!(
+        added, want,
+        "beyond the control's messages, the module variant reports \
+         the refusal of a module-nested only `main locus` and nothing \
+         else\ncontrol: {:?}\nmodule: {:?}",
+        flat, nested
+    );
+    let pick = |ds: Vec<(bool, String)>| -> Vec<(bool, String)> {
+        ds.into_iter().filter(|(_, m)| m.contains(needle)).collect()
+    };
+    (pick(flat), pick(nested))
 }
 
 /// The whole assertion, for a check whose finding is one diagnostic:
@@ -879,6 +926,37 @@ fn a_main_two_modules_deep_is_refused() {
         "the innermost module is the one it is written in: {:?}",
         found
     );
+}
+
+/// The `main locus` half of the same exception (F.40 phase 3, L4): a
+/// `main locus` inside a module is not the entry (decision 2), so a seed
+/// whose only one is module-nested has nothing for lowering to deploy,
+/// and the check refuses it once, an error at the locus's name. The
+/// same declarations at the top level are the entry, and say nothing of
+/// it; so does a module-nested `main locus` beside a top-level one,
+/// which rule 1 refuses instead.
+#[test]
+fn a_module_nested_only_main_locus_is_refused_at_its_name() {
+    let decls = "main locus App {\n    params { n: Int = 0; }\n}\n";
+    let refusals = |src: &str| -> Vec<hale_syntax::Diag> {
+        let prog = parse_source(src).expect("parse");
+        check_program(&prog).into_iter().filter(|d| d.message.contains("the entry must be top-level")).collect()
+    };
+    assert!(refusals(&format!("{}\n{}", decls, MAIN)).is_empty(), "the top-level control is the entry");
+    let nested = format!("{}\n{}", in_module(decls), MAIN);
+    let found = refusals(&nested);
+    assert_eq!(found.len(), 1, "refused once: {:?}", found);
+    assert!(found[0].is_error(), "an error: {:?}", found);
+    assert_eq!(found[0].message, REFUSED);
+    let at = nested.find("App {").expect("the name");
+    assert_eq!((found[0].span.start.as_usize(), found[0].span.end.as_usize()), (at, at + "App".len()), "at the name");
+    let both = format!("main locus Top {{ }}\n{}\nfn main() {{ Top {{ }}; }}\n", in_module(decls));
+    assert!(refusals(&both).is_empty(), "a seed with an entry is not refused for its module-nested main");
+    // Two modules deep, the path names both.
+    let deep = format!("module outer {{\n{}}}\n{}", in_module(decls), MAIN);
+    let found = refusals(&deep);
+    assert_eq!(found.len(), 1, "refused once: {:?}", found);
+    assert!(found[0].message.contains("inside `module outer::inner`"), "{:?}", found);
 }
 
 /// The control: a top-level `fn main` beside a module full of

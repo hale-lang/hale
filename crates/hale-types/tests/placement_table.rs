@@ -378,8 +378,10 @@ fn a_generic_locus_field_is_refused_before_any_consumer() {
 }
 
 /// Case 7: a module-qualified field resolves; a seed whose only `main`
-/// is module-nested has rows, because lowering deploys it, and its root
-/// is not the entry.
+/// is module-nested is refused, since it is not the entry and nothing
+/// else is (F.40 phase 3, L4), and still has rows, rooted at it with
+/// `is_entry` false, so every other rule judges it as a top-level one
+/// (GH #825).
 #[test]
 fn a_module_nested_main_is_the_root_and_not_the_entry() {
     let s = clean("module_qualified.hl");
@@ -388,8 +390,15 @@ fn a_module_nested_main_is_the_root_and_not_the_entry() {
     assert!(t.root.as_ref().unwrap().is_entry);
 
     let s = check(&fixture("module_nested_main.hl"));
+    let e = errors(&s);
+    assert_eq!(
+        e,
+        ["the entry must be top-level: `main locus App` inside `module app` is not the program's entry, and \
+          nothing else in the seed is — move it out of the module"],
+        "refused, and nothing else"
+    );
     let t = table(&s);
-    let root = t.root.as_ref().expect("lowering deploys the nested main");
+    let root = t.root.as_ref().expect("the refused main is still judged");
     assert!(!root.is_entry);
     assert!(root.decl.module_nested);
     let (_, w) = one(t, "w");

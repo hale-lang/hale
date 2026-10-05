@@ -77,6 +77,20 @@ impl MainLocus {
     pub fn may_be_the_entry(&self) -> bool {
         !self.imported && !self.module_nested
     }
+
+    /// The modules that enclose the declaration, outermost first: empty
+    /// at the top level.
+    pub fn modules<'b>(&self, bundle: &Bundle<'b>) -> Vec<&'b str> {
+        let (program, path) = &self.at;
+        let mut out = Vec::new();
+        let Some(mut items) = bundle.programs.get(program).map(|p| &p.items[..]) else { return out };
+        for i in path.split_last().map_or(&[][..], |(_, modules)| modules) {
+            let Some(TopDecl::Module(m)) = items.get(*i) else { break };
+            out.push(m.name.name.as_str());
+            items = &m.items;
+        }
+        out
+    }
 }
 
 /// Why a bundle has no entry.
@@ -136,6 +150,19 @@ impl EntryRow {
     /// included: what rule 1 counts.
     pub fn own(&self) -> impl Iterator<Item = &MainLocus> {
         self.mains.iter().filter(|m| !m.imported)
+    }
+
+    /// The module-nested `main locus` of a seed with no entry for that
+    /// reason (decision 2): the first of the seed's own, which the check
+    /// refuses at its name, since nothing else in the seed is the entry
+    /// (`lowering_laws`, F.40 phase 3, L4). `None` whenever there is an
+    /// entry: a module-nested `main` beside one is not deployed and is
+    /// not refused for it (rule 1 counts it).
+    pub fn refused(&self) -> Option<&MainLocus> {
+        match self.entry {
+            Err(NoEntry::OnlyModuleNested) => self.own().next(),
+            _ => None,
+        }
     }
 }
 

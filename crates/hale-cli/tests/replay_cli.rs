@@ -607,9 +607,12 @@ fn same_subject_race_and_nested_republish_replay_exactly() {
 }
 
 /// Round 3, finding 2's negative controls: modules nest top
-/// declarations, and both admission walkers (effect rows, binding
-/// scan) must recurse into them — a module-contained live effect
-/// or transport binding failing open was the review's exact case.
+/// declarations, and admission must see into them — a module-contained
+/// live effect or transport binding failing open was the review's exact
+/// case. A module-contained binding is now refused by the check before
+/// admission, since it can only sit on a module-nested `main locus`,
+/// which is not the entry (F.40 phase 3, L4): (b) holds that refusal,
+/// and the gate's binding case at the top level.
 #[test]
 fn module_contained_effects_and_bindings_are_refused() {
     let dir = workdir("modgate");
@@ -669,40 +672,42 @@ fn main() { App { }; }
         stderr
     );
 
-    // (b) module-contained transport binding.
-    let prog_b = dir.join("modbind.hl");
-    std::fs::write(
-        &prog_b,
-        r#"
-module wired {
-    type Tick { n: Int = 0; }
-    topic Wire { payload: Tick; subject: "m.wire"; }
-    main locus App {
-        bus { publish Wire; }
-        bindings { Wire: unix("/tmp/hale_replay_modcanary.sock", role: listen); }
-        run() { Wire <- Tick { n: 1 }; std::time::sleep(200ms); }
-    }
+    // (b) a transport binding. `bindings { }` is main-only (rule 4),
+    // and a `main locus` inside a module is not the entry: a seed whose
+    // only `main locus` is one is refused by the check at its name
+    // (F.40 phase 3, L4), before the gate and before anything is built.
+    // So the binding the gate must see is the entry's, at the top level
+    // (the control), and the module-contained one is the refusal.
+    const BOUND: &str = "\
+type Tick { n: Int = 0; }
+topic Wire { payload: Tick; subject: \"m.wire\"; }
+main locus App {
+    bus { publish Wire; }
+    bindings { Wire: unix(\"/tmp/hale_replay_modcanary.sock\", role: listen); }
+    run() { Wire <- Tick { n: 1 }; std::time::sleep(200ms); }
 }
-fn main() { App { }; }
-"#,
-    )
-    .unwrap();
-    // The module-main shape may not even record (main-in-module is
-    // its own question) — the load-bearing assertion is the GATE:
-    // admission must see the binding regardless of a recording.
-    let out = hale()
-        .arg("replay")
-        .arg(&rec)
-        .arg(&prog_b)
-        .output()
-        .expect("hale replay");
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
+";
+    let replay = |name: &str, text: &str| {
+        let prog = dir.join(name);
+        std::fs::write(&prog, text).unwrap();
+        let out = hale().arg("replay").arg(&rec).arg(&prog).output().expect("hale replay");
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).to_string())
+    };
+    let (ok, stderr) = replay("topbind.hl", &format!("{BOUND}fn main() {{ App {{ }}; }}\n"));
+    assert!(!ok);
+    assert!(stderr.contains("live world"), "the entry's binding passed the gate:\n{}", stderr);
+    let body: String = BOUND.lines().map(|l| format!("    {l}\n")).collect();
+    let (ok, stderr) = replay("modbind.hl", &format!("module wired {{\n{body}}}\nfn main() {{ App {{ }}; }}\n"));
+    assert!(!ok);
     assert!(
-        stderr.contains("live world"),
-        "module-contained binding passed the gate:\n{}",
+        stderr.contains(
+            "modbind.hl:4:16: type error: the entry must be top-level: `main locus App` inside `module wired` is \
+             not the program's entry, and nothing else in the seed is — move it out of the module"
+        ),
+        "a module-contained main is refused at its name:\n{}",
         stderr
     );
+    assert!(!stderr.contains("live world"), "refused before the gate:\n{}", stderr);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

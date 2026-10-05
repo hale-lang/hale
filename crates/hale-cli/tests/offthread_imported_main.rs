@@ -138,46 +138,77 @@ fn an_imported_undeployed_main_does_not_make_its_importer_off_thread() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The binding term reads the binding rows, which hold a module-nested
-/// `main`'s entries as lowering's prelude lowers them: `fn main` deploys
-/// the module's `main`, its unix listen entry starts a reader thread,
-/// and the bus takes the lock. The old term scanned top-level items
-/// only, so this program got `no_pinned=1` beside a live reader (the
-/// GH #468 shape, one brace deeper).
-const NESTED_BOUND_MAIN: &str = "\
-module wired {
-    type Tick { n: Int = 0; }
-    type Local { v: Int; }
-    topic Wire { payload: Tick; subject: \"m.wire\"; }
-    locus Sink {
-        bus { subscribe \"m.local\" as on_local of type Local; }
-        fn on_local(l: Local) { println(\"local \", l.v); }
-    }
-    main locus App {
-        bus { publish Wire; publish \"m.local\" of type Local; }
-        bindings { Wire: unix(\"/tmp/hale_offthread_nested.sock\", role: listen); }
-        run() {
-            Sink { };
-            \"m.local\" <- Local { v: 1 };
-            Wire <- Tick { n: 1 };
-        }
+/// A `main locus` whose unix listen entry starts a reader thread, with an
+/// eligible local subject.
+const BOUND_MAIN: &str = "\
+type Tick { n: Int = 0; }
+type Local { v: Int; }
+topic Wire { payload: Tick; subject: \"m.wire\"; }
+locus Sink {
+    bus { subscribe \"m.local\" as on_local of type Local; }
+    fn on_local(l: Local) { println(\"local \", l.v); }
+}
+main locus App {
+    bus { publish Wire; publish \"m.local\" of type Local; }
+    bindings { Wire: unix(\"/tmp/hale_offthread_nested.sock\", role: listen); }
+    run() {
+        Sink { };
+        \"m.local\" <- Local { v: 1 };
+        Wire <- Tick { n: 1 };
     }
 }
-
-fn main() { App { }; }
 ";
 
-#[test]
-fn a_module_nested_mains_binding_makes_the_program_off_thread() {
-    let d = std::env::temp_dir().join(format!("hale_offthread_nested_{}", std::process::id()));
+/// A seed of `text` and an empty manifest.
+fn bound_seed(tag: &str, text: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("hale_offthread_{}_{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
-    std::fs::write(d.join("main.hl"), NESTED_BOUND_MAIN).unwrap();
+    std::fs::write(d.join("main.hl"), text).unwrap();
+    d
+}
+
+/// The binding term reads the binding rows of the deployed entry: its
+/// unix listen entry starts a reader thread, and the bus takes the lock.
+#[test]
+fn the_entrys_binding_makes_the_program_off_thread() {
+    let d = bound_seed("top", &format!("{BOUND_MAIN}\nfn main() {{ App {{ }}; }}\n"));
     let ir = build_ir(&d, &d.join("app.bin"));
     let flags = no_pinned_args(&ir);
     assert!(!flags.is_empty(), "the program has an eligible static dispatch");
     assert!(marks_pinned(&ir), "the deployed main's listen binding is a thread beside the bus");
     assert!(flags.iter().all(|f| f == "0"), "off-thread: no_pinned=0 everywhere: {flags:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The same `main locus` inside `module wired`: it is not the entry and
+/// nothing else in the seed is, so it is refused at its name and no
+/// binary is built (F.40 phase 3, L4). This test pinned, while lowering
+/// still deployed a module-nested `main`, that its binding made the
+/// program off-thread (the old term scanned top-level items only: the
+/// GH #468 shape, one brace deeper); the shape now never reaches
+/// lowering, and the entry's binding is the control above.
+#[test]
+fn a_module_nested_bound_main_is_refused_and_builds_nothing() {
+    let body: String = BOUND_MAIN.lines().map(|l| format!("    {l}\n")).collect();
+    let text = format!("module wired {{\n{body}}}\n\nfn main() {{ App {{ }}; }}\n");
+    let (line, col) = text
+        .lines()
+        .enumerate()
+        .find_map(|(i, l)| l.find("main locus App").map(|c| (i + 1, c + 1 + "main locus ".len())))
+        .expect("the nested main");
+    let d = bound_seed("nested", &text);
+    let bin = d.join("app.bin");
+    let built = Command::new(env!("CARGO_BIN_EXE_hale")).arg("build").arg(&d).arg("-o").arg(&bin).output().expect("hale build");
+    let out = format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+    assert!(!built.status.success(), "refused: {out}");
+    let refused = format!(
+        "main.hl:{line}:{col}: type error: the entry must be top-level: `main locus App` inside `module wired` is \
+         not the program's entry, and nothing else in the seed is — move it out of the module"
+    );
+    assert!(out.contains(&refused), "the located refusal: {out}");
+    assert_eq!(out.matches("type error").count(), 1, "alone: {out}");
+    assert!(!bin.exists(), "no binary is built");
     let _ = std::fs::remove_dir_all(&d);
 }

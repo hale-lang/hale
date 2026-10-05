@@ -2412,8 +2412,8 @@ assume the others in a build:
     adapter of the root's `bindings { }` is one thread, counted once
     whatever the root's bound. A nested instance runs on its anchor's
     thread and adds none. Only the deployed root's rows count: an
-    imported `main` or a module-nested one lowering does not deploy
-    costs nothing.
+    imported `main` or a module-nested one, which lowering does not
+    deploy, costs nothing.
   - **Cooperative pools** (`cooperative_pools`) are worker pools: one per
     named pool however many instances it holds, and an affinity is a
     property of its pool, never a thread. `main` is the program's own

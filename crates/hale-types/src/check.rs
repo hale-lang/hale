@@ -855,12 +855,15 @@ pub fn check_bundle_by_declaration(
     // pins a field is not built in a loop), rule 18 (GH #890, every
     // placement entry is consumed by a locus literal), the cross-pool
     // spawn, which is fire-and-forget, and GH #813 (a locus that builds
-    // itself through its own param defaults).
+    // itself through its own param defaults); and, before them, decision
+    // 2's refusal (F.40 phase 3, L4): a seed whose only `main locus` is
+    // module-nested has no entry for lowering to deploy.
     diags.extend(crate::lowering_laws::lowering_laws(
         bundle,
         &crate::lowering_laws::LoweringLawInputs {
             placement: inputs.placement,
             bindings: inputs.bindings,
+            entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
         },
     ));

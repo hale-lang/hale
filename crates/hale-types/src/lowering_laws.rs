@@ -22,6 +22,7 @@ use hale_syntax::ast::{
 use hale_syntax::{Diag, Span};
 
 use crate::binding_rows::BindingRows;
+use crate::entry::EntryRow;
 use crate::ownership_graph::OwnershipGraph;
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
@@ -34,6 +35,9 @@ pub struct LoweringLawInputs<'a> {
     pub placement: &'a PlacementTable,
     /// The binding rows: the topic an adapter's binding entry names.
     pub bindings: &'a BindingRows,
+    /// The entry row: whether the seed's only `main locus` is
+    /// module-nested, which lowering does not deploy.
+    pub entry: &'a EntryRow,
     /// The ownership graph, on request: which instantiation sites bubble
     /// to an owner on another thread. Asked for only when the placement
     /// table runs something off the main thread.
@@ -43,12 +47,38 @@ pub struct LoweringLawInputs<'a> {
 /// Every law that replaced a lowering backstop, over `bundle`.
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
     let mut diags = Vec::new();
+    module_nested_main_is_not_the_entry(bundle, inputs, &mut diags);
     pinned_features(bundle, inputs, &mut diags);
     pinned_root_in_a_loop(bundle, inputs, &mut diags);
     placement_entry_consumed(bundle, inputs, &mut diags);
     cross_pool_spawn_used_as_a_value(inputs, &mut diags);
     self_containing_locus(bundle, &mut diags);
     diags
+}
+
+/// Decision 2 (F.40 phase 3, E0): a `main locus` inside a `module { }`
+/// is not the entry, as a `fn main` inside one is not the entry point
+/// (`spec/semantics.md`, "The entry locus"). Lowering deploys the entry
+/// and nothing else (L4), so a seed whose only `main locus` is
+/// module-nested would build a program whose `main locus` never runs;
+/// it is refused instead, once, at that locus's name. One more
+/// diagnostic, never a replacement: every other rule still judges the
+/// declaration and its members as it judges a top-level one (GH #825),
+/// so a program refused today for another reason is refused for both.
+/// A module-nested `main` beside an entry is not refused here (rule 1
+/// counts it).
+fn module_nested_main_is_not_the_entry(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+    let Some(main) = inputs.entry.refused() else { return };
+    let Some(decl) = main.decl(bundle) else { return };
+    diags.push(Diag::ty(
+        decl.name.span,
+        format!(
+            "the entry must be top-level: `main locus {}` inside `module {}` is not the program's \
+             entry, and nothing else in the seed is — move it out of the module",
+            main.name,
+            main.modules(bundle).join("::"),
+        ),
+    ));
 }
 
 /// A cross-pool spawn is fire-and-forget (spec/semantics.md, "accept

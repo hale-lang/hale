@@ -1677,6 +1677,7 @@ impl Snapshot {
         let inputs = hale_types::lowering_laws::LoweringLawInputs {
             placement: self.demand_placement().map_err(Clone::clone)?,
             bindings: self.demand_bindings().map_err(Clone::clone)?,
+            entry: self.demand_entry().map_err(Clone::clone)?,
             ownership: &ownership,
         };
         let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
@@ -2464,32 +2465,37 @@ mod tests {
 
     /// The lowering view carries the snapshot's entry row (F.40 phase 3,
     /// L4), and lowering reads which `main locus` it deploys from the
-    /// row's lowering root. The two disagree on one shape: a seed whose
-    /// only `main` is module-nested has no entry (decision 2) and still a
-    /// lowering root, which lowering deploys until it reads the entry.
+    /// row. A seed whose only `main` is module-nested has no entry
+    /// (decision 2), and no view: the check refuses it at the locus's
+    /// name, and the harness's lowering view, which is not gated on the
+    /// check, is blocked by the same refusal, so no program reaches
+    /// lowering with a root that is not the entry.
     #[test]
     fn the_lowering_view_carries_the_entry_row() {
         let d = scratch("view_entry");
-        let view_of = |name: &str, text: &str| {
+        let seed_of = |name: &str, text: &str| {
             let seed = d.join(name);
             std::fs::create_dir_all(&seed).unwrap();
             std::fs::write(seed.join("main.hl"), text).unwrap();
-            let s = load(&seed, &Disk, Config::check(true, false));
-            let row = s.demand_entry().expect("an entry row").clone();
-            let view = s.demand_lowering().unwrap_or_else(|b| panic!("{name}: the view is blocked: {:?}", b.because));
-            assert_eq!(view.entry(), Some(&row), "{name}: the view carries the snapshot's row");
-            row
+            seed
         };
-        let root = |row: &hale_types::entry::EntryRow| row.lowering_root.as_ref().map(|m| m.name.clone());
-        let top = view_of("top", "main locus App { params { n: Int = 0; } }\nfn main() { App { }; }\n");
-        assert_eq!(top.entry().map(|m| m.name.as_str()), Some("App"));
-        assert_eq!(root(&top).as_deref(), Some("App"), "the entry is the root lowering deploys");
-        let nested = view_of(
-            "nested",
-            "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { App { }; }\n",
-        );
-        assert!(nested.entry().is_none(), "decision 2: no entry");
-        assert_eq!(root(&nested).as_deref(), Some("App"), "and still the root lowering deploys");
+        let top = seed_of("top", "main locus App { params { n: Int = 0; } }\nfn main() { App { }; }\n");
+        let s = load(&top, &Disk, Config::check(true, false));
+        let row = s.demand_entry().expect("an entry row").clone();
+        let view = s.demand_lowering().unwrap_or_else(|b| panic!("the view is blocked: {:?}", b.because));
+        assert_eq!(view.entry(), Some(&row), "the view carries the snapshot's row");
+        assert_eq!(row.entry().map(|m| m.name.as_str()), Some("App"));
+        let nested =
+            seed_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { App { }; }\n");
+        let refused = "the entry must be top-level: `main locus App` inside `module inner` is not the program's \
+                       entry, and nothing else in the seed is — move it out of the module";
+        for config in [Config::check(true, false), Config::harness(Target::host())] {
+            let s = load(&nested, &Disk, config);
+            assert!(s.demand_entry().unwrap().entry().is_none(), "decision 2: no entry");
+            let b = s.demand_lowering().err().expect("no view of a seed with no entry");
+            let because: Vec<&str> = b.because.iter().map(|d| d.message.as_str()).collect();
+            assert_eq!(because, [refused], "blocked by the refusal");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
