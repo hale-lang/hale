@@ -7,104 +7,65 @@
 //! the part of "measure before building more" I wrongly called
 //! not-code.
 //!
-//! **The survey runs the real check rather than reimplementing it.**
-//! It clones the bundle, marks every locus `@sealed`, and re-checks:
-//! each resulting diagnostic is a site that sealing would break. A
-//! hand-written walk over `self.child.field` would drift from
-//! `check_sealed_read` the first time either changed, and a survey that
-//! disagrees with the checker is worse than none — it would tell you a
-//! locus is free to seal when it is not.
+//! **The survey reads the rows the sealed rule reads** (F.40 phase 4,
+//! W4). The checker records every access to a locus's `params` through
+//! a receiver typed as that locus, sealed or not, as a row of the typed
+//! bodies ([`crate::typed_bodies::ParamAccess`]); the rule
+//! ([`crate::sealed_access`]) reports the rows whose receiver is sealed
+//! and whose reader is not the receiver. The survey asks the same
+//! question of every locus: the rows reaching into it from outside its
+//! own members are what sealing it would break. It re-checks nothing,
+//! so it agrees with the rule by construction rather than by
+//! re-running it, and it names a locus by its declaration, never by a
+//! message's text.
 
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{Program, TopDecl};
 
+use crate::placement::SiteUniverse;
+use crate::typed_bodies::TypedBodies;
+
 /// One locus's verdict.
 pub struct Sealable {
     pub locus: String,
-    /// Sites outside the locus that read OR write its `params`.
-    /// Empty means sealing it today is a no-op.
-    ///
-    /// Writes joined the set for free when the sealed check learned
-    /// to look at assignment targets — the survey reruns the real
-    /// checker rather than approximating it, so it tracks whatever
-    /// the rule covers.
+    /// Sites outside the locus that read OR write its `params`, as
+    /// `Locus.param`. Empty means sealing it today is a no-op.
     pub blockers: Vec<String>,
 }
 
-fn mark_all_sealed(items: &mut [TopDecl]) {
-    for item in items {
-        match item {
-            TopDecl::Locus(l) => l.sealed = true,
-            TopDecl::Module(m) => mark_all_sealed(&mut m.items),
-            _ => {}
-        }
-    }
-}
-
-fn locus_names(items: &[TopDecl], out: &mut Vec<String>) {
-    for item in items {
-        match item {
-            TopDecl::Locus(l) => out.push(l.name.name.clone()),
-            TopDecl::Module(m) => locus_names(&m.items, out),
-            _ => {}
-        }
-    }
-}
-
-/// Survey every locus in the bundle.
+/// Survey every locus `programs` declare (at any depth of modules), over
+/// `rows`, the typed-body table of their check.
 ///
-/// Already-sealed loci are included with no blockers — they are sealed,
-/// so they trivially pass, and omitting them would make the report read
-/// as though they were unexamined.
-pub fn survey(programs: &[&Program]) -> Vec<Sealable> {
-    let mut names: Vec<String> = Vec::new();
-    for p in programs {
-        locus_names(&p.items, &mut names);
-    }
-    names.sort();
-    names.dedup();
-
-    // Clone, seal everything, re-check. The diagnostics ARE the answer.
-    let sealed: Vec<Program> = programs
-        .iter()
-        .map(|p| {
-            let mut c = (*p).clone();
-            mark_all_sealed(&mut c.items);
-            c
-        })
-        .collect();
-    let mut map: BTreeMap<String, &Program> = BTreeMap::new();
-    for (i, p) in sealed.iter().enumerate() {
-        map.insert(format!("{i}"), p);
-    }
-    let diags = crate::check_bundle(&crate::Bundle::new(map));
-
-    let mut blockers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for d in diags {
-        if !d.message.contains("is `@sealed`") {
+/// Already-sealed loci are included — they are sealed, so a program
+/// that checks has no access to report for them, and omitting them
+/// would make the report read as though they were unexamined.
+pub fn survey(programs: &[&Program], rows: &TypedBodies) -> Vec<Sealable> {
+    let mut by_decl: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for (_, access) in rows.param_accesses() {
+        if access.receiver.universe != SiteUniverse::User || access.from_inside() {
             continue;
         }
-        // "`L` is `@sealed`: … and `L.f` reads one from outside — …"
-        let Some(rest) = d.message.strip_prefix('`') else { continue };
-        let Some(end) = rest.find('`') else { continue };
-        let owner = rest[..end].to_string();
-        let site = d
-            .message
-            .split_once("and `")
-            .and_then(|(_, r)| r.split_once('`'))
-            .map(|(s, _)| s.to_string())
-            .unwrap_or_else(|| owner.clone());
-        blockers.entry(owner).or_default().push(site);
+        by_decl
+            .entry(access.receiver.decl.0)
+            .or_default()
+            .push(format!("{}.{}", crate::sealed_access::shown_name(&access.locus), access.param));
     }
-
-    names
+    let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in programs {
+        for item in hale_syntax::ast::flat_decls(&p.items) {
+            if let TopDecl::Locus(l) = item {
+                let blockers = by_name.entry(l.name.name.clone()).or_default();
+                blockers.extend(by_decl.get(&l.id.0).into_iter().flatten().cloned());
+            }
+        }
+    }
+    by_name
         .into_iter()
-        .map(|locus| {
-            let mut b = blockers.remove(&locus).unwrap_or_default();
-            b.sort();
-            b.dedup();
-            Sealable { locus, blockers: b }
+        .map(|(locus, mut blockers)| {
+            blockers.sort();
+            blockers.dedup();
+            Sealable { locus, blockers }
         })
         .collect()
 }
