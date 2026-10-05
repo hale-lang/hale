@@ -579,6 +579,25 @@ fn std_term_calls_are_checked() {
 }
 
 #[test]
+fn std_ts_calls_are_checked() {
+    refused(
+        "    let c = std::ts::node_child(1);\n    println(c);",
+        &[("`std::ts::node_child` takes 2 arguments, got 1", "std::ts::node_child")],
+    );
+    refused(
+        "    let t = std::ts::parse_go(42);\n    println(t);",
+        &[("`std::ts::parse_go` argument 1: expected `String`, got `Int`", "42")],
+    );
+    refused(
+        "    let k = std::ts::node_kind(1) or \"\";\n    println(k);",
+        &[(
+            "`std::ts::node_kind` is not fallible (it returns `String`); drop the `or` clause",
+            "std::ts::node_kind(1)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

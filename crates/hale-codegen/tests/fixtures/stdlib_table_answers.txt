@@ -1000,17 +1000,17 @@ std::time::slep | lookup=time@2 | locus=false | effects=- | sig=- | parks=false 
 std::time::time_from_unix | lookup=time@2 | locus=false | effects=pure | sig=(Int) -> Time | ret_ty=Time | or=- | parks=false | holds=false | unknown=- | suggest=time_from_unix
 std::time::unix | lookup=time@2 | locus=false | effects=pure | sig=(Time) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=unix
 std::totally::fake | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::totally`
-std::ts::node_child | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_child
-std::ts::node_child_count | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_child_count
-std::ts::node_end_byte | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_end_byte
-std::ts::node_is_named | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_is_named
-std::ts::node_kind | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_kind
-std::ts::node_named_child | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_named_child
-std::ts::node_named_child_count | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_named_child_count
-std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_start_byte
-std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=node_text
-std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=- | parks=false | holds=false | unknown=- | suggest=parse_go
-std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=root_node
+std::ts::node_child | lookup=ts@2 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_child
+std::ts::node_child_count | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_child_count
+std::ts::node_end_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_end_byte
+std::ts::node_is_named | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_is_named
+std::ts::node_kind | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_kind
+std::ts::node_named_child | lookup=ts@2 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_named_child
+std::ts::node_named_child_count | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_named_child_count
+std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=node_start_byte
+std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_text
+std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=parse_go
+std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=root_node
 std::vec::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::vec::len` is not a stdlib function; the length of an array is the builtin `len(a)`
 std::x | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::yaml::Builder | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
