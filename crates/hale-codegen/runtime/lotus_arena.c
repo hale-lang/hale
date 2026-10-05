@@ -8184,6 +8184,11 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
  * makes it impossible for a producer to sleep on a slot we just freed.
  * MUST be called with mb->lock NOT held. */
 static void lotus_mailbox_wake_producers(lotus_mailbox_t *mb) {
+    /* No mailbox exists on wasm32 (see `lotus_mailbox_post`:
+     * PinnedThreads × wasm32 = Reject), so no producer blocks on one.
+     * Compiled out so `lotus_mailbox_drain_pending`, which the readiness
+     * step links in, does not import pthread_cond_broadcast (P3 T7). */
+#ifndef __wasm__
     atomic_thread_fence(memory_order_seq_cst);
     if (atomic_load_explicit(&mb->producers_waiting,
                              memory_order_seq_cst) > 0) {
@@ -8191,6 +8196,9 @@ static void lotus_mailbox_wake_producers(lotus_mailbox_t *mb) {
         pthread_cond_broadcast(&mb->not_full);
         pthread_mutex_unlock(&mb->lock);
     }
+#else
+    (void)mb;
+#endif
 }
 
 void lotus_mailbox_post(lotus_mailbox_t *mb,
@@ -13347,13 +13355,24 @@ void lotus_bus_ready(void *self) {
         if (!p) {
             *u = g_bus_unready[--g_bus_unready_len];
             __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+            /* No wake on wasm32: its only waiter, the cap wait in
+             * `lotus_bus_park_if_unready`, is compiled out there
+             * (PinnedThreads × wasm32 = Reject, so the module's one
+             * thread holds every window), and no other thread exists
+             * to wake. Compiled out so the module does not import
+             * pthread_cond_broadcast (P3 T7). */
+#ifndef __wasm__
             pthread_cond_broadcast(&g_bus_ready_cond);
+#endif
             pthread_mutex_unlock(&g_bus_ready_lock);
             return;
         }
         u->head = u->tail = NULL;
         u->parked = 0;
+        /* No wake on wasm32: as above, no thread waits at the cap. */
+#ifndef __wasm__
         pthread_cond_broadcast(&g_bus_ready_cond);
+#endif
         pthread_mutex_unlock(&g_bus_ready_lock);
         size_t posted_to_own_mailbox = 0;
         for (lotus_bus_parked_t *c = p; c; c = c->next) {
@@ -13397,7 +13416,14 @@ static void lotus_bus_ready_forget(void *self) {
         lotus_bus_parked_t *p = u->head;
         *u = g_bus_unready[--g_bus_unready_len];
         __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+        /* The quarantine's wake. None on wasm32: the cap wait it wakes
+         * is compiled out there (PinnedThreads × wasm32 = Reject, so
+         * the module's one thread holds every window), and no other
+         * thread exists to wake. Compiled out so the module does not
+         * import pthread_cond_broadcast (P3 T7). */
+#ifndef __wasm__
         pthread_cond_broadcast(&g_bus_ready_cond);
+#endif
         pthread_mutex_unlock(&g_bus_ready_lock);
         lotus_bus_parked_free(p);
         return;

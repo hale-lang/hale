@@ -386,14 +386,6 @@ pub const KNOWN_OPEN: &[KnownOpen] = &[
     KnownOpen { name: "lotus_obs_locus_birth", callers: None, why: OBSERVATION_PROBE },
     KnownOpen { name: "lotus_obs_locus_dissolve", callers: None, why: OBSERVATION_PROBE },
     KnownOpen { name: "lotus_obs_note_publisher", callers: None, why: OBSERVATION_PROBE },
-    KnownOpen {
-        name: "pthread_cond_broadcast",
-        callers: Some(&["lotus_bus_quarantine_self", "lotus_bus_ready", "lotus_mailbox_drain_pending"]),
-        why: "the readiness window's wake: lotus_bus_ready (and lotus_bus_ready_forget, inlined into \
-              lotus_bus_quarantine_self) broadcast at every subscriber's readiness on wasm32. Its only \
-              waiter, the cap wait, is compiled out there, so the `() => 0` wakes no one, but the call \
-              runs. (lotus_mailbox_drain_pending's never runs: no mailbox exists on wasm32.)",
-    },
 ];
 
 /// The import backstop over one module a test built, named `origin`:
