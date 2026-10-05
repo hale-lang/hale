@@ -39,6 +39,7 @@ use crate::locus::method::LocusMethodBodies;
 use crate::stdlib::bus::BusStdlib;
 use crate::stdlib::ring::RingStdlib;
 use crate::stdlib::bytes::BytesStdlib;
+use crate::stdlib::compress::{CompressStdlib, TarArg, TarRet, TarStdlib};
 use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::decimal::DecimalStdlib;
 use crate::stdlib::env::EnvStdlib;
@@ -27200,6 +27201,472 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
         value.map(Some)
+    }
+
+    /// A `std::*` call under `or` (`lower_fallible_call`), dispatched from
+    /// its row: an intrinsic's id picks its arm in
+    /// [`Cx::lower_std_intrinsic_fallible`]. `Ok(None)` says the call is
+    /// not a stdlib fallible call (a Hale body, a rename, an unlowered row
+    /// or a path with no row), and the caller resolves the path as a
+    /// function (`mangled_for_path`) or refuses it as an unknown path call.
+    pub(crate) fn lower_std_fallible_call(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        use hale_types::stdlib_surface::Lower;
+        match hale_types::stdlib_surface::row(segs).map(|r| r.lower) {
+            Some(Lower::Intrinsic(id)) => self.lower_std_intrinsic_fallible(id, segs, args, scope),
+            Some(Lower::HaleBody(_)) | Some(Lower::Renamed) | Some(Lower::Unlowered) | None => Ok(None),
+        }
+    }
+
+    /// A natively lowered stdlib function under `or`, by its id: the call,
+    /// its success value and its error path. Exhaustive, beside
+    /// [`Cx::lower_std_intrinsic`] rather than in it because the two
+    /// positions produce different things (a value, or a
+    /// `FallibleCallResult`) and few ids lower at both. Each helper
+    /// evaluates the arguments, calls the C primitive, and builds the
+    /// error branch from its sentinel (`complete_io_fallible_call` for the
+    /// fs/tcp surfaces flipped to `fallible(IoError)`).
+    fn lower_std_intrinsic_fallible(
+        &mut self,
+        id: IntrinsicId,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        use IntrinsicId as Id;
+        let lowered = match id {
+            // GH #254: std::tar (ustar) one-shot surface.
+            Id::TarEntries => self.lower_std_tar_fallible(
+                "lotus_tar_entries", "std::tar::entries",
+                &[TarArg::Bytes], TarRet::Int, args, scope,
+            ),
+            Id::TarEntryName => self.lower_std_tar_fallible(
+                "lotus_tar_entry_name", "std::tar::entry_name",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
+            ),
+            Id::TarEntrySize => self.lower_std_tar_fallible(
+                "lotus_tar_entry_size", "std::tar::entry_size",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Int, args, scope,
+            ),
+            Id::TarEntryType => self.lower_std_tar_fallible(
+                "lotus_tar_entry_type", "std::tar::entry_type",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
+            ),
+            Id::TarEntryData => self.lower_std_tar_fallible(
+                "lotus_tar_entry_data", "std::tar::entry_data",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Bytes, args, scope,
+            ),
+            Id::TarPack => self.lower_std_tar_fallible(
+                "lotus_tar_pack", "std::tar::pack",
+                &[TarArg::Bytes, TarArg::Str, TarArg::Bytes], TarRet::Bytes,
+                args, scope,
+            ),
+            Id::TarPackDir => self.lower_std_tar_fallible(
+                "lotus_tar_pack_dir", "std::tar::pack_dir",
+                &[TarArg::Bytes, TarArg::Str], TarRet::Bytes, args, scope,
+            ),
+            Id::TarFinish => self.lower_std_tar_fallible(
+                "lotus_tar_finish", "std::tar::finish",
+                &[TarArg::Bytes], TarRet::Bytes, args, scope,
+            ),
+            // GH #254: std::compress one-shot surface.
+            Id::CompressGzip => self.lower_std_compress_fallible(
+                "lotus_compress_gzip", "std::compress::gzip",
+                args, scope,
+            ),
+            Id::CompressGunzip => self.lower_std_compress_fallible(
+                "lotus_compress_gunzip", "std::compress::gunzip",
+                args, scope,
+            ),
+            Id::CompressZstd => self.lower_std_compress_fallible(
+                "lotus_compress_zstd", "std::compress::zstd",
+                args, scope,
+            ),
+            Id::CompressUnzstd => self.lower_std_compress_fallible(
+                "lotus_compress_unzstd", "std::compress::unzstd",
+                args, scope,
+            ),
+            Id::BytesAt => self.lower_std_bytes_at_fallible(args, scope),
+            // shm-ring-interop Proposal A: binary-pack readers
+            // `read_<type>_<endian>(b, off) -> Int|Float
+            // fallible(IndexError)`. The helper reads the width, the
+            // signedness and the byte order off the name (`segs[2]`).
+            Id::BytesReadF32Le
+            | Id::BytesReadF64Be
+            | Id::BytesReadF64Le
+            | Id::BytesReadI16Be
+            | Id::BytesReadI16Le
+            | Id::BytesReadI32Be
+            | Id::BytesReadI32Le
+            | Id::BytesReadI64Be
+            | Id::BytesReadI64Le
+            | Id::BytesReadI8
+            | Id::BytesReadU16Be
+            | Id::BytesReadU16Le
+            | Id::BytesReadU32Be
+            | Id::BytesReadU32Le
+            | Id::BytesReadU64Be
+            | Id::BytesReadU64Le
+            | Id::BytesReadU8 => self.lower_std_bytes_read(segs[2], args, scope),
+            // A1 zero-copy write: `write_<type>_<endian>(w, off, val) -> ()
+            // fallible(IndexError)`, the name read the same way.
+            Id::BytesWriteF32Le
+            | Id::BytesWriteF64Be
+            | Id::BytesWriteF64Le
+            | Id::BytesWriteI16Be
+            | Id::BytesWriteI16Le
+            | Id::BytesWriteI32Be
+            | Id::BytesWriteI32Le
+            | Id::BytesWriteI64Be
+            | Id::BytesWriteI64Le
+            | Id::BytesWriteI8
+            | Id::BytesWriteU16Be
+            | Id::BytesWriteU16Le
+            | Id::BytesWriteU32Be
+            | Id::BytesWriteU32Le
+            | Id::BytesWriteU64Be
+            | Id::BytesWriteU64Le
+            | Id::BytesWriteU8 => self.lower_std_bytes_write(segs[2], args, scope),
+            // #353: the INVERSE of `time_from_unix`.
+            //
+            // Formatting was never missing — a Time renders as
+            // ISO-8601 text (`to_string`, `println`, `iso8601`).
+            // Parsing had no counterpart, so a timestamp could be
+            // produced and never read back.
+            //
+            // UTC only. A timezone database is megabytes and the wasm
+            // target carries whatever ships; local time additionally
+            // reads TZ, an `env` effect rather than a pure
+            // computation. Local parsing can arrive later as a
+            // distinct, effectful call rather than be smuggled in.
+            Id::TimeParseIso8601 => self.lower_std_time_parse_iso8601_fallible(args, scope),
+            // GH #607: the same parse, yielding the instant itself.
+            Id::TimeParseTime => self.lower_std_time_parse_time_fallible(args, scope),
+            Id::StrParseInt => self.lower_std_str_parse_int_fallible(args, scope),
+            Id::StrParseFloat => self.lower_std_str_parse_float_fallible(args, scope),
+            Id::StrParseDecimal => self.lower_std_str_parse_decimal_fallible(args, scope),
+            // 2026-05-26: range-bounded variants for allocation-
+            // free JSON walks. Take (json, start, end_exclusive)
+            // instead of an owned substring.
+            Id::StrRangeParseInt => self.lower_std_str_range_parse_int_fallible(args, scope),
+            Id::StrRangeParseDecimal => {
+                self.lower_std_str_range_parse_decimal_fallible(args, scope)
+            }
+            // C4 (pond/crypto follow-up): CSPRNG getrandom.
+            Id::OsGetrandom => self.lower_std_os_getrandom_fallible(args, scope),
+            // 2026-06-04: ECDSA P-256 signing in `or` context →
+            // fallible(CryptoError). Bare calls keep the empty-bytes
+            // form via the value position's arm.
+            Id::CryptoEcdsaP256Sign => {
+                self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
+            }
+            // Not moved yet (S4): the old dispatcher's literals still
+            // lower or refuse these.
+            Id::BytesBuilderAppendRaw
+            | Id::BytesBuilderAppendSliceRaw
+            | Id::BytesBuilderAppendStrRaw
+            | Id::BytesBuilderClearRaw
+            | Id::BytesBuilderFinishRaw
+            | Id::BytesBuilderFreeRaw
+            | Id::BytesBuilderLenRaw
+            | Id::BytesBuilderNewRaw
+            | Id::BytesBuilderShiftFrontRaw
+            | Id::BytesBuilderSnapshotRaw
+            | Id::BytesBuilderTextViewRaw
+            | Id::BytesBuilderViewRaw
+            | Id::BytesClone
+            | Id::BytesFromString
+            | Id::BytesIsAllocFailRaw
+            | Id::BytesSlice
+            | Id::EnvArg
+            | Id::EnvArgOr
+            | Id::EnvArgsCount
+            | Id::EnvVar
+            | Id::EnvVarExists
+            | Id::IoFileOpenRaw
+            | Id::IoFileSeekRaw
+            | Id::IoFileWriteBytesRaw
+            | Id::IoFsFileExists
+            | Id::IoFsFileSize
+            | Id::IoFsListDirAt
+            | Id::IoFsListDirCount
+            | Id::IoFsMkdir
+            | Id::IoFsMktemp
+            | Id::IoFsReadBytes
+            | Id::IoFsReadFile
+            | Id::IoFsRename
+            | Id::IoFsUnlink
+            | Id::IoFsWriteBytes
+            | Id::IoFsWriteFile
+            | Id::IoFsWriteFileAppend
+            | Id::IoFsWritePrivateRaw
+            | Id::IoStdinReadLine
+            | Id::IoStdinReadLineStatus
+            | Id::IoTcpAcceptOne
+            | Id::IoTcpCloseFd
+            | Id::IoTcpConnect
+            | Id::IoTcpConnectWait
+            | Id::IoTcpListenSocket
+            | Id::IoTcpSetNodelay
+            | Id::IoTcpSetRecvTimeout
+            | Id::IoTcpSetRxTimestamps
+            | Id::IoTcpSetSendTimeout
+            | Id::IoTlsConnect
+            | Id::IoTlsSetNodelay
+            | Id::IoTlsSetRecvTimeout
+            | Id::IoTlsSetRxTimestamps
+            | Id::IoTlsSetSendTimeout
+            | Id::IoTlsUpgrade
+            | Id::IoUdpBind
+            | Id::IoUdpBindRaw
+            | Id::IoUdpGetOptionInt
+            | Id::IoUdpJoinGroup
+            | Id::IoUdpLeaveGroup
+            | Id::IoUdpRecv
+            | Id::IoUdpRecvRaw
+            | Id::IoUdpRecvWithSource
+            | Id::IoUdpSend
+            | Id::IoUdpSendRaw
+            | Id::IoUdpSetMulticastIface
+            | Id::IoUdpSetMulticastLoop
+            | Id::IoUdpSetMulticastTtl
+            | Id::IoUdpSetOptionBool
+            | Id::IoUdpSetOptionInt
+            | Id::IoUdpSetRecvTimeout
+            | Id::IoUdpSetSendTimeout
+            | Id::IoUnixConnect
+            | Id::IoUnixConnectWait
+            | Id::IoUnixListenSocket
+            | Id::MathAcos
+            | Id::MathAsin
+            | Id::MathAtan
+            | Id::MathAtan2
+            | Id::MathCeil
+            | Id::MathCos
+            | Id::MathExp
+            | Id::MathFloor
+            | Id::MathInf
+            | Id::MathIsNan
+            | Id::MathLog
+            | Id::MathNan
+            | Id::MathPow
+            | Id::MathSin
+            | Id::MathSqrt
+            | Id::MathTan
+            | Id::MathTanh
+            | Id::ProcessKillEscalateRaw
+            | Id::ProcessPid
+            | Id::ProcessPipeReadRaw
+            | Id::ProcessPipeWriteRaw
+            | Id::ProcessRun
+            | Id::ProcessSignalPidRaw
+            | Id::ProcessSpawnRaw
+            | Id::ProcessTryWaitPidRaw
+            | Id::ProcessWaitPidRaw
+            | Id::StrBuilderAppend
+            | Id::StrBuilderFinish
+            | Id::StrBuilderLen
+            | Id::StrBuilderNew
+            | Id::StrCanParseFloat
+            | Id::StrCanParseInt
+            | Id::StrClone
+            | Id::StrFromBytes
+            | Id::StrIndexOf
+            | Id::StrLower
+            | Id::StrPadLeft
+            | Id::StrPadRight
+            | Id::StrRepeat
+            | Id::StrReplace
+            | Id::StrSubstring
+            | Id::StrTrim
+            | Id::StrUpper
+            | Id::TextIsAlnum
+            | Id::TextIsAlpha
+            | Id::TextIsDigit
+            | Id::TextIsWhitespace
+            | Id::TextIsWordChar
+            | Id::TextTokenizeWordsInto
+            | Id::TimeMonotonic
+            | Id::TimeSleep => return self.lower_std_fallible_unmoved(segs, args, scope),
+            // No arm under `or`: not a stdlib fallible call.
+            Id::BusBindingFailRaw
+            | Id::BusLocalDispatchRaw
+            | Id::BusTransportRealizeRaw
+            | Id::BusTransportReclaimRaw
+            | Id::BusTransportSpawnServerRaw
+            | Id::BytesBuilderAppendF32Raw
+            | Id::BytesBuilderAppendF64Raw
+            | Id::BytesBuilderAppendPadRaw
+            | Id::BytesBuilderAppendScalarRaw
+            | Id::BytesBuilderXorMaskIntoRaw
+            | Id::BytesConcat
+            | Id::BytesFindByte
+            | Id::BytesFromInt
+            | Id::CryptoCrc32
+            | Id::CryptoEcdsaP256Verify
+            | Id::CryptoHmacSha256
+            | Id::CryptoHmacSha512
+            | Id::CryptoSha1
+            | Id::CryptoSha256
+            | Id::CryptoSha512
+            | Id::DecimalFormat
+            | Id::DecimalToFloat
+            | Id::DiagHeapAllocCount
+            | Id::DiagSyscallCount
+            | Id::HttpHeader
+            | Id::IoFileAtEofRaw
+            | Id::IoFileCloseRaw
+            | Id::IoFileReadLineRaw
+            | Id::IoFsExtension
+            | Id::IoMirrorCapacityRaw
+            | Id::IoMirrorCommitRaw
+            | Id::IoMirrorConsumeRaw
+            | Id::IoMirrorFreeRaw
+            | Id::IoMirrorLenRaw
+            | Id::IoMirrorNewRaw
+            | Id::IoMirrorReadableRaw
+            | Id::IoMirrorRecvIntoRaw
+            | Id::IoMirrorWritableRaw
+            | Id::IoSockoptIpAddMembership
+            | Id::IoSockoptIpDropMembership
+            | Id::IoSockoptIpMtuDiscover
+            | Id::IoSockoptIpMulticastIf
+            | Id::IoSockoptIpMulticastLoop
+            | Id::IoSockoptIpMulticastTtl
+            | Id::IoSockoptIpPktinfo
+            | Id::IoSockoptIpPmtudiscDo
+            | Id::IoSockoptIpPmtudiscDont
+            | Id::IoSockoptIpPmtudiscProbe
+            | Id::IoSockoptIpPmtudiscWant
+            | Id::IoSockoptIpprotoIp
+            | Id::IoSockoptIpprotoIpv6
+            | Id::IoSockoptIpprotoTcp
+            | Id::IoSockoptIpprotoUdp
+            | Id::IoSockoptIpTos
+            | Id::IoSockoptIpTtl
+            | Id::IoSockoptSoBindtodevice
+            | Id::IoSockoptSoBroadcast
+            | Id::IoSockoptSoKeepalive
+            | Id::IoSockoptSoLinger
+            | Id::IoSockoptSolSocket
+            | Id::IoSockoptSoPriority
+            | Id::IoSockoptSoRcvbuf
+            | Id::IoSockoptSoRcvtimeo
+            | Id::IoSockoptSoReuseaddr
+            | Id::IoSockoptSoReuseport
+            | Id::IoSockoptSoSndbuf
+            | Id::IoSockoptSoSndtimeo
+            | Id::IoSockoptTcpNodelay
+            | Id::IoStdinReadByte
+            | Id::IoStdoutWriteBytes
+            | Id::IoTcpAcceptOneRaw
+            | Id::IoTcpCloseFdRaw
+            | Id::IoTcpConnectRaw
+            | Id::IoTcpIoErrorKindRaw
+            | Id::IoTcpLastIoStatusRaw
+            | Id::IoTcpLastRecvKernelNs
+            | Id::IoTcpLastRecvUserNs
+            | Id::IoTcpListenSocketRaw
+            | Id::IoTcpRecvBytesRaw
+            | Id::IoTcpRecvInto
+            | Id::IoTcpRecvRaw
+            | Id::IoTcpRecvStampedInto
+            | Id::IoTcpSendBytesRaw
+            | Id::IoTcpSendRaw
+            | Id::IoTcpSetRecvTimeoutNsRaw
+            | Id::IoTcpShutdownListenSocketRaw
+            | Id::IoTlsClose
+            | Id::IoTlsLastRecvKernelNs
+            | Id::IoTlsLastRecvUserNs
+            | Id::IoTlsRecvBytes
+            | Id::IoTlsRecvInto
+            | Id::IoTlsRecvStampedInto
+            | Id::IoTlsSendBytes
+            | Id::IoUdpClose
+            | Id::IoUdpCloseRaw
+            | Id::IoUdpLastSourceHost
+            | Id::IoUdpLastSourcePort
+            | Id::IoUdpRecvInto
+            | Id::IoUnixGroupId
+            | Id::IoUnixPeerGid
+            | Id::IoUnixPeerGroupAt
+            | Id::IoUnixPeerGroupsCount
+            | Id::IoUnixPeerPid
+            | Id::IoUnixPeerUid
+            | Id::IoUnixUserId
+            | Id::JsonNextNonWs
+            | Id::JsonNextQuoteOrBs
+            | Id::JsonNextStructOrQuote
+            | Id::MathFloatToInt
+            | Id::MathIntToFloat
+            | Id::MathRound
+            | Id::MathTrunc
+            | Id::ProcessDumpArenaResidency
+            | Id::ProcessDumpPoolResidency
+            | Id::ProcessExit
+            | Id::ProcessRssBytes
+            | Id::ProcessUid
+            | Id::RandNextInt
+            | Id::RandSeedFromTime
+            | Id::RegexFind
+            | Id::RegexMatches
+            | Id::RegexValid
+            | Id::RingSpscEmitRaw
+            | Id::RingSpscInitRaw
+            | Id::RingSpscNoteDropRaw
+            | Id::RingSpscReadRaw
+            | Id::RingSpscSetTagBRaw
+            | Id::ShmLastRecordKernelNs
+            | Id::ShmLastRecordSeq
+            | Id::ShmLastRecordUserNs
+            | Id::StrByteAtUnchecked
+            | Id::StrContains
+            | Id::StrCpAt
+            | Id::StrCpCount
+            | Id::StrCpSize
+            | Id::StrEndsWith
+            | Id::StrJoin
+            | Id::StrRangeCopy
+            | Id::StrRangeEq
+            | Id::StrSplitInto
+            | Id::StrStartsWith
+            | Id::TermIsTty
+            | Id::TermRawDisableRaw
+            | Id::TermRawEnableRaw
+            | Id::TermSizePackedRaw
+            | Id::TestFailedRaw
+            | Id::TestNoteFailRaw
+            | Id::TestNotePassRaw
+            | Id::TestPassesRaw
+            | Id::TextBase64Decode
+            | Id::TextBase64Encode
+            | Id::TextBase64UrlEncode
+            | Id::TimeCanParseIso8601
+            | Id::TimeCurrent
+            | Id::TimeFromNanos
+            | Id::TimeIso8601
+            | Id::TimeMonotonicNs
+            | Id::TimeNanos
+            | Id::TimeNow
+            | Id::TimeTimeFromUnix
+            | Id::TimeUnix
+            | Id::TsNodeChild
+            | Id::TsNodeChildCount
+            | Id::TsNodeEndByte
+            | Id::TsNodeIsNamed
+            | Id::TsNodeKind
+            | Id::TsNodeNamedChild
+            | Id::TsNodeNamedChildCount
+            | Id::TsNodeStartByte
+            | Id::TsNodeText
+            | Id::TsParseGo
+            | Id::TsRootNode => return Ok(None),
+        };
+        lowered.map(Some)
     }
 
     /// 2026-05-16: `std::text::tokenize_words_into(s: String,

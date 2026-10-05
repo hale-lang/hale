@@ -22,11 +22,6 @@ use crate::codegen::{
     bce_receiver_key, view_coerces_to, BlockEnd, CodegenError, CodegenTy,
     Cx, FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
 };
-use crate::stdlib::bytes::BytesStdlib;
-use crate::stdlib::time::TimeStdlib;
-use crate::stdlib::compress::CompressStdlib;
-use crate::stdlib::compress::{TarArg, TarRet, TarStdlib};
-use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::io_file::IoFileStdlib;
 use crate::stdlib::io_fs::IoFsStdlib;
 use crate::stdlib::io_tcp::IoTcpStdlib;
@@ -34,7 +29,6 @@ use crate::stdlib::io_tls::IoTlsStdlib;
 use crate::stdlib::io_udp::IoUdpStdlib;
 use crate::stdlib::io_unix::IoUnixStdlib;
 use crate::stdlib::process::ProcessStdlib;
-use crate::stdlib::str::StrStdlib;
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The `on_failure` fn a failing child of locus type `child`
@@ -1370,18 +1364,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Dispatcher for `path or raise` where the path resolves to a
-    /// fallible stdlib path-call (`std::io::fs::read_file`, etc.).
-    /// Returns:
-    ///   - `Ok(Some(result))` — the path matched a known fallible
-    ///     stdlib surface; the call was lowered.
-    ///   - `Ok(None)` — the path didn't match; caller falls through
-    ///     to other resolution paths.
-    ///   - `Err(_)` — the path matched but lowering failed (arity,
-    ///     type, etc.).
-    /// Specific paths are wired by individual `lower_std_*_fallible`
-    /// methods that this dispatcher routes to. See the IoError flip
-    /// for the fs/tcp surface.
+    /// fallible stdlib path-call (`std::io::fs::read_file`, etc.):
+    /// [`Cx::lower_std_fallible_call`], from the path's row. Returns:
+    ///   - `Ok(Some(result))` — the path is a known fallible stdlib
+    ///     surface; the call was lowered.
+    ///   - `Ok(None)` — it is not; the caller falls through to other
+    ///     resolution paths.
+    ///   - `Err(_)` — it is, but lowering failed (arity, type, etc.),
+    ///     or it is a stdlib call that is not fallible.
     pub(crate) fn try_lower_fallible_stdlib_path_call(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        self.lower_std_fallible_call(segs, args, scope)
+    }
+
+    /// The `or` position's arms not yet moved to
+    /// [`Cx::lower_std_intrinsic_fallible`] (F.40 phase 4, S4), which
+    /// sends their ids here.
+    pub(crate) fn lower_std_fallible_unmoved(
         &mut self,
         segs: &[&str],
         args: &[Expr],
@@ -1393,65 +1396,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // result + path into `complete_io_fallible_call` to build
         // the lazy-IoError branch.
         match segs {
-            // GH #254: std::tar (ustar) one-shot surface.
-            ["std", "tar", "entries"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_entries", "std::tar::entries",
-                &[TarArg::Bytes], TarRet::Int, args, scope,
-            )?)),
-            ["std", "tar", "entry_name"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_entry_name", "std::tar::entry_name",
-                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
-            )?)),
-            ["std", "tar", "entry_size"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_entry_size", "std::tar::entry_size",
-                &[TarArg::Bytes, TarArg::Int], TarRet::Int, args, scope,
-            )?)),
-            ["std", "tar", "entry_type"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_entry_type", "std::tar::entry_type",
-                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
-            )?)),
-            ["std", "tar", "entry_data"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_entry_data", "std::tar::entry_data",
-                &[TarArg::Bytes, TarArg::Int], TarRet::Bytes, args, scope,
-            )?)),
-            ["std", "tar", "pack"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_pack", "std::tar::pack",
-                &[TarArg::Bytes, TarArg::Str, TarArg::Bytes], TarRet::Bytes,
-                args, scope,
-            )?)),
-            ["std", "tar", "pack_dir"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_pack_dir", "std::tar::pack_dir",
-                &[TarArg::Bytes, TarArg::Str], TarRet::Bytes, args, scope,
-            )?)),
-            ["std", "tar", "finish"] => Ok(Some(self.lower_std_tar_fallible(
-                "lotus_tar_finish", "std::tar::finish",
-                &[TarArg::Bytes], TarRet::Bytes, args, scope,
-            )?)),
-            // GH #254: std::compress one-shot surface.
-            ["std", "compress", "gzip"] => Ok(Some(
-                self.lower_std_compress_fallible(
-                    "lotus_compress_gzip", "std::compress::gzip",
-                    args, scope,
-                )?,
-            )),
-            ["std", "compress", "gunzip"] => Ok(Some(
-                self.lower_std_compress_fallible(
-                    "lotus_compress_gunzip", "std::compress::gunzip",
-                    args, scope,
-                )?,
-            )),
-            ["std", "compress", "zstd"] => Ok(Some(
-                self.lower_std_compress_fallible(
-                    "lotus_compress_zstd", "std::compress::zstd",
-                    args, scope,
-                )?,
-            )),
-            ["std", "compress", "unzstd"] => Ok(Some(
-                self.lower_std_compress_fallible(
-                    "lotus_compress_unzstd", "std::compress::unzstd",
-                    args, scope,
-                )?,
-            )),
             ["std", "io", "fs", "read_file"] => Ok(Some(
                 self.lower_std_io_fs_read_file_fallible(args, scope)?,
             )),
@@ -1531,67 +1475,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // connect since it handshakes + optionally verifies.
             ["std", "io", "tls", "upgrade"] => Ok(Some(
                 self.lower_std_io_tls_upgrade_fallible(args, scope)?,
-            )),
-            ["std", "bytes", "at"] => Ok(Some(
-                self.lower_std_bytes_at_fallible(args, scope)?,
-            )),
-            // shm-ring-interop Proposal A: binary-pack readers
-            // `read_<type>_<endian>(b, off) -> Int|Float
-            // fallible(IndexError)`.
-            ["std", "bytes", n] if n.starts_with("read_") => Ok(Some(
-                self.lower_std_bytes_read(n, args, scope)?,
-            )),
-            // A1 zero-copy write: `write_<type>_<endian>(w, off, val) -> ()
-            // fallible(IndexError)`.
-            ["std", "bytes", n] if n.starts_with("write_") => Ok(Some(
-                self.lower_std_bytes_write(n, args, scope)?,
-            )),
-            // #353: the INVERSE of `time_from_unix`.
-            //
-            // Formatting was never missing — a Time renders as
-            // ISO-8601 text (`to_string`, `println`, `iso8601`).
-            // Parsing had no counterpart, so a timestamp could be
-            // produced and never read back.
-            //
-            // UTC only. A timezone database is megabytes and the wasm
-            // target carries whatever ships; local time additionally
-            // reads TZ, an `env` effect rather than a pure
-            // computation. Local parsing can arrive later as a
-            // distinct, effectful call rather than be smuggled in.
-            ["std", "time", "parse_iso8601"] => Ok(Some(
-                self.lower_std_time_parse_iso8601_fallible(args, scope)?,
-            )),
-            // GH #607: the same parse, yielding the instant itself.
-            ["std", "time", "parse_time"] => Ok(Some(
-                self.lower_std_time_parse_time_fallible(args, scope)?,
-            )),
-            ["std", "str", "parse_int"] => Ok(Some(
-                self.lower_std_str_parse_int_fallible(args, scope)?,
-            )),
-            ["std", "str", "parse_float"] => Ok(Some(
-                self.lower_std_str_parse_float_fallible(args, scope)?,
-            )),
-            ["std", "str", "parse_decimal"] => Ok(Some(
-                self.lower_std_str_parse_decimal_fallible(args, scope)?,
-            )),
-            // 2026-05-26: range-bounded variants for allocation-
-            // free JSON walks. Take (json, start, end_exclusive)
-            // instead of an owned substring.
-            ["std", "str", "range_parse_int"] => Ok(Some(
-                self.lower_std_str_range_parse_int_fallible(args, scope)?,
-            )),
-            ["std", "str", "range_parse_decimal"] => Ok(Some(
-                self.lower_std_str_range_parse_decimal_fallible(args, scope)?,
-            )),
-            // C4 (pond/crypto follow-up): CSPRNG getrandom.
-            ["std", "os", "getrandom"] => Ok(Some(
-                self.lower_std_os_getrandom_fallible(args, scope)?,
-            )),
-            // 2026-06-04: ECDSA P-256 signing in `or` context →
-            // fallible(CryptoError). Bare calls keep the empty-bytes
-            // form via the non-fallible dispatcher.
-            ["std", "crypto", "ecdsa_p256_sign"] => Ok(Some(
-                self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)?,
             )),
             // C2 (pond/subprocess): synchronous run + async
             // lifecycle primitives. `run` is user-facing; the

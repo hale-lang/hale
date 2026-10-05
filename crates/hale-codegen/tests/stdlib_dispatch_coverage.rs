@@ -85,7 +85,7 @@ impl Position {
 /// The dispatchers still matched on `["std", ..]` literals: the
 /// function, the file it is in, the position it serves.
 const DISPATCHERS: &[(&str, &str, Position)] =
-    &[("try_lower_fallible_stdlib_path_call", "src/channels/mod.rs", Position::Fallible)];
+    &[("lower_std_fallible_unmoved", "src/channels/mod.rs", Position::Fallible)];
 
 /// The position whose arm lowers a call the walk found at `position`: a
 /// statement call of a path with no statement branch is the value
@@ -471,16 +471,65 @@ struct IdArm {
     value: Branch,
 }
 
-/// The arms of `lower_std_intrinsic`'s `match id`, in source order. The
-/// match has no `_` arm: every id is named by exactly one arm.
+/// The arms of `lower_std_intrinsic`'s `match id`, with their positions'
+/// branches.
 fn id_arms() -> Vec<IdArm> {
+    match_id_arms("lower_std_intrinsic")
+        .into_iter()
+        .map(|(line, ids, text)| {
+            let (statement, value) = if text.contains("match pos") {
+                let s = text.find("StdCallPos::Statement =>").expect("a statement branch");
+                let v = text.find("StdCallPos::Value =>").expect("a value branch");
+                assert!(s < v, "line {line}: the statement branch comes first");
+                (Some(branch(&text[s..v])), branch(&text[v..]))
+            } else {
+                (None, branch(&text))
+            };
+            IdArm { line, ids, statement, value }
+        })
+        .collect()
+}
+
+/// What an arm of `lower_std_intrinsic_fallible` does under `or`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallibleBranch {
+    /// It lowers the call.
+    Lowers,
+    /// It says the call is not a stdlib fallible call (`Ok(None)`).
+    NotFallible,
+    /// It sends the call to the arms not moved yet
+    /// (`lower_std_fallible_unmoved`, scraped as a literal dispatcher).
+    Unmoved,
+}
+
+/// The arms of `lower_std_intrinsic_fallible`'s `match id`.
+fn fallible_id_arms() -> Vec<(usize, Vec<String>, FallibleBranch)> {
+    match_id_arms("lower_std_intrinsic_fallible")
+        .into_iter()
+        .map(|(line, ids, text)| {
+            let b = if text.contains("lower_std_fallible_unmoved(") {
+                FallibleBranch::Unmoved
+            } else if text.contains("Ok(None)") {
+                FallibleBranch::NotFallible
+            } else {
+                FallibleBranch::Lowers
+            };
+            (line, ids, b)
+        })
+        .collect()
+}
+
+/// The arms of `fn func`'s `match id` in `codegen.rs`, in source order:
+/// each arm's line, its ids and its body's text. The match has no `_`
+/// arm: every id is named by exactly one arm.
+fn match_id_arms(func: &str) -> Vec<(usize, Vec<String>, String)> {
     let src = crate_file("src/codegen.rs");
     let no_comments = mask(&src, false);
     let code = mask(&src, true);
-    let (open, close) = fn_body(&code, "lower_std_intrinsic");
+    let (open, close) = fn_body(&code, func);
     let body = &no_comments[open..close];
     let first_line = src[..open].matches('\n').count() + 1;
-    let m = body.find("match id {").expect("`lower_std_intrinsic` matches on `id`");
+    let m = body.find("match id {").unwrap_or_else(|| panic!("`{func}` matches on `id`"));
     let arm_indent = line_indent(body, m) + 4;
     let lines: Vec<&str> = body.lines().collect();
     let ends_match = |l: &str| indent_of(l) < arm_indent && !l.trim().is_empty();
@@ -490,7 +539,7 @@ fn id_arms() -> Vec<IdArm> {
     while i < lines.len() && !ends_match(lines[i]) {
         let l = lines[i];
         if indent_of(l) == arm_indent && l.trim_start().starts_with('_') {
-            panic!("`lower_std_intrinsic` has a `_` arm (line {}): an id without an arm would compile", first_line + i);
+            panic!("`{func}` has a `_` arm (line {}): an id without an arm would compile", first_line + i);
         }
         if !is_head(l) {
             i += 1;
@@ -515,15 +564,7 @@ fn id_arms() -> Vec<IdArm> {
             .split('|')
             .map(|p| p.trim().strip_prefix("Id::").unwrap_or_else(|| panic!("not an id pattern: {p}")).to_string())
             .collect();
-        let (statement, value) = if text.contains("match pos") {
-            let s = text.find("StdCallPos::Statement =>").expect("a statement branch");
-            let v = text.find("StdCallPos::Value =>").expect("a value branch");
-            assert!(s < v, "line {}: the statement branch comes first", first_line + start);
-            (Some(branch(&text[s..v])), branch(&text[v..]))
-        } else {
-            (None, branch(&text))
-        };
-        arms.push(IdArm { line: first_line + start, ids, statement, value });
+        arms.push((first_line + start, ids, text));
         i = end;
     }
     arms
@@ -575,15 +616,17 @@ fn id_list(name: &str) -> (Vec<String>, usize) {
     (ids, src[..at].matches('\n').count() + 1)
 }
 
-/// The row dispatch's arms at the statement and expression positions.
+/// The row dispatch's arms at the statement, expression and fallible
+/// positions.
 struct RowDispatch {
     statement: Vec<Arm>,
     expression: Vec<Arm>,
+    fallible: Vec<Arm>,
 }
 
 fn row_dispatch() -> RowDispatch {
     let paths = intrinsic_paths();
-    let mut rd = RowDispatch { statement: Vec::new(), expression: Vec::new() };
+    let mut rd = RowDispatch { statement: Vec::new(), expression: Vec::new(), fallible: Vec::new() };
     let mut named = BTreeSet::new();
     let arm = |line: usize, paths: &[&String], refuses: bool, calls: ArmCall| Arm {
         line,
@@ -618,6 +661,21 @@ fn row_dispatch() -> RowDispatch {
     }
     let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
     assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic` names: {unnamed:?}");
+    // The `or` position (S4): an arm that lowers is a pair; one that
+    // says "not a fallible call" is none; the ids sent to the arms not
+    // moved yet are the literal dispatcher's, scraped from it.
+    let mut named = BTreeSet::new();
+    for (line, ids, b) in fallible_id_arms() {
+        for id in &ids {
+            assert!(named.insert(id.clone()), "`Id::{id}` is named by two arms of `lower_std_intrinsic_fallible`");
+        }
+        if b == FallibleBranch::Lowers {
+            let ps: Vec<&String> = ids.iter().map(path_of).collect();
+            rd.fallible.push(arm(line, &ps, false, ArmCall::Native));
+        }
+    }
+    let unnamed: Vec<&String> = paths.keys().filter(|id| !named.contains(*id)).collect();
+    assert!(unnamed.is_empty(), "ids no arm of `lower_std_intrinsic_fallible` names: {unnamed:?}");
     let (statement_bodies, line) = const_list_in("lower_std_hale_body", "STATEMENT_BODIES");
     let (no_value_bodies, _) = const_list_in("lower_std_hale_body", "NO_VALUE_BODIES");
     for (s, f) in hale_types::stdlib_surface::rows() {
@@ -642,7 +700,7 @@ pub fn scrape() -> Vec<Scraped> {
             let mut arms = match position {
                 Position::Statement => rd.statement.clone(),
                 Position::Expression => rd.expression.clone(),
-                Position::Fallible => Vec::new(),
+                Position::Fallible => rd.fallible.clone(),
             };
             if let Some(&(name, file, _)) = DISPATCHERS.iter().find(|d| d.2 == position) {
                 arms.extend(arms_of(name, file));

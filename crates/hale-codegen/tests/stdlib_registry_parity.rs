@@ -380,6 +380,7 @@ fn parity_check_is_not_vacuous() {
     let hale_arms = dispatched.values().flat_map(|d| &d.lowering).filter(|c| matches!(c, ArmCall::HaleBody(_))).count();
     assert!(hale_arms > 40, "only {hale_arms} arms call a Hale body by name");
     // The statement and expression positions dispatch from the row
-    // (S3); the fallible dispatcher's 148 literal paths remain.
-    assert!(std_literals().len() > 140, "the literal scrape found only {}", std_literals().len());
+    // (S3), and the `or` position's arms move to it a group at a time
+    // (S4); the 68 paths of its not-fallible list are the last to go.
+    assert!(std_literals().len() > 60, "the literal scrape found only {}", std_literals().len());
 }
