@@ -258,13 +258,8 @@ impl DispatchPlan {
     /// covers what lowering reads: each subject, its flavor and its
     /// subscribers.
     pub fn digest(&self) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        let mut eat = |bytes: &[u8]| {
-            for b in bytes {
-                h ^= u64::from(*b);
-                h = h.wrapping_mul(0x100000001b3);
-            }
-        };
+        let mut h = hale_graph::identity::Fnv64::new();
+        let mut eat = |bytes: &[u8]| h.write(bytes);
         for s in &self.subjects {
             eat(s.subject.as_bytes());
             // The third byte is where `same_domain` sat, reserved and
@@ -281,7 +276,7 @@ impl DispatchPlan {
                 eat(f.as_bytes());
             }
         }
-        h
+        h.finish()
     }
 }
 

@@ -1,13 +1,12 @@
 //! Phase 2i — stale-CLI hash check.
 //!
-//! Hashes the codegen + runtime source files this CLI binary will
-//! be linked against, emits the hash and the codegen-crate path
-//! as `cargo:rustc-env` variables. At runtime, `main.rs` recomputes
-//! the hash from the on-disk source files and warns when they
-//! disagree (the user edited codegen / runtime / stdlib source
-//! after building the CLI binary, so the binary's bundled
-//! `include_str!` snapshots are stale relative to what the
-//! workspace now shows).
+//! Hashes the identity-covered sources this CLI binary is built from
+//! (`hale_graph::identity::identity_files`), emits the hash, the file
+//! count and the workspace path as `cargo:rustc-env` variables. At
+//! runtime, `stale.rs` holds the on-disk tree against them and warns
+//! when they disagree (the user edited a compiler, runtime or stdlib
+//! source after building the CLI binary, so what it emits is stale
+//! relative to what the workspace now shows).
 //!
 //! Resolves `apps/log-router/FRICTION.md` 2026-05-10
 //! stale-cli-silent-drops-subscribers: agent ran
@@ -20,10 +19,8 @@
 //! now prints a one-line warning pointing the agent at
 //! `cargo build -p hale-cli`.
 
-use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
-use std::hash::Hasher;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -170,8 +167,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 /// crate's Rust alone missed them), and this CLI — then the lock
 /// file and the ts-shim manifest. A semantic producer moving between
 /// these crates cannot make a later edit invisible to replay
-/// identity. The 64-bit stale-CLI hash keeps its separate, narrower
-/// job.
+/// identity. The stale-binary hash (`stale_src_hash`) folds the same
+/// selection.
 fn toolchain_digest(workspace_root: &PathBuf) {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
@@ -209,6 +206,23 @@ fn toolchain_digest(workspace_root: &PathBuf) {
     println!("cargo:rustc-env=HALE_TOOLCHAIN_SHA256={}", hex);
 }
 
+/// The stale-binary hash (F.40 phase 4, I4): the shared selection
+/// folded with the shared fold, and how many files it holds, for
+/// `stale.rs` to hold the tree on disk against by the same walk and
+/// the same fold. Each covered directory re-runs this script, so a
+/// file added or removed re-bakes it; the files themselves are
+/// declared by `toolchain_digest`.
+fn stale_src_hash(workspace_root: &PathBuf) {
+    for d in hale_graph::identity::covered_dirs(workspace_root, &[]) {
+        println!("cargo:rerun-if-changed={}", d.display());
+    }
+    let files = hale_graph::identity::identity_files(workspace_root);
+    let hash = hale_graph::identity::fold_files(workspace_root, &files);
+    println!("cargo:rustc-env=HALE_STALE_SRC_HASH={hash:016x}");
+    println!("cargo:rustc-env=HALE_STALE_SRC_COUNT={}", files.len());
+    println!("cargo:rustc-env=HALE_STALE_ROOT={}", workspace_root.display());
+}
+
 fn main() {
     embed_spec();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")
@@ -218,56 +232,18 @@ fn main() {
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf());
-    let codegen_dir = match workspace_root.as_ref() {
-        Some(root) => root.join("crates").join("hale-codegen"),
-        None => {
-            // Manifest dir is not under the workspace shape we
-            // expect; emit empty env vars so the runtime check
-            // skips itself.
-            println!("cargo:rustc-env=HALE_CODEGEN_SRC_HASH=");
-            println!("cargo:rustc-env=HALE_CODEGEN_DIR=");
-            println!("cargo:rustc-env=HALE_TOOLCHAIN_SHA256=");
-            return;
-        }
+    let Some(root) = workspace_root.as_ref() else {
+        // Manifest dir is not under the workspace shape we
+        // expect; emit empty env vars so the runtime check
+        // skips itself.
+        println!("cargo:rustc-env=HALE_STALE_SRC_HASH=");
+        println!("cargo:rustc-env=HALE_STALE_SRC_COUNT=0");
+        println!("cargo:rustc-env=HALE_STALE_ROOT=");
+        println!("cargo:rustc-env=HALE_TOOLCHAIN_SHA256=");
+        return;
     };
-    if let Some(root) = workspace_root.as_ref() {
-        toolchain_digest(root);
-    }
-
-    // Files we hash. codegen.rs is the IR-emit; lotus_arena.c is
-    // the C runtime bundled via include_str!; every `.hl` under
-    // crates/hale-stdlib/hl is the Hale stdlib seed merged into
-    // every compiled program (it moved there from
-    // codegen/runtime/stdlib, and this list followed it in F.40
-    // phase 0 — until then the stale hash covered two files).
-    // Drift in any of these silently changes what `hale build`
-    // emits. `stale.rs::compute_codegen_src_hash` takes the same list
-    // from `hale_graph::identity::stale_hash_paths`.
-    let paths: Vec<PathBuf> = hale_graph::identity::stale_hash_paths(&codegen_dir);
-
-    let mut hasher = DefaultHasher::new();
-    for path in &paths {
-        // rerun-if-changed makes Cargo invalidate this build
-        // script when any tracked file changes, so the hash
-        // baked into the binary stays in sync with what cargo
-        // last saw on disk. This is the second line of defence;
-        // the runtime check is the first.
-        println!("cargo:rerun-if-changed={}", path.display());
-        if let Ok(bytes) = fs::read(path) {
-            // Mix path-as-bytes into the hash so renames /
-            // additions / deletions also change the digest.
-            hasher.write(path.to_string_lossy().as_bytes());
-            hasher.write(&[0u8]);
-            hasher.write(&bytes);
-        }
-    }
-    let hash = format!("{:016x}", hasher.finish());
-
-    println!("cargo:rustc-env=HALE_CODEGEN_SRC_HASH={}", hash);
-    println!(
-        "cargo:rustc-env=HALE_CODEGEN_DIR={}",
-        codegen_dir.display()
-    );
+    toolchain_digest(root);
+    stale_src_hash(root);
 
     // macOS: LLVM 18+ links against zstd, but the homebrew
     // `llvm@18` formula ships its libs in

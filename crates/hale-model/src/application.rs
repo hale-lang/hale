@@ -615,13 +615,8 @@ impl ApplicationModel {
     /// derivation stamps it; the judgment refuses a sidecar whose
     /// coverage disagrees with the judged model.
     pub fn analysis_coverage_digest(&self) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        let mut eat = |bytes: &[u8]| {
-            for b in bytes {
-                h ^= u64::from(*b);
-                h = h.wrapping_mul(0x100000001b3);
-            }
-        };
+        let mut h = hale_graph::identity::Fnv64::new();
+        let mut eat = |bytes: &[u8]| h.write(bytes);
         for l in &self.entities.loci {
             eat(l.name.as_bytes());
             eat(&[0, u8::from(l.analyzable)]);
@@ -645,7 +640,7 @@ impl ApplicationModel {
                 None => eat(&[0xff; 4]),
             }
         }
-        h
+        h.finish()
     }
 }
 
