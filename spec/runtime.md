@@ -1969,7 +1969,11 @@ the edge from each run's end to its reclaim's completion. A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
-teardown at the literal. An owner's Reclaim entry follows its children's
+teardown at the literal. Any other literal a statement of a lifecycle
+body builds is torn down where its statement ends, so that body's row
+completes after the literal's reclaim: a run that exits inside the
+teardown has not reached the body's end and owes nothing that waits
+for it. An owner's Reclaim entry follows its children's
 Dissolve completion; its Reclaim completion follows their Reclaim
 completion. This permits retained storage while preserving physical
 release from children to owner.

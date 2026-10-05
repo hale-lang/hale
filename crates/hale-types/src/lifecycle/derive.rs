@@ -158,6 +158,9 @@ enum Member {
     Fn,
     /// An `on_failure` body: runs only when the handler does.
     Handler,
+    /// A lifecycle body with a row of its locus's own (`birth`, `run`,
+    /// `drain`, `dissolve`): the row whose end follows each statement.
+    Lifecycle(K),
     Other,
 }
 
@@ -203,7 +206,13 @@ impl LiteralWalk<'_> {
                                 }
                             }
                             LocusMember::Lifecycle(d) => {
-                                self.member = Member::Other;
+                                self.member = match d.kind {
+                                    LifecycleKind::Birth => Member::Lifecycle(K::Birth),
+                                    LifecycleKind::Run => Member::Lifecycle(K::Run),
+                                    LifecycleKind::Drain => Member::Lifecycle(K::Drain),
+                                    LifecycleKind::Dissolve => Member::Lifecycle(K::Dissolve),
+                                    LifecycleKind::Accept | LifecycleKind::Release => Member::Other,
+                                };
                                 self.block(&d.body);
                             }
                             LocusMember::Fn(f) => {
@@ -352,6 +361,10 @@ struct Subject<'a> {
     /// Built in an `on_failure` body under every contribution: it exists
     /// only on a path where the handler runs.
     in_handler: bool,
+    /// Built by a statement of its enclosing locus's lifecycle body: the
+    /// kind of that body's row, which ends after the statement's
+    /// teardown (C13).
+    statement_of: Option<K>,
     /// A field's name in its owner's params: where it falls in the
     /// owner's declaration order, the order the cascade walks fields in.
     field: Option<String>,
@@ -597,6 +610,7 @@ fn subjects<'a>(
             }],
             bound,
             in_handler: false,
+            statement_of: None,
             field: (how == How::Field).then(|| key.path.last().map(|s| s.field.clone())).flatten(),
             placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
         });
@@ -639,6 +653,10 @@ fn subjects<'a>(
             contributions: vec![Contribution { owner: None, under: None, it: domain, own: domain, in_handler }],
             bound: d.bound.clone(),
             in_handler,
+            statement_of: match (how, at.member) {
+                (How::Body { built: Built::Statement, .. }, Member::Lifecycle(k)) => Some(k),
+                _ => None,
+            },
             field: None,
             placed: false,
         });
@@ -769,6 +787,7 @@ fn dynamic_fields<'a>(
                         contributions: Vec::new(),
                         bound: Bound::Once,
                         in_handler: false,
+                        statement_of: None,
                     });
                     sources.push(Source::Field { parents: vec![parent] });
                     dynamic_fields(out, sources, out.len() - 1, index, ids);
@@ -1919,6 +1938,22 @@ impl<'b, 'a> Builder<'b, 'a> {
             // cascade after the owner's dissolve (inventory C28).
             if let (Some(cd), Some(pd), How::Accepted { flow: false }) = (child.drain, parent.dissolve, self.subjects[i].how) {
                 self.get(cd).edges.entry.push(after(pd, Point::Completed, Rule::SHIPPED));
+            }
+        }
+        // A literal a statement of the owner's lifecycle body builds is
+        // torn down where the statement ends (the eager spine), so the body
+        // ends after its reclaim (C13): a run that ends inside that teardown
+        // has not reached the body's end, nor what waits for it.
+        if let (Some(kind), (Spine::EagerTeardown, _), Some(cr)) = (self.subjects[i].statement_of, self.teardown(i), child.reclaim) {
+            let body = match kind {
+                K::Birth => parent.birth,
+                K::Run => parent.run,
+                K::Drain => parent.drain,
+                K::Dissolve => parent.dissolve,
+                _ => None,
+            };
+            if let Some(b) = body {
+                self.get(b).edges.completion.push(after(cr, Point::Completed, Rule::SHIPPED));
             }
         }
         // Children before their owner's physical release (line 14).
