@@ -1541,6 +1541,7 @@ pub fn build_resolved(
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle,
+        spines: hale_types::lifecycle::spine::SpineIndex::new(lifecycle),
         entry_locus: entry_locus(entry, merged),
         entry_fn: entry_fn(entry, merged),
         current_user_fn_scratch_local: false,
@@ -3438,6 +3439,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4). A required
     /// row: a view without one is refused before lowering starts.
     pub(crate) lifecycle: &'p hale_types::lifecycle::LifecyclePlan,
+    /// The plan's orders (`SpineIndex`), computed once from `lifecycle`:
+    /// what the emitters of a literal or a declaration read, so lowering
+    /// one does not pass over the whole plan.
+    pub(crate) spines: hale_types::lifecycle::spine::SpineIndex,
     /// The `main locus` lowering deploys, read from the view's entry row
     /// (`LoweringView::entry`, its entry) and found in lowering's program
     /// by identity: every comparison against "the main locus" reads it
@@ -6074,7 +6079,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn emit_process_rows(&mut self, spine: Spine, flush: bool, pre_drain: bool) -> Result<(), CodegenError> {
         let plan = self.lifecycle;
         let mut in_flush = false;
-        for step in plan.process_order(spine).map_err(CodegenError::Unsupported)? {
+        for step in self.spines.process_order(spine).map_err(CodegenError::Unsupported)? {
             // A known-open row (the eager spine's pre-drain, C13) is not
             // emitted, and divides nothing.
             if matches!(plan.obligations[step.obligation.0 as usize].status, hale_types::lifecycle::Status::KnownOpen { .. }) {
@@ -6443,7 +6448,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// cannot emit: a cascade before the head or before the joins.
     pub(crate) fn head_before_pinned_joins(&self, spine: Spine) -> Result<bool, CodegenError> {
         use hale_types::lifecycle::spine::EntryStep;
-        let order = self.lifecycle.entry_order(spine).map_err(CodegenError::Unsupported)?;
+        let order = self.spines.entry_order(spine).map_err(CodegenError::Unsupported)?;
         let at = |s: EntryStep| order.iter().position(|&x| x == s);
         if at(EntryStep::Cascade) < at(EntryStep::Head) || at(EntryStep::Cascade) < at(EntryStep::PinnedJoins) {
             return Err(CodegenError::Unsupported(format!(

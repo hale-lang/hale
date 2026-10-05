@@ -1363,7 +1363,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         entries.sort_by_key(|(_, idx, _)| *idx);
         if !self.cascade_orders.contains_key(locus_name) {
             let plan = self.lifecycle;
-            let steps = plan.cascade_order(locus_name).map_err(CodegenError::Unsupported)?;
+            let steps = self.spines.cascade_order(locus_name).map_err(CodegenError::Unsupported)?;
             if steps != CASCADE_STEPS {
                 return Err(CodegenError::Unsupported(format!(
                     "`{locus_name}`: the lifecycle plan orders its cascade {steps:?}, which the dissolve cascade cannot emit"
@@ -1395,7 +1395,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(order) = self.reclaim_orders.get(locus) {
             return Ok(order.clone());
         }
-        let order = self.lifecycle.reclaim_order(locus).map_err(CodegenError::Unsupported)?;
+        let order = self.spines.reclaim_order(locus).map_err(CodegenError::Unsupported)?;
         let at = |s: ReclaimStep| order.iter().position(|&x| x == s).expect("every step is ordered");
         let refuse = |a: ReclaimStep, b: ReclaimStep| -> Result<(), CodegenError> {
             if at(a) > at(b) {

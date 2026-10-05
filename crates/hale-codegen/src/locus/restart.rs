@@ -531,7 +531,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(&name)
                 .cloned()
                 .expect("restart fns are declared for user loci");
-            let order = self.lifecycle.recovery_order(&name).map_err(CodegenError::Unsupported)?;
+            let order = self.spines.recovery_order(&name).map_err(CodegenError::Unsupported)?;
             self.define_restart_fn(&name, &info, fns.restart, &order)?;
             self.define_resume_fn(&name, &info, fns, &order)?;
         }

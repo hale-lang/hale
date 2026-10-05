@@ -29,7 +29,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus: &str,
         kinds: &[ObligationKind],
     ) -> Result<Vec<ObligationKind>, CodegenError> {
-        self.lifecycle.birth_order(locus, kinds).map_err(CodegenError::Unsupported)
+        self.spines.birth_order(locus, kinds).map_err(CodegenError::Unsupported)
     }
 
     /// Whether the plan owes an instance of `locus` readiness (line 6):
@@ -37,8 +37,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// template of `locus` in the plan means none of its spines owes
     /// readiness.
     pub(crate) fn owes_readiness(&self, locus: &str) -> bool {
-        let p = self.lifecycle;
-        p.templates(locus).any(|s| p.birth_spine(s).iter().any(|st| st.kind == ObligationKind::Readiness))
+        self.spines.owes_readiness(locus)
     }
 
     /// Open `self_ptr`'s readiness window before its first
