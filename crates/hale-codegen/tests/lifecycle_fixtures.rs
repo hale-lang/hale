@@ -58,6 +58,7 @@ use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_types::lifecycle::project::{self, Focus, Inside, PathFailure, RunPath};
+use hale_types::lifecycle::spine::RECOVERY_KINDS;
 use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
 use hale_types::lifecycle::{FailureSource, Multiplicity, NotStarted, ObligationKind, Point, ShutdownCause, Spine, Status, Terminal};
 
@@ -255,6 +256,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l10_dissolve_closures_first.hl", line: "10", adopted: Some("closures-before-dissolve"), run: RunMode::Plain, judge: closures_before_dissolve },
     Fixture { file: "l11_let_bound_drain.hl", line: "11", adopted: Some("drain-at-scope-exit"), run: RunMode::Plain, judge: drain_at_scope_exit },
     Fixture { file: "l12_pinned_fields_drain.hl", line: "12", adopted: Some("fields-drained-first"), run: RunMode::Plain, judge: fields_drained_first },
+    Fixture { file: "l12_returned_root_pinned_anchor.hl", line: "12", adopted: Some("delivered"), run: RunMode::Plain, judge: returned_anchor_delivery },
     Fixture { file: "l13_resume_pool_child.hl", line: "13", adopted: Some("resumed-posted"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l14_reclaim_exactly_once.hl", line: "14", adopted: Some("torn-down-once"), run: RunMode::Plain, judge: torn_down_once },
     Fixture { file: "l15_sigint_flag.hl", line: "15", adopted: Some("cooperative-drain"), run: RunMode::SigintAfter("ev ready"), judge: cooperative_drain },
@@ -288,6 +290,11 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
+    // A pinned anchor is joined when the fn that built it returns, not in
+    // its owner's teardown. Decision needed: where a returned root's
+    // anchor thread is joined, and where its thread id lives once the
+    // building fn's frame is gone.
+    ("l12_returned_root_pinned_anchor.hl", "C52", "dropped"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -305,21 +312,6 @@ const PENDING: &[(&str, &str)] = &[
 /// `support/lifecycle_plan.rs` parses: one line per declaration, its
 /// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
-    (
-        "l07_or_wait_deferred_main_entry.hl",
-        "-: WaitAbort@DeferredMainEntry PoolJoin@DeferredMainEntry
-         edge -.WaitAbort@DeferredMainEntry.Completed -> -.PoolJoin@DeferredMainEntry.Entered",
-    ),
-    (
-        "l07_or_wait_main_return.hl",
-        "-: WaitAbort@MainReturn PoolJoin@MainReturn
-         edge -.WaitAbort@MainReturn.Completed -> -.PoolJoin@MainReturn.Entered",
-    ),
-    (
-        "l07_or_wait_main_test_failure.hl",
-        "-: WaitAbort@MainTestFailure PoolJoin@MainTestFailure
-         edge -.WaitAbort@MainTestFailure.Completed -> -.PoolJoin@MainTestFailure.Entered",
-    ),
     // R19 across pools: the run queued on `side` is canceled by the
     // reclaim on main, inside its bracket. The replacement's run is the
     // judge's, since one plan step cannot owe two ends.
@@ -378,7 +370,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         "l01_neg_same_pool_held.hl" => {
             p.failures.push(fails("Late", FailureSource::BirthClosure, true, false, 1));
             p.occurrences = count(&[("Owner", 1), ("Late", 1)]);
-            // Line 13: the resumed Late declares no run() (C48).
+            // Line 13: the resumed Late declares no run() and enters
+            // none (C48, L4).
             &["1", "13"]
         }
         "l01_neg_it_waits_worker_queue.hl" => {
@@ -432,8 +425,23 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // The aborted wait is an unhandled structural failure: the
         // worker exits the process while main is joining it. The abort
         // completed, but neither the join nor later teardown completes.
-        "l07_pool_or_wait_teardown.hl" | "l07_or_wait_main_fall_through.hl" => {
-            let spine = if file == "l07_pool_or_wait_teardown.hl" { Spine::EagerTeardown } else { Spine::MainFallThrough };
+        // Each spine's head is the plan's (the deferred main entry in a fn
+        // that is not `main`, and `fn main`'s exits, each the run's exit).
+        "l07_pool_or_wait_teardown.hl"
+        | "l07_or_wait_main_fall_through.hl"
+        | "l07_or_wait_deferred_main_entry.hl"
+        | "l07_or_wait_main_return.hl"
+        | "l07_or_wait_main_test_failure.hl" => {
+            let spine = match file {
+                "l07_pool_or_wait_teardown.hl" => Spine::EagerTeardown,
+                "l07_or_wait_deferred_main_entry.hl" => Spine::DeferredMainEntry,
+                "l07_or_wait_main_return.hl" => Spine::MainReturn,
+                "l07_or_wait_main_test_failure.hl" => Spine::MainTestFailure,
+                _ => Spine::MainFallThrough,
+            };
+            if matches!(spine, Spine::MainReturn | Spine::MainTestFailure) {
+                p.exit = Some(spine);
+            }
             p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(spine) });
             &["7"]
         }
@@ -457,6 +465,7 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         }
         "l11_let_bound_drain.hl" => &["11"],
         "l12_pinned_fields_drain.hl" => &["12"],
+        "l12_returned_root_pinned_anchor.hl" => &["12"],
         "l13_resume_pool_child.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
             &["13"]
@@ -519,13 +528,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
 /// cancellation at a reclaim off the run's pool, the instances of one
 /// declaration whose runs end differently in one run (the trace names
 /// an instance by its declaration), and a main locus built more than
-/// once, each literal with its own teardown. The producer also does not
-/// enumerate deferred main-entry, return or test-failure process spines
-/// yet; P3's fixtures pin those spines until their producer rows exist.
+/// once, each literal with its own teardown.
 const UNDERIVED: &[(&str, &str)] = &[
-    ("l07_or_wait_deferred_main_entry.hl", "the producer has no deferred main-entry process spine"),
-    ("l07_or_wait_main_return.hl", "the producer has no main-return process spine or exit-path selection"),
-    ("l07_or_wait_main_test_failure.hl", "the producer has no test-failure process spine or exit-path selection"),
     (
         "l19_cross_pool_queued_run_canceled.hl",
         "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
@@ -592,8 +596,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         "C31",
         &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
     ),
-    // Late declares no run(), and its resumed incarnation enters one.
-    ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
     ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.
@@ -655,10 +657,16 @@ struct Control {
 const LINE_7_PLAN: &str = "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
      edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered";
 
-/// The held failure's restart, without line 13's resumed run (C48,
-/// which the fixture's own plan pins).
+/// The held failure's restart; Late declares no run(), so its resumed
+/// incarnation owes none (line 13, C48).
 const RESTART_PLAN: &str = "Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Drain Dissolve Reclaim
      edge Late.FailureDelivery.Completed -> Late.Restart.Entered";
+
+/// The held failure's resume at settle, before the restart it decides,
+/// with no resumed run (line 13, C48).
+const RESUME_PLAN: &str = "Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Resume Restart Drain Dissolve Reclaim
+     edge Late.FailureDelivery.Completed -> Late.Resume.Entered
+     edge Late.Resume.Completed -> Late.Restart.Entered";
 
 /// The worker's teardown waits for its run to end: the pool join is
 /// what orders the two across threads.
@@ -782,6 +790,16 @@ const CONTROLS: &[Control] = &[
         plan: Some(RESTART_PLAN),
         fails_with: "unended: Late.Restart",
         baseline_passes: false,
+    },
+    // The resume at settle, its decision's completion dropped.
+    Control {
+        name: "resume_completion_omitted",
+        covers: ObligationKind::Resume,
+        fixture: "l01_neg_same_pool_held.hl",
+        skip: "Resume.Completed",
+        plan: Some(RESUME_PLAN),
+        fails_with: "unended: Late.Resume",
+        baseline_passes: true,
     },
     Control {
         name: "wait_abort_removed",
@@ -1172,6 +1190,19 @@ fn final_publish(r: &Ran) -> String {
         0 => "final-dropped".to_string(),
         1 => "final-delivered".to_string(),
         n => format!("final-delivered-{n}-times"),
+    }
+}
+
+/// C52: whether a publish after the root is returned reaches its pinned
+/// field, before fn main's exit.
+fn returned_anchor_delivery(r: &Ran) -> String {
+    if r.timed_out || r.code != Some(0) {
+        return exit_word(r);
+    }
+    match (pos(r, "ev sink-heard"), pos(r, "ev main-done")) {
+        (Some(h), Some(d)) if h < d => "delivered".to_string(),
+        (Some(_), _) => "delivered-at-exit".to_string(),
+        (None, _) => "dropped".to_string(),
     }
 }
 
@@ -1675,10 +1706,20 @@ fn assert_fixture(file: &str) {
 
 // ------------------------------------------------------------ spines
 
-/// The spines the law below reads whole (L4): the six an instance's own
-/// steps are emitted on and the trace names as the plan's holder does.
-const SPINES: &[Spine] =
-    &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown, Spine::Reclaim];
+/// The spines the law below reads whole (L4): the eight an instance's own
+/// steps are emitted on and the trace names as the plan's holder does,
+/// the deferred entry's and the deferred main entry's among them (a
+/// let-bound literal's and a subscribing statement literal's, C14).
+const SPINES: &[Spine] = &[
+    Spine::Instantiation,
+    Spine::PinnedMain,
+    Spine::PoolRun,
+    Spine::Cascade,
+    Spine::EagerTeardown,
+    Spine::DeferredEntry,
+    Spine::DeferredMainEntry,
+    Spine::Reclaim,
+];
 
 /// Kinds the law reads on every spine: the reclaim, whose events carry
 /// the spine that holds it in the plan (a field's the cascade's, a frame
@@ -1690,7 +1731,7 @@ const SPINES: &[Spine] =
 const EVERY_SPINE: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
 
 fn read(spine: Spine, kind: ObligationKind) -> bool {
-    SPINES.contains(&spine) || EVERY_SPINE.contains(&kind)
+    !RECOVERY_KINDS.contains(&kind) && (SPINES.contains(&spine) || EVERY_SPINE.contains(&kind))
 }
 
 /// Spines whose emitted steps depart from the plan today, each classified
@@ -1711,6 +1752,22 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_handler_replaces_started_run_async.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    // L4's restart and resume spine: the producer owes no resume for a
+    // held run() failure, whose phase-0 resume C43 names.
+    ("l01_held_failure_settle.hl", "Boom@Settle recovery: emitted [Resume], the plan owes []",
+        "C43: the producer derives a resume for a held birth failure only"),
+    ("l01_pool_owner_settle.hl", "Boom@Settle recovery: emitted [Resume], the plan owes []",
+        "C43: the producer derives a resume for a held birth failure only"),
+    // ... and holds every restart on the posted run's spine, where C42
+    // names the deciding thread's: here the settle's resume.
+    ("l01_neg_same_pool_held.hl", "Late@PoolRun recovery: emitted [], the plan owes [Restart]",
+        "C42: the producer holds a held failure's restart on PoolRun, the resume performs it at settle"),
+    ("l01_neg_same_pool_held.hl", "Late@Settle recovery: emitted [Resume Restart], the plan owes []",
+        "C42: the producer holds a held failure's restart on PoolRun, the resume performs it at settle"),
+    // Restart during drain (RD): refused under an owner's teardown is
+    // known open.
+    ("rd_restart_during_teardown.hl", "Kid@PoolRun recovery: emitted [Restart], the plan owes []",
+        "C42: a restart asked for under the owner's teardown is performed"),
 ];
 
 /// The emitted step sequence of every instance a run of `file` built, per
@@ -1774,6 +1831,55 @@ fn spine_departures(file: &str) -> Vec<String> {
         if !holds {
             let want: Vec<String> = want.iter().map(|w| format!("[{}]", names(w))).collect();
             out.push(format!("{decl}@{}: emitted [{}], the plan owes {}", spine.name(), names(got), want.join(" or ")));
+        }
+    }
+    // The recovery steps (the resume, the restart), every incarnation's,
+    // against the plan's for the failures the run's path raises: per
+    // failure, its resume where it was held, and its restart once per
+    // restart the run performed (none where the path refuses it).
+    let failures = run_path(file).map(|(_, p)| p.failures).unwrap_or_default();
+    let mut recovered: BTreeMap<(String, u64, Spine), Vec<ObligationKind>> = BTreeMap::new();
+    for e in &ran.trace.events {
+        let (Some(decl), Some(subject), Some(spine)) = (&e.decl, e.subject, e.spine) else { continue };
+        for s in Spine::ALL {
+            recovered.entry((decl.clone(), subject.instance.raw(), *s)).or_default();
+        }
+        let step = e.point == Point::Entered || matches!(e.point, Point::Terminal(Terminal::NotStarted(_)));
+        if step && RECOVERY_KINDS.contains(&e.kind) {
+            recovered.entry((decl.clone(), subject.instance.raw(), spine)).or_default().push(e.kind);
+        }
+    }
+    let recovery_owed = |decl: &str, spine: Spine| -> Vec<Vec<ObligationKind>> {
+        let mut out: Vec<Vec<ObligationKind>> = Vec::new();
+        for site in plan.templates(decl) {
+            let mut seq = Vec::new();
+            for f in failures.iter().filter(|f| f.decl == decl) {
+                let performed = f.restarts > 0 && !f.in_teardown;
+                for s in plan.recovery_spine(site, spine, f.source, f.held, performed) {
+                    let times = if s.kind == ObligationKind::Restart { f.restarts as usize } else { 1 };
+                    seq.extend(std::iter::repeat_n(s.kind, times));
+                }
+            }
+            if !out.contains(&seq) {
+                out.push(seq);
+            }
+        }
+        if out.is_empty() {
+            out.push(Vec::new());
+        }
+        out
+    };
+    for ((decl, _, spine), got) in &recovered {
+        let want = recovery_owed(decl, *spine);
+        let holds = want.iter().any(|w| w == got || (!ran.complete() && w.starts_with(got)));
+        if !holds {
+            let want: Vec<String> = want.iter().map(|w| format!("[{}]", names(w))).collect();
+            out.push(format!(
+                "{decl}@{} recovery: emitted [{}], the plan owes {}",
+                spine.name(),
+                names(got),
+                want.join(" or ")
+            ));
         }
     }
     out.sort();
@@ -1845,6 +1951,7 @@ fixture_tests! {
     l10_dissolve_closures_first => "l10_dissolve_closures_first.hl",
     l11_let_bound_drain => "l11_let_bound_drain.hl",
     l12_pinned_fields_drain => "l12_pinned_fields_drain.hl",
+    l12_returned_root_pinned_anchor => "l12_returned_root_pinned_anchor.hl",
     l13_resume_pool_child => "l13_resume_pool_child.hl",
     l14_reclaim_exactly_once => "l14_reclaim_exactly_once.hl",
     l15_sigint_flag => "l15_sigint_flag.hl",
@@ -2156,6 +2263,7 @@ control_tests! {
     queued_run_cancel_unnamed,
     run_hold_wait_removed,
     restart_completion_omitted,
+    resume_completion_omitted,
     wait_abort_removed,
     birth_removed,
     run_removed,

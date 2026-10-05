@@ -989,3 +989,60 @@ fn birth_checks_contribute_value_births() {
     assert!(!birth.bare_statement && !birth.params_default);
     assert_eq!(birth.child_key.as_deref(), Some("Kid"));
 }
+
+/// F.40 phase 3, C5: lowering derives no ownership graph of the user's
+/// program. Its graph is the snapshot's rows, each found in the merged
+/// program through the view's correspondence, followed by the stdlib's
+/// rows, assembled as the snapshot's graph is: every user site resolves
+/// as the snapshot's does, the stdlib's declarations follow the user's,
+/// and the tower's accept relation (`accepts_ancestor`) is one relation
+/// on both sides.
+#[test]
+fn lowerings_graph_is_the_snapshots_rows_through_the_correspondence() {
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus B {
+            run() { I { }; }
+        }
+        main locus A {
+            accept(i: I) { }
+            run() { B { }; }
+        }
+        fn main() { A { }; }
+    "#;
+    let s = hale_frontend::snapshot::Snapshot::from_program(
+        parse_source(src).unwrap(),
+        Vec::new(),
+        hale_frontend::snapshot::Config::check(false, false),
+    )
+    .unwrap_or_else(|_| panic!("load"));
+    let snap = s.demand_ownership_graph().unwrap_or_else(|_| panic!("the graph is blocked"));
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("the lowering view is blocked"));
+    let low = &view.ownership;
+
+    let user = |g: &OwnershipGraph| {
+        g.sites
+            .iter()
+            .filter(|x| !x.enclosing_locus.starts_with("__Std"))
+            .map(|x| (x.enclosing_locus.clone(), x.child_ty.clone(), x.resolution.clone(), x.span))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(user(low), user(snap));
+    assert_eq!(site(low, "B", "I").resolution, OwnerResolution::Ancestor("A".to_string()));
+    assert_eq!(view.bubble.singleton.get(&("B".to_string(), "I".to_string())).map(String::as_str), Some("A"));
+
+    // The stdlib's declarations follow the user's, which keep their order.
+    let names = |g: &OwnershipGraph| g.declarations.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
+    let (ours, theirs) = (names(snap), names(low));
+    assert!(theirs.len() > ours.len() && theirs[..ours.len()] == ours[..], "{theirs:?}");
+    assert!(theirs[ours.len()..].iter().all(|n| n.starts_with("__Std")), "{theirs:?}");
+
+    for g in [snap, low] {
+        assert!(g.rows.accepts_ancestor("A", "I") && !g.rows.accepts_ancestor("B", "I"));
+    }
+
+    // The view's scope is the snapshot's, the stdlib's declarations in it.
+    let scope = s.demand_scope().unwrap_or_else(|_| panic!("the scope is blocked"));
+    assert_eq!(format!("{:?}", view.top), format!("{scope:?}"));
+    assert!(view.top.symbols.keys().any(|k| k.starts_with("__Std")));
+}

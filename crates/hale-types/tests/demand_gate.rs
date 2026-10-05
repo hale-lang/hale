@@ -352,6 +352,36 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// F.40 phase 3, C5: on a build path the count is the whole truth. The
+/// lowering view derives no scope, bus graph or ownership graph of the
+/// user's program: its scope is the snapshot's, and its graphs are the
+/// snapshot's rows (the stdlib's after them), so the one `builds()`
+/// counts for each is the only derivation, lowering's included.
+#[test]
+fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
+    let d = seed("one-graph", WITH_CLAIM);
+    let s = build(&d.join("app.hl"));
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    let builds = s.builds();
+    for family in ["top_scope", "bus_graph", "ownership"] {
+        assert_eq!(builds[family], 1, "`{family}`: one derivation, and lowering reads it");
+    }
+    let scope = s.demand_scope().expect("scoped");
+    assert_eq!(format!("{:?}", view.top), format!("{scope:?}"), "the view's scope is the snapshot's");
+    let bus = s.demand_bus_graph().expect("the graph");
+    let ids = |rows: &[hale_types::bus_graph::PublishRow]| rows.iter().map(|r| r.id.0).collect::<Vec<_>>();
+    assert_eq!(
+        ids(&view.bus.rows.publishes[..bus.rows.publishes.len()]),
+        ids(&bus.rows.publishes),
+        "the view's bus rows are the snapshot's, first"
+    );
+    let own = s.demand_ownership_graph().expect("the graph");
+    let names = |g: &hale_types::ownership_graph::OwnershipGraph| g.declarations.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&view.ownership)[..own.declarations.len()], names(own)[..], "the view's ownership rows are the snapshot's, first");
+    assert_at_most_once(&s, "build");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// F.40 phase 2, use-site identity: which declaration each use names is
 /// resolved once per snapshot, by its mint — the load's, and the
 /// lowering view's over the merged program — and nothing the check, the
