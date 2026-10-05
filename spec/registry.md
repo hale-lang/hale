@@ -1524,40 +1524,46 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 ## Spec rules and their evaluators
 
-A registered rule without an evaluator fails the compiler's own build.
+A registered rule without an evaluator fails the compiler's own build, and `registry_rules_match_spec.rs` reads each list below from the spec and fails on a rule one side lacks or a title that differs. `reads` is what the evaluator reads: the rows of the named families, or the declaration it judges.
 
-| rule | gist | family | evaluator | state |
-|---|---|---|---|---|
-| semantics/placement/1 | `placement { }` is main-locus-only | `placement` | `crates/hale-syntax/src/parser.rs` · ``placement` block is only valid inside` | Canonical |
-| semantics/placement/2 | keys name main-locus params fields | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
-| semantics/placement/3 | field values are locus types | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
-| semantics/placement/4 | at most one entry per field | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
-| semantics/placement/5 | pool names are identifiers; `main` always exists | `placement` | `crates/hale-syntax/src/parser.rs` · `parse_placement_block` | Canonical |
-| semantics/placement/6 | pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_features` | Canonical |
-| semantics/placement/7 | dead bus receiver on a cooperative pool is an error | `blocking` | `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` | Migrating |
-| semantics/placement/8 | a blocking syscall on a cooperative pool is a warning | `blocking` | `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` | Migrating |
-| semantics/placement/9 | orphan bus topic (closed world) | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_graph` | Migrating |
-| semantics/placement/10 | bus cycles: a queued cycle warns, an unconditional intra-locus cycle of direct calls is an error | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_cycles` | Migrating |
-| semantics/placement/11 | bus backpressure heuristic | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_backpressure` | Migrating |
-| semantics/placement/12 | one literal subject, one payload type | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_subject_types` | Migrating |
-| semantics/placement/13 | degenerate `pinned(cores = ..)` is an error | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
-| semantics/placement/14 | topology consistency and node/l3 resolution | `placement` | `crates/hale-types/src/check.rs` · `check_topology_block` | Canonical |
-| semantics/placement/15 | `replicas = K`: K >= 1, pinned only | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
-| semantics/placement/16 | pool affinity agrees per pool | `placement` | `crates/hale-types/src/check.rs` · `check_pool_affinity` | Migrating |
-| semantics/placement/17 | a pinned locus is not instantiated in a loop | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop` | Canonical |
-| semantics/placement/18 | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/lowering_laws.rs` · `placement_entry_consumed` | Canonical |
-| semantics/placement/19 | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | Migrating |
-| semantics/placement/20 | a subscriber born in a bus handler is owned | `ownership` | `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` | Canonical |
-| semantics/slots/1 | a capacity slot's cell type is not a locus: a span-targeted typecheck error, and again at codegen (`locus/decl.rs`) as defense in depth | `forms` | `crates/hale-types/src/check.rs` · `check_locus_member_at` | Canonical |
-| semantics/slots/2 | structurally enforced, no check: a slot name is a locus member, not a typeable identifier (`self.<slot>` is typed `Unknown`, `check_expr_at`), so it cannot appear as a payload struct field | `forms` | `crates/hale-types/src/check.rs` · `check_expr_at` | Canonical |
-| semantics/slots/3 | two slots of one name are a typecheck error, and again at codegen (`locus/decl.rs`) | `forms` | `crates/hale-types/src/check.rs` · `check_locus_member_at` | Canonical |
-| verification/structural/cqrs-no-locus-return | a locus `fn` whose return type or `fallible(T)` payload names a user-declared locus (error) | `surfaces` | `crates/hale-types/src/check.rs` · `check_no_locus_return` | Canonical |
-| verification/structural/stdlib-error-type-shadow | a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type (error) | `stdlib_surface` | `crates/hale-types/src/resolve.rs` · `check_stdlib_error_shadowing` | Migrating |
-| verification/structural/codec-purity | a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | Canonical |
-| verification/structural/ring-layout-contract | a foreign-ring layout declaration that is internally ill-formed (error); `check_ring_layout`, and `check_main_and_bindings` for a binding's `layout:` reference | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | Canonical |
-| verification/structural/ring-layout-geometry | a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings` | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | Canonical |
-| verification/structural/foreign-ring-payload-shape | a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error) | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | Canonical |
-| verification/structural/cell-slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | Canonical |
+| list | rules |
+|---|---|
+| `spec/semantics.md` § Type-check rules | 20 |
+| `spec/semantics.md` § Slot restrictions (v1) | 3 |
+| `spec/verification.md` § Structural & design rules | 7 |
+
+| rule | list | title | gist | family | evaluator | reads | state |
+|---|---|---|---|---|---|---|---|
+| semantics/placement/1 | `spec/semantics.md` § Type-check rules | `placement { }` is `main locus` only. | `placement { }` is main-locus-only | `placement` | `crates/hale-syntax/src/parser.rs` · ``placement` block is only valid inside` | the declaration | Canonical |
+| semantics/placement/2 | `spec/semantics.md` § Type-check rules | Keys reference main-locus `params` field names. | keys name main-locus params fields | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | `top_scope` | Canonical |
+| semantics/placement/3 | `spec/semantics.md` § Type-check rules | Field values are locus types. | field values are locus types | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | `top_scope` | Canonical |
+| semantics/placement/4 | `spec/semantics.md` § Type-check rules | At most one placement entry per field. | at most one entry per field | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | the declaration | Canonical |
+| semantics/placement/5 | `spec/semantics.md` § Type-check rules | Pool names use snake_case Idents. | pool names are identifiers; `main` always exists | `placement` | `crates/hale-syntax/src/parser.rs` · `parse_placement_block` | the declaration | Canonical |
+| semantics/placement/6 | `spec/semantics.md` § Type-check rules | Locus-pinning compatibility. | pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) on every pinned instance, a placement entry's or an adapter binding's | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_features` | `placement` | Canonical |
+| semantics/placement/7 | `spec/semantics.md` § Type-check rules | Dead bus receiver (error). | dead bus receiver on a cooperative pool is an error | `blocking` | `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` | `placement`, `bus_graph`, `effects` | Migrating |
+| semantics/placement/8 | `spec/semantics.md` § Type-check rules | Blocking syscall on a cooperative pool (warning). | a blocking syscall on a cooperative pool is a warning | `blocking` | `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` | `placement`, `bus_graph`, `effects` | Migrating |
+| semantics/placement/9 | `spec/semantics.md` § Type-check rules | Orphan bus topic (warning). | orphan bus topic (closed world) | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_graph` | `bus_graph`, `entrypoint`, `top_scope` | Migrating |
+| semantics/placement/10 | `spec/semantics.md` § Type-check rules | Bus cycles. | bus cycles: a queued cycle warns, an unconditional intra-locus cycle of direct calls is an error | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_cycles` | `bus_graph`, `desugar_sequence` | Migrating |
+| semantics/placement/11 | `spec/semantics.md` § Type-check rules | Bus backpressure (warning). | bus backpressure heuristic | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_backpressure` | the declaration | Migrating |
+| semantics/placement/12 | `spec/semantics.md` § Type-check rules | Bus subject type-mismatch (error). | one literal subject, one payload type | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_subject_types` | the declaration | Migrating |
+| semantics/placement/13 | `spec/semantics.md` § Type-check rules | Empty / degenerate `pinned(cores = …)` (error). | degenerate `pinned(cores = ..)` is an error | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | the declaration | Canonical |
+| semantics/placement/14 | `spec/semantics.md` § Type-check rules | `topology { }` consistency + `pinned(node/l3)` resolution (error). | topology consistency and node/l3 resolution | `placement` | `crates/hale-types/src/check.rs` · `check_topology_block` | the declaration | Canonical |
+| semantics/placement/15 | `spec/semantics.md` § Type-check rules | `replicas = K` (error on `K < 1`; pinned-only). | `replicas = K`: K >= 1, pinned only | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | the declaration | Canonical |
+| semantics/placement/16 | `spec/semantics.md` § Type-check rules | Pool affinity (2026-08-12). | pool affinity agrees per pool | `placement` | `crates/hale-types/src/check.rs` · `check_pool_affinity` | `entrypoint` | Migrating |
+| semantics/placement/17 | `spec/semantics.md` § Type-check rules | A `pinned` placement forbids a loop (error). | a pinned locus is not instantiated in a loop | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop` | `placement` | Canonical |
+| semantics/placement/18 | `spec/semantics.md` § Type-check rules | Every entry is consumed by exactly one instantiation (error). | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/lowering_laws.rs` · `placement_entry_consumed` | `placement` | Canonical |
+| semantics/placement/19 | `spec/semantics.md` § Type-check rules | Uncarriable bus payload (error). | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | `top_scope` | Migrating |
+| semantics/placement/20 | `spec/semantics.md` § Type-check rules | Unowned subscriber (error). | a subscriber born in a bus handler is owned | `ownership` | `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` | `ownership`, `placement` | Canonical |
+| semantics/slots/1 | `spec/semantics.md` § Slot restrictions (v1) | Slot element type must be a value-shape, not a LocusRef. | a capacity slot's cell type is not a locus: a span-targeted typecheck error, and again at codegen (`locus/decl.rs`) as defense in depth | `forms` | `crates/hale-types/src/check.rs` · `check_locus_member_at` | `top_scope` | Canonical |
+| semantics/slots/2 | `spec/semantics.md` § Slot restrictions (v1) | Slot pointers don't cross the bus. | structurally enforced, no check: a slot name is a locus member, not a typeable identifier (`self.<slot>` is typed `Unknown`, `check_expr_at`), so it cannot appear as a payload struct field | `forms` | `crates/hale-types/src/check.rs` · `check_expr_at` | the declaration | Canonical |
+| semantics/slots/3 | `spec/semantics.md` § Slot restrictions (v1) | Duplicate slot names rejected. | two slots of one name are a typecheck error, and again at codegen (`locus/decl.rs`) | `forms` | `crates/hale-types/src/check.rs` · `check_locus_member_at` | the declaration | Canonical |
+| verification/structural/cqrs-no-locus-return | `spec/verification.md` § Structural & design rules | CQRS / no-locus-return | a locus `fn` whose return type or `fallible(T)` payload names a user-declared locus (error) | `surfaces` | `crates/hale-types/src/check.rs` · `check_no_locus_return` | `top_scope` | Canonical |
+| verification/structural/stdlib-error-type-shadow | `spec/verification.md` § Structural & design rules | Stdlib error-type shadow | a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type (error) | `stdlib_surface` | `crates/hale-types/src/resolve.rs` · `check_stdlib_error_shadowing` | `top_scope` | Migrating |
+| verification/structural/codec-purity | `spec/verification.md` § Structural & design rules | Codec purity | a bus codec whose `encode` / `decode` is not pure (error), read from the purity column of the effect rows | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | `effects` | Canonical |
+| verification/structural/ring-layout-contract | `spec/verification.md` § Structural & design rules | `ring_layout` contract | a foreign-ring layout declaration that is internally ill-formed (error); `check_ring_layout`, and `check_main_and_bindings` for a binding's `layout:` reference | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | the declaration | Canonical |
+| verification/structural/ring-layout-geometry | `spec/verification.md` § Structural & design rules | `ring_layout` geometry | a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings` | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | the declaration | Canonical |
+| verification/structural/foreign-ring-payload-shape | `spec/verification.md` § Structural & design rules | Foreign-ring payload shape | a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error) | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | `top_scope` | Canonical |
+| verification/structural/cell-slot-of-origin | `spec/verification.md` § Structural & design rules | Cell slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | the declaration | Canonical |
 
 ## The shadow facility's allowance
 

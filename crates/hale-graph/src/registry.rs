@@ -2500,18 +2500,51 @@ pub fn render_markdown() -> String {
         }
     }
     o.push_str("## Spec rules and their evaluators\n\n");
-    o.push_str("A registered rule without an evaluator fails the compiler's own build.\n\n");
-    o.push_str("| rule | gist | family | evaluator | state |\n|---|---|---|---|---|\n");
+    o.push_str(
+        "A registered rule without an evaluator fails the compiler's own build, and \
+         `registry_rules_match_spec.rs` reads each list below from the spec and fails on a rule \
+         one side lacks or a title that differs. `reads` is what the evaluator reads: the rows of \
+         the named families, or the declaration it judges.\n\n",
+    );
+    o.push_str("| list | rules |\n|---|---|\n");
+    for l in RULE_LISTS {
+        let n = RULES
+            .iter()
+            .filter(|r| r.id.starts_with(&format!("{}/", l.key)))
+            .count();
+        o.push_str(&format!("| `{}` § {} | {} |\n", l.spec, l.heading, n));
+    }
+    o.push('\n');
+    o.push_str(
+        "| rule | list | title | gist | family | evaluator | reads | state |\n\
+         |---|---|---|---|---|---|---|---|\n",
+    );
     for r in RULES {
+        let list = RULE_LISTS
+            .iter()
+            .find(|l| r.id.starts_with(&format!("{}/", l.key)))
+            .map(|l| format!("`{}` § {}", l.spec, l.heading))
+            .unwrap_or_default();
+        let reads = match r.reads {
+            Reads::Rows(fs) => fs
+                .iter()
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Reads::Declaration => "the declaration".to_string(),
+        };
         o.push_str(&format!(
-            "| {} | {} | `{}` | {} | {} |\n",
+            "| {} | {} | {} | {} | `{}` | {} | {} | {} |\n",
             r.id,
+            list,
+            r.title,
             r.gist,
             r.family,
             r.evaluator
                 .as_ref()
                 .map(site_md)
                 .unwrap_or_else(|| "—".into()),
+            reads,
             r.state.label()
         ));
     }
