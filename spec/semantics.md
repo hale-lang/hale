@@ -1403,6 +1403,14 @@ any other: a child whose birth failed does not start `run()` until
 its handler has returned, and then starts it, restarts, or stays
 quarantined as the handler decided.
 
+**A handler may replace a sibling whose own failure is still
+outstanding** (`self.b = Kid { … }` in the handler for `a`, with
+`b`'s failure not yet delivered): the field holds the new child at
+once, the replaced child's failure is still delivered to the owner,
+after the running handler returns (handlers never run inside one
+another), and the replaced child is kept for that handler and
+reclaimed right after it.
+
 One failure cannot wait and is delivered at once: a
 **dissolve-epoch closure's**, because the child's region is
 released right after.
@@ -1431,7 +1439,9 @@ transition**, not a value store. It is lowered **break-before-make**:
 3. The field is repointed at the live new instance.
 
 The old instance's drain and dissolve finish before the new instance
-is constructed. There is one storage-retention exception: when a
+is constructed, unless its own failure is still outstanding: then
+its whole teardown follows its handler (§ "on_failure(c, err)").
+There is one storage-retention exception: when a
 queued main-thread handler performs the replacement, waiting for an
 old run inside that handler could deadlock a reply queued behind it.
 Physical release is then deferred until the handler returns. The old
@@ -3148,7 +3158,7 @@ Dispatch (`lotus_bus_local_dispatch_keyed`):
 
 ```c
 int matched_specific = 0;
-for (entry in g_bus_entries with matching subject):
+for (entry in the registration table with matching subject):
     if (entry.key_filter_kind == 1
         && entry.key_lo == msg.key_lo
         && entry.key_hi == msg.key_hi) {
@@ -3158,7 +3168,7 @@ for (entry in g_bus_entries with matching subject):
         fire(entry);                  /* unkeyed receive-all */
     }
 if (!matched_specific) {
-    for (entry in g_bus_entries with matching subject):
+    for (entry in the registration table with matching subject):
         if (entry.key_filter_kind == 2) fire(entry);
 }
 ```
@@ -3168,6 +3178,14 @@ with a second pass only when there's no specific match (fallback
 case). For workloads with thousands of keyed subscribers per
 subject, a per-`(subject, key_lo, key_hi)` open-addressing index
 can be added later — YAGNI until a workload demands.
+
+A registration may come from any thread (the instantiating thread,
+a pinned anchor's thread initializing its subtree, a pool's worker
+initializing a pool root's), while any thread dispatches. The table
+is append-only: a registration appends under a lock, and a dispatch
+walks the entries published when the walk began, without one; an
+entry registered meanwhile is not in that walk (`spec/runtime.md`
+§ "Bus message router" and `lotus_arena.c`, inventory row R50).
 
 Two new runtime symbols:
 

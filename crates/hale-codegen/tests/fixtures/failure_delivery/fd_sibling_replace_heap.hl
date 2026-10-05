@@ -1,0 +1,63 @@
+// `fd_sibling_replace.hl` with a child that carries a heap String,
+// built at run time in `birth()`. The owner's handler for `a` replaces
+// `b` while `b`'s failure is posted to it; `b`'s handler then reads the
+// old `b`'s name through `c`, after the replacement. The old `b` is
+// reclaimed right after that handler, so the read finds it whole (a
+// reclaim before it would free the String under the handler, a
+// heap-use-after-free under ASan).
+// Expected outcome: both handlers on the owner's thread; the old `b`'s
+// handler reads `kid-1-name` before the old `b` dissolves; every child
+// dissolves once.
+
+@ffi("c") fn pthread_self() -> Int;
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.sibling.heap.go"; }
+
+fn gate() -> String { return "/tmp/hale-fd-sibling-heap-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    closure fuse { captures: tag; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            if self.tag == 1 { std::io::fs::write_file(gate(), "go") or discard; }
+            violate fuse;
+        }
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { a: Kid = Kid { tag: 0 }; b: Kid = Kid { tag: 1 }; heard: Int = 0; mine: Int = 0; }
+    placement { a: cooperative(pool = left); b: cooperative(pool = right); }
+    bus { publish Gos; }
+    fn trigger() { Gos <- Go { k: 1 }; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        if pthread_self() == self.mine {
+            println("ev handler-on-owner");
+        } else {
+            println("ev handler-off-owner");
+        }
+        if c.tag == 0 {
+            self.trigger();
+            while !std::io::fs::file_exists(gate()) { std::time::sleep(1ms); }
+            std::time::sleep(250ms);
+            self.b = Kid { tag: 2 };
+            println("ev replaced sibling");
+        }
+        println("ev handler " + c.name);
+        self.heard = self.heard + 1;
+    }
+    run() {
+        self.mine = pthread_self();
+        Gos <- Go { k: 0 };
+        while self.heard < 2 { std::time::sleep(1ms); }
+        println("ev finished");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

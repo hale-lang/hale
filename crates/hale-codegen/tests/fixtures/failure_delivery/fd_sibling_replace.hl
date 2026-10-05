@@ -1,0 +1,56 @@
+// A reclaim never waits for a delivery only the waiting thread can run.
+// Two children on two pools fail in bus handlers, one after the other.
+// The owner's handler for `a` publishes the message `b` fails on, waits
+// for `b` to raise (a gate file, then 250 ms for the post), and replaces
+// `b` while `b`'s own failure is posted to the owner and not delivered.
+// `b`'s delivery can only run on the owner's thread, which is inside
+// `a`'s handler, and handlers do not nest: the reclaim of the old `b` is
+// deferred behind that delivery instead of waiting for it.
+// Expected outcome: `handling 0`, `replacing sibling`, `replaced
+// sibling`, `handling 1` (the old `b`'s failure is still delivered,
+// after `a`'s handler returns), `finished`, exit 0. Before the rule the
+// replacement waited forever after `replacing sibling`.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.sibling.go"; }
+
+fn gate() -> String { return "/tmp/hale-fd-sibling-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; }
+    closure fuse { captures: tag; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            if self.tag == 1 { std::io::fs::write_file(gate(), "go") or discard; }
+            violate fuse;
+        }
+    }
+}
+
+main locus App {
+    params { a: Kid = Kid { tag: 0 }; b: Kid = Kid { tag: 1 }; heard: Int = 0; }
+    placement { a: cooperative(pool = left); b: cooperative(pool = right); }
+    bus { publish Gos; }
+    fn trigger() { Gos <- Go { k: 1 }; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("handling ", c.tag);
+        if c.tag == 0 {
+            self.trigger();
+            while !std::io::fs::file_exists(gate()) { std::time::sleep(1ms); }
+            std::time::sleep(250ms);
+            println("replacing sibling");
+            self.b = Kid { tag: 2 };
+            println("replaced sibling");
+        }
+        self.heard = self.heard + 1;
+    }
+    run() {
+        Gos <- Go { k: 0 };
+        while self.heard < 2 { std::time::sleep(1ms); }
+        println("finished");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

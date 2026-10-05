@@ -1446,8 +1446,9 @@ binding-emit time.
 from their protocol layer call `std::bus::__local_dispatch(
 subject, bytes)`; the primitive backs onto
 `lotus_bus_dispatch_wire`, which looks up the subject's
-registered deserialize fn in `g_bus_entries` (same table the
-publish-side fanout consults), reconstructs the struct-layout
+registered deserialize fn in the registration table (`g_bus_table`,
+the same table the publish-side fanout consults), reconstructs the
+struct-layout
 bytes, and fans into local subscribers via
 `lotus_bus_local_dispatch`. Symmetric to the unix reader-
 thread path; out-of-band recv loops (any code holding wire
@@ -1730,37 +1731,72 @@ zero_copy binding produces.
     "on_failure(c, err)"). One subcase is open: an owner placed
     on a cooperative pool. This decision names the pool's worker
     as that owner's domain. `spec/semantics.md` names "the thread
-    settling the parent", which today is the instantiating
-    thread. The subcase awaits the construction-time decision
-    (inventory Decisions line 1), and this bullet and
-    `spec/semantics.md` are brought into agreement when it lands.
+    settling the parent", which for a pool root is now its worker
+    too (C50), the domain a later failure is posted to (L5's fourth
+    part). The subcase's status stays with the construction-time
+    decision (§ "Lifecycle obligations", line 1) until a fixture
+    holds the delivery's thread.
   - Transport loss already follows this rule. Its dispatcher runs
     from the top of `lotus_bus_queue_drain`, "owner thread, the
     only place failure handlers may run" (§ "Bus message
     router").
 
-  **What the runtime does today, where it differs.**
-  `emit_on_failure_call` (`crates/hale-codegen/src/channels/mod.rs`)
-  asks `lotus_failure_hold` first. The runtime holds a failure only
-  while the parent's params are open; once they have settled, the
-  handler is called in place, on whatever thread raised the
-  failure. A failure raised off the owner's thread therefore runs
-  the owner's handler beside the owner's own code, on a second
-  thread inside one locus. Today that happens:
-  - on a pinned child's thread, for a `violate` in its `run()` or
-    a closure after `run()` returns. The second failure in
-    `tests/hale/pinned_restart_test.hl` is this case: `App`'s
-    handler writes `self.fired` on the pump's thread while
-    `App.run()` reads it on `main`;
-  - on a pool worker, for a `violate` in a pool-placed child's
-    `run()`;
-  - on a subscriber's queue owner, for a closure that fires after
-    one of the subscriber's handlers.
+  **What the runtime does (F.40 phase 3, L5's fourth part).**
+  Every thread that runs locus code is an execution domain: `main`,
+  a cooperative pool's worker, a pinned locus's own thread. An
+  owner's domain is the thread that opens its params, which settles
+  them and delivers what was held there; `lotus_params_open` records
+  it once the program has a second thread, so a single-threaded
+  program records nothing. `emit_on_failure_call`
+  (`crates/hale-codegen/src/channels/mod.rs`) asks
+  `lotus_failure_hold` first, then, in a program with a thread
+  besides `main`, `lotus_failure_post`:
+  - On the owner's domain the handler is called in place.
+  - Off it, the failing thread posts the delivery to the owner's
+    domain, carrying the copied violation and the child, which stays
+    alive until the handler returns; wakes that domain; and waits
+    for the handler's return before it restarts, carries on or is
+    reclaimed. While it waits it services its own queue as a yield
+    on its thread would, so an owner that is itself waiting on the
+    child is served and neither waits on the other.
+  - The domain runs a posted delivery wherever it services its
+    queue: `main`'s bus queue drain, a pinned thread's mailbox
+    drains and yields, a pool worker between cells, every wait that
+    services its queue (a held failure's wait, a reclaim's wait for
+    a started run, a readiness wait), and the two joins below. A
+    handler is never started inside another on the same thread.
+  - A domain that has ended consumes nothing more: its thread has
+    exited, or its pool's worker has left its loop. A delivery still
+    posted to it, or posted after, runs in place where it was
+    raised, as a failure whose owner no longer holds it does, and
+    shutdown never drops one. The lifecycle matrix's
+    `drain/grandchild/cross_pool` cell is this case: a pool-placed
+    owner's child drains on the teardown thread after the pool join
+    has ended the owner's worker.
+  - The owner's reclaim of a child waits for the child's posted
+    delivery (`lotus_failure_defer_reclaim`), running it if it was
+    posted to the reclaiming thread; a reclaim the handler itself
+    asks for runs after the handler. A reclaim never waits for a
+    delivery only the waiting thread can run: one reached inside a
+    handler, for a child whose delivery is still held for that
+    thread (an owner replacing a failing sibling), is deferred behind
+    that delivery too, so the field holds the new child at once, the
+    replaced child's failure is still delivered after the running
+    handler returns, and the child is reclaimed right after its own
+    handler. A failure posted from a pool
+    worker's cell holds the child until that cell returns, as a
+    started run does (decision line 19), so the reclaim never
+    releases the child under the rest of the cell (what follows the
+    decision, the closures after a handler, the cell's scratch
+    region).
+  - wasm32 has one thread and one domain: the in-place call is its
+    only delivery, and none of the posting is compiled into its
+    runtime.
 
-  `notes/f40-lifecycle-inventory.md` lists these sites as rows
-  C36–C40. No test asserts the thread a handler runs on.
+  `notes/f40-lifecycle-inventory.md` lists the raising sites as
+  rows C36–C40.
 
-  A fourth site is misrouted, not misplaced. It is a
+  One site is misrouted, not misplaced. It is a
   dissolve-epoch closure that fails under a flow child's
   run-completion reclaim. The reclaim spine
   (`synthesize_reclaim_fns`, `crates/hale-codegen/src/codegen.rs`)
@@ -1775,74 +1811,56 @@ zero_copy binding produces.
   the reclaiming thread. Inventory row C25 records the site;
   inventory Decisions line 4 chooses the route.
 
-  Teardown pumps no owner queue while it joins. A dissolving
-  parent joins a pinned child with a blocking `pthread_join`
-  (`emit_deferred_entry_teardown`,
-  `crates/hale-codegen/src/codegen.rs`) and drains the bus only
-  after the join returns. `lotus_coop_pool_shutdown_all` joins
-  each pool worker with no drain in between. Neither join is a
-  hazard while the handler is called in place. With delivery
-  through the owner's queue, both are the wait cycle that the
-  progress requirement above rules out (inventory rows C18 and
-  R20).
+  The joins make progress. A dissolving parent joins a pinned child
+  through `lotus_pinned_join` (`emit_deferred_entry_teardown`,
+  `crates/hale-codegen/src/codegen.rs`), and
+  `lotus_coop_pool_shutdown_all` joins each pool worker. Each waits
+  for the thread's domain to end, running the deliveries posted to
+  the joining thread meanwhile and nothing else, then `pthread_join`s
+  it (inventory rows C18 and R20).
 
-  **Regression (added with the implementation, F.40 phase 3
-  L5).** `lifecycle_flow
-  failure_delivery_domain::a_childs_failure_runs_on_its_owners_thread`
-  (`crates/hale-codegen/tests/failure_delivery_domain.rs`).
-  The owner records `pthread_self` in its own `run()` and again in
-  its handler; the test asserts the two are equal for:
-  - a pinned child's `violate` after the owner settled;
-  - a pool-placed child's `violate` in `run()`;
-  - a pool subscriber's tick-epoch closure after a handler;
-  - a pinned child failing during the owner's params loop. This
-    case is held and delivered at settle, and is the control;
-  - a pinned child failing during the params loop of an owner
-    placed on a cooperative pool. The construction-time decision
-    (inventory Decisions line 1) fixes which thread the case
-    expects, and the case lands with that decision.
+  **Regressions.** `lifecycle_flow failure_delivery_domain`
+  (`crates/hale-codegen/tests/failure_delivery_domain.rs`) judges the
+  fixtures under `tests/fixtures/failure_delivery/` into one outcome
+  word each, in the trace build (where the delivery's
+  `FailureDelivery` steps must all be on `main`; the sibling cases in
+  both dispatch modes) and, for the first two and the heap-carrying
+  sibling case, under ASan with chunk pooling off, in both dispatch
+  modes:
+  - `fd_pinned_owner_state.hl`: a pinned child fails in a bus
+    handler while its owner, on `main`, reads the state the handler
+    writes in a window with no yield; the handler records its
+    `pthread_self`. Adopted and shipped: `held-in-window on-owner
+    heard-1`. Before, the handler ran on the pinned thread inside
+    the owner's window (`changed-in-window off-owner heard-1`).
+  - `fd_reclaim_under_delivery.hl`: a child on a pool fails in a bus
+    handler, and its owner replaces it while the delivery is in
+    flight; gate files force the order. Adopted and shipped:
+    `on-owner read-before-dissolve dissolved-once-each`. Before, the
+    old child dissolved first and the handler, on the pool's worker,
+    read its freed name (a heap-use-after-free under ASan).
+  - `fd_sibling_replace*.hl`: the owner's handler for one child
+    replaces a sibling whose own failure is posted to the owner and
+    not delivered; each run is under a deadline. The bare case and
+    its control give `handling 0`, `replacing sibling`, `replaced
+    sibling`, `handling 1`, `finished`; before the rule the bare
+    case hung after `replacing sibling`. A child carrying a heap
+    String the late handler reads (`on-owner read-before-dissolve
+    dissolved-once-each`, under ASan too), three siblings with two
+    replaced from one handler (handled in posting order, each old
+    child reclaimed once after its own handler), and the replacement
+    through a method hold the same rule.
 
-  In each of these cases the owner is running, not in teardown,
-  and the case asserts that the restart the handler asks for
-  takes effect.
-
-  A flow child whose dissolve-epoch closure fails under its
-  run-completion reclaim has a case of its own. The case asserts:
-  - the correct owner receives the violation exactly once;
-  - the handler runs on the owner's domain;
-  - the child and the closure's captured payload are live until
-    the handler returns.
-
-  The case asserts no restart. A dissolve-epoch failure has no
-  restart unless a separate decision introduces one.
-
-  Two further cases run under a deadline: a hang fails the test
-  rather than stalling the suite.
-  - a pinned child raises a failure after the owner has entered
-    teardown;
-  - a pool child raises a failure after the owner has entered
-    teardown.
-
-  A handshake forces the order, never a sleep: the child raises
-  only after it observes the owner's teardown. The pinned child
-  sees its mailbox shut down. The pool child sees its pool's
-  shutdown flag, which a classic-pool accept already returns on.
-  Each of the two cases asserts:
-  - the handler ran on the owner's domain;
-  - the handler completed exactly once;
-  - the owner's teardown completed exactly once;
-  - the child and the violation's payload were live until the
-    handler returned.
-
-  **Restart during drain** has a case of its own. It uses the same
-  handshake: a pinned child fails after the owner has entered
-  teardown, and the handler asks for a restart. The case asserts
-  the conversion to cancellation described above:
-  - `birth()` ran once;
-  - the child reached its ordinary end;
-  - the child was torn down exactly once.
-
-  The test runs under ASan with heap-backed child fields.
+  The lifecycle matrix holds the domain of every cell's
+  `FailureDelivery` to the plan's: the cells whose failure is raised
+  on a pinned thread or a pool worker deliver on the owner's domain
+  (`run/root_child/pinned` and `run/root_child/cross_pool` stay in
+  its ASan sample as regressions), and the join-progress fixtures
+  `jp_late_failure_pinned_join.hl` and `jp_late_failure_pool_join.hl`
+  deliver on `main` inside the joins. The decision's other cases,
+  a restart asked for during the owner's teardown and a flow child's
+  dissolve-epoch failure under its run-completion reclaim, have no
+  fixture of their own yet.
 
 ### Lifecycle obligations
 
@@ -1870,8 +1888,8 @@ pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 entry has to go with the fix. Each fixture also runs under the
 lifecycle trace (§ "The lifecycle trace"), held to the plan the
 table's producer (`hale_types::lifecycle::derive`) derives for its
-program, on its line's rules (three of line 19's, whose shapes the
-producer does not derive yet, to a hand-written plan).
+program, on its line's rules (three of line 19's and one of line 8's,
+whose shapes the producer does not derive yet, to a hand-written plan).
 The six started-run retention fixtures use the derived plan, including
 the edge from each run's end to its reclaim's completion. A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
@@ -1902,7 +1920,14 @@ its `KNOWN_OPEN` table.
   arrived, before the owner's `birth()`, and each child waits for
   its decision. The child and the copied violation are retained
   until the handler completes. Shipped for an owner whose params
-  settle on its own domain (`l01_held_failure_settle.hl`). No
+  settle on its own domain (`l01_held_failure_settle.hl`). Once the
+  params have settled, a failure is delivered on the owner's domain
+  (§ "Failure handling", decision L0-1, shipped by L5's fourth part):
+  the runtime records that domain where the owner's params open, and
+  a failure raised elsewhere is posted there and awaited, so the held
+  delivery at the settle and a later posted one run on the same
+  thread. The trace reports a held delivery where its handler runs,
+  at the settle. No
   mechanism carrying this protocol may wait on itself: a held
   failure whose child and owner share a pool's worker
   (`l01_neg_same_pool_held.hl`), and an instantiating thread that
@@ -1911,13 +1936,20 @@ its `KNOWN_OPEN` table.
   both complete today; so does an instantiating thread waiting for
   a pool-placed field's initialization on a worker that is itself
   waiting for that thread's decision, since the worker runs the
-  initialization in place (§ "m27 + m28a", the pool side).
+  initialization in place (§ "m27 + m28a", the pool side); and so
+  does an owner whose handler replaces a sibling with a failure
+  posted to it, since that sibling's reclaim follows its own
+  delivery, after the replacing handler returns, instead of waiting
+  for it (`l08_sibling_replaced_kept.hl`).
   **Pending:** an owner placed on a cooperative pool. Decision L0-1
   names the pool's worker as that owner's domain, and
   `spec/semantics.md` § "on_failure(c, err)" names the thread
   settling the parent; for a root field placed on a pool both are
-  now the worker, where its params open and settle
-  (`l01_pool_owner_settle.hl` pins the delivery, not its thread).
+  now the worker, where its params open and settle, and since L5's
+  fourth part a failure posted to that owner after the settle runs
+  there too. `l01_pool_owner_settle.hl` pins the delivery, not its
+  thread, and the lifecycle plan keeps the line's status until a
+  fixture holds the thread.
 - **Line 2, the tick closures after a posted `run()`.** **Pending:**
   the decisions choose no option. Today the tick and duration
   closures of a locus whose `run()` is posted to a pool run on the
@@ -2023,13 +2055,16 @@ its `KNOWN_OPEN` table.
   closure) is a `ClosureViolation`, and the failing child is kept
   for its owner's supervision: its region stays, the handler reads
   it, and a restart reuses it. There is no `StructuralFailure`.
-  Shipped (`l08_birth_failure_kept.hl`). A pinned locus's
+  Shipped (`l08_birth_failure_kept.hl`). A failing child its owner
+  replaces before hearing its failure is kept too, until its handler
+  has run (`l08_sibling_replaced_kept.hl`, held to a hand-written plan:
+  the producer has no field replacement, inventory row C29). A pinned locus's
   `birth_check` runs on its own thread, after `birth()` and before
   `run()`; a check's failure its owner is still holding is decided
   before `run()` starts, as for every other locus (inventory row
   C38, shipped by L4's birth spine; the lifecycle matrix's pinned
-  birth cells, whose delivery is decision L0-1's in-place one until
-  L5).
+  birth cells, whose delivery is posted to the owner's domain since
+  L5's fourth part).
 - **Line 9, when a violation reaches the owner.** At the failing
   epoch, not at dissolve; held while the owner's params are open
   (line 1). Shipped (`l09_delivery_at_epoch.hl`).
@@ -2276,7 +2311,10 @@ its `KNOWN_OPEN` table.
   reclaim the retired child again: it returns from the reclaim entry,
   ends its run hold, and lets the thread that owns retirement complete
   release. Failure-handler deferral happens before claiming, so its
-  later callback can enter the spine. A constructor resets the claim
+  later callback can enter the spine. That deferral also covers a
+  reclaim reached inside a handler for a child whose own failure is
+  still posted to the same thread, whose wait only that thread could
+  end (§ "Failure handling", decision L0-1). A constructor resets the claim
   for each new instance, including recycled storage. The handler
   retention regression exercises termination and flow completion under
   ASan on classic and async pools, in both dispatch modes.
@@ -2347,16 +2385,17 @@ its `KNOWN_OPEN` table.
   failure cell whose child awaits it. The joins do not acquire a
   general queue drain beside `pthread_join`: whatever the joining
   thread runs while it waits has its own reentrancy and admission
-  rules. Today a late failure during a pinned join or during the
-  pool join completes (`jp_late_failure_pinned_join.hl`,
-  `jp_late_failure_pool_join.hl`), but only because its handler
-  runs in place on the child's thread, outside decision L0-1 (the
-  trace build shows the delivery completing on the child's pinned
-  thread or pool worker, not on `main`, inventory row C36); once
-  delivery follows L0-1, the joins, which pump no queue (inventory
-  rows C18, R20), are the wait cycle this rule rules out. A late
-  failure whose destination queue is full has no regression yet
-  (L5).
+  rules. Shipped (F.40 phase 3, L5's fourth part): the pinned join
+  and the pool join wait for the joined thread's domain to end,
+  running the failures posted to the joining thread meanwhile and
+  nothing else (§ "Failure handling", decision L0-1), so a late
+  failure during either join is delivered on `main` and the join
+  then returns (`jp_late_failure_pinned_join.hl`,
+  `jp_late_failure_pool_join.hl`; inventory rows C18, R20, C36). A
+  posted delivery never waits on a full queue: it is a node the
+  owner's domain finds wherever it services its queue, and the wake
+  cell beside it is dropped when the queue is full, since a full
+  queue has a consumer that is not parked.
 - **Bubble climbs the tree.** `bubble(err)` passes the failure to
   the grandparent's `on_failure`, and on up until a handler absorbs
   it; only past the root is it the report and the non-zero exit

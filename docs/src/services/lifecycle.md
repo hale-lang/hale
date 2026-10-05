@@ -523,7 +523,8 @@ so nothing tears it down twice. The rules that order gives you:
   performs the replacement, storage release waits until that handler
   returns, so another queued handler can answer the old run. Cleanup
   in `dissolve()`, including closing handles, still happens before the
-  replacement's birth.
+  replacement's birth, except for a failed child its parent has not
+  heard yet: that one is torn down right after its handler runs.
 - **Ctrl-C raises a flag.** The signal calls none of your methods;
   the `run()`s that watch `self.draining` return, and the ordinary
   teardown follows.

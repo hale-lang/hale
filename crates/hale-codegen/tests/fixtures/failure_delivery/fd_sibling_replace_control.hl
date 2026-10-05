@@ -1,0 +1,49 @@
+// The control of `fd_sibling_replace.hl`: the same program without the
+// replacement (`self.b = Kid { tag: 2 }`). The two failures are
+// delivered one after the other on the owner's thread.
+// Expected outcome: `handling 0`, `replacing sibling`, `replaced
+// sibling`, `handling 1`, `finished`, exit 0, before the rule and
+// after it.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "fd.sibling.control.go"; }
+
+fn gate() -> String { return "/tmp/hale-fd-sibling-control-" + to_string(std::process::pid()); }
+
+locus Kid {
+    params { tag: Int = 0; }
+    closure fuse { captures: tag; epoch inline; }
+    bus { subscribe Gos as on_go; }
+    fn on_go(g: Go) {
+        if g.k == self.tag {
+            if self.tag == 1 { std::io::fs::write_file(gate(), "go") or discard; }
+            violate fuse;
+        }
+    }
+}
+
+main locus App {
+    params { a: Kid = Kid { tag: 0 }; b: Kid = Kid { tag: 1 }; heard: Int = 0; }
+    placement { a: cooperative(pool = left); b: cooperative(pool = right); }
+    bus { publish Gos; }
+    fn trigger() { Gos <- Go { k: 1 }; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("handling ", c.tag);
+        if c.tag == 0 {
+            self.trigger();
+            while !std::io::fs::file_exists(gate()) { std::time::sleep(1ms); }
+            std::time::sleep(250ms);
+            println("replacing sibling");
+            println("replaced sibling");
+        }
+        self.heard = self.heard + 1;
+    }
+    run() {
+        Gos <- Go { k: 0 };
+        while self.heard < 2 { std::time::sleep(1ms); }
+        println("finished");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }

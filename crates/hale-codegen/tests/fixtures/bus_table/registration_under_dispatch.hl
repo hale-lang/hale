@@ -1,0 +1,91 @@
+// The registration table grows while another thread walks it (F.40
+// phase 3, L5 4 of 4; inventory R50). `a`, a pinned anchor, publishes
+// `T`, `U`, `V` and `W` in turn for 300 ms from its own thread, and
+// every publish walks the table (or the topic's static bucket).
+// Meanwhile `b`, a second pinned anchor, initializes its subtree on its
+// own thread: forty `Kid`s, one subscription to each topic apiece, so
+// the table grows from 16 slots to 256 and each bucket to 64 while `a`
+// dispatches.
+// Expected outcome: `ev published`, then `ev done`, exit 0, and nothing
+// an AddressSanitizer build reports.
+
+type P { n: Int; }
+topic T { payload: P; }
+topic U { payload: P; }
+topic V { payload: P; }
+topic W { payload: P; }
+
+locus Pub {
+    params { sent: Int = 0; }
+    bus {
+        publish T;
+        publish U;
+        publish V;
+        publish W;
+    }
+    run() {
+        let until = std::time::monotonic_ns() + 300000000;
+        while std::time::monotonic_ns() < until {
+            let k = self.sent % 4;
+            if k == 0 {
+                T <- P { n: 1 };
+            } else if k == 1 {
+                U <- P { n: 1 };
+            } else if k == 2 {
+                V <- P { n: 1 };
+            } else {
+                W <- P { n: 1 };
+            }
+            self.sent = self.sent + 1;
+        }
+        println("ev published");
+    }
+}
+
+locus Kid {
+    params { got: Int = 0; }
+    bus {
+        subscribe T as on_t;
+        subscribe U as on_u;
+        subscribe V as on_v;
+        subscribe W as on_w;
+    }
+    fn on_t(p: P) { self.got = self.got + p.n; }
+    fn on_u(p: P) { self.got = self.got + p.n; }
+    fn on_v(p: P) { self.got = self.got + p.n; }
+    fn on_w(p: P) { self.got = self.got + p.n; }
+}
+
+locus Mid {
+    params {
+        k1: Kid = Kid { };
+        k2: Kid = Kid { };
+        k3: Kid = Kid { };
+        k4: Kid = Kid { };
+        k5: Kid = Kid { };
+    }
+}
+
+locus Anchor {
+    params {
+        m1: Mid = Mid { };
+        m2: Mid = Mid { };
+        m3: Mid = Mid { };
+        m4: Mid = Mid { };
+        m5: Mid = Mid { };
+        m6: Mid = Mid { };
+        m7: Mid = Mid { };
+        m8: Mid = Mid { };
+    }
+}
+
+main locus App {
+    params { a: Pub = Pub { }; b: Anchor = Anchor { }; }
+    placement { a: pinned; b: pinned; }
+    run() {
+        std::time::sleep(500ms);
+        println("ev done");
+    }
+}
+
+fn main() { App { }; }

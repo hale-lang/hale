@@ -1923,7 +1923,23 @@ typedef struct lotus_held_failure {
     int64_t phase, pre;
     int state;
     int waiters;               /* threads blocked in lotus_failure_await */
+    /* A posted delivery (decision L0-1, below): the owner's domain it
+     * waits for, NULL for a failure held while its parent is open; and
+     * the thread running its handler, once claimed. */
+    struct lotus_domain *posted;
+    pthread_t deliverer;
 } lotus_held_failure_t;
+
+/* Decision L0-1's posted delivery, defined with the pools and mailboxes
+ * further down (`lotus_domain_t`). */
+typedef struct lotus_domain lotus_domain_t;
+static void lotus_failure_owner_note_locked(void *owner);
+static void lotus_failure_service_here(void);
+static void lotus_failure_service_at_yield(void);
+static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *node);
+static void lotus_failure_await_service_locked(void);
+static void lotus_failure_domain_enter(void);
+static void lotus_failure_owner_forget(void *owner);
 
 typedef struct {
     void *parent;
@@ -1962,6 +1978,9 @@ void lotus_params_open(void *parent) {
     g_params_open[g_params_open_len++] =
         (lotus_params_open_t){ parent, pthread_self() };
     __atomic_add_fetch(&g_params_open_count, 1, __ATOMIC_RELEASE);
+    /* The thread that opens the parent's params is its domain: it
+     * settles them, delivers what was held, and runs what is posted. */
+    lotus_failure_owner_note_locked(parent);
     pthread_mutex_unlock(&g_params_open_lock);
 }
 
@@ -2001,9 +2020,9 @@ int64_t lotus_failure_hold(void *parent, void *fn, void *child,
     g_held_tail = node;
     __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_params_open_lock);
-#ifdef LOTUS_LIFECYCLE_TRACE
-    lotus_lc_ev("ConstructionDelivery", "Entered", child, "Settle", NULL);
-#endif
+    /* The trace reports the delivery where its handler runs, at the
+     * owner's settle on its domain (decision L0-1), not here on the
+     * raising thread; the compiler reports the in-place call alone. */
     return 1;
 }
 
@@ -2027,13 +2046,26 @@ static void lotus_held_unlink(lotus_held_failure_t *node) {
 /* A child whose failure is held must outlive its handler: the handler
  * reads it. `__reclaim_<L>` asks here first: 1 = a failure of this
  * child is outstanding, and the reclaim now runs right after its
- * handler; 0 = reclaim now. */
+ * handler; 0 = reclaim now.
+ *
+ * A posted delivery (decision L0-1) is waited for instead, as a started
+ * run is (the run hold's twin): the owner's domain may be this thread,
+ * which runs it while it waits, and the reclaim then proceeds here. A
+ * reclaim never waits for a delivery only the waiting thread can run, so
+ * it is deferred behind the delivery when reached from that delivery's
+ * own handler, or from another handler on the thread the delivery is
+ * still held for (an owner replacing a sibling whose failure is posted
+ * to it): that delivery runs after the running handler returns, and the
+ * reclaim right after its handler (`lotus_failure_reclaim_wait_locked`). */
 int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
     pthread_mutex_lock(&g_params_open_lock);
     lotus_held_failure_t *node = lotus_held_latest_for(child);
-    if (node) node->reclaim = (void (*)(void *))reclaim;
+    int deferred = node != NULL;
+    if (node && node->posted)
+        deferred = lotus_failure_reclaim_wait_locked(node);
+    if (deferred) node->reclaim = (void (*)(void *))reclaim;
     pthread_mutex_unlock(&g_params_open_lock);
-    return node ? 1 : 0;
+    return deferred;
 }
 
 /* Defined with the pool start (C50): a pool-placed root's init the
@@ -2087,6 +2119,10 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
             pthread_mutex_lock(&g_params_open_lock);
             continue;
         }
+        /* So may a delivery posted to this thread's domain (L0-1): run
+         * it, unlocked, and wait on; a post broadcasts. */
+        lotus_failure_await_service_locked();
+        if (node->state == LOTUS_DELIVERED) break;
         pthread_cond_wait(&g_held_delivered, &g_params_open_lock);
     }
     if (--node->waiters == 0) free(node);
@@ -2113,7 +2149,7 @@ void lotus_params_settle(void *parent) {
     for (;;) {
         pthread_mutex_lock(&g_params_open_lock);
         lotus_held_failure_t *node = g_held_head;
-        while (node && !(node->parent == parent && node->state == LOTUS_HELD))
+        while (node && !(node->parent == parent && node->state == LOTUS_HELD && !node->posted))
             node = node->next;
         if (!node) {
             pthread_mutex_unlock(&g_params_open_lock);
@@ -2122,6 +2158,10 @@ void lotus_params_settle(void *parent) {
         node->state = LOTUS_DELIVERING;
         pthread_mutex_unlock(&g_params_open_lock);
 
+#ifdef LOTUS_LIFECYCLE_TRACE
+        lotus_lc_ev("FailureDelivery", "Entered", node->child, "Settle", NULL);
+        lotus_lc_ev("ConstructionDelivery", "Entered", node->child, "Settle", NULL);
+#endif
         node->fn(node->parent, node->child, node->err);
 #ifdef LOTUS_LIFECYCLE_TRACE
         lotus_lc_ev("FailureDelivery", "Completed", node->child, "Settle", NULL);
@@ -7275,6 +7315,11 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->self_ptr     = self_ptr;
     slot->payload_size = payload_size;
     slot->payload_heap = heap_buf;
+    /* A queued cell has no per-delivery region until materialize makes
+     * one, and drop_old's tombstone (lotus_bus_shed_check) destroys a
+     * queued cell's region before that: NULL, not the slot's last
+     * occupant's (or realloc's) bytes. */
+    slot->payload_region = NULL;
     slot->deserialize  = g_bus_pending_wire_deser;
     slot->rec_pub_id   = g_bus_pending_rec_pub;
     slot->run_ticket   = NULL;
@@ -7672,6 +7717,9 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
      * the owner's next drain point. */
     if (!pthread_equal(pthread_self(), q->owner)) return;
     if (g_bus_drain_active) return;
+    /* Decision L0-1: failures posted to main's domain run here, on the
+     * owner thread, before the queue's cells. One load when none is. */
+    lotus_failure_service_here();
     /* GH #233 steps 3-4: dispatch pending transport-loss events
      * first — we're on the owner thread here, the only place
      * failure handlers may run. Defined with the transport
@@ -8243,6 +8291,9 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     lotus_bus_cell_t cell;
     int replaying = lotus_replay_note_consume && lotus_replay_active;
     for (;;) {
+        /* Decision L0-1: failures posted to this thread's domain, between
+         * cells (a wake cell reaches a parked consumer). */
+        lotus_failure_service_here();
         /* Ring first (lock-free), then the consumer-local overflow list. */
         if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
             lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
@@ -8382,6 +8433,9 @@ lotus_mailbox_t *lotus_mailbox_get_current(void) {
 static void lotus_pool_init_yield(void);
 
 void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
+    /* Decision L0-1: a yield runs the failures posted to this thread's
+     * domain where it would run its queue's cells. */
+    lotus_failure_service_at_yield();
     if (!mb) {
         lotus_pool_init_yield();
         return;
@@ -8536,8 +8590,11 @@ static void lotus_pinned_start_wait(lotus_pinned_start_t *s, int state) {
     pthread_mutex_unlock(&s->lock);
 }
 
-/* The pinned thread: its params are initialized. */
+/* The pinned thread: its params are initialized. It is a domain from
+ * here on, before its instantiating thread can reach its join, so the
+ * join can wait for its end (decision L0-1's posted delivery). */
 void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
+    lotus_failure_domain_enter();
     lotus_pinned_start_set(s, 1);
 }
 
@@ -9033,7 +9090,12 @@ static void lotus_run_cancel(void *child, int wait) {
 
 /* Logical teardown cancels queued runs even if a handler must postpone
  * waiting for started runs. The later physical release waits again. */
-void lotus_run_cancel_only(void *child) { lotus_run_cancel(child, 0); }
+/* The Reclaim's logical step, on every reclaim path: also the instance's
+ * last moment as an owner, so its recorded domain goes (decision L0-1). */
+void lotus_run_cancel_only(void *child) {
+    lotus_run_cancel(child, 0);
+    lotus_failure_owner_forget(child);
+}
 void lotus_run_cancel_queued(void *child) { lotus_run_cancel(child, 1); }
 
 typedef struct lotus_coop_pool {
@@ -9077,6 +9139,10 @@ typedef struct lotus_coop_pool {
      * for (`lotus_pool_start_job_t *`, C50), NULL when none: what the
      * worker runs if it is itself waiting on that thread. */
     _Atomic(void *)   start_pending;
+    /* The worker's execution domain (decision L0-1's posted delivery,
+     * `lotus_domain_t`), made by start_all before the worker exists, so
+     * a join can wait for its end; NULL until then. */
+    void             *domain;
     /* F.35 Slice 1: async_io state. Dormant when `async_io_enabled`
      * is 0 — pool runs the classic blocking-syscall worker loop.
      * When non-zero, `epoll_fd` is open and the worker uses the
@@ -9248,6 +9314,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->overflow_tail = NULL;
     p->worker_started = 0;
     atomic_store_explicit(&p->start_pending, NULL, memory_order_relaxed);
+    p->domain = NULL;
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->not_empty, NULL);
     pthread_cond_init(&p->not_full, NULL);
@@ -9330,6 +9397,9 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     lotus_run_ticket_t *outer = t_run_running;
     t_run_running = hold;
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    /* The run's hold, or the one a failure posted from the cell took
+     * (`lotus_failure_hold_cell`). */
+    hold = t_run_running;
     t_run_running = outer;
     p->running_label = NULL;
     lotus_run_hold_release(hold);
@@ -9952,6 +10022,10 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
         g_run_hold_waiters--;
         pthread_mutex_unlock(&g_run_tickets_lock);
 #endif
+        /* A hold may be a posted failure's, whose cell waits for this
+         * thread to run its delivery (decision L0-1): run it, inside a
+         * bus handler too, where the queue drain below does nothing. */
+        lotus_failure_service_here();
         lotus_bus_queue_drain(g_bus_queue_for_remote);
         lotus_mailbox_drain_pending(lotus_mailbox_get_current());
     }
@@ -9964,6 +10038,569 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
         }
     }
 }
+
+/* ---- Decision L0-1: a failure is delivered on its owner's domain ------
+ *
+ * (F.40 phase 3, L5 4 of 4; spec/runtime.md § Failure handling.) A
+ * child's failure runs its owner's `on_failure` on the owner's execution
+ * domain, never on the failing child's thread. Every thread that runs
+ * locus code is a domain (`lotus_domain_t`, one per thread): main, a
+ * cooperative pool's worker (made by start_all before the worker
+ * exists), a pinned locus's own thread (from its readiness report on).
+ * An owner's domain is the thread that opens its params, which settles
+ * them and delivers what was held there (decision line 1);
+ * `lotus_params_open` records it, once the program has a second thread
+ * (`g_bus_has_pinned`), so a single-threaded program records nothing and
+ * pays nothing.
+ *
+ * On the owner's domain the delivery stays the compiler's in-place call
+ * (`lotus_failure_post` answers 0). Off it, the failing thread posts the
+ * delivery, a held-failure node carrying the copied violation and the
+ * child, retained until the handler returns (line 19's rule for a held
+ * failure); wakes the domain; and waits for the handler's decision,
+ * servicing its own queue as a yield on its thread would, so an owner
+ * that is itself waiting on the child (a join, a run hold, a readiness
+ * wait) is served and neither side waits on the other. The domain runs
+ * a posted delivery wherever it services its queue: main's queue drain,
+ * a pinned thread's mailbox drains and a pool worker between cells (a
+ * wake cell on the queue reaches a parked consumer), a yield (sleep's
+ * slices, `yield`), every wait that services its queue, and the two
+ * joins, which run posted deliveries and nothing else (join progress).
+ * A handler is never started inside another on the same thread.
+ *
+ * A domain that has ended consumes nothing more: its thread exited (the
+ * key's destructor), or its pool's worker left its loop. A delivery
+ * still posted to it then runs where it was raised, as a failure whose
+ * owner no longer holds it does (`lotus_failure_hold` answering 0), and
+ * shutdown never drops one. The owner's reclaim of a child waits for
+ * the child's posted delivery (`lotus_failure_defer_reclaim`), the run
+ * hold's twin, unless only the waiting thread could run it (a handler
+ * replacing a sibling whose failure is posted to it): the reclaim is
+ * then deferred behind that delivery.
+ *
+ * Every field below is under `g_params_open_lock`. wasm32 has one thread
+ * and no domain: the in-place call is the only delivery there, and none
+ * of this is compiled (no timed wait, no thread key in its shim). */
+#ifndef __wasm__
+
+enum { LOTUS_DOMAIN_MAIN = 0, LOTUS_DOMAIN_POOL = 1, LOTUS_DOMAIN_THREAD = 2 };
+
+struct lotus_domain {
+    struct lotus_domain *next;          /* g_domains */
+    pthread_t            thread;
+    int                  kind;
+    lotus_coop_pool_t   *pool;          /* a pool's worker: its queue */
+    lotus_mailbox_t     *mailbox;       /* a locus's thread: its mailbox, if any */
+    int                  alive;         /* the thread still consumes */
+    int                  pending;       /* posted deliveries not yet claimed */
+    int                  refs;          /* posters still naming it */
+};
+
+static lotus_domain_t *g_domains = NULL;
+static __thread lotus_domain_t *t_domain = NULL;
+static __thread int t_failure_servicing = 0;
+static int64_t g_failure_posted_count = 0;      /* every domain's pending */
+static pthread_t g_main_thread;
+static pthread_key_t g_domain_key;
+static pthread_once_t g_domain_key_once = PTHREAD_ONCE_INIT;
+
+/* The process's first thread, the program's main. */
+__attribute__((constructor))
+static void lotus_domain_note_main(void) {
+    g_main_thread = pthread_self();
+}
+
+static void lotus_domain_end_locked(lotus_domain_t *d) {
+    d->alive = 0;
+    pthread_cond_broadcast(&g_held_delivered);
+}
+
+/* The key's destructor: a locus's thread is ending. */
+static void lotus_domain_thread_exit(void *arg) {
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_end_locked((lotus_domain_t *)arg);
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+static void lotus_domain_key_create(void) {
+    if (pthread_key_create(&g_domain_key, lotus_domain_thread_exit) != 0) {
+        fprintf(stderr, "lotus: creating the domain key failed\n");
+        abort();
+    }
+}
+
+static lotus_domain_t *lotus_domain_new_locked(int kind, pthread_t thread) {
+    lotus_domain_t *d = calloc(1, sizeof *d);
+    if (!d) lotus_held_oom("recording a domain");
+    d->thread = thread;
+    d->kind = kind;
+    d->alive = 1;
+    d->next = g_domains;
+    g_domains = d;
+    return d;
+}
+
+/* This thread's domain, made on first use. */
+static lotus_domain_t *lotus_domain_here_locked(void) {
+    if (t_domain) return t_domain;
+    if (g_current_pool_tls && g_current_pool_tls->domain) {
+        t_domain = (lotus_domain_t *)g_current_pool_tls->domain;
+        return t_domain;
+    }
+    pthread_t self = pthread_self();
+    int is_main = pthread_equal(self, g_main_thread);
+    lotus_domain_t *d = lotus_domain_new_locked(
+        is_main ? LOTUS_DOMAIN_MAIN : LOTUS_DOMAIN_THREAD, self);
+    if (!is_main) {
+        d->mailbox = g_current_pinned_mailbox;
+        pthread_once(&g_domain_key_once, lotus_domain_key_create);
+        pthread_setspecific(g_domain_key, d);
+    }
+    t_domain = d;
+    return d;
+}
+
+static void lotus_failure_domain_enter(void) {
+    pthread_mutex_lock(&g_params_open_lock);
+    (void)lotus_domain_here_locked();
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* ---- owner → domain ----------------------------------------------- */
+
+typedef struct lotus_owner_domain {
+    void                      *owner;
+    lotus_domain_t            *domain;
+    struct lotus_owner_domain *next;
+} lotus_owner_domain_t;
+
+#define LOTUS_OWNER_BUCKETS 256
+static lotus_owner_domain_t *g_owner_domains[LOTUS_OWNER_BUCKETS];
+static int64_t g_owner_domain_count = 0;
+
+static lotus_owner_domain_t **lotus_owner_slot_locked(const void *owner) {
+    uint64_t h = ((uint64_t)(uintptr_t)owner >> 4) * 0x9E3779B97F4A7C15ull;
+    lotus_owner_domain_t **pp = &g_owner_domains[(h >> 56) & (LOTUS_OWNER_BUCKETS - 1)];
+    while (*pp && (*pp)->owner != owner) pp = &(*pp)->next;
+    return pp;
+}
+
+static void lotus_failure_owner_note_locked(void *owner) {
+    if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)) return;
+    lotus_domain_t *d = lotus_domain_here_locked();
+    lotus_owner_domain_t **pp = lotus_owner_slot_locked(owner);
+    if (*pp) {
+        (*pp)->domain = d;            /* storage reused by a new owner */
+        return;
+    }
+    lotus_owner_domain_t *e = malloc(sizeof *e);
+    if (!e) lotus_held_oom("recording an owner's domain");
+    *e = (lotus_owner_domain_t){ owner, d, NULL };
+    *pp = e;
+    __atomic_add_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+}
+
+/* An owner's reclaim: it receives no failure after this. */
+static void lotus_failure_owner_forget(void *owner) {
+    if (__atomic_load_n(&g_owner_domain_count, __ATOMIC_ACQUIRE) == 0) return;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_owner_domain_t **pp = lotus_owner_slot_locked(owner);
+    if (*pp) {
+        lotus_owner_domain_t *e = *pp;
+        *pp = e->next;
+        free(e);
+        __atomic_sub_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* A domain about to be freed: no owner names it any more. */
+static void lotus_owner_purge_locked(const lotus_domain_t *d) {
+    for (size_t b = 0; b < LOTUS_OWNER_BUCKETS; b++) {
+        lotus_owner_domain_t **pp = &g_owner_domains[b];
+        while (*pp) {
+            if ((*pp)->domain != d) {
+                pp = &(*pp)->next;
+                continue;
+            }
+            lotus_owner_domain_t *e = *pp;
+            *pp = e->next;
+            free(e);
+            __atomic_sub_fetch(&g_owner_domain_count, 1, __ATOMIC_RELEASE);
+        }
+    }
+}
+
+/* ---- delivery ------------------------------------------------------- */
+
+/* One slice of a wait on `g_held_delivered`, the lock held: up to 1 ms,
+ * or until a post, a delivery or a domain's end broadcasts. */
+static void lotus_held_wait_slice_locked(void) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += 1000000;
+    if (until.tv_nsec >= 1000000000L) {
+        until.tv_sec++;
+        until.tv_nsec -= 1000000000L;
+    }
+    pthread_cond_timedwait(&g_held_delivered, &g_params_open_lock, &until);
+}
+
+/* Claim a posted delivery for this thread, the lock held. */
+static void lotus_failure_claim_locked(lotus_held_failure_t *n) {
+    n->state = LOTUS_DELIVERING;
+    n->deliverer = pthread_self();
+    n->posted->pending--;
+    __atomic_sub_fetch(&g_failure_posted_count, 1, __ATOMIC_RELEASE);
+}
+
+/* Run a claimed delivery's handler here, unlocked; then it is delivered
+ * and its poster resumes. A reclaim its own handler asked for runs after
+ * the handler, once every other waiter has resumed (they read the node,
+ * the poster the child). `self_waiting`: this thread is one of the
+ * waiters (it ran a delivery whose domain had ended), and keeps its
+ * reference. */
+static void lotus_failure_deliver_posted(lotus_held_failure_t *n, int self_waiting) {
+#ifdef LOTUS_LIFECYCLE_TRACE
+    lotus_lc_ev("FailureDelivery", "Entered", n->child, "-", NULL);
+#endif
+    n->fn(n->parent, n->child, n->err);
+#ifdef LOTUS_LIFECYCLE_TRACE
+    lotus_lc_ev("FailureDelivery", "Completed", n->child, "-", NULL);
+#endif
+    pthread_mutex_lock(&g_params_open_lock);
+    void *err = n->err;
+    void *child = n->child;
+    void (*reclaim)(void *) = n->reclaim;
+    n->err = NULL;
+    n->state = LOTUS_DELIVERED;
+    lotus_held_unlink(n);
+    __atomic_sub_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&g_held_delivered);
+    if (reclaim) {
+        if (!self_waiting) n->waiters++;
+        while (n->waiters > 1) lotus_held_wait_slice_locked();
+        if (!self_waiting) free(n);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+    free(err);
+    if (reclaim) reclaim(child);
+}
+
+static void lotus_failure_service_here(void) {
+    if (__atomic_load_n(&g_failure_posted_count, __ATOMIC_ACQUIRE) == 0) return;
+    lotus_domain_t *d = t_domain;
+    if (!d || t_failure_servicing) return;
+    t_failure_servicing = 1;
+    for (;;) {
+        pthread_mutex_lock(&g_params_open_lock);
+        lotus_held_failure_t *n = g_held_head;
+        while (n && !(n->posted == d && n->state == LOTUS_HELD)) n = n->next;
+        if (!n) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            break;
+        }
+        lotus_failure_claim_locked(n);
+        pthread_mutex_unlock(&g_params_open_lock);
+        lotus_failure_deliver_posted(n, 0);
+    }
+    t_failure_servicing = 0;
+}
+
+/* A yield: where it runs its queue's cells. Not on a pool's worker
+ * outside a root's init (its cells are atomic, and a yield there drains
+ * nothing), nor inside a handler of main's queue (whose drain is not
+ * re-entered). */
+static void lotus_failure_service_at_yield(void) {
+    if (g_current_pool_tls && !g_pool_init_on) return;
+    if (g_bus_drain_active) return;
+    lotus_failure_service_here();
+}
+
+/* A wait elsewhere in the failure protocol, the lock held: a delivery
+ * posted to this thread's domain runs, unlocked. */
+static void lotus_failure_await_service_locked(void) {
+    lotus_domain_t *d = t_domain;
+    if (!d || d->pending == 0 || t_failure_servicing) return;
+    pthread_mutex_unlock(&g_params_open_lock);
+    lotus_failure_service_here();
+    pthread_mutex_lock(&g_params_open_lock);
+}
+
+/* A wake cell's handler: run what is posted to this domain. */
+static void lotus_failure_service_cell(void *self_ptr, void *payload) {
+    (void)self_ptr;
+    (void)payload;
+    lotus_failure_service_here();
+}
+
+/* Wake a domain that may be parked on its queue, without blocking: a
+ * full queue means a consumer that is not parked, which services between
+ * cells. Main is never parked on its queue; it, and every join and wait,
+ * is woken by the post's broadcast. */
+static void lotus_domain_wake(lotus_domain_t *d) {
+    lotus_bus_cell_t cell;
+    memset(&cell, 0, offsetof(lotus_bus_cell_t, payload_inline));
+    cell.handler = (void *)lotus_failure_service_cell;
+    if (d->kind == LOTUS_DOMAIN_POOL && d->pool) {
+        if (lotus_mpsc_ring_try_enqueue(&d->pool->ring, &cell))
+            lotus_coop_pool_wake_consumer(d->pool);
+    } else if (d->kind == LOTUS_DOMAIN_THREAD && d->mailbox) {
+        lotus_mailbox_t *mb = d->mailbox;
+        if (lotus_mpsc_ring_try_enqueue(&mb->ring, &cell)) {
+            atomic_thread_fence(memory_order_seq_cst);
+            if (atomic_load_explicit(&mb->parked, memory_order_seq_cst)) {
+                pthread_mutex_lock(&mb->lock);
+                pthread_cond_signal(&mb->not_empty);
+                pthread_mutex_unlock(&mb->lock);
+            }
+        }
+    }
+}
+
+/* Wait, the lock held, until the posted delivery `n` has been
+ * delivered, servicing this thread as a yield on it would: an async
+ * pool's coroutine parks, so its worker runs its other cells; elsewhere
+ * 1 ms slices, between which main's queue and this thread's mailbox
+ * drain (no-ops off their threads). A delivery whose domain has ended is
+ * run here. */
+static void lotus_failure_wait_locked(lotus_held_failure_t *n) {
+    while (n->state != LOTUS_DELIVERED) {
+        if (n->state == LOTUS_HELD && !n->posted->alive) {
+            lotus_failure_claim_locked(n);
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_failure_deliver_posted(n, 1);
+            pthread_mutex_lock(&g_params_open_lock);
+            continue;
+        }
+        if (lotus_pool_start_pending_here()) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_pool_start_run_pending();
+            pthread_mutex_lock(&g_params_open_lock);
+            continue;
+        }
+        lotus_domain_t *here = t_domain;
+        if (here && here->pending > 0 && !t_failure_servicing) {
+            lotus_failure_await_service_locked();
+            continue;
+        }
+        pthread_mutex_unlock(&g_params_open_lock);
+        if (!lotus_time_sleep_park_try(1000000)) {
+            pthread_mutex_lock(&g_params_open_lock);
+            if (n->state != LOTUS_DELIVERED) lotus_held_wait_slice_locked();
+            pthread_mutex_unlock(&g_params_open_lock);
+            lotus_bus_queue_drain(g_bus_queue_for_remote);
+            lotus_mailbox_drain_pending(lotus_mailbox_get_current());
+        }
+        pthread_mutex_lock(&g_params_open_lock);
+    }
+}
+
+/* `lotus_failure_defer_reclaim`'s wait, the lock held: 0 once the
+ * posted delivery has been delivered and its poster has resumed; 1 when
+ * the reclaim is deferred behind it instead. A reclaim never waits for a
+ * delivery only the waiting thread can run: the caller is that
+ * delivery's own handler, or it is inside another handler (handlers do
+ * not nest) and the delivery is still held for this thread's domain, so
+ * it runs when the service loop reaches it, after the running handler
+ * returns. The reclaim then runs right after it, as for its own handler.
+ * Every other reclaim waits: for a delivery another thread will run, or,
+ * outside a handler, servicing its own domain meanwhile. */
+static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
+    if (n->state == LOTUS_DELIVERING && pthread_equal(n->deliverer, pthread_self()))
+        return 1;
+    if (t_failure_servicing && n->state == LOTUS_HELD && n->posted == t_domain)
+        return 1;
+    n->waiters++;
+    lotus_failure_wait_locked(n);
+    while (n->waiters > 1) lotus_held_wait_slice_locked();
+    if (--n->waiters == 0) free(n);
+    return 0;
+}
+
+/* The delivery's hold on its child, the run hold's twin (decision line
+ * 19): a failure posted from a pool worker's cell holds the child until
+ * that cell returns, so the owner's reclaim, which waits for the child's
+ * holds (`lotus_run_hold_wait`), never releases the child under the rest
+ * of the cell: what follows the handler's decision, the tick closures
+ * after a handler (C40), the cell's scratch region. A run's cell holds
+ * its child already. Taken linked and held under one lock, so no cancel
+ * sees it unheld; released where the cell's run hold would be (the
+ * dispatch, or the coroutine's release). A pinned thread needs none:
+ * its owner reclaims it after joining the thread. */
+static void lotus_failure_hold_cell(void *child) {
+    if (!g_current_pool_tls || lotus_run_hold_own()) return;
+    lotus_run_ticket_t *t = (lotus_run_ticket_t *)malloc(sizeof *t);
+    if (!t) lotus_held_oom("holding a posted failure's child");
+    *t = (lotus_run_ticket_t){ child, 0, 1, (void *)g_current_pool_tls, NULL, NULL };
+    pthread_mutex_lock(&g_run_tickets_lock);
+    size_t b = lotus_run_ticket_bucket(child);
+    t->next = g_run_tickets[b];
+    if (t->next) t->next->prev = t;
+    g_run_tickets[b] = t;
+    __atomic_add_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+#if LOTUS_HAVE_ASYNC_IO
+    if (g_current_coro_tls) {
+        g_current_coro_tls->run_ticket = t;
+        return;
+    }
+#endif
+    t_run_running = t;
+}
+
+/* The compiled delivery's question, after `lotus_failure_hold` answered
+ * 0 (or for a failure that is never held): 0 = call the handler in
+ * place, this thread being the owner's domain (or the owner having none:
+ * a single-threaded program, a domain that has ended); 1 = the delivery
+ * was posted to the owner's domain and its handler has returned. */
+int64_t lotus_failure_post(void *parent, void *fn, void *child,
+                           const void *err, int64_t err_size) {
+    if (!parent || __atomic_load_n(&g_owner_domain_count, __ATOMIC_ACQUIRE) == 0)
+        return 0;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_owner_domain_t *e = *lotus_owner_slot_locked(parent);
+    lotus_domain_t *d = e ? e->domain : NULL;
+    if (!d || !d->alive || d == lotus_domain_here_locked()) {
+        pthread_mutex_unlock(&g_params_open_lock);
+        return 0;
+    }
+    /* Lock order: `g_params_open_lock`, then `g_run_tickets_lock`. */
+    lotus_failure_hold_cell(child);
+    lotus_held_failure_t *n = calloc(1, sizeof *n);
+    void *copy = malloc(err_size > 0 ? (size_t)err_size : 1);
+    if (!n || !copy) lotus_held_oom("posting a failure");
+    if (err_size > 0) memcpy(copy, err, (size_t)err_size);
+    n->parent = parent;
+    n->opener = d->thread;
+    n->fn = (lotus_failure_fn)fn;
+    n->child = child;
+    n->err = copy;
+    n->state = LOTUS_HELD;
+    n->posted = d;
+    n->waiters = 1;                     /* this thread, until it resumes */
+    if (g_held_tail) g_held_tail->next = n; else g_held_head = n;
+    g_held_tail = n;
+    __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
+    d->pending++;
+    d->refs++;
+    __atomic_add_fetch(&g_failure_posted_count, 1, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&g_held_delivered);
+    pthread_mutex_unlock(&g_params_open_lock);
+    lotus_domain_wake(d);
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_failure_wait_locked(n);
+    d->refs--;
+    pthread_cond_broadcast(&g_held_delivered);
+    if (--n->waiters == 0) free(n);
+    pthread_mutex_unlock(&g_params_open_lock);
+    return 1;
+}
+
+/* A join's wait for a domain's end (join progress): the deliveries
+ * posted to this thread run, nothing else; then no poster names it. */
+static void lotus_domain_join_wait(lotus_domain_t *d) {
+    pthread_mutex_lock(&g_params_open_lock);
+    while (d->alive || d->refs > 0) {
+        lotus_domain_t *here = t_domain;
+        if (here && here->pending > 0 && !t_failure_servicing) {
+            lotus_failure_await_service_locked();
+            continue;
+        }
+        lotus_held_wait_slice_locked();
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* A pool's worker: its domain, made before the worker starts and ended
+ * when it leaves its loop (or never started). Never freed: a pool's
+ * worker is joined once per start, and the count is bounded by them. */
+static void lotus_domain_pool_begin(lotus_coop_pool_t *p) {
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = lotus_domain_new_locked(LOTUS_DOMAIN_POOL, pthread_self());
+    d->pool = p;
+    p->domain = d;
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+static void lotus_domain_pool_started(lotus_coop_pool_t *p) {
+    pthread_mutex_lock(&g_params_open_lock);
+    ((lotus_domain_t *)p->domain)->thread = p->worker;
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+static void lotus_domain_pool_enter(lotus_coop_pool_t *p) {
+    t_domain = (lotus_domain_t *)p->domain;
+}
+
+static void lotus_domain_pool_end(lotus_coop_pool_t *p) {
+    if (!p->domain) return;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_end_locked((lotus_domain_t *)p->domain);
+    pthread_mutex_unlock(&g_params_open_lock);
+    if (t_domain == p->domain) t_domain = NULL;
+}
+
+static void lotus_domain_pool_join_wait(lotus_coop_pool_t *p) {
+    if (p->domain) lotus_domain_join_wait((lotus_domain_t *)p->domain);
+}
+
+/* A pinned entry's join (C18): its thread's end, servicing the failures
+ * it (or anything else) posts to this thread meanwhile, then
+ * `pthread_join`, then its domain is freed. */
+void lotus_pinned_join(int64_t tid) {
+    pthread_t t = (pthread_t)(uintptr_t)tid;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = g_domains;
+    while (d && !(d->kind == LOTUS_DOMAIN_THREAD && pthread_equal(d->thread, t)))
+        d = d->next;
+    pthread_mutex_unlock(&g_params_open_lock);
+    if (d) lotus_domain_join_wait(d);
+    pthread_join(t, NULL);
+    if (!d) return;
+    pthread_mutex_lock(&g_params_open_lock);
+    for (lotus_domain_t **pp = &g_domains; *pp; pp = &(*pp)->next) {
+        if (*pp == d) {
+            *pp = d->next;
+            break;
+        }
+    }
+    lotus_owner_purge_locked(d);
+    pthread_mutex_unlock(&g_params_open_lock);
+    free(d);
+}
+
+#else /* __wasm__ */
+static void lotus_domain_pool_begin(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_started(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_enter(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_end(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_domain_pool_join_wait(lotus_coop_pool_t *p) { (void)p; }
+static void lotus_failure_owner_note_locked(void *owner) { (void)owner; }
+static void lotus_failure_owner_forget(void *owner) { (void)owner; }
+static void lotus_failure_service_here(void) {}
+static void lotus_failure_service_at_yield(void) {}
+static void lotus_failure_await_service_locked(void) {}
+static void lotus_failure_domain_enter(void) {}
+/* Nothing is posted on wasm32 (`lotus_failure_post` answers 0), so no
+ * node reaching here has a domain; were one to, the only thread that
+ * could run it is this one, and the rule is the threaded one's: the
+ * reclaim is deferred behind the delivery, never waits for it. */
+static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
+    (void)n;
+    return 1;
+}
+int64_t lotus_failure_post(void *parent, void *fn, void *child,
+                           const void *err, int64_t err_size) {
+    (void)parent; (void)fn; (void)child; (void)err; (void)err_size;
+    return 0;
+}
+void lotus_pinned_join(int64_t tid) {
+    (void)tid;
+    fprintf(stderr, "lotus: a pinned locus cannot be joined on wasm32 (no threads)\n");
+    abort();
+}
+#endif /* __wasm__ */
 
 /* Enable async_io mode for a pool: opens an epoll fd. Idempotent;
  * safe to call before or after the worker thread starts (the worker
@@ -10572,6 +11209,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         t_run_running = hold;
         ((lotus_handler_fn)cell_copy->handler)(
             cell_copy->self_ptr, payload_ptr);
+        hold = t_run_running;   /* or a posted failure's (L0-1) */
         t_run_running = outer;
         p->running_label = NULL;
         lotus_run_hold_release(hold);
@@ -11349,6 +11987,7 @@ void lotus_drain_observer_add(int64_t delta, const char *label) {
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;
     g_current_pool_tls = p;
+    lotus_domain_pool_enter(p);
     /* GH #296: stable consumer identity — 16 + registration index
      * (registration order is program structure, so it survives a
      * re-run; the pthread id does not). */
@@ -11367,6 +12006,9 @@ static void *lotus_coop_pool_worker(void *arg) {
     while (1) {
         int async = __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE);
         int progressed;
+        /* Decision L0-1: failures posted to this worker's domain run
+         * between cells (a wake cell reaches a parked worker). */
+        lotus_failure_service_here();
 #if LOTUS_HAVE_ASYNC_IO
         if (async) {
             progressed = lotus_coop_pool_drain_one_async(p);
@@ -11381,6 +12023,10 @@ static void *lotus_coop_pool_worker(void *arg) {
 #endif
         if (!progressed) break;
     }
+    /* The worker's domain ends: what was posted to it runs here, and a
+     * later post runs where it is raised. */
+    lotus_failure_service_here();
+    lotus_domain_pool_end(p);
     g_current_pool_tls = NULL;
     return NULL;
 }
@@ -11405,8 +12051,14 @@ void lotus_coop_pool_start_all(void) {
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (p->worker_started) continue;
+        /* The worker's domain exists before the worker, so the pool
+         * join can wait for its end (decision L0-1). */
+        lotus_domain_pool_begin(p);
         if (pthread_create(&p->worker, NULL,
-                           lotus_coop_pool_worker, p) == 0) {
+                           lotus_coop_pool_worker, p) != 0) {
+            lotus_domain_pool_end(p);
+        } else {
+            lotus_domain_pool_started(p);
             p->worker_started = 1;
             /* Pool affinity (2026-08-12): bind the worker thread to
              * the stashed core set, best-effort. */
@@ -11483,9 +12135,13 @@ void lotus_coop_pool_shutdown_all(void) {
 #endif
         }
     }
+    /* Join progress (decision L0-1): a worker's child may post a failure
+     * to this thread while it is joined; each wait runs those, and only
+     * those, until the worker's domain has ended. */
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (!p->worker_started) continue;
+        lotus_domain_pool_join_wait(p);
         pthread_join(p->worker, NULL);
         p->worker_started = 0;
     }
@@ -11649,9 +12305,129 @@ typedef struct lotus_bus_entry {
     uint64_t              ctr_dropped_full;
 } lotus_bus_entry_t;
 
-static lotus_bus_entry_t *g_bus_entries = NULL;
-static size_t             g_bus_count   = 0;
-static size_t             g_bus_cap     = 0;
+/* ---- The registration table (F.40 phase 3, L5 4 of 4; inventory R50)
+ *
+ * Registrations come from any thread: the instantiating thread, a
+ * pinned anchor's thread initializing its subtree (C49), a pool's
+ * worker initializing a pool root's (C50). Every dispatch walks the
+ * table, from any thread. So the table is an append-only array of
+ * entry pointers that a walk reads without a lock (`lotus_pub_array_t`):
+ *
+ *   - an append takes `g_bus_reg_lock` (registrations are rare next to
+ *     dispatch), writes the new slot, then publishes the count with a
+ *     release store;
+ *   - growth copies the slots into a new array and publishes its
+ *     pointer, with a release store, before the count that needs it;
+ *     the old array is retired, never freed while the process runs
+ *     (`lotus_bus_router_destroy` frees it at teardown), so a walk
+ *     that loaded it reads valid memory to its end;
+ *   - a walk loads the pair once, count first, then pointer, both with
+ *     acquire loads (`lotus_pub_view`): the array it gets is the one
+ *     published with that count or a later copy, so it holds at least
+ *     that many published slots, and an entry appended meanwhile is
+ *     simply not in this walk.
+ *
+ * Retired arrays total less than the live one (each growth doubles).
+ * An entry itself never moves: entries are carved from chunks that
+ * live until teardown (`lotus_bus_entry_new_locked`), so what a walk
+ * or a cell writes into one (`in_flight`, a quarantine's `subject =
+ * NULL`) is seen by every later walk, whichever array it loaded. Before
+ * this, `lotus_bus_register_keyed` grew one array of entries by
+ * `realloc` with no lock: a walk on another thread could read the
+ * freed array, and two concurrent appends could lose one.
+ *
+ * The static-devirt buckets (below) are the same structure: a bucket
+ * is an append-only array of entry pointers, and the directory of
+ * buckets is an append-only array of stable bucket pointers. */
+typedef struct lotus_pub_array {
+    void  **items;   /* the current array; acquire/release */
+    size_t  count;   /* published slots; acquire/release */
+    size_t  cap;     /* the writer's, under g_bus_reg_lock */
+} lotus_pub_array_t;
+
+static pthread_mutex_t g_bus_reg_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Retired arrays and entry chunks, freed at the router's teardown.
+ * Under g_bus_reg_lock. */
+typedef struct lotus_bus_retired {
+    void                     *mem;
+    struct lotus_bus_retired *next;
+} lotus_bus_retired_t;
+static lotus_bus_retired_t *g_bus_retired = NULL;
+static lotus_bus_retired_t *g_bus_chunks = NULL;
+
+static int lotus_bus_keep_locked(lotus_bus_retired_t **list, void *mem) {
+    lotus_bus_retired_t *r = (lotus_bus_retired_t *)malloc(sizeof *r);
+    if (!r) return 0;
+    r->mem = mem;
+    r->next = *list;
+    *list = r;
+    return 1;
+}
+
+/* One walk's view: count first, then the array (see above). */
+static inline size_t lotus_pub_view(const lotus_pub_array_t *a,
+                                    void *const **items) {
+    size_t n = __atomic_load_n(&a->count, __ATOMIC_ACQUIRE);
+    *items = (void *const *)__atomic_load_n(&a->items, __ATOMIC_ACQUIRE);
+    return n;
+}
+
+/* Append under g_bus_reg_lock; 0 on OOM (nothing published). */
+static int lotus_pub_append_locked(lotus_pub_array_t *a, void *item) {
+    size_t n = a->count;
+    if (n == a->cap) {
+        size_t nc = a->cap == 0 ? 16 : a->cap * 2;
+        void **grown = (void **)malloc(nc * sizeof(void *));
+        if (!grown) return 0;
+        if (n) memcpy(grown, a->items, n * sizeof(void *));
+        void **old = a->items;
+        /* A retire that cannot record the old array leaks it, never
+         * frees it under a walk. */
+        if (old) (void)lotus_bus_keep_locked(&g_bus_retired, old);
+        __atomic_store_n(&a->items, grown, __ATOMIC_RELEASE);
+        a->cap = nc;
+    }
+    a->items[n] = item;
+    __atomic_store_n(&a->count, n + 1, __ATOMIC_RELEASE);
+    return 1;
+}
+
+/* A zeroed entry that never moves, from a chunk kept to teardown. */
+#define LOTUS_BUS_ENTRY_CHUNK 64
+static lotus_bus_entry_t *g_bus_chunk = NULL;
+static size_t             g_bus_chunk_used = LOTUS_BUS_ENTRY_CHUNK;
+
+static lotus_bus_entry_t *lotus_bus_entry_new_locked(void) {
+    if (g_bus_chunk_used == LOTUS_BUS_ENTRY_CHUNK) {
+        lotus_bus_entry_t *c = (lotus_bus_entry_t *)
+            calloc(LOTUS_BUS_ENTRY_CHUNK, sizeof(lotus_bus_entry_t));
+        if (!c) return NULL;
+        if (!lotus_bus_keep_locked(&g_bus_chunks, c)) {
+            free(c);
+            return NULL;
+        }
+        g_bus_chunk = c;
+        g_bus_chunk_used = 0;
+    }
+    return &g_bus_chunk[g_bus_chunk_used++];
+}
+
+/* Every registration, in registration order. */
+static lotus_pub_array_t g_bus_table = { NULL, 0, 0 };
+
+typedef struct {
+    lotus_bus_entry_t *const *at;
+    size_t                    n;
+} lotus_bus_view_t;
+
+static inline lotus_bus_view_t lotus_bus_view(void) {
+    lotus_bus_view_t v;
+    void *const *items;
+    v.n = lotus_pub_view(&g_bus_table, &items);
+    v.at = (lotus_bus_entry_t *const *)items;
+    return v;
+}
 
 /* GH #255 phase 2: find the registration a queued cell belongs
  * to. Linear scan — dispatch already walks this array, and the
@@ -11662,8 +12438,9 @@ static int g_bus_any_bounds = 0;
 static lotus_bus_entry_t *lotus_bus_bound_entry_for(void *handler,
                                                     void *self_ptr) {
     if (!g_bus_any_bounds) return NULL;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (e->handler == handler && e->self_ptr == self_ptr &&
             (e->shed_bound > 0 || e->refuse_bound > 0)) {
             return e;
@@ -11737,8 +12514,9 @@ void lotus_bus_set_sub_bound(const char *subject,
                              int64_t shed_bound,
                              int64_t shed_policy,
                              int64_t refuse_bound) {
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject || e->self_ptr != self_ptr) continue;
         if (strcmp(e->subject, subject) != 0) continue;
         e->shed_bound   = shed_bound;
@@ -11764,8 +12542,9 @@ static void lotus_bus_note_dispatched(void *handler, void *self_ptr) {
  * best-effort synchronous signal (documented in spec). */
 int64_t lotus_bus_subject_would_refuse(const char *subject) {
     if (!g_bus_any_bounds || !subject) return 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject || e->refuse_bound <= 0) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (__atomic_load_n(&e->in_flight, __ATOMIC_RELAXED) >=
@@ -11782,27 +12561,42 @@ int64_t lotus_bus_subject_would_refuse(const char *subject) {
  * binding, no wildcard, no cross-seed, no routing key — the BusGraph
  * gate in hale-types decides), codegen assigns a stable compile-time
  * subject id and emits lotus_bus_register_static at each subscriber's
- * registration. That appends the subscriber's INDEX into g_bus_entries
- * to this subject's bucket — an additional index, never the source of
- * truth. The dynamic path (g_bus_entries scan + lotus_subject_match)
- * stays authoritative: remote fanout, quarantine, and deregister all
- * keep operating on g_bus_entries unchanged.
+ * registration. That appends the subscriber's ENTRY into this
+ * subject's bucket — an additional index, never the source of truth.
+ * The dynamic path (g_bus_table scan + lotus_subject_match) stays
+ * authoritative: remote fanout, quarantine, and deregister all keep
+ * operating on the table's entries unchanged.
  *
  * lotus_bus_dispatch_static(id, ...) then routes a publish by reading
  * this subject's bucket directly — no scan over unrelated subjects'
- * entries, no per-entry strcmp. The bucket stores INDICES (not copied
- * entries or baked pointers) precisely so the static path observes the
- * runtime-set self_ptr and the quarantine null-out on the SAME live
- * lotus_bus_entry the dynamic path uses — the two paths dispatch over
- * identical state, which is what makes them behaviorally identical. */
-typedef struct {
-    size_t *idx;     /* indices into g_bus_entries, append-only */
-    size_t  count;
-    size_t  cap;
-} lotus_bus_static_bucket_t;
+ * entries, no per-entry strcmp. The bucket holds pointers to the
+ * table's own entries, which never move (R50, above), not copies, so
+ * the static path observes the runtime-set self_ptr and the quarantine
+ * null-out on the SAME live lotus_bus_entry the dynamic path uses —
+ * the two paths dispatch over identical state, which is what makes
+ * them behaviorally identical. A bucket and the directory of buckets
+ * are append-only arrays read without a lock (`lotus_pub_array_t`). */
+typedef lotus_pub_array_t lotus_bus_static_bucket_t;
 
-static lotus_bus_static_bucket_t *g_bus_static_buckets = NULL;
-static uint32_t                   g_bus_static_bucket_count = 0;
+/* Bucket pointers by compile-time subject id; a slot never changes
+ * once published. */
+static lotus_pub_array_t g_bus_static_buckets = { NULL, 0, 0 };
+
+/* Bucket `id`, or NULL when no subscriber of it has registered. */
+static inline lotus_bus_static_bucket_t *lotus_bus_static_bucket(uint32_t id) {
+    void *const *items;
+    size_t n = lotus_pub_view(&g_bus_static_buckets, &items);
+    return id < n ? (lotus_bus_static_bucket_t *)items[id] : NULL;
+}
+
+/* A bucket's entries: count first, then the array. */
+static inline size_t lotus_bus_bucket_view(const lotus_bus_static_bucket_t *b,
+                                           lotus_bus_entry_t *const **at) {
+    void *const *items;
+    size_t n = lotus_pub_view(b, &items);
+    *at = (lotus_bus_entry_t *const *)items;
+    return n;
+}
 
 /* Per-thread scratch for the wire dispatch path (2026-05-29).
  * These were `char buf[LOTUS_PAYLOAD_MAX]` (64 KiB) stack arrays
@@ -11824,8 +12618,6 @@ static uint32_t                   g_bus_static_bucket_count = 0;
  * their own stack arrays (they run on full-size pthreads). */
 static __thread char g_tls_bus_wire_buf[LOTUS_PAYLOAD_MAX];
 static __thread char g_tls_bus_struct_buf[LOTUS_PAYLOAD_MAX];
-
-#define LOTUS_BUS_ROUTER_INITIAL_CAP 16
 
 /* m94: subject wildcard matching.
  *
@@ -11951,6 +12743,67 @@ void lotus_bus_register_keyed(const char *subject,
  * without needing another inbound message or the exit quiesce. */
 static void lotus_bus_early_flush_for_subject(const char *pattern);
 
+/* Every registration's one path (R50): the entry is filled in whole,
+ * its String key included, then appended to the table and, for a
+ * statically-eligible subject (`static_id` != UINT32_MAX), to its
+ * bucket, all under g_bus_reg_lock, so a walk sees it complete or not
+ * at all. `key_str` is a heap copy the entry takes. 0 on OOM: nothing
+ * is published (graceful degrade), and `key_str` is the caller's to
+ * free. A failed bucket append keeps the table's entry: the dynamic
+ * path still fires it. */
+static int lotus_bus_register_entry(const char *subject, void *self_ptr,
+                                    void *handler, lotus_mailbox_t *mailbox,
+                                    lotus_deserialize_fn deserialize,
+                                    lotus_coop_pool_t *coop_pool,
+                                    uint8_t key_filter_kind, uint64_t key_lo,
+                                    uint64_t key_hi, const char *key_str,
+                                    uint32_t static_id) {
+    /* GH #703: this address is a live subscriber (again). */
+    bus_dead_remove(self_ptr);
+    pthread_mutex_lock(&g_bus_reg_lock);
+    lotus_bus_entry_t *e = lotus_bus_entry_new_locked();
+    if (!e) {
+        pthread_mutex_unlock(&g_bus_reg_lock);
+        return 0;
+    }
+    e->subject     = subject;
+    e->self_ptr    = self_ptr;
+    e->handler     = handler;
+    e->mailbox     = mailbox;
+    e->deserialize = deserialize;
+    e->coop_pool   = coop_pool;
+    e->key_filter_kind = key_filter_kind;
+    e->key_lo      = key_lo;
+    e->key_hi      = key_hi;
+    e->key_str     = key_str;
+    if (!lotus_pub_append_locked(&g_bus_table, e)) {
+        /* The chunk slot stays unused; nothing points at it. */
+        memset(e, 0, sizeof *e);
+        pthread_mutex_unlock(&g_bus_reg_lock);
+        return 0;
+    }
+    if (static_id != UINT32_MAX) {
+        /* The directory grows to `static_id` with empty buckets. */
+        while (g_bus_static_buckets.count <= static_id) {
+            lotus_bus_static_bucket_t *nb = (lotus_bus_static_bucket_t *)
+                calloc(1, sizeof(lotus_bus_static_bucket_t));
+            if (!nb) break;
+            if (!lotus_pub_append_locked(&g_bus_static_buckets, nb)) {
+                free(nb);
+                break;
+            }
+        }
+        if (g_bus_static_buckets.count > static_id)
+            (void)lotus_pub_append_locked(
+                (lotus_bus_static_bucket_t *)g_bus_static_buckets.items[static_id], e);
+    }
+    pthread_mutex_unlock(&g_bus_reg_lock);
+    /* GH #468: this registration may be the one the boot-window
+     * buffer was waiting for. */
+    lotus_bus_early_flush_for_subject(subject);
+    return 1;
+}
+
 void lotus_bus_register(const char *subject,
                         void *self_ptr,
                         void *handler,
@@ -11997,32 +12850,9 @@ void lotus_bus_register_keyed(const char *subject,
                               uint8_t key_filter_kind,
                               uint64_t key_lo,
                               uint64_t key_hi) {
-    /* GH #703: this address is a live subscriber (again). */
-    bus_dead_remove(self_ptr);
-    if (g_bus_count == g_bus_cap) {
-        size_t new_cap = g_bus_cap == 0
-            ? LOTUS_BUS_ROUTER_INITIAL_CAP
-            : g_bus_cap * 2;
-        lotus_bus_entry_t *grown = (lotus_bus_entry_t *)
-            realloc(g_bus_entries, new_cap * sizeof(lotus_bus_entry_t));
-        if (!grown) return;     /* drop on OOM — graceful degrade */
-        g_bus_entries = grown;
-        g_bus_cap     = new_cap;
-    }
-    lotus_bus_entry_t *e = &g_bus_entries[g_bus_count++];
-    e->subject     = subject;
-    e->self_ptr    = self_ptr;
-    e->handler     = handler;
-    e->mailbox     = mailbox;
-    e->deserialize = deserialize;
-    e->coop_pool   = coop_pool;
-    e->key_filter_kind = key_filter_kind;
-    e->key_lo      = key_lo;
-    e->key_hi      = key_hi;
-    e->key_str     = NULL;
-    /* GH #468: this registration may be the one the boot-window
-     * buffer was waiting for. */
-    lotus_bus_early_flush_for_subject(subject);
+    (void)lotus_bus_register_entry(subject, self_ptr, handler, mailbox,
+                                   deserialize, coop_pool, key_filter_kind,
+                                   key_lo, key_hi, NULL, UINT32_MAX);
 }
 
 /* Computed-subject publish authorization.
@@ -12170,8 +13000,8 @@ uint64_t lotus_route_key_hash(const char *s) {
  * heap-owned copy plus its hash. On any OOM the entry is dropped
  * whole (graceful degrade, mirroring the registry-grow path) — a
  * hash-only entry would false-positive on collision and route
- * another key's traffic. Registration runs single-threaded at locus
- * birth (before pools spin up), so the copy needs no synchronization. */
+ * another key's traffic. The copy is made first and the entry is
+ * published with it, whole (R50: registration runs on any thread). */
 void lotus_bus_register_keyed_str(const char *subject,
                                   void *self_ptr,
                                   void *handler,
@@ -12179,22 +13009,17 @@ void lotus_bus_register_keyed_str(const char *subject,
                                   lotus_deserialize_fn deserialize,
                                   lotus_coop_pool_t *coop_pool,
                                   const char *key) {
-    size_t before = g_bus_count;
-    lotus_bus_register_keyed(subject, self_ptr, handler, mailbox,
-                             deserialize, coop_pool,
-                             /* key_filter_kind */ 1,
-                             lotus_route_key_hash(key),
-                             /* key_hi */ 0);
-    if (g_bus_count == before) return;          /* registry-grow OOM */
     const char *k = key ? key : "";
     size_t n = strlen(k) + 1;
     char *copy = (char *)malloc(n);
-    if (!copy) {                                /* copy OOM — drop whole */
-        g_bus_count--;
-        return;
-    }
+    if (!copy) return;                          /* copy OOM — drop whole */
     memcpy(copy, k, n);
-    g_bus_entries[g_bus_count - 1].key_str = copy;
+    if (!lotus_bus_register_entry(subject, self_ptr, handler, mailbox,
+                                  deserialize, coop_pool,
+                                  /* key_filter_kind */ 1,
+                                  lotus_route_key_hash(key),
+                                  /* key_hi */ 0, copy, UINT32_MAX))
+        free(copy);                             /* registry OOM */
 }
 
 /* Gap B: does keyed entry `e` (kind==1) match the published key?
@@ -12213,29 +13038,11 @@ static int lotus_bus_key_matches(const lotus_bus_entry_t *e,
     return e->key_lo == key_lo && e->key_hi == key_hi;
 }
 
-/* Grow g_bus_static_buckets so index `id` is valid; new slots are
- * zero-initialized (empty bucket). No-op if already large enough. */
-static void lotus_bus_static_buckets_ensure(uint32_t id) {
-    if (id < g_bus_static_bucket_count) return;
-    uint32_t new_count = id + 1;
-    lotus_bus_static_bucket_t *grown = (lotus_bus_static_bucket_t *)
-        realloc(g_bus_static_buckets,
-                (size_t)new_count * sizeof(lotus_bus_static_bucket_t));
-    if (!grown) return;     /* OOM — register_static degrades to dynamic-only */
-    for (uint32_t i = g_bus_static_bucket_count; i < new_count; i++) {
-        grown[i].idx = NULL;
-        grown[i].count = 0;
-        grown[i].cap = 0;
-    }
-    g_bus_static_buckets = grown;
-    g_bus_static_bucket_count = new_count;
-}
-
 /* Build #1b: register a subscriber on a statically-eligible subject.
  * Does the normal dynamic registration FIRST (so the dynamic path
  * remains the source of truth — remote fanout, quarantine, deregister
- * are unaffected), then records the just-appended g_bus_entries index
- * into bucket `id`. Same args as lotus_bus_register_keyed plus the
+ * are unaffected), then records the just-appended entry in bucket
+ * `id`, under the same lock (`lotus_bus_register_entry`). Same args as lotus_bus_register_keyed plus the
  * compile-time subject id. On any OOM the static index is simply not
  * recorded; the dynamic path still fires the subscriber, so the
  * worst case is a fall-back to a scan-dispatch for that subject, never
@@ -12250,23 +13057,9 @@ void lotus_bus_register_static(uint32_t id,
                                uint8_t key_filter_kind,
                                uint64_t key_lo,
                                uint64_t key_hi) {
-    size_t before = g_bus_count;
-    lotus_bus_register_keyed(subject, self_ptr, handler, mailbox,
-                             deserialize, coop_pool,
-                             key_filter_kind, key_lo, key_hi);
-    if (g_bus_count == before) return;   /* register hit OOM — nothing to index */
-    size_t entry_idx = g_bus_count - 1;
-    lotus_bus_static_buckets_ensure(id);
-    if (id >= g_bus_static_bucket_count) return;   /* bucket-grow OOM */
-    lotus_bus_static_bucket_t *b = &g_bus_static_buckets[id];
-    if (b->count == b->cap) {
-        size_t nc = b->cap == 0 ? 4 : b->cap * 2;
-        size_t *grown = (size_t *)realloc(b->idx, nc * sizeof(size_t));
-        if (!grown) return;
-        b->idx = grown;
-        b->cap = nc;
-    }
-    b->idx[b->count++] = entry_idx;
+    (void)lotus_bus_register_entry(subject, self_ptr, handler, mailbox,
+                                   deserialize, coop_pool, key_filter_kind,
+                                   key_lo, key_hi, NULL, id);
 }
 
 /* Forward decl: defined alongside the other LOTUS_BUS_LOG_*
@@ -12633,8 +13426,9 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     size_t delivered = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;          /* deregistered */
         /* m94: pattern-match in case the subscriber registered a
          * wildcard subject (e.g. "log.**"). The fast path —
@@ -12658,12 +13452,12 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         fprintf(stderr,
                 "[bus] publish dropped: no local subscribers for "
                 "subject=\"%s\" (g_bus_count=%zu)\n",
-                subject, g_bus_count);
+                subject, bv.n);
     }
 }
 
 /* Phase 3 (2026-05-25): the keyed-dispatch core. Walks the same
- * g_bus_entries array but applies the routing-key filter at each
+ * registration table but applies the routing-key filter at each
  * entry: specific-key subscribers (kind=1) fire only when the
  * stored (key_lo, key_hi) matches the published key; receive-all
  * subscribers (kind=0) fire on every keyed publish too (an
@@ -12760,8 +13554,9 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (e->key_filter_kind == 1) {
@@ -12794,8 +13589,8 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
      * fallback` at v0.1 so kind=2 never appears, but the
      * dispatch shape is here for the v0.2 wiring. */
     if (!matched_specific) {
-        for (size_t i = 0; i < g_bus_count; i++) {
-            lotus_bus_entry_t *e = &g_bus_entries[i];
+        for (size_t i = 0; i < bv.n; i++) {
+            lotus_bus_entry_t *e = bv.at[i];
             if (!e->subject) continue;
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (e->key_filter_kind != 2) continue;
@@ -13158,8 +13953,9 @@ int lotus_bus_dispatch_keyed_fallible(lotus_bus_queue_t *queue,
      * "would anyone fire?" so the caller can route the no-match
      * branch. The dispatch then proceeds normally below. */
     int matched = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (e->key_filter_kind == 1
@@ -13333,8 +14129,9 @@ int lotus_bus_dispatch_keyed_fallible_flat(lotus_bus_queue_t *queue,
                                             uint64_t key_lo,
                                             uint64_t key_hi) {
     int matched = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (e->key_filter_kind == 1
@@ -13452,8 +14249,9 @@ void lotus_bus_dispatch_fused(lotus_bus_queue_t *queue,
     uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live)
         obs_tok = lotus_obs_bus_publish(subject, NULL, size);
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (e->self_ptr != receiver || !e->subject || e->key_filter_kind != 0
             || !lotus_subject_match(e->subject, subject)) continue;
         if (!flat && !e->deserialize) continue;
@@ -13518,9 +14316,10 @@ void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
  * those slots — quarantined subscribers stop receiving messages. */
 void lotus_bus_quarantine_self(void *self_ptr) {
     int subscribed = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        if (g_bus_entries[i].self_ptr == self_ptr) {
-            g_bus_entries[i].subject = NULL;
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        if (bv.at[i]->self_ptr == self_ptr) {
+            bv.at[i]->subject = NULL;
             subscribed = 1;
         }
     }
@@ -13559,37 +14358,54 @@ int lotus_on_main_thread(void) {
  * cell already taken for it is dropped. */
 void lotus_bus_retire_mailbox(void *mb) {
     if (!mb) return;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        if (g_bus_entries[i].mailbox == mb && g_bus_entries[i].subject) {
-            g_bus_entries[i].subject = NULL;
-            bus_dead_add(g_bus_entries[i].self_ptr);
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
+        if (e->mailbox == mb && e->subject) {
+            e->subject = NULL;
+            bus_dead_add(e->self_ptr);
         }
     }
 }
 
 void lotus_bus_router_destroy(void) {
-    /* Gap B: release String-key copies (single-threaded teardown —
-     * the only safe point; see the key_str field comment). */
-    for (size_t i = 0; i < g_bus_count; i++) {
-        if (g_bus_entries && g_bus_entries[i].key_str) {
-            free((void *)g_bus_entries[i].key_str);
+    /* The process's teardown (R50): every registration's storage goes
+     * here, and nowhere earlier, since a walk may still hold any array
+     * the table ever published. */
+    pthread_mutex_lock(&g_bus_reg_lock);
+    /* Gap B: release String-key copies (the only safe point; see the
+     * key_str field comment). */
+    for (size_t i = 0; i < g_bus_table.count; i++) {
+        lotus_bus_entry_t *e = (lotus_bus_entry_t *)g_bus_table.items[i];
+        if (e->key_str) free((void *)e->key_str);
+    }
+    free(g_bus_table.items);
+    g_bus_table = (lotus_pub_array_t){ NULL, 0, 0 };
+    /* Build #1b: release the static-devirt buckets (entry pointer
+     * lists into the chunks freed below). */
+    for (size_t i = 0; i < g_bus_static_buckets.count; i++) {
+        lotus_bus_static_bucket_t *b =
+            (lotus_bus_static_bucket_t *)g_bus_static_buckets.items[i];
+        free(b->items);
+        free(b);
+    }
+    free(g_bus_static_buckets.items);
+    g_bus_static_buckets = (lotus_pub_array_t){ NULL, 0, 0 };
+    /* The arrays growth replaced, and the entries' chunks. */
+    lotus_bus_retired_t *lists[2] = { g_bus_retired, g_bus_chunks };
+    for (int l = 0; l < 2; l++) {
+        for (lotus_bus_retired_t *r = lists[l]; r;) {
+            lotus_bus_retired_t *next = r->next;
+            free(r->mem);
+            free(r);
+            r = next;
         }
     }
-    if (g_bus_entries) free(g_bus_entries);
-    g_bus_entries = NULL;
-    g_bus_count   = 0;
-    g_bus_cap     = 0;
-    /* Build #1b: release the static-devirt buckets (index lists). The
-     * entries they pointed into are freed above; the index storage is
-     * the bucket's own. */
-    if (g_bus_static_buckets) {
-        for (uint32_t i = 0; i < g_bus_static_bucket_count; i++) {
-            if (g_bus_static_buckets[i].idx) free(g_bus_static_buckets[i].idx);
-        }
-        free(g_bus_static_buckets);
-    }
-    g_bus_static_buckets = NULL;
-    g_bus_static_bucket_count = 0;
+    g_bus_retired = NULL;
+    g_bus_chunks = NULL;
+    g_bus_chunk = NULL;
+    g_bus_chunk_used = LOTUS_BUS_ENTRY_CHUNK;
+    pthread_mutex_unlock(&g_bus_reg_lock);
     /* m58: also tear down any remote-bound transports the
      * deployment-config loader opened at boot. */
     lotus_bus_remote_destroy_all();
@@ -18573,8 +19389,9 @@ static lotus_bus_queue_t *g_bus_queue_for_remote;
 static lotus_deserialize_fn lotus_bus_find_deserializer(
     const char *bound_subject)
 {
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, bound_subject)) continue;
         return e->deserialize;
@@ -19438,8 +20255,8 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
  * realized/suppressed, every boot subscription registered, run()
  * not yet entered. The registry SNAPSHOT is taken there, on the
  * main thread, so injector workers never read the live
- * `g_bus_entries` array (registration may realloc it; the old
- * design's polling loop was timing, not synchronization). Feed
+ * registration table (a later registration is not the injector's;
+ * the old design's polling loop was timing, not synchronization). Feed
  * targets that dropped or rearranged the listener binding still
  * get their tape: tape presence, not the survival of the old
  * listener declaration, decides that injection starts.
@@ -19601,15 +20418,16 @@ void lotus_replay_start_ingress(void) {
      * with a deserializer. Wildcard subjects stay wildcard — the
      * worker matches with the same pattern matcher the reader
      * used. */
+    lotus_bus_view_t bv = lotus_bus_view();
     g_rp_snap = (lotus_rp_snap_t *)malloc(
-        (g_bus_count ? g_bus_count : 1) * sizeof(lotus_rp_snap_t));
+        (bv.n ? bv.n : 1) * sizeof(lotus_rp_snap_t));
     if (!g_rp_snap) {
         if (lotus_replay_note_injector_start_failure)
             lotus_replay_note_injector_start_failure();
         return;
     }
-    for (size_t e = 0; e < g_bus_count; e++) {
-        lotus_bus_entry_t *be = &g_bus_entries[e];
+    for (size_t e = 0; e < bv.n; e++) {
+        lotus_bus_entry_t *be = bv.at[e];
         if (!be->subject || !be->deserialize) continue;
         g_rp_snap[g_rp_snap_len].subject = be->subject;
         g_rp_snap[g_rp_snap_len].deserialize = be->deserialize;
@@ -19700,8 +20518,9 @@ void lotus_replay_injector_join(void) {
         for (int u = 0; u < n; u++) {
             const char *subj = g_rp_unmatched_subjects[u];
             if (!subj) continue;
-            for (size_t e = 0; e < g_bus_count; e++) {
-                lotus_bus_entry_t *be = &g_bus_entries[e];
+            lotus_bus_view_t bv = lotus_bus_view();
+            for (size_t e = 0; e < bv.n; e++) {
+                lotus_bus_entry_t *be = bv.at[e];
                 if (!be->subject || !be->deserialize) continue;
                 if (lotus_subject_match(be->subject, subj)) {
                     late++;
@@ -20818,7 +21637,7 @@ int64_t lotus_bus_subject_wait_space(lotus_bus_queue_t *queue,
  * See the doc-comment up there for the design rationale. Lives
  * here because the function body references g_bus_queue_for_remote
  * (declared just above) and the per-subject deserialize_fn from
- * g_bus_entries. */
+ * the registration table. */
 /* Phase 3 keyed variant (2026-05-25). Mirrors
  * lotus_bus_dispatch_wire's per-subscriber-arena routing but
  * applies the routing-key filter at each entry. Same Task-9
@@ -20854,8 +21673,9 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (!e->deserialize) continue;
@@ -20900,8 +21720,8 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         }
     }
     if (!matched_specific) {
-        for (size_t i = 0; i < g_bus_count; i++) {
-            lotus_bus_entry_t *e = &g_bus_entries[i];
+        for (size_t i = 0; i < bv.n; i++) {
+            lotus_bus_entry_t *e = bv.at[i];
             if (!e->subject) continue;
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (!e->deserialize) continue;
@@ -20986,8 +21806,9 @@ void lotus_bus_dispatch_wire(const char *subject,
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
     size_t matched = 0;
     size_t delivered = 0;
-    for (size_t i = 0; i < g_bus_count; i++) {
-        lotus_bus_entry_t *e = &g_bus_entries[i];
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (!e->deserialize) {
@@ -21068,7 +21889,7 @@ void lotus_bus_dispatch_wire(const char *subject,
                 "[bus] publish dropped: no local subscribers for "
                 "subject=\"%s\" via wire path (g_bus_count=%zu, "
                 "wire_size=%zu)\n",
-                subject, g_bus_count, wire_size);
+                subject, bv.n, wire_size);
     }
     (void)delivered;
     lotus_current_caller_arena = prev_tls;
@@ -21078,9 +21899,10 @@ void lotus_bus_dispatch_wire(const char *subject,
  *
  * The publish-side counterpart to lotus_bus_register_static. Reads
  * the per-subject bucket for `id` directly — NO scan over unrelated
- * g_bus_entries and NO lotus_subject_match strcmp — then does the
+ * subjects' entries and NO lotus_subject_match strcmp — then does the
  * SAME per-entry routing the dynamic path does, over the SAME live
- * lotus_bus_entry rows (the bucket holds indices). That identity is
+ * lotus_bus_entry rows (the bucket holds the table's own entries).
+ * That identity is
  * the whole point: deferred-FIFO enqueue order, mailbox/coop_pool/
  * queue routing, quarantine skip, and arena rebinding all behave
  * exactly as the dynamic path, so the static and dynamic lowerings
@@ -21111,8 +21933,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                                lotus_serialize_fn serialize_fn,
                                int flat,
                                int no_pinned) {
-    lotus_bus_static_bucket_t *b =
-        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
+    lotus_bus_static_bucket_t *b = lotus_bus_static_bucket(id);
 
     if (flat) {
         /* Verbatim local fanout (mirror lotus_bus_local_dispatch). */
@@ -21129,8 +21950,10 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
         }
         if (b) {
-            for (size_t k = 0; k < b->count; k++) {
-                lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+            lotus_bus_entry_t *const *at;
+            size_t bn = lotus_bus_bucket_view(b, &at);
+            for (size_t k = 0; k < bn; k++) {
+                lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;           /* quarantined */
                 if (e->key_filter_kind != 0) continue;
                 if (lotus_obs_bus_deliver && lotus_obs_live) {
@@ -21222,8 +22045,10 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
          * verbatim local fanout. */
         size_t delivered = 0;
         if (b) {
-            for (size_t k = 0; k < b->count; k++) {
-                lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+            lotus_bus_entry_t *const *at;
+            size_t bn = lotus_bus_bucket_view(b, &at);
+            for (size_t k = 0; k < bn; k++) {
+                lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;
                 if (e->key_filter_kind != 0) continue;
                 /* R4 exception: the build #3 no-pinned fast path
@@ -21280,8 +22105,10 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
     size_t delivered = 0;
     if (b) {
-        for (size_t k = 0; k < b->count; k++) {
-            lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+        lotus_bus_entry_t *const *at;
+        size_t bn = lotus_bus_bucket_view(b, &at);
+        for (size_t k = 0; k < bn; k++) {
+            lotus_bus_entry_t *e = at[k];
             if (!e->subject) continue;             /* quarantined */
             if (e->key_filter_kind != 0) continue;
             if (!e->deserialize) continue;
@@ -21388,8 +22215,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                                       const char *subject,
                                       const void *payload,
                                       uint64_t size) {
-    lotus_bus_static_bucket_t *b =
-        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
+    lotus_bus_static_bucket_t *b = lotus_bus_static_bucket(id);
     size_t delivered = 0;
     /* GH #782: the recording's payload blob, under the SAME gate
      * and in the same order as every other flavor (before the
@@ -21414,8 +22240,10 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
         obs_tok = lotus_obs_bus_publish(subject, NULL, size);
     }
     if (b) {
-        for (size_t k = 0; k < b->count; k++) {
-            lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+        lotus_bus_entry_t *const *at;
+        size_t bn = lotus_bus_bucket_view(b, &at);
+        for (size_t k = 0; k < bn; k++) {
+            lotus_bus_entry_t *e = at[k];
             if (!e->subject) continue;           /* quarantined */
             if (e->key_filter_kind != 0) continue;
             /* R4 note: deliberately NOT lotus_bus_post_entry — the
@@ -21467,7 +22295,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
  * to a loop-invariant self-ptr load + the inlined handler body, the
  * Go-equivalent hoisted dispatch.
  *
- * These read the SAME g_bus_entries[idx] rows lotus_bus_dispatch_static_
+ * These read the SAME bucket entries lotus_bus_dispatch_static_
  * direct reads, in the SAME registration order, applying the SAME
  * quarantine (`!e->subject`) / keyed (`key_filter_kind != 0`) skips — so
  * the inline lowering is byte-identical to the helper. The accessor
@@ -21484,19 +22312,19 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
 size_t lotus_bus_static_direct_count(uint32_t id) __attribute__((pure));
 LOTUS_HOT_ALIGN
 size_t lotus_bus_static_direct_count(uint32_t id) {
-    lotus_bus_static_bucket_t *b =
-        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
-    return b ? b->count : 0;
+    lotus_bus_static_bucket_t *b = lotus_bus_static_bucket(id);
+    return b ? __atomic_load_n(&b->count, __ATOMIC_ACQUIRE) : 0;
 }
 
 void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k)
     __attribute__((pure));
 LOTUS_HOT_ALIGN
 void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k) {
-    lotus_bus_static_bucket_t *b =
-        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
-    if (!b || k >= b->count) return NULL;
-    lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+    lotus_bus_static_bucket_t *b = lotus_bus_static_bucket(id);
+    if (!b) return NULL;
+    lotus_bus_entry_t *const *at;
+    if (k >= lotus_bus_bucket_view(b, &at)) return NULL;
+    lotus_bus_entry_t *e = at[k];
     if (!e->subject) return NULL;            /* quarantined → skip */
     if (e->key_filter_kind != 0) return NULL;/* keyed → skip */
     /* Defensive (mirrors lotus_bus_dispatch_static_direct's same-thread
