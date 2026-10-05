@@ -488,3 +488,151 @@ locus Holder {
     assert_ne!(routing.instance_key(cell, "Cell_Alpha"), routing.instance_key(cell, "Cell_Beta"));
     assert_eq!(routing.instance_key(NodeId::NONE, "Alpha"), InstanceKey::Unminted("Alpha".to_string()));
 }
+
+// F.40 phase 4, Q1: the lowering view's handler rows are the snapshot's,
+// carried by the correspondence, with the stdlib's derived over the
+// merged program's tail and the indexes rebuilt over the union. The view
+// used to derive them over the whole merged program; these pin that the
+// fold keeps every answer lowering reads.
+
+const SUPERVISED: &str = "
+locus Worker {
+    params { n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { violate boom; }
+}
+locus Sup<T> {
+    on_failure(c: T, err: ClosureViolation) { restart_in_place(c) for 2; }
+}
+main locus App {
+    params { max: Int = 2; w: Worker = Worker { }; b: std::bytes::BytesBuilder = std::bytes::BytesBuilder { }; }
+    on_failure(c: Worker, err: ClosureViolation) {
+        if self.max > 1 { restart(c) for 3; } else { restart_in_place(c) for self.max + 1; }
+    }
+    on_failure(c: std::bytes::BytesBuilder, err: ClosureViolation) { quarantine(c); }
+    fn again() { restart(self.w) for 4; }
+}
+fn main() { App { }; }
+";
+
+/// The bounds are keyed by the statement's span alone, and the stdlib's
+/// spans overlap the first user file's: a stdlib bound at a user bound's
+/// span would answer for it. The stdlib writes no recovery statement and
+/// declares no handler, so its rows hold no bound to collide with; the
+/// failure column is the one thing it adds (its loci declaring a closure
+/// or a `birth_check`).
+#[test]
+fn the_stdlib_states_no_recovery_bound_and_declares_no_handler() {
+    let std = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    let ids = hale_types::stdlib_bodies::identities().expect("and is minted");
+    let rows = handler_rows(&[std], &[], ids);
+    assert!(rows.rows().is_empty(), "the stdlib declares no on_failure handler");
+    assert_eq!(rows.bounds().count(), 0, "the stdlib writes no `for` bound");
+    assert!(rows.can_fail("__StdBytesBytesBuilder"), "a stdlib locus with a closure can fail");
+}
+
+/// Every answer lowering reads of the view's rows, as `handler_rows`
+/// gives it over the merged program (the derivation the view ran before
+/// the fold): the rows and their indexes, the failure column, the
+/// bounds, the in-place restarts, and a specialization's rows and key.
+/// The rows' identities are compared by index, the key lowering joins a
+/// declaration by (`is_row_of`, `handlers_of_decl`).
+#[test]
+fn the_views_rows_answer_as_the_merged_programs_did() {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::snapshot::{Config, Snapshot, Target};
+    use hale_syntax::ast::{flat_decls, LocusDecl, TopDecl, TypeExpr};
+    use hale_types::handler_routing::{HandlerRouting, HandlerRow};
+
+    let d = std::env::temp_dir().join(format!("hale-handler-fold-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("app.hl"), SUPERVISED).unwrap();
+    let config = Config::build(Target::host());
+    let s = Snapshot::load(&d.join("app.hl"), LoadMode::WholeSeed, &hale_frontend::source::Disk, config)
+        .unwrap_or_else(|_| panic!("the fixture loads"));
+    let checked = s.demand_check().expect("checked");
+    let errors: Vec<&String> = checked.diags.iter().filter(|x| x.is_error()).map(|x| &x.message).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
+    let mut lowered = view.handlers.clone();
+    let mut merged = handler_rows(&[&view.merged], &view.import_renames, &view.snapshot);
+
+    let loci: Vec<&LocusDecl> = flat_decls(&view.merged.items)
+        .filter_map(|i| match i {
+            TopDecl::Locus(l) => Some(l),
+            _ => None,
+        })
+        .collect();
+    let row = |r: &HandlerRow| {
+        format!(
+            "{} {:?} {:?} {} {} {} {:?} {:?} {:?} {:?} {:?}",
+            r.parent,
+            r.parent_id.map(|s| s.index),
+            r.child,
+            r.written,
+            r.error_type,
+            r.ordinal,
+            r.id.map(|s| s.index),
+            r.span,
+            r.ops,
+            r.bounds,
+            r.retry_bound
+        )
+    };
+    let answers = |h: &HandlerRouting| {
+        let mut out: Vec<String> = h.rows().iter().map(row).collect();
+        for r in h.rows() {
+            let first = h.route(&r.parent, r.child.name()).map(row);
+            out.push(format!("route {} {} -> {first:?}", r.parent, r.child.name()));
+        }
+        for l in &loci {
+            let name = &l.name.name;
+            out.push(format!("decl {name}: {:?}", h.handlers_of_decl(l.id).map(row).collect::<Vec<_>>()));
+            out.push(format!("by name {name}: {:?}", h.handlers_of(name).map(row).collect::<Vec<_>>()));
+            out.push(format!("can_fail {name}: {}", h.can_fail(name)));
+            out.push(format!("in place {name}: {}", h.restarts_in_place(name)));
+            out.push(format!("key {name}: {:?}", h.instance_key(l.id, name)));
+        }
+        out.extend(h.bounds().map(|b| format!("bound {b:?}")));
+        out
+    };
+    assert_eq!(answers(&lowered), answers(&merged), "the view's rows answer as the merged program's did");
+    assert_eq!(lowered.bounds().count(), 4, "three in the handler, one in a method");
+    assert!(lowered.can_fail("__StdBytesBytesBuilder") && lowered.can_fail("Worker"));
+    // The one column the fold moves: a user row's `child_decl` is the
+    // snapshot's, a stdlib child named in the analysis copy, where the
+    // merged program named its merged twin. No lowering reader reads it
+    // (the model reads the snapshot's rows).
+    use hale_types::placement::SiteUniverse;
+    let universe = |h: &HandlerRouting| {
+        h.rows().iter().find(|r| r.written == "std::bytes::BytesBuilder").and_then(|r| r.child_decl).map(|d| d.universe)
+    };
+    assert_eq!(universe(&lowered), Some(SiteUniverse::StdlibAnalysis));
+    assert_eq!(universe(&lowered), universe(s.demand_handlers().expect("the snapshot's rows")));
+    assert_eq!(universe(&merged), Some(SiteUniverse::User));
+
+    // A specialization: the template's rows under lowering's substitution.
+    let sup = *loci.iter().find(|l| l.name.name == "Sup").expect("the generic supervisor");
+    let zero = hale_syntax::Span::new(0, 0);
+    let worker = TypeExpr::Named {
+        path: hale_syntax::ast::QualifiedName {
+            segments: vec![hale_syntax::ast::Ident::new("Worker", zero)],
+            span: zero,
+        },
+        generic_args: Vec::new(),
+        span: zero,
+    };
+    for h in [&mut lowered, &mut merged] {
+        h.specialize(sup, "Sup_Worker", |_| worker.clone());
+    }
+    let special = |h: &HandlerRouting| {
+        (
+            h.handlers_of_instance(sup.id, "Sup_Worker").map(row).collect::<Vec<_>>(),
+            h.instance_key(sup.id, "Sup_Worker"),
+            h.restarts_in_place("Worker"),
+        )
+    };
+    assert_eq!(special(&lowered), special(&merged));
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -371,7 +371,9 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     let s = build(&d.join("app.hl"));
     let view = s.demand_lowering().unwrap_or_else(|_| panic!("a clean program is lowered"));
     let builds = s.builds();
-    for family in ["top_scope", "bus_graph", "ownership"] {
+    // And the handler rows, the flow rows and the arrangement (F.40
+    // phase 4, Q1).
+    for family in ["top_scope", "bus_graph", "ownership", "handler_routing", "flows", "arrangement"] {
         assert_eq!(builds[family], 1, "`{family}`: one derivation, and lowering reads it");
     }
     let scope = s.demand_scope().expect("scoped");
@@ -390,7 +392,10 @@ fn a_build_derives_the_scope_and_each_graph_once_lowering_included() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-const WITH_FLOWS: &str = r#"
+// The fixtures below are plain literals, not raw ones: the corpus
+// harvests `r#"…"#` programs from test files, and these belong to this
+// test.
+const WITH_FLOWS: &str = "
 locus Worker { params { ran: Int = 0; } run() { self.ran = 1; } }
 type Job = Worker;
 locus Pool {
@@ -405,7 +410,7 @@ locus Manager<T> {
     release(c: T) { self.released = self.released + 1; }
 }
 fn main() { Pool { }; let a: Manager<Worker> = Manager { }; }
-"#;
+";
 
 /// F.40 phase 4, Q1: the flow rows are surveyed once per snapshot, and
 /// the lowering view reads that survey. It used to survey the merged
@@ -448,14 +453,14 @@ fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-const WITH_SCRATCH: &str = r#"
-fn shout(s: String) -> Int { let t = s + "!"; return len(t); }
+const WITH_SCRATCH: &str = "
+fn shout(s: String) -> Int { let t = s + \"!\"; return len(t); }
 locus App {
     params { n: Int = 0; }
-    run() { self.n = shout("a"); }
+    run() { self.n = shout(\"a\"); }
 }
 fn main() { App { }; }
-"#;
+";
 
 /// F.40 phase 4, Q1: the scratch-local free fns are classified once on
 /// a build path, in the allocation summary, and lowering's routing rows

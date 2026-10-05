@@ -349,7 +349,8 @@ pub fn rewrite_intra_locus(
 /// so they are built here over the minted program, by the snapshot's own
 /// producers (`bus_graph::build_bus_graph`,
 /// `ownership_graph::build_ownership_graph`), with `bindings` and
-/// `placement`, its flow rows surveyed (`flows::survey`) and its
+/// `placement`, its handler rows derived (`handler_routing::handler_rows`),
+/// its flow rows surveyed (`flows::survey`) and its
 /// allocation summary derived (`alloc_summary::derive_alloc_summary`),
 /// whose scratch-local set the view's routing rows are handed.
 pub fn resolve_program(
@@ -379,6 +380,7 @@ pub fn resolve_program(
     };
     let arrangement = crate::arrangement::project_arrangement(&[&minted], &checked, placement, &ownership);
     let flows = crate::flows::survey(&[&minted], import_renames);
+    let handlers = crate::handler_routing::handler_rows(&[&minted], import_renames, &checked);
     resolve_rewritten(
         &rewrite_intra_locus(&minted, placement),
         &checked,
@@ -393,6 +395,7 @@ pub fn resolve_program(
         &top,
         &bus,
         &ownership,
+        &handlers,
         &flows,
         &summary.scratch_local,
         &arrangement.domains(),
@@ -444,7 +447,10 @@ pub fn resolve_program(
 /// snapshot's ownership graph (`Snapshot::demand_ownership_graph`), read
 /// the same way (`ownership_graph::lowering_ownership_graph`). `flows` is
 /// the snapshot's flow rows (`Snapshot::demand_flows`), which lowering
-/// reads by locus name, so they need no correspondence. `scratch_local`
+/// reads by locus name, so they need no correspondence. `handlers` is the
+/// snapshot's handler rows (`Snapshot::demand_handlers`), read the way
+/// the graphs are (`handler_routing::lowering_handler_routing`): through
+/// the correspondence, the stdlib's after them. `scratch_local`
 /// is the snapshot's allocation summary's scratch-local set
 /// (`AllocSummary::scratch_local`), classified over the declarations the
 /// merged program holds; the routing rows read it. `domains`
@@ -471,6 +477,7 @@ pub fn resolve_rewritten(
     top: &TopScope,
     bus: &BusGraph,
     ownership: &OwnershipGraph,
+    handlers: &crate::handler_routing::HandlerRouting,
     flows: &crate::flows::FlowRows,
     scratch_local: &std::collections::BTreeSet<String>,
     domains: &BTreeMap<&str, Vec<String>>,
@@ -670,9 +677,16 @@ pub fn resolve_rewritten(
         (graph, bubble, bus, plan)
     };
 
-    // F.40 phase 1.4: the handler rows, over the same merged program,
-    // with the child type resolved the way lowering resolves it.
-    let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
+    // F.40 phase 1.4: the handler rows, with the child type resolved the
+    // way lowering resolves it. They are the snapshot's rows read through
+    // the correspondence, and after them the stdlib's, derived over the
+    // merged program's tail (F.40 phase 4, Q1,
+    // `handler_routing::lowering_handler_routing`).
+    let handlers = crate::handler_routing::lowering_handler_routing(
+        handlers,
+        crate::handler_routing::stdlib_handler_rows(&merged, &merged.items[user_items..], import_renames, &snapshot),
+        &correspondence,
+    )?;
     // The flow rows are the snapshot's (F.40 phase 4, Q1): lowering reads
     // them by locus name (`is_flow`, `specialize`), the stdlib declares no
     // `release` clause and no type alias, and `DeclaredNames` holds the

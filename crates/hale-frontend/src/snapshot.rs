@@ -1787,10 +1787,12 @@ impl Snapshot {
                 let placement = self.demand_placement().map_err(Clone::clone)?;
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
                 // Lowering's scope is this one, and its bus and ownership
-                // graphs are these ones' rows (C5).
+                // graphs are these ones' rows (C5), and its handler rows
+                // (F.40 phase 4, Q1).
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 // And its flow rows these ones, and its scratch-local set
                 // the allocation summary's (F.40 phase 4, Q1): the check
                 // demanded the summary on the gated path, the target
@@ -1830,6 +1832,7 @@ impl Snapshot {
                     &scope.top,
                     bus,
                     ownership,
+                    handlers,
                     flows,
                     &summary.scratch_local,
                     &arrangement.domains(),
