@@ -29,7 +29,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `handler_routing` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which `on_failure` handler a failing child's locus type reaches, and from which parent; and which recovery statements written outside a handler apply which operation to a child of which type. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
-| `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
+| `closures` | Layer 3 | Canonical | law | `closure_event_rows` | 0 | Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep. |
 | `api_surface` | Layer 3 | Canonical | derivation | `api_surface` | 0 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form; and the role rows: every `role` declaration, every `@gated` site and the api entry's role source, with or without an `api:` entry. |
 | `sealability` | Layer 3 | Migrating | law | `check_sealed_access` | 1 | Which loci confine their state (`@sealed`), and which could. |
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
@@ -735,29 +735,35 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `can_fail(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-codegen/src/locus/restart.rs` ×1
 - `retry_bound_at(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
 
-### `closures` — Migrating · law
+### `closures` — Canonical · law
 
-**Answers.** Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names.
+**Answers.** Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep.
 
-**Inputs.** closure declarations; lifecycle_order (the event alphabet)
+**Inputs.** closure declarations (each clause's names as the parser typed them: `RecoveryEvents`); handler_routing (each handler's child and the events its ops apply, and the recovery statements outside handlers with their receivers' child types); entrypoint (whether the world is closed, as rule 9 asks)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_locus_member`
+**Producer.** `crates/hale-types/src/closure_events.rs` · `closure_event_rows`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/closure_events.rs` · `closure_event_laws`; `crates/hale-types/src/closure_events.rs` · `outside_the_alphabet`; `crates/hale-types/src/closure_events.rs` · `persists_through_dissolve`; `crates/hale-types/src/closure_events.rs` · `in_both_clauses`; `crates/hale-types/src/closure_events.rs` · `unreached_events`; `crates/hale-types/src/closure_events.rs` · `nothing_to_keep`
 
-- `crates/hale-codegen/src/codegen.rs` · `emit_accumulator_reset_for_event` — the recovery events a closure names are matched ad hoc: `persists_through(...)` takes any identifier (`parse_recovery_event_name`), `locus/decl.rs` copies the names as strings, and this function compares them with the event being lowered, which is only ever `restart`, `restart_in_place` or `quarantine`, so a clause naming an event the locus never reaches is a silent no-op; `resets_on(...)` is read by nothing. The epoch is not ad hoc: its names are a closed enum (`EpochSpec`) the parser enforces. *Removed when:* the clause joins the lifecycle table and an unreachable event is a law violation with a witness.
-
-**Consumers.** check; codegen
+**Consumers.** check (the five laws, through one entry, over the handler rows and the entry row handed in: `CheckInputs`) (`crates/hale-types/src/check.rs` · `closure_event_laws`); codegen (the accumulator reset: each closure's typed `persists_through` events, compared as `RecoveryEvent`s with the event a recovery statement lowers) (`crates/hale-codegen/src/locus/decl.rs` · `persists_through`)
 
 **Invariants.**
 
-- closures are a consumer of the layer-6 alphabet (RFC §2)
+- a recovery event is typed once, by the parser (`parse_recovery_event_name`): a `RecoveryEventName` keeps the name as written, with its span, and the `RecoveryEvent` it is when it is in the closed alphabet (`restart`, `restart_in_place`, `quarantine`); a name outside the alphabet is kept for the check to refuse, never a parse error; the clause carries its own span
+- lowering compares no string: the per-closure persistence map holds `RecoveryEvent`s (`ClosureDecl::persists_through`), and each recovery statement zeroes the accumulators of every closure that does not persist through its event (a spent `restart(c) for N` bound is `quarantine`). Nothing reads `resets_on` at run time: it states that default, and the laws hold it
+- the laws are registered rules of `spec/verification.md`'s structural table, each a function over the clause rows producing `law::Violation`s, run by the check through `closure_event_laws`: the errors (a name outside the alphabet, `dissolve` persisted through, an event in both clauses) for every locus the bundle declares; the warnings (an unreached event, a persistence with nothing to keep) for the loci of the program's own seed only
+- whether a recovery reaches a locus is read from the handler rows (a handler's ops on its child, by the declaration the child resolves to; a recovery statement outside handlers on the child its receiver is declared with), never from the lifecycle plan, where one flag covers both restarts, quarantine has no obligation, and no check may build the plan. The world is closed as rule 9 asks (the entry row has an entry); an event some recovery applies to a child the rows cannot name (a generic supervisor's type parameter, a receiver that is not a declared param) is not judged
 
-**Missing data.** a missing required row is a compiler error
+**Missing data.** total: no persisted event means the closure persists through none: its accumulators are zeroed at every recovery event, the default `resets_on` states (`emit_accumulator_reset_for_event`)
 
-**Focused tests.** crates/hale-codegen/tests/closure_resets_per_epoch.rs; crates/hale-types/tests/violate.rs
+**Focused tests.** crates/hale-types/tests/closure_events.rs; crates/hale-syntax/tests/closure_recovery_events.rs; crates/hale-codegen/tests/closure_recovery_events.rs (the reset at run time: default, `resets_on`, `persists_through`); crates/hale-types/tests/handler_routing_probes.rs (the recovery statements' column); crates/hale-codegen/tests/closure_resets_per_epoch.rs; crates/hale-types/tests/violate.rs
 
-**Spec.** spec/semantics.md § closures
+**Spec.** spec/semantics.md § Recovery events; spec/verification.md § Structural & design rules; spec/runtime.md § Closure-test infrastructure (recovery-event interaction)
+
+**Guarded seams.**
+
+- `closure_event_rows(` may be referenced from: `crates/hale-types/src/closure_events.rs` ×1
+- `closure_event_laws(` may be referenced from: `crates/hale-types/src/closure_events.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `api_surface` — Canonical · derivation
 
