@@ -5,7 +5,7 @@
 //! snapshot holds and build the top scope for themselves
 //! (`check_program`, `check_bundle`, `check_bundle_opts`,
 //! `check_bundle_opts_whole_program`, `check_bundle_opts_scoped`,
-//! `derive_application_model`, `effect_certificates`, `resolve_program`,
+//! `check_bundle_for_build`, `derive_application_model`, `effect_certificates`, `resolve_program`,
 //! and the bundle forms of `claim_law_diags`, `model_shape_hash` and
 //! `dump_topology`). No verb reaches them: every verb and the editor
 //! build a `hale_frontend::snapshot::Snapshot` and demand the scope, the
@@ -38,6 +38,11 @@
 //!   `check_bundle_opts_scoped(.., false, false)` had them.
 //! - [`check_bundle_opts_whole_program`]: the same under
 //!   `Config::check(true, allow_unowned_subscriber)`.
+//! - [`check_bundle_for_build`]: that check, then the borrow rule
+//!   (`hale_types::build_rule_diags`) over the snapshot's ownership rows,
+//!   appended after it as the old entry appended it. (A build's own
+//!   snapshot, `Config::build`, runs the rule inside its typing stage,
+//!   so its laws' diagnostics follow the rule's; the old order is kept.)
 //! - [`check_bundle_opts_scoped`]: `Config::check(strict, ..)` where the
 //!   two strictnesses agree. The snapshot holds one whole-program flag,
 //!   so a caller that asks for one rule without the other is refused by
@@ -158,6 +163,21 @@ pub fn check_bundle_opts_scoped(
         "the snapshot's `Config::whole_program` holds the callee rule and the identifier rule together"
     );
     checked(&bundle_snapshot(bundle, Config::check(strict_callees, allow_unowned_subscriber)))
+}
+
+/// `hale_types::check_bundle_for_build`, through the snapshot: the
+/// whole-program check, then the rules a build refuses beside it
+/// (`hale_types::build_rule_diags`, the borrow rule) over the snapshot's
+/// ownership rows, after the check as the old entry appended them.
+pub fn check_bundle_for_build(bundle: &Bundle<'_>, allow_unowned_subscriber: bool) -> Vec<Diag> {
+    let snap = bundle_snapshot(bundle, Config::check(true, allow_unowned_subscriber));
+    let mut diags = checked(&snap);
+    let ownership = match snap.demand_ownership_graph() {
+        Ok(graph) => &graph.rows,
+        Err(blocked) => panic!("the ownership graph is blocked: {}", render_blocked(blocked)),
+    };
+    diags.extend(hale_types::build_rule_diags(&snap.bundle(), ownership));
+    diags
 }
 
 /// `hale_types::derive_application_model`, through the snapshot.

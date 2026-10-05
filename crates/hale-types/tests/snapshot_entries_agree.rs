@@ -5,7 +5,8 @@
 //! Over every single-file program `hale_corpus::all()` yields that
 //! parses, both paths run and are compared: the diagnostics of
 //! `check_program` (each diagnostic whole: kind, span, message, origin,
-//! related; and their order), and, for a program whose check reports no
+//! related; and their order), the same of `check_bundle_for_build` over
+//! a bundle of the program, and, for a program whose check reports no
 //! error, the topology artifact (`dump_topology` over a bundle of the
 //! program as parsed), line by line. A panic on one path and not the
 //! other is a difference; a panic on both is the same answer.
@@ -17,7 +18,10 @@
 //! all join the model). An artifact that differs is that difference
 //! when the bare entry over the program the sequence shaped is the
 //! snapshot's artifact byte for byte; the test lists each such program
-//! and fails on any difference that is not that one.
+//! and fails on any difference that is not that one. The bare
+//! `check_bundle_for_build` checks the bundle as parsed too (it runs no
+//! sequence, unlike `check_program`), and its differences are
+//! classified the same way.
 //!
 //! The default run is a deterministic sample (every program whose index
 //! in the corpus is a multiple of [`SAMPLE_STRIDE`]); `HALE_MATRIX=full`
@@ -110,11 +114,15 @@ fn the_snapshot_entries_agree_with_the_bare_bundle_entries() {
     let mut programs = 0usize;
     let mut checked_clean = 0usize;
     let mut diagnostics = 0usize;
+    let mut build_diagnostics = 0usize;
     let mut dumped_bytes = 0usize;
     let mut differences: Vec<String> = Vec::new();
     // Artifacts that differ only because the snapshot ran the desugar
     // sequence over the program the bare entry modelled as parsed.
     let mut sequenced_only: Vec<String> = Vec::new();
+    // Build checks that differ only because the snapshot ran the desugar
+    // sequence over the bundle the bare entry checked as parsed.
+    let mut build_sequenced_only: Vec<String> = Vec::new();
     for (index, p) in corpus.iter().enumerate() {
         if !full && index % SAMPLE_STRIDE != 0 {
             continue;
@@ -147,6 +155,44 @@ fn the_snapshot_entries_agree_with_the_bare_bundle_entries() {
                 false
             }
         };
+        // What a build refuses: the whole-program check and the borrow
+        // rule after it, over the bundle as parsed.
+        let build_old = answer(|| hale_types::check_bundle_for_build(&bundle_of(&program), false));
+        let build_new = answer(|| entries::check_bundle_for_build(&bundle_of(&program), false));
+        match (&build_old, &build_new) {
+            (Ok(o), Ok(n)) => {
+                build_diagnostics += o.len();
+                if let Some(d) = first_diag_difference(o, n) {
+                    // The bare entry checks the bundle as parsed (it runs
+                    // no sequence, unlike `check_program`); the snapshot's
+                    // load runs the desugar sequence first, as `hale
+                    // build`'s does. The bare entry over the sequenced
+                    // program equal to the snapshot's is that difference.
+                    let mut sequenced = program.clone();
+                    let shaped = answer(|| {
+                        hale_types::desugar_sequence::desugar_before_check(
+                            &mut [&mut sequenced],
+                            &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+                        )
+                    });
+                    let after = match shaped {
+                        Ok(Ok(_)) => answer(|| hale_types::check_bundle_for_build(&bundle_of(&sequenced), false)).ok(),
+                        _ => None,
+                    };
+                    match after.as_ref() == Some(n) {
+                        true => build_sequenced_only.push(format!("{}: {d}", p.origin)),
+                        false => differences.push(format!("{}: build check: {d}", p.origin)),
+                    }
+                }
+            }
+            (Err(o), Err(n)) if o == n => {}
+            _ => differences.push(format!(
+                "{}: build check: old {:?} / new {:?}",
+                p.origin,
+                build_old.as_ref().map(|_| "diagnostics"),
+                build_new.as_ref().map(|_| "diagnostics"),
+            )),
+        }
         if !clean {
             continue;
         }
@@ -195,15 +241,19 @@ fn the_snapshot_entries_agree_with_the_bare_bundle_entries() {
         }
     }
     println!(
-        "snapshot entries ({}): {programs} programs compared ({diagnostics} diagnostics), \
-         {checked_clean} checked clean and dumped ({dumped_bytes} bytes of artifact), \
-         {} differences the desugar sequence accounts for, {} unclassified",
+        "snapshot entries ({}): {programs} programs compared ({diagnostics} diagnostics, \
+         {build_diagnostics} from the build check), {checked_clean} checked clean and dumped ({dumped_bytes} bytes of artifact), \
+         {} artifact and {} build-check differences the desugar sequence accounts for, {} unclassified",
         if full { "full" } else { "sample" },
         sequenced_only.len(),
+        build_sequenced_only.len(),
         differences.len(),
     );
     for d in &sequenced_only {
         println!("  the desugar sequence: {d}");
+    }
+    for d in &build_sequenced_only {
+        println!("  the desugar sequence (build check): {d}");
     }
     assert!(
         differences.is_empty(),
