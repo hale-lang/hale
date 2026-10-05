@@ -1477,7 +1477,12 @@ bytes for a bound subject) can use this too.
 fixed-slot ring over CALLER-PROVIDED memory, exposed as lotus
 primitives (`lotus_spsc_init` / `_emit` / `_note_drop` /
 `_set_tag_b` / `_read`) and the raw all-Int Hale surface
-`std::ring::__spsc_*`. Built for observation planes (the iris
+`std::ring::__spsc_*`, every address an `Int`: statements
+`__spsc_init(desc, data_off, tag_a, tag_b)`,
+`__spsc_emit(seg_base, desc, ring_slots, w0, w1)`,
+`__spsc_note_drop(desc)` and `__spsc_set_tag_b(desc, v)`, and
+`__spsc_read(seg_base, desc, ring_slots, cursor_io, overruns_io,
+out, max) -> Int`, the records copied. Built for observation planes (the iris
 observer attaches to these rings inside an shm segment,
 read-only, from a foreign process), so the layout is a STABLE
 documented contract:

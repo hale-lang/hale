@@ -523,7 +523,8 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
     }
 
     /// A1 zero-copy write: `std::bytes::write_<type>[_<endian>](w: BytesMut,
-    /// off: Int, val) -> () fallible(IndexError)`. Mirror of the readers:
+    /// off: Int, val) -> Int fallible(IndexError)`, the Int being the offset
+    /// past the write (`off` + the width). Mirror of the readers:
     /// writes a fixed-width scalar at `off` into the writable view `w`
     /// (data ptr + capacity), bounds-checked against the capacity. Floats
     /// are bit-cast to their integer pattern and written through the same
@@ -666,7 +667,21 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // () success; lazy IndexError(off, cap) on the err path.
+        // The success value is the offset past the write, `off + width`
+        // (spec/stdlib.md), so writes chain; lazy IndexError(off, cap) on
+        // the err path.
+        let next = self
+            .builder
+            .build_int_add(
+                off_ssa,
+                i64_t.const_int(width as u64, false),
+                "bytes.write.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let out_val_slot = self.alloca_for(&CodegenTy::Int, "bytes.write.out_val")?;
+        self.builder
+            .build_store(out_val_slot, next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let payload_ty = CodegenTy::TypeRef("IndexError".to_string());
         let out_err_slot = self.alloca_for(&payload_ty, "bytes.write.out_err")?;
         let func = self.current_fn.expect("bytes.write inside fn body");
@@ -686,9 +701,9 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         self.builder.position_at_end(join_bb);
         Ok(FallibleCallResult {
             i1_path: is_err,
-            out_val_slot: None,
+            out_val_slot: Some(out_val_slot),
             out_err_slot,
-            success_ty: None,
+            success_ty: Some(CodegenTy::Int),
             payload_ty,
         })
     }

@@ -141,10 +141,12 @@ fn lowering_error(source: &str, name: &str) -> (String, Option<hale_syntax::Span
 ///   `sqrt` was in the list ("is not a fallible call"), `regex::valid`
 ///   was not ("`or` over unknown path call").
 ///
-/// An `or` over a function with no signature yet (S6 gives each one) is
-/// what a checked program can still reach, since the check types the call
-/// `Unknown`: all of them get the refusal only the list's ids got, in its
-/// words (`SOL_SOCKET` got "`or` over unknown path call").
+/// An `or` over a function with no signature is what a checked program can
+/// still reach, since the check types the call `Unknown`: all of them get
+/// the refusal only the list's ids got, in its words (`SOL_SOCKET` got
+/// "`or` over unknown path call"; S6 gave it a signature, so the check
+/// refuses that `or` now). `std::io::mirror::__len` is one of the few S6
+/// left unsigned: its helper reads its argument without counting them.
 #[test]
 fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
     for (path, err, line) in [
@@ -179,12 +181,12 @@ fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
         let at = source.find(path).unwrap() as u32;
         assert_eq!(span.map(|s| (s.start.0, s.end.0)), Some((at, at + path.len() as u32)), "{path}");
     }
-    let source = "fn main() {\n    let v = std::io::sockopt::SOL_SOCKET() or 0;\n    println(v);\n}\n";
+    let source = "fn main() {\n    let v = std::io::mirror::__len(0) or 0;\n    println(v);\n}\n";
     checks_clean(source);
     let (text, span) = lowering_error(source, "or_over_unsigned_row");
     assert_eq!(
         text,
-        "unsupported in codegen v0: `std::io::sockopt::SOL_SOCKET` is not a fallible call \
+        "unsupported in codegen v0: `std::io::mirror::__len` is not a fallible call \
          — remove the `or` clause. Returns its value directly; failures (if any) use the \
          sentinel-with-discriminator idiom or are infallible."
     );
