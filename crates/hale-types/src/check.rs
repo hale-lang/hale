@@ -31,6 +31,7 @@ use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
 use crate::handler_routing::ChildRef;
+use crate::law::{Law, RuleId, Violation};
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
@@ -1061,12 +1062,14 @@ pub fn check_bundle_by_declaration(
     // wired to only one end. Gated on a closed-world program (one
     // with an entry), so library seeds whose consumers are external
     // aren't falsely flagged.
-    check_bus_graph(bundle, top, inputs.entry, inputs.bus, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
     // an intra-locus loop lowering turns into direct calls is
     // synchronous self-dispatch that recurses without bound (error).
-    check_bus_cycles(inputs.bus, inputs.intra_locus, &mut diags);
+    // Rules 9 and 10 are laws over the bus graph (F.40 phase 4, W5).
+    let bus_rows =
+        BusLawRows { bundle, top, entry: inputs.entry, bus: inputs.bus, intra_locus: inputs.intra_locus };
+    bus_graph_laws(&bus_rows, &mut diags);
     // GH #18 #4: backpressure. An unbounded publish loop with no
     // yield/throttle floods the bus — the producer has no
     // backpressure. Structural heuristic (warning).
@@ -4849,13 +4852,36 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
 // cross-seed (`alias::Foo`) references (the other seed owns the other
 // half). A site the graph cannot resolve is a hole, judged by no rule.
 
-fn check_bus_graph(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-    bus: &crate::bus_graph::BusGraph,
-    diags: &mut Vec<Diag>,
-) {
+/// Rule 9, the orphan bus topic.
+const RULE_9: RuleId = RuleId::registered("semantics/placement", "9");
+/// Rule 10, bus cycles.
+const RULE_10: RuleId = RuleId::registered("semantics/placement", "10");
+
+/// What rules 9 and 10 read: the bus graph, the entry row (the closed
+/// world, and the entry's `api:` binding, read off its declaration), the
+/// scope's declared topics, and the intra-locus rewrite relation.
+struct BusLawRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    top: &'r TopScope,
+    entry: &'r crate::entry::EntryRow,
+    bus: &'r crate::bus_graph::BusGraph,
+    intra_locus: &'r [hale_syntax::desugar::IntraLocusRewrite],
+}
+
+/// Rules 9 and 10 over the bus graph, and between them the wildcard
+/// payload warning (`spec/semantics.md` § "Computed publish subjects are
+/// confined to their declaration"), which no list registers: it reads the
+/// scope's declarations and judges a closed world, as rule 9 does.
+fn bus_graph_laws(rows: &BusLawRows<'_, '_>, diags: &mut Vec<Diag>) {
+    diags.extend(Law { rule: RULE_9, eval: check_bus_graph }.diags(rows));
+    if rows.entry.entry().is_some() {
+        check_wildcard_publish_payloads(rows.top, diags);
+    }
+    diags.extend(Law { rule: RULE_10, eval: check_bus_cycles }.diags(rows));
+}
+
+fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
+    let BusLawRows { bundle, top, entry, bus, .. } = *rows;
     // Closed-world gate: only a complete program (one with an entry,
     // F.40 phase 3, E0) has both ends of every channel in-bundle. A
     // seed whose only `main locus` is imported or module-nested has
@@ -4904,7 +4930,8 @@ fn check_bus_graph(
         let s = has_sub(row);
         if p && !s {
             let span = row.and_then(|r| r.published).unwrap_or(info.span);
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus topic `{}` is published but has no subscriber — \
@@ -4915,7 +4942,8 @@ fn check_bus_graph(
             ));
         } else if s && !p {
             let span = row.and_then(|r| r.subscribed).unwrap_or(info.span);
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus topic `{}` is subscribed but never published — its \
@@ -4925,7 +4953,8 @@ fn check_bus_graph(
                 ),
             ));
         } else if !p && !s {
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 info.span,
                 format!(
                     "bus topic `{}` is declared but neither published nor \
@@ -4946,7 +4975,8 @@ fn check_bus_graph(
         let s = has_sub(Some(row));
         if p && !s {
             let Some(span) = row.published else { continue };
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus subject `\"{}\"` is published but has no subscriber — \
@@ -4957,7 +4987,8 @@ fn check_bus_graph(
             ));
         } else if s && !p {
             let Some(span) = row.subscribed else { continue };
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_9,
                 span,
                 format!(
                     "bus subject `\"{}\"` is subscribed but never published — \
@@ -4968,8 +4999,6 @@ fn check_bus_graph(
             ));
         }
     }
-
-    check_wildcard_publish_payloads(top, diags);
 }
 
 /// A wildcard publish declaration authorizes its locus to publish any
@@ -5119,12 +5148,9 @@ fn cycle_path(cycle: &[&crate::bus_graph::BusEdge]) -> String {
 /// declarations, not names. Whether a hop is a direct call is the
 /// intra-locus rewrite's relation (`intra_locus`, by the send's id),
 /// never re-derived here.
-fn check_bus_cycles(
-    bus: &crate::bus_graph::BusGraph,
-    intra_locus: &[hale_syntax::desugar::IntraLocusRewrite],
-    diags: &mut Vec<Diag>,
-) {
+fn check_bus_cycles(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::bus_graph::BusEdge;
+    let (bus, intra_locus) = (rows.bus, rows.intra_locus);
     let roots = |keep: &dyn Fn(&BusEdge) -> bool| -> BTreeSet<&str> {
         bus.edges.iter().filter(|e| keep(e)).map(|e| e.from.as_str()).collect()
     };
@@ -5151,7 +5177,8 @@ fn check_bus_cycles(
         // the queue carries, so it is refused here rather than judged.
         // Every entry numbers before it checks; this is the invariant.
         if let Some(e) = bus.edges.iter().find(|e| keep(e) && e.send.is_none()) {
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                RULE_10,
                 e.span,
                 format!(
                     "internal: the send to `{}` in handler `{}` of locus `{}` \
@@ -5167,7 +5194,8 @@ fn check_bus_cycles(
             ));
             intra.insert(d);
         } else if let Some(cycle) = first_cycle(&called) {
-            diags.push(Diag::ty(
+            out.push(Violation::error(
+                RULE_10,
                 cycle[0].span,
                 format!(
                     "locus `{}` has a re-entrant synchronous bus cycle \
@@ -5182,7 +5210,8 @@ fn check_bus_cycles(
             ));
             intra.insert(d);
         } else {
-            diags.push(Diag::warn(
+            out.push(Violation::warning(
+                RULE_10,
                 queued[0].span,
                 format!(
                     "bus cycle `{}` in locus `{}`: a cell can re-trigger \
@@ -5226,7 +5255,8 @@ fn check_bus_cycles(
             })
             .collect();
         loci.sort();
-        diags.push(Diag::warn(
+        out.push(Violation::warning(
+            RULE_10,
             cycle[0].span,
             format!(
                 "bus cycle `{}` across loci ({}): a cell can re-trigger \
