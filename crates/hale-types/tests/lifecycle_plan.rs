@@ -456,8 +456,10 @@ fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
 #[test]
 fn an_anchors_params_and_held_delivery_use_its_initialization_domain() {
     let source = include_str!("../../hale-codegen/tests/fixtures/lifecycle/l01_pool_owner_settle.hl");
+    // Line 3 (L4's fifth part): a pool-placed anchor's own birth runs on
+    // its pool's worker, as a pinned one's on its thread.
     for (placement, domain, birth_domain) in [
-        ("cooperative(pool = side)", "pool:side", "main"),
+        ("cooperative(pool = side)", "pool:side", "pool:side"),
         ("pinned", "pinned", "pinned"),
     ] {
         let s = snapshot(&source.replace("cooperative(pool = side)", placement));

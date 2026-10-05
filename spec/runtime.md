@@ -956,9 +956,10 @@ or via the bus — ships as a typecheck rule (Phase 5).
 runtime ships pool-aware **bus dispatch** for now: a subscriber
 whose enclosing locus is placed on a non-`main` cooperative
 pool gets its handler invoked on that pool's worker thread.
-Lifecycle methods (`birth` / `run` / `dissolve` / `accept`)
-still run on the main thread for cooperative-pool loci —
-the codegen does NOT yet relocate them to the pool worker.
+Lifecycle methods (`dissolve` / `accept`) still run on the
+main thread for cooperative-pool loci — the codegen does NOT
+yet relocate them to the pool worker (`run` and a pool-placed
+root's own `birth` are relocated, below).
 For state mutated only inside bus handlers this is enough to
 honor the single-threaded-method invariant (the handler is
 the only writer of locus state on the pool thread). State
@@ -973,8 +974,12 @@ instantiation / scope-exit boundaries). The pool-placed field's
 initializes there (§ "m27 + m28a", the pool side): everything
 nested under it is built, registered and born on the worker, and
 a nested cooperative child's `run()` runs there inline. The
-placed field's own `accept` and `birth()` still run on the
-instantiating thread (§ "Lifecycle obligations", line 3).
+placed field's own `birth()`, with its birth-epoch closures and
+its `birth_check`, runs on the worker too, as one more job the
+instantiating thread posts after the field's registrations and
+waits for, before its readiness (§ "Lifecycle obligations", line
+3). Its `accept` and `dissolve()` still run on the instantiating
+and the teardown thread.
 
 **Runtime pool inheritance for in-method-body instantiation
 (2026-05-29).** A locus instantiated *inside a method or
@@ -1920,14 +1925,27 @@ its `KNOWN_OPEN` table.
   `l02_tick_after_posted_run.hl`). The options stand: run them in
   the posted wrapper after `run()` returns, or drop the post-run
   tick for a posted `run()`.
-- **Line 3, where lifecycle methods run on a pool.** **Pending:**
-  the decisions choose no option. Today a pool-placed locus's
-  `accept` and `birth()` run on the instantiating thread, its
-  `run()` on the pool's worker, and its `dissolve()` on the
-  teardown thread (`l03_pool_birth_domain.hl`); § "Placement
-  classes", Phase 4 v1 limit, says otherwise. Everything nested
-  under it is built, registered, born and run inline on the worker
-  (§ "m27 + m28a", the pool side).
+- **Line 3, where lifecycle methods run on a pool.** A placed
+  locus's own `birth()` runs on the domain the placement table gives
+  it: a pinned one's on its thread, and a pool-placed root's on its
+  pool's worker, with its birth-epoch closures and its
+  `birth_check`, after its subtree's initialization and its own
+  registrations and before its readiness. The birth spine's order is
+  unchanged; only the thread moves, and the instantiating thread
+  waits for the birth as it waits for the subtree's initialization,
+  posting it as one more job of the same kind (`__pool_birth_<L>`).
+  A failure the birth raises while the owner's params are open is
+  held on the worker and decided on the instantiating thread after
+  the job, as before. Shipped (L4's fifth part,
+  `l03_pool_birth_domain.hl`: the birth and a handler that touch one
+  field run on the worker's one thread; before, the birth ran on the
+  instantiating thread beside them). A restart of that birth decided
+  at settle still runs on the settling thread (inventory rows C42 and
+  C43, line 13). **Pending:** the decisions choose no option for the rest: a
+  pool-placed locus's `accept` runs on the instantiating thread, its
+  `run()` on the pool's worker, and its `dissolve()` on the teardown
+  thread. Everything nested under it is built, registered, born and
+  run inline on the worker (§ "m27 + m28a", the pool side).
 - **Line 4, the failure route bound at birth, in every spine.**
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one

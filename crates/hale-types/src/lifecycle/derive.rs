@@ -1126,8 +1126,11 @@ impl<'b, 'a> Builder<'b, 'a> {
 
     /// The domain the instance's birth runs on: its pinned thread, or
     /// the instantiating thread.
+    /// Where the instance's own `birth()` runs: a pinned anchor's thread, a
+    /// pool-placed root's worker (line 3, L4's fifth part), else the
+    /// instantiating thread.
     fn birth_domain(&self, i: usize, c: &Contribution) -> Option<DomainId> {
-        if self.is_pinned(i) { c.own } else { c.it }
+        if self.is_pinned(i) || self.pool_placed(c) { c.own } else { c.it }
     }
 
     fn site(&self, i: usize) -> Option<SourceSite> {
@@ -1263,22 +1266,23 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.runs_on = self.claim(i, |c| Self::on(c.it, shipped("6")));
             self.push(o)
         });
-        // Birth: on the pinned thread, else on the instantiating thread,
-        // a pool-placed locus's domain pending (line 3).
+        // Birth: on the pinned thread; a pool-placed root's on its pool's
+        // worker, as a job the instantiating thread waits for (line 3); else
+        // on the instantiating thread.
         let birth_holder = if pinned {
             Holder { spine: Spine::PinnedMain, domain: DomainRole::Own }
         } else {
             instantiation
         };
         let mut o = self.row(i, K::Birth, birth_holder);
+        if s.placed && on_pool {
+            o.holder.domain = DomainRole::Own;
+        }
         o.multiplicity = Multiplicity::OncePerIncarnation;
         o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
         o.runs_on = self.claim(i, |c| {
-            if self.pool_placed(c) {
-                Self::on(c.it, Rule::line("3", Status::Pending { condition: NO_OPTION }))
-            } else {
-                Self::on(self.birth_domain(i, c), Rule::SHIPPED)
-            }
+            let rule = if self.pool_placed(c) { shipped("3") } else { Rule::SHIPPED };
+            Self::on(self.birth_domain(i, c), rule)
         });
         if let Some(p) = r.params_settle {
             o.edges.entry.push(after(p, Point::Completed, Rule::SHIPPED));

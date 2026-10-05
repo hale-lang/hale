@@ -104,7 +104,7 @@
 //! line  kinds                                    status
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
 //! 2     Closures Run                             Pending (no option chosen)
-//! 3     Accept Birth Run Dissolve                Pending (no option chosen)
+//! 3     Accept Birth Run Dissolve                Shipped (birth, L4); Pending (no option chosen)
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; Shipped (L4)
@@ -1048,7 +1048,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "3",
         title: "where lifecycle methods run on a pool",
         kinds: &[K::Accept, K::Birth, K::Run, K::Dissolve],
-        statuses: &[(Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus")],
+        statuses: &[
+            (Status::Shipped, "a pool-placed root's own birth(), on its pool's worker (L4)"),
+            (Status::Pending { condition: NO_OPTION }, "accept and dissolve of a pool-placed locus"),
+        ],
     },
     DecisionLine {
         line: "4",

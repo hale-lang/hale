@@ -316,9 +316,11 @@ it with that helper's `birth()` and inline `run()`, are built on
 the worker as the locus's first job there, and the literal returns
 once they are. A helper that waits in that `run()` for a message to
 itself gets it: a `std::time::sleep` there lets the worker handle
-`io`'s queued messages. The pool locus's own `birth()` still runs
-where the literal is, and its `run()` is posted to the worker after
-that, as before. Two locus fields on one pool are built in turn,
+`io`'s queued messages. The pool locus's own `birth()` runs on the
+worker too, after its helpers are built and before any message
+reaches it, while the literal waits for it; its `run()` is then
+posted to the worker, as before. So the locus's `birth()` and its
+handlers run on one thread and never at the same time. Two locus fields on one pool are built in turn,
 one after the other. If the worker is waiting for this constructor
 to settle a held failure, it can perform the initialization during
 that wait, even when its message queue is full. This breaks the

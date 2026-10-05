@@ -234,7 +234,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l01_neg_same_pool_held.hl", line: "1", adopted: Some("delivered-once-resumed"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l01_neg_it_waits_worker_queue.hl", line: "1", adopted: Some("delivered-at-settle-queue-ran"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l02_tick_after_posted_run.hl", line: "2", adopted: None, run: RunMode::Plain, judge: outcome_line },
-    Fixture { file: "l03_pool_birth_domain.hl", line: "3", adopted: None, run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l03_pool_birth_domain.hl", line: "3", adopted: Some("birth-on-worker-run-posted"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l03_field_parents_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l03_field_parents_two_domains_nested.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: twig_born },
     Fixture { file: "l03_field_parents_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
@@ -296,7 +296,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
 const PENDING: &[(&str, &str)] = &[
     ("l01_pool_owner_settle.hl", "delivered-at-settle"),
     ("l02_tick_after_posted_run.hl", "tick-before-run-returned"),
-    ("l03_pool_birth_domain.hl", "birth-inline-run-posted"),
     ("l16_eager_spine_pool_join.hl", "joined-before-teardown"),
     ("l17_pinned_join_eager.hl", "final-dropped"),
     ("l17_pinned_join_deferred.hl", "final-dropped"),
@@ -410,6 +409,8 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.occurrences = count(&[("Mid", 2), ("Leaf", 2)]);
             &["3"]
         }
+        // A pool-placed root's own birth, on its pool's worker.
+        "l03_pool_birth_domain.hl" => &["3"],
         "l05_accept_position.hl" => {
             p.occurrences = count(&[("Kid", 1)]);
             &["5"]
@@ -1519,7 +1520,8 @@ fn every_planned_kind_has_a_negative_control() {
 /// where the template that kept its first parent's context only claimed
 /// `Birth*2!pool:side Run*2!pool:side`, false of the occurrence on main;
 /// the side occurrence's run is canceled behind its parent's teardown
-/// and the main one's completes (`=Ended`). The edges between the
+/// and the main one's completes (`=Ended`). The pool-placed Worker's own
+/// birth claims its pool (line 3, L4's fifth part). The edges between the
 /// Parents and their fields are not held: two occurrences of each, and
 /// the trace does not say which is whose. The control, both parents on
 /// main, claims main alone. Every run is held until reclaim completes.
@@ -1527,7 +1529,7 @@ const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains.hl",
         "App: Birth!main Run!main Drain Dissolve Reclaim\n\
-         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Worker: Birth!pool:side Run!pool:side Drain Dissolve Reclaim\n\
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
          edge App.Run.Ended -> App.Drain.Entered\n\
@@ -1544,7 +1546,7 @@ const FIELD_PLANS: &[(&str, &str)] = &[
     (
         "l03_field_parents_two_domains_nested.hl",
         "App: Birth!main Run!main Drain Dissolve Reclaim\n\
-         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Worker: Birth!pool:side Run!pool:side Drain Dissolve Reclaim\n\
          Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
@@ -1592,7 +1594,7 @@ const BODY_PLANS: &[(&str, &str)] = &[
     (
         "l03_body_literal_two_domains.hl",
         "App: Birth!main Run!main Drain Dissolve Reclaim\n\
-         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Worker: Birth!pool:side Run!pool:side Drain Dissolve Reclaim\n\
          Leaf: Birth*2!{main,pool:side} Run*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
          Mid: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
          edge App.Run.Ended -> App.Drain.Entered\n\

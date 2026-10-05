@@ -4539,6 +4539,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for step in birth_spine.iter().copied() {
         match step {
         ObligationKind::Birth => {
+        // Decision line 3: a pool-placed root's birth runs on its pool's
+        // worker, posted as a job the instantiating thread waits for.
+        let birth_job = match pool_init.clone() {
+            Some(pool) => Some(self.begin_pool_birth(locus_name, &info, pool)?),
+            None => None,
+        };
         // m39: birth-epoch closures fire right after birth()
         // returns. We emit birth() + __birth_closures + run() in
         // sequence — the closure check sits between birth (which
@@ -4595,6 +4601,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // a regular violate.
         let birth_check_decls = self.birth_check_decls(locus_name);
         self.emit_birth_checks(&birth_check_decls, self_ptr, &info, locus_name)?;
+        if let Some(job) = birth_job {
+            self.finish_pinned_init(job, locus_name, &info, self_ptr)?;
+        }
         }
         ObligationKind::Readiness => {
             self.emit_readiness(self_ptr, locus_name, "Instantiation")?;
@@ -5261,15 +5270,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &LocusInfo<'ctx>,
         pool: Option<String>,
     ) -> Result<PinnedInit<'ctx>, CodegenError> {
+        let init_name = match pool {
+            Some(_) => format!("__pool_init_{}", locus_name),
+            None => format!("__pinned_init_{}", locus_name),
+        };
+        self.begin_init_fn(locus_name, info, pool, init_name)
+    }
+
+    /// Decision line 3 (L4's fifth part): a pool-placed root's own
+    /// `birth()`, with its birth-epoch closures and its `birth_check`,
+    /// lowered into `__pool_birth_<L>(self, start)` and posted to its pool
+    /// as one more job, after its subtree's init and its own registrations
+    /// and before its readiness, the instantiating thread waiting for it as
+    /// for the init ([`Cx::finish_pinned_init`]). The birth spine's order is
+    /// unchanged; only the thread moves. The decision a held failure of the
+    /// birth waits for (R4) stays on the instantiating thread, after the
+    /// job: the worker records the hold and returns.
+    pub(crate) fn begin_pool_birth(
+        &mut self,
+        locus_name: &str,
+        info: &LocusInfo<'ctx>,
+        pool: String,
+    ) -> Result<PinnedInit<'ctx>, CodegenError> {
+        self.begin_init_fn(locus_name, info, Some(pool), format!("__pool_birth_{}", locus_name))
+    }
+
+    fn begin_init_fn(
+        &mut self,
+        locus_name: &str,
+        info: &LocusInfo<'ctx>,
+        pool: Option<String>,
+        init_name: String,
+    ) -> Result<PinnedInit<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let saved_block = self
             .builder
             .get_insert_block()
             .expect("a pinned instantiation inside an active block");
-        let init_name = match pool {
-            Some(_) => format!("__pool_init_{}", locus_name),
-            None => format!("__pinned_init_{}", locus_name),
-        };
         let init_fn = self.module.add_function(
             &init_name,
             self.context.void_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
