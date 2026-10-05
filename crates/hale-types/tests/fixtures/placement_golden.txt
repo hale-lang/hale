@@ -4269,6 +4269,134 @@ row	App@literal1.e	Echo	main	default
 == crates/hale-types/tests/call_arity.rs#700f7f93
 row	A@main1	A	main	default
 
+== crates/hale-types/tests/check_rules.rs#c55458f4
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#989b09ab
+root	App	the entry
+domain	pinned:MyAdapter@binding1
+row	App@entry	App	main	default
+row	MyAdapter@binding1	MyAdapter	pinned:MyAdapter@binding1	binding
+
+== crates/hale-types/tests/check_rules.rs#4a17c976
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#71a0e1c0
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#f9040aae
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#e2b2a850
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#beaa6766
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#6ac605f3
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#dc4295b3
+row	ParentL@main1	ParentL	main	default
+
+== crates/hale-types/tests/check_rules.rs#4ee4752e
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#f5136f98
+row	StdoutSinkL@main1	StdoutSinkL	main	default
+
+== crates/hale-types/tests/check_rules.rs#0027490f
+row	Hello@main1	Hello	main	default
+
+== crates/hale-types/tests/check_rules.rs#b5c6331f
+row	ItemListL@main1	ItemListL	main	default
+
+== crates/hale-types/tests/check_rules.rs#2ccb19b7
+row	Registry@main1	Registry	main	default
+
+== crates/hale-types/tests/check_rules.rs#80291fb3
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#15d584f2
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#ab31fd75
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#d61c77f5
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#656fe35c
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#2a72ba82
+row	Registry@main1	Registry	main	default
+
+== crates/hale-types/tests/check_rules.rs#55423ab2
+row	Registry@main1	Registry	main	default
+
+== crates/hale-types/tests/check_rules.rs#cf908127
+row	Registry@main1	Registry	main	default
+
+== crates/hale-types/tests/check_rules.rs#c7cb8787
+row	Registry@main1	Registry	main	default
+
+== crates/hale-types/tests/check_rules.rs#1e87dd67
+row	Registry@main1	Registry	main	default
+
+== crates/hale-types/tests/check_rules.rs#9ea87a6b
+row	ById@main1	ById	main	default
+
+== crates/hale-types/tests/check_rules.rs#0802c3fe
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#db0e07c2
+row	ItemListL@main1	ItemListL	main	default
+
+== crates/hale-types/tests/check_rules.rs#e9154d97
+row	ItemListL@main1	ItemListL	main	default
+
+== crates/hale-types/tests/check_rules.rs#69e998bc
+row	ItemListL@main1	ItemListL	main	default
+
+== crates/hale-types/tests/check_rules.rs#8a106a7e
+row	ItemListL@main1	ItemListL	main	default
+
+== crates/hale-types/tests/check_rules.rs#432bcdb3
+row	PairsL@main1	PairsL	main	default
+
+== crates/hale-types/tests/check_rules.rs#d70d05e9
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#df9347a6
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#b5ff4bd3
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#20315b84
+row	L@main1	L	main	default
+
+== crates/hale-types/tests/check_rules.rs#4161e265
+row	Pub@main1	Pub	main	default
+dynamic	<hole>	on main|unresolved declaration `src::Beat`	in the seed
+
+== crates/hale-types/tests/check_rules.rs#85a93390
+row	Disp@main1	Disp	main	default
+dynamic	Child	on main	in the seed
+
+== crates/hale-types/tests/check_rules.rs#3c8b2a63
+row	Producer@main1	Producer	main	default
+dynamic	Watcher	on main	in the seed
+
+== crates/hale-types/tests/check_rules.rs#5ff5e1f0
+row	Disp@main1	Disp	main	default
+dynamic	Child	on main	in the seed
+
 == crates/hale-types/tests/claim_lowering.rs#c643464f
 root	App	the entry
 row	App@literal1	App	main	default
