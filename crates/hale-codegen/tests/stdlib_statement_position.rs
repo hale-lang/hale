@@ -99,3 +99,27 @@ fn bare_parse_int_and_parse_float_get_the_expression_forms_refusal() {
         );
     }
 }
+
+/// A path no dispatcher lowers at statement position fails as it did
+/// before the fold, in the statement's words: the fall-through must not
+/// hand a statement the expression form's "in expression position".
+/// The four paths the checker knows and only the `or` form lowers are
+/// the ones a checked program can reach this with.
+#[test]
+fn a_statement_no_dispatcher_lowers_keeps_the_statement_wording() {
+    for path in [
+        "std::io::tcp::set_recv_timeout",
+        "std::io::tcp::set_send_timeout",
+        "std::io::tls::set_nodelay",
+        "std::io::tls::set_rx_timestamps",
+    ] {
+        let program =
+            hale_syntax::parse_source(&format!("fn main() {{\n    {path}(3, 5);\n}}\n")).expect("parses");
+        let bin = harness::unique_bin("stmt_not_implemented");
+        let err = harness::build_ir_text(&program, &bin).expect_err("no dispatcher lowers it bare");
+        let _ = std::fs::remove_file(&bin);
+        let text = format!("{err}");
+        assert!(text.contains(&format!("stdlib path `{path}` — not implemented")), "{path}: {text}");
+        assert!(!text.contains("in expression position"), "{path}: {text}");
+    }
+}

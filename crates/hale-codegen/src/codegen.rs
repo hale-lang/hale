@@ -26161,7 +26161,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // value dropped: its arms, its refusals, and its fallback
             // to the Hale bodies `PATH_RENAMES` names.
             _ => {
-                let _ = self.lower_stdlib_path_call_expr(segs, args, scope)?;
+                // A path no dispatcher lowers keeps the statement's
+                // wording: the expression form's last arm says "in
+                // expression position", which a statement is not. This
+                // goes when the dispatch takes its position as a
+                // parameter (S3).
+                let _ = self.lower_stdlib_path_call_expr(segs, args, scope).map_err(|e| match e {
+                    CodegenError::Unsupported(m) if m.ends_with("in expression position — not implemented") => {
+                        CodegenError::Unsupported(format!(
+                            "stdlib path `{}` — not implemented",
+                            segs.join("::")
+                        ))
+                    }
+                    e => e,
+                })?;
                 Ok(())
             }
         }
