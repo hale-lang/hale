@@ -4,8 +4,8 @@
 //! of the child waits for a delivery in flight (F.40 phase 3, L5's
 //! fourth part; inventory rows C36 and C39).
 //!
-//! Two fixtures under `tests/fixtures/failure_delivery/`, each judged
-//! into one outcome word from its `ev` lines:
+//! The fixtures under `tests/fixtures/failure_delivery/`, each judged
+//! into one outcome word from its output:
 //!
 //!   * `fd_pinned_owner_state.hl`: a pinned child fails in a bus handler
 //!     while its owner, on main, reads the state the handler writes in a
@@ -17,6 +17,18 @@
 //!     flight. Gate files force the order. The word names the handler's
 //!     thread and whether the handler read the old child before that
 //!     child dissolved.
+//!   * `fd_sibling_replace*.hl`: the owner's handler for one child
+//!     replaces a sibling whose own failure is posted to the owner and
+//!     not yet delivered. That delivery can only run on the owner's
+//!     thread, which is inside the handler (handlers do not nest), so a
+//!     reclaim that waited for it would never end: the reclaim is
+//!     deferred behind it instead (PR #1348's review). The bare case and
+//!     its control, a child carrying a heap String the late handler
+//!     reads, three siblings, and the replacement through a method. The
+//!     word is the program's output, or for the heap and three-sibling
+//!     cases the order the handlers read and the children dissolved in.
+//!     Each run is under [`DEADLINE`], so a hang is a `timeout` word, not
+//!     a stuck suite.
 //!
 //! [`KNOWN_OPEN`] gives each fixture's word today, with the row it
 //! departs at; the test asserts it, so the protocol that delivers on the
@@ -46,7 +58,18 @@ const DEADLINE: Duration = Duration::from_secs(20);
 const ADOPTED: &[(&str, &str)] = &[
     ("fd_pinned_owner_state.hl", "held-in-window on-owner heard-1"),
     ("fd_reclaim_under_delivery.hl", "on-owner read-before-dissolve dissolved-once-each"),
+    ("fd_sibling_replace.hl", SIBLING_OUTPUT),
+    ("fd_sibling_replace_control.hl", SIBLING_OUTPUT),
+    ("fd_sibling_replace_heap.hl", "on-owner read-before-dissolve dissolved-once-each"),
+    ("fd_sibling_replace_three.hl", "handled-0-1-2 reclaimed-after-own-handler dissolved-once-each"),
+    ("fd_sibling_replace_method.hl", SIBLING_OUTPUT),
 ];
+
+/// The review's reproducer's output, with the replacement and without:
+/// the replaced sibling's failure is still delivered, after the handler
+/// that replaced it returns. Before the rule, the replacing run printed
+/// `handling 0 / replacing sibling` and never ended.
+const SIBLING_OUTPUT: &str = "handling 0 / replacing sibling / replaced sibling / handling 1 / finished";
 
 /// What each fixture gives today, where it differs: (fixture, inventory
 /// row, today's word). Empty since the protocol landed: before it, the
@@ -197,10 +220,66 @@ fn reclaim_under_delivery(r: &Ran) -> String {
     format!("{} {read} {once}", thread_word(r))
 }
 
+/// The sibling replacement's plain cases: what the program printed, in
+/// order.
+fn output(r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return format!("{w} after: {}", r.stdout.lines().collect::<Vec<_>>().join(" / "));
+    }
+    r.stdout.lines().collect::<Vec<_>>().join(" / ")
+}
+
+/// `fd_sibling_replace_heap.hl`: the handlers' thread, whether the
+/// replaced child's late handler read its name before it dissolved, and
+/// the dissolve counts.
+fn sibling_heap(r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return w;
+    }
+    let read = match (pos(r, "ev handler kid-1-name"), pos(r, "ev kid-dissolve 1"), pos(r, "ev replaced sibling")) {
+        (Some(h), Some(d), Some(s)) if s < h && h < d => "read-before-dissolve",
+        (Some(_), Some(_), Some(_)) => "read-out-of-order",
+        _ => "never-read",
+    };
+    let once = if (0..3).all(|t| count(r, &format!("ev kid-dissolve {t}")) == 1) {
+        "dissolved-once-each"
+    } else {
+        "dissolved-other"
+    };
+    format!("{} {read} {once}", thread_word(r))
+}
+
+/// `fd_sibling_replace_three.hl`: the order the handlers ran in, whether
+/// each replaced child dissolved after its own handler and before the
+/// owner went on, and the dissolve counts (three old children, two
+/// replacements).
+fn sibling_three(r: &Ran) -> String {
+    if let Some(w) = exit_word(r) {
+        return w;
+    }
+    let handled: Vec<&str> = r.stdout.lines().filter_map(|l| l.strip_prefix("ev handling ")).collect();
+    let after = [1, 2].iter().all(|t| {
+        match (pos(r, &format!("ev handling {t}")), pos(r, &format!("ev kid-dissolve {t}")), pos(r, "ev finished")) {
+            (Some(h), Some(d), Some(f)) => h < d && d < f,
+            _ => false,
+        }
+    });
+    let after = if after { "reclaimed-after-own-handler" } else { "reclaimed-out-of-order" };
+    let once = if (0..5).all(|t| count(r, &format!("ev kid-dissolve {t}")) == 1) {
+        "dissolved-once-each"
+    } else {
+        "dissolved-other"
+    };
+    format!("handled-{} {after} {once}", handled.join("-"))
+}
+
 fn judge(file: &str, r: &Ran) -> String {
     match file {
         "fd_pinned_owner_state.hl" => owner_state(r),
         "fd_reclaim_under_delivery.hl" => reclaim_under_delivery(r),
+        "fd_sibling_replace_heap.hl" => sibling_heap(r),
+        "fd_sibling_replace_three.hl" => sibling_three(r),
+        f if f.starts_with("fd_sibling_replace") => output(r),
         _ => panic!("{file} has no judge"),
     }
 }
@@ -245,12 +324,16 @@ fn known_open(file: &str) -> Option<(&'static str, &'static str)> {
 /// The trace build: today's word where the fixture is known open, the
 /// adopted one otherwise; and where the delivery ran.
 fn assert_traced(file: &str) {
-    let bin = build(file, false, false);
+    assert_traced_in(file, false);
+}
+
+fn assert_traced_in(file: &str, no_bus_devirt: bool) {
+    let bin = build(file, false, no_bus_devirt);
     let ran = run_bin(&bin, &[]);
     let _ = std::fs::remove_file(&bin);
     let got = judge(file, &ran);
     let domains = delivery_domains(&ran);
-    eprintln!("{file}: {got}; FailureDelivery on {domains:?}\n{}", report(&ran));
+    eprintln!("{file}, no_bus_devirt={no_bus_devirt}: {got}; FailureDelivery on {domains:?}\n{}", report(&ran));
     match known_open(file) {
         Some((row, today)) => assert_eq!(
             got, today,
@@ -259,9 +342,22 @@ fn assert_traced(file: &str) {
             report(&ran)
         ),
         None => {
-            assert_eq!(got, adopted(file), "{file}\n{}", report(&ran));
+            assert_eq!(got, adopted(file), "{file}, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
             assert!(!domains.is_empty() && domains.iter().all(|d| d == "main"), "{file}: the delivery ran on {domains:?}, not main");
         }
+    }
+}
+
+/// Under AddressSanitizer, with chunk pooling off (GH #816), in both
+/// dispatch modes: the adopted word and nothing reported.
+fn assert_asan(file: &str) {
+    for no_bus_devirt in [false, true] {
+        let bin = build(file, true, no_bus_devirt);
+        let ran = run_bin(&bin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+        let _ = std::fs::remove_file(&bin);
+        let hits = sanitizer_hits(&ran);
+        assert!(hits.is_empty(), "{file}, no_bus_devirt={no_bus_devirt}: {hits:?}\n{}", report(&ran));
+        assert_eq!(judge(file, &ran), adopted(file), "{file} under ASan, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
     }
 }
 
@@ -301,14 +397,49 @@ fn an_owner_never_reclaims_a_child_under_its_failure_delivery() {
 /// child's freed arena (a heap-use-after-free).
 #[test]
 fn both_fixtures_hold_under_asan_in_both_dispatch_modes() {
-    for (file, _) in ADOPTED {
-        for no_bus_devirt in [false, true] {
-            let bin = build(file, true, no_bus_devirt);
-            let ran = run_bin(&bin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
-            let _ = std::fs::remove_file(&bin);
-            let hits = sanitizer_hits(&ran);
-            assert!(hits.is_empty(), "{file}, no_bus_devirt={no_bus_devirt}: {hits:?}\n{}", report(&ran));
-            assert_eq!(judge(file, &ran), adopted(file), "{file} under ASan, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));
-        }
+    assert_asan("fd_pinned_owner_state.hl");
+    assert_asan("fd_reclaim_under_delivery.hl");
+}
+
+/// The review's reproducer: the owner's handler for `a` replaces `b`
+/// while `b`'s failure is posted to the owner. Before the rule this
+/// printed `handling 0 / replacing sibling` and hung (the word was
+/// `timeout`); its control, without the replacement, never did.
+#[test]
+fn a_handler_replacing_a_failing_sibling_never_waits_on_itself() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_sibling_replace.hl", no_bus_devirt);
+        assert_traced_in("fd_sibling_replace_control.hl", no_bus_devirt);
+    }
+}
+
+/// The replaced sibling's late handler reads its heap String through
+/// `c`: whole, before the old child dissolves, under ASan as well.
+#[test]
+fn a_replaced_siblings_late_handler_reads_it_whole() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_sibling_replace_heap.hl", no_bus_devirt);
+    }
+    assert_asan("fd_sibling_replace_heap.hl");
+}
+
+/// Two siblings replaced from one handler: both deliveries run after it,
+/// in posting order, and each old child is reclaimed once, after its own.
+#[test]
+fn two_replaced_siblings_are_each_delivered_then_reclaimed_once() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_sibling_replace_three.hl", no_bus_devirt);
+    }
+}
+
+/// The replacement reached through a method the handler calls. (An owner
+/// placed on a pool has no such case: only `main locus` places, and a
+/// nested instance runs on its owner's domain, so a pool-placed owner's
+/// children fail on its worker and their deliveries are in place, never
+/// posted to it.)
+#[test]
+fn a_sibling_replaced_through_a_method_is_deferred_too() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_sibling_replace_method.hl", no_bus_devirt);
     }
 }

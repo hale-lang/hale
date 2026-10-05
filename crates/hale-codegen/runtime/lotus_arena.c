@@ -2050,9 +2050,13 @@ static void lotus_held_unlink(lotus_held_failure_t *node) {
  *
  * A posted delivery (decision L0-1) is waited for instead, as a started
  * run is (the run hold's twin): the owner's domain may be this thread,
- * which runs it while it waits, and the reclaim then proceeds here. Only
- * a reclaim reached from that delivery's own handler is deferred behind
- * it, since waiting there would wait on itself. */
+ * which runs it while it waits, and the reclaim then proceeds here. A
+ * reclaim never waits for a delivery only the waiting thread can run, so
+ * it is deferred behind the delivery when reached from that delivery's
+ * own handler, or from another handler on the thread the delivery is
+ * still held for (an owner replacing a sibling whose failure is posted
+ * to it): that delivery runs after the running handler returns, and the
+ * reclaim right after its handler (`lotus_failure_reclaim_wait_locked`). */
 int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
     pthread_mutex_lock(&g_params_open_lock);
     lotus_held_failure_t *node = lotus_held_latest_for(child);
@@ -10070,7 +10074,9 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
  * owner no longer holds it does (`lotus_failure_hold` answering 0), and
  * shutdown never drops one. The owner's reclaim of a child waits for
  * the child's posted delivery (`lotus_failure_defer_reclaim`), the run
- * hold's twin.
+ * hold's twin, unless only the waiting thread could run it (a handler
+ * replacing a sibling whose failure is posted to it): the reclaim is
+ * then deferred behind that delivery.
  *
  * Every field below is under `g_params_open_lock`. wasm32 has one thread
  * and no domain: the in-place call is the only delivery there, and none
@@ -10392,10 +10398,18 @@ static void lotus_failure_wait_locked(lotus_held_failure_t *n) {
 
 /* `lotus_failure_defer_reclaim`'s wait, the lock held: 0 once the
  * posted delivery has been delivered and its poster has resumed; 1 when
- * the caller is that delivery's own handler, whose reclaim is deferred
- * behind it. */
+ * the reclaim is deferred behind it instead. A reclaim never waits for a
+ * delivery only the waiting thread can run: the caller is that
+ * delivery's own handler, or it is inside another handler (handlers do
+ * not nest) and the delivery is still held for this thread's domain, so
+ * it runs when the service loop reaches it, after the running handler
+ * returns. The reclaim then runs right after it, as for its own handler.
+ * Every other reclaim waits: for a delivery another thread will run, or,
+ * outside a handler, servicing its own domain meanwhile. */
 static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
     if (n->state == LOTUS_DELIVERING && pthread_equal(n->deliverer, pthread_self()))
+        return 1;
+    if (t_failure_servicing && n->state == LOTUS_HELD && n->posted == t_domain)
         return 1;
     n->waiters++;
     lotus_failure_wait_locked(n);
@@ -10568,6 +10582,10 @@ static void lotus_failure_service_here(void) {}
 static void lotus_failure_service_at_yield(void) {}
 static void lotus_failure_await_service_locked(void) {}
 static void lotus_failure_domain_enter(void) {}
+/* Nothing is posted on wasm32 (`lotus_failure_post` answers 0), so no
+ * node reaching here has a domain; were one to, the only thread that
+ * could run it is this one, and the rule is the threaded one's: the
+ * reclaim is deferred behind the delivery, never waits for it. */
 static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *n) {
     (void)n;
     return 1;
