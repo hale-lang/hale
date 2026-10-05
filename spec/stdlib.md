@@ -70,8 +70,10 @@ polymorphic, like the user `@form(vec)` destination of
 `std::str::split_into` — types permissively, as does an argument
 whose own type the checker cannot see; incompleteness therefore
 degrades to the historical tolerance, never to a false error.
-The codegen layer resolves `std::*` paths against a hardcoded
-namespace dispatcher.
+Lowering resolves a `std::*` path through the function's row (the
+`stdlib_surface` family): the row names an intrinsic id, a Hale
+body, a rename, or nothing, and one exhaustive `match` on the id
+lowers the call at each position.
 
 Some operations are bare **builtins** rather than stdlib
 functions (`len`, `to_string`, `abs`, `min`, `max`, the printers —
@@ -89,10 +91,14 @@ with no builtin equivalent is never pointed anywhere.
 There is **no general module system** at v1 — no `use`
 statements, no user-defined modules, no multi-file `.hl`
 packages via the std-style mechanism. `std::*` is the only
-recognized prefix. Adding a new stdlib function means: declare
-its libc backer in `hale-codegen`'s `declare_builtins`, add a
-match arm to `lower_stdlib_path_call_expr` (or its statement
-sibling), and implement one `lower_std_*` method.
+recognized prefix. Adding a new stdlib function means: one row
+in `SURFACES` (`crates/hale-types/src/stdlib_surface.rs`: its
+signature, effect classes, fallibility and how it lowers), its
+`IntrinsicId` variant, an arm in `lower_std_intrinsic` and one in
+`lower_std_intrinsic_fallible` (the compiler refuses a missing
+arm), its libc backer in `declare_builtins` and the C function,
+a program that calls it (the coverage gate fails without one),
+the table-answers golden, this document's row and the book's.
 
 Cross-binary user code uses the F.25 cross-seed-imports mechanism
 (`import "path/to/lib" as alias;`) — distinct from the `std::*`
