@@ -718,8 +718,8 @@ std::io::tcp::set_rx_timestamps | lookup=io::tcp@3 | locus=false | effects=sysca
 std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
 std::io::tls::close | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::tls::connect | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
-std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
-std::io::tls::last_recv_user_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_recv_user_ns
+std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
+std::io::tls::last_recv_user_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_user_ns
 std::io::tls::recv_bytes | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=true | unknown=- | suggest=recv_bytes
 std::io::tls::recv_into | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_into
 std::io::tls::recv_stamped_into | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_stamped_into

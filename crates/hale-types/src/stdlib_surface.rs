@@ -770,8 +770,9 @@ pub const SURFACES: &[NsSurface] = &[
             // io::file::write_line (lowering ambiguous; the tcp timeout
             // setters, once here too, have their rows since F.40 phase 4,
             // S5); io::fs::list_dir (spec-only); the 7 spec'd
-            // std::io::tls fns with NO lowering (recv_stamped_into,
-            // last_recv_*, set_*) — names-only keeps them permissive.
+            // std::io::tls fns with NO lowering then (recv_stamped_into,
+            // last_recv_*, set_*), all lowered and signed since (the last
+            // two at F.40 phase 4, S6).
             // Handle args are plain Int FDs at the path-call level (the
             // File/Stream locus wrappers live in stdlib .hl seeds).
             row!("read_file", SYSCALL, [Str] -> Str ! "IoError", Intrinsic(IoFsReadFile)),
@@ -919,8 +920,8 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("close", SYSCALL, [Int] -> Int, Intrinsic(IoTlsClose)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTlsConnect)),
-            row!("last_recv_kernel_ns", PURE, _, Intrinsic(IoTlsLastRecvKernelNs)),
-            row!("last_recv_user_ns", PURE, _, Intrinsic(IoTlsLastRecvUserNs)),
+            row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvKernelNs)),
+            row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvUserNs)),
             row!("recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytes)),
             row!("recv_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvInto)),
             // GH #829: `tls::recv_stamped_into` is dispatched by codegen

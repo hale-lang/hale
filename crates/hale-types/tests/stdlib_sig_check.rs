@@ -510,6 +510,21 @@ fn std_io_tcp_calls_are_checked() {
 }
 
 #[test]
+fn std_io_tls_calls_are_checked() {
+    refused(
+        "    let ns = std::io::tls::last_recv_kernel_ns(3);\n    println(ns);",
+        &[("`std::io::tls::last_recv_kernel_ns` takes 0 arguments, got 1", "std::io::tls::last_recv_kernel_ns")],
+    );
+    refused(
+        "    let ns = std::io::tls::last_recv_user_ns() or 0;\n    println(ns);",
+        &[(
+            "`std::io::tls::last_recv_user_ns` is not fallible (it returns `Int`); drop the `or` clause",
+            "std::io::tls::last_recv_user_ns()",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(
