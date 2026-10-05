@@ -57,7 +57,7 @@ use hale_syntax::ast::{
 use hale_syntax::{Diag, Span};
 
 use super::{
-    Abi, BehaviourVerdict, Capability, CapabilityMatrix, Inversion, KnownOpen, OpenCell, Origin,
+    Abi, BehaviourVerdict, Capability, Inversion, KnownOpen, OpenCell, Origin,
     TargetClass, TargetRow, Transport, KNOWN_OPEN,
 };
 use crate::alloc_summary::{loop_reassigned, AllocKind, AllocSummary, CallEdge, CallSpelling, Callee, DeclId, FnKey};
@@ -130,23 +130,40 @@ impl CapabilityUses {
 /// namespace of the stdlib's table (the matrix's `StdNamespace` keys,
 /// which the laws hold to the stdlib's own namespaces) that holds the
 /// path's last segment. `None` for a path that is not the stdlib's.
-pub fn std_namespace(m: &CapabilityMatrix, path: &str) -> Option<&'static str> {
-    let segs: Vec<&str> = path.split("::").collect();
-    if segs.len() < 3 || segs[0] != "std" {
-        return None;
-    }
-    let inner = &segs[1..segs.len() - 1];
-    m.behaviours
-        .iter()
-        .filter_map(|r| match r.capability {
-            Capability::StdNamespace(ns) => Some(ns),
-            _ => None,
-        })
-        .filter(|ns| {
-            let n: Vec<&str> = ns.split("::").collect();
-            inner.len() >= n.len() && inner[..n.len()] == n[..]
-        })
-        .max_by_key(|ns| ns.split("::").count())
+///
+/// Answered from [`std_namespaces`], with nothing allocated: the path's
+/// segments are those `split("::")` gives, so after its `std::` head the
+/// prefixes that end at a separator are the candidates — `rest[..s]` for
+/// each separator `s`, the one before the last segment included — and a
+/// namespace is one of them exactly when its own segments begin the
+/// path's. The last of them the table holds is the longest (F.40 phase
+/// 4, Q2: the matrix was split and scanned per unresolved edge).
+pub fn std_namespace(path: &str) -> Option<&'static str> {
+    let rest = path.strip_prefix("std::")?;
+    let table = std_namespaces();
+    // `match_indices` finds the separators `split` splits at, left to
+    // right; a path of fewer than three segments has none here.
+    rest.match_indices("::").filter_map(|(s, _)| table.binary_search(&&rest[..s]).ok().map(|i| table[i])).last()
+}
+
+/// The stdlib's namespaces, the matrix's `StdNamespace` keys, sorted:
+/// read from the matrix once per process. Every reader asks the one
+/// matrix ([`super::derive_capability_matrix`]'s static rows).
+fn std_namespaces() -> &'static [&'static str] {
+    static TABLE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut ns: Vec<&'static str> = super::derive_capability_matrix()
+            .behaviours
+            .iter()
+            .filter_map(|r| match r.capability {
+                Capability::StdNamespace(ns) => Some(ns),
+                _ => None,
+            })
+            .collect();
+        ns.sort_unstable();
+        ns.dedup();
+        ns
+    })
 }
 
 /// One fn's requirements: per capability, the chain from the fn's body
@@ -187,7 +204,6 @@ fn hole_of(e: &CallEdge) -> Option<&'static str> {
 
 struct Graph<'a> {
     summary: &'a AllocSummary,
-    m: &'a CapabilityMatrix,
     /// `alias::Name` → the merged name, the bundle's import renames.
     renames: BTreeMap<String, String>,
     /// The stdlib's locus names, by their public path's namespace.
@@ -202,19 +218,14 @@ struct Graph<'a> {
 }
 
 impl<'a> Graph<'a> {
-    fn new(
-        summary: &'a AllocSummary,
-        m: &'a CapabilityMatrix,
-        import_renames: &[(Vec<String>, String)],
-        programs: &[&Program],
-    ) -> Self {
+    fn new(summary: &'a AllocSummary, import_renames: &[(Vec<String>, String)], programs: &[&Program]) -> Self {
         let renames = import_renames.iter().map(|(k, v)| (k.join("::"), v.clone())).collect();
         let std_loci = hale_stdlib::PATH_RENAMES
             .iter()
-            .filter_map(|(path, mangled)| std_namespace(m, &path.join("::")).map(|ns| (mangled.to_string(), ns)))
+            .filter_map(|(path, mangled)| std_namespace(&path.join("::")).map(|ns| (mangled.to_string(), ns)))
             .collect();
         let demangle = crate::stdlib_bodies::Demangler::new(import_renames);
-        let mut g = Graph { summary, m, renames, std_loci, demangle, members: BTreeMap::new() };
+        let mut g = Graph { summary, renames, std_loci, demangle, members: BTreeMap::new() };
         // The imported seeds' loci are in the bundle under their merged
         // names; the stdlib's are its analysis copy's.
         let stdlib = crate::stdlib_bodies::program().filter(|_| !summary.analysis_copy_loci.is_empty());
@@ -332,7 +343,7 @@ impl<'a> Graph<'a> {
         match &e.callee {
             Callee::Resolved(k) => Edge::Calls(k.clone()),
             Callee::Unresolved(name) => {
-                if let Some(ns) = std_namespace(self.m, name) {
+                if let Some(ns) = std_namespace(name) {
                     return Edge::Needs(Capability::StdNamespace(ns), name.clone());
                 }
                 // A method the summary did not find on a stdlib handle (a
@@ -473,9 +484,8 @@ fn merged(name: &str) -> bool {
 pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
     // The bundle's authoritative summary already includes module-nested
     // bodies and resolved function-value alternatives. Read those rows.
-    let m = super::derive_capability_matrix();
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let g = Graph::new(summary, &m, &bundle.import_renames, &programs);
+    let g = Graph::new(summary, &bundle.import_renames, &programs);
     let req = g.requirements();
     let mut uses = Vec::new();
 
@@ -509,7 +519,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
                     // path is a link of the crossing's witness.
                     let written = g.public(&k.display());
                     let direct = (!e.receiver_present && e.via_local.is_none())
-                        .then(|| std_namespace(&m, &written))
+                        .then(|| std_namespace(&written))
                         .flatten();
                     if let Some(ns) = direct {
                         uses.push(CapabilityUse {
@@ -905,7 +915,7 @@ impl<'w, 'a> Walker<'w, 'a> {
             },
             Expr::Path(qn) => {
                 let path = qualified(qn);
-                if let Some(ns) = std_namespace(self.g.m, &path) {
+                if let Some(ns) = std_namespace(&path) {
                     Some(FnValue::Primitive(Capability::StdNamespace(ns), path))
                 } else {
                     // A merged name the summary keys no row for names
@@ -975,7 +985,7 @@ impl<'w, 'a> Walker<'w, 'a> {
                 match callee.as_ref() {
                     Expr::Path(qn) => {
                         let path = qualified(qn);
-                        if let Some(ns) = std_namespace(self.g.m, &path) {
+                        if let Some(ns) = std_namespace(&path) {
                             self.met.push(Met::Needs(Capability::StdNamespace(ns), vec![path], qn.span));
                         } else if let Some(k) =
                             self.g.renames.get(&path).and_then(|mangled| self.g.summary.resolve(None, mangled)).cloned()
