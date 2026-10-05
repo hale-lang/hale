@@ -132,26 +132,21 @@ fn every_rows_lowering_is_where_the_column_says() {
 /// refuses (`or_over_an_infallible_row`). At a bare position the arm
 /// that refuses (`bare_call_of_a_fallible_row`) is every id whose row is
 /// fallible, and no other, and no fallible row has a bare arm that lowers.
-/// The exception is the arm a later ruling removes, named in
-/// `stdlib_dispatch_coverage`; an id outside it that disagrees is a
-/// finding, not a repair.
+/// An id that disagrees is a finding, not a repair.
 #[test]
 fn which_calls_lowering_refuses_is_the_rows_fallibility() {
-    use crate::stdlib_dispatch_coverage::{
-        fallible_id_arms, id_arms, Branch, OR_LOWERS_AN_INFALLIBLE_ROW,
-    };
+    use crate::stdlib_dispatch_coverage::{fallible_id_arms, id_arms, Branch};
     let mut fallible = BTreeSet::new();
-    let mut path_of = BTreeMap::new();
-    for (s, f) in surf::rows() {
+    let mut ids = BTreeSet::new();
+    for (_, f) in surf::rows() {
         if let Lower::Intrinsic(id) = f.lower {
             let id = format!("{id:?}");
-            path_of.insert(id.clone(), format!("std::{}::{}", s.ns.join("::"), f.name));
+            ids.insert(id.clone());
             if f.sig.is_some_and(|s| s.fallible.is_some()) {
                 fallible.insert(id);
             }
         }
     }
-    let excepted = |list: &[&str], id: &String| list.contains(&path_of[id].as_str());
 
     let mut or_lowers = BTreeSet::new();
     let mut or_refuses = BTreeSet::new();
@@ -160,11 +155,10 @@ fn which_calls_lowering_refuses_is_the_rows_fallibility() {
     }
     let fallible_unarmed: Vec<&String> = fallible.difference(&or_lowers).collect();
     assert!(fallible_unarmed.is_empty(), "fallible rows `or` does not lower: {fallible_unarmed:?}");
-    let infallible_armed: Vec<&String> =
-        or_lowers.difference(&fallible).filter(|id| !excepted(OR_LOWERS_AN_INFALLIBLE_ROW, id)).collect();
+    let infallible_armed: Vec<&String> = or_lowers.difference(&fallible).collect();
     assert!(infallible_armed.is_empty(), "rows that cannot fail, lowered under `or`: {infallible_armed:?}");
     assert!(or_refuses.is_disjoint(&fallible), "a fallible row refused under `or`");
-    assert_eq!(or_lowers.len() + or_refuses.len(), path_of.len(), "every id has one arm under `or`");
+    assert_eq!(or_lowers.len() + or_refuses.len(), ids.len(), "every id has one arm under `or`");
 
     let mut bare_refuses = BTreeSet::new();
     let mut bare_lowers = BTreeSet::new();

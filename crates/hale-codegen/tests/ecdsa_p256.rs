@@ -70,7 +70,7 @@ fn main() {{
     let msg = std::bytes::from_string("hello ES256");
 
     // Round-trip: our own signature verifies.
-    let sig = std::crypto::ecdsa_p256_sign(privk, msg);
+    let sig = std::crypto::ecdsa_p256_sign(privk, msg) or raise;
     println("rt=", std::crypto::ecdsa_p256_verify(pubk, msg, sig));
 
     // Tamper: a different message must not verify against `sig`.

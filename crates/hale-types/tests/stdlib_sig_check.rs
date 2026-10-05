@@ -230,6 +230,38 @@ fn a_function_lowering_treats_as_fallible_is_refused_bare_by_the_check() {
     }
 }
 
+/// F.40 phase 4, S5 (a classified correction): `ecdsa_p256_sign` has one
+/// mode. Its bare call answered an empty `Bytes` on a bad key and passed
+/// the check; its row now says it can fail, so the bare call is the law's
+/// error at the call, and an `or` checks against the `Bytes` it succeeds
+/// with.
+#[test]
+fn ecdsa_p256_sign_is_fallible_and_its_bare_call_is_refused() {
+    let call = "std::crypto::ecdsa_p256_sign(k, k)";
+    let src = format!("fn main() {{\n    let k = std::bytes::from_string(\"key\");\n    let s = {call};\n    println(len(s));\n}}\n");
+    let prog = parse_source(&src).expect("parse");
+    let errors: Vec<_> = check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "{:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        errors[0].message.starts_with(
+            "`std::crypto::ecdsa_p256_sign` can fail (CryptoError) and this call says nothing about it"
+        ),
+        "{}",
+        errors[0].message
+    );
+    let at = src.find(call).unwrap() as u32;
+    assert_eq!((errors[0].span.start.0, errors[0].span.end.0), (at, at + call.len() as u32));
+
+    let substitute = msgs(
+        "fn main() {\n    let k = std::bytes::from_string(\"key\");\n    let s = std::crypto::ecdsa_p256_sign(k, k) or b\"\";\n    println(len(s));\n}\n",
+    );
+    assert!(substitute.is_empty(), "got: {substitute:?}");
+    let wrong = msgs(
+        "fn main() {\n    let k = std::bytes::from_string(\"key\");\n    let s = std::crypto::ecdsa_p256_sign(k, k) or 0;\n    println(s);\n}\n",
+    );
+    assert!(wrong.iter().any(|m| m.contains("does not match success type") && m.contains("Bytes")), "got: {wrong:?}");
+}
+
 #[test]
 fn statement_position_or_discards_value_type() {
     // `call() or handler(err);` in statement position discards the

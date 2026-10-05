@@ -26817,9 +26817,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoCrc32 => {
                 self.lower_std_crypto_crc32(args, scope)
             }
-            Id::CryptoEcdsaP256Sign => {
-                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
-            }
             Id::CryptoEcdsaP256Verify => {
                 self.lower_std_crypto_ecdsa_p256_verify(args, scope)
             }
@@ -27112,6 +27109,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressGzip
             | Id::CompressUnzstd
             | Id::CompressZstd
+            | Id::CryptoEcdsaP256Sign
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
@@ -27339,9 +27337,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // C4 (pond/crypto follow-up): CSPRNG getrandom.
             Id::OsGetrandom => self.lower_std_os_getrandom_fallible(args, scope),
-            // 2026-06-04: ECDSA P-256 signing in `or` context →
-            // fallible(CryptoError). Bare calls keep the empty-bytes
-            // form via the value position's arm.
+            // 2026-06-04: ECDSA P-256 signing → fallible(CryptoError),
+            // its one mode since F.40 phase 4, S5.
             Id::CryptoEcdsaP256Sign => {
                 self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
             }

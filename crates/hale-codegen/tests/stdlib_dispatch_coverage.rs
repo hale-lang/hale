@@ -1316,9 +1316,7 @@ fn write_harvested_programs() {
 /// fail (`bare_call_of_a_fallible_row`, the value position's arm, which a
 /// statement reaches too), and an `or` over one whose row says it cannot
 /// (`or_over_an_infallible_row`). No program builds with one, and the
-/// check refuses all but an `or` over a row with no signature yet. The
-/// rows' one exception is the arm a later ruling of S5 removes: the
-/// infallible row an `or` still lowers.
+/// check refuses all but an `or` over a row with no signature yet.
 pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
     use hale_types::stdlib_surface::{rows, Lower};
     rows()
@@ -1328,16 +1326,8 @@ pub fn refused_by_the_rows() -> BTreeSet<(String, Position)> {
             let fallible = f.sig.is_some_and(|s| s.fallible.is_some());
             (path, if fallible { Position::Expression } else { Position::Fallible })
         })
-        .filter(|(path, position)| {
-            *position == Position::Expression || !OR_LOWERS_AN_INFALLIBLE_ROW.contains(&path.as_str())
-        })
         .collect()
 }
-
-/// The infallible row an `or` still lowers: `ecdsa_p256_sign`, whose bare
-/// call returns empty `Bytes` and whose `or` call can fail. Ruling 4 makes
-/// its row fallible.
-pub const OR_LOWERS_AN_INFALLIBLE_ROW: &[&str] = &["std::crypto::ecdsa_p256_sign"];
 
 /// Allowance 2, internal: paths the checker refuses from a user's
 /// program ("unknown stdlib function": they are in no registry row, and

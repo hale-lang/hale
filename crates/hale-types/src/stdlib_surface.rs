@@ -636,7 +636,9 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["crypto"],
         fns: &[
             row!("crc32", PURE, [Bytes] -> Int, Intrinsic(CryptoCrc32)),
-            row!("ecdsa_p256_sign", PURE, _, Intrinsic(CryptoEcdsaP256Sign)),
+            // One mode, fallible (F.40 phase 4, S5): the bare form that
+            // answered an empty Bytes on a bad key is gone.
+            row!("ecdsa_p256_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEcdsaP256Sign)),
             row!("ecdsa_p256_verify", PURE, _, Intrinsic(CryptoEcdsaP256Verify)),
             row!("hmac_sha256", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha256)),
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
