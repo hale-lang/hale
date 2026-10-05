@@ -962,8 +962,11 @@ pub fn check_bundle_by_declaration(
     // pool the dead-receiver error already reported.
     if let Some(main) = inputs.placement.root.as_ref().and_then(|r| r.decl.decl(bundle)) {
         let fields = root_field_placements(bundle, inputs.placement);
+        // Rules 7 and 8 report as one walk reaches them (F.40 phase 4, W5).
+        let mut found = Vec::new();
         let errored_pools =
-            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut diags);
+            check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut found);
+        diags.extend(crate::law::diags(found));
         check_pool_starvation(main, &fields, flows, &errored_pools, &mut diags);
         check_birth_order(main, &fields, flows, &mut diags);
     }
@@ -1056,7 +1059,11 @@ pub fn check_bundle_by_declaration(
     // returns, so its subscription can never fire. Judged over the
     // ownership graph (F.40 phase 3, C4). Hard error unless
     // `--allow-unowned-subscriber` is set.
-    check_unowned_subscriber_locus(bundle, inputs, allow_unowned_subscriber, &mut diags);
+    // Rule 20 is a law over those rows (F.40 phase 4, W5).
+    if !allow_unowned_subscriber {
+        let rows = UnownedSubscriberRows { bundle, ownership: inputs.ownership, placement: inputs.placement };
+        diags.extend(Law { rule: RULE_20, eval: check_unowned_subscriber_locus }.diags(&rows));
+    }
     // GH #18 #4: bus-graph property checks over the typed topic
     // topology. v1 (PR A): orphan topics — declared/used subjects
     // wired to only one end. Gated on a closed-world program (one
@@ -1373,21 +1380,18 @@ fn locus_accepts(parent: &LocusDecl, child_name: &str) -> bool {
 /// handler's locus, which the placement table records
 /// (`OwnershipGraph::construction_paths`); the diagnostic names a path
 /// with none.
-fn check_unowned_subscriber_locus(
-    bundle: &Bundle<'_>,
-    inputs: &CheckInputs<'_>,
-    allow: bool,
-    diags: &mut Vec<Diag>,
-) {
+///
+/// Its finding is a [`Violation`] (F.40 phase 4, W5) whose witness steps
+/// are the two related locations the diagnostic always carried: the
+/// declaration judged when two share the child's name, and the
+/// construction path no accepting ancestor lies on.
+fn check_unowned_subscriber_locus(rows: &UnownedSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::ownership_graph::{ConstructionPath, OwnerResolution};
-    if allow {
-        return;
-    }
-    let graph = inputs.ownership;
+    let (bundle, graph) = (rows.bundle, rows.ownership);
     // The construction paths are derived from the table once, by the
     // first birth its own locus does not accept.
     let paths = std::cell::OnceCell::new();
-    let paths = || paths.get_or_init(|| graph.construction_paths(inputs.placement, bundle));
+    let paths = || paths.get_or_init(|| graph.construction_paths(rows.placement, bundle));
     // In declaration order of the enclosing locus, as the program reads;
     // the graph lists its sites by locus name.
     let mut sites: Vec<&crate::ownership_graph::OwnedSite> = graph.sites.iter().collect();
@@ -1410,7 +1414,8 @@ fn check_unowned_subscriber_locus(
             continue;
         }
         let (name, p_name) = (&child.name, &p.name);
-        let mut diag = Diag::ty(
+        let mut found = Violation::error(
+            RULE_20,
             site.span,
             format!(
                 "locus `{}` declares `bus subscribe` but is \
@@ -1433,7 +1438,7 @@ fn check_unowned_subscriber_locus(
         // A name two declarations share: the graph judged the first.
         let same_name = graph.declarations.iter().filter(|d| d.name == *name).count();
         if same_name > 1 {
-            diag = diag.with_related(
+            found = found.step(
                 child.span,
                 format!(
                     "the declaration judged: the first, in declaration order, of the \
@@ -1468,10 +1473,21 @@ fn check_unowned_subscriber_locus(
                     format!("{within}no construction of `{top}` has an ancestor that accepts `{name}`"),
                 ),
             };
-            diag = diag.with_related(at, note);
+            found = found.step(at, note);
         }
-        diags.push(diag);
+        out.push(found);
     }
+}
+
+/// Rule 20, the unowned subscriber.
+const RULE_20: RuleId = RuleId::registered("semantics/placement", "20");
+
+/// What rule 20 reads: the ownership graph, and the placement table its
+/// construction paths are derived from.
+struct UnownedSubscriberRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    ownership: &'r crate::ownership_graph::OwnershipGraph,
+    placement: &'r crate::placement::PlacementTable,
 }
 
 /// Known stdlib loci whose `run()` body is structurally non-
@@ -2393,12 +2409,16 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
 ///
 /// The helpers that block are the effect rows' ([`worker_holding_fns`]),
 /// demanded only once a placed field has a `run()` to walk.
+///
+/// One walk judges both rules, field by field, so its findings, each a
+/// [`Violation`] of rule 7 or rule 8 (F.40 phase 4, W5), are reported in
+/// the order it reaches them.
 fn check_cooperative_pool_blocking<'r>(
     bundle: &Bundle<'_>,
     bus: &crate::bus_graph::BusGraph,
     effects: &dyn Fn() -> Option<&'r crate::effect_rows::EffectRows>,
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
-    diags: &mut Vec<Diag>,
+    found: &mut Vec<Violation>,
 ) -> BTreeSet<String> {
     // GH #825: the rows key a module's fns by their bare names, as the
     // resolver does, so a module-nested helper that blocks is in the
@@ -2493,7 +2513,8 @@ fn check_cooperative_pool_blocking<'r>(
                 // placement-only rule, which over-fired on
                 // event-driven subscribers — `Reader`/`Dispatcher`
                 // received fine for 16h+ in production.)
-                diags.push(Diag::ty(
+                found.push(Violation::error(
+                    RULE_7,
                     span,
                     format!(
                         "locus `{}` (field `{}`) subscribes to bus topics \
@@ -2521,7 +2542,8 @@ fn check_cooperative_pool_blocking<'r>(
                 // locus isn't itself a subscriber. Interprocedural:
                 // `deep_call` may name a helper fn / self-method that
                 // blocks transitively, not just a literal stdlib op.
-                diags.push(Diag::warn(
+                found.push(Violation::warning(
+                    RULE_8,
                     deep_span,
                     format!(
                         "locus `{}` (field `{}`) is placed `cooperative(pool \
@@ -2546,6 +2568,11 @@ fn check_cooperative_pool_blocking<'r>(
     }
     errored_pools
 }
+
+/// Rule 7, the dead bus receiver.
+const RULE_7: RuleId = RuleId::registered("semantics/placement", "7");
+/// Rule 8, a blocking syscall on a cooperative pool.
+const RULE_8: RuleId = RuleId::registered("semantics/placement", "8");
 
 /// Pool starvation, a law over the deployed root's placement rows: two
 /// (or more) statically non-returning `run()` bodies on one cooperative
