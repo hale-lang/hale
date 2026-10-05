@@ -424,7 +424,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(TY_RESOLVED, "rewrite_intra_locus"), site(TY_RESOLVED, "resolve_rewritten"), site(DESUGAR, "desugar_intra_locus_topics"), site(DESUGAR, "desugar_topics"), site(DESUGAR_SEQ, "bundled_stdlib"), site(DESUGAR, "desugar_omitted_run"), site(DESUGAR, "desugar_repr_accessors")],
         seams: &[
             Seam { symbol: "desugar_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (TLIB, 1), (SNAPSHOT, 1)] },
+            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (SNAPSHOT, 1)] },
             Seam { symbol: "desugar_omitted_run(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "desugar_repr_accessors(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "rewrite_intra_locus(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1)] },
@@ -471,7 +471,7 @@ pub const FAMILIES: &[Family] = &[
             // The snapshot's, and the entries of a bundle no snapshot
             // holds: `check_bundle`, `check_bundle_opts_scoped` and
             // `derive_application_model`, `effect_certificates`.
-            Seam { symbol: "form_rows(", allowed: &[(FORM_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1)] },
+            Seam { symbol: "form_rows(", allowed: &[(FORM_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1)] },
         ],
     },
     Family {
@@ -567,7 +567,7 @@ pub const FAMILIES: &[Family] = &[
         // `sync_inference.rs` and `lifecycle/derive.rs`; `stdlib_bodies.rs`:
         // the scope of no program, which holds the stdlib's declarations
         // alone, once per process, for its bus rows.
-        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (SYNC, 1), (EFFECTS, 1), (SNAPSHOT, 1), (LIFECYCLE_DERIVE, 1), (STDLIB_BODIES, 1)] }],
+        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 1), (SYNC, 1), (SNAPSHOT, 1), (LIFECYCLE_DERIVE, 1), (STDLIB_BODIES, 1)] }],
     },
     Family {
         name: "expression_typing",
@@ -761,7 +761,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
         seams: &[
-            Seam { symbol: "entry_row(", allowed: &[(ENTRY, 2), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1), (OWNERSHIP_GRAPH, 1), (LIFECYCLE_DERIVE, 1)] },
+            Seam { symbol: "entry_row(", allowed: &[(ENTRY, 2), (SNAPSHOT, 1), (CHECK, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1), (OWNERSHIP_GRAPH, 1), (LIFECYCLE_DERIVE, 1)] },
             Seam { symbol: "is_entry_locus(", allowed: &[(CG, 3), (CG_INST, 2), (CG_DISSOLVE, 2), (CG_DECL, 1)] },
             // The per-declaration readers of the `main` keyword (the
             // invariant above): each where it is, once.
@@ -808,7 +808,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(TY_OWN, "resolve_binding_facts"), site(OWNERSHIP_GRAPH, "bubble_plans"), site(OWNERSHIP_GRAPH, "compute_forwarding_sets"), site(OWNERSHIP_GRAPH, "classify_owner_kind"), site(OWNERSHIP_GRAPH, "classify_edge"), site(TY_OWN, "fresh_factories")],
         seams: &[
             Seam { symbol: "resolve_owners(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
-            Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 2), (CHECK, 1)] },
+            Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "stdlib_ownership_rows(", allowed: &[(OWNERSHIP_GRAPH, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "lowering_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "accepts_ancestor(", allowed: &[(OWNERSHIP_GRAPH, 3), ("crates/hale-types/src/borrow_lifetime.rs", 1)] },
@@ -844,7 +844,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("lsp (hale/busGraph: the model's graph, so eligibility is the diagnostics pass's)", LSP, "demand_bus_graph"),
             consumer_at("codegen (a rewritten publish, found by its call's id in the relation: the probes and the reclaimed subregion)", CG, "intra_locus_rewrite"),
             consumer_at("lowering view (its graph: the snapshot's rows through the correspondence, each user site keyed by the topic rewrite's wire, then the stdlib's; the plan lowering reads is its gates)", TY_RESOLVED, "lowering_bus_graph"),
-            consumer_at("the no-snapshot entries (`check_bundle`, `check_bundle_opts_scoped`, the hale-types tests, and the artifact's bundle entry): the producer itself, once per entry, over the entry's scope", TLIB, "build_bus_graph"),
+            consumer_at("the check of a bundle no snapshot holds (`check::check_bundle`, the hale-types tests' scope-taking entry): the producer itself, once per call, over the caller's scope", CHECK, "build_bus_graph"),
         ],
         invariants: &[
             "one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it (`cycle_from`)",
@@ -866,7 +866,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md rules 7, 9-12, 19", "spec/verification.md § Bus-graph property checks"],
         owned: &[site(BUS_GRAPH, "dispatch_gates"), site(BUS_GRAPH, "cycle_from"), site(BUS_GRAPH, "external_handlers")],
         seams: &[
-            Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 2), (CHECK, 1)] },
+            Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2)] },
             Seam { symbol: "stdlib_bus_rows(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1), (STDLIB_BODIES, 1)] },
             Seam { symbol: "lowering_bus_graph(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
@@ -940,7 +940,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/decisions.md F.36, F.37", "spec/semantics.md § Operational constraints (Form K)"],
         owned: &[],
         seams: &[
-            Seam { symbol: "derive_binding_rows(", allowed: &[(BINDING_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2)] },
+            Seam { symbol: "derive_binding_rows(", allowed: &[(BINDING_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "role_from_ends(", allowed: &[(DESUGAR, 2), (BINDING_ROWS, 1)] },
         ],
     },
@@ -972,11 +972,11 @@ pub const FAMILIES: &[Family] = &[
             // bundle no snapshot holds (the model of
             // `derive_application_model`, which only tests call), through
             // the same two producers.
-            Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 1), (SNAPSHOT, 1), (TLIB, 1)] },
+            Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 1), (SNAPSHOT, 1)] },
             // The one domain map, over the arrangement projection.
             Seam { symbol: "domain_map(", allowed: &[(ARRANGEMENT, 1)] },
             // The one gate set: the snapshot's cell, and the same entry.
-            Seam { symbol: "derive_dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1), (TLIB, 1)] },
+            Seam { symbol: "derive_dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (SNAPSHOT, 1)] },
         ],
     },
     Family {
@@ -1235,7 +1235,7 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "infer_purity_for_bundle(", allowed: &[(PURITY, 2), (EFFECT_ROWS, 1)] },
             Seam { symbol: "infer_effect_bounds(", allowed: &[(FRONTIER, 2), (EFFECT_ROWS, 1)] },
             Seam { symbol: "direct_effects(", allowed: &[(EFFECT_ROWS, 2)] },
-            Seam { symbol: "effect_report_grouped(", allowed: &[(EFFECTS, 3), (CHECK, 1)] },
+            Seam { symbol: "effect_report_grouped(", allowed: &[(EFFECTS, 2), (CHECK, 1)] },
             Seam { symbol: "derive_certificate_evidence(", allowed: &[(EVIDENCE, 1)] },
             Seam { symbol: "derive_certificate_evidence_over(", allowed: &[(EVIDENCE, 2), (JUDGMENT, 1), (TOPOLOGY, 1)] },
         ],
@@ -1307,7 +1307,7 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 4)] },
             Seam { symbol: "allocating_recv(", allowed: &[(ALLOC, 2)] },
             Seam { symbol: "check_hot_path_alloc(", allowed: &[(CHECK, 2)] },
-            Seam { symbol: "derive_alloc_summary(", allowed: &[(ALLOC, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (EVIDENCE, 1), (TOPOLOGY, 1), ("crates/hale-types/src/resource_budget.rs", 1)] },
+            Seam { symbol: "derive_alloc_summary(", allowed: &[(ALLOC, 1), (SNAPSHOT, 1), (CHECK, 1), (EVIDENCE, 1), ("crates/hale-types/src/resource_budget.rs", 1)] },
             Seam { symbol: "own_rows(", allowed: &[(ALLOC, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/budget_check.rs", 1), ("crates/hale-types/src/quantitative.rs", 1), (FRONTIER, 1), ("crates/hale-types/src/resource_budget.rs", 2)] },
             Seam { symbol: "derive_alloc_routing(", allowed: &[(ALLOC_ROUTING, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "fn_body_definitely_non_allocating(", allowed: &[(ALLOC_ROUTING, 12)] },
@@ -1435,7 +1435,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38", "spec/runtime.md § Placement classes (m28b: subscriptions follow the tower)"],
         owned: &[],
         seams: &[
-            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 2), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (SYNC, 1)] },
+            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 2), (SNAPSHOT, 1), (CHECK, 1), (SYNC, 1)] },
             Seam { symbol: "bundle_placement(", allowed: &[(PLACEMENT, 1), (LIFECYCLE_DERIVE, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
             Seam { symbol: "route_anchors(", allowed: &[(TY_RESOLVED, 2)] },
@@ -1446,7 +1446,7 @@ pub const FAMILIES: &[Family] = &[
             // And one projection, read by the model and by lowering's
             // dispatch plan (C5): the snapshot's, which the builder and the
             // lowering view read, and a bundle no snapshot holds (`lib.rs`).
-            Seam { symbol: "project_arrangement(", allowed: &[(SNAPSHOT, 1), (TLIB, 1)] },
+            Seam { symbol: "project_arrangement(", allowed: &[(SNAPSHOT, 1)] },
             // The authored blocks' validation: one definition and one
             // call, in the check.
             Seam { symbol: "check_pool_affinity(", allowed: &[(CHECK, 2)] },
@@ -1542,11 +1542,11 @@ pub const FAMILIES: &[Family] = &[
             // of a bundle no snapshot holds
             Seam {
                 symbol: "derive_capability_uses(",
-                allowed: &[(CAPABILITY_USES, 1), (SNAPSHOT, 1), (CHECK, 1), ("crates/hale-types/src/lib.rs", 1)],
+                allowed: &[(CAPABILITY_USES, 1), (SNAPSHOT, 1), (CHECK, 1)],
             },
             // the definition, the snapshot's family, and the check of a
             // bundle no snapshot holds (the tests' entries)
-            Seam { symbol: "target_row(", allowed: &[(CAPABILITY, 1), (SNAPSHOT, 1), (CHECK, 1), ("crates/hale-types/src/lib.rs", 1)] },
+            Seam { symbol: "target_row(", allowed: &[(CAPABILITY, 1), (SNAPSHOT, 1), (CHECK, 1)] },
         ],
     },
     Family {
@@ -1711,7 +1711,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["a checked bundle", "top_scope", "bus_graph", "ownership", "handler_routing", "placement", "effects", "alloc_summary", "topics", "bindings", "dispatch (the snapshot's plan, held projected: no model table hashes it)"],
         producer: Some(site(MODEL_BUILDER, "derive_application_model_over")),
         legacy: &[],
-        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("topology (a bundle no snapshot holds)", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
+        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
             "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
@@ -1722,10 +1722,10 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/demand_gate.rs", "crates/hale-model/tests/architecture.rs", "crates/hale-types/tests/topology_projection.rs", "crates/hale-types/tests/model_arrangement.rs (the arrangement's three identity contracts, each pinned against the build before the switch)"],
         spec: &["spec/model.md"],
-        owned: &[site(MODEL_BUILDER, "ModelInputs"), site(TLIB, "derive_application_model")],
+        owned: &[site(MODEL_BUILDER, "ModelInputs")],
         seams: &[
-            Seam { symbol: "derive_application_model(", allowed: &[(TLIB, 1), (TOPOLOGY, 1)] },
-            Seam { symbol: "derive_application_model_over(", allowed: &[(MODEL_BUILDER, 1), (TLIB, 1), (SNAPSHOT, 1)] },
+            Seam { symbol: "derive_application_model(", allowed: &[] },
+            Seam { symbol: "derive_application_model_over(", allowed: &[(MODEL_BUILDER, 1), (SNAPSHOT, 1)] },
         ],
     },
     Family {
@@ -1778,7 +1778,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["seed_loading", "desugar_sequence"],
         producer: Some(site("crates/hale-types/src/snapshot.rs", "mint")),
         legacy: &[],
-        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)"), consumer_at("the model's test entry (a bundle nothing minted is minted over clones of its programs, since the arrangement is the placement table's rows)", TLIB, "derive_application_model")],
+        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)")],
         invariants: &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
@@ -1795,7 +1795,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[site(SITES, "SiteKind"), site(TY_SNAPSHOT, "resolve_uses"), site(TY_SNAPSHOT, "declaration_of"), site(TY_SNAPSHOT, "number")],
         seams: &[
-            Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 2), (STDLIB_BODIES, 1), (ALLOC, 1), (SYNC, 1)] },
+            Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1), (STDLIB_BODIES, 1), (ALLOC, 1), (SYNC, 1)] },
             Seam { symbol: "type_expr_identity(", allowed: &[(CHECK, 7)] },
             // The name joins left to `FunctionId` and `FnKey`: resolving
             // author text, and a key no mint numbered.

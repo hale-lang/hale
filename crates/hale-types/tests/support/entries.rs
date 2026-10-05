@@ -1,20 +1,18 @@
 //! The check's and the model's test entries, through the snapshot
 //! (F.40 phase 4, T3).
 //!
-//! `hale_types` exported entry points that check or model a bundle no
-//! snapshot holds and build the top scope for themselves (the ones no
-//! test or production caller still reaches have left `src`:
-//! `resolve_program`, `check_bundle_for_build`, and the bundle forms of
-//! `claim_law_diags` and `model_shape_hash`)
+//! `hale_types` exported entry points that checked or modelled a bundle
+//! no snapshot holds and built the top scope for themselves
 //! (`check_program`, `check_bundle`, `check_bundle_opts`,
 //! `check_bundle_opts_whole_program`, `check_bundle_opts_scoped`,
 //! `check_bundle_for_build`, `derive_application_model`, `effect_certificates`, `resolve_program`,
 //! and the bundle forms of `claim_law_diags`, `model_shape_hash` and
-//! `dump_topology`). No verb reaches them: every verb and the editor
+//! `dump_topology`). No verb reached them: every verb and the editor
 //! build a `hale_frontend::snapshot::Snapshot` and demand the scope, the
-//! check and the model from it. This module offers each of those entries
+//! check and the model from it, and once every test had moved here the
+//! entries left `src`. This module offers each of them
 //! under the same name, with the same arguments and result, answered by
-//! a snapshot, so that a test moves to it by its imports alone. A test
+//! a snapshot, so that a test moved to it by its imports alone. A test
 //! file includes it as the codegen tests include their support:
 //!
 //! ```text

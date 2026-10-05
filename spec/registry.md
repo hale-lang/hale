@@ -148,7 +148,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `desugar_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 - `desugar_omitted_run(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `desugar_repr_accessors(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `rewrite_intra_locus(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
@@ -186,7 +186,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `form_rows(` may be referenced from: `crates/hale-types/src/form_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1
+- `form_rows(` may be referenced from: `crates/hale-types/src/form_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `effect_class_table` — Canonical · derivation
 
@@ -268,7 +268,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/effects.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1
 
 ### `expression_typing` — Canonical · derivation
 
@@ -435,7 +435,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/placement.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1
+- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/placement.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1
 - `is_entry_locus(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×3, `crates/hale-codegen/src/locus/instantiation.rs` ×2, `crates/hale-codegen/src/locus/dissolve.rs` ×2, `crates/hale-codegen/src/locus/decl.rs` ×1
 - `world()` may be referenced from: `crates/hale-types/src/claims.rs` ×1
 - `parent.is_main` may be referenced from: `crates/hale-types/src/check.rs` ×1
@@ -482,7 +482,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `resolve_owners(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
-- `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/check.rs` ×1
+- `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 - `stdlib_ownership_rows(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `lowering_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `accepts_ancestor(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×3, `crates/hale-types/src/borrow_lifetime.rs` ×1
@@ -506,7 +506,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-types/src/bus_graph.rs` · `dispatch_gates`; `crates/hale-types/src/bus_graph.rs` · `cycle_from`; `crates/hale-types/src/bus_graph.rs` · `external_handlers`
 
-**Consumers.** check (rule 9: the wire rows, their bound, cross-seed and wildcard columns, over the entry row's closed world; the snapshot's graph, `CheckInputs::bus`) (`crates/hale-types/src/check.rs` · `check_bus_graph`); check (rule 10: the edges by declaration, through `cycle_from`, each edge's send joined to the intra-locus relation by its id, `CheckInputs::intra_locus`) (`crates/hale-types/src/check.rs` · `check_bus_cycles`); check (rule 7: the placed declaration's row, `external_handlers`) (`crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking`); check (rules 11, 12, 19); the role law (each locus declaration's sites, `PublishRow::decl` and `SubscribeRow::decl`, the topic each names as written, `topic`, where a subscriber's handler is named, `handler_span`, and whether the declaration is imported, `LocusDeclRow::imported`) (`crates/hale-types/src/roles.rs` · `role_laws`); model (subjects, endpoints and gates: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_bus_graph`); topology; dispatch; lsp (hale/busGraph: the model's graph, so eligibility is the diagnostics pass's) (`crates/hale-lsp/src/lib.rs` · `demand_bus_graph`); codegen (a rewritten publish, found by its call's id in the relation: the probes and the reclaimed subregion) (`crates/hale-codegen/src/codegen.rs` · `intra_locus_rewrite`); lowering view (its graph: the snapshot's rows through the correspondence, each user site keyed by the topic rewrite's wire, then the stdlib's; the plan lowering reads is its gates) (`crates/hale-types/src/resolved.rs` · `lowering_bus_graph`); the no-snapshot entries (`check_bundle`, `check_bundle_opts_scoped`, the hale-types tests, and the artifact's bundle entry): the producer itself, once per entry, over the entry's scope (`crates/hale-types/src/lib.rs` · `build_bus_graph`)
+**Consumers.** check (rule 9: the wire rows, their bound, cross-seed and wildcard columns, over the entry row's closed world; the snapshot's graph, `CheckInputs::bus`) (`crates/hale-types/src/check.rs` · `check_bus_graph`); check (rule 10: the edges by declaration, through `cycle_from`, each edge's send joined to the intra-locus relation by its id, `CheckInputs::intra_locus`) (`crates/hale-types/src/check.rs` · `check_bus_cycles`); check (rule 7: the placed declaration's row, `external_handlers`) (`crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking`); check (rules 11, 12, 19); the role law (each locus declaration's sites, `PublishRow::decl` and `SubscribeRow::decl`, the topic each names as written, `topic`, where a subscriber's handler is named, `handler_span`, and whether the declaration is imported, `LocusDeclRow::imported`) (`crates/hale-types/src/roles.rs` · `role_laws`); model (subjects, endpoints and gates: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_bus_graph`); topology; dispatch; lsp (hale/busGraph: the model's graph, so eligibility is the diagnostics pass's) (`crates/hale-lsp/src/lib.rs` · `demand_bus_graph`); codegen (a rewritten publish, found by its call's id in the relation: the probes and the reclaimed subregion) (`crates/hale-codegen/src/codegen.rs` · `intra_locus_rewrite`); lowering view (its graph: the snapshot's rows through the correspondence, each user site keyed by the topic rewrite's wire, then the stdlib's; the plan lowering reads is its gates) (`crates/hale-types/src/resolved.rs` · `lowering_bus_graph`); the check of a bundle no snapshot holds (`check::check_bundle`, the hale-types tests' scope-taking entry): the producer itself, once per call, over the caller's scope (`crates/hale-types/src/check.rs` · `build_bus_graph`)
 
 **Invariants.**
 
@@ -530,7 +530,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/check.rs` ×1
+- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2
 - `stdlib_bus_rows(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1
 - `lowering_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
@@ -596,7 +596,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `derive_binding_rows(` may be referenced from: `crates/hale-types/src/binding_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2
+- `derive_binding_rows(` may be referenced from: `crates/hale-types/src/binding_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 - `role_from_ends(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×2, `crates/hale-types/src/binding_rows.rs` ×1
 
 ### `dispatch` — Canonical · derivation
@@ -629,9 +629,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
+- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 - `domain_map(` may be referenced from: `crates/hale-types/src/arrangement.rs` ×1
-- `derive_dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
+- `derive_dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `handler_routing` — Canonical · derivation
 
@@ -893,7 +893,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `infer_purity_for_bundle(` may be referenced from: `crates/hale-types/src/purity.rs` ×2, `crates/hale-types/src/effect_rows.rs` ×1
 - `infer_effect_bounds(` may be referenced from: `crates/hale-types/src/frontier.rs` ×2, `crates/hale-types/src/effect_rows.rs` ×1
 - `direct_effects(` may be referenced from: `crates/hale-types/src/effect_rows.rs` ×2
-- `effect_report_grouped(` may be referenced from: `crates/hale-types/src/effects.rs` ×3, `crates/hale-types/src/check.rs` ×1
+- `effect_report_grouped(` may be referenced from: `crates/hale-types/src/effects.rs` ×2, `crates/hale-types/src/check.rs` ×1
 - `derive_certificate_evidence(` may be referenced from: `crates/hale-types/src/evidence.rs` ×1
 - `derive_certificate_evidence_over(` may be referenced from: `crates/hale-types/src/evidence.rs` ×2, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×1
 
@@ -972,7 +972,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `summarize_identified(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×4
 - `allocating_recv(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×2
 - `check_hot_path_alloc(` may be referenced from: `crates/hale-types/src/check.rs` ×2
-- `derive_alloc_summary(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/evidence.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×1
+- `derive_alloc_summary(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/evidence.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×1
 - `own_rows(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/budget_check.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×2
 - `derive_alloc_routing(` may be referenced from: `crates/hale-types/src/alloc_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `fn_body_definitely_non_allocating(` may be referenced from: `crates/hale-types/src/alloc_routing.rs` ×12
@@ -1124,13 +1124,13 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `derive_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
 - `bundle_placement(` may be referenced from: `crates/hale-types/src/placement.rs` ×1, `crates/hale-types/src/lifecycle/derive.rs` ×1
 - `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 - `route_anchors(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2
 - `placed_in.push(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
 - `affined_to.push(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
-- `project_arrangement(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
+- `project_arrangement(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×1
 - `check_pool_affinity(` may be referenced from: `crates/hale-types/src/check.rs` ×2
 
 ### `target_capability` — Canonical · capability
@@ -1171,8 +1171,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `derive_capability_matrix(` may be referenced from: `crates/hale-types/src/capability.rs` ×5, `crates/hale-types/src/capability/transport.rs` ×1, `crates/hale-types/src/capability/laws.rs` ×12, `crates/hale-types/src/capability/uses.rs` ×2, `crates/hale-types/src/target.rs` ×1, `crates/hale-cli/src/shared/options.rs` ×1
-- `derive_capability_uses(` may be referenced from: `crates/hale-types/src/capability/uses.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×1
-- `target_row(` may be referenced from: `crates/hale-types/src/capability.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×1
+- `derive_capability_uses(` may be referenced from: `crates/hale-types/src/capability/uses.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `target_row(` may be referenced from: `crates/hale-types/src/capability.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `deployment` — Reserved · derivation
 
@@ -1323,9 +1323,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Producer.** `crates/hale-types/src/model_builder.rs` · `derive_application_model_over`
 
-**Also owned.** `crates/hale-types/src/model_builder.rs` · `ModelInputs`; `crates/hale-types/src/lib.rs` · `derive_application_model`
+**Also owned.** `crates/hale-types/src/model_builder.rs` · `ModelInputs`
 
-**Consumers.** demand (every verb and the LSP: the claims, over the snapshot's scope and graphs) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_over`); a bundle no snapshot holds (the test entry's) (`crates/hale-types/src/lib.rs` · `derive_application_model_over`); topology (`hale check`'s artifact and both gates: the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); topology (a bundle no snapshot holds) (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); fleet (admits the artifact, never the model)
+**Consumers.** demand (every verb and the LSP: the claims, over the snapshot's scope and graphs) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_over`); topology (`hale check`'s artifact and both gates: the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); fleet (admits the artifact, never the model)
 
 **Invariants.**
 
@@ -1343,8 +1343,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `derive_application_model(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/topology.rs` ×1
-- `derive_application_model_over(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `derive_application_model(` may be referenced from: 
+- `derive_application_model_over(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `claims` — Canonical · law
 
@@ -1401,7 +1401,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-syntax/src/sites.rs` · `SiteKind`; `crates/hale-types/src/snapshot.rs` · `resolve_uses`; `crates/hale-types/src/snapshot.rs` · `declaration_of`; `crates/hale-types/src/snapshot.rs` · `number`
 
-**Consumers.** every table; the shadow facility (compares through an explicit correspondence, never raw id equality); lsp (a later incremental future); the resolved program (codegen's input is minted over the merged program); the model's test entry (a bundle nothing minted is minted over clones of its programs, since the arrangement is the placement table's rows) (`crates/hale-types/src/lib.rs` · `derive_application_model`)
+**Consumers.** every table; the shadow facility (compares through an explicit correspondence, never raw id equality); lsp (a later incremental future); the resolved program (codegen's input is minted over the merged program)
 
 **Invariants.**
 
@@ -1423,7 +1423,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
 - `type_expr_identity(` may be referenced from: `crates/hale-types/src/check.rs` ×7
 - `fn_id.get(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×8, `crates/hale-types/src/claim_lowering.rs` ×1
 - `FnKey::method(None` may be referenced from: `crates/hale-types/src/frontier.rs` ×1

@@ -1,11 +1,10 @@
 //! Hale type checker. Phase 1 milestone 2.
 //!
 //! Public surface:
-//! - [`check_program`] — check a single program in isolation.
-//! - [`check_bundle`] — check a multi-file bundle (e.g., a
-//!   project that imports across files).
-//! - [`Bundle`] — the compilation-unit shape the bundle checker
-//!   takes.
+//! - [`check::check_bundle_reporting`] — the check, over the scope and
+//!   the rows a `hale_frontend::snapshot::Snapshot` demands for it
+//!   (`Snapshot::demand_check`, which every verb and the editor read).
+//! - [`Bundle`] — the compilation-unit shape the checker takes.
 //! - [`ty::Ty`] — resolved-type representation.
 //!
 //! Milestone-2 cut: literal typing, binary/unary op type
@@ -102,68 +101,11 @@ pub mod working_set;
 /// One Rust implementation, not two.
 pub use hale_model::wildcard_match;
 
-use std::collections::BTreeMap;
-
-use hale_syntax::ast::Program;
 use hale_syntax::Diag;
 
 pub use crate::symbol::Bundle;
 pub use crate::ty::Ty;
 
-/// Check a single program. Returns all diagnostics from
-/// resolution + type checking.
-///
-/// One `Program` is a WHOLE program — there is no sibling file the
-/// caller was not handed, because there is no bundle to be a part of
-/// — so this holds the whole-program rules
-/// ([`check_bundle_opts_whole_program`]): a bare callee and a bare
-/// identifier that name nothing are errors at their own span, as
-/// every command that compiles reports them (GH #911 B1, #846).
-///
-/// Before that this was [`check_bundle`], the PARTIAL-program entry,
-/// which left both rules off. The two callers that made it matter are
-/// the test harness — `build_executable` runs no checker, so a Rust
-/// test's `check_program` + build pair was checking to a weaker gate
-/// than the CLI applies to the same bytes — and
-/// `corpus_check_build_agreement`'s sweep, which decides "the checker
-/// accepts it" with this function and so recorded divergences the CLI
-/// never had.
-///
-/// A caller that deliberately holds a FRAGMENT (one file of a
-/// multi-file seed, a styleguide snippet) wants [`check_bundle`].
-///
-/// The program is checked as every entry point checks one: after the
-/// desugar sequence ([`desugar_sequence::desugar_before_check`]), run
-/// here on a copy, and minted after it, so the bundle carries the
-/// identities its analyses read. The sequence and the mint are
-/// idempotent, so a program that has already been through them is
-/// checked unchanged.
-pub fn check_program(program: &Program) -> Vec<Diag> {
-    let mut program = program.clone();
-    desugar_sequence::desugar_before_check(
-        &mut [&mut program],
-        &desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
-    )
-    .expect("the sequence refuses only an `--api` injection, and none is asked for");
-    let ids = snapshot::mint([("", &mut program)], &[]);
-    let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
-    programs.insert(String::new(), &program);
-    let mut bundle = Bundle::new(programs);
-    bundle.snapshot = ids;
-    check_bundle_opts_whole_program(&bundle, false)
-}
-
-/// Check a bundle of programs (one logical compilation unit
-/// spread across multiple `.hl` files, linked by `import`).
-pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
-    check_bundle_opts(bundle, false)
-}
-
-/// Like `check_bundle`, but `allow_unowned_subscriber` downgrades
-/// the "bus-subscribing locus instantiated unowned in a method
-/// body" hard error to allowed — the `--allow-unowned-subscriber`
-/// escape hatch for code that manages the subscriber's lifetime
-/// some other way.
 /// Render the per-method allocation summary + call graph (GH #18 item
 /// 1): the bundle's own fns and loci, judged over the snapshot's summary
 /// (`summary`, with the stdlib's analysis copy and the import renames).
@@ -221,41 +163,6 @@ pub fn check_resource_ceiling(
     resource_budget::check_ceiling(&budget, ceiling)
 }
 
-pub fn check_bundle_opts(
-    bundle: &Bundle<'_>,
-    allow_unowned_subscriber: bool,
-) -> Vec<Diag> {
-    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, false, false)
-}
-
-/// GH #721: the check for a caller holding a WHOLE program — every
-/// import resolved, nothing a sibling file still has to supply. The
-/// build path qualifies (`hale build` / `hale run` / `hale test`
-/// compile exactly what they bundle) and so does the language server,
-/// which typechecks only once the whole seed has parsed. An
-/// identifier nothing binds is a typo for these callers, reported
-/// with a span instead of arriving as codegen's spanless `unknown
-/// identifier`.
-///
-/// The F.18 callee rule is ON here too (GH #911 B1, #846). It used to
-/// be off, on the reasoning that codegen refuses these calls anyway so
-/// the flag would only change which layer says so — but that is the
-/// whole point: codegen says it with no file, line or caret, from a
-/// layer below the one that just approved the program, and `hale check
-/// <dir>` on the same bytes says it at the call's own span. Two
-/// answers to one question, and the useful one was the one the build
-/// did not give. `BARE_BUILTIN_CALLEES` is exact in both directions
-/// now (GH #779 for "a name codegen answers is exempt", GH #800 for "a
-/// name the rule exempts is one codegen answers"), both halves gated
-/// by `corpus_check_build_agreement`, so the rule refuses nothing the
-/// build accepts.
-pub fn check_bundle_opts_whole_program(
-    bundle: &Bundle<'_>,
-    allow_unowned_subscriber: bool,
-) -> Vec<Diag> {
-    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, true, true)
-}
-
 /// The rules a build refuses beside the check, after it: the borrow
 /// rule (GH #730, #1048) — a handle stored by name into a
 /// locus-carrying field, or kept by a method (`Router.add`), is never
@@ -278,28 +185,11 @@ pub fn build_rule_diags(bundle: &Bundle<'_>, ownership: &ownership_graph::Owners
     diags
 }
 
-/// The same check with the whole-program rules on: a call to a bare
-/// name nothing binds (F.18) and a bare identifier nothing binds
-/// (GH #721) are errors, as `hale build` would say. The CLI passes
-/// `true` when it checked a whole seed (a directory), never for one
-/// file — see `check::check_bundle_scoped` for why the two are
-/// separate flags.
-pub fn check_bundle_opts_scoped(
-    bundle: &Bundle<'_>,
-    allow_unowned_subscriber: bool,
-    strict_callees: bool,
-    strict_idents: bool,
-) -> Vec<Diag> {
-    with_identities(bundle, |bundle| {
-        check_numbered_bundle(bundle, allow_unowned_subscriber, strict_callees, strict_idents)
-    })
-}
-
 /// A bundle no snapshot holds, with identities: `bundle` itself when an
-/// entry already minted it (`check_program`, every verb's snapshot), and
+/// entry already minted it (every verb's snapshot), and
 /// otherwise its programs copied and minted once, together, with its
-/// source map — what `Bundle::new` over parsed programs hands the test
-/// entries. Every family the check reads is then derived from the one
+/// source map — what `Bundle::new` over parsed programs hands
+/// [`check::check_bundle`]. Every family the check reads is then derived from the one
 /// numbered program, as the snapshot's are: the bus graph's sends and
 /// the intra-locus rewrite's relation ([`bundle_intra_locus`], whose own
 /// numbering keeps these ids) name a send by the same id, so rule 10's
@@ -321,104 +211,9 @@ pub(crate) fn with_identities<R>(bundle: &Bundle<'_>, f: impl FnOnce(&Bundle<'_>
     })
 }
 
-/// [`check_bundle_opts_scoped`] over a bundle [`with_identities`]
-/// numbered.
-fn check_numbered_bundle(
-    bundle: &Bundle<'_>,
-    allow_unowned_subscriber: bool,
-    strict_callees: bool,
-    strict_idents: bool,
-) -> Vec<Diag> {
-    // A bundle no snapshot holds: the scope and the families the check
-    // reads are built here, once each, and the model below reads the
-    // same ones.
-    let (top, mut diags) = resolve::build_top_scope(bundle);
-    let handlers = bundle_handler_rows(bundle);
-    let flows = bundle_flow_rows(bundle);
-    let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
-    let rows = std::cell::OnceCell::new();
-    let effects = || {
-        Some(rows.get_or_init(|| {
-            effect_rows::derive_effect_rows(bundle, &top, alloc_summary.clone())
-        }))
-    };
-    let entry = entry::entry_row(bundle);
-    let placement = placement::derive_placement(bundle, &top, &entry);
-    let ownership = ownership_graph::build_ownership_graph(bundle, &top, &placement, &entry);
-    let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bus_graph::build_bus_graph(bundle, &top, &bindings, &placement, &entry);
-    let target = capability::target_row(bundle);
-    let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
-    let laws = bundle_law_selection(bundle);
-    let roles = roles::role_rows(bundle, &entry);
-    let api_surface = bundle_api_surface(bundle, &entry);
-    let (checked, effect_certificates) = check::check_bundle_reporting(
-        bundle,
-        &check::CheckInputs {
-            top: &top,
-            handlers: &handlers,
-            flows: &flows,
-            ownership: &ownership,
-            effects: &effects,
-            entry: &entry,
-            bindings: &bindings,
-            alloc_summary: &alloc_summary,
-            forms: &forms,
-            bus: &bus,
-            intra_locus: &bundle_intra_locus(bundle, &placement),
-            placement: &placement,
-            target: &target,
-            uses: &uses,
-            laws: &laws,
-            roles: &roles,
-            api_surface: api_surface.as_ref(),
-        },
-        allow_unowned_subscriber,
-        strict_callees,
-        strict_idents,
-    );
-    diags.extend(checked);
-    // GH #476 Change 9 (review): claim VERDICTS are judged over the
-    // canonical model, and a model is a description of a CHECKED
-    // program — `derive_application_model` says so, and ends with a
-    // debug assertion that the model it built is lawful. Some
-    // parser-valid, checker-invalid programs deliberately derive
-    // UNLAWFUL models (a key filter on an unkeyed topic; an illegal
-    // fallback), which was harmless only while nothing on the
-    // ordinary check path consumed them. Judging one would panic in
-    // a debug build and, in release, walk evidence and relation code
-    // whose indexing assumes lawfulness.
-    //
-    // So the model half runs only once the resolver and the checker
-    // agree the program denotes something ([`denotes_a_model`]).
-    // The claim surface gate is `judgment::has_claim_surface`; the
-    // model is derived over the scope and the rows the check read, and
-    // the evidence reads the check's effects certificate report.
-    if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        // The bundle is minted ([`with_identities`]), so the table the
-        // model's arrangement reads has its rows.
-        let model = model_over_scope(
-            bundle,
-            &top,
-            &handlers,
-            alloc_summary.clone(),
-            &forms,
-            &bus,
-            &bindings,
-            &ownership,
-            &placement,
-        );
-        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary, &laws));
-    }
-    finish_check_diags(&mut diags);
-    diags
-}
-
 /// Law selection over a bundle no snapshot holds, which names no
-/// deployment environment: what the test entries' check, its laws and
-/// the artifact's bundle entry read ([`check_bundle_opts_scoped`],
-/// [`check::check_bundle`], [`topology::dump_topology`]), once per entry. Every verb reads its
+/// deployment environment: what [`check::check_bundle`] and
+/// [`claim_lowering::lower_claims`] read, once per call. Every verb reads its
 /// snapshot's (`Snapshot::demand_law_selection`).
 pub fn bundle_law_selection(bundle: &Bundle<'_>) -> claims::LawSelection {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
@@ -428,8 +223,8 @@ pub fn bundle_law_selection(bundle: &Bundle<'_>) -> claims::LawSelection {
 /// The served surface of a bundle no snapshot holds: the api entry of
 /// the entry row's root (`entry`), over the bundle's programs as they
 /// stand, which the sequence has already generated the binding into, or
-/// not (a test that generated it itself). What the test entries' check
-/// reads ([`check_bundle_opts_scoped`], [`check::check_bundle`]); every
+/// not (a test that generated it itself). What [`check::check_bundle`]
+/// reads; every
 /// verb reads its snapshot's, the surface its sequence generated the
 /// binding from (`Snapshot::api_surface`).
 pub fn bundle_api_surface(bundle: &Bundle<'_>, entry: &entry::EntryRow) -> Option<hale_syntax::api_gen::ApiSurface> {
@@ -438,52 +233,20 @@ pub fn bundle_api_surface(bundle: &Bundle<'_>, entry: &entry::EntryRow) -> Optio
 }
 
 /// The handler rows of a bundle no snapshot holds, in the bundle's
-/// order (a row's position is its authored ordinal): what the test
-/// entries' check and model read ([`check_bundle_opts_scoped`],
-/// [`check::check_bundle`], [`derive_application_model`]). Every verb
+/// order (a row's position is its authored ordinal): what
+/// [`check::check_bundle`] reads. Every verb
 /// reads its snapshot's (`Snapshot::demand_handlers`).
 pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::HandlerRouting {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot)
 }
 
-/// The flow rows of a bundle no snapshot holds: what the test entries'
-/// check reads ([`check_bundle_opts_scoped`], [`check::check_bundle`]).
+/// The flow rows of a bundle no snapshot holds: what
+/// [`check::check_bundle`] reads.
 /// Every verb reads its snapshot's (`Snapshot::demand_flows`).
 pub(crate) fn bundle_flow_rows(bundle: &Bundle<'_>) -> flows::FlowRows {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     flows::survey(&programs, &bundle.import_renames)
-}
-
-/// The application model of a bundle no snapshot holds: the test
-/// entry's (the hale-types tests, the artifact's bundle entry
-/// `topology::dump_topology`). It builds the
-/// families the frontend's snapshot demands for the model — the scope,
-/// the bus graph and the ownership graph over the checked programs, the
-/// handler rows, the effect rows — once each, and derives over them
-/// ([`model_builder::derive_application_model_over`]). Every verb reads
-/// its snapshot's model instead (`Snapshot::demand_model`).
-///
-/// The arrangement is the placement table's rows, and the table names
-/// minted sites, so a bundle nothing minted (an in-test `Bundle::new`)
-/// is minted first, over clones of its programs, as every verb's load
-/// mints its own; the model is derived over the clones.
-pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
-    with_identities(bundle, model_of_minted)
-}
-
-/// [`derive_application_model`] over a bundle whose identities are minted.
-fn model_of_minted(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
-    let (top, diags) = resolve::build_top_scope(bundle);
-    let handlers = bundle_handler_rows(bundle);
-    let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
-    let entry = entry::entry_row(bundle);
-    let placement = placement::derive_placement(bundle, &top, &entry);
-    let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    let bindings = binding_rows::derive_binding_rows(bundle, &top);
-    let bus = bus_graph::build_bus_graph(bundle, &top, &bindings, &placement, &entry);
-    let ownership = ownership_graph::build_ownership_graph(bundle, &top, &placement, &entry);
-    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership, &placement)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds
@@ -506,43 +269,6 @@ pub(crate) fn bundle_intra_locus(
     resolved::rewrite_intra_locus(&merged, placement).intra_locus
 }
 
-/// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary, the form rows, the bus graph, the binding rows,
-/// the ownership graph and the placement table its caller already built:
-/// the effect rows, the table's arrangement and the dispatch plan the
-/// model reads beside them are built here, by the snapshot's producers.
-fn model_over_scope(
-    bundle: &Bundle<'_>,
-    top: &resolve::TopScope,
-    handlers: &handler_routing::HandlerRouting,
-    alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
-    forms: &form_rows::FormRows,
-    bus_graph: &bus_graph::BusGraph,
-    bindings: &binding_rows::BindingRows,
-    ownership: &ownership_graph::OwnershipGraph,
-    placement: &placement::PlacementTable,
-) -> hale_model::ApplicationModel {
-    let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
-    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let arrangement = arrangement::project_arrangement(&programs, &bundle.snapshot, placement, ownership);
-    let gates = bus_graph::derive_dispatch_gates(bus_graph, top, placement);
-    let dispatch_plan = hale_model::dispatch_plan::DispatchPlan::from_gates(&gates, &arrangement.domains());
-    model_builder::derive_application_model_over(
-        bundle,
-        &model_builder::ModelInputs {
-            top,
-            bus_graph,
-            ownership,
-            handlers,
-            effects: &effects,
-            forms,
-            bindings,
-            placement,
-            arrangement: &arrangement,
-            dispatch_plan: &dispatch_plan,
-        },
-    )
-}
 
 /// Whether a program the resolver and the checker reported `diags`
 /// for denotes a model: no error but a claim's. Claim errors do not
@@ -602,7 +328,8 @@ mod flat_shapeable_tests {
     //! constraint substrate. These tests pin the predicate's
     //! behavior on the cases the route matrix consults.
 
-    use super::*;
+    use std::collections::BTreeMap;
+
     use hale_syntax::ast::PrimType;
     use hale_syntax::parse_source;
 

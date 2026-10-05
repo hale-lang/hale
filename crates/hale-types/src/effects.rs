@@ -649,22 +649,6 @@ fn written_forms(programs: &[&Program]) -> crate::form_rows::FormRows {
 /// once per snapshot.
 pub type EffectCertificates = Vec<(LoweredCertificate, Vec<(Diag, bool)>)>;
 
-/// The certificate report of a bundle no snapshot holds and no check
-/// ran over (the tests', the artifact's bundle entry): the engine's one
-/// run for that caller, over the form rows
-/// built here. A snapshot's comes from its check
-/// (`Snapshot::demand_effect_certificates`).
-pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertificates {
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let summary = crate::alloc_summary::derive_alloc_summary(bundle);
-    let (top, diags) = crate::resolve::build_top_scope(bundle);
-    let entry = crate::entry::entry_row(bundle);
-    let placement = crate::placement::derive_placement(bundle, &top, &entry);
-    let forms = crate::form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    let root = entry.root().and_then(|m| m.decl(bundle));
-    effect_report_grouped(&programs, root, &summary, &forms).1
-}
-
 /// GH #476 Change 5e: the same report with each certificate's own
 /// diagnostics attached — the evidence rows the model builder
 /// stores, produced by the ONE pass that also feeds `hale check`

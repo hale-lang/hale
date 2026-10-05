@@ -174,7 +174,7 @@ pub fn lower_claims_over(
             // offset-space). Collapsing to `Synthetic` threw the
             // position away, and every consumer that resolves a
             // synthetic record renders span 0..0 — so a bundle with
-            // no source map (the public `check_program`, the LSP)
+            // no source map (a bare program's snapshot, the LSP)
             // anchored EVERY claim diagnostic at byte zero of the
             // first file, however far from the claim that was. GH
             // #476 Change 9, review round 1.
