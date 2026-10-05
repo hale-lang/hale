@@ -220,7 +220,7 @@ pub(crate) fn role_coverage(
         return Vec::new();
     };
     let refs: Vec<&hale_syntax::ast::Program> = programs.values().collect();
-    let declared = hale_syntax::api_gen::declared_roles(&refs, hale_types::entry::lowering_root_decl(&refs));
+    let declared = hale_syntax::api_gen::declared_roles(&refs, hale_types::entry::root_decl(&refs));
     let mut out = Vec::new();
     let missing: Vec<&String> = declared.iter().filter(|r| !table.contains_key(*r)).collect();
     if !missing.is_empty() {

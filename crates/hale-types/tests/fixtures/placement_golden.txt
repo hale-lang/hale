@@ -923,10 +923,6 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 
-== crates/hale-cli/tests/replay_cli.rs#a3e9a9f8
-root	App	not the entry
-row	App@literal1	App	main	default
-
 == crates/hale-cli/tests/replay_cli.rs#6c357bb0
 root	App	the entry
 row	App@literal1	App	main	default
@@ -4195,7 +4191,11 @@ row	App@literal1.c	Clock	main	default
 row	App@literal1.w	Worker	main	default
 
 == crates/hale-types/tests/bus_graph.rs#130c4f61
+root	__lib_App	the entry
+domain	pinned:__lib_App@entry.w
+row	__lib_App@entry	__lib_App	main	default
 row	W@main1	W	main	default
+row	__lib_App@entry.w	W	pinned:__lib_App@entry.w	entry	off owner
 
 == crates/hale-types/tests/bus_graph.rs#589350b0
 root	App	the entry
@@ -5439,8 +5439,6 @@ root	App	the entry
 domain	pinned:App@literal1.a
 row	App@literal1	App	main	default
 row	App@literal1.a	Worker	pinned:App@literal1.a	entry	off owner
-
-== crates/hale-types/tests/placement.rs#a2d70f5a
 
 == crates/hale-types/tests/placement.rs#0345377d
 root	App	the entry
@@ -12743,12 +12741,6 @@ row	Lib@entry.idle	K	main	default
 -- Lib@entry.w	Worker
 row	~	Worker	pinned:~	entry	off owner
 row	~.k	K	pinned:~	inherited
-
-== crates/hale-types/tests/fixtures/placement/module_nested_main.hl
-root	App	not the entry
-domain	pinned:App@literal1.w
-row	App@literal1	App	main	default
-row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 
 == crates/hale-types/tests/fixtures/placement/module_qualified.hl
 root	App	the entry

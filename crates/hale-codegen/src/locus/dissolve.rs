@@ -377,7 +377,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // their drain/dissolve here would double-dispatch. Their
         // pthread_join + arena_destroy happen via the
         // deferred-dissolve frame's flush at fn-scope exit.
-        let is_main_locus = self.is_lowering_root(locus_name);
+        let is_main_locus = self.is_entry_locus(locus_name);
         // The fields in the order the plan places their teardowns (line
         // 12: declaration order). Physical release can remain deferred.
         let field_entries = self.cascade_field_entries(info, locus_name)?;
@@ -956,7 +956,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // F.31 Phase 3b: skip cascade drain for pinned-placed
         // fields. See emit_locus_field_dissolves's matching guard.
-        let is_main_locus = self.is_lowering_root(locus_name);
+        let is_main_locus = self.is_entry_locus(locus_name);
         // The fields in the order the plan chains their drains (line 12:
         // declaration order), each drained after its own fields.
         let field_entries = self.cascade_field_entries(info, locus_name)?;

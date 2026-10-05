@@ -2315,11 +2315,12 @@ assume the others in a build:
 
   **The pools are the deployed root's** (F.40 phase 3, the entry's
   consumers). The async_io pools read are those of the `main locus`
-  the build deploys, the entry row's lowering root
-  (`spec/semantics.md` § "The entry locus"): a module-nested one
-  included, since the build spawns its pools; a second `main locus`
-  (rule 1's error) and an imported library's are not deployed, and
-  their `placement { }` entries imply nothing.
+  the build deploys, the entry row's root, the entry
+  (`spec/semantics.md` § "The entry locus"), or a seed's refused
+  module-nested `main`, which the check still judges; another `main
+  locus` (rule 1's error, the entry being the last) and an imported
+  library's are not deployed, and their `placement { }` entries imply
+  nothing.
 
   **The leaf set is `block` minus what parks** (GH #791, 2026-09-20).
   Waiting stalls co-scheduled loci only if it holds the worker, and
@@ -2439,8 +2440,8 @@ assume the others in a build:
     adapter of the root's `bindings { }` is one thread, counted once
     whatever the root's bound. A nested instance runs on its anchor's
     thread and adds none. Only the deployed root's rows count: an
-    imported `main` or a module-nested one lowering does not deploy
-    costs nothing.
+    imported `main` or a module-nested one, which lowering does not
+    deploy, costs nothing.
   - **Cooperative pools** (`cooperative_pools`) are worker pools: one per
     named pool however many instances it holds, and an affinity is a
     property of its pool, never a thread. `main` is the program's own

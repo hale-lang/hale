@@ -1,6 +1,7 @@
 // Case 7, second half: the seed's only `main locus` is inside a
-// module. It is not the entry, and lowering deploys it: the table's
-// root, with `is_entry` false.
+// module. It is not the entry, so the check refuses the seed, and it is
+// still the table's root, with `is_entry` false, so every other rule
+// judges it.
 locus Worker { }
 
 module app {

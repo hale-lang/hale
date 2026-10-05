@@ -478,7 +478,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // the frame that built the root keeps the join (its flush entries'
         // allocas hold the ids).
         let mut anchor_records: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-        if self.is_lowering_root(&l.name.name) {
+        if self.is_entry_locus(&l.name.name) {
             let record_ty = self.anchor_record_ty();
             for (field, &replicas) in &self.deployment.instance_joined_anchor_fields {
                 anchor_records.insert(field.clone(), (idx, replicas));

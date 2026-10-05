@@ -216,7 +216,7 @@ fn main() {
         let mut refs: Vec<&mut hale_syntax::ast::Program> = programs.values_mut().collect();
         let row = hale_types::entry::entry_row_in(&refs.iter().map(|p| &**p).collect::<Vec<_>>());
         assert!(
-            hale_syntax::api_gen::generate_api(&mut refs, row.lowering_root.as_ref().and_then(|m| m.index_in()), None)
+            hale_syntax::api_gen::generate_api(&mut refs, row.root().and_then(|m| m.index_in()), None)
                 .is_some(),
             "the api binding lowers"
         );
@@ -335,7 +335,7 @@ fn main() { App { }; }
         let mut refs = vec![&mut p];
         let row = hale_types::entry::entry_row_in(&[&*refs[0]]);
         assert!(
-            hale_syntax::api_gen::generate_api(&mut refs, row.lowering_root.as_ref().and_then(|m| m.index_in()), None)
+            hale_syntax::api_gen::generate_api(&mut refs, row.root().and_then(|m| m.index_in()), None)
                 .is_some(),
             "the api binding lowers"
         );

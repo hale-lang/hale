@@ -188,13 +188,23 @@ fn fires_through_an_alias() {
 }
 
 /// K-2's principle: a `main locus` lowering does not deploy (an imported
-/// one, here by its `__lib_` name) births nothing, so it traps nothing.
-/// The legacy walk read every `main locus` the bundle declared.
+/// one, renamed `__lib_App` and marked `imported` as the cross-seed
+/// rename pass leaves it, GH #1104 piece 5) births nothing, so it traps
+/// nothing. The legacy walk read every `main locus` the bundle
+/// declared. The mark, not the name, is what makes it a library's: the
+/// entry row's decision 1, which lowering reads (F.40 phase 3, L4).
 #[test]
 fn silent_under_a_root_lowering_does_not_deploy() {
     let src = format!(
         "{}\nmain locus __lib_App {{\n    params {{ f: Forever = Forever {{ }}; l: Later = Later {{ }}; }}\n}}\nfn main() {{ }}\n",
         BLOCKER
     );
-    assert!(!fires(&src), "{:#?}", msgs(&src));
+    let mut prog = parse_source(&src).expect("parse failed");
+    for item in &mut prog.items {
+        if let hale_syntax::ast::TopDecl::Locus(l) = item {
+            l.imported = l.name.name.starts_with("__lib_");
+        }
+    }
+    let msgs: Vec<String> = check_program(&prog).into_iter().map(|d| d.message).collect();
+    assert!(!msgs.iter().any(|m| m.contains("never BORN")), "{:#?}", msgs);
 }

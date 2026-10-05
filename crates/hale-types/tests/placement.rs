@@ -2576,11 +2576,12 @@ fn main() { App { }; }
 
 #[test]
 fn an_imported_seeds_main_placement_is_not_flagged() {
-    // An imported seed's main locus is renamed `__lib_*` and is not
-    // the deployment root: `collect_main_placement` filters it, so its
-    // entries never reach the plan and flagging them (as a drop the
-    // author could fix) would be a false positive. The same scope rule
-    // rule 17's check uses.
+    // An imported seed's main locus is renamed `__lib_*` and marked
+    // `imported` by the cross-seed rename pass (GH #1104 piece 5, here
+    // by hand), and is not the deployment root: the entry is the
+    // seed's own, so its entries never reach the plan and flagging them
+    // (as a drop the author could fix) would be a false positive. The
+    // same scope rule rule 17's check uses.
     let src = r#"
 locus Worker { run() { } }
 
@@ -2597,7 +2598,14 @@ main locus __lib_App {
 
 fn main() { }
 "#;
-    let msgs = errors(src);
+    let mut prog = parse_source(src).expect("parse failed");
+    for item in &mut prog.items {
+        if let hale_syntax::ast::TopDecl::Locus(l) = item {
+            l.imported = l.name.name.starts_with("__lib_");
+        }
+    }
+    let msgs: Vec<String> =
+        check_program(&prog).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
     assert!(
         !msgs.iter().any(|m| m.contains(UNCONSUMED)),
         "an imported seed's main is not the deployment root: {:?}",

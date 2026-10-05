@@ -2834,39 +2834,47 @@ entrypoint is. Two shapes are not the entry (F.40 phase 3, E0):
   is not closed.
 - **A `main locus` inside a `module { }`** is not the entry either, as
   a `fn main` inside one is not the entry point (§ "Declarations
-  inside `module { }`"). A seed whose only `main locus` is
-  module-nested has no entry; a seed with both keeps the top-level
-  one. Rule 1 still counts a module-nested one (GH #825).
+  inside `module { }`"). A seed with both keeps the top-level one, and
+  rule 1 still counts the module-nested one (GH #825). A seed whose
+  only `main locus` is module-nested has no entry, and is **refused**,
+  by `hale check` as by the build, with one located error at that
+  locus's name:
+
+  ```text
+  main.hl:2:16: type error: the entry must be top-level: `main locus App` inside `module inner` is not the program's entry, and nothing else in the seed is — move it out of the module
+  ```
 
 With more than one candidate (rule 1's error) the checker reads the
 last.
 
-The build does not read the entry yet (F.40 phase 3, L4). It deploys
-the first `main locus` of the seed's own, in declaration order, a
-module-nested one included, and spawns that one's placement. The
-placement-safety rules guard what the build deploys, so they read that
-root, not the entry: the pool map behind the cross-pool method call
-error (`spec/types.md` § "Single-threaded-method invariant (F.31)"),
-the pinned-in-a-loop rule (placement rule 17), the instance-aliasing
-warning (one locus shared by two of the root's fields placed apart,
-#334), which reads where each field runs from the placement table, and
-the async_io advisory (`spec/verification.md` § "Placement-implied
-contracts"). The api binding is generated into that root too, and the
-editor's `hale/placement` view and the model's `entrypoint` name it
-(`main` when the build deploys none, as for a seed whose only `main
-locus` is imported). A seed whose only `main locus` is module-nested therefore has no
-entry, so its world is not closed and `--env` refuses it, and its
-placement is still checked as the top-level one's is, because the
-build still runs it.
+The build deploys the entry and nothing else (F.40 phase 3, L4): its
+placement, its bindings, its pinned threads. The refusal above is one
+more diagnostic, never a replacement: the placement-safety rules (the
+pool map behind the cross-pool method call error, `spec/types.md` §
+"Single-threaded-method invariant (F.31)", the pinned-in-a-loop rule,
+placement rule 17, the instance-aliasing warning, one locus shared by
+two of the root's fields placed apart, #334, which reads where each
+field runs from the placement table, and the async_io advisory,
+`spec/verification.md` § "Placement-implied contracts") and every
+other rule still judge a refused module-nested `main locus` and its
+members as they judge the same declarations at the top level, so a
+program refused for another reason is refused for both. The api
+binding is generated into the same root, the entry or a refused
+module-nested `main`, and the editor's `hale/placement` view and the
+model's `entrypoint` name it (`main` when there is none, as for a seed
+whose only `main locus` is imported). Until L4 the build deployed the
+first `main locus` of the seed's own, a module-nested one included;
+the refusal is what changed for the one seed that ran differently,
+whose only `main locus` is module-nested.
 
 Whether a thread runs beside the bus's main drain, so that the bus
 queue takes its lock, is decided from what the build deploys (F.40
 phase 3, E2): a domain of the placement table that is not main (a
 `pinned` field, a non-main cooperative pool, an adapter binding, the
-`api` binding's pool), or an entry of the deployed `main locus`'s
-`bindings { }`, a module-nested one included. An imported `main
-locus`'s `placement { }` block and `bindings { }` start nothing, so a
-program that imports one keeps the single-threaded queue.
+`api` binding's pool), or an entry of the entry's `bindings { }`. An
+imported `main locus`'s `placement { }` block and `bindings { }`
+start nothing, so a program that imports one keeps the
+single-threaded queue.
 
 Bundle-wide rules:
 
@@ -3439,8 +3447,9 @@ main locus App {
    — it is not widened onto indirect paths, so the higher-stakes
    diagnostic keeps its precision. Rules 7 and 8, the pool-starvation
    warning and the birth-order trap read where each field runs from
-   the placement table: they judge the `main locus` lowering deploys
-   (one it does not, imported or beside the deployed one, spawns
+   the placement table: they judge the `main locus` lowering deploys,
+   the entry, or the refused module-nested one of a seed with none
+   (one lowering does not deploy, imported or beside the entry, spawns
    nothing and is not judged), and each field by the locus it
    realizes, an alias or an imported seed's qualified path
    included (a stdlib locus's `run()` is judged by the
@@ -3629,9 +3638,10 @@ main locus App {
     so the shape this rejects is the deployment root booted once per
     iteration, and the placement it reads is the deployment root's
     (an imported `main locus` is not deployed and pins nothing; a
-    module-nested one is not the entry but is deployed until the
-    build reads the entry, so it pins: "The entry locus", § "Phase
-    2: hierarchy, subjects, bindings, closed-world optimization").
+    module-nested one that is the seed's only `main locus` is refused
+    as not the entry, and judged here too, as a top-level one would
+    be: "The entry locus", § "Phase 2: hierarchy, subjects, bindings,
+    closed-world optimization").
     The fix is to instantiate it once outside the loop;
     a loop that *calls a fn* holding the literal is unaffected and
     correct (each call joins its own thread at that fn's exit), and
@@ -5078,14 +5088,21 @@ name lookup:
   thing now (2026-09-20, GH #911).
 
   A `main locus` written inside a module is not the entry either
-  (F.40 phase 3, E0): it is not refused, and rule 1 counts it, but
-  the checker's entry is the seed's top-level `main locus`, so a
-  module-nested one does not close the world and is not a deployment
-  target for `--env` ("The entry locus", § "Phase 2: hierarchy,
-  subjects, bindings, closed-world optimization"). Codegen still
-  deploys one as its root, by name, until its comparisons read the
-  same row (F.40 phase 3, L4), so its placement is checked and runs
-  as a top-level one's does.
+  (F.40 phase 3, E0): rule 1 counts it, but the entry is the seed's
+  top-level `main locus`, so a module-nested one does not close the
+  world, is not a deployment target for `--env`, and is not what the
+  build deploys ("The entry locus", § "Phase 2: hierarchy, subjects,
+  bindings, closed-world optimization"). Beside a top-level one it is
+  rule 1's error. Where it is the seed's only `main locus` nothing in
+  the seed is the entry, and the seed is **refused** at its name, as
+  a nested `fn main` is (F.40 phase 3, L4):
+
+  ```text
+  main.hl:2:16: type error: the entry must be top-level: `main locus App` inside `module inner` is not the program's entry, and nothing else in the seed is — move it out of the module
+  ```
+
+  The refusal is one more diagnostic: every other rule still judges
+  that `main locus` and its members as it would at the top level.
 - **Scoping of locals.** Ordinary lexical scope is unchanged; a
   module is not a scope.
 

@@ -1071,18 +1071,34 @@ fn compile_cached_runtime_object_with(
     }
 }
 
-/// The `main locus` lowering deploys: the entry row's lowering root
-/// (`hale_types::entry::EntryRow::lowering_root`), found in lowering's
-/// program by its site (a user site is the node of the same index in the
-/// merged program, as the placement table's root is). A view with no row
-/// (a bare program's) or a row with no root deploys none.
-fn lowering_root<'p>(
+/// The `main locus` lowering deploys: the entry row's entry
+/// (`hale_types::entry::EntryRow::entry`), found in lowering's program by
+/// its site (a user site is the node of the same index in the merged
+/// program, as the placement table's root is). A view with no row (a bare
+/// program's) or a row with no entry deploys none.
+fn entry_locus<'p>(
     entry: Option<&hale_types::entry::EntryRow>,
     program: &'p Program,
 ) -> Option<&'p hale_syntax::ast::LocusDecl> {
-    let site = entry?.lowering_root.as_ref()?.site?;
+    let site = entry?.entry()?.site?;
     hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
         TopDecl::Locus(l) if l.id.0 == site.index => Some(l),
+        _ => None,
+    })
+}
+
+/// The `fn main` lowering emits as the process's entry point: the entry
+/// row's column (`hale_types::entry::EntryRow::fn_main`), found among
+/// lowering's top-level declarations by its site. A view with no row (a
+/// bare program's) applies the row's own definition
+/// (`hale_types::entry::top_level_fn_main`) to the program.
+fn entry_fn<'p>(entry: Option<&hale_types::entry::EntryRow>, program: &'p Program) -> Option<&'p FnDecl> {
+    let Some(row) = entry else {
+        return hale_types::entry::top_level_fn_main(&program.items).map(|(_, f)| f);
+    };
+    let site = row.fn_main.as_ref()?.site?;
+    program.items.iter().find_map(|item| match item {
+        TopDecl::Fn(f) if f.id.0 == site.index => Some(f),
         _ => None,
     })
 }
@@ -1277,8 +1293,8 @@ pub fn build_resolved(
     //     table places what lowering deploys, so an imported library's
     //     `main locus`, which nothing builds, adds nothing however its
     //     `placement { }` block reads; and
-    //   * ANY binding row of the program's own main locus, a
-    //     module-nested one included, as `root_bindings` lowers it
+    //   * ANY binding row of the entry, the main locus the entry row
+    //     names, as `root_bindings` lowers it
     //     (`BindingRows::binds_on_main`). Adapter entries
     //     were always counted (a transport recv-loop on its own
     //     thread, "pinned-equivalent by construction") — but unix/udp
@@ -1298,7 +1314,7 @@ pub fn build_resolved(
     //     be un-baked at runtime — so the compile-time union here
     //     must stay the superset.
     let program_has_offthread =
-        resolved.placement.places_off_main() || resolved.bindings.binds_on_main();
+        resolved.placement.places_off_main() || resolved.bindings.binds_on_main(resolved.entry());
 
     // Static-bus-dispatch devirtualization plan (build #1b), derived in
     // the resolved program from the bus graph over the merged and
@@ -1484,7 +1500,8 @@ pub fn build_resolved(
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
         lifecycle: resolved.lifecycle(),
-        lowering_root: lowering_root(resolved.entry(), merged),
+        entry_locus: entry_locus(resolved.entry(), merged),
+        entry_fn: entry_fn(resolved.entry(), merged),
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
@@ -3376,10 +3393,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4).
     pub(crate) lifecycle: Option<&'p hale_types::lifecycle::LifecyclePlan>,
     /// The `main locus` lowering deploys, read from the view's entry row
-    /// (`LoweringView::entry`, its lowering root) and found in lowering's
-    /// program by identity: every comparison against "the main locus"
-    /// reads it (`is_lowering_root`). `None` with no root.
-    pub(crate) lowering_root: Option<&'p hale_syntax::ast::LocusDecl>,
+    /// (`LoweringView::entry`, its entry) and found in lowering's program
+    /// by identity: every comparison against "the main locus" reads it
+    /// (`is_entry_locus`). `None` with no entry.
+    pub(crate) entry_locus: Option<&'p hale_syntax::ast::LocusDecl>,
+    /// The `fn main` lowering emits as the process's entry point, read
+    /// from the view's entry row (its `fn_main` column) by identity: the
+    /// body `in_main` marks. `None` with none.
+    pub(crate) entry_fn: Option<&'p FnDecl>,
     /// Set while lowering the body of a fn the rows call scratch-local.
     pub(crate) current_user_fn_scratch_local: bool,
     /// User-defined `type` declarations indexed by name. Filled
@@ -3675,9 +3696,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// already emitted ahead of their pinned joins: their own teardown
     /// skips it (`emit_deferred_entry_teardown`).
     hoisted_heads: Vec<PointerValue<'ctx>>,
-    /// True while lowering the body of `main`. `return` is treated
-    /// as an exit-code return (truncated to i32) when this is set,
-    /// rather than the user-fn `current_user_fn_ret` path.
+    /// True while lowering the body of the entry row's `fn main`
+    /// (`entry_fn`). `return` is treated as an exit-code return
+    /// (truncated to i32) when this is set, rather than the user-fn
+    /// `current_user_fn_ret` path.
     pub(crate) in_main: bool,
     /// The spine of the fn main exit tearing its frame down, set after its
     /// head and taken by its flush, which emits that spine's process rows
@@ -6262,7 +6284,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if head_first && thread_id_alloca.is_some() {
                 let owner = self.pinned_owner.iter().find(|(p, _)| p == self_slot).map(|(_, o)| *o);
                 let main_owner = owner.and_then(|o| {
-                    order.iter().find(|(s, name, tid)| *s == o && tid.is_none() && self.is_lowering_root(name)).cloned()
+                    order.iter().find(|(s, name, tid)| *s == o && tid.is_none() && self.is_entry_locus(name)).cloned()
                 });
                 if let Some((owner_slot, owner_name, _)) = main_owner {
                     if !self.hoisted_heads.contains(&owner_slot) {
@@ -6539,7 +6561,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // as it unwound, and the process died on every stop
             // (downstream handoff). Joining here is idempotent: the pools'
             // later join at main's exit finds no worker left.
-            let is_main_entry = self.is_lowering_root(&locus_name);
+            let is_main_entry = self.is_entry_locus(&locus_name);
             let lc_outer = std::mem::replace(
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
@@ -8304,29 +8326,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // are scratch-local, and per locus the arena and method-scratch
         // elision verdicts.
 
-        // Locate fn main.
+        // fn main is the entry row's column (`entry_fn`, F.40 phase 3,
+        // L4): lowering derives no entry point.
         //
-        // GH #884: this one stays TOP-LEVEL-ONLY, and is the only
-        // declaration lookup in codegen that does. `main` is not a
-        // symbol resolved by name from a use site — it is the
-        // seed's entry point, and every other layer reads it as a
-        // top-level property of the file: `desugar`'s auto-wrap
-        // splices the synthesized `main locus` at main's INDEX in
-        // `program.items` (a module-nested one has no such index),
-        // `hale bench` classifies a seed by it, and
-        // `check_build_divergences.txt` lists the library seeds
-        // that have none. A `fn main` inside `module { }` is an
-        // ordinary free fn named `main`; promoting it to the entry
-        // point here would make codegen the only layer that
-        // thinks so.
-        let main_found = self
-            .program
-            .items
-            .iter()
-            .find_map(|item| match item {
-                TopDecl::Fn(f) if f.name.name == "main" => Some(f.clone()),
-                _ => None,
-            });
+        // GH #884: it is TOP-LEVEL-ONLY. `main` is not a symbol
+        // resolved by name from a use site — it is the seed's entry
+        // point, and every other layer reads it as a top-level
+        // property of the file: `desugar`'s auto-wrap splices the
+        // synthesized `main locus` at main's INDEX in `program.items`
+        // (a module-nested one has no such index), `hale bench`
+        // classifies a seed by it, and `check_build_divergences.txt`
+        // lists the library seeds that have none. A `fn main` inside
+        // `module { }` is refused by the check (GH #911).
+        let main_found = self.entry_fn.cloned();
         let main_decl = match main_found {
             Some(m) => m,
             None => {
@@ -8450,8 +8462,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // F.31: main's deployment, read from the placement table.
         // Populates `main_placement_map` keyed by `params` field
         // name, which the params-init loop in
-        // `lower_locus_instantiation` reads for the lowering root
-        // (`is_lowering_root`) to override the per-field placement.
+        // `lower_locus_instantiation` reads for the entry
+        // (`is_entry_locus`) to override the per-field placement.
         self.collect_main_placement();
 
         // Pass A0: declare every user-defined `type` so locus
@@ -9778,8 +9790,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// F.31: main's deployment, read from the placement table (F.40
     /// phase 3, P1 5 of 6) before any lowering runs: for the root lowering
-    /// deploys (the table's, seeded from the entry row's lowering root,
-    /// which `is_lowering_root` reads), per root field a `placement { }`
+    /// deploys (the table's, seeded from the entry row's entry,
+    /// which `is_entry_locus` reads), per root field a `placement { }`
     /// entry decides, its schedule class, pool, NUMA node and replicas,
     /// keyed by field name for the params init of the root. The domains
     /// give the pools their `async_io` and affinity; the type sets are
@@ -9822,7 +9834,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // ownership table's `Owner::Caller`) is torn down by its owner,
         // not by the frame that built it, so its pinned fields keep their
         // join record in the instance.
-        let root_handed_back = self.lowering_root.is_some_and(|l| {
+        let root_handed_back = self.entry_locus.is_some_and(|l| {
             self.owner_table.rows().any(|(_, e)| {
                 e.owner == crate::ownership::Owner::Caller
                     && e.what == hale_types::ownership::Produced::Literal
@@ -10190,7 +10202,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // dispatcher needed. The handler is main's routing row for
         // the locus the connect entry's row names as its transport.
         if let Some(transport) = connect_transport {
-            let main_handler = self.lowering_root.and_then(|l| self.failure_handler_for(&l.name.name, transport));
+            let main_handler = self.entry_locus.and_then(|l| self.failure_handler_for(&l.name.name, transport));
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler, transport)?;
             }
@@ -10199,21 +10211,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Whether `locus_name` is the `main locus` lowering deploys, the
-    /// entry row's lowering root (`lowering_root`).
-    pub(crate) fn is_lowering_root(&self, locus_name: &str) -> bool {
-        self.lowering_root.is_some_and(|l| l.name.name == locus_name)
+    /// entry row's entry (`entry_locus`).
+    pub(crate) fn is_entry_locus(&self, locus_name: &str) -> bool {
+        self.entry_locus.is_some_and(|l| l.name.name == locus_name)
     }
 
-    /// The lowering root's `bindings { }` entries, each with the row
-    /// that decides it (F.40 phase 3, P2): the root is the entry row's
-    /// (`lowering_root`). An entry the view holds no row for is a missing
+    /// The entry's `bindings { }` entries, each with the row that
+    /// decides it (F.40 phase 3, P2): the entry is the entry row's
+    /// (`entry_locus`). An entry the view holds no row for is a missing
     /// required row, an error, not a guess.
     fn root_bindings(
         &self,
     ) -> Result<Vec<(&'p hale_syntax::ast::BindingEntry, &'p hale_types::binding_rows::BindingRow)>, CodegenError>
     {
         let rows = self.bindings;
-        let Some(l) = self.lowering_root else { return Ok(Vec::new()) };
+        let Some(l) = self.entry_locus else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for m in &l.members {
             let LocusMember::Bindings(b) = m else { continue };

@@ -583,7 +583,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // C52: whether this literal hands the root back to its caller; its
         // params init then gives each replica of a pinned field the join
         // record the root keeps for it (`anchor_record_slot`).
-        let hands_back_the_root = returns_this_locus && self.is_lowering_root(locus_name);
+        let hands_back_the_root = returns_this_locus && self.is_entry_locus(locus_name);
         // A literal codegen builds for a program-lifetime slot — a
         // `bindings { }` transport, adapter or codec — needs the same
         // STORAGE and none of the ownership. It used to get both by
@@ -2239,7 +2239,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // inside the loop below (set immediately before
         // lower_expr, consumed by the recursive call to
         // lower_locus_instantiation).
-        let is_main_locus = self.is_lowering_root(locus_name);
+        let is_main_locus = self.is_entry_locus(locus_name);
         // F.31 Phase 3b (2026-05-23): during the params-init
         // loop, surface this locus as a "params-init parent"
         // context so children instantiated as field defaults

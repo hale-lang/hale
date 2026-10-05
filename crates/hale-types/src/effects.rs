@@ -661,7 +661,7 @@ pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertific
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, &top, &entry);
     let forms = crate::form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    let root = entry.lowering_root.as_ref().and_then(|m| m.decl(bundle));
+    let root = entry.root().and_then(|m| m.decl(bundle));
     effect_report_grouped(&programs, root, &summary, &forms).1
 }
 

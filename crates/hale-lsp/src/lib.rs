@@ -2579,7 +2579,7 @@ fn placement_of(snap: &Snapshot) -> Value {
     }
     use hale_syntax::ast::LocusMember;
     let bundle = snap.bundle();
-    let root = snap.demand_entry().ok().and_then(|row| row.lowering_root.as_ref()).and_then(|m| m.decl(&bundle));
+    let root = snap.demand_entry().ok().and_then(|row| row.root()).and_then(|m| m.decl(&bundle));
     let Some(l) = root else {
         return json!({ "fields": [], "noMainLocus": true });
     };

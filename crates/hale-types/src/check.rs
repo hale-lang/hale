@@ -878,12 +878,15 @@ pub fn check_bundle_by_declaration(
     // pins a field is not built in a loop), rule 18 (GH #890, every
     // placement entry is consumed by a locus literal), the cross-pool
     // spawn, which is fire-and-forget, and GH #813 (a locus that builds
-    // itself through its own param defaults).
+    // itself through its own param defaults); and, before them, decision
+    // 2's refusal (F.40 phase 3, L4): a seed whose only `main locus` is
+    // module-nested has no entry for lowering to deploy.
     diags.extend(crate::lowering_laws::lowering_laws(
         bundle,
         &crate::lowering_laws::LoweringLawInputs {
             placement: inputs.placement,
             bindings: inputs.bindings,
+            entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
             omitted: &typed.omitted_args,
         },
@@ -964,7 +967,7 @@ pub fn check_bundle_by_declaration(
         // for the certificate evidence.
         let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
-            inputs.entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)),
+            inputs.entry.root().and_then(|m| m.decl(bundle)),
             inputs.alloc_summary,
             inputs.forms,
         );
@@ -4605,7 +4608,7 @@ fn check_main_and_bindings<'e>(
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    check_api_binding(&programs_vec, entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)), diags);
+    check_api_binding(&programs_vec, entry.root().and_then(|m| m.decl(bundle)), diags);
     check_api_roles(&programs_vec, &top.topics, bindings, diags);
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {

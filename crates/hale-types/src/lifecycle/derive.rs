@@ -30,6 +30,8 @@
 //!   end of its `run()` (a flow) or by its owner's cascade (a resident).
 //! - the **bus graph**: which instances subscribe (registration,
 //!   readiness, the teardown delivery contract).
+//! - the **entry row**: which `main locus` is the entry, by identity,
+//!   whose deferred teardown is the main entry's spine.
 //!
 //! Each instance owes its rows in the order its domain performs them:
 //! params settle (when its declaration brackets), accept, subscribe and
@@ -69,6 +71,7 @@ use super::{
     Rule, RunsOn, ShutdownCause, SourceSite, Spine, Status, Terminal,
 };
 use crate::bus_graph::BusGraph;
+use crate::entry::EntryRow;
 use crate::flows::{is_flow, FlowRows};
 use crate::handler_routing::HandlerRouting;
 use crate::placement::{
@@ -87,6 +90,9 @@ pub struct LifecycleInputs<'a> {
     pub handlers: &'a HandlerRouting,
     pub flows: &'a FlowRows,
     pub bus: &'a BusGraph,
+    /// The entry row: which `main locus` is the entry, whose deferred
+    /// teardown is the main entry's spine.
+    pub entry: &'a EntryRow,
 }
 
 /// The `lifecycle_order` family's producer: every obligation of every
@@ -1192,6 +1198,13 @@ impl<'b, 'a> Builder<'b, 'a> {
         domain.map(|domain| RunsOn { domains: BTreeSet::from([domain]), rule })
     }
 
+    /// Whether `decl` is the entry, the `main locus` lowering deploys:
+    /// the entry row's, by identity.
+    fn is_entry(&self, decl: &LocusDecl) -> bool {
+        let inputs = self.inputs;
+        inputs.entry.entry().and_then(|m| m.decl(inputs.bundle)).is_some_and(|e| std::ptr::eq(e, decl))
+    }
+
     /// The spine that tears the instance down, and the domain role it
     /// runs on there.
     fn teardown(&self, i: usize) -> (Spine, DomainRole) {
@@ -1206,7 +1219,9 @@ impl<'b, 'a> Builder<'b, 'a> {
                 if !self.facts[i].subscribes => {
                 (Spine::EagerTeardown, DomainRole::Instantiating)
             }
-            How::Top { .. } | How::Body { .. } if s.decl.is_main => (Spine::DeferredMainEntry, DomainRole::Teardown),
+            How::Top { .. } | How::Body { .. } if self.is_entry(s.decl) => {
+                (Spine::DeferredMainEntry, DomainRole::Teardown)
+            }
             How::Top { .. } | How::Body { .. } => (Spine::DeferredEntry, DomainRole::Teardown),
             How::Adapter => (Spine::Process, DomainRole::Main),
         }
@@ -2391,7 +2406,9 @@ mod tests {
             let bus = BusGraph::default();
             let programs: Vec<_> = bundle.programs.values().copied().collect();
             let flows = crate::flows::survey(&programs, &bundle.import_renames);
-            let inputs = LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus };
+            let entry = crate::entry::entry_row(bundle);
+            let inputs =
+                LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus, entry: &entry };
             let index = LocusIndex::of(bundle);
             let all = subjects(&inputs, &index, &literal_positions(bundle));
             assert_eq!(all.len(), 33, "one template per literal");
