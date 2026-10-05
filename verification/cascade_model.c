@@ -899,7 +899,11 @@ static void lotus_params_settle(void *parent, int self_tid) {
 #endif
         pthread_mutex_unlock(&g_params_open_lock);
 
+        /* Under the posted delivery's guard: handlers do not nest. */
+        int was_servicing = g_servicing[self_tid];
+        g_servicing[self_tid] = 1;
         node->fn(node->parent, node->child, node->err, self_tid);
+        g_servicing[self_tid] = was_servicing;
 
         pthread_mutex_lock(&g_params_open_lock);
         void *child = node->child;

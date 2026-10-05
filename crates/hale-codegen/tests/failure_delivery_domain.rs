@@ -29,6 +29,11 @@
 //!     cases the order the handlers read and the children dissolved in.
 //!     Each run is under [`DEADLINE`], so a hang is a `timeout` word, not
 //!     a stuck suite.
+//!   * `fd_settle_no_nest.hl`: a failure held while its parent's params
+//!     were open is delivered at the parent's settle, and its handler
+//!     sleeps while another failure is posted to the same thread. The
+//!     posted handler starts after the held one returns (handlers do not
+//!     nest). The word is the order of the handlers' entry and exit lines.
 //!   * `fd_restart*_replaced*.hl`: the reclaim wins. A handler asks for a
 //!     restart (`restart`, `restart_in_place`) of a child whose reclaim is
 //!     owed: the child its own delivery is about, after replacing it; a
@@ -76,6 +81,7 @@ const ADOPTED: &[(&str, &str)] = &[
     ("fd_restart_in_place_replaced.hl", RECLAIM_WINS),
     ("fd_restart_sibling_replaced.hl", RECLAIM_WINS),
     ("fd_restart_replaced_by_owner.hl", RECLAIM_WINS),
+    ("fd_settle_no_nest.hl", "ev held-enter / ev held-exit / ev posted-enter / ev posted-exit / ev finished"),
 ];
 
 /// A restart asked for about a child whose reclaim is owed: the old child
@@ -326,7 +332,7 @@ fn judge(file: &str, r: &Ran) -> String {
         "fd_reclaim_under_delivery.hl" => reclaim_under_delivery(r),
         "fd_sibling_replace_heap.hl" => sibling_heap(r),
         "fd_sibling_replace_three.hl" => sibling_three(r),
-        f if f.starts_with("fd_sibling_replace") => output(r),
+        f if f.starts_with("fd_sibling_replace") || f == "fd_settle_no_nest.hl" => output(r),
         _ => panic!("{file} has no judge"),
     }
 }
@@ -522,6 +528,17 @@ fn a_restart_of_a_replaced_sibling_is_not_performed() {
 fn a_restart_of_a_child_its_owner_is_reclaiming_is_not_performed() {
     for no_bus_devirt in [false, true] {
         assert_traced_in("fd_restart_replaced_by_owner.hl", no_bus_devirt);
+    }
+}
+
+/// Handlers do not nest at settle (PR #1348's review): a posted delivery
+/// waits for the held handler running at settle to return. Before the
+/// guard the posted handler's entry and exit lines came inside the held
+/// handler's.
+#[test]
+fn a_held_handler_at_settle_does_not_nest_a_posted_one() {
+    for no_bus_devirt in [false, true] {
+        assert_traced_in("fd_settle_no_nest.hl", no_bus_devirt);
     }
 }
 

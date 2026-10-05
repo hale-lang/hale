@@ -1944,6 +1944,8 @@ static void lotus_failure_service_here(void);
 static void lotus_failure_service_at_yield(void);
 static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *node);
 static void lotus_failure_await_service_locked(void);
+static int lotus_failure_servicing_enter(void);
+static void lotus_failure_servicing_leave(int was);
 static void lotus_failure_domain_enter(void);
 static void lotus_failure_owner_forget(void *owner);
 
@@ -2183,7 +2185,11 @@ void lotus_params_settle(void *parent) {
         lotus_lc_ev("FailureDelivery", "Entered", node->child, "Settle", NULL);
         lotus_lc_ev("ConstructionDelivery", "Entered", node->child, "Settle", NULL);
 #endif
+        /* Under the posted delivery's guard: handlers do not nest, so
+         * a delivery posted to this thread waits for this one. */
+        int was_servicing = lotus_failure_servicing_enter();
         node->fn(node->parent, node->child, node->err);
+        lotus_failure_servicing_leave(was_servicing);
 #ifdef LOTUS_LIFECYCLE_TRACE
         lotus_lc_ev("FailureDelivery", "Completed", node->child, "Settle", NULL);
         lotus_lc_ev("ConstructionDelivery", "Completed", node->child, "Settle", NULL);
@@ -10317,6 +10323,18 @@ static void lotus_failure_deliver_posted(lotus_held_failure_t *n, int self_waiti
     if (reclaim) reclaim(child);
 }
 
+/* A held failure's handler at settle runs under the same guard as a
+ * posted one's: no posted delivery starts inside it. */
+static int lotus_failure_servicing_enter(void) {
+    int was = t_failure_servicing;
+    t_failure_servicing = 1;
+    return was;
+}
+
+static void lotus_failure_servicing_leave(int was) {
+    t_failure_servicing = was;
+}
+
 static void lotus_failure_service_here(void) {
     if (__atomic_load_n(&g_failure_posted_count, __ATOMIC_ACQUIRE) == 0) return;
     lotus_domain_t *d = t_domain;
@@ -10612,6 +10630,9 @@ static void lotus_failure_service_here(void) {}
 static void lotus_failure_service_at_yield(void) {}
 static void lotus_failure_await_service_locked(void) {}
 static void lotus_failure_domain_enter(void) {}
+/* Nothing is posted on wasm32, so the guard has nothing to keep out. */
+static int lotus_failure_servicing_enter(void) { return 0; }
+static void lotus_failure_servicing_leave(int was) { (void)was; }
 /* Nothing is posted on wasm32 (`lotus_failure_post` answers 0), so no
  * node reaching here has a domain; were one to, the only thread that
  * could run it is this one, and the rule is the threaded one's: the
