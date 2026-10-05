@@ -446,16 +446,11 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // `build_executable` does not typecheck, so nothing caught it.
     // Injection is idempotent and a user declaration still wins, so
     // running it unconditionally only ever adds the stdlib names.
-    inject_form_stdlib_types(&mut scope);
-    // Phase 3 routing-keys v0.2 (2026-05-26): inject
-    // BusUnmatchedKey for `on_unmatched: fail` topics whose
-    // publishes use `or handler(err)` / `or fail <payload>`
-    // dispositions. Gated to keep the name out of scope for
-    // programs that don't use fail-policy topics. Idempotent:
-    // user-declared BusUnmatchedKey wins.
-    if bundle_uses_fail_topics(bundle) {
-        inject_bus_unmatched_key_type(&mut scope);
-    }
+    // Phase 3 routing-keys v0.2 (2026-05-26): `BusUnmatchedKey` is
+    // injected only for `on_unmatched: fail` topics, whose publishes
+    // carry it through `or handler(err)` / `or fail <payload>`, to keep
+    // the name out of scope for programs that don't use them.
+    inject_builtin_types(&mut scope, bundle_uses_fail_topics(bundle));
     // FUv0.8.2 #1 (2026-05-25): if the user has declared a
     // type whose name shadows a stdlib error type but with
     // a different shape AND the program actually uses a
@@ -541,47 +536,6 @@ fn bundle_uses_fail_topics(bundle: &Bundle<'_>) -> bool {
     bundle.programs.values().any(|p| scan_items(&p.items))
 }
 
-/// Phase 3 routing-keys v0.2 (2026-05-26): synthesize the
-/// `BusUnmatchedKey` stdlib type so `on_unmatched: fail` topic
-/// publishes can carry err payloads through
-/// `or handler(err)` / `or fail <payload>` dispositions.
-/// Mirrors `inject_form_stdlib_types`'s idempotent pattern.
-pub(crate) fn inject_bus_unmatched_key_type(scope: &mut TopScope) {
-    let zero = Span::new(0, 0);
-    if scope.symbols.contains_key("BusUnmatchedKey") {
-        return;
-    }
-    scope.symbols.insert(
-        "BusUnmatchedKey".to_string(),
-        TopSymbol::Type(TypeInfo {
-            name: "BusUnmatchedKey".to_string(),
-            kind: TypeKind::Struct(vec![
-                FieldInfo {
-                    name: "subject".to_string(),
-                    ty: Ty::Prim(PrimType::String),
-                    has_default: false,
-                    tag: None,
-                    span: zero,
-                },
-                FieldInfo {
-                    name: "key_lo".to_string(),
-                    ty: Ty::Prim(PrimType::Int),
-                    has_default: false,
-                    tag: None,
-                    span: zero,
-                },
-                FieldInfo {
-                    name: "key_hi".to_string(),
-                    ty: Ty::Prim(PrimType::Int),
-                    has_default: false,
-                    tag: None,
-                    span: zero,
-                },
-            ]),
-            span: zero,
-        }),
-    );
-}
 
 fn collect_type_names(
     items: &[TopDecl],
@@ -1817,7 +1771,7 @@ fn form_hashmap_value_and_key_ty(
 ///
 /// `IndexError` is a synthesized stdlib type; the resolver
 /// injects it into the top scope when the first form-locus
-/// is registered (see `inject_form_stdlib_types`).
+/// is registered (see `inject_builtin_types`).
 fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
     let index_err = Ty::Named("IndexError".to_string());
     methods.push(MethodInfo {
@@ -1906,7 +1860,7 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
 ///   `is_empty() -> Bool`                        (infallible)
 ///
 /// `KeyError` is a synthesized stdlib type injected by
-/// `inject_form_stdlib_types` alongside `IndexError`.
+/// `inject_builtin_types` alongside `IndexError`.
 ///
 /// The key-by-field intrusive shape (the cell carries its own
 /// key as one of its fields) means `set(value: S)` takes the
@@ -2162,222 +2116,43 @@ fn synthesize_form_lru_cache_methods(
     });
 }
 
-/// v1.x-FORM-1 PR3b: inject form-specific stdlib types into the
-/// top scope so synthesized method signatures' payload types
-/// resolve. v1 injects `IndexError` (used by `@form(vec)`)
-/// and `KeyError` (used by `@form(hashmap)`); future forms
-/// will inject their own payload types here.
+/// Put the builtin types ([`crate::builtin_types::BUILTIN_TYPES`])
+/// into the top scope, each when its row says: always, or (with
+/// `fail_topics`, the bundle has an `on_unmatched: fail` topic) the
+/// `BusUnmatchedKey` publish payload. A synthesized `@form` method's,
+/// a `bounded` push's and a fallible stdlib call's error type then
+/// resolves with its fields.
 ///
-/// Idempotent per name: if a name already exists in the scope
-/// (declared by user code or a stdlib `.hl` file), that
-/// injection is a no-op. Keeps the form machinery non-breaking
-/// for projects that already shipped their own error shapes.
-pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
+/// Idempotent per name: a name the scope already holds (declared by
+/// user code or a stdlib `.hl` file) wins, so a project that shipped
+/// its own error shapes keeps them (and `check_stdlib_error_shadowing`
+/// says when one cannot stand in for the stdlib's). The injected
+/// entries carry a zero span.
+pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool) {
+    use crate::builtin_types::{Injected, BUILTIN_TYPES};
     let zero = Span::new(0, 0);
-    // bounded[T; N] (2026-07-02): push-at-cap payload.
-    if !scope.symbols.contains_key("CapacityError") {
-        scope.symbols.insert(
-            "CapacityError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "CapacityError".to_string(),
-                kind: TypeKind::Struct(vec![
-                    FieldInfo {
-                        name: "cap".to_string(),
-                        ty: Ty::Prim(PrimType::Int),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "count".to_string(),
-                        ty: Ty::Prim(PrimType::Int),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                ]),
+    for t in BUILTIN_TYPES {
+        let injected = match t.injected {
+            Injected::Always => true,
+            Injected::WhenAFailTopic => fail_topics,
+        };
+        if !injected || scope.symbols.contains_key(t.name) {
+            continue;
+        }
+        let fields = t
+            .fields
+            .iter()
+            .map(|(name, p)| FieldInfo {
+                name: name.to_string(),
+                ty: Ty::Prim(*p),
+                has_default: false,
+                tag: None,
                 span: zero,
-            }),
-        );
-    }
-    if !scope.symbols.contains_key("IndexError") {
+            })
+            .collect();
         scope.symbols.insert(
-            "IndexError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "IndexError".to_string(),
-                kind: TypeKind::Struct(vec![
-                    FieldInfo {
-                        name: "kind".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "index".to_string(),
-                        ty: Ty::Prim(PrimType::Int),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "len".to_string(),
-                        ty: Ty::Prim(PrimType::Int),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                ]),
-                span: zero,
-            }),
-        );
-    }
-    // v1.x-FORM-4: KeyError for @form(hashmap) get/remove
-    // fallible methods. Minimal shape — just a kind tag at v1.
-    // The key itself isn't carried because the key type K
-    // varies per hashmap; carrying it would require a generic
-    // KeyError<K> which v1 doesn't have. Users wanting key
-    // context construct it via `or <fallback>` substitution:
-    //   let v = reg.get("foo") or Default { ... };
-    if !scope.symbols.contains_key("KeyError") {
-        scope.symbols.insert(
-            "KeyError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "KeyError".to_string(),
-                kind: TypeKind::Struct(vec![FieldInfo {
-                    name: "kind".to_string(),
-                    ty: Ty::Prim(PrimType::String),
-                    has_default: false,
-                    tag: None,
-                    span: zero,
-                }]),
-                span: zero,
-            }),
-        );
-    }
-    // v1.x-FORM-5: EmptyError for @form(ring_buffer)'s pop()
-    // fallible. Same minimal-shape rationale as KeyError —
-    // a single `kind` tag is enough at v1; richer context can
-    // be constructed at the `or` substitute site.
-    if !scope.symbols.contains_key("EmptyError") {
-        scope.symbols.insert(
-            "EmptyError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "EmptyError".to_string(),
-                kind: TypeKind::Struct(vec![FieldInfo {
-                    name: "kind".to_string(),
-                    ty: Ty::Prim(PrimType::String),
-                    has_default: false,
-                    tag: None,
-                    span: zero,
-                }]),
-                span: zero,
-            }),
-        );
-    }
-    // IoError for the `std::io::fs::*` and `std::io::tcp::*`
-    // path-calls that return `fallible(IoError)`. One Error type
-    // for I/O surfaces uniform pattern-matching in the agent —
-    // the same `or fallback(err)` clause shape works for both
-    // file and network operations. Fields:
-    //   - kind: a string tag — "not_found", "permission_denied",
-    //     "is_dir", "io", "would_block", "connection_refused",
-    //     "timeout", "host_unreachable" (extensible).
-    //   - errno: raw platform errno for callers that want it.
-    //   - path: file path / connection target / "stdin" / "" —
-    //     diagnostic context naming what failed.
-    if !scope.symbols.contains_key("IoError") {
-        scope.symbols.insert(
-            "IoError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "IoError".to_string(),
-                kind: TypeKind::Struct(vec![
-                    FieldInfo {
-                        name: "kind".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "errno".to_string(),
-                        ty: Ty::Prim(PrimType::Int),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "path".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                ]),
-                span: zero,
-            }),
-        );
-    }
-    // 2026-05-17 — ParseError for `std::str::parse_int` /
-    // `parse_float` after their flip to fallible. Carries:
-    //   - kind: "parse_int" / "parse_float" — surfaces which
-    //     parser rejected the input.
-    //   - input: the original String that failed to parse —
-    //     for diagnostic messages.
-    if !scope.symbols.contains_key("ParseError") {
-        scope.symbols.insert(
-            "ParseError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "ParseError".to_string(),
-                kind: TypeKind::Struct(vec![
-                    FieldInfo {
-                        name: "kind".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "input".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                ]),
-                span: zero,
-            }),
-        );
-    }
-    // 2026-06-04 — CryptoError for the `std::crypto::*` path-calls
-    // that return `fallible(CryptoError)` in `or` context (currently
-    // `ecdsa_p256_sign`). Carries:
-    //   - kind: op tag — "ecdsa_p256_sign" — which crypto op failed.
-    //   - detail: human-readable failure context (e.g. "signing
-    //     failed (bad key or non-P-256 curve)").
-    if !scope.symbols.contains_key("CryptoError") {
-        scope.symbols.insert(
-            "CryptoError".to_string(),
-            TopSymbol::Type(TypeInfo {
-                name: "CryptoError".to_string(),
-                kind: TypeKind::Struct(vec![
-                    FieldInfo {
-                        name: "kind".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                    FieldInfo {
-                        name: "detail".to_string(),
-                        ty: Ty::Prim(PrimType::String),
-                        has_default: false,
-                        tag: None,
-                        span: zero,
-                    },
-                ]),
-                span: zero,
-            }),
+            t.name.to_string(),
+            TopSymbol::Type(TypeInfo { name: t.name.to_string(), kind: TypeKind::Struct(fields), span: zero }),
         );
     }
 }
@@ -2390,7 +2165,7 @@ pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
 /// missing. The failure point was 100s of LOC away from the
 /// user's declaration, with a span-less diagnostic.
 ///
-/// This pass fires AFTER `inject_form_stdlib_types` so the
+/// This pass fires AFTER `inject_builtin_types` so the
 /// `scope.symbols[name]` for each candidate type holds whichever
 /// version "won" the contains_key race. If the winner is a
 /// user decl (real span) and its shape doesn't match the
@@ -2719,62 +2494,21 @@ fn check_stdlib_error_shadowing(
     usage: &StdlibErrorUsage,
     diags: &mut Vec<Diag>,
 ) {
-    // (stdlib type name, expected fields, qualified-path
-    // suggestion to surface in the diagnostic, "is this type
-    // actually used in this program" gate).
-    let expected: &[(&str, &[(&str, PrimType)], &str, bool)] = &[
-        (
-            "ParseError",
-            &[
-                ("kind", PrimType::String),
-                ("input", PrimType::String),
-            ],
-            "std::str::ParseError",
-            usage.parse_error,
-        ),
-        (
-            "IoError",
-            &[
-                ("kind", PrimType::String),
-                ("errno", PrimType::Int),
-                ("path", PrimType::String),
-            ],
-            "std::io::IoError",
-            usage.io_error,
-        ),
-        (
-            "IndexError",
-            &[
-                ("kind", PrimType::String),
-                ("index", PrimType::Int),
-                ("len", PrimType::Int),
-            ],
-            "std::index::IndexError",
-            usage.index_error,
-        ),
-        (
-            "KeyError",
-            &[("kind", PrimType::String)],
-            "std::form::hashmap::KeyError",
-            usage.key_error,
-        ),
-        (
-            "EmptyError",
-            &[("kind", PrimType::String)],
-            "std::form::ring_buffer::EmptyError",
-            usage.empty_error,
-        ),
-        (
-            "CryptoError",
-            &[
-                ("kind", PrimType::String),
-                ("detail", PrimType::String),
-            ],
-            "std::crypto::CryptoError",
-            usage.crypto_error,
-        ),
+    // (stdlib type name, qualified-path suggestion to surface in the
+    // diagnostic, "is this type actually used in this program" gate);
+    // the expected fields are the builtin type's row.
+    let expected: &[(&str, &str, bool)] = &[
+        ("ParseError", "std::str::ParseError", usage.parse_error),
+        ("IoError", "std::io::IoError", usage.io_error),
+        ("IndexError", "std::index::IndexError", usage.index_error),
+        ("KeyError", "std::form::hashmap::KeyError", usage.key_error),
+        ("EmptyError", "std::form::ring_buffer::EmptyError", usage.empty_error),
+        ("CryptoError", "std::crypto::CryptoError", usage.crypto_error),
     ];
-    for (name, expected_fields, qualified, in_use) in expected {
+    for (name, qualified, in_use) in expected {
+        let expected_fields = crate::builtin_types::builtin_type(name)
+            .expect("a shadowable stdlib error type is a builtin type")
+            .fields;
         if !in_use {
             continue;
         }
@@ -2803,7 +2537,7 @@ fn check_stdlib_error_shadowing(
             ));
             continue;
         };
-        for (field_name, expected_ty) in *expected_fields {
+        for (field_name, expected_ty) in expected_fields {
             let matches = actual.iter().any(|f| {
                 f.name == *field_name
                     && matches!(&f.ty, Ty::Prim(p) if p == expected_ty)

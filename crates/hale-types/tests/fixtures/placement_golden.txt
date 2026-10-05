@@ -3312,6 +3312,9 @@ row	App@literal1.s	Sink	pool:io	entry	off owner
 == crates/hale-codegen/tests/portable_subset.rs#a0b4f2e7
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
+== crates/hale-codegen/tests/printable_rule.rs#131986c0
+row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
+
 == crates/hale-codegen/tests/process_child.rs#60a6b930
 dynamic	__StdProcessChild	on main	in the seed
 shared	Job@main1	Job #01dd0b0d

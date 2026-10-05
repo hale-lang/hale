@@ -8391,43 +8391,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
 
-        // Pre-pass: register the built-in `ClosureViolation` type.
-        // The interpreter exposes this as a Value::Struct with
-        // fields { locus, closure, left, right, tolerance, diff };
-        // codegen v0 only carries `locus` and `closure` (both
-        // String) since the dynamic-typed left/right/diff fields
-        // would need polymorphic record support. on_failure
-        // handlers can therefore read err.locus and err.closure.
-        self.declare_builtin_closure_violation_type();
-        // v1.x-FORM-2 PR6: synthesized @form(vec) `get` / `pop`
-        // surface a typed `IndexError` payload. Codegen mirror
-        // of `inject_form_stdlib_types` in
-        // hale-types/src/resolve.rs.
-        self.declare_builtin_index_error_type();
-        self.declare_builtin_capacity_error_type();
-        // v1.x-FORM-4: synthesized @form(hashmap) `get` /
-        // `remove` surface a typed `KeyError` payload. Mirror
-        // of the typecheck-side injection alongside IndexError.
-        self.declare_builtin_key_error_type();
-        // v1.x-FORM-5: synthesized @form(ring_buffer) `pop`
-        // surfaces a typed `EmptyError` payload.
-        self.declare_builtin_empty_error_type();
-        // Synthesized `IoError` payload for the fallible
-        // `std::io::fs::*` / `std::io::tcp::*` wrappers
-        // (#68 — IoError flip). Mirror of the typecheck-side
-        // injection alongside the other error types.
-        self.declare_builtin_io_error_type();
-        // Phase 3 routing-keys v0.2 (2026-05-26): BusUnmatchedKey
-        // err payload for `on_unmatched: fail` publishes that
-        // route through `or handler(err)` / `or fail <p>` /
-        // `or <substitute>` dispositions.
-        self.declare_builtin_bus_unmatched_key_type();
-        // 2026-05-17 — `ParseError` payload for the
-        // `std::str::parse_int` / `parse_float` fallible flip.
-        self.declare_builtin_parse_error_type();
-        // 2026-06-04 — `CryptoError` payload for the
-        // `std::crypto::ecdsa_p256_sign` fallible (`or`-context) form.
-        self.declare_builtin_crypto_error_type();
+        // Pre-pass: the builtin types (the fallible stdlib calls',
+        // the synthesized `@form` methods' and a `bounded` push's
+        // error payloads, `BusUnmatchedKey`, `ClosureViolation`),
+        // declared before the program's types, which replace one of
+        // the same name.
+        self.declare_builtin_types();
 
         // F.20: register interface declarations by name. The
         // codegen layer uses this in two places: signature lowering
@@ -11600,283 +11569,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-
-    /// Register the built-in `ClosureViolation` record so closure-
-    /// failure handlers can take it as their second param. v0
-    /// fields: `locus: String`, `closure: String`, `diff: Int`.
-    /// The polymorphic `left / right / tolerance` fields the
-    /// interpreter exposes wait on polymorphic record support.
-    /// `diff` is i64; for Int/Duration closures it carries `left -
-    /// right` directly; for Float/Decimal closures it carries 0
-    /// (the value isn't a useful signed Int there anyway).
-    fn declare_builtin_closure_violation_type(&mut self) {
+    /// Declare every builtin type (`hale_types::builtin_types`, the
+    /// table the checker injects from) as a struct, its fields in the
+    /// row's order: a String field is a pointer, an Int an i64.
+    /// Always declared, so lowering need not know whether a program
+    /// reaches one; an unused struct type costs nothing.
+    fn declare_builtin_types(&mut self) {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("locus".into(), (0, CodegenTy::String));
-        fields.insert("closure".into(), (1, CodegenTy::String));
-        fields.insert("diff".into(), (2, CodegenTy::Int));
-        let field_order = vec![
-            "locus".to_string(),
-            "closure".to_string(),
-            "diff".to_string(),
-        ];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into(), ptr_t.into(), i64_t.into()];
-        let struct_ty = self
-            .context
-            .opaque_struct_type("type.ClosureViolation");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "ClosureViolation".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// v1.x-FORM-2 PR6 (PR5 finale): register the built-in
-    /// `IndexError` record so synthesized @form(vec) `get` /
-    /// `pop` codegen can allocate it (codegen mirror of
-    /// `inject_form_stdlib_types` in hale-types/src/resolve.rs).
-    /// v1 fields: `kind: String`, `index: Int`, `len: Int`.
-    /// Always declared so the codegen doesn't need to know
-    /// whether any @form(vec) locus is in scope — the LLVM
-    /// struct type is opaque-light and the cost of declaring an
-    /// unused type is negligible.
-    fn declare_builtin_index_error_type(&mut self) {
-        if self.user_types.contains_key("IndexError") {
-            return;
+        for t in hale_types::builtin_types::BUILTIN_TYPES {
+            if self.user_types.contains_key(t.name) {
+                continue;
+            }
+            let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
+            let mut llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> = Vec::new();
+            for (idx, (name, p)) in t.fields.iter().enumerate() {
+                let (ty, llvm) = match p {
+                    PrimType::String => (CodegenTy::String, ptr_t.into()),
+                    PrimType::Int => (CodegenTy::Int, i64_t.into()),
+                    other => unreachable!("builtin type {}: a {other:?} field", t.name),
+                };
+                fields.insert(name.to_string(), (idx as u32, ty));
+                llvm_field_tys.push(llvm);
+            }
+            let struct_ty = self.context.opaque_struct_type(&format!("type.{}", t.name));
+            struct_ty.set_body(&llvm_field_tys, false);
+            self.user_types.insert(
+                t.name.to_string(),
+                TypeInfo {
+                    struct_ty,
+                    fields,
+                    field_order: t.fields.iter().map(|(n, _)| n.to_string()).collect(),
+                    defaults: BTreeMap::new(),
+                },
+            );
         }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let i64_t = self.context.i64_type();
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("kind".into(), (0, CodegenTy::String));
-        fields.insert("index".into(), (1, CodegenTy::Int));
-        fields.insert("len".into(), (2, CodegenTy::Int));
-        let field_order = vec![
-            "kind".to_string(),
-            "index".to_string(),
-            "len".to_string(),
-        ];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into(), i64_t.into(), i64_t.into()];
-        let struct_ty = self
-            .context
-            .opaque_struct_type("type.IndexError");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "IndexError".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// v1.x-FORM-4: register the built-in `KeyError` record so
-    /// synthesized @form(hashmap) `get` / `remove` codegen can
-    /// allocate it. Mirror of `inject_form_stdlib_types` for
-    /// KeyError in hale-types/src/resolve.rs. v1 fields:
-    /// `kind: String` only — the key isn't carried because K
-    /// varies per hashmap.
-    fn declare_builtin_key_error_type(&mut self) {
-        if self.user_types.contains_key("KeyError") {
-            return;
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("kind".into(), (0, CodegenTy::String));
-        let field_order = vec!["kind".to_string()];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into()];
-        let struct_ty = self
-            .context
-            .opaque_struct_type("type.KeyError");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "KeyError".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// Phase 3 routing-keys v0.2 (2026-05-26): register the
-    /// built-in `BusUnmatchedKey` record. Fields:
-    ///   - subject: String  (the wire subject of the publish)
-    ///   - key_lo: Int      (low 64 bits of the unmatched key)
-    ///   - key_hi: Int      (high 64 bits; 0 for i64 keys)
-    /// Allocated in the failing publish's `or handler(err)` /
-    /// `or fail <p>` codegen branch when
-    /// lotus_bus_dispatch_keyed_fallible returns 0. Mirror of
-    /// `inject_bus_unmatched_key_type` in
-    /// hale-types/src/resolve.rs.
-    fn declare_builtin_bus_unmatched_key_type(&mut self) {
-        if self.user_types.contains_key("BusUnmatchedKey") {
-            return;
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let i64_t = self.context.i64_type();
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("subject".into(), (0, CodegenTy::String));
-        fields.insert("key_lo".into(), (1, CodegenTy::Int));
-        fields.insert("key_hi".into(), (2, CodegenTy::Int));
-        let field_order = vec![
-            "subject".to_string(),
-            "key_lo".to_string(),
-            "key_hi".to_string(),
-        ];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into(), i64_t.into(), i64_t.into()];
-        let struct_ty = self
-            .context
-            .opaque_struct_type("type.BusUnmatchedKey");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "BusUnmatchedKey".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// v1.x-FORM-5: register the built-in `EmptyError` record so
-    /// synthesized @form(ring_buffer) `pop` codegen can allocate
-    /// it. Mirror of `inject_form_stdlib_types` for EmptyError in
-    /// hale-types/src/resolve.rs. v1 fields: `kind: String` only.
-    fn declare_builtin_empty_error_type(&mut self) {
-        if self.user_types.contains_key("EmptyError") {
-            return;
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("kind".into(), (0, CodegenTy::String));
-        let field_order = vec!["kind".to_string()];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into()];
-        let struct_ty = self
-            .context
-            .opaque_struct_type("type.EmptyError");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "EmptyError".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// 2026-05-17 — register the built-in `ParseError` record so
-    /// the fallible `std::str::parse_int` / `parse_float` codegen
-    /// wrappers can allocate it. Mirror of the resolver's
-    /// inject_form_stdlib_types ParseError entry. Fields:
-    ///   - kind: String ("parse_int" / "parse_float")
-    ///   - input: String (the offending input string)
-    fn declare_builtin_parse_error_type(&mut self) {
-        if self.user_types.contains_key("ParseError") {
-            return;
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("kind".into(), (0, CodegenTy::String));
-        fields.insert("input".into(), (1, CodegenTy::String));
-        let field_order = vec!["kind".to_string(), "input".to_string()];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into(), ptr_t.into()];
-        let struct_ty = self.context.opaque_struct_type("type.ParseError");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "ParseError".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// Register the built-in `CryptoError { kind, detail }` record so
-    /// the fallible `std::crypto::*` codegen wrappers can allocate it.
-    /// Mirror of the `CryptoError` injection in
-    /// hale-types/src/resolve.rs. Fields:
-    ///   - kind: String (op tag, e.g. "ecdsa_p256_sign")
-    ///   - detail: String (human-readable failure context)
-    fn declare_builtin_crypto_error_type(&mut self) {
-        if self.user_types.contains_key("CryptoError") {
-            return;
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("kind".into(), (0, CodegenTy::String));
-        fields.insert("detail".into(), (1, CodegenTy::String));
-        let field_order = vec!["kind".to_string(), "detail".to_string()];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into(), ptr_t.into()];
-        let struct_ty = self.context.opaque_struct_type("type.CryptoError");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "CryptoError".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
-    }
-
-    /// Register the built-in `IoError` record so the fallible
-    /// `std::io::fs::*` / `std::io::tcp::*` codegen wrappers can
-    /// allocate it. Mirror of `inject_form_stdlib_types` for
-    /// IoError in hale-types/src/resolve.rs. Fields:
-    ///   - kind: String (errno-derived tag from
-    ///     `lotus_io_error_kind`)
-    ///   - errno: Int (raw platform errno)
-    ///   - path: String (file path / connection target)
-    fn declare_builtin_io_error_type(&mut self) {
-        if self.user_types.contains_key("IoError") {
-            return;
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let i64_t = self.context.i64_type();
-        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
-        fields.insert("kind".into(), (0, CodegenTy::String));
-        fields.insert("errno".into(), (1, CodegenTy::Int));
-        fields.insert("path".into(), (2, CodegenTy::String));
-        let field_order = vec![
-            "kind".to_string(),
-            "errno".to_string(),
-            "path".to_string(),
-        ];
-        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
-            vec![ptr_t.into(), i64_t.into(), ptr_t.into()];
-        let struct_ty = self.context.opaque_struct_type("type.IoError");
-        struct_ty.set_body(&llvm_field_tys, false);
-        self.user_types.insert(
-            "IoError".to_string(),
-            TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: BTreeMap::new(),
-            },
-        );
     }
 
     /// m65: synthesize the built-in stdlib generic enums
@@ -15654,7 +15381,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// v1.x-FORM-2 PR6 (PR5 finale): allocate an `IndexError`
     /// struct in the current arena and populate its three fields.
-    /// Matches the shape `inject_form_stdlib_types` synthesizes
+    /// Matches the shape `inject_builtin_types` synthesizes
     /// (`kind: String`, `index: Int`, `len: Int`) and the
     /// interpreter's `index_error_value` helper.
     pub(crate) fn emit_index_error_alloc(
@@ -15734,7 +15461,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// v1.x-FORM-4: allocate a `KeyError` struct in the current
     /// arena and populate its single field `kind: String`. Matches
-    /// the shape `inject_form_stdlib_types` synthesizes and the
+    /// the shape `inject_builtin_types` synthesizes and the
     /// interpreter's `key_error_value` helper.
     pub(crate) fn emit_key_error_alloc(
         &mut self,
@@ -19162,48 +18889,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// reads identical to the same value passed to println.
     /// String passes through (so `to_string` is the identity on
     /// String — handy in generic-feeling helper fns).
-    /// Whether `value_to_string` can render a value of this type
-    /// inline. Used by the `String + <printable>` auto-coercion
-    /// in lower_expr's BinOp::Add branch — types not in this set
-    /// fall back to the existing mixed-type error.
-    /// Which types [`Self::value_to_string`] can render.
-    ///
-    /// Must stay in lockstep with `ty_is_printable` in the
-    /// typechecker. A type the checker accepts and this refuses is a
-    /// check/build divergence — `hale check` tells the author their
-    /// program is fine and `hale build` then rejects it from another
-    /// layer, usually without a span. That class is gated by
-    /// `corpus_check_build_agreement`, so widening one side alone
-    /// fails CI by design.
-    fn value_to_string_supports(ty: &CodegenTy) -> bool {
+    /// Which types [`Self::value_to_string`] renders: the
+    /// `String + <printable>` coercion in lower_expr's BinOp::Add
+    /// branch (a type outside it falls back to the mixed-type error)
+    /// and `println`'s composites. The rule is
+    /// `hale_types::printable`'s, which the checker reads too.
+    fn value_to_string_supports(&self, ty: &CodegenTy) -> bool {
+        hale_types::printable::prints(ty, &|t: &CodegenTy| self.print_shape(t))
+    }
+
+    /// `ty` as the printable rule sees it.
+    fn print_shape(&self, ty: &CodegenTy) -> hale_types::printable::PrintShape<CodegenTy> {
+        use hale_types::printable::PrintShape;
         match ty {
-            CodegenTy::String
-            | CodegenTy::Int
-            | CodegenTy::Bool
-            | CodegenTy::Float
-            | CodegenTy::Decimal
-            | CodegenTy::Duration
-            | CodegenTy::Time
-            | CodegenTy::Enum(_)
-            | CodegenTy::TypeRef(_) => true,
-            // GH #469 A2. Element types are restricted to the
-            // scalars because those are the shapes whose SSA value
-            // is reliably a pointer to inline storage; a
-            // `[String; 3]` has no settled value repr to walk.
+            CodegenTy::String => PrintShape::Prim(PrimType::String),
+            CodegenTy::Int => PrintShape::Prim(PrimType::Int),
+            CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
+            CodegenTy::Float => PrintShape::Prim(PrimType::Float),
+            CodegenTy::Decimal => PrintShape::Prim(PrimType::Decimal),
+            CodegenTy::Duration => PrintShape::Prim(PrimType::Duration),
+            CodegenTy::Time => PrintShape::Prim(PrimType::Time),
+            CodegenTy::Bytes => PrintShape::Prim(PrimType::Bytes),
+            CodegenTy::BytesView => PrintShape::Prim(PrimType::BytesView),
+            CodegenTy::BytesMut => PrintShape::Prim(PrimType::BytesMut),
+            CodegenTy::StringView => PrintShape::Prim(PrimType::StringView),
+            CodegenTy::Enum(_) => PrintShape::Enum,
+            // The fields in declaration order, as `value_to_string`
+            // walks them; a record it cannot walk has no text form.
+            CodegenTy::TypeRef(name) => self
+                .user_types
+                .get(name)
+                .and_then(|info| {
+                    info.field_order
+                        .iter()
+                        .map(|f| info.fields.get(f).map(|(_, t)| t.clone()))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .map_or(PrintShape::NoTextForm, PrintShape::Record),
             CodegenTy::Array(elem, _) | CodegenTy::Bounded(elem, _) => {
-                matches!(
-                    elem.as_ref(),
-                    CodegenTy::Int
-                        | CodegenTy::Float
-                        | CodegenTy::Bool
-                        | CodegenTy::Decimal
-                        | CodegenTy::Duration
-                )
+                PrintShape::Sequence(elem.as_ref().clone())
             }
-            CodegenTy::Tuple(elems) => {
-                elems.iter().all(Self::value_to_string_supports)
-            }
-            _ => false,
+            CodegenTy::Tuple(elems) => PrintShape::Tuple(elems.clone()),
+            CodegenTy::LocusRef(_)
+            | CodegenTy::FnPtr { .. }
+            | CodegenTy::Interface(_)
+            | CodegenTy::Perspective(_)
+            | CodegenTy::Cell(..)
+            | CodegenTy::Drain(_) => PrintShape::NoTextForm,
         }
     }
 
@@ -19239,6 +18971,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ty = ty.clone();
         match ty {
             CodegenTy::String => Ok(v),
+            CodegenTy::StringView => {
+                // A view renders as its text, copied out as
+                // `std::str::clone` copies it: the result is a String,
+                // which must not alias the builder a later append
+                // moves.
+                let data = self.unpack_view_if_needed(v, &CodegenTy::StringView)?;
+                let arena_ptr = self.current_arena_ptr()?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_clone")
+                    .expect("lotus_str_clone declared");
+                let res = self
+                    .builder
+                    .build_call(f, &[arena_ptr.into(), data.into()], "to_string.view")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_clone returns ptr");
+                Ok(res)
+            }
             CodegenTy::Time => {
                 // GH #607: an instant renders as ISO-8601 UTC, the
                 // fraction only when it is not zero.
@@ -19772,8 +19524,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// [`Self::value_to_string`], which is what makes nesting work
     /// without a second implementation.
     ///
-    /// The printable set is fixed by the typechecker
-    /// (`ty_is_printable`); the errors below are for values that
+    /// The printable set is `hale_types::printable`'s, which the
+    /// checker enforces; the errors below are for values that
     /// reach codegen some other way (a synthesized type, a stdlib
     /// path typed `Unknown`), and they name a field rather than the
     /// whole record so the author knows which one to fix.
@@ -23707,11 +23459,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // println('p=', n) works." Other mixed-type binops
                 // remain errors.
                 if *op == BinOp::Add && lt != rt {
-                    if lt == CodegenTy::String && Self::value_to_string_supports(&rt) {
+                    if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
                         let coerced = self.value_to_string(rv, &rt)?;
                         return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
                     }
-                    if rt == CodegenTy::String && Self::value_to_string_supports(&lt) {
+                    if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
                         let coerced = self.value_to_string(lv, &lt)?;
                         return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
                     }
@@ -25321,7 +25073,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // because no embedded program prints a bounded; the
                 // compiler's own unreachable-pattern warning did.
                 CodegenTy::Bounded(_, _) => {
-                    if !Self::value_to_string_supports(&ty) {
+                    if !self.value_to_string_supports(&ty) {
                         return Err(CodegenError::Unsupported(
                             "cannot print a bounded[T; N] value \
                              directly unless its elements are scalars \
@@ -25460,7 +25212,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::TypeRef(_)
                 | CodegenTy::Tuple(_)
                 | CodegenTy::Array(_, _)
-                    if Self::value_to_string_supports(&ty) =>
+                    if self.value_to_string_supports(&ty) =>
                 {
                     let rendered = self.value_to_string(val, &ty)?;
                     format.push_str("%s");
@@ -25951,6 +25703,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(Lower::HaleBodyByReceiver(bodies)) => {
                 self.lower_std_hale_body_by_receiver(bodies, segs, args, scope).map(Some)
             }
+            // No row (the `stdlib_surface` family's total answer): the
+            // path is no table function, so it is the stdlib Hale
+            // declaration its mangled name names, or not implemented.
             Some(Lower::Renamed) | Some(Lower::Unlowered) | None => {
                 self.lower_std_unarmed(segs, args, scope, pos)
             }
@@ -34162,9 +33917,10 @@ fn bare_call_of_a_fallible_row(
 
 /// An `or` over a stdlib function whose row says it cannot fail. With a
 /// signature, the check refuses the `or` ("is not fallible"), so this is
-/// an internal error naming the row. Without one (step S6 gives every
-/// dispatched function one) the check types the call `Unknown` and lets
-/// the `or` through, so this refusal is the one a checked program meets.
+/// an internal error naming the row. Without one the check types the call
+/// `Unknown` and lets the `or` through; since S6 and its ruling every
+/// public intrinsic row is signed, so only an internal row, which a
+/// stdlib seed calls and user code cannot, is left to meet this refusal.
 /// Until F.40 phase 4, S5 an id list said which of them lowering refused.
 fn or_over_an_infallible_row(segs: &[&str], at: hale_syntax::Span) -> CodegenError {
     let path = segs.join("::");

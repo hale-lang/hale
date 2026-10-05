@@ -12435,7 +12435,11 @@ impl<'a> Checker<'a> {
     fn type_name_is_declared(&self, name: &str) -> bool {
         if self.known.contains_key(name)
             || self.known.alias_target(name).is_some()
-            || SYNTHESIZED_TYPE_NAMES.contains(&name)
+            // GH #877: a builtin type names something even where the
+            // resolver injects nothing (`BusUnmatchedKey` without a fail
+            // topic): lowering declares every one
+            // unconditionally, so a signature naming one lowers.
+            || crate::builtin_types::builtin_type(name).is_some()
             || self.generic_params.iter().any(|g| g == name)
             || self.generic_types.contains_key(name)
         {
@@ -12487,7 +12491,7 @@ impl<'a> Checker<'a> {
                 .filter(|k| !k.starts_with("__")),
         );
         cands.extend(self.generic_params.iter().map(|g| g.as_str()));
-        cands.extend(SYNTHESIZED_TYPE_NAMES.iter().copied());
+        cands.extend(crate::builtin_types::BUILTIN_TYPES.iter().map(|t| t.name));
         cands.extend(
             self.top
                 .symbols
@@ -14766,11 +14770,9 @@ impl<'a> Checker<'a> {
         );
     }
 
-    /// Whether a value of type `t` can be auto-coerced to String
-    /// inside a `String + <t>` expression. Mirrors the codegen
-    /// `value_to_string_supports` set: every primitive that
-    /// `to_string(...)` accepts, plus enums (which render as their
-    /// variant name).
+    /// Whether a value of type `t` prints: `println`, `to_string`,
+    /// f-string interpolation and the `String + <t>` coercion. The rule
+    /// is [`crate::printable`]'s, which lowering reads too.
     fn ty_is_printable(&self, t: &Ty) -> bool {
         self.ty_is_printable_at(t, 0)
     }
@@ -14959,42 +14961,41 @@ impl<'a> Checker<'a> {
     /// size), but the checker runs first and must not hang on a
     /// program it is about to reject for another reason.
     fn ty_is_printable_at(&self, t: &Ty, depth: u32) -> bool {
-        if depth > 16 {
-            return false;
-        }
+        crate::printable::prints_at(t, depth, &|t: &Ty| self.print_shape(t))
+    }
+
+    /// `t` as the printable rule sees it.
+    fn print_shape(&self, t: &Ty) -> crate::printable::PrintShape<Ty> {
+        use crate::printable::PrintShape;
         match t {
-            Ty::Tuple(ts) => {
-                ts.iter().all(|x| self.ty_is_printable_at(x, depth + 1))
+            Ty::Prim(p) => PrintShape::Prim(*p),
+            Ty::Tuple(ts) => PrintShape::Tuple(ts.clone()),
+            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => {
+                PrintShape::Sequence(elem.as_ref().clone())
             }
-            // Element types are restricted to the scalars, matching
-            // `value_to_string_supports` in codegen: those are the
-            // shapes whose runtime value is reliably a pointer to
-            // inline storage the renderer can walk. Widening this
-            // without widening codegen is a check/build divergence,
-            // which `corpus_check_build_agreement` fails on.
-            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => matches!(
-                elem.as_ref(),
-                Ty::Prim(
-                    PrimType::Int
-                        | PrimType::Float
-                        | PrimType::Bool
-                        | PrimType::Decimal
-                        | PrimType::Duration
-                )
-            ),
             Ty::Named(n) => match self.top.symbols.get(n) {
                 Some(TopSymbol::Type(ti)) => match &ti.kind {
-                    TypeKind::Enum(_) => true,
-                    TypeKind::Struct(fs) => fs.iter().all(|f| {
-                        self.ty_is_printable_at(&f.ty, depth + 1)
-                    }),
-                    TypeKind::Alias(inner) => {
-                        self.ty_is_printable_at(inner, depth + 1)
+                    TypeKind::Enum(_) => PrintShape::Enum,
+                    TypeKind::Struct(fs) => {
+                        PrintShape::Record(fs.iter().map(|f| f.ty.clone()).collect())
                     }
+                    TypeKind::Alias(inner) => PrintShape::Alias(inner.clone()),
                 },
-                _ => self.ty_is_printable_scalar(t),
+                Some(
+                    TopSymbol::Locus(_)
+                    | TopSymbol::Perspective(_)
+                    | TopSymbol::Interface(_),
+                ) => PrintShape::NoTextForm,
+                // Unresolved names stay permissive (imports /
+                // synthesized types).
+                _ => PrintShape::Unseen,
             },
-            _ => self.ty_is_printable_scalar(t),
+            Ty::Unknown => PrintShape::Unseen,
+            Ty::Array(_, None)
+            | Ty::Projection(..)
+            | Ty::Function { .. }
+            | Ty::Unit
+            | Ty::Fallible { .. } => PrintShape::NoTextForm,
         }
     }
 
@@ -15059,42 +15060,6 @@ impl<'a> Checker<'a> {
                     .to_string(),
             ),
             other => Some(format!("`{}` does not render", other.display())),
-        }
-    }
-
-    fn ty_is_printable_scalar(&self, t: &Ty) -> bool {
-        match t {
-            Ty::Prim(p) => matches!(
-                p,
-                PrimType::String
-                    | PrimType::Int
-                    | PrimType::Bool
-                    | PrimType::Float
-                    | PrimType::Decimal
-                    | PrimType::Duration
-                    | PrimType::Time
-                    | PrimType::StringView
-            ),
-            // GH #241 (audit item 1): enums render via to_string
-            // (variant name); structs / loci / perspectives do
-            // NOT — pre-#241 this deferred to a spanless codegen
-            // error ("`to_string` not supported for type ...").
-            // Resolve the name: enum printable, everything else
-            // known is not. Unresolved names stay permissive
-            // (imports / synthesized types).
-            Ty::Named(n) => match self.top.symbols.get(n) {
-                Some(TopSymbol::Type(ti)) => {
-                    matches!(ti.kind, TypeKind::Enum(_))
-                }
-                Some(
-                    TopSymbol::Locus(_)
-                    | TopSymbol::Perspective(_)
-                    | TopSymbol::Interface(_),
-                ) => false,
-                _ => true,
-            },
-            Ty::Unknown => true,
-            _ => false,
         }
     }
 
@@ -16176,35 +16141,6 @@ fn locus_has_unsynchronized_state(
     }
     None
 }
-
-/// GH #877: the type names the COMPILER declares, which therefore
-/// name something even when no declaration in the bundle does.
-///
-/// Codegen synthesizes each of these unconditionally (`codegen.rs`'s
-/// builtin-type declarations; `CapacityError` in `form/bounded.rs`),
-/// so a signature naming one lowers. The resolver injects most of
-/// them into the top scope as well — `IoError`, `ParseError`,
-/// `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
-/// `CapacityError` are there unconditionally since 2026-07-29, and
-/// `BusUnmatchedKey` only when a topic declares `on_unmatched: fail`
-/// — but `ClosureViolation`, the `on_failure` error payload, is
-/// injected nowhere and has always resolved to `Ty::Unknown`.
-///
-/// Listing all of them keeps the unknown-bare-type-name rule at
-/// least as permissive as codegen: an entry that the top scope
-/// already carries is simply redundant, while a missing one would
-/// refuse a program `hale build` accepts.
-const SYNTHESIZED_TYPE_NAMES: &[&str] = &[
-    "BusUnmatchedKey",
-    "CapacityError",
-    "ClosureViolation",
-    "CryptoError",
-    "EmptyError",
-    "IndexError",
-    "IoError",
-    "KeyError",
-    "ParseError",
-];
 
 /// The bare names codegen answers itself when they resolve to no user
 /// fn. A call to any other unbound bare name is refused by `hale

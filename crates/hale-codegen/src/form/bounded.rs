@@ -806,35 +806,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(alloc_ptr)
     }
 
-    /// Register the built-in `CapacityError` record (mirror of
-    /// `declare_builtin_index_error_type`). Fields: `cap: Int`,
-    /// `count: Int`.
-    pub(crate) fn declare_builtin_capacity_error_type(&mut self) {
-        if self.user_types.contains_key("CapacityError") {
-            return;
-        }
-        let i64_t = self.context.i64_type();
-        let mut fields: std::collections::BTreeMap<
-            String,
-            (u32, CodegenTy),
-        > = std::collections::BTreeMap::new();
-        fields.insert("cap".into(), (0, CodegenTy::Int));
-        fields.insert("count".into(), (1, CodegenTy::Int));
-        let field_order = vec!["cap".to_string(), "count".to_string()];
-        let struct_ty =
-            self.context.opaque_struct_type("type.CapacityError");
-        struct_ty
-            .set_body(&[i64_t.into(), i64_t.into()], false);
-        self.user_types.insert(
-            "CapacityError".to_string(),
-            crate::codegen::TypeInfo {
-                struct_ty,
-                fields,
-                field_order,
-                defaults: std::collections::BTreeMap::new(),
-            },
-        );
-    }
     /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots
     /// hold heap pointers that need arena anchoring; scalars are
     /// inline bytes.)

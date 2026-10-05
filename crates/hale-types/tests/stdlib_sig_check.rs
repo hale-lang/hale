@@ -371,6 +371,41 @@ fn std_io_mirror_calls_are_checked() {
     );
 }
 
+/// The seven cursor primitives are signed with the count and types their
+/// helper reads (F.40 phase 4, S6's ruling). The helper ignores arguments
+/// past the ones it reads, so lowering built each extra-argument call
+/// below; the check refuses it now. One per group the helper lowers
+/// together.
+#[test]
+fn std_io_mirror_cursor_calls_are_checked() {
+    refused(
+        "    let h = std::io::mirror::__new(4096);\n    let c = std::io::mirror::__commit(h, 1, 2);\n    println(c);",
+        &[("`std::io::mirror::__commit` takes 2 arguments, got 3", "std::io::mirror::__commit")],
+    );
+    refused(
+        "    let h = std::io::mirror::__new(4096);\n    let f = std::io::mirror::__free(h, 0);\n    println(f);",
+        &[("`std::io::mirror::__free` takes 1 argument, got 2", "std::io::mirror::__free")],
+    );
+    refused(
+        "    let h = std::io::mirror::__new(4096);\n    let w = std::io::mirror::__writable(h, 64);\n    std::bytes::write_i8(w, 0, 1) or raise;",
+        &[("`std::io::mirror::__writable` takes 1 argument, got 2", "std::io::mirror::__writable")],
+    );
+    refused(
+        "    let h = std::io::mirror::__new(4096);\n    let n = std::io::mirror::__capacity(h, 1);\n    println(n);",
+        &[("`std::io::mirror::__capacity` takes 1 argument, got 2", "std::io::mirror::__capacity")],
+    );
+    refused(
+        "    let n = std::io::mirror::__consume(\"h\", 1);\n    println(n);",
+        &[("`std::io::mirror::__consume` argument 1: expected `Int`, got `String`", "\"h\"")],
+    );
+    // The values are what the helper returns: a window is a BytesMut.
+    refused(
+        "    let h = std::io::mirror::__new(4096);\n    let r: BytesMut = std::io::mirror::__readable(h);\n    let n: Int = \
+         std::io::mirror::__len(h);\n    std::bytes::write_i8(r, 0, n) or raise;",
+        &[],
+    );
+}
+
 #[test]
 fn std_bytes_calls_are_checked() {
     refused(
@@ -392,6 +427,38 @@ fn std_bytes_calls_are_checked() {
             "std::bytes::builder::__len(0)",
         )],
     );
+}
+
+/// `__finish` and `__snapshot` are `(Int) -> Bytes`, signed after S7
+/// made the stdlib call fixture print their lengths instead of the
+/// Bytes, which do not print.
+#[test]
+fn std_bytes_builder_finish_and_snapshot_are_checked() {
+    refused(
+        "    let f = std::bytes::builder::__finish(1, 2);\n    println(len(f));",
+        &[("`std::bytes::builder::__finish` takes 1 argument, got 2", "std::bytes::builder::__finish")],
+    );
+    refused(
+        "    let s = std::bytes::builder::__snapshot(\"h\");\n    println(len(s));",
+        &[("`std::bytes::builder::__snapshot` argument 1: expected `Int`, got `String`", "\"h\"")],
+    );
+    refused(
+        "    let s = std::bytes::builder::__snapshot(1) or b\"\";\n    println(len(s));",
+        &[(
+            "`std::bytes::builder::__snapshot` is not fallible (it returns `Bytes`); drop the `or` clause",
+            "std::bytes::builder::__snapshot(1)",
+        )],
+    );
+    refused(
+        "    let f = std::bytes::builder::__finish(1);\n    println(f);",
+        &[(
+            "`println` cannot render a value of type `Bytes` — `Bytes` is binary — choose a rendering (hex, \
+             length, or a text decode)",
+            "f",
+        )],
+    );
+    // The value is the Bytes it always was.
+    refused("    let f: Bytes = std::bytes::builder::__finish(1);\n    println(len(f));", &[]);
 }
 
 #[test]

@@ -1561,7 +1561,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .cloned()
             .ok_or_else(|| {
                 CodegenError::Unsupported(
-                    "ParseError type missing — `declare_builtin_parse_error_type` \
+                    "ParseError type missing — `declare_builtin_types` \
                      should have injected it; sequencing bug?".to_string(),
                 )
             })?;
@@ -1721,7 +1721,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .cloned()
             .ok_or_else(|| {
                 CodegenError::Unsupported(
-                    "CryptoError type missing — `declare_builtin_crypto_error_type` \
+                    "CryptoError type missing — `declare_builtin_types` \
                      should have injected it; sequencing bug?".to_string(),
                 )
             })?;
@@ -2165,7 +2165,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("lotus_io_error_kind returns ptr");
 
-        // Store fields. Order matches inject_form_stdlib_types:
+        // Store fields. Order matches the `IoError` row of `hale_types::builtin_types`:
         // kind (0), errno (1), path (2).
         let (kind_idx, _) = info
             .fields

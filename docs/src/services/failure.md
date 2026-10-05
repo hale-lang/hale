@@ -275,9 +275,11 @@ locus DbConnection {
 - `closure fatal_io { ... epoch inline; }` is a *named structural
   failure* with no assertion — it only fires when you say so. The
   `captures:` clause names the state the failure is about. The
-  `ClosureViolation` itself has a fixed shape (which locus, which
-  closure), so the supervisor reads that state through the child
-  handle it is given: `c.last_error` in `on_failure(c, err)`.
+  `ClosureViolation` itself has a fixed shape (`err.locus` and
+  `err.closure`, which locus and which closure, and `err.diff`), so
+  the supervisor reads that state through the child handle it is
+  given: `c.last_error` in `on_failure(c, err)`. `err.last_error` is
+  a type error, since the violation has no such field.
 - `violate fatal_io;` fires it. It's divergent (the `Never` type,
   like `fail` and `bubble`), so the branches that violate need no
   `return`. It fires on the spot: `self.draining` turns true, the
