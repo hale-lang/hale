@@ -11,13 +11,14 @@
 - **Measured at the close:** `hale check dna/host` 0.75 s and 224 MB (v0.22.0: 1.71 s, 162 MB); `hale build dna/host` 17.6 s and 735 MB (30.6 s, 807 MB); editor latency on `dna/host/main.hl` 0.79 s open and 0.81 s edit; on a small file 16 ms and 10 ms (v0.22.0: 8 ms and 3 ms); the bench 25 of 29 inside their bands, with `locus_instantiation` at 1.08 and `coord_with_churn` at 1.13 outside on the slow side.
 - **Exit lines phase 3 did not meet, carried here:** three derivations run more than once on a build path (`handler_rows` twice, `flows::survey` three times, `scratch_local_free_fns` twice); the two instantiation benches; the cascade model's fourth phase is not explored; the editor's final publication on `dna/host` is over the 300 ms target, and the small-file path has doubled.
 - **Known-open tables** (each entry fails when its defect is fixed): the lifecycle fixtures name a bus handler's cell taking no hold on its subscriber (R52, a use-after-free that predates F.40), the owner-teardown half of a restart (C42), field replacement without a derived spine (C29), a pool child's resumed `run()` running inline (C43), structural exit inside dissolve (C25, C31); the corpus oracle's plan table names one example (C13); the wasm import backstop names `dprintf` and `fflush`.
-- **What the surveys found that the rows do not say.** Six row texts are out of date, and §3 plans against the code:
+- **What the surveys found that the rows do not say.** Five row texts are out of date, and §3 plans against the code:
   - `stdlib_surface` · `lower_fallible_call`: the function holds no stdlib literal any more; the fallible dispatch is `try_lower_fallible_stdlib_path_call`. The three dispatchers' counts are re-measured in line S.
   - `closures` · `EpochSpec::Birth`: epoch names are a closed enum the parser enforces. What is matched ad hoc is the event list of `persists_through` and `resets_on`, in `decl.rs` and `codegen.rs`.
   - `api_surface` · `generate_api`: codegen stopped running it in phase 2 (e24fbf7e3). It has one production call site, the desugar sequence, and the snapshot's configuration already carries the api entry, the roles and the environment and digests all three. What is left of the row is that `hale check` never carries an environment's roles.
   - `claims` · `validate_law_account`: admission does not re-judge. It never evaluates a law over a model. It decodes the artifact's law rows with a private copy of the law vocabulary, re-renders their forms with a private renderer, re-aggregates the stated verdicts, and refuses an artifact whose sections disagree. That refusal is a documented contract (`spec/verification.md`, the tamper tests), so the row cannot be closed as its text says without weakening it (§8, decision 2).
   - `claims` · the matrix's `constitution_identities`: it re-runs the loader and law selection, not the scope or the bus graph.
-  - `desugar_sequence` · `build_executable_with_options`: 470 call sites in 350 test files, not 330; `build_executable` no longer exists.
+  
+  And one count the phase-3 plan carried is wrong: the harness adapter `build_executable_with_options` has 470 call sites in 350 test files, not 330, and `build_executable` no longer exists.
 - **Process, from the phase-3 close:** four CI failures came from a pin or a seam count a pane's local run had not covered (the cell-read inventory, the topology baseline, the placement golden, the registry's seam counts); every one is now a step of the pane's standing footer. Two regressions (the build of `dna/host` at 52.9 s; the instantiation benches at 1.6×) lived for days because performance was measured only at the exit; §5 proposes deterministic standing checks, and §8 asks for the decision.
 
 ## 2. What phase 4 is, and is not
@@ -32,7 +33,7 @@ The unit dialect is the next piece of work after this phase (§7), and the phase
 
 ## 3. Lines of work
 
-Six lines, and a seventh by decision. Each step names its job shape (§6), the model that does it, its oracle, and the registry rows it closes (the manifest in §10 is the authority). Before any line starts, one registry-only commit (**C0**, shape M) corrects the six row texts §1 names to what the code is; the rows stay open.
+Six lines, and a seventh by decision. Each step names its job shape (§6), the model that does it, its oracle, and the registry rows it closes (the manifest in §10 is the authority). Before any line starts, one registry-only commit (**C0**, shape M) corrects the five row texts §1 names to what the code is; the rows stay open.
 
 ### Line S — the stdlib surface (layer 2), and the dispatch plan's second derivation
 
