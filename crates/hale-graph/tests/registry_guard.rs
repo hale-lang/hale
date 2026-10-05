@@ -334,6 +334,122 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
     );
 }
 
+/// How many times `text` references the shadow facility: the name
+/// `shadow` as a whole path segment (`hale_graph::shadow`,
+/// `shadow::Report`, `crate::shadow`), or anywhere in a `use hale_graph`
+/// tree (`use hale_graph::{shadow, Site}`). Comments do not count, nor
+/// does a source file's own `#[cfg(test)] mod`, which is a test. A string
+/// literal spelling the path does: the scan errs toward a reference.
+fn shadow_references(text: &str) -> usize {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut n = 0;
+    let mut in_use = false;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|l| l.trim_start().starts_with("mod ")) {
+            break;
+        }
+        if t.starts_with("//") {
+            continue;
+        }
+        let code = line.split("//").next().unwrap_or(line);
+        if code.trim_start().starts_with("use hale_graph") || code.trim_start().starts_with("pub use hale_graph") {
+            in_use = true;
+        }
+        for (k, _) in code.match_indices("shadow") {
+            let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            let before = code[..k].chars().next_back();
+            let after = code[k + "shadow".len()..].chars().next();
+            if before.is_some_and(ident) || after.is_some_and(ident) {
+                continue;
+            }
+            if in_use || code[..k].ends_with("::") || code[k..].starts_with("shadow::") {
+                n += 1;
+            }
+        }
+        if in_use && code.contains(';') {
+            in_use = false;
+        }
+    }
+    n
+}
+
+#[test]
+fn shadow_references_are_path_segments() {
+    assert_eq!(shadow_references("use hale_graph::shadow::{gate_message, Report};\n"), 1);
+    assert_eq!(shadow_references("let r = hale_graph::shadow::Report::new(\"f\");\n"), 1);
+    assert_eq!(shadow_references("use hale_graph::{\n    shadow,\n    Site,\n};\nshadow::program_id(o, s);\n"), 2);
+    assert_eq!(shadow_references("let shadowed = 1; // hale_graph::shadow\nlet shadow = 2;\nfn shadow_return_binding() {}\n"), 0);
+    assert_eq!(shadow_references("fn f() {}\n#[cfg(test)]\nmod tests {\n    use hale_graph::shadow::Report;\n}\n"), 0);
+}
+
+/// The shadow facility's call sites outside tests are the registry's
+/// allowance only (F.40 §5). Every source file under `crates/*/src` is
+/// scanned, `hale-graph`'s own included, except the facility's module;
+/// the tests are scanned too, as the vacuity check: they are the
+/// facility's users today, so a scanner that sees none of them is broken.
+#[test]
+fn the_shadow_facility_is_called_only_where_the_registry_allows() {
+    const FACILITY: &str = "crates/hale-graph/src/shadow.rs";
+    let root = workspace_root();
+    let allowed: BTreeMap<&str, usize> = hale_graph::SHADOW_CALL_SITES.iter().copied().collect();
+    let mut crates: Vec<String> = std::fs::read_dir(root.join("crates"))
+        .expect("crates/")
+        .flatten()
+        .filter(|e| e.path().join("src").is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    crates.sort();
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+    for c in &crates {
+        for (rel, text) in rust_sources(&root, c) {
+            scanned += 1;
+            if rel == FACILITY {
+                continue;
+            }
+            let n = shadow_references(&text);
+            match allowed.get(rel.as_str()) {
+                Some(&k) if k == n => {}
+                Some(&k) => violations.push(format!("{rel} references the facility {n} time(s); the registry allows {k}")),
+                None if n == 0 => {}
+                None => violations.push(format!("{rel} references the facility {n} time(s), which the registry does not allow")),
+            }
+        }
+    }
+    for (rel, _) in hale_graph::SHADOW_CALL_SITES {
+        if !root.join(rel).is_file() {
+            violations.push(format!("the registry allows {rel}, which does not exist"));
+        }
+    }
+    let mut users = 0usize;
+    for c in &crates {
+        let Ok(entries) = std::fs::read_dir(root.join("crates").join(c).join("tests")) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if let Ok(text) = std::fs::read_to_string(e.path()) {
+                users += usize::from(e.path().extension().is_some_and(|x| x == "rs") && shadow_references(&text) > 0);
+            }
+        }
+    }
+    assert!(
+        scanned >= 100 && crates.iter().any(|c| c == "hale-codegen") && users >= 4,
+        "the shadow scan is vacuous ({} crates, {scanned} source files, {users} test files using the facility)",
+        crates.len()
+    );
+    assert!(
+        violations.is_empty(),
+        "{} file(s) call the shadow facility outside the registry's allowance:\n{}\n\n\
+         The shadow facility runs a derivation beside the one it replaces while a family \
+         migrates, and phase 3 deleted every such run. A non-test call site is listed in \
+         SHADOW_CALL_SITES (crates/hale-graph/src/registry.rs) with its count, and its family's \
+         entry says what deletes it; then regenerate spec/registry.md.",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
 /// Every formatting-macro invocation in `text` whose template holds a
 /// `?}` placeholder and no space, collapsed to one line (its first 90
 /// characters), nested invocations included. Parentheses inside string
