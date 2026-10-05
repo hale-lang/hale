@@ -470,21 +470,22 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         } else {
             None
         };
-        // C52 (line 12): a pinned anchor whose root some literal hands back
-        // to its caller keeps its thread's join record in the instance, a
-        // synthetic `__thread: i64`, so its owner's cascade can join it
-        // wherever the owner is torn down. Zero where the frame that built
-        // the root keeps the join (its flush entry's alloca holds the id).
-        let thread_field_idx = if is_pinned_locus_type
-            && self.deployment.instance_joined_anchor_types.contains(&l.name.name)
-        {
-            let i = idx;
-            llvm_field_tys.push(self.context.i64_type().into());
-            idx += 1;
-            Some(i)
-        } else {
-            None
-        };
+        // C52 (line 12): a root some literal hands back to its caller keeps
+        // the join record of every replica of each of its pinned fields,
+        // `[K x {i64 thread, ptr instance}]` per field in field-name order
+        // (K the field's declared replica count), so its cascade joins
+        // them wherever it is torn down. A record's thread is zero where
+        // the frame that built the root keeps the join (its flush entries'
+        // allocas hold the ids).
+        let mut anchor_records: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+        if self.is_lowering_root(&l.name.name) {
+            let record_ty = self.anchor_record_ty();
+            for (field, &replicas) in &self.deployment.instance_joined_anchor_fields {
+                anchor_records.insert(field.clone(), (idx, replicas));
+                llvm_field_tys.push(record_ty.array_type(replicas).into());
+                idx += 1;
+            }
+        }
 
         // m40: synthetic `__restart_count: i64` field, always
         // appended to every locus struct. Zero-initialized at
@@ -1320,7 +1321,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 owner_forward_field_idxs,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
-                thread_field_idx,
+                anchor_records,
                 projection_class,
                 schedule_class,
                 capacity_slots,

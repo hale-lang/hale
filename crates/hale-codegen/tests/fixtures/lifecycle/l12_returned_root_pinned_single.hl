@@ -1,0 +1,33 @@
+// Decision line 12, an owned field's lifetime is its owner's
+// (PinnedJoin, Drain): a single-replica pinned field returned with its
+// root (C52's control).
+//
+// `make` builds App, whose field `sink` is placed `pinned`, and returns
+// it; fn main holds the root. The root keeps the one replica's join
+// record, so its teardown, at fn main's exit, joins it, and it drains
+// once, after the root was handed back.
+//
+// Adopted terminal outcome: `every-replica-joined-by-owner`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l12.single"; }
+
+locus Sink {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) { println("ev sink-heard"); }
+    drain() { println("ev sink-drain"); }
+}
+
+main locus App {
+    params { sink: Sink = Sink { }; }
+    placement { sink: pinned; }
+}
+
+fn make() -> App {
+    return App { };
+}
+
+fn main() {
+    let app = make();
+    println("ev handed-back");
+}

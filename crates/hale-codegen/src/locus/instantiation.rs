@@ -58,11 +58,9 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // that called us once it returns, on every exit path.
         let saved_holder = self.field_holder.clone();
         let saved_supervisor = self.supervising_parent.clone();
-        let saved_handed_back = self.anchor_owner_handed_back;
         let out = self.lower_locus_instantiation_inner(locus_name, inits, scope);
         self.field_holder = saved_holder;
         self.supervising_parent = saved_supervisor;
-        self.anchor_owner_handed_back = saved_handed_back;
         out
     }
 }
@@ -350,6 +348,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut self.current_instantiation_replica_index,
             replica_index_override.unwrap_or(0),
         );
+        // C52: the join record the root keeps for this instance, when it
+        // is a replica of a handed-back root's pinned field. Taken like
+        // the replica index, so nested instantiations see none.
+        let anchor_record = self.anchor_record_slot.take();
         // F.31 Phase 4: consume the parallel pool-name override
         // before any recursion happens (a nested instantiation
         // in this locus's params-init loop would otherwise
@@ -572,10 +574,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
         let returns_this_locus =
             matches!(site_owner, crate::ownership::Owner::Caller);
-        // C52: whether the literal this one is a field of hands its root
-        // back (read before this literal sets its own, for its fields).
+        // C52: whether this literal hands the root back to its caller; its
+        // params init then gives each replica of a pinned field the join
+        // record the root keeps for it (`anchor_record_slot`).
         let hands_back_the_root = returns_this_locus && self.is_lowering_root(locus_name);
-        let owner_handed_back = std::mem::replace(&mut self.anchor_owner_handed_back, hands_back_the_root);
         // A literal codegen builds for a program-lifetime slot — a
         // `bindings { }` transport, adapter or codec — needs the same
         // STORAGE and none of the ownership. It used to get both by
@@ -2634,6 +2636,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // (`hale_types::lowering_laws`), so every placed field
                 // reaching here is initialised by a literal.
             }
+            // C52 (line 12): the join records the root keeps for this
+            // pinned field, one per replica, start with no thread (the
+            // frame keeps the join); where this literal hands the root
+            // back, each replica's literal writes its own record
+            // (`anchor_record_slot`) and pushes no frame entry.
+            let anchor_replicas = info.anchor_records.get(fname.as_str()).map_or(0, |&(_, k)| k);
+            for replica in 0..anchor_replicas {
+                let record = self.anchor_record_at(&info, self_ptr, fname, replica)?.expect("the root keeps it");
+                let tid_slot = self
+                    .builder
+                    .build_struct_gep(self.anchor_record_ty(), record, 0, &format!("{}.{}.record.clear", locus_name, fname))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(tid_slot, self.context.i64_type().const_zero())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            let hands_back_replicas = hands_back_the_root && anchor_replicas > 0;
             // Topology Phase 1c: fan out the extra replicas. For a
             // `pinned(..., replicas = K)` field (K > 1) we emit K-1
             // extra single-threaded instances HERE; replica 0 goes
@@ -2678,12 +2697,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             Some(i as u64);
                         // The extra replica's self_ptr isn't stored in a
                         // field (replicas are non-addressable workers);
-                        // it lives only in the deferred-dissolve frame.
+                        // it lives in the deferred-dissolve frame, or, for
+                        // a handed-back root, in its join record (C52).
+                        if hands_back_replicas {
+                            self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, i as u32)?;
+                        }
                         // Finding 4: replica exprs are default text.
                         let saved_ipd = self.in_params_default;
                         self.in_params_default = true;
                         let _ = self.lower_expr(&rep_expr, scope)?;
                         self.in_params_default = saved_ipd;
+                        self.anchor_record_slot = None;
                     }
                     // Restore replica 0's overrides for the normal path
                     // below — the loop clobbered them.
@@ -2776,6 +2800,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // expressions ignore it.
             if go_to_payload_arena {
                 self.instantiating_into_payload_arena = true;
+            }
+            if hands_back_replicas {
+                self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, 0)?;
             }
             let (val, val_ty, owned_via_literal, came_from_literal) =
                 if let Some(expr) = overrides.get(fname.as_str()) {
@@ -2989,6 +3016,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.cooperative_pool_for_next_locus_instantiation = None;
             self.numa_node_for_next_locus_instantiation = None;
             self.replica_index_for_next_locus_instantiation = None;
+            self.anchor_record_slot = None;
             let (slot_idx, declared_ty) = info
                 .fields
                 .get(fname)
@@ -4478,29 +4506,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let tid_alloca = start.tid_alloca;
 
             // C52 (line 12): an owned field's lifetime is its owner's. When
-            // the root this anchor is a field of is handed back to the
-            // caller, the frame building it does not own it at its exit:
-            // the join record goes in the instance and the owner's cascade
-            // joins the thread, wherever the owner is torn down
+            // the root this anchor is a replica of a field of is handed
+            // back to the caller, the frame building it does not own it at
+            // its exit: the thread id and the instance go in the join
+            // record the root keeps for this replica, and the root's
+            // cascade joins it, wherever the root is torn down
             // (`emit_instance_pinned_join`). Otherwise the frame keeps the
-            // join, and the instance's record says so with a zero.
-            if let Some(thread_idx) = info.thread_field_idx {
-                let i64_t = self.context.i64_type();
-                let record = if owner_handed_back {
-                    self.builder
-                        .build_load(i64_t, tid_alloca, &format!("{}.tid.record", locus_name))
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_int_value()
-                } else {
-                    i64_t.const_zero()
-                };
-                let slot = self
-                    .builder
-                    .build_struct_gep(info.struct_ty, self_ptr, thread_idx, &format!("{}.__thread", locus_name))
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder.build_store(slot, record).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            if owner_handed_back && info.thread_field_idx.is_some() {
+            // join.
+            if let Some(record) = anchor_record {
+                let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+                let record_ty = self.anchor_record_ty();
+                let tid = self.builder.build_load(self.context.i64_type(), tid_alloca, &format!("{}.tid.record", locus_name)).map_err(e)?;
+                let tid_slot = self.builder.build_struct_gep(record_ty, record, 0, &format!("{}.record.thread", locus_name)).map_err(e)?;
+                self.builder.build_store(tid_slot, tid).map_err(e)?;
+                let self_slot = self.builder.build_struct_gep(record_ty, record, 1, &format!("{}.record.self", locus_name)).map_err(e)?;
+                self.builder.build_store(self_slot, self_ptr).map_err(e)?;
                 self.current_cooperative_pool = prev_current_coop_pool;
                 self.current_instantiation_replica_index = prev_replica_index;
                 return Ok(self_ptr);

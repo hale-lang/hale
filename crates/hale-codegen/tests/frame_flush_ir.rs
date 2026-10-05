@@ -298,45 +298,92 @@ fn a_deferred_main_entrys_head_comes_before_its_pinned_joins() {
     assert_head_before_pinned_joins(&function(&in_main, "main"), &want, "fn main");
 }
 
-/// A root with a pinned subscriber field, built by `make`: `{returns}`
-/// says whether `make` hands it back, or tears it down at its own exit.
-fn anchor_program(returns: bool) -> String {
+/// A root with a pinned subscriber field of `replicas` replicas, built by
+/// `make`: `{returns}` says whether `make` hands it back, or tears it
+/// down at its own exit.
+fn anchor_program(returns: bool, replicas: u32) -> String {
     let (sig, body, main) = if returns {
         (" -> App", "    return App { };\n", "fn main() {\n    let app = make();\n}\n")
     } else {
         ("", "    let app = App { };\n", "fn main() {\n    make();\n}\n")
     };
+    let placement = if replicas == 1 { "pinned".to_string() } else { format!("pinned(replicas = {replicas})") };
     format!(
         "type Ping {{ n: Int; }}\ntopic Pings {{ payload: Ping; subject: \"frame.flush.ir.anchor\"; }}\n\n\
          locus Sink {{\n    bus {{ subscribe Pings as on_ping; }}\n    fn on_ping(p: Ping) {{ }}\n}}\n\n\
-         main locus App {{\n    params {{ sink: Sink = Sink {{ }}; }}\n    placement {{ sink: pinned; }}\n}}\n\n\
+         main locus App {{\n    params {{ sink: Sink = Sink {{ }}; }}\n    placement {{ sink: {placement}; }}\n}}\n\n\
          fn make(){sig} {{\n{body}}}\n\n{main}"
     )
 }
 
-/// C52 (line 12): a root handed back to its caller keeps its pinned
-/// field's join record in the instance, and its owner's cascade joins it,
-/// where the caller tears the owner down; the frame that built it pushes
-/// no entry. Before, `make`'s flush joined the field at `make`'s exit
-/// (`l12_returned_root_pinned_anchor.hl`). The control, a root `make`
-/// keeps, is the frame flush's as before: no record, no cascade join.
+/// The replica index each of `f`'s `sink.anchor_record.*` addresses
+/// names (`getelementptr inbounds [K x { i64, ptr }], ptr …, i32 0, i32
+/// <replica>`), with its (block, line), in block order.
+fn record_reads(f: &Func) -> Vec<(u32, (usize, usize))> {
+    let mut out = Vec::new();
+    for (b, (_, lines, _)) in f.blocks.iter().enumerate() {
+        for (i, l) in lines.iter().enumerate() {
+            if l.trim_start().starts_with("%sink.anchor_record.") {
+                let replica = l.rsplit("i32 ").next().and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).unwrap();
+                out.push((replica.parse().unwrap(), (b, i)));
+            }
+        }
+    }
+    out
+}
+
+/// The stores of a function into `{name}` slots (`store …, ptr %{name}`).
+fn stores_into(f: &Func, name: &str) -> usize {
+    let pat = format!("ptr %{name}");
+    f.blocks.iter().flat_map(|b| &b.1).filter(|l| l.trim_start().starts_with("store ") && l.contains(&pat)).count()
+}
+
+/// C52 (line 12): a root handed back to its caller keeps, per instance,
+/// the join record of every replica of its pinned field (`[K x {i64
+/// thread, ptr instance}]`), and its cascade, where the caller tears it
+/// down, shuts down, joins and reclaims every one; the frame that built
+/// it pushes no entry for any. The order is the building frame's flush
+/// order: replica 0 (pushed last, by the field's own path), then K-1 down
+/// to 1. Before the review of #1354 the record was a `__thread` in the
+/// field's instance, so only replica 0 was reachable from the root and
+/// the others were never joined (`l12_returned_root_pinned_replicas.hl`).
+/// The control, a root `make` keeps, is the frame flush's as before: no
+/// record, no cascade join, `make`'s flush joins every replica.
 #[test]
 fn a_returned_roots_pinned_field_is_joined_by_its_owners_teardown() {
-    let returned = ir("anchor_returned", &anchor_program(true));
-    let make = function(&returned, "make");
-    assert!(make.calls("pthread_join").is_empty(), "make joins no thread");
-    assert!(!make.blocks.iter().any(|b| b.0 == "Sink.dissolve.arena_check"), "make's flush has no entry for Sink");
-    assert!(returned.contains("%Sink.__thread = getelementptr"), "the instance keeps the join record");
-    let main = function(&returned, "main");
-    let join = main.block("Sink.instance_join");
-    let app = main.block("App.dissolve.process");
-    assert!(main.before(app, join), "Sink is joined inside App's teardown, in fn main");
-    assert!(main.calls("pthread_join").iter().any(|&j| main.before(join, j) || j.0 == join.0), "the join is a pthread_join");
+    for k in [1u32, 3] {
+        let returned = ir(&format!("anchor_returned_{k}"), &anchor_program(true, k));
+        assert!(returned.contains(&format!("[{k} x {{ i64, ptr }}]")), "K = {k}: App keeps one record per replica");
+        assert!(!returned.contains("__thread"), "K = {k}: no record in the field's own instance");
+        let make = function(&returned, "make");
+        assert!(make.calls("pthread_join").is_empty(), "K = {k}: make joins no thread");
+        assert!(!make.blocks.iter().any(|b| b.0.starts_with("Sink.dissolve")), "K = {k}: make's flush has no entry for any Sink");
+        assert_eq!(stores_into(&make, "Sink.record.thread"), k as usize, "K = {k}: every replica writes its thread");
+        assert_eq!(stores_into(&make, "Sink.record.self"), k as usize, "K = {k}: every replica writes its instance");
 
-    let kept = ir("anchor_kept", &anchor_program(false));
-    assert!(!kept.contains("__thread") && !kept.contains("instance_join"), "a root the frame keeps carries no record");
-    let make = function(&kept, "make");
-    assert_eq!(make.calls("pthread_join").len(), 1, "make's flush joins Sink");
+        let main = function(&returned, "main");
+        let joins = main.calls("pthread_join");
+        assert_eq!(joins.len(), k as usize, "K = {k}: fn main's App teardown joins every replica");
+        let app = main.block("App.dissolve.process");
+        assert!(joins.iter().all(|&j| main.before(app, j)), "K = {k}: inside App's teardown");
+        let reads = record_reads(&main);
+        let order: Vec<u32> = reads.iter().map(|r| r.0).collect();
+        let want: Vec<u32> = std::iter::once(0).chain((1..k).rev()).collect();
+        assert_eq!(order, want, "K = {k}: the records are joined in the frame flush's order");
+        for (w, j) in reads.windows(2).zip(joins.windows(2)) {
+            assert!(main.before(w[0].1, w[1].1) && main.before(j[0], j[1]), "K = {k}: one replica's join before the next's");
+        }
+        for (r, j) in reads.iter().zip(&joins) {
+            assert!(main.before(r.1, *j), "K = {k}: replica {}'s record is read before its join", r.0);
+        }
+    }
+
+    for k in [1u32, 2] {
+        let kept = ir(&format!("anchor_kept_{k}"), &anchor_program(false, k));
+        assert!(!kept.contains("anchor_record") && !kept.contains("instance_join"), "K = {k}: a root the frame keeps carries no record");
+        let make = function(&kept, "make");
+        assert_eq!(make.calls("pthread_join").len(), k as usize, "K = {k}: make's flush joins every replica");
+    }
 }
 
 #[test]

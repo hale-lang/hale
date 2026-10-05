@@ -1547,7 +1547,7 @@ pub fn build_resolved(
         declared_owner: None,
         locus_cascade_path: Vec::new(),
         instantiating_into_payload_arena: false,
-        anchor_owner_handed_back: false,
+        anchor_record_slot: None,
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         params_init_self: None,
@@ -3875,13 +3875,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// them sees the flag still set as long as the parent's
     /// params-init loop holds it.
     pub(crate) instantiating_into_payload_arena: bool,
-    /// C52: set by the root's instantiation while its params initialize,
-    /// when that literal hands the root back to its caller
-    /// (`Owner::Caller`). A pinned field built under it keeps its join
-    /// record in the instance (`LocusInfo::thread_field_idx`) and pushes
+    /// C52: set by the root's params init before each replica of a
+    /// pinned field, when that literal hands the root back to its caller
+    /// (`Owner::Caller`): the replica's join record in the root
+    /// (`LocusInfo::anchor_records`). Taken by the next locus literal,
+    /// which writes its thread id and instance pointer there and pushes
     /// no entry on the building frame, which does not own the root at its
-    /// exit. Saved and restored around every instantiation.
-    pub(crate) anchor_owner_handed_back: bool,
+    /// exit.
+    pub(crate) anchor_record_slot: Option<PointerValue<'ctx>>,
     /// F.31 (2026-05-23): the placement a `placement { }` entry
     /// gives one field, as `(entry, class)`.
     ///
@@ -5248,12 +5249,14 @@ pub(crate) struct LocusInfo<'ctx> {
     /// queue; pinned loci without subscriptions don't need a
     /// mailbox at all). m28b stage 2.
     pub(crate) mailbox_field_idx: Option<u32>,
-    /// Index of the synthetic `__thread: i64` field: a pinned anchor's
-    /// join record, kept in the instance when the root it is a field of
-    /// is handed back to a caller (C52), so its owner's cascade joins it
-    /// (`emit_instance_pinned_join`). Zero while the frame that built the
-    /// root keeps the join. None for every other locus.
-    pub(crate) thread_field_idx: Option<u32>,
+    /// The root's join records for its pinned fields, when some literal
+    /// hands the root back to a caller (C52): field name → (index of a
+    /// synthetic `[K x {i64 thread, ptr instance}]`, K), one record per
+    /// declared replica, so the root's cascade joins every replica
+    /// (`emit_instance_pinned_join`). A record's thread is zero while the
+    /// frame that built the root keeps the join. Empty for every other
+    /// locus.
+    pub(crate) anchor_records: BTreeMap<String, (u32, u32)>,
     /// Per-spec projection class. Resolved at declare-locus-struct
     /// time from the `LocusAnnotation::Projection` annotation, or
     /// (per spec/memory.md) defaults to chunked if the locus
@@ -6275,53 +6278,86 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// C52 (line 12): a pinned field whose join record the instance keeps
-    /// (`LocusInfo::thread_field_idx`, its root handed back to a caller)
-    /// is joined in its owner's cascade, as the field's drain: the mailbox
-    /// shutdown and the join (its thread drains its fields, then itself,
-    /// and dissolves), then the rest of the pinned entry's teardown (its
-    /// fields' dissolves, its reclaim), the frame entry's spine
-    /// (`emit_deferred_entry_teardown`) read through the owner's field
-    /// slot. Skipped where the field is unset, or its record is zero (the
-    /// frame that built the root keeps the join).
+    /// One join record of a handed-back root's pinned field replica
+    /// (C52): `{i64 thread, ptr instance}`.
+    pub(crate) fn anchor_record_ty(&self) -> inkwell::types::StructType<'ctx> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        self.context.struct_type(&[self.context.i64_type().into(), ptr_t.into()], false)
+    }
+
+    /// The join record of replica `replica` of the root's pinned field
+    /// `field` (`LocusInfo::anchor_records`), or None where the root keeps
+    /// no records for it.
+    pub(crate) fn anchor_record_at(
+        &self,
+        owner: &LocusInfo<'ctx>,
+        owner_self: PointerValue<'ctx>,
+        field: &str,
+        replica: u32,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        let Some(&(idx, replicas)) = owner.anchor_records.get(field) else { return Ok(None) };
+        let i32_t = self.context.i32_type();
+        let array_ty = self.anchor_record_ty().array_type(replicas);
+        let records = self
+            .builder
+            .build_struct_gep(owner.struct_ty, owner_self, idx, &format!("{field}.anchor_records"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // SAFETY: `replica` < the array's length, the field's declared
+        // replica count.
+        let record = unsafe {
+            self.builder.build_in_bounds_gep(
+                array_ty,
+                records,
+                &[i32_t.const_zero(), i32_t.const_int(replica as u64, false)],
+                &format!("{field}.anchor_record.{replica}"),
+            )
+        }
+        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(Some(record))
+    }
+
+    /// C52 (line 12): the replicas of a pinned field whose join records
+    /// the root keeps (`LocusInfo::anchor_records`, the root handed back
+    /// to a caller) are joined in the root's cascade, as the field's
+    /// drain, each with the frame entry's spine
+    /// (`emit_deferred_entry_teardown`) read through its record: the
+    /// mailbox shutdown and the join (its thread drains its fields, then
+    /// itself, and dissolves), then its fields' dissolves and its reclaim;
+    /// the record's thread is zeroed after. The order is the building
+    /// frame's flush order, which pops entries in reverse of their push:
+    /// replica 0 (built last, by the field's own path), then replicas
+    /// K-1 down to 1. A record whose thread is zero is skipped (the frame
+    /// that built the root keeps the join).
     pub(crate) fn emit_instance_pinned_join(
         &mut self,
         owner: &LocusInfo<'ctx>,
         owner_self: PointerValue<'ctx>,
-        field_idx: u32,
+        field: &str,
         inner_name: &str,
     ) -> Result<(), CodegenError> {
-        let Some(inner) = self.user_loci.get(inner_name).cloned() else { return Ok(()) };
-        let Some(thread_idx) = inner.thread_field_idx else { return Ok(()) };
+        let Some(&(_, replicas)) = owner.anchor_records.get(field) else { return Ok(()) };
         let func = self.current_fn.expect("a cascade inside a fn body");
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
+        let record_ty = self.anchor_record_ty();
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let field_slot = self
-            .builder
-            .build_struct_gep(owner.struct_ty, owner_self, field_idx, &format!("{inner_name}.instance_join.field"))
-            .map_err(e)?;
-        let child = self.builder.build_load(ptr_t, field_slot, &format!("{inner_name}.instance_join.self")).map_err(e)?.into_pointer_value();
-        let check_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join.check"));
-        let join_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join"));
-        let after_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join.after"));
-        let null = self.builder.build_is_null(child, &format!("{inner_name}.instance_join.null")).map_err(e)?;
-        self.builder.build_conditional_branch(null, after_bb, check_bb).map_err(e)?;
-        self.builder.position_at_end(check_bb);
-        let tid_slot = self
-            .builder
-            .build_struct_gep(inner.struct_ty, child, thread_idx, &format!("{inner_name}.__thread.join"))
-            .map_err(e)?;
-        let tid = self.builder.build_load(i64_t, tid_slot, &format!("{inner_name}.__thread.record")).map_err(e)?.into_int_value();
-        let kept = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, tid, i64_t.const_zero(), &format!("{inner_name}.instance_join.frame_keeps"))
-            .map_err(e)?;
-        self.builder.build_conditional_branch(kept, after_bb, join_bb).map_err(e)?;
-        self.builder.position_at_end(join_bb);
-        self.emit_deferred_entry_teardown(field_slot, inner_name, Some(tid_slot), false)?;
-        self.builder.build_unconditional_branch(after_bb).map_err(e)?;
-        self.builder.position_at_end(after_bb);
+        for replica in std::iter::once(0).chain((1..replicas).rev()) {
+            let record = self.anchor_record_at(owner, owner_self, field, replica)?.expect("checked above");
+            let tid_slot = self.builder.build_struct_gep(record_ty, record, 0, &format!("{inner_name}.instance_join.thread")).map_err(e)?;
+            let self_slot = self.builder.build_struct_gep(record_ty, record, 1, &format!("{inner_name}.instance_join.self")).map_err(e)?;
+            let tid = self.builder.build_load(i64_t, tid_slot, &format!("{inner_name}.instance_join.record")).map_err(e)?.into_int_value();
+            let join_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join"));
+            let after_bb = self.context.append_basic_block(func, &format!("{inner_name}.instance_join.after"));
+            let kept = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, tid, i64_t.const_zero(), &format!("{inner_name}.instance_join.frame_keeps"))
+                .map_err(e)?;
+            self.builder.build_conditional_branch(kept, after_bb, join_bb).map_err(e)?;
+            self.builder.position_at_end(join_bb);
+            self.emit_deferred_entry_teardown(self_slot, inner_name, Some(tid_slot), false)?;
+            self.builder.build_store(tid_slot, i64_t.const_zero()).map_err(e)?;
+            self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+            self.builder.position_at_end(after_bb);
+        }
         Ok(())
     }
 
@@ -9819,7 +9855,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.deployment.main_placement_node.insert(field.to_string(), *node);
                     }
                     if root_handed_back {
-                        self.deployment.instance_joined_anchor_types.extend(realized.clone());
+                        self.deployment.instance_joined_anchor_fields.insert(field.to_string(), rows.len() as u32);
                     }
                     self.deployment.pinned_locus_types.extend(realized);
                     // Each replica's one core, from its own row's domain.

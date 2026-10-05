@@ -989,11 +989,11 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                     Some(ScheduleClass::Pinned(_))
                 )
             {
-                // C52 (line 12): a pinned field whose join record the
-                // instance keeps is joined here, as its drain, in its
-                // owner's cascade; one the building frame keeps is
-                // joined by that frame's flush entry.
-                self.emit_instance_pinned_join(info, self_ptr, field_idx, &inner_name)?;
+                // C52 (line 12): the replicas of a pinned field whose
+                // join records the root keeps are joined here, as its
+                // drain, in its owner's cascade; one the building frame
+                // keeps is joined by that frame's flush entries.
+                self.emit_instance_pinned_join(info, self_ptr, &fname, &inner_name)?;
                 continue;
             }
             let inner_info = match self.user_loci.get(&inner_name).cloned() {
