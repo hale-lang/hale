@@ -15,14 +15,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    Block, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember,
-    MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program, RecoveryModifier, Stmt,
-    StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
+    Block, ClosureClause, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl,
+    LocusMember, MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program,
+    RecoveryModifier, Stmt, StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
-use hale_syntax::{Diag, Span};
+use hale_syntax::{Diag, Span, SpanOrigin};
 
 use crate::binding_rows::BindingRows;
 use crate::entry::EntryRow;
+use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
@@ -48,11 +49,22 @@ pub struct LoweringLawInputs<'a> {
     pub omitted: &'a OmittedArgsByCall,
 }
 
+/// What a law on the shared finding type ([`Law`]) reads: the bundle and
+/// the rows.
+struct LawRows<'r, 'b, 'i> {
+    bundle: &'r Bundle<'b>,
+    inputs: &'r LoweringLawInputs<'i>,
+}
+
+/// Rule 6, the locus-pinning compatibility rule.
+const RULE_6: RuleId = RuleId::registered("semantics/placement", "6");
+
 /// Every law that replaced a lowering backstop, over `bundle`.
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
+    let rows = LawRows { bundle, inputs };
     let mut diags = Vec::new();
     module_nested_main_is_not_the_entry(bundle, inputs, &mut diags);
-    pinned_features(bundle, inputs, &mut diags);
+    diags.extend(Law { rule: RULE_6, eval: pinned_features }.diags(&rows));
     pinned_root_in_a_loop(bundle, inputs, &mut diags);
     placement_entry_consumed(bundle, inputs, &mut diags);
     cross_pool_spawn_used_as_a_value(inputs, &mut diags);
@@ -823,7 +835,14 @@ fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, di
 /// checker resolves to `Unknown` (a stdlib locus), an `accept()` written
 /// with no parameter (the checker read `accept_param`, lowering the
 /// member), and the adapter, which no placement entry names.
-fn pinned_features(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+///
+/// Its finding is a [`Violation`] whose witness is the chain the walk
+/// follows (F.40 phase 4, W2): the entry that decides the instance runs
+/// pinned (the placement entry, or the binding entry), the declaration
+/// the instance realizes, and the member that conflicts (the `accept`, or
+/// the closure's assertion).
+fn pinned_features(rows: &LawRows<'_, '_, '_>, violations: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
     let placement = inputs.placement;
     let decls = declarations(bundle);
     let mut reported: BTreeSet<(SiteRef, &'static str)> = BTreeSet::new();
@@ -839,13 +858,21 @@ fn pinned_features(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &
         };
         let Some(realizes) = &row.realizes else { continue };
         let Some(decl) = decls.get(&realizes.site) else { continue };
-        let Some(why) = pinned_conflict(decl) else { continue };
+        let Some(conflict) = pinned_conflict(decl) else { continue };
+        let why = conflict.why;
         if !reported.insert((entry, why)) {
             continue;
         }
-        let Some(mut span) = bundle.snapshot.site(entry.id).map(|s| s.span) else { continue };
+        let Some(entry_span) = bundle.snapshot.site(entry.id).map(|s| s.span) else { continue };
+        let mut span = entry_span;
         let locus = decl.name.name.as_str();
-        let message = if binding {
+        // The declaration, and so the conflicting member, is the stdlib's
+        // when the instance realizes a `std::` locus.
+        let decl_origin = match realizes.site.universe {
+            SiteUniverse::User => SpanOrigin::Seed,
+            SiteUniverse::StdlibAnalysis => SpanOrigin::Stdlib,
+        };
+        let (message, decides) = if binding {
             let binding_row = inputs.bindings.for_site(entry.id);
             let topic = binding_row.map(|r| r.topic.as_str()).unwrap_or("?");
             if let Some(hale_syntax::ast::BindingEntry {
@@ -853,48 +880,88 @@ fn pinned_features(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &
             }) = binding_row.and_then(|r| r.entry(bundle)) {
                 span = locus.span;
             }
-            format!(
-                "adapter binding for topic `{}`: `{}` runs on its own pinned thread but {}; \
-                 drop the feature from the adapter locus (rule 6)",
-                topic, locus, why
+            (
+                format!(
+                    "adapter binding for topic `{}`: `{}` runs on its own pinned thread but {}; \
+                     drop the feature from the adapter locus (rule 6)",
+                    topic, locus, why
+                ),
+                format!("the adapter runs on a thread of its own: topic `{topic}` is bound to it here"),
             )
         } else {
             let field = key.path.last().map(|s| s.field.as_str()).unwrap_or("?");
-            format!(
-                "placement entry `{}`: `{}` is placed `pinned` but {}; place it `cooperative`, or \
-                 drop the feature (rule 6)",
-                field, locus, why
+            (
+                format!(
+                    "placement entry `{}`: `{}` is placed `pinned` but {}; place it `cooperative`, or \
+                     drop the feature (rule 6)",
+                    field, locus, why
+                ),
+                format!("the instance runs on a thread of its own: field `{field}` is placed `pinned` here"),
             )
         };
-        diags.push(Diag::ty(span, message));
+        let witness = vec![
+            WitnessStep { span: entry_span, origin: SpanOrigin::Seed, note: decides },
+            WitnessStep {
+                span: decl.name.span,
+                origin: decl_origin,
+                note: format!("the instance realizes `{locus}`, declared here"),
+            },
+            WitnessStep { span: conflict.at, origin: decl_origin, note: conflict.note },
+        ];
+        violations.push(Violation { rule: RULE_6, severity: Severity::Error, span, message, witness });
     }
+}
+
+/// What a declaration does that a pinned instance cannot, and where.
+struct PinnedConflict {
+    /// The phrase the message gives.
+    why: &'static str,
+    /// The member that does it: the `accept`, or the closure's assertion.
+    at: Span,
+    /// The witness's note at it.
+    note: String,
 }
 
 /// What a declaration does that a pinned instance cannot: lowering's
 /// own two conditions, read off the declaration (an `accept` of any
 /// arity, and a closure with an assertion whose epoch is `birth` or
 /// `dissolve`; an assertion-less closure is inline and fires through
-/// `violate`).
-fn pinned_conflict(decl: &LocusDecl) -> Option<&'static str> {
-    let accepts = decl
-        .members
-        .iter()
-        .any(|m| matches!(m, LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept)));
-    if accepts {
-        return Some(
-            "declares `accept()`: a pinned locus owns its own thread and cannot accept children",
-        );
-    }
-    let cascade_closure = decl.members.iter().any(|m| match m {
-        LocusMember::Closure(c) => {
-            c.assertion.is_some() && matches!(c.epoch(), EpochSpec::Birth | EpochSpec::Dissolve)
-        }
-        _ => false,
+/// `violate`). The first such member in source order, an `accept` before
+/// any closure.
+fn pinned_conflict(decl: &LocusDecl) -> Option<PinnedConflict> {
+    let locus = decl.name.name.as_str();
+    let accept = decl.members.iter().find_map(|m| match m {
+        LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept) => Some(lc.span),
+        _ => None,
     });
-    cascade_closure.then_some(
-        "declares a closure whose epoch is `birth` or `dissolve` (dissolve is the default): the \
-         lifecycle cascade cannot route it across a pinned locus's thread",
-    )
+    if let Some(at) = accept {
+        return Some(PinnedConflict {
+            why: "declares `accept()`: a pinned locus owns its own thread and cannot accept children",
+            at,
+            note: format!("`{locus}` declares `accept()` here"),
+        });
+    }
+    decl.members.iter().find_map(|m| {
+        let LocusMember::Closure(c) = m else { return None };
+        let assertion = c.assertion.as_ref()?;
+        let epoch = match c.epoch() {
+            EpochSpec::Birth => "epoch `birth`",
+            EpochSpec::Dissolve if c.clauses.iter().any(|k| matches!(k, ClosureClause::Epoch(_))) => {
+                "epoch `dissolve`"
+            }
+            EpochSpec::Dissolve => "epoch `dissolve` (no `epoch` is written, and dissolve is the default)",
+            _ => return None,
+        };
+        Some(PinnedConflict {
+            why: "declares a closure whose epoch is `birth` or `dissolve` (dissolve is the default): the \
+                  lifecycle cascade cannot route it across a pinned locus's thread",
+            at: assertion.span,
+            note: format!(
+                "`{locus}`'s closure `{}` fires inside the lifecycle cascade, at {epoch}: its assertion is here",
+                c.name.name
+            ),
+        })
+    })
 }
 
 /// Every locus declaration of both universes, by the site the placement

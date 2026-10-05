@@ -291,19 +291,11 @@ fn field_tag(ty: &TypeExpr) -> &'static str {
 /// unconditionally (an empty shape still contributes it), exactly
 /// as the C does.
 pub fn topic_shape_hash(subject: &str, shape: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |b: u8| {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    };
-    for b in subject.bytes() {
-        eat(b);
-    }
-    eat(b':');
-    for b in shape.bytes() {
-        eat(b);
-    }
-    h
+    let mut h = hale_graph::identity::Fnv64::new();
+    h.write(subject.as_bytes());
+    h.write(b":");
+    h.write(shape.as_bytes());
+    h.finish()
 }
 
 #[cfg(test)]

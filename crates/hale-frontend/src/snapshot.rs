@@ -323,23 +323,6 @@ impl Config {
 
 /// What identifies a snapshot. Two snapshots with different keys were
 /// loaded from different inputs, and share no result.
-/// FNV-1a/64 over whatever the key hashes.
-struct Fnv(u64);
-impl Fnv {
-    fn new() -> Self {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= *b as u64;
-            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SnapshotKey {
     /// The target the load started from, canonical where it exists.
@@ -569,7 +552,7 @@ impl Snapshot {
         }
         .map_err(LoadError::Load)?;
         // the key names what was read, so it is computed after the load
-        let mut h = Fnv::new();
+        let mut h = hale_graph::identity::Fnv64::new();
         for (path, text) in &loaded.sources {
             h.write(path.to_string_lossy().as_bytes());
             h.write(b"\0");
@@ -2080,18 +2063,15 @@ pub fn adopt_into_root(programs: &mut [&mut Program], names: &[String]) {
 
 /// FNV-1a/64 over length-framed fields: two different field lists
 /// never frame to one byte string.
-pub(crate) struct Digest(u64);
+pub(crate) struct Digest(hale_graph::identity::Fnv64);
 
 impl Digest {
     pub(crate) fn new() -> Self {
-        Digest(0xcbf2_9ce4_8422_2325)
+        Digest(hale_graph::identity::Fnv64::new())
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= *b as u64;
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+        self.0.write(bytes);
     }
 
     pub(crate) fn count(&mut self, n: usize) {
@@ -2118,7 +2098,7 @@ impl Digest {
     }
 
     pub(crate) fn finish(&self) -> u64 {
-        self.0
+        self.0.finish()
     }
 }
 

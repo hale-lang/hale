@@ -336,7 +336,10 @@ An adapter named in `bindings { }` runs on its own pinned thread.
 The same restrictions as an explicit `pinned` placement apply:
 it cannot declare `accept()` or a closure with a `birth` or
 `dissolve` epoch (including an omitted epoch). The checker reports
-these at the binding. Inline closures are supported on that thread.
+these at the binding, as it reports them at a `pinned` placement
+entry, with a note at each place that makes it so: the binding (or
+the entry), the locus's declaration, and the `accept()` or the
+closure's assertion. Inline closures are supported on that thread.
 
 When a cooperative locus on one pool publishes to a subscriber on
 another pool — or to a pinned locus on its own thread — the

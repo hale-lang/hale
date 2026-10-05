@@ -178,11 +178,7 @@ pub struct Classified {
 /// by `#<digest>` of the source, so a literal added above it in a
 /// test file does not rename it.
 pub fn program_id(origin: &str, source: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in source.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
+    let h = crate::identity::fnv64(source.as_bytes());
     let base = origin.split('#').next().unwrap_or(origin);
     format!("{base}#{:08x}", (h >> 32) as u32 ^ h as u32)
 }

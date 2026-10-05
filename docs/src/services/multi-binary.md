@@ -129,7 +129,8 @@ locus placed `pinned` (placement rule 6): it declares no
 `accept(...)` and no closure whose epoch is `birth` or `dissolve`
 (dissolve is the default), because the lifecycle cascade that runs
 those cannot cross onto its thread. `hale check` refuses either one
-at the binding entry.
+at the binding entry, with notes at the adapter's declaration and at
+the member that conflicts.
 
 ## What each binding promises
 

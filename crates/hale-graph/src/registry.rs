@@ -673,7 +673,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["one table of stdlib functions (`SURFACES`: one row per function, grouped by namespace: its name, whether user code may call it, its effect classes, its signature when it has one, and how it lowers: an intrinsic id, a Hale body by name, a rename, or not at all)", "hale_stdlib::PATH_RENAMES", "the parsed stdlib source"],
         producer: Some(site(STDLIB_SURFACE, "SURFACES")),
         legacy: &[
-            legacy(CG_CHANNELS, "try_lower_fallible_stdlib_path_call", "the `or` position's dispatch, which still matches 150 `[\"std\", ..]` literals, a second copy of the stdlib call shapes; the statement and value positions dispatch from the row (`lower_std_call`)", "codegen dispatches from the registry row"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
             legacy(CG, "declare_builtin_closure_violation_type", "a hand-maintained mirror of the checker's injected builtin types", "one declaration"),
@@ -681,11 +680,12 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("effects", EFFECTS, "effects_for"), consumer_at("frontier", FRONTIER, "effects_for"), consumer("codegen"), consumer("lsp (hover, completion)"), consumer("doc")],
         invariants: &[
             "one row per stdlib function: the signature, the effect classes and the lowering of a path are columns of the same row, and every question the checker, the effects analysis, the catalogue and the LSP ask (lookup, the unknown-function diagnostic, the did-you-mean, the effect set, the signature) reads it; an internal row answers only the signature",
-            "codegen dispatches a stdlib call at statement or value position from its row, the position a parameter (`lower_std_call`): an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; the fallible dispatcher's arms agree with the rows, every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
+            "codegen dispatches every stdlib call from its row, at all three positions: at statement or value position the position is a parameter (`lower_std_call`), an intrinsic's id picks its arm in one exhaustive match with no catch-all (`lower_std_intrinsic`), a Hale body is called by the name its row gives, and a renamed or unlowered row reaches the fallback; under `or` (`lower_std_fallible_call`) the id picks its arm in an exhaustive match of its own beside it (`lower_std_intrinsic_fallible`), because what it produces is the call's success value and its error path, and any other row is not a stdlib fallible call; the three refusal lists (a bare call of a fallible function at statement and at value position, an `or` over one that is not fallible) are id lists until the row's fallibility replaces them; every intrinsic row is lowered at some position, every Hale-body row names a declared body, a renamed row is a rename, and the unlowered rows are named (parity test)",
+            "no `[\"std\",` path literal in `crates/hale-codegen/src` outside `CODEGEN_STD_PATH_LITERALS`, the registry's allowance with its reason per file (registry_guard.rs: `std_path_literals_in_codegen_are_the_registry_allowance`): a stdlib call's lowering is an arm of a match on its row's id, never a match on its path",
             "the checker and codegen agree on every stdlib call shape (parity test) and on the printable set (corpus agreement)",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs"],
+        tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-codegen/tests/stdlib_table_answers.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs", "crates/hale-graph/tests/registry_guard.rs (std_path_literals_in_codegen_are_the_registry_allowance)"],
         spec: &["spec/stdlib.md"],
         owned: &[],
         seams: &[],
@@ -1636,7 +1636,7 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "a law is judged once, with a span",
             "lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)",
-            "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)",
+            "rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1); its finding is a `law::Violation` whose witness is the walk's chain, each step located: the entry that runs the instance pinned (the placement entry, or the binding entry), the declaration the instance realizes, and the conflicting member (the `accept`, or the closure's assertion), a stdlib declaration's steps in the stdlib's space (phase 4, W2)",
             "rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)",
             "rule 18 is judged per entry of the placement table's root over the inits its constructions supply, or the params default when one leaves the field or none builds the root (C7, 3)",
             "a cross-pool spawn is judged from the ownership graph's resolved birth rows and bubble plan: `bare_statement` records whether that literal is a discarded expression statement; a value use in a locus's own member bodies (birth checks and closure assertions included; an argument default's literal is not one, it is judged where it is expanded) is refused at the literal. The law does not rewalk literals or join by their written final segments (C7, 4; C3)",
@@ -1683,23 +1683,22 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "claims",
         layer: Layer::Law,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Law,
         answers: "Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account.",
         inputs: &["model", "claim and constitution declarations", "evidence (certificates, budgets)", "effects"],
         producer: Some(site(JUDGMENT, "claim_law_diags")),
-        legacy: &[
-            legacy(TOPO_LAW, "validate_law_account", "admitting an artifact, the CLI recomputes the law digest and compares the evidence inputs digest, decodes every law payload into a private copy of the law vocabulary (`decode_law`), re-renders the claims' forms with a private renderer that mirrors `hale-model`'s, and re-aggregates the stated verdicts (a row's from its certificates', the document's from the rows'); it evaluates no law over a model", "admission validates ties and reads verdicts; it re-derives none"),
-        ],
-        consumers: &[consumer("check / verify"), consumer_at("the check's law-selection diagnostics (the snapshot's selection, handed in)", CHECK, "laws.diags"), consumer_at("the check's laws stage (judged over the snapshot's model, after its typing stage; its lowering reads the snapshot's selection)", SNAPSHOT, "demand_laws"), consumer_at("topology (law section: the law rows, the constitution identities projected from the adoption, and the environment label, all the snapshot's selection, handed in)", V_CHECK, "demand_law_selection"), consumer_at("check --matrix (each pair's identity comparison: the roots its snapshot's selection adopted, `LawSelection::identities`, the projection the artifact reads; a pair the check refuses has no snapshot, so no constitution of its takes part)", V_MATRIX, "adopted_roots"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
+        legacy: &[],
+        consumers: &[consumer("check / verify"), consumer_at("admission (`hale topology graph`, `hale fleet`: an artifact's law account is validated against itself, with the family's own functions; it recomputes the law digest and the evidence inputs digest, checks every reference against the artifact's catalogs, re-renders every stated form with the model's spelling (`hale_model::claim_form`) and recomputes a row's verdict and the document's with the model's aggregation (`certificate_row_verdict`, `document_verdict`); its decoder is the artifact schema's reader, since a payload carries no model ids and cannot rebuild a `ClaimIr`, held to the emitter by a round trip over every artifact the corpus emits, `law_account_round_trip.rs`, F.40 phase 4, A5)", TOPO_LAW, "validate_law_account"), consumer_at("the check's law-selection diagnostics (the snapshot's selection, handed in)", CHECK, "laws.diags"), consumer_at("the check's laws stage (judged over the snapshot's model, after its typing stage; its lowering reads the snapshot's selection)", SNAPSHOT, "demand_laws"), consumer_at("topology (law section: the law rows, the constitution identities projected from the adoption, and the environment label, all the snapshot's selection, handed in)", V_CHECK, "demand_law_selection"), consumer_at("check --matrix (each pair's identity comparison: the roots its snapshot's selection adopted, `LawSelection::identities`, the projection the artifact reads; a pair the check refuses has no snapshot, so no constitution of its takes part)", V_MATRIX, "adopted_roots"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
         invariants: &[
             "law selection runs once per snapshot (F.40 phase 4, A2): the `law_selection` cell (`Snapshot::demand_law_selection`) selects over the programs after the sequence, for the configuration's environment (its label and the constitutions it injected, passed as data, never a binding on the thread), and the check's selection diagnostics, the laws stage's lowering and the artifact's law rows, constitution identities (`LawSelection::identities`, a projection of the adoption) and environment label read that one selection, as does the environment matrix's identity comparison, from the snapshot its pair's check read (F.40 phase 4, A3: a pair loads its seed once, and a pair the check refuses, which has no snapshot, compares nothing); it is not gated on the typing, so a program that does not typecheck still answers it; a bundle no snapshot holds selects once per entry (`bundle_law_selection`)",
-            "structural compiler laws are evaluated through model_query with shared witness rendering; the judgment path stays for user claims (final direction)",
+            "structural compiler laws are functions over family rows that the check runs, not queries over the model (F.40 phase 4, decision 3); their shared finding is `law::Violation` (`crates/hale-types/src/law.rs`): a registered rule's `RuleId`, the span, the message, and a witness of located steps, made a diagnostic by `Violation::into_diag` alone, each step a related location with its note (W2); the judgment path stays for user claims (final direction)",
             "a registered rule without an evaluator fails the compiler's own build",
             "a non-holds verdict is never silent",
+            "admission evaluates no law; it refuses an artifact whose sections disagree (`spec/verification.md`)",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/claim_diags_snapshot.rs", "crates/hale-cli/tests/law_selection_reaches_the_artifact.rs", "crates/hale-cli/tests/dna_law.rs", "crates/hale-types/tests/one_reachability_engine.rs"],
+        tests: &["crates/hale-types/tests/claim_diags_snapshot.rs", "crates/hale-cli/tests/law_selection_reaches_the_artifact.rs", "crates/hale-cli/tests/law_account_round_trip.rs", "crates/hale-cli/tests/dna_law.rs", "crates/hale-types/tests/one_reachability_engine.rs"],
         spec: &["spec/verification.md § Claims", "spec/model.md § Adding a judgment family"],
         owned: &[],
         seams: &[],
@@ -1821,22 +1820,21 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "digests",
         layer: Layer::Identity,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Digest,
         answers: "Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under.",
         inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
         producer: Some(site("crates/hale-graph/src/identity.rs", "IDENTITIES")),
-        legacy: &[
-            legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk", "one identity per snapshot; the stale check reads it"),
-        ],
-        consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache")],
+        legacy: &[],
+        consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache"), consumer("the stale-binary warning")],
         invariants: &[
             "external contracts are frozen through extraction: additive and unhashed sections are free; hash and replay identity change only through explicit versioned transitions with an exact diagnostic (#476's rule)",
             "a build's identities read one snapshot (2.3, `model_identity`): the model hash (P26) is the snapshot model's `shape_hash`, read from the model (`project_shape_hash`, the value its artifact stamps, never scraped from a rendered artifact), the obs ids are that model's entities, and the plan digest `exec_digest` frames is its lowering view's plan; beside them the snapshot key (`SnapshotKey`: the entry, the load mode, the target, the config digest, the overlay digest, the digest of the source text read) names the load all three were derived from. The key is snapshot-local: no binary or recording carries it",
-            "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity: the replay identity and the cache key fold one selection, every identity-covered crate (the CLI among them until hale-frontend owns its semantic work) and the manifest files; the stale-binary hash is a cheap warning over codegen.rs, the runtime and the stdlib seeds by design",
+            "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity, or to the stale-binary warning: the replay identity, the cache key and the stale-binary hash fold one selection, every identity-covered crate (the CLI among them until hale-frontend owns its semantic work) and the manifest files (F.40 phase 4, I4); the warning stats that selection and reads it only when a file or its directory is newer than the binary",
+            "every FNV identity folds through one function, `hale_graph::identity::Fnv64` (F.40 phase 4, I6): what tells two identities apart is the bytes each frames, and the offset basis written anywhere else in a crate's `src` or build script fails `identity_coverage.rs` (`the_fnv_basis_is_written_only_where_the_one_fold_lives`) until it calls the fold or is listed with its reason",
         ],
         missing: Missing::NotApplicable,
-        tests: &["crates/hale-cli/tests/obs_model_hash.rs", "crates/hale-cli/tests/model_diff.rs", "crates/hale-cli/tests/replay_cli.rs", "crates/hale-cli/tests/stale_dna_warning.rs", "crates/hale-cli/tests/source_map.rs"],
+        tests: &["crates/hale-cli/tests/obs_model_hash.rs", "crates/hale-cli/tests/model_diff.rs", "crates/hale-cli/tests/replay_cli.rs", "crates/hale-cli/tests/stale_dna_warning.rs", "crates/hale-cli/tests/source_map.rs", "crates/hale-cli/src/shared/stale.rs (an_edit_to_any_covered_source_is_stale_and_an_uncovered_one_is_not, an_unmodified_tree_is_fresh_without_a_read_and_its_fold_agrees)", "crates/hale-graph/tests/identity_coverage.rs (the_fnv_basis_is_written_only_where_the_one_fold_lives)"],
         spec: &["spec/model.md § Identity and versioning"],
         owned: &[
             site("crates/hale-types/src/topology_projection.rs", "project_shape_hash"),
@@ -1860,6 +1858,7 @@ pub const FAMILIES: &[Family] = &[
             site("crates/hale-types/src/claims.rs", "constitution_digest"),
             site("crates/hale-cli/src/fleet.rs", "fnv"),
             site(CG, "compile_cached_runtime_object_with"),
+            site(STALE, "stale_sources"),
         ],
         seams: &[],
     },
@@ -2223,6 +2222,20 @@ pub const RULES: &[Rule] = &[
 /// migration that runs one outside a test lists its file here first.
 pub const SHADOW_CALL_SITES: &[(&str, usize)] = &[];
 
+/// The `["std",` path literals `crates/hale-codegen/src` may hold (F.40
+/// phase 4's exit: "no stdlib path literal in codegen outside the one
+/// `match` on intrinsic ids, held by a seam"), each a source file, its
+/// count and the reason it is not a dispatch. Since S4 every stdlib call
+/// dispatches from its row's id, so a literal outside this allowance is
+/// a lowering deciding on a path the row should say: it fails
+/// registry_guard.rs, as does a different count. A comment line, and
+/// what follows `//` on a line, is not counted.
+pub const CODEGEN_STD_PATH_LITERALS: &[(&str, usize, &str)] = &[(
+    "crates/hale-codegen/src/stdlib/sockopt.rs",
+    2,
+    "its unit test's probes of `unknown_fn_error`, a path built around a variable name to ask the checker's question; neither dispatches",
+)];
+
 /// Every Debug rendering with no prose around it (a `?}` placeholder in a
 /// formatting macro whose template holds no space: a value, never a
 /// message) in hale-syntax, hale-types, hale-model, hale-codegen,
@@ -2579,6 +2592,18 @@ pub fn render_markdown() -> String {
         }
         o.push('\n');
     }
+    o.push_str("## Stdlib path literals in codegen\n\n");
+    o.push_str(
+        "Every stdlib call lowers from its row: an intrinsic's id picks its arm in an exhaustive \
+         match, at statement, value and `or` position. A `[\"std\",` path literal in \
+         `crates/hale-codegen/src` is a lowering that decides on a path instead, so the ones that \
+         remain are this allowance, each with its reason, or fail `registry_guard.rs`.\n\n",
+    );
+    o.push_str("| path | literals | reason |\n|---|---|---|\n");
+    for (path, n, why) in CODEGEN_STD_PATH_LITERALS {
+        o.push_str(&format!("| `{path}` | {n} | {} |\n", why.replace('|', "\\|")));
+    }
+    o.push('\n');
     o.push_str("## Frozen Debug renderings\n\n");
     o.push_str(
         "Every Debug rendering with no prose around it (a `?}` placeholder in a formatting \
