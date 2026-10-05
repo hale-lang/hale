@@ -435,3 +435,84 @@ fn an_exported_locus_with_run_is_refused_at_run_on_wasm32() {
     assert_eq!(check(src, Some("wasm32")), vec![(3, 5, want.to_string())]);
     assert_eq!(check(src, None), vec![]);
 }
+
+/// `std_namespace` answers from an index built once (F.40 phase 4, Q2)
+/// exactly as it answered by splitting the path and scanning the
+/// matrix's rows, reconstructed here as it was: over every path the
+/// stdlib's tables name (its functions, its locus paths, its locus
+/// renames), every namespace the matrix keys with each shape of path
+/// that reaches it, and the edges — fewer than three segments, a head
+/// that is not `std`, a namespace that is a prefix of another, a path
+/// equal to a namespace, empty and doubled separators.
+#[test]
+fn std_namespace_answers_as_the_scan_of_the_matrix() {
+    use hale_types::capability::derive_capability_matrix;
+    use hale_types::capability::uses::std_namespace;
+    let m = derive_capability_matrix();
+    let namespaces: Vec<&'static str> = m
+        .behaviours
+        .iter()
+        .filter_map(|r| match r.capability {
+            Capability::StdNamespace(ns) => Some(ns),
+            _ => None,
+        })
+        .collect();
+    let scan = |path: &str| -> Option<&'static str> {
+        let segs: Vec<&str> = path.split("::").collect();
+        if segs.len() < 3 || segs[0] != "std" {
+            return None;
+        }
+        let inner = &segs[1..segs.len() - 1];
+        namespaces
+            .iter()
+            .copied()
+            .filter(|ns| {
+                let n: Vec<&str> = ns.split("::").collect();
+                inner.len() >= n.len() && inner[..n.len()] == n[..]
+            })
+            .max_by_key(|ns| ns.split("::").count())
+    };
+    let mut paths: Vec<String> = Vec::new();
+    for (s, f) in hale_types::stdlib_surface::rows() {
+        paths.push(format!("std::{}::{}", s.ns.join("::"), f.name));
+    }
+    paths.extend(hale_types::stdlib_surface::LOCUS_PATHS.iter().map(|p| p.join("::")));
+    for (path, mangled) in hale_stdlib::PATH_RENAMES {
+        paths.push(path.join("::"));
+        paths.push(format!("{}::method", path.join("::")));
+        paths.push(mangled.to_string());
+    }
+    for ns in &namespaces {
+        for shape in ["std::NS", "std::NS::f", "std::NS::T::f", "std::NS::", "std::NS::::f", "NS::f", "core::NS::f", "std:::NS::f"] {
+            paths.push(shape.replace("NS", ns));
+        }
+        for other in &namespaces {
+            paths.push(format!("std::{ns}::{other}::f"));
+        }
+    }
+    for edge in [
+        "",
+        "std",
+        "std::",
+        "std::f",
+        "std::::",
+        "std::::f",
+        "std::io",
+        "std::io::f",
+        "std::io::tcp",
+        "std::io:::tcp::f",
+        "xstd::io::tcp::f",
+        "Std::io::tcp::f",
+        "std::bytes::builder::f",
+        "std::bytes::builderx::f",
+        "std::text::base64::encode::x",
+    ] {
+        paths.push(edge.to_string());
+    }
+    let mut answered = 0;
+    for p in &paths {
+        assert_eq!(std_namespace(p), scan(p), "{p}");
+        answered += usize::from(scan(p).is_some());
+    }
+    assert!(paths.len() > 3000 && answered > 2000, "{} paths, {answered} in a namespace", paths.len());
+}
