@@ -6,7 +6,7 @@
 //! harness does) is refused with an error naming the declaration and
 //! where it is, never a panic and never a silent skip.
 
-use hale_codegen::{build_executable_with_options, CodegenError};
+use hale_codegen::CodegenError;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -14,10 +14,8 @@ mod harness;
 mod build_opts;
 
 fn refusal(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_unit_dialect_{}_{}", name, std::process::id()));
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
-        .expect_err("the unit dialect is not lowered");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("the unit dialect is not lowered");
     let _ = std::fs::remove_file(&bin);
     match err {
         CodegenError::UnsupportedAt(msg, span) => format!("{msg} @ {}", span.slice(src)),

@@ -6,8 +6,11 @@
 //! one located error each, and nothing else: a use of a scalar type's
 //! name is not a second error.
 
+#[path = "support/entries.rs"]
+mod entries;
+
+use entries::check_program;
 use hale_syntax::parse_source;
-use hale_types::check_program;
 
 const NOT_YET: &str = "the unit dialect's declarations are parsed and not yet checked (GH #1076)";
 
