@@ -496,14 +496,13 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("factory_field_asan");
     // GH #843: an ASan build is a per-build option, not a
     // process-wide `LOTUS_ASAN` that every concurrent build in this
     // binary would also have picked up. The helper checks the
     // artifact is really instrumented — the assertions below are all
     // negative, so an uninstrumented build passes them vacuously.
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         // GH #816: compiled in by the ASan cflags already
@@ -629,9 +628,8 @@ fn an_interface_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("factory_iface_field_asan");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .env("LOTUS_NO_CHUNK_POOL", "1")

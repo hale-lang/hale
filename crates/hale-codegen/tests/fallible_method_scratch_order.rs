@@ -54,12 +54,11 @@ fn ir_and_run(
     name: &str,
     src: &str,
 ) -> (String, String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
     // GH #843: the dump is a per-build option, so it needs no
     // "set-only, never unset" reasoning about the process
     // environment at all.
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

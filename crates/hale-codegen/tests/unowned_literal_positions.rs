@@ -86,9 +86,8 @@ fn build_and_run(tag: &str, src: &str) -> (String, String) {
 }
 
 fn dump_ir(tag: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin: PathBuf = harness::unique_bin(&format!("unowned_lit_ir_{}", tag));
-    let text = harness::build_ir_text(&program, &bin).expect("build");
+    let text = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     text
 }

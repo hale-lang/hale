@@ -239,7 +239,6 @@ fn add_fn_registers_bare_fn_routes() {
 /// Run `src` twice: under `LOTUS_ARENA_RESIDENCY=1`, and as an ASan
 /// build with chunk recycling off. Returns the first run's stdout.
 fn run_under_oracles(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_http_router_{}", name));
     build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).env("LOTUS_ARENA_RESIDENCY", "1").output().expect("run");
@@ -252,7 +251,7 @@ fn run_under_oracles(name: &str, src: &str) -> String {
         "{name}: an arena outlived the program:\n{stderr}"
     );
     let asan = harness::unique_bin(&format!("hale_http_router_{}_asan", name));
-    harness::build_asan(&program, &asan);
+    harness::build_source_asan(src, &asan);
     let out = Command::new(&asan)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .env("ASAN_OPTIONS", "detect_leaks=0")

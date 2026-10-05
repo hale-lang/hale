@@ -15,7 +15,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -119,7 +118,8 @@ fn main() { App { }; }
         second.span = first.span;
     }
     let bin = harness::unique_bin("lotus_test_on_failure_shared_span");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    // the program is this test's own AST, edited below; no source text spells it: built through from_program
+    build_opts::build_program(&program, &bin, &[], &build_opts::options())
         .expect("two handlers sharing a span build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

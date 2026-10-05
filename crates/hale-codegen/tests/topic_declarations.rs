@@ -21,7 +21,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::{parse_source, ast::*};
 use hale_syntax::desugar::desugar_topics;
 
@@ -158,9 +157,8 @@ fn desugar_rewrites_topic_refs_to_literals() {
 }
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
-    let program = parse(src);
     let bin = harness::unique_bin(&format!("hale_test_topic_{}", name));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
 }
 

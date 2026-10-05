@@ -131,9 +131,8 @@ fn main() {{
 }}
 "#
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_scratch_local_asan");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(&src, &bin);
     let (stdout, stderr, ok) = run(&bin);
     assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
     assert!(ok, "stdout={stdout:?} stderr={stderr:?}");
@@ -169,9 +168,8 @@ fn main() {{
 }}
 "#
     );
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_scratch_local_ir");
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(&src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     let body = |name: &str| -> String {
         let start = ir

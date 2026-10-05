@@ -29,9 +29,8 @@ mod harness;
 mod build_opts;
 
 fn dump_ir(name: &str, src: &str) -> String {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_ms_ir_{}_{}", name, std::process::id()));
-    let text = harness::build_ir_text(&program, &bin).expect("build");
+    let text = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     text
 }

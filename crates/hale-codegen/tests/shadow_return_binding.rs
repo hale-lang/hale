@@ -83,16 +83,16 @@ fn run(name: &str, src: &str) -> Run {
         r.stdout
     );
     assert_safe(&r);
-    assert_no_sanitizer_report(name, &program);
+    assert_no_sanitizer_report(name, src);
     r
 }
 
 /// The same program under AddressSanitizer: no use-after-free, no
 /// double free. Leaks are the residency oracle's, so LeakSanitizer is
 /// off here.
-fn assert_no_sanitizer_report(name: &str, program: &hale_syntax::ast::Program) {
+fn assert_no_sanitizer_report(name: &str, src: &str) {
     let bin = harness::unique_bin(&format!("{name}_asan"));
-    harness::build_asan(program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .env("ASAN_OPTIONS", "detect_leaks=0")

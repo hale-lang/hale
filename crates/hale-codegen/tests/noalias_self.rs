@@ -4,15 +4,13 @@
 //! AND all params by-value scalars. Modes participate via the
 //! elidable fixpoint under their synthetic names.
 
-use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
 
 fn ir_for(src: &str) -> String {
-    let program = parse_source(src).expect("parse");
     let bin = harness::unique_bin("noalias_self");
-    let ir = harness::build_ir_text(&program, &bin).expect("build");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     ir
 }

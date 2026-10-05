@@ -3,52 +3,12 @@
 //! This is the regression for the dir-seeds milestone (resolves
 //! `notes/hale-friction.md` 2026-05-10 single-file-app-monolith).
 
-use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use hale_codegen::build_executable_with_options;
-use hale_syntax::ast::Program;
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn unique_dir(tag: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let p = harness::unique_bin(&format!(
-        "hale_multi_file_{}_{}_{}",
-        tag,
-        std::process::id(),
-        nanos
-    ));
-    p
-}
-
-/// Mirrors the merge step inside `hale-cli` `run_build` —
-/// concat every parsed Program's items into one Program. Order:
-/// the iterator's order (the CLI sorts files alphabetically
-/// before parsing).
-fn merge(programs: Vec<Program>) -> Program {
-    let mut iter = programs.into_iter();
-    let first = iter.next().expect("at least one program");
-    let mut merged = Program {
-        effect_defs: Vec::new(),
-        effect_names: Vec::new(),
-        declared_effects: Vec::new(),
-        items: first.items,
-        imports: Vec::new(),
-        span: first.span,
-    };
-    for p in iter {
-        merged.items.extend(p.items);
-    }
-    merged
-}
 
 #[test]
 fn cross_file_fn_call() {
@@ -66,14 +26,11 @@ fn cross_file_fn_call() {
         }
         fn main() { AppL { }; }
     "#;
-    let p_helpers = hale_syntax::parse_source(helpers).expect("parse helpers");
-    let p_main = hale_syntax::parse_source(main).expect("parse main");
-    let merged = merge(vec![p_helpers, p_main]);
-
-    let dir = unique_dir("cross_fn");
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let dir = harness::unique_dir("hale_multi_file_cross_fn");
+    std::fs::write(dir.join("helpers.hl"), helpers).expect("write helpers.hl");
+    std::fs::write(dir.join("main.hl"), main).expect("write main.hl");
     let bin = dir.join("app");
-    build_executable_with_options(&merged, &bin, &[], &build_opts::options()).expect("build merged");
+    build_opts::build_seed_dir(&dir, &bin, &build_opts::options()).expect("build merged");
 
     let out = Command::new(&bin).output().expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -108,14 +65,11 @@ fn cross_file_locus_referenced() {
         }
         fn main() { AppL { }; }
     "#;
-    let p_helpers = hale_syntax::parse_source(helpers).expect("parse helpers");
-    let p_main = hale_syntax::parse_source(main).expect("parse main");
-    let merged = merge(vec![p_helpers, p_main]);
-
-    let dir = unique_dir("cross_type");
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let dir = harness::unique_dir("hale_multi_file_cross_type");
+    std::fs::write(dir.join("helpers.hl"), helpers).expect("write helpers.hl");
+    std::fs::write(dir.join("main.hl"), main).expect("write main.hl");
     let bin = dir.join("app");
-    build_executable_with_options(&merged, &bin, &[], &build_opts::options()).expect("build merged");
+    build_opts::build_seed_dir(&dir, &bin, &build_opts::options()).expect("build merged");
 
     let out = Command::new(&bin).output().expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

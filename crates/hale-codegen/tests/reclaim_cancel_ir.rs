@@ -127,9 +127,8 @@ fn assert_guarded(tag: &str, f: &str, callee: &str, words: &[&str]) -> Vec<Strin
 
 fn ir_of(tag: &str, body: &str) -> String {
     let src = [KID, body].concat();
-    let program = hale_syntax::parse_source(&src).unwrap_or_else(|e| panic!("{tag}: parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&format!("reclaim_cancel_ir_{tag}"));
-    let ir = harness::build_ir_text(&program, &bin).unwrap_or_else(|e| panic!("{tag}: build: {e:?}\n{src}"));
+    let ir = harness::build_source_ir_text(&src, &bin).unwrap_or_else(|e| panic!("{tag}: build: {e:?}\n{src}"));
     let _ = std::fs::remove_file(&bin);
     ir
 }

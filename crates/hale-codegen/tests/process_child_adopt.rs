@@ -76,9 +76,8 @@ fn build(name: &str) -> PathBuf {
 /// the assertions on it are all negative, so an uninstrumented
 /// build would pass them vacuously.
 fn build_asan(name: &str) -> PathBuf {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_process_child_adopt_{}", name));
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(SRC, &bin);
     bin
 }
 

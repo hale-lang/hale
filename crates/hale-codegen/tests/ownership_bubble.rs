@@ -357,9 +357,14 @@ fn resolved_birth_bubbles(tag: &str, birth: &str, alias: &str, renames: &[(Vec<S
         "    run() { self.yard.spawn(); println(\"count=\", self.harmonic()); println(\"total=\", self.bulk()); }\n",
         "}\nfn main() { World { }; }\n",
     ].concat();
-    let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(tag);
-    hale_codegen::build_executable_with_options(&program, &bin, renames, &sanitize::options()).expect("build");
+    if renames.is_empty() {
+        build_opts::build_source(&src, &bin, &sanitize::options()).expect("build");
+    } else {
+        // the subject is the rename table handed through the API (no import line, no loaded seed has one)
+        let program = hale_syntax::parse_source(&src).expect("parse");
+        build_opts::build_program(&program, &bin, renames, &sanitize::options()).expect("build");
+    }
     let out = run(&bin);
     assert!(out.contains("count=2") && out.contains("total=42"), "both children belong to World: {out}");
     assert_eq!(out.matches("ship dissolved=").count(), 2, "each child dissolves once: {out}");

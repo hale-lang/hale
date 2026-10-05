@@ -230,9 +230,8 @@ fn world_collects_crosspool_bubbled_ships() {
 #[test]
 fn crosspool_bubble_is_clean_under_asan() {
     let _lock = bubble_lock();
-    let program = hale_syntax::parse_source(XPOOL_SRC).expect("parse");
     let bin = harness::unique_bin("hale_test_xpool_bubble_asan");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(XPOOL_SRC, &bin);
     let mut last = String::new();
     for _ in 0..6 {
         let out = Command::new(&bin)

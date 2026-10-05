@@ -18,7 +18,6 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/build.rs"]
 mod build_opts;
@@ -157,18 +156,15 @@ fn main() { Root { }; }
 /// The control: a drain that finishes inside the grace says nothing.
 #[test]
 fn a_drain_that_finishes_prints_no_report() {
-    let program = hale_syntax::parse_source(
-        r#"
+    let src = r#"
 main locus Root {
     params { _u: Int = 0; }
     run() { println("up"); while !self.draining { std::time::sleep(10ms); } }
 }
 fn main() { Root { }; }
-"#,
-    )
-    .expect("parse");
+"#;
     let bin = harness::unique_bin("drain_grace_quiet");
-    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .env("LOTUS_DRAIN_GRACE_MS", GRACE_MS.to_string())
         .stdout(Stdio::piped())

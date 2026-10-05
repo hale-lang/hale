@@ -44,7 +44,6 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::ast::{TopDecl, TypeDeclBody, TypeExpr};
 
 #[path = "support/harness.rs"]
@@ -70,11 +69,11 @@ fn check_accepts(program: &hale_syntax::ast::Program) -> Result<(), String> {
 /// Does CODEGEN accept it? Builds to a unique path and removes the
 /// binary; the error is rendered so a failure names the refusal.
 fn build_accepts(
-    program: &hale_syntax::ast::Program,
+    src: &str,
     tag: &str,
 ) -> Result<(), String> {
     let bin = harness::unique_bin(tag);
-    match build_executable_with_options(program, &bin, &[], &build_opts::options()) {
+    match build_opts::build_source(src, &bin, &build_opts::options()) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             Ok(())
@@ -135,7 +134,7 @@ fn every_primitive_as_a_generic_argument_agrees_between_check_and_build() {
         let expected_ok = hale_types::ty::generic_arg_mangle_token(*p).is_some();
 
         let checked = check_accepts(&program);
-        let built = build_accepts(&program, &format!("hale_vg_ga_{}", spelling));
+        let built = build_accepts(&src, &format!("hale_vg_ga_{}", spelling));
 
         match (&checked, &built) {
             (Ok(()), Err(e)) => disagreements.push(format!(
@@ -457,7 +456,7 @@ fn statement_position_lowers_every_bare_builtin() {
             }
         };
         let tag = format!("hale_vg_stmt_{}", i);
-        match (check_accepts(&program), build_accepts(&program, &tag)) {
+        match (check_accepts(&program), build_accepts(src, &tag)) {
             (Ok(()), Ok(())) => {}
             (Err(e), Ok(())) => failures.push(format!(
                 "  `{}` — check refuses a statement-position call the \

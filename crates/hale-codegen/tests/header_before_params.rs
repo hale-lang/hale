@@ -38,10 +38,9 @@ locus Ship {
 "#;
 
 fn run(tag: &str, src: &str, asan: bool) -> Output {
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
     if asan {
-        harness::build_asan(&program, &bin);
+        harness::build_source_asan(src, &bin);
     } else {
         harness_build::build_source(src, &bin, &harness_build::options()).expect("build");
     }

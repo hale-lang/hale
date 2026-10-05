@@ -74,12 +74,11 @@ fn ir_contains_per_payload_serializer_pair() {
     "#;
 
     let bin = unique_path("shape", "bin");
-    let program = hale_syntax::parse_source(src).expect("parse");
 
     // `BuildOptions::dump_ir` makes the build also write the `.ll`
     // beside the binary; the request is scoped to this one build
     // rather than to the whole process (GH #843).
-    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
+    let ir_text = harness::build_source_ir_text(src, &bin).expect("build");
 
     let _ = std::fs::remove_file(&bin);
 

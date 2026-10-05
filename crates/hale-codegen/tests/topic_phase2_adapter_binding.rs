@@ -14,7 +14,6 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -233,7 +232,7 @@ fn build_rejects_locus_missing_send_method() {
     // build_executable), so the structural check at typecheck is
     // a no-op. Codegen catches the missing `send` method with a
     // focused diag.
-    let program = hale_syntax::parse_source(r#"
+    let src = r#"
         type Tick { n: Int; }
         topic Beat { payload: Tick; subject: "beat"; }
 
@@ -245,13 +244,12 @@ fn build_rejects_locus_missing_send_method() {
             }
         }
         fn main() { App { }; }
-    "#)
-    .expect("parse");
+    "#;
     let bin = harness::unique_bin(&format!(
         "hale_adapter_missing_send_{}",
         std::process::id()
     ));
-    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("expected codegen err");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("expected codegen err");
     let msg = format!("{:?}", err);
     assert!(
         msg.contains("has no `send` method"),
@@ -327,30 +325,22 @@ fn build_with_lib(
     lib_src: &str,
     consumer_src: &str,
 ) -> Result<std::path::PathBuf, hale_codegen::CodegenError> {
-    use hale_codegen::mangle;
-    let alias = "lib";
-    let mut lib_prog = hale_syntax::parse_source(lib_src).expect("parse lib");
-    let seed_renames = {
-        let stems: Vec<(String, &hale_syntax::ast::Program)> =
-            vec![("wire".to_string(), &lib_prog)];
-        mangle::build_seed_renames(&stems, alias)
-    };
-    let renames: Vec<(Vec<String>, String)> = seed_renames
-        .iter()
-        .map(|(n, m)| (vec![alias.to_string(), n.clone()], m.clone()))
-        .collect();
-    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
-    let mut consumer =
-        hale_syntax::parse_source(consumer_src).expect("parse consumer");
-    consumer.imports.clear();
-    consumer.items.extend(lib_prog.items);
-    mangle::apply_qualified_path_renames(&mut consumer, &renames);
+    // The seed on disk, as the consumer's `import "../lib"` expects:
+    // the consumer in `consumer/`, the library beside it.
+    let dir = harness::unique_dir(&format!("hale_adapter_binding_seed_{name}"));
+    std::fs::create_dir_all(dir.join("consumer")).expect("create consumer dir");
+    std::fs::create_dir_all(dir.join("lib")).expect("create lib dir");
+    std::fs::write(dir.join("lib").join("wire.hl"), lib_src).expect("write lib");
+    let entry = dir.join("consumer").join("main.hl");
+    std::fs::write(&entry, consumer_src).expect("write consumer");
     let bin = harness::unique_bin(&format!(
         "hale_adapter_binding_{}_{}",
         name,
         std::process::id()
     ));
-    hale_codegen::build_executable_with_options(&consumer, &bin, &renames, &build_opts::options())?;
+    let built = build_opts::build_seed_dir(&entry, &bin, &build_opts::options());
+    let _ = std::fs::remove_dir_all(&dir);
+    built?;
     Ok(bin)
 }
 
@@ -631,12 +621,11 @@ fn adapter_send_bytes_are_kept_by_copy_and_survive_a_nested_use() {
 
         fn main() { App { }; }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!(
         "hale_adapter_binding_send_scratch_{}",
         std::process::id()
     ));
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()

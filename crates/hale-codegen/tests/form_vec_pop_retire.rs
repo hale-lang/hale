@@ -173,9 +173,8 @@ fn a_popped_value_outlives_its_slot() {
             println("out=" + out + " last=" + h.last.subj + " lastb=" + std::str::from_bytes(h.lastb) + " seen=" + to_string(h.seen));
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_vec_pop_outlives");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()

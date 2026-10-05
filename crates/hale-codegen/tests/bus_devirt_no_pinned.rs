@@ -40,8 +40,7 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
 /// Compile `src` with the IR dumped, return the `.ll` text.
 fn build_ir(tag: &str, src: &str) -> String {
     let bin = unique_path(tag, "bin");
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let text = harness::build_ir_text(&program, &bin).expect("build");
+    let text = harness::build_source_ir_text(src, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
     text
 }

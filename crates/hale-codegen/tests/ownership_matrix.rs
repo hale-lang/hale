@@ -50,7 +50,7 @@
 //!      runtime's registry of live top-level arenas at exit and
 //!      reports them on an ordinary build; the matrix requires `0
 //!      live arenas`.
-//!   3. **ASan** — `harness::build_asan` (`BuildOptions::asan`,
+//!   3. **ASan** — `harness::build_source_asan` (`BuildOptions::asan`,
 //!      GH #843), whose runtime cflags carry
 //!      `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` (GH #816, PR #875) so a
 //!      recycled chunk's intact bytes cannot hide a
@@ -1130,7 +1130,7 @@ fn run_cell(c: Cell) -> Outcome {
     // --- oracle 3: the sanitizer --------------------------------
     ran.push(Oracle::Asan);
     let abin = harness::unique_bin(&["ownmatrix_asan_", &slug(&id)].concat());
-    harness::build_asan(&program, &abin);
+    harness::build_source_asan(&src, &abin);
     let arun = run_bin(
         &abin,
         &[

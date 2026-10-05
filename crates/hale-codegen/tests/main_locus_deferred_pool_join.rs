@@ -63,9 +63,8 @@ fn main() {
 
 #[test]
 fn a_main_locus_built_outside_main_joins_its_pools_before_teardown() {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin("hale_main_locus_deferred_pool_join");
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(SRC, &bin);
     let out = Command::new(&bin)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()

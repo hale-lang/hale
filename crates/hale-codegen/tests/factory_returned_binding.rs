@@ -346,14 +346,13 @@ fn a_factory_result_in_a_method_frame_is_leak_clean_under_asan() {
             println("runs=", e.runs);
         }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("factory_or_asan");
     // GH #843: an ASan build is a per-build option, not a
     // process-wide `LOTUS_ASAN` that every concurrent build in this
     // binary would also have picked up. The helper checks the
     // artifact is really instrumented — the assertions below are all
     // negative, so an uninstrumented build passes them vacuously.
-    harness::build_asan(&program, &bin);
+    harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .output()

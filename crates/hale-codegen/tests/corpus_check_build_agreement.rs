@@ -67,7 +67,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hale_codegen::build_executable_with_options;
 use hale_syntax::ast::TopDecl;
 
 #[path = "support/harness.rs"]
@@ -208,7 +207,8 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
         options.target = hale_codegen::CompileTarget::Wasm32;
     }
     let bin = harness::unique_bin(bin_tag);
-    match build_executable_with_options(&program, &bin, &[], &options) {
+    // `program` is the swept AST with a synthetic entry point added, which no source text spells: built from the AST
+    match build_opts::build_program(&program, &bin, &[], &options) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             Verdict::Built
@@ -588,7 +588,7 @@ fn strict_check_refuses_nothing_the_build_accepts() {
 
         // The rule refused it. Does codegen answer these names anyway?
         let bin = harness::unique_bin(&format!("hale_strict_{}", refused));
-        if build_executable_with_options(&program, &bin, &[], &build_opts::options()).is_ok() {
+        if build_opts::build_source(&p.source, &bin, &build_opts::options()).is_ok() {
             let _ = std::fs::remove_file(&bin);
             for n in names {
                 divergences.entry(n).or_default().push(p.origin.clone());
@@ -770,21 +770,18 @@ fn every_bare_builtin_callee_lowers() {
             name,
             src
         );
-        let program = match hale_syntax::parse_source(src) {
-            Ok(p) => p,
-            Err(ds) => {
-                let msgs: Vec<&str> =
-                    ds.iter().map(|d| d.message.as_str()).collect();
-                failures.push(format!(
-                    "  `{}` does not parse: {}",
-                    name,
-                    msgs.join("; ")
-                ));
-                continue;
-            }
-        };
+        if let Err(ds) = hale_syntax::parse_source(src) {
+            let msgs: Vec<&str> =
+                ds.iter().map(|d| d.message.as_str()).collect();
+            failures.push(format!(
+                "  `{}` does not parse: {}",
+                name,
+                msgs.join("; ")
+            ));
+            continue;
+        }
         let bin = harness::unique_bin(&format!("hale_bbc_{}", i));
-        match build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
+        match build_opts::build_source(src, &bin, &build_opts::options()) {
             Ok(()) => {
                 let _ = std::fs::remove_file(&bin);
             }
@@ -982,7 +979,7 @@ fn build_and_run_probe(src: &str, tag: &str) -> Result<String, String> {
         return Err(format!("`hale check` refuses it: {}", errs.join("; ")));
     }
     let bin = harness::unique_bin(&format!("hale_builtin_probe_{}", tag));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options())
+    build_opts::build_source(src, &bin, &build_opts::options())
         .map_err(|e| format!("`hale build` refuses it: {:?}", e))?;
     let out = std::process::Command::new(&bin)
         .output()

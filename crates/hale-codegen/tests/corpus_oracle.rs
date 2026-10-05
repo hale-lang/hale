@@ -51,7 +51,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -492,7 +491,7 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration, traced: bool) -
     };
     let bin = harness::unique_bin(&format!("lotus_corpus_{}_{}", name.replace(['/', '-'], "_"), std::process::id()));
     let opts = hale_codegen::BuildOptions { lifecycle_trace: traced, ..fixture_build_options() };
-    if let Err(e) = build_executable_with_options(&program, &bin, &[], &opts) {
+    if let Err(e) = build_opts::build_source(&src, &bin, &opts) {
         let msg = format!("{e:?}");
         // A codegen feature gap is ACKNOWLEDGED only when the fixture
         // is on the interpreter-only list; otherwise it's a
