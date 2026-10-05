@@ -609,10 +609,10 @@ std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | 
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__at_eof
 std::io::file::__close | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close
-std::io::file::__open | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__open
+std::io::file::__open | lookup=io::file@3 | locus=false | effects=syscall | sig=(Str, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__open
 std::io::file::__read_line | lookup=io::file@3 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__read_line
-std::io::file::__seek | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__seek
-std::io::file::__write_bytes | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__write_bytes
+std::io::file::__seek | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__seek
+std::io::file::__write_bytes | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__write_bytes
 std::io::file::at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=at_eof
 std::io::file::clos | lookup=io::file@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::file::clos` | suggest=-
 std::io::file::close | lookup=io::file@3 | locus=false | effects=- | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::file::close` — did you mean `std::io::file::__close`? | suggest=__close
@@ -714,9 +714,9 @@ std::io::tcp::recv_into | lookup=io::tcp@3 | locus=false | effects=syscall|block
 std::io::tcp::recv_stamped_into | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_stamped_into
 std::io::tcp::send_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=send_fd
 std::io::tcp::set_nodelay | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Bool) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_nodelay
-std::io::tcp::set_recv_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=set_recv_timeout
+std::io::tcp::set_recv_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_recv_timeout
 std::io::tcp::set_rx_timestamps | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Bool) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_rx_timestamps
-std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=set_send_timeout
+std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
 std::io::tls::close | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::tls::connect | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
 std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
@@ -725,16 +725,16 @@ std::io::tls::recv_bytes | lookup=io::tls@3 | locus=false | effects=syscall|bloc
 std::io::tls::recv_into | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_into
 std::io::tls::recv_stamped_into | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=recv_stamped_into
 std::io::tls::send_bytes | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=send_bytes
-std::io::tls::set_nodelay | lookup=io::tls@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=set_nodelay
-std::io::tls::set_recv_timeout | lookup=io::tls@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=set_recv_timeout
-std::io::tls::set_rx_timestamps | lookup=io::tls@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=set_rx_timestamps
-std::io::tls::set_send_timeout | lookup=io::tls@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=set_send_timeout
+std::io::tls::set_nodelay | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int, Bool) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_nodelay
+std::io::tls::set_recv_timeout | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_recv_timeout
+std::io::tls::set_rx_timestamps | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int, Bool) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_rx_timestamps
+std::io::tls::set_send_timeout | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
 std::io::tls::upgrade | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Str, Bool) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=upgrade
 std::io::udp::Reader | lookup=io::udp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::io::udp::__bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__bind
+std::io::udp::__bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__bind
 std::io::udp::__close | lookup=io::udp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__close
-std::io::udp::__recv | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=__recv
-std::io::udp::__send | lookup=io::udp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__send
+std::io::udp::__recv | lookup=io::udp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=true | holds=true | unknown=- | suggest=__recv
+std::io::udp::__send | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Str, Int, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__send
 std::io::udp::bind | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=bind
 std::io::udp::close | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::udp::get_option_int | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Int, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=get_option_int
@@ -861,13 +861,13 @@ std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false 
 std::os::getrandom | lookup=os@2 | locus=false | effects=syscall|entropy | sig=(Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=getrandom
 std::process::Child | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::ProcessOutput | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
-std::process::__kill_escalate | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__kill_escalate
-std::process::__pipe_read | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__pipe_read
-std::process::__pipe_write | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__pipe_write
-std::process::__signal_pid | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__signal_pid
-std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__spawn
-std::process::__try_wait_pid | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=__try_wait_pid
-std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=__wait_pid
+std::process::__kill_escalate | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__kill_escalate
+std::process::__pipe_read | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=__pipe_read
+std::process::__pipe_write | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__pipe_write
+std::process::__signal_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__signal_pid
+std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn
+std::process::__try_wait_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__try_wait_pid
+std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_pid
 std::process::adopt | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=adopt
 std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_arena_residency
 std::process::dump_pool_residency | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_pool_residency

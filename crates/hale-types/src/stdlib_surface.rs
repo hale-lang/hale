@@ -710,10 +710,13 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("__at_eof", SYSCALL, _, Intrinsic(IoFileAtEofRaw)),
             row!("__close", SYSCALL, _, Intrinsic(IoFileCloseRaw)),
-            row!("__open", SYSCALL, _, Intrinsic(IoFileOpenRaw)),
+            // The three primitives `file.hl`'s `File` wraps lower only under
+            // an `or`, so their rows say they can fail and a bare call is
+            // the checker's (F.40 phase 4, S5).
+            row!("__open", SYSCALL, [Str, Str] -> Int ! "IoError", Intrinsic(IoFileOpenRaw)),
             row!("__read_line", SYSCALL | BLOCK, _, Intrinsic(IoFileReadLineRaw)),
-            row!("__seek", SYSCALL, _, Intrinsic(IoFileSeekRaw)),
-            row!("__write_bytes", SYSCALL, _, Intrinsic(IoFileWriteBytesRaw)),
+            row!("__seek", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoFileSeekRaw)),
+            row!("__write_bytes", SYSCALL, [Int, Bytes] -> Unit ! "IoError", Intrinsic(IoFileWriteBytesRaw)),
             row!("at_eof", SYSCALL, [Int] -> Bool, Renamed),
             row!("open", SYSCALL, [Str, Str] -> Int ! "IoError", Renamed),
             row!("read_line", SYSCALL | BLOCK, [Int] -> Str, Renamed),
@@ -744,8 +747,9 @@ pub const SURFACES: &[NsSurface] = &[
             // std::json/std::http rows and process write_stdin/read_std*
             // (routed through Hale-stdlib __ fns — codegen never validates
             // their args, so there's no ground truth to table);
-            // io::file::write_line, io::tcp set_recv/send_timeout (lowering
-            // ambiguous); io::fs::list_dir (spec-only); the 7 spec'd
+            // io::file::write_line (lowering ambiguous; the tcp timeout
+            // setters, once here too, have their rows since F.40 phase 4,
+            // S5); io::fs::list_dir (spec-only); the 7 spec'd
             // std::io::tls fns with NO lowering (recv_stamped_into,
             // last_recv_*, set_*) — names-only keeps them permissive.
             // Handle args are plain Int FDs at the path-call level (the
@@ -842,9 +846,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("recv_stamped_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTcpRecvStampedInto)),
             row!("send_fd", SYSCALL, _, Renamed),
             row!("set_nodelay", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTcpSetNodelay)),
-            row!("set_recv_timeout", SYSCALL, _, Intrinsic(IoTcpSetRecvTimeout)),
+            row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetRecvTimeout)),
             row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTcpSetRxTimestamps)),
-            row!("set_send_timeout", SYSCALL, _, Intrinsic(IoTcpSetSendTimeout)),
+            row!("set_send_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetSendTimeout)),
         ],
         open_prefixes: &[],
     },
@@ -906,10 +910,10 @@ pub const SURFACES: &[NsSurface] = &[
             // closed if every member of it is.
             row!("recv_stamped_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvStampedInto)),
             row!("send_bytes", SYSCALL, [Int, Bytes] -> Int, Intrinsic(IoTlsSendBytes)),
-            row!("set_nodelay", SYSCALL, _, Intrinsic(IoTlsSetNodelay)),
-            row!("set_recv_timeout", SYSCALL, _, Intrinsic(IoTlsSetRecvTimeout)),
-            row!("set_rx_timestamps", SYSCALL, _, Intrinsic(IoTlsSetRxTimestamps)),
-            row!("set_send_timeout", SYSCALL, _, Intrinsic(IoTlsSetSendTimeout)),
+            row!("set_nodelay", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTlsSetNodelay)),
+            row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTlsSetRecvTimeout)),
+            row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTlsSetRxTimestamps)),
+            row!("set_send_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTlsSetSendTimeout)),
             row!("upgrade", SYSCALL | BLOCK, [Int, Str, Bool] -> Int ! "IoError", Intrinsic(IoTlsUpgrade)),
         ],
         open_prefixes: &[],
@@ -917,10 +921,10 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "udp"],
         fns: &[
-            row!("__bind", SYSCALL, _, Intrinsic(IoUdpBindRaw)),
+            row!("__bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBindRaw)),
             row!("__close", SYSCALL, _, Intrinsic(IoUdpCloseRaw)),
-            row!("__recv", SYSCALL | BLOCK, _, Intrinsic(IoUdpRecvRaw)),
-            row!("__send", SYSCALL, _, Intrinsic(IoUdpSendRaw)),
+            row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvRaw)),
+            row!("__send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSendRaw)),
             row!("bind", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoUdpBind)),
             row!("close", SYSCALL, [Int] -> Int, Intrinsic(IoUdpClose)),
             row!("get_option_int", SYSCALL, [Int, Int, Int] -> Int ! "IoError", Intrinsic(IoUdpGetOptionInt)),
@@ -1077,13 +1081,18 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["process"],
         fns: &[
-            row!("__kill_escalate", SYSCALL, _, Intrinsic(ProcessKillEscalateRaw)),
-            row!("__pipe_read", SYSCALL | BLOCK, _, Intrinsic(ProcessPipeReadRaw)),
-            row!("__pipe_write", SYSCALL, _, Intrinsic(ProcessPipeWriteRaw)),
-            row!("__signal_pid", SYSCALL, _, Intrinsic(ProcessSignalPidRaw)),
-            row!("__spawn", SYSCALL, _, Intrinsic(ProcessSpawnRaw)),
-            row!("__try_wait_pid", SYSCALL, _, Intrinsic(ProcessTryWaitPidRaw)),
-            row!("__wait_pid", SYSCALL | BLOCK, _, Intrinsic(ProcessWaitPidRaw)),
+            // The primitives `process.hl` wraps lower only under an `or`, so
+            // their rows say they can fail (F.40 phase 4, S5). The handles
+            // `__spawn` and the two waits return (`__StdProcessSpawnHandle`,
+            // `__StdProcessWaitOutcome`) have no public spelling, so their
+            // success is `Any`, as `run`'s is.
+            row!("__kill_escalate", SYSCALL, [Int] -> Unit ! "IoError", Intrinsic(ProcessKillEscalateRaw)),
+            row!("__pipe_read", SYSCALL | BLOCK, [Int] -> Str ! "IoError", Intrinsic(ProcessPipeReadRaw)),
+            row!("__pipe_write", SYSCALL, [Int, Str] -> Int ! "IoError", Intrinsic(ProcessPipeWriteRaw)),
+            row!("__signal_pid", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(ProcessSignalPidRaw)),
+            row!("__spawn", SYSCALL, [Str] -> Any ! "IoError", Intrinsic(ProcessSpawnRaw)),
+            row!("__try_wait_pid", SYSCALL, [Int] -> Any ! "IoError", Intrinsic(ProcessTryWaitPidRaw)),
+            row!("__wait_pid", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Intrinsic(ProcessWaitPidRaw)),
             // GH #716: adopt closes the outgoing handle's fds and
             // TERM/KILL-reaps its process, so it carries the same
             // syscall class as kill — not PURE, despite reading like

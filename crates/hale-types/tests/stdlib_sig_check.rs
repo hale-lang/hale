@@ -190,6 +190,45 @@ fn bare_fallible_calls_are_the_law_s_errors_and_type_permissively() {
     assert!(bare[1].starts_with("`std::io::fs::write_file` can fail (IoError)"), "got: {:?}", bare);
 }
 
+/// F.40 phase 4, S5 (a classified correction): the functions lowering
+/// lowered only under an `or` and whose rows said nothing about it — the
+/// tcp and tls setters, the `File`, udp and process primitives — say
+/// they can fail, so a bare call is the bare-fallible law's error, at the
+/// call, from the check. Lowering refused most of them without a span and
+/// answered "not implemented" for the rest. One per module.
+#[test]
+fn a_function_lowering_treats_as_fallible_is_refused_bare_by_the_check() {
+    let calls = [
+        ("std::io::file::__seek(3, 0)", "std::io::file::__seek"),
+        ("std::io::tcp::set_recv_timeout(3, 5ms)", "std::io::tcp::set_recv_timeout"),
+        ("std::io::tls::set_nodelay(3, true)", "std::io::tls::set_nodelay"),
+        ("std::io::udp::__send(3, \"127.0.0.1\", 9, \"x\")", "std::io::udp::__send"),
+        ("std::process::__kill_escalate(3)", "std::process::__kill_escalate"),
+    ];
+    for (call, path) in calls {
+        let src = format!("fn main() {{\n    {call};\n}}\n");
+        let prog = parse_source(&src).expect("parse");
+        let errors: Vec<_> = check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "{call}: {:?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert_eq!(
+            errors[0].message,
+            format!(
+                "`{path}` can fail (IoError) and this call says nothing about it: write \
+                 `or raise` to hand the failure to the caller, `or <fallback>` for a value \
+                 to use instead, `or handler(err)` to deal with it here, or `or discard` \
+                 when losing it is the intent. A bare call to a fallible entry point is an \
+                 error since v0.22.0 (GH #738)."
+            )
+        );
+        let at = src.find(call).expect("the call") as u32;
+        assert_eq!(
+            (errors[0].span.start.0, errors[0].span.end.0),
+            (at, at + call.len() as u32),
+            "{call}: the error is the call's"
+        );
+    }
+}
+
 #[test]
 fn statement_position_or_discards_value_type() {
     // `call() or handler(err);` in statement position discards the

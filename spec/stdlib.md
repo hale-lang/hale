@@ -27,7 +27,19 @@ and the return may itself be a stdlib struct (GH #771): a
 `std::json::string_field(...)` is a `std::json::JsonString`, so a
 misspelled field on the result is a located error naming the
 public path, and passing the result where a `String` is expected
-is refused. An ARGUMENT position names a stdlib type the same way
+is refused. A row also says whether the function can fail, and every
+function lowering lowers only under an `or` has a row that does (F.40
+phase 4, S5): the `std::io::tcp` and `std::io::tls` timeout and
+option setters (`set_recv_timeout`, `set_send_timeout`, and tls's
+`set_nodelay` and `set_rx_timestamps`) and the `__` primitives the
+stdlib's own `File`, udp and `Child` wrappers call
+(`std::io::file::__open` / `__seek` / `__write_bytes`,
+`std::io::udp::__bind` / `__send` / `__recv`, the seven
+`std::process::__*` primitives) all fail with `IoError`, so a bare
+call of one is the located bare-fallible error from `hale check`
+(spec/semantics.md § "A bare fallible call is an error"), where
+lowering used to refuse it without a span or answer "not
+implemented". An ARGUMENT position names a stdlib type the same way
 (GH #829): `recv_into`'s `buf` is a `std::bytes::BytesBuilder`,
 the one type its lowering accepts, so
 `std::io::tcp::recv_into(fd, 0, 64)` is a located error at the
