@@ -233,6 +233,11 @@ pub struct Obligation {
     /// obligation (a pool join, a wait-abort, a pre-drain, the process
     /// drain), which a spine owes the process.
     pub site: Option<SourceSite>,
+    /// For a process-level obligation a spine owes at each teardown of
+    /// one template's occurrence (the eager spine's steps, at each
+    /// statement literal it follows): that template. `None` for once per
+    /// process, and for an instance's own row.
+    pub per_occurrence_of: Option<SourceSite>,
     pub kind: ObligationKind,
     /// For [`ObligationKind::Closures`] and a failure raised by one:
     /// the epoch.

@@ -43,8 +43,9 @@
 //! owner's handler can restart, the recovery decision and the restart,
 //! performed or refused under teardown. The process owes the spines'
 //! own steps: the pre-drain, the wait-abort and the pool join of the
-//! main locus's eager teardown and of `fn main`'s exit, and the signal
-//! path's cooperative drain.
+//! main locus's eager teardown, once per construction of the literal
+//! ([`super::Obligation::per_occurrence_of`]), and of `fn main`'s exit,
+//! and the signal path's cooperative drain.
 //!
 //! A row's status is its decision line's ([`super::DECISION_LINES`]):
 //! the line that makes it exist, the rule that places each edge and the
@@ -1127,6 +1128,7 @@ impl<'b, 'a> Builder<'b, 'a> {
     fn row(&self, i: usize, kind: super::ObligationKind, holder: Holder) -> Obligation {
         Obligation {
             site: self.site(i),
+            per_occurrence_of: None,
             kind,
             epoch: None,
             source: None,
@@ -1481,14 +1483,20 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         // Any posted run still queued at reclaim is canceled there,
         // including a static field reclaimed on main after its pool stops.
-        // Cancellation follows the reclaiming domain; claim the worker
-        // only when every occurrence's owner tears down on that worker.
+        // Cancellation follows the reclaiming domain (R19a): the worker
+        // where every occurrence's owner tears down on that worker, main
+        // for a static instance, which its root's cascade reclaims there.
         if r.run.is_some() && posted_run {
             let mut o = self.row(i, K::Cancellation, reclaim_holder);
             o.line = Some("19");
             o.guard = PathGuard::DrainInFlight;
+            let reclaimed_on_main = matches!(s.site.template, Template::Static(_));
             o.runs_on = combine(self.contributions(i).iter().filter(|c| self.is_pool(c.own)).map(|c| {
-                self.posted_to_its_owners_teardown(i, c).then(|| Self::on(c.own, shipped("19"))).flatten()
+                if reclaimed_on_main {
+                    Self::on(Some(PlacementTable::MAIN), shipped("19"))
+                } else {
+                    self.posted_to_its_owners_teardown(i, c).then(|| Self::on(c.own, shipped("19"))).flatten()
+                }
             }));
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
@@ -1945,6 +1953,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         let main = Some(PlacementTable::MAIN);
         let process_row = |kind, spine, line: Option<&'static str>, status| Obligation {
             site: None,
+            per_occurrence_of: None,
             kind,
             epoch: None,
             source: None,
@@ -1966,11 +1975,31 @@ impl<'b, 'a> Builder<'b, 'a> {
         let eager: Vec<usize> = (0..self.subjects.len())
             .filter(|&i| matches!(self.subjects[i].how, How::Top { built: Built::Statement, .. }) && !self.facts[i].subscribes)
             .collect();
+        // The first join joins every pool once. A main locus built more
+        // than once enters its eager spine's join at each teardown, and a
+        // run its later constructions post finds the pools shut down and
+        // ends after that teardown's join, at its own child's reclaim
+        // (line 19). What every pool's run owes the first join is stated
+        // only where the main locus is built once.
+        let main_tops: Vec<usize> =
+            eager.iter().copied().filter(|&i| matches!(self.subjects[i].how, How::Top { main_locus: true, .. })).collect();
+        let join_once = match main_tops[..] {
+            [] => true,
+            [i] => self.subjects[i].bound == Bound::Once,
+            _ => false,
+        };
         let statements_done: Vec<ObligationId> = eager.iter().filter_map(|&i| self.rows[i].reclaim).collect();
         for i in eager {
             let main_locus = matches!(self.subjects[i].how, How::Top { main_locus: true, .. });
             let fields: Vec<usize> =
                 (0..self.subjects.len()).filter(|&c| self.subjects[c].how == How::Field && self.owners(c).contains(&i)).collect();
+            // The eager spine's steps are owed at each teardown of the
+            // statement literal, once per its occurrence.
+            let per = self.site(i);
+            let process_row = |kind, spine, line, status| Obligation {
+                per_occurrence_of: per.clone(),
+                ..process_row(kind, spine, line, status)
+            };
             // Every teardown spine pre-drains (line 18; not the eager one
             // yet, C13).
             let mut o = process_row(K::PreDrain, Spine::EagerTeardown, Some("18"), Status::KnownOpen { inventory_row: "C13" });
@@ -2102,7 +2131,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         for i in 0..self.subjects.len() {
             let join = if self.is_pinned(i) {
                 self.rows[i].pinned_join
-            } else if self.all(i, |c| self.is_pool(c.own)) {
+            } else if join_once && self.all(i, |c| self.is_pool(c.own)) {
                 first_join
             } else {
                 None
@@ -2130,7 +2159,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         // the join, so those cancellations impose no join prerequisite. A
         // run is held to the join where every occurrence is on a pool; a
         // cancellation exists only on one.
-        if let Some(join) = first_join {
+        if let Some(join) = first_join.filter(|_| join_once) {
             for i in 0..self.subjects.len() {
                 if !self.any(i, |c| self.is_pool(c.own)) {
                     continue;

@@ -882,7 +882,36 @@ fn deferred_main_and_cross_pool_cancellation_name_their_spines() {
     assert_eq!(one(p, "App", K::Reclaim).holder.spine, Spine::DeferredMainEntry);
     let canceled = rows(p, "Kid", K::Cancellation);
     assert!(canceled.iter().any(|o| o.holder.spine == Spine::Cascade && o.guard == PathGuard::DrainInFlight));
-    // Its reclaim happens on main, so the child's worker must not be
-    // asserted as the cancellation's execution domain.
-    assert!(canceled.iter().filter(|o| o.holder.spine == Spine::Cascade).all(|o| o.runs_on.is_none()));
+    // Its reclaim happens on main, not on the child's worker: the
+    // cancellation claims main (R19a).
+    for o in canceled.iter().filter(|o| o.holder.spine == Spine::Cascade) {
+        assert_eq!(claimed(p, o), labels(&["main"]));
+        assert_eq!(o.runs_on.as_ref().map(|r| (r.rule.line, r.rule.status)), Some((Some("19"), Status::Shipped)));
+    }
+}
+
+/// A main locus built more than once enters its eager spine at each
+/// teardown: the spine's steps are owed per occurrence of the literal,
+/// and the first join, one construction's, owes no other construction's
+/// run (line 19: a later run is posted to shut-down pools and ends at its
+/// own child's reclaim, after its teardown's join).
+#[test]
+fn a_main_locus_built_twice_owes_its_eager_spine_per_construction() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_empty_ring_last_check.hl"));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let eager: Vec<&Obligation> =
+        p.obligations.iter().filter(|o| o.site.is_none() && o.holder.spine == Spine::EagerTeardown).collect();
+    assert!(eager.iter().any(|o| o.kind == K::PoolJoin));
+    for o in &eager {
+        assert_eq!(o.per_occurrence_of.as_ref().map(|s| s.decl.lowered.as_str()), Some("App"), "{}", o.kind.name());
+    }
+    let kid_runs: BTreeSet<ObligationId> = rows(p, "Kid", K::Run).into_iter().map(|o| id_of(p, o)).collect();
+    assert_eq!(kid_runs.len(), 2, "one template per App literal");
+    for join in eager.iter().filter(|o| o.kind == K::PoolJoin) {
+        assert!(
+            !join.edges.completion.iter().any(|pr| kid_runs.contains(&pr.event.obligation)),
+            "no construction's run is owed to a join"
+        );
+    }
 }

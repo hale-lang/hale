@@ -320,35 +320,6 @@ const PLANS: &[(&str, &str)] = &[
         "-: WaitAbort@MainTestFailure PoolJoin@MainTestFailure
          edge -.WaitAbort@MainTestFailure.Completed -> -.PoolJoin@MainTestFailure.Entered",
     ),
-    // R19 across pools: the run queued on `side` is canceled by the
-    // reclaim on main, inside its bracket. The replacement's run is the
-    // judge's, since one plan step cannot owe two ends.
-    (
-        "l19_cross_pool_queued_run_canceled.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Holder: Birth Drain Dissolve Reclaim
-         Kid*2: Birth Drain Dissolve Reclaim
-         Kid: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
-    ),
-    // R19's other half: a run admitted after the worker's last check is
-    // canceled by its child's reclaim; once the canceled cells fill the
-    // ring, a post is refused for the pool's shutdown, named with no
-    // cancellation. The judge counts the two ends.
-    (
-        "l19_full_ring.hl",
-        "App*200: Birth Drain Dissolve Reclaim
-         Kid*200: Birth Drain Dissolve Reclaim
-         Kid*+: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
-    ),
-    (
-        "l19_empty_ring_last_check.hl",
-        "App*2: Birth Drain Dissolve Reclaim
-         Kid*2: Birth Drain Dissolve Reclaim
-         Kid: Cancellation!main
-         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
-    ),
 ];
 
 /// Each adopted line's run, as the producer's plan reads it
@@ -482,6 +453,29 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.canceled.insert("Kid".to_string(), 2);
             &["19"]
         }
+        // R19a across pools: the old Kid's run, queued on `side`, is
+        // canceled by its reclaim on main; the replacement's runs. One
+        // declaration, two ends.
+        "l19_cross_pool_queued_run_canceled.hl" => {
+            p.occurrences = count(&[("Kid", 2)]);
+            p.canceled = count(&[("Kid", 1)]);
+            &["19"]
+        }
+        // A main locus built 200 times, each torn down where it stands:
+        // the first Kid's run completes; the next 64 are admitted to the
+        // 64-cell ring and canceled by their children's reclaims on main;
+        // the rest are refused, named with no cancellation.
+        "l19_full_ring.hl" => {
+            p.occurrences = count(&[("App", 200), ("Kid", 200)]);
+            p.canceled = count(&[("Kid", 64)]);
+            &["19"]
+        }
+        // Built twice: the first Kid's run completes, the second's is
+        // admitted after the worker's last check and canceled on main.
+        "l19_empty_ring_last_check.hl" => {
+            p.canceled = count(&[("Kid", 1)]);
+            &["19"]
+        }
         "l19_resumed_run_at_shutdown.hl" => {
             p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
             &["19"]
@@ -514,27 +508,17 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
 
 /// Fixtures with a plan the producer does not derive yet, held to their
 /// hand-written one alone: (file, what the producer does not state).
-/// Each needs a fact a
-/// run path cannot carry or a row the producer does not emit: R19a's
-/// cancellation at a reclaim off the run's pool, the instances of one
-/// declaration whose runs end differently in one run (the trace names
-/// an instance by its declaration), and a main locus built more than
-/// once, each literal with its own teardown. The producer also does not
-/// enumerate deferred main-entry, return or test-failure process spines
-/// yet; P3's fixtures pin those spines until their producer rows exist.
+/// The producer does not enumerate the deferred main-entry, return or
+/// test-failure process spines yet; P3's fixtures pin those spines until
+/// their producer rows exist. The line-19 fixtures that were here are
+/// derived: R19a's cancellation at a reclaim off the run's pool, the
+/// occurrences of one declaration whose runs end differently, and a main
+/// locus built more than once, its eager spine's steps owed at each of
+/// its teardowns.
 const UNDERIVED: &[(&str, &str)] = &[
     ("l07_or_wait_deferred_main_entry.hl", "the producer has no deferred main-entry process spine"),
     ("l07_or_wait_main_return.hl", "the producer has no main-return process spine or exit-path selection"),
     ("l07_or_wait_main_test_failure.hl", "the producer has no test-failure process spine or exit-path selection"),
-    (
-        "l19_cross_pool_queued_run_canceled.hl",
-        "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
-    ),
-    (
-        "l19_full_ring.hl",
-        "200 App literals, each torn down where it stands; Kid's runs complete once, then are canceled on main or refused",
-    ),
-    ("l19_empty_ring_last_check.hl", "two App literals; the first Kid's run completes, the second's is canceled on main"),
 ];
 
 /// The plan the producer derives for a fixture's program, on its run's

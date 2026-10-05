@@ -40,7 +40,13 @@
 //! occurrence is built under which is not in the trace). A domain claim
 //! is one domain, or the set a template's occurrences run on when they
 //! are built under parents on different domains, each occurrence held
-//! to one of them.
+//! to one of them. Two exceptions count occurrences from the path: a
+//! teardown's cancellation is held however many templates owe it, once
+//! per run the path cancels, and only edges into it are held where some
+//! occurrences' runs end otherwise (line 19); and a process row a spine
+//! owes at each teardown of a template's occurrences (a main locus built
+//! more than once) is owed that many times, its edges held as an
+//! instance's with that many occurrences.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -335,10 +341,19 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
         }
     }
     let every_template = |l: &str, of: &BTreeSet<&Template>| templates.get(l).is_none_or(|all| all.is_subset(of));
+    // A teardown's cancellation the path counts is held however many of
+    // the declaration's templates owe it: its count is the path's, one
+    // per run canceled, and the occurrences whose run ends otherwise owe
+    // none (one completes, another is canceled: line 19).
+    let counted_cancel = |o: &Obligation| {
+        o.kind == K::Cancellation
+            && o.holder.domain == DomainRole::Teardown
+            && decl(o).is_some_and(|l| path.canceled.contains_key(&l))
+    };
     for (i, o) in plan.obligations.iter().enumerate() {
         let Some(site) = &o.site else { continue };
         let l = &site.decl.lowered;
-        if state[i] == State::Owed && !every_template(l, &owing[&(l.clone(), o.kind)]) {
+        if state[i] == State::Owed && !counted_cancel(o) && !every_template(l, &owing[&(l.clone(), o.kind)]) {
             state[i] = State::Unchecked;
         }
     }
@@ -410,7 +425,7 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
     let mut index: BTreeMap<Key, usize> = BTreeMap::new();
     let mut of: Vec<Option<usize>> = vec![None; n];
     let mut claims: BTreeMap<usize, BTreeSet<Option<Vec<String>>>> = BTreeMap::new();
-    let mut process_rows: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut process_rows: BTreeMap<usize, (usize, bool)> = BTreeMap::new();
     let mut lines: Vec<(Option<String>, Vec<usize>)> = Vec::new();
     for (i, o) in plan.obligations.iter().enumerate() {
         if state[i] != State::Owed {
@@ -476,7 +491,18 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             }
         };
         if k.0.is_none() {
-            *process_rows.entry(at).or_insert(0) += 1;
+            // Once per process, or at each teardown of the template's
+            // occurrences (the eager spine's steps): as many as it has, at
+            // least one where the path does not count them.
+            let (n, exact) = process_rows.entry(at).or_insert((0, true));
+            match o.per_occurrence_of.as_ref().map(|s| instances(&s.decl.lowered)) {
+                None => *n += 1,
+                Some(Some(Count::Exactly(k))) => *n += k,
+                Some(_) => {
+                    *n += 1;
+                    *exact = false;
+                }
+            }
         }
         of[i] = Some(at);
         let claim = o.runs_on.as_ref().filter(|r| focus.holds(r.rule)).map(|r| {
@@ -485,8 +511,8 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
         });
         claims.entry(at).or_default().insert(claim);
     }
-    for (at, rows) in process_rows {
-        exp.owed[at].count = Count::Exactly(rows);
+    for (at, (n, exact)) in process_rows {
+        exp.owed[at].count = if exact { Count::Exactly(n) } else { Count::AtLeast(n) };
     }
     for (at, cs) in claims {
         if cs.len() == 1 {
@@ -533,16 +559,37 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
     // (a field reached under several constructions of its owner), the
     // trace cannot tell which occurrence is whose, and the edge is not
     // held.
-    let single = |at: usize| exp.owed[at].decl.as_deref().is_none_or(|l| instances(l) == Some(Count::Exactly(1)));
+    // A process row owed at each of several teardowns (a main locus built
+    // more than once) is several occurrences the same way.
+    let single = |at: usize| match exp.owed[at].decl.as_deref() {
+        Some(l) => instances(l) == Some(Count::Exactly(1)),
+        None => exp.owed[at].count == Count::Exactly(1),
+    };
     let tied = |a: usize, b: usize| {
         let (da, db) = (&exp.owed[a].decl, &exp.owed[b].decl);
-        da.is_none() || db.is_none() || da == db || single(a) || single(b)
+        (da.is_some() && da == db) || single(a) || single(b)
     };
+    // A cancellation the path counts, which some of the declaration's
+    // occurrences reach and others do not: an edge into it is held of the
+    // templates that owe it; one out of it only where every occurrence's
+    // run is canceled, since the others' steps never wait for it.
+    let counted = |at: usize| {
+        exp.owed[at].kind == K::Cancellation && exp.owed[at].decl.as_ref().is_some_and(|l| path.canceled.contains_key(l))
+    };
+    let all_canceled =
+        |at: usize| exp.owed[at].decl.as_deref().is_some_and(|l| instances(l) == Some(Count::Exactly(path.canceled[l] as usize)));
     exp.edges = edges
         .into_iter()
         .filter(|((a, b), (by_a, by_b))| {
             let (a, b) = (a.obligation.0 as usize, b.obligation.0 as usize);
-            held_by_every(a, by_a) && held_by_every(b, by_b) && tied(a, b)
+            if counted(a) && !all_canceled(a) {
+                return false;
+            }
+            let cancel = [a, b].into_iter().find(|&at| counted(at)).filter(|_| exp.owed[a].decl == exp.owed[b].decl);
+            match cancel.and_then(|at| exp.owed[at].decl.clone()).and_then(|l| owing.get(&(l, K::Cancellation))) {
+                Some(owe) => owe.is_subset(by_a) && owe.is_subset(by_b),
+                None => held_by_every(a, by_a) && held_by_every(b, by_b) && tied(a, b),
+            }
         })
         .map(|(edge, _)| edge)
         .collect();
