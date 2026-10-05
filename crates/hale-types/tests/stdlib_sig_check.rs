@@ -431,6 +431,25 @@ fn std_bus_calls_are_checked() {
 }
 
 #[test]
+fn std_crypto_calls_are_checked() {
+    refused(
+        "    let k = std::bytes::from_string(\"k\");\n    let ok = std::crypto::ecdsa_p256_verify(k, k);\n    println(ok);",
+        &[("`std::crypto::ecdsa_p256_verify` takes 3 arguments, got 2", "std::crypto::ecdsa_p256_verify")],
+    );
+    refused(
+        "    let k = std::bytes::from_string(\"k\");\n    let ok = std::crypto::ecdsa_p256_verify(k, \"message\", k);\n    println(ok);",
+        &[("`std::crypto::ecdsa_p256_verify` argument 2: expected `Bytes`, got `String`", "\"message\"")],
+    );
+    refused(
+        "    let k = std::bytes::from_string(\"k\");\n    let ok = std::crypto::ecdsa_p256_verify(k, k, k) or false;\n    println(ok);",
+        &[(
+            "`std::crypto::ecdsa_p256_verify` is not fallible (it returns `Bool`); drop the `or` clause",
+            "std::crypto::ecdsa_p256_verify(k, k, k)",
+        )],
+    );
+}
+
+#[test]
 fn value_position_or_still_checks_fallback() {
     // Same shapes in VALUE position still check.
     let m = msgs(

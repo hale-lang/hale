@@ -560,7 +560,7 @@ std::compress::unzstd | lookup=compress@2 | locus=false | effects=pure | sig=(By
 std::compress::zstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=zstd
 std::crypto::crc32 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=crc32
 std::crypto::ecdsa_p256_sign | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes ! CryptoError | ret_ty=? | or=(Bytes, CryptoError) | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_sign
-std::crypto::ecdsa_p256_verify | lookup=crypto@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_verify
+std::crypto::ecdsa_p256_verify | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes, Bytes) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_verify
 std::crypto::hmac_sha256 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=hmac_sha256
 std::crypto::hmac_sha512 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=hmac_sha512
 std::crypto::sha1 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha1
