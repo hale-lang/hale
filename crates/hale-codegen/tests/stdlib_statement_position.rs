@@ -141,12 +141,12 @@ fn lowering_error(source: &str, name: &str) -> (String, Option<hale_syntax::Span
 ///   `sqrt` was in the list ("is not a fallible call"), `regex::valid`
 ///   was not ("`or` over unknown path call").
 ///
-/// An `or` over a function with no signature is what a checked program can
-/// still reach, since the check types the call `Unknown`: all of them get
-/// the refusal only the list's ids got, in its words (`SOL_SOCKET` got
-/// "`or` over unknown path call"; S6 gave it a signature, so the check
-/// refuses that `or` now). `std::io::mirror::__len` is one of the few S6
-/// left unsigned: its helper reads its argument without counting them.
+/// An `or` over a function with no signature was what a checked program
+/// could still reach, since the check typed the call `Unknown` (`SOL_SOCKET`
+/// got "`or` over unknown path call"). S6 signed it, and S6's ruling signed
+/// the last unsigned intrinsic rows a program may call, the seven
+/// `std::io::mirror` cursor primitives, so the check refuses an `or` over
+/// `std::io::mirror::__len` too, and lowering's answer is the internal error.
 #[test]
 fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
     for (path, err, line) in [
@@ -168,7 +168,11 @@ fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
         let at = source.find(path).unwrap() as u32;
         assert_eq!(span.map(|s| (s.start.0, s.end.0)), Some((at, at + path.len() as u32)), "{path}");
     }
-    for (path, call) in [("std::math::sqrt", "std::math::sqrt(2.0) or 0.0"), ("std::regex::valid", "std::regex::valid(\"a\") or false")] {
+    for (path, call) in [
+        ("std::math::sqrt", "std::math::sqrt(2.0) or 0.0"),
+        ("std::regex::valid", "std::regex::valid(\"a\") or false"),
+        ("std::io::mirror::__len", "std::io::mirror::__len(0) or 0"),
+    ] {
         let source = format!("fn main() {{\n    let v = {call};\n    println(v);\n}}\n");
         let (text, span) = lowering_error(&source, "or_over_infallible_row");
         assert_eq!(
@@ -181,16 +185,6 @@ fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
         let at = source.find(path).unwrap() as u32;
         assert_eq!(span.map(|s| (s.start.0, s.end.0)), Some((at, at + path.len() as u32)), "{path}");
     }
-    let source = "fn main() {\n    let v = std::io::mirror::__len(0) or 0;\n    println(v);\n}\n";
-    checks_clean(source);
-    let (text, span) = lowering_error(source, "or_over_unsigned_row");
-    assert_eq!(
-        text,
-        "unsupported in codegen v0: `std::io::mirror::__len` is not a fallible call \
-         — remove the `or` clause. Returns its value directly; failures (if any) use the \
-         sentinel-with-discriminator idiom or are infallible."
-    );
-    assert_eq!(span, None);
 }
 
 /// F.40 phase 4, S5 (a classified correction): the nine fallible rows

@@ -120,7 +120,7 @@
 //! 16    PoolJoin WaitAbort                       Shipped (the capability matrix selects)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
-//! 19    RunAdmission Run Cancellation            Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2)
+//! 19    RunAdmission Run Cancellation Handler    Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2); Shipped (a handler's hold, R52)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
 //! JP    JoinProgress FailureDelivery             Shipped (pinned join, L5); Shipped (pool joins, an ended domain, L5)
 //! ```
@@ -445,6 +445,10 @@ pub enum ObligationKind {
     RunAdmission,
     /// `run()`'s execution, from start to return.
     Run,
+    /// A bus handler's execution on a pool's worker, from its start to
+    /// its return, once per delivered cell: its subscriber, which another
+    /// thread can reclaim, is retained until it returns (line 19, R52).
+    Handler,
     /// The run end: await phase 0, the restart loop, the per-child
     /// reclaim decision (a kept failed child stays, GH #1069).
     RunEnd,
@@ -511,6 +515,7 @@ impl ObligationKind {
         ObligationKind::Birth,
         ObligationKind::RunAdmission,
         ObligationKind::Run,
+        ObligationKind::Handler,
         ObligationKind::RunEnd,
         ObligationKind::Closures,
         ObligationKind::FailureDelivery,
@@ -546,6 +551,7 @@ impl ObligationKind {
             ObligationKind::Birth => "Birth",
             ObligationKind::RunAdmission => "RunAdmission",
             ObligationKind::Run => "Run",
+            ObligationKind::Handler => "Handler",
             ObligationKind::RunEnd => "RunEnd",
             ObligationKind::Closures => "Closures",
             ObligationKind::FailureDelivery => "FailureDelivery",
@@ -578,6 +584,7 @@ impl ObligationKind {
             ObligationKind::Birth => &["C1", "C9", "C10", "C38", "C49", "C50", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
             ObligationKind::Run => &["C9", "C12", "C48", "C49", "C50", "C53", "R24", "R25"],
+            ObligationKind::Handler => &["R52"],
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
@@ -1183,7 +1190,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
     DecisionLine {
         line: "19",
         title: "a run's admission and its named terminal outcome",
-        kinds: &[K::RunAdmission, K::Run, K::Cancellation],
+        kinds: &[K::RunAdmission, K::Run, K::Cancellation, K::Handler],
         statuses: &[
             (
                 Status::Shipped,
@@ -1198,6 +1205,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
                 "a post refused at shutdown ends NotStarted(Shutdown(PoolShutdown)), a cell freed unrun at the pools' teardown NotStarted(Shutdown(PoolTeardown)) (L5)",
             ),
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
+            (
+                Status::Shipped,
+                "a bus handler on a pool's worker holds its subscriber until it returns, so the subscriber's physical reclaim completes after it (R52, phase 4's R1)",
+            ),
         ],
     },
     DecisionLine {

@@ -1076,6 +1076,7 @@ crates/hale-codegen/tests/portable_subset.rs#2 865d341109268295
 crates/hale-codegen/tests/portable_subset.rs#3 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#6 f2c1228edb650960
+crates/hale-codegen/tests/printable_rule.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/process_child.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_child.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_child.rs#2 865d341109268295

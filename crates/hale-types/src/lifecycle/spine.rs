@@ -591,8 +591,9 @@ impl LifecyclePlan {
         // Line 19: a queued run's cancellation is entered once the reclaim
         // is; the run holds the instance until it ends, and the reclaim
         // completes only once the run has ended and the cancellation
-        // completed, so nothing of the instance is released before it.
-        let held_run = mine(ObligationKind::Run).any(|(run, r)| {
+        // completed, so nothing of the instance is released before it. A
+        // bus handler on a pool's worker holds it the same way (R52).
+        let held_run = [ObligationKind::Run, ObligationKind::Handler].into_iter().flat_map(|k| mine(k)).any(|(run, r)| {
             row.edges.completion.iter().any(|p| p.event.obligation == run)
                 && r.lifetime.iter().any(|t| t.resource == Resource::Instance && t.until.obligation == run)
         });
