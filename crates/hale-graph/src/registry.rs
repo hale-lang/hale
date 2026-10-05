@@ -1889,6 +1889,15 @@ pub const RULES: &[Rule] = &[
     },
 ];
 
+/// The shadow facility's call sites outside tests (F.40 §5: "the shadow
+/// facility's call sites outside tests are the registry's allowance
+/// only"), each a source file under `crates/*/src` and its number of
+/// references to `hale_graph::shadow`. The facility's own module is not a
+/// call site; a file the allowance does not list, or a different count,
+/// fails registry_guard.rs. Empty since phase 3 deleted every shadow: a
+/// migration that runs one outside a test lists its file here first.
+pub const SHADOW_CALL_SITES: &[(&str, usize)] = &[];
+
 /// Every Debug rendering with no prose around it (a `?}` placeholder in a
 /// formatting macro whose template holds no space: a value, never a
 /// message) in hale-syntax, hale-types, hale-model, hale-codegen,
@@ -2141,6 +2150,22 @@ pub fn render_markdown() -> String {
         ));
     }
     o.push('\n');
+    o.push_str("## The shadow facility's allowance\n\n");
+    o.push_str(
+        "The shadow facility (`hale-graph`'s `shadow` module) runs a new derivation beside the old one while \
+         a family migrates. Its call sites outside tests are this allowance only: a source file \
+         under `crates/*/src` that references the facility, other than the facility's own module, \
+         is listed here with its count, or fails `registry_guard.rs`. ",
+    );
+    if SHADOW_CALL_SITES.is_empty() {
+        o.push_str("None today: F.40 phase 3 deleted every shadow, and the facility's users are tests.\n\n");
+    } else {
+        o.push_str("\n\n| path | references |\n|---|---|\n");
+        for (path, n) in SHADOW_CALL_SITES {
+            o.push_str(&format!("| `{path}` | {n} |\n"));
+        }
+        o.push('\n');
+    }
     o.push_str("## Frozen Debug renderings\n\n");
     o.push_str(
         "Every Debug rendering with no prose around it (a `?}` placeholder in a formatting \

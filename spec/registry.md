@@ -1523,6 +1523,10 @@ A registered rule without an evaluator fails the compiler's own build.
 | semantics/placement/19 | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | Migrating |
 | semantics/placement/20 | a subscriber born in a bus handler is owned | `ownership` | `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` | Canonical |
 
+## The shadow facility's allowance
+
+The shadow facility (`hale-graph`'s `shadow` module) runs a new derivation beside the old one while a family migrates. Its call sites outside tests are this allowance only: a source file under `crates/*/src` that references the facility, other than the facility's own module, is listed here with its count, or fails `registry_guard.rs`. None today: F.40 phase 3 deleted every shadow, and the facility's users are tests.
+
 ## Frozen Debug renderings
 
 Every Debug rendering with no prose around it (a `?}` placeholder in a formatting macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, `hale-codegen`, `hale-frontend`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse to the fragment. A message with prose around its `{:?}` is not listed: it is read by a person. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
