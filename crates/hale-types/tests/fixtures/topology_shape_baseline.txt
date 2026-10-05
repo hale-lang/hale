@@ -1364,6 +1364,7 @@ crates/hale-codegen/tests/violate_build.rs#4 9f7a676eb9c51fa7
 crates/hale-codegen/tests/violate_build.rs#5 ce98cb0347d3ec5d
 crates/hale-codegen/tests/violate_build.rs#6 193913768d00ce7f
 crates/hale-codegen/tests/violate_child_state_read.rs#0 233b72b88fea82fb
+crates/hale-codegen/tests/wasm_import_backstop.rs#0 7155761f6f0fa380
 crates/hale-codegen/tests/wasm_target.rs#0 03e8f21557521e65
 crates/hale-codegen/tests/wasm_target.rs#1 3218fa9dbdc01510
 crates/hale-codegen/tests/wasm_target.rs#13 1a66df8bb5922a1f

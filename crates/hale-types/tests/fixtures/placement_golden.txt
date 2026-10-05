@@ -3983,6 +3983,11 @@ row	Child@main1	Child	main	default
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
 
+== crates/hale-codegen/tests/wasm_import_backstop.rs#1ed1d7b4
+row	Receiver@main1	Receiver	main	default
+row	Sender@main2	Sender	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+
 == crates/hale-codegen/tests/wasm_target.rs#8cade88e
 
 == crates/hale-codegen/tests/wasm_target.rs#bf616e43

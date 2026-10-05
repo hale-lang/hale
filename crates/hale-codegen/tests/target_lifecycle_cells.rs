@@ -439,11 +439,10 @@ fn every_spine_owes_what_its_target_selects_in_the_plans_order() {
                     if let Err(e) = wasm_module::backstop(&format!("target_lifecycle_cells::{id}"), &program, &b.bin) {
                         failures.push(e);
                     }
-                    // The thread and async_io startup the cells reject. (A
-                    // `pthread_join` or `pthread_cond_wait` import reaches
-                    // some of these modules through runtime paths that are
-                    // not the teardown obligations: the module calls
-                    // neither the pool join nor the quiesce, above.)
+                    // The thread and async_io startup the cells reject. (The
+                    // import backstop, below, holds the whole import list:
+                    // the runtime's thread joins and waits are compiled out
+                    // of a wasm32 module, P3 T7.)
                     for forbidden in ["pthread_create", "epoll_", "eventfd"] {
                         if let Some(i) = imports.iter().find(|i| i.starts_with(forbidden)) {
                             failures.push(format!("{id} wasm32: the module imports `{i}`"));

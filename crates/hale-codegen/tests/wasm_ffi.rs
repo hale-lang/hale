@@ -1,4 +1,4 @@
-//! The `wasm_ffi` integration-test binary: 7 test files of this area, kept
+//! The `wasm_ffi` integration-test binary: 8 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -15,6 +15,8 @@ mod portable_subset;
 mod shadow_capability_lowering;
 #[path = "target_lifecycle_cells.rs"]
 mod target_lifecycle_cells;
+#[path = "wasm_import_backstop.rs"]
+mod wasm_import_backstop;
 #[path = "wasm_target.rs"]
 mod wasm_target;
 #[path = "ws1_ffi_handle_reassign.rs"]

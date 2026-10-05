@@ -357,16 +357,85 @@ pub fn outside_the_set(program: &Program, wasm: &Path) -> Result<Vec<Import>, St
         .collect())
 }
 
-/// The import backstop over one module a test built, named `origin`.
-/// Today a measurement: it lists each import outside the set on stderr
-/// (`wasm import outside the set: <origin>: <module>.<name> (<kind>)`)
-/// and passes.
+/// An import outside the set that a module may still carry, and why:
+/// each is reached by a path that can run on wasm32, or is emitted by
+/// codegen rather than the runtime's C, and so waits on a ruling
+/// instead of being compiled out. `callers` names the only functions
+/// allowed to reference it (the runtime's, which are fixed), or `None`
+/// when the callers are the program's own generated functions. Each
+/// entry is asserted to be still imported
+/// (`wasm_import_backstop::every_known_open_import_is_still_imported`),
+/// so a fix that closes one fails until its entry goes.
+pub struct KnownOpen {
+    pub name: &'static str,
+    pub callers: Option<&'static [&'static str]>,
+    pub why: &'static str,
+}
+
+const UNABSORBED_REPORT: &str = "generated code: the report of a violation no handler absorbs \
+     (`fflush(stdout)`, `dprintf(2, ...)`, `exit(1)`) calls libc directly; it runs on wasm32 whenever \
+     such a violation happens, and the loader's `() => 0` drops the message";
+const OBSERVATION_PROBE: &str = "generated code: the observation probes, behind `lotus_obs_live`. \
+     lotus_obs.c is not linked into a wasm32 module and Record/Replay are refused there, so the flag \
+     (an undefined data symbol `--allow-undefined` resolves to address 0) reads 0 and the probes do \
+     not run; the calls are codegen's, so the runtime's C cannot compile them out";
+
+pub const KNOWN_OPEN: &[KnownOpen] = &[
+    KnownOpen { name: "dprintf", callers: None, why: UNABSORBED_REPORT },
+    KnownOpen { name: "fflush", callers: None, why: UNABSORBED_REPORT },
+    KnownOpen {
+        name: "fwrite",
+        callers: Some(&["lotus_bus_hold_delivery", "lotus_bus_park_if_unready", "lotus_reclaim_defer", "lotus_replay_gate_cell"]),
+        why: "the runtime's out-of-memory diagnostics before abort(): the shim's fprintf is an inline \
+              no-op, but clang rewrites `fprintf(stderr, \"<literal>\")` into an fwrite nothing defines \
+              (the arena is compiled without -fno-builtin). It runs on wasm32 when malloc fails. \
+              (lotus_replay_gate_cell's runs only under replay, which wasm32 refuses.)",
+    },
+    KnownOpen { name: "lotus_obs_locus_birth", callers: None, why: OBSERVATION_PROBE },
+    KnownOpen { name: "lotus_obs_locus_dissolve", callers: None, why: OBSERVATION_PROBE },
+    KnownOpen { name: "lotus_obs_note_publisher", callers: None, why: OBSERVATION_PROBE },
+    KnownOpen {
+        name: "pthread_cond_broadcast",
+        callers: Some(&["lotus_bus_quarantine_self", "lotus_bus_ready", "lotus_mailbox_drain_pending"]),
+        why: "the readiness window's wake: lotus_bus_ready (and lotus_bus_ready_forget, inlined into \
+              lotus_bus_quarantine_self) broadcast at every subscriber's readiness on wasm32. Its only \
+              waiter, the cap wait, is compiled out there, so the `() => 0` wakes no one, but the call \
+              runs. (lotus_mailbox_drain_pending's never runs: no mailbox exists on wasm32.)",
+    },
+];
+
+/// The import backstop over one module a test built, named `origin`:
+/// every import is a function the loader's writers supply or one of
+/// the program's declared `@ffi("js")` names, or a [`KNOWN_OPEN`] one
+/// referenced only by its stated callers. An import outside that is a
+/// symbol that reached the link undefined and would run as `() => 0`;
+/// the error names the program, the import and the functions calling
+/// it.
 pub fn backstop(origin: &str, program: &Program, wasm: &Path) -> Result<(), String> {
     let outside = outside_the_set(program, wasm)?;
-    let callers = std::fs::read(wasm).ok().and_then(|b| import_callers(&b)).unwrap_or_default();
-    for i in outside {
-        let by: Vec<&str> = callers.get(&i.name).map(|s| s.iter().map(|s| s.as_str()).collect()).unwrap_or_default();
-        eprintln!("wasm import outside the set: {origin}: {}.{} ({}) <- {}", i.module, i.name, i.kind, by.join(", "));
+    if outside.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let bytes = std::fs::read(wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
+    let callers =
+        import_callers(&bytes).ok_or_else(|| format!("{origin}: {}: the code section does not decode", wasm.display()))?;
+    let mut unresolved = Vec::new();
+    for i in outside {
+        let by = callers.get(&i.name).cloned().unwrap_or_default();
+        let known = KNOWN_OPEN.iter().find(|k| k.name == i.name && i.kind == "func");
+        let admitted = known.is_some_and(|k| k.callers.is_none_or(|allowed| by.iter().all(|c| allowed.contains(&c.as_str()))));
+        if !admitted {
+            let by: Vec<&str> = by.iter().map(|s| s.as_str()).collect();
+            unresolved.push(format!("  {}.{} ({}) <- {}", i.module, i.name, i.kind, by.join(", ")));
+        }
+    }
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{origin}: the wasm module imports what neither the loader's writers nor the program's \
+         `@ffi(\"js\")` names supply, so it reached the link undefined and the loader would run it \
+         as `() => 0` (P3 T7):\n{}",
+        unresolved.join("\n")
+    ))
 }
