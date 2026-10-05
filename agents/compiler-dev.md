@@ -79,9 +79,11 @@ hale-ts-shim  staticlib; no dependents; linked by path
    `hale_types::desugar_sequence::desugar_before_check`: JSON parsers,
    the api surface, unit returns, construction aliases, qualified bus subjects, the omitted
    `run` (marked `LifecycleDecl::synthesized`), repr accessors.
-4. **Resolve + check**: `hale_types::check_bundle_opts_scoped`
-   (`hale-types/src/lib.rs`): `resolve::build_top_scope`, then
-   `check::check_bundle_scoped` (`check.rs`).
+4. **Resolve + check**: the snapshot's `demand_scope`
+   (`resolve::build_top_scope`), then `demand_check`:
+   `check::check_bundle_by_declaration` (`check.rs`) over the rows
+   the snapshot demands for it (`CheckInputs`), then the laws stage
+   (`Snapshot::demand_laws`).
 5. **Model**: `model_builder::derive_application_model_over`, on
    demand (`Snapshot::demand_model`), over the snapshot's scope, bus
    graph, ownership graph and handler rows.
@@ -155,9 +157,9 @@ Contract: [`spec/model.md`](../spec/model.md); tutorial:
 
 - **One constructor**:
   `hale_types::model_builder::derive_application_model_over(&Bundle,
-  &ModelInputs)`, over a *checked* bundle; a test without a snapshot
-  calls `derive_application_model(&Bundle)`, which builds the inputs
-  and derives over them. No artifact-to-model, no plan-to-model, no
+  &ModelInputs)`, over a *checked* bundle, with the inputs a snapshot
+  demands (`Snapshot::demand_model`); a test asks a snapshot too
+  (`crates/hale-types/tests/support/entries.rs`). No artifact-to-model, no plan-to-model, no
   hand-authored model format; a test that needs a shape derives a
   real model and edits its tables.
 - The law: `Bundle -> ApplicationModel`; `Bundle + Model ->
