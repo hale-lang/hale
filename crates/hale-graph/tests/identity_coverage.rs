@@ -321,10 +321,10 @@ fn a_file_walking_identity_covers_the_classes_its_selection_holds() {
 }
 
 /// The legacy rows an inventory entry's producer still shares: the
-/// identities whose own correction (I2 and I3 for `exec_digest`, I4
-/// for the stale-binary hash) retires the row. Every other legacy row
-/// names a symbol no inventory entry produces.
-const LEGACY_STILL_SHARED: &[&str] = &["exec_digest", "compute_codegen_src_hash"];
+/// identities whose own correction (I4 for the stale-binary hash)
+/// retires the row. Every other legacy row names a symbol no inventory
+/// entry produces.
+const LEGACY_STILL_SHARED: &[&str] = &["compute_codegen_src_hash"];
 
 #[test]
 fn every_inventory_producer_is_registered_and_no_legacy_row_duplicates_one() {

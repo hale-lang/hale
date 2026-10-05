@@ -1793,9 +1793,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
         producer: Some(site("crates/hale-graph/src/identity.rs", "IDENTITIES")),
         legacy: &[
-            legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names, so a directory build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
             legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk", "one identity per snapshot; the stale check reads it"),
-            legacy(SNAPSHOT, "b.sources", "per-file FNV digests, set by the snapshot, rooted at hale.toml for every load mode, the editor's and its requests' included", "one source map per snapshot"),
         ],
         consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache")],
         invariants: &[
@@ -1809,6 +1807,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[
             site("crates/hale-types/src/topology_projection.rs", "project_shape_hash"),
             site(OPTIONS, "model_identity"),
+            site(OPTIONS, "exec_digest"),
             site(TOPOLOGY, "dump_topology_over"),
             site("crates/hale-model/src/claim_ir.rs", "semantic_digest"),
             site("crates/hale-model/src/application.rs", "analysis_coverage_digest"),
