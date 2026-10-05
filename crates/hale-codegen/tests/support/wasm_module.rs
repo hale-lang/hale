@@ -358,9 +358,8 @@ pub fn outside_the_set(program: &Program, wasm: &Path) -> Result<Vec<Import>, St
 }
 
 /// An import outside the set that a module may still carry, and why:
-/// each is reached by a path that can run on wasm32, or is emitted by
-/// codegen rather than the runtime's C, and so waits on a ruling
-/// instead of being compiled out. `callers` names the only functions
+/// each is reached by a path that can run on wasm32 and cannot be
+/// compiled out until what it needs exists. `callers` names the only functions
 /// allowed to reference it (the runtime's, which are fixed), or `None`
 /// when the callers are the program's own generated functions. Each
 /// entry is asserted to be still imported
@@ -373,35 +372,15 @@ pub struct KnownOpen {
 }
 
 const UNABSORBED_REPORT: &str = "generated code: the report of a violation no handler absorbs \
-     (`fflush(stdout)`, `dprintf(2, ...)`, `exit(1)`) calls libc directly; it runs on wasm32 whenever \
-     such a violation happens, and the loader's `() => 0` drops the message";
-const OBSERVATION_PROBE: &str = "generated code: the observation probes, behind `lotus_obs_live`. \
-     lotus_obs.c is not linked into a wasm32 module and Record/Replay are refused there, so the flag \
-     (an undefined data symbol `--allow-undefined` resolves to address 0) reads 0 and the probes do \
-     not run; the calls are codegen's, so the runtime's C cannot compile them out";
+     (`fflush(stdout)`, `dprintf(2, ...)`, `exit(1)`) calls libc directly, and runs on wasm32 whenever \
+     such a violation happens. The ruling routes it through the path `eprintln` takes to the loader's \
+     stderr writer, and there is none: `eprintln` lowers to `dprintf` too, the loader stubs it with \
+     `() => 0`, so on wasm32 both print nothing (the report's `exit(1)` then traps the module). Open \
+     until the loader has a stderr writer";
 
 pub const KNOWN_OPEN: &[KnownOpen] = &[
     KnownOpen { name: "dprintf", callers: None, why: UNABSORBED_REPORT },
     KnownOpen { name: "fflush", callers: None, why: UNABSORBED_REPORT },
-    KnownOpen {
-        name: "fwrite",
-        callers: Some(&["lotus_bus_hold_delivery", "lotus_bus_park_if_unready", "lotus_reclaim_defer", "lotus_replay_gate_cell"]),
-        why: "the runtime's out-of-memory diagnostics before abort(): the shim's fprintf is an inline \
-              no-op, but clang rewrites `fprintf(stderr, \"<literal>\")` into an fwrite nothing defines \
-              (the arena is compiled without -fno-builtin). It runs on wasm32 when malloc fails. \
-              (lotus_replay_gate_cell's runs only under replay, which wasm32 refuses.)",
-    },
-    KnownOpen { name: "lotus_obs_locus_birth", callers: None, why: OBSERVATION_PROBE },
-    KnownOpen { name: "lotus_obs_locus_dissolve", callers: None, why: OBSERVATION_PROBE },
-    KnownOpen { name: "lotus_obs_note_publisher", callers: None, why: OBSERVATION_PROBE },
-    KnownOpen {
-        name: "pthread_cond_broadcast",
-        callers: Some(&["lotus_bus_quarantine_self", "lotus_bus_ready", "lotus_mailbox_drain_pending"]),
-        why: "the readiness window's wake: lotus_bus_ready (and lotus_bus_ready_forget, inlined into \
-              lotus_bus_quarantine_self) broadcast at every subscriber's readiness on wasm32. Its only \
-              waiter, the cap wait, is compiled out there, so the `() => 0` wakes no one, but the call \
-              runs. (lotus_mailbox_drain_pending's never runs: no mailbox exists on wasm32.)",
-    },
 ];
 
 /// The import backstop over one module a test built, named `origin`:

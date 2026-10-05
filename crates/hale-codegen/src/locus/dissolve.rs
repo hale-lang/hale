@@ -1483,15 +1483,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
         // iris P4: LOCUS_DISSOLVE probe at THE teardown
         // chokepoint (every dissolve path funnels here). No-op
-        // unless LOTUS_OBS=1.
-        {
+        // unless LOTUS_OBS=1; none where the target has no observation
+        // (wasm32).
+        if let Some(obs_live) = self.obs_live_check()? {
             // #328: branch-gate on `lotus_obs_live`, matching the birth
             // probe and the bus publish/deliver probes. This one was
             // the more expensive of the pair — ~2.04ns per dissolve
             // against the birth probe's ~0.85 — because the teardown
             // chokepoint sits in the middle of code LLVM would
             // otherwise optimize freely.
-            let obs_live = self.obs_live_check()?;
             let current_fn = self
                 .builder
                 .get_insert_block()

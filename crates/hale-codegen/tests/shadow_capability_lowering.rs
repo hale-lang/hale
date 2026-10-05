@@ -639,7 +639,9 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     (CG, "Capability::AsyncIoPool", 1),
     (CG, "Capability::ForeignAbi(Abi::Js)", 1),
     (CG, "Obligation::SignalInstall", 2),
-    (CG, "Obligation::ObservationIdentity", 2),
+    // The identity setters and eager init in the prelude, and the
+    // observation probes' gate (`obs_live_check`, P3 T7).
+    (CG, "Obligation::ObservationIdentity", 3),
     (CG, "Obligation::BindingConfig", 2),
     (CG, "Obligation::DrainObserver", 1),
     // The five spines' heads and the frame teardown's wait-abort, all

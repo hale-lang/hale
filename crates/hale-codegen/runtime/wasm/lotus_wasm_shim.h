@@ -89,8 +89,12 @@ static inline void *pthread_getspecific(pthread_key_t k) {
 
 /* ---- stdio: diagnostics are inert in the browser (v1) -------------
  * The runtime's fprintf-to-stderr diagnostics (residency dumps, pool
- * stats) have no console sink yet; route them to no-ops. A host
- * `console.log` import replaces these in a later phase. */
+ * stats, the out-of-memory messages before abort()) have no console
+ * sink: the generated loader's writers have no stderr writer for
+ * fprintf to write through, so they are no-ops. The arena is compiled
+ * with -fno-builtin-fprintf, so clang keeps calling this fprintf rather
+ * than rewriting `fprintf(stderr, "<literal>")` to an fwrite nothing
+ * defines (P3 T7). */
 typedef struct lotus_wasm_FILE lotus_wasm_FILE;
 #define FILE lotus_wasm_FILE
 extern lotus_wasm_FILE *const stderr;
