@@ -80,6 +80,14 @@
 //!   table names its file, and a bare program's snapshot has no file to
 //!   name: [`resolve_files`] loads the caller's text under the caller's
 //!   name instead, so the view's snapshot seeds each site by its file.
+//! - [`check_files`]: what `hale check <dir>` reports for in-memory
+//!   files, the api binding included: the load's sequence generates the
+//!   binding a program's own `api:` entry asks for, and the check reads
+//!   the surface it generated, so a test that holds an api program's
+//!   text checks it as the verb does. (A program the caller ran the
+//!   api pass over itself has its binding already, so the sequence
+//!   generates none and records no surface: [`check_program`] over it
+//!   checks the binding without the entry's own rules.)
 //!
 //! The snapshot of a bundle (`bundle_snapshot`): the bundle's target and
 //! import renames on the config and the load, and its program. A bundle
@@ -227,6 +235,27 @@ pub fn resolve_files(files: &[(&str, &str)]) -> Result<LoweringView, String> {
     match snap.demand_lowering() {
         Ok(view) => Ok(view.clone()),
         Err(blocked) => Err(render_blocked(blocked)),
+    }
+}
+
+/// What `hale check <dir>` reports for a seed of in-memory files: the
+/// directory of `files` loaded whole under `Config::check(true, false)`
+/// (a directory's check holds the whole-program rules, as
+/// `check_program` did), the desugar sequence generating the api binding
+/// the program's own `api:` entry asks for, and the load's diagnostics
+/// when the load fails, the check's otherwise (`load_for_check`, then
+/// `demand_check`). The verb prints its default advisories after these
+/// (the unbounded-allocation survey and the borrow rule); they are
+/// passes of their own, not the check, and are not here.
+pub fn check_files(files: &[(&str, &str)]) -> Vec<Diag> {
+    let dir = PathBuf::from(SEED_DIR);
+    let buffers = buffers(files);
+    match Snapshot::load(&dir, LoadMode::WholeSeed, &Overlay::new(&buffers), Config::check(true, false)) {
+        Ok(snap) => checked(&snap),
+        Err(hale_frontend::snapshot::LoadError::Load(failure)) => failure.diags,
+        Err(hale_frontend::snapshot::LoadError::Refused(msg)) => {
+            panic!("`hale check` refuses only an `--api` or `--env` it was not asked for: {msg}")
+        }
     }
 }
 
