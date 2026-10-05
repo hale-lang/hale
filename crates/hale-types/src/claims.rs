@@ -51,51 +51,52 @@ use crate::effects::close;
 /// answers about the same program, which is worse than the two
 /// implementations this change set out to delete.
 ///
-/// One result, two consumers. The claim rows come from `universe`;
-/// the issues are `diags`, which cover clause enumeration AND group
-/// resolution AND vacuity.
-pub(crate) struct Selection<'a> {
-    pub universe: ClauseUniverse<'a>,
+/// One result, three consumers: the check reports `diags`, the
+/// lowering turns `claims` into rows and carries `groups` with them,
+/// and the artifact projects `adoption` to identities
+/// ([`LawSelection::identities`]). The issues cover clause
+/// enumeration AND group resolution AND vacuity.
+///
+/// F.40 phase 4, A2: it is computed once per snapshot, a family cell
+/// (`Snapshot::demand_law_selection`), and handed to each reader;
+/// every reader used to run selection again for itself (four runs for
+/// one `hale check --dump-topology`). A bundle no snapshot holds (the
+/// test entries) selects for itself through [`select_laws`].
+#[derive(Debug, Clone)]
+pub struct LawSelection {
+    /// The clauses selected, in authored order: the world tier's, the
+    /// adopted constitutions', then the library tier's.
+    pub claims: Vec<ClaimDecl>,
+    /// claim name → originating constitution (adopted clauses).
+    pub origins: BTreeMap<String, String>,
+    /// claim name → attribution alias (library-tier clauses).
+    pub library: BTreeMap<String, Option<String>>,
+    /// The constitutions adopted: the roots named and their closure.
+    pub adoption: AdoptionInfo,
+    /// Every diagnostic selection produced, in the author's spelling.
     pub diags: Vec<Diag>,
     /// Per-group outcome, by RAW name — carried, never re-derived.
     pub groups: BTreeMap<String, GroupSelection>,
+    /// The deployment environment the selection was made for (GH
+    /// #409): the artifact's `evaluation.environment`, carried here as
+    /// data because the binding is an input of selection itself (an
+    /// injected constitution's diagnostics name it).
+    pub environment: Option<String>,
 }
 
-pub(crate) fn select<'a>(
-    programs: &[&'a Program],
-    import_renames: &[(Vec<String>, String)],
-) -> Selection<'a> {
-    let universe = enumerate_clauses(programs, import_renames);
-    let (mut diags, _, groups) =
-        claims_report_inner(programs, import_renames);
-    crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
-    for d in &mut diags {
-        if d.kind == hale_syntax::error::DiagKind::Type {
-            d.kind = hale_syntax::error::DiagKind::Claim;
-        }
+impl LawSelection {
+    /// The identities of the constitutions adopted — GH #409's
+    /// normalized-closure digests — projected from the adoption over
+    /// `programs`, the programs selection read (whose declarations the
+    /// digests cover). The artifact's `evaluation.roots` and `closure`
+    /// read it, and the environment matrix compares the roots.
+    pub fn identities(&self, programs: &[&Program]) -> Adoption {
+        adoption_identities(programs, &self.adoption)
     }
-    Selection { universe, diags, groups }
 }
 
-/// The identities of the constitutions actually adopted — GH #409's
-/// normalized-closure digests.
-///
-/// GH #476 Change 9: both consumers (the artifact's constitution
-/// section, `hale fleet`'s matrix) wanted ONLY the identities and
-/// discarded the diagnostics and outcomes that came with them,
-/// which meant every artifact dump ran the whole legacy evaluation
-/// for a value it threw away. Adoption is settled during law
-/// selection, so this stops there.
-pub fn constitution_identities(
-    programs: &[&Program],
-    import_renames: &[(Vec<String>, String)],
-) -> Adoption {
-    let (_d, adoption, _groups) =
-        claims_report_inner(programs, import_renames);
-    adoption_identities(programs, adoption)
-}
-
-/// GH #476 Change 9 — LAW SELECTION only: which laws exist at all.
+/// GH #476 Change 9 — LAW SELECTION only: which laws exist at all,
+/// for the environment `env` binds.
 ///
 /// Clause enumeration (constitutions: unknown, cyclic, illegally
 /// adopted, colliding), group resolution (a member naming nothing,
@@ -109,16 +110,24 @@ pub fn constitution_identities(
 /// (`judgment::claim_law_diags`). Before Change 9 both halves lived
 /// here AND in the engines, and `hale check` read this copy while
 /// the artifact read the other.
-pub fn selection_diags(
-    programs: &[&Program],
-    import_renames: &[(Vec<String>, String)],
-) -> Vec<Diag> {
-    select(programs, import_renames).diags
-}
-
-/// Diagnostics plus per-claim outcomes (the artifact's rows).
+///
 /// Demangles cross-seed symbols in the diagnostics so witnesses name
 /// what the author wrote.
+pub fn select_laws(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+    env: &EnvBinding,
+) -> LawSelection {
+    let mut selection = claims_report_inner(programs, import_renames, env);
+    crate::stdlib_bodies::demangle_imports(&mut selection.diags, import_renames);
+    for d in &mut selection.diags {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
+    selection
+}
+
 /// GH #409 (review finding 3): a constitution's identity is its
 /// NORMALIZED CLOSURE, not its display name.
 ///
@@ -141,11 +150,10 @@ pub struct ConstitutionIdentity {
 
 
 /// Resolve an adoption's names to identities (name + normalized
-/// closure digest). Shared by the full report and by
-/// `constitution_identities`.
+/// closure digest): [`LawSelection::identities`].
 fn adoption_identities(
     programs: &[&Program],
-    adoption: AdoptionInfo,
+    adoption: &AdoptionInfo,
 ) -> Adoption {
     let mut consts: Vec<&ConstitutionDecl> = Vec::new();
     fn walk<'a>(items: &'a [TopDecl], out: &mut Vec<&'a ConstitutionDecl>) {
@@ -260,6 +268,13 @@ impl ResolvedGroup {
 
 /// What a deployment environment contributed to this evaluation: its
 /// label, and the constitutions it required.
+///
+/// An input of selection, passed as data ([`select_laws`]): the
+/// snapshot builds it from its configuration's environment, so a
+/// selection is explained by its own snapshot's environment whatever
+/// was loaded since (outside review of #1283, finding 1). It used to
+/// be a thread-local each demand and each serialization was wrapped
+/// in; F.40 phase 4, A2 left it no reader.
 #[derive(Debug, Default, Clone)]
 pub struct EnvBinding {
     pub name: Option<String>,
@@ -271,63 +286,21 @@ pub struct EnvBinding {
     pub injected: Vec<String>,
 }
 
-thread_local! {
-    /// A thread-local because the artifact is serialized, and claims
-    /// are evaluated, far from the CLI that knows the label —
-    /// threading an `EnvBinding` through every intervening signature
-    /// would buy nothing.
-    static ENV_BINDING: std::cell::RefCell<EnvBinding> =
-        const { std::cell::RefCell::new(EnvBinding {
-            name: None,
-            injected: Vec::new(),
-        }) };
-}
-
-/// Run `f` with `b` as the environment this evaluation is for, and
-/// restore whatever was bound before, unwinding included: the binding
-/// belongs to the snapshot being demanded or serialized, never to the
-/// last one loaded on the thread (outside review of #1283, finding 1).
-pub fn with_env_binding<R>(b: &EnvBinding, f: impl FnOnce() -> R) -> R {
-    struct Restore(Option<EnvBinding>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(prev) = self.0.take() {
-                ENV_BINDING.with(|e| *e.borrow_mut() = prev);
-            }
-        }
+fn injected_from_manifest(env: &EnvBinding, name: &str) -> Option<String> {
+    if env.injected.iter().any(|i| i == name) {
+        Some(match &env.name {
+            Some(env) => format!(
+                ". `[environments.{}]` in hale.toml requires it — \
+                 this entrypoint cannot see a declaration, so \
+                 either import the seed that declares it or fix \
+                 the manifest",
+                env
+            ),
+            None => ". It was required by hale.toml".to_string(),
+        })
+    } else {
+        None
     }
-    let prev = ENV_BINDING.with(|e| {
-        std::mem::replace(
-            &mut *e.borrow_mut(),
-            EnvBinding { name: b.name.clone(), injected: b.injected.clone() },
-        )
-    });
-    let _restore = Restore(Some(prev));
-    f()
-}
-
-pub fn current_environment() -> Option<String> {
-    ENV_BINDING.with(|e| e.borrow().name.clone())
-}
-
-fn injected_from_manifest(name: &str) -> Option<String> {
-    ENV_BINDING.with(|e| {
-        let b = e.borrow();
-        if b.injected.iter().any(|i| i == name) {
-            Some(match &b.name {
-                Some(env) => format!(
-                    ". `[environments.{}]` in hale.toml requires it — \
-                     this entrypoint cannot see a declaration, so \
-                     either import the seed that declares it or fix \
-                     the manifest",
-                    env
-                ),
-                None => ". It was required by hale.toml".to_string(),
-            })
-        } else {
-            None
-        }
-    })
 }
 
 /// GH #409: what an evaluation adopted.
@@ -355,6 +328,7 @@ fn expand_adoptions(
     consts: &[&ConstitutionDecl],
     adopts: &[Ident],
     lib_adopts: &[Ident],
+    env: &EnvBinding,
     claims: &mut Vec<ClaimDecl>,
     diags: &mut Vec<Diag>,
     info: &mut AdoptionInfo,
@@ -406,6 +380,7 @@ fn expand_adoptions(
     fn visit(
         name: &Ident,
         by_name: &BTreeMap<&str, &ConstitutionDecl>,
+        env: &EnvBinding,
         done: &mut BTreeSet<String>,
         stack: &mut Vec<String>,
         out: &mut Vec<(String, ClaimDecl)>,
@@ -434,7 +409,7 @@ fn expand_adoptions(
             // Manifest provenance: an injected adoption has no source
             // line, so the span points at the main locus and the
             // author sees no `adopt` to explain the error.
-            if let Some(extra) = injected_from_manifest(&name.name) {
+            if let Some(extra) = injected_from_manifest(env, &name.name) {
                 msg.push_str(&extra);
             }
             if let Some(near) = by_name.keys().find(|k| {
@@ -448,7 +423,7 @@ fn expand_adoptions(
         };
         stack.push(name.name.clone());
         for base in &cd.extends {
-            visit(base, by_name, done, stack, out, diags);
+            visit(base, by_name, env, done, stack, out, diags);
         }
         stack.pop();
         for e in &cd.entries {
@@ -463,6 +438,7 @@ fn expand_adoptions(
         visit(
             a,
             &by_name,
+            env,
             &mut done,
             &mut stack,
             &mut collected,
@@ -578,7 +554,9 @@ pub fn selected_clauses(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<(String, Option<String>)> {
-    let u = enumerate_clauses(programs, import_renames);
+    // Which clauses are selected does not depend on the environment's
+    // label: the binding only words a diagnostic, and none is read here.
+    let u = enumerate_clauses(programs, import_renames, &EnvBinding::default());
     u.claims
         .iter()
         .map(|c| {
@@ -593,6 +571,7 @@ pub fn selected_clauses(
 pub(crate) fn enumerate_clauses<'a>(
     programs: &[&'a Program],
     import_renames: &[(Vec<String>, String)],
+    env: &EnvBinding,
 ) -> ClauseUniverse<'a> {
     let mut library: BTreeMap<String, Option<String>> = BTreeMap::new();
     // ---- collect group decls + claims blocks (modules included) ----
@@ -668,6 +647,7 @@ pub(crate) fn enumerate_clauses<'a>(
         &consts,
         &adopts,
         &lib_adopts,
+        env,
         &mut claims,
         &mut diags,
         &mut adoption,
@@ -945,21 +925,38 @@ fn resolve_member(
 /// text, adoption, and group membership, so no entry point takes a
 /// graph (their callers built one for nothing until F.40 phase 1's
 /// review).
+///
+/// The clauses come from one enumeration ([`enumerate_clauses`]),
+/// which the group resolution below continues; the result is the
+/// whole selection, before [`select_laws`] puts its diagnostics in
+/// the author's spelling.
 fn claims_report_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, AdoptionInfo, BTreeMap<String, GroupSelection>) {
+    env: &EnvBinding,
+) -> LawSelection {
+    SELECTIONS.with(|n| n.set(n.get() + 1));
     let ClauseUniverse {
         claims,
-        origins: _,
-        library: _,
+        origins,
+        library,
         group_decls,
         adoption,
         diags,
-    } = enumerate_clauses(programs, import_renames);
+    } = enumerate_clauses(programs, import_renames, env);
     let mut diags = diags;
-    if group_decls.is_empty() && claims.is_empty() {
-        return (diags, adoption, BTreeMap::new());
+    let nothing_to_resolve = group_decls.is_empty() && claims.is_empty();
+    let selection = |diags, groups| LawSelection {
+        claims,
+        origins,
+        library,
+        adoption,
+        diags,
+        groups,
+        environment: env.name.clone(),
+    };
+    if nothing_to_resolve {
+        return selection(diags, BTreeMap::new());
     }
 
     // ---- decl indexes for member / topic resolution ----
@@ -1091,7 +1088,18 @@ fn claims_report_inner(
         groups.insert(g.name.name.clone(), rg);
     }
 
-    (diags, adoption, group_selection)
+    selection(diags, group_selection)
+}
+
+thread_local! {
+    static SELECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread ran law selection: the accounting a test
+/// reads to pin that a check, its laws and its artifact read one
+/// selection per snapshot (F.40 phase 4, A2), whoever asked for it.
+pub fn selections_on_this_thread() -> u64 {
+    SELECTIONS.with(|n| n.get())
 }
 
 

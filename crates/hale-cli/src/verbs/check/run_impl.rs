@@ -40,14 +40,18 @@ fn topology_artifact<'c>(
     if cell.get().is_none() {
         match snap
             .demand_model()
-            .and_then(|model| Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?)))
+            .and_then(|model| {
+                Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?, snap.demand_law_selection()?))
+            })
         {
-            Ok((model, effects, summary)) => {
-                // The artifact's environment label is the snapshot's own
-                // (outside review of #1283, finding 1). Its law evidence
-                // reads the check's effects certificate report and the
-                // allocation summary the check read.
-                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary));
+            Ok((model, effects, summary, laws)) => {
+                // The artifact's law rows, constitution identities and
+                // environment label are the snapshot's law selection, the
+                // one the check reported (outside review of #1283,
+                // finding 1). Its law evidence reads the check's effects
+                // certificate report and the allocation summary the check
+                // read.
+                let art = hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary, laws);
                 let _ = cell.set(art);
             }
             Err(b) => return Err(refuse_without_model(target, doing, b)),

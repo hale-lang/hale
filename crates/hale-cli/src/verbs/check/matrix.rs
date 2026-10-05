@@ -271,10 +271,16 @@ pub(crate) fn constitution_identities(
     bundle.import_renames = renames;
     let progs: Vec<&Program> =
         bundle.programs.values().copied().collect();
-    let ids = hale_types::claims::constitution_identities(
+    // The projection the artifact reads, over the programs loaded
+    // here (the pair's snapshot is A3's): one definition of the
+    // identities. No environment is bound: the label only words a
+    // diagnostic, which is discarded.
+    let ids = hale_types::claims::select_laws(
         &progs,
         &bundle.import_renames,
-    );
+        &hale_types::claims::EnvBinding::default(),
+    )
+    .identities(&progs);
     // ROOTS, not the whole closure: the manifest asked for these by
     // name, so these are what must agree across entrypoints. The
     // closure follows from them.
