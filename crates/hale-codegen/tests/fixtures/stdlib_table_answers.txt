@@ -615,7 +615,6 @@ std::io::file::__seek | lookup=io::file@3 | locus=false | effects=syscall | sig=
 std::io::file::__write_bytes | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__write_bytes
 std::io::file::at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=at_eof
 std::io::file::clos | lookup=io::file@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::file::clos` | suggest=-
-std::io::file::close | lookup=io::file@3 | locus=false | effects=- | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::file::close` — did you mean `std::io::file::__close`? | suggest=__close
 std::io::file::open | lookup=io::file@3 | locus=false | effects=syscall | sig=(Str, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=open
 std::io::file::read_line | lookup=io::file@3 | locus=false | effects=syscall|block | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=read_line
 std::io::file::seek | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=seek

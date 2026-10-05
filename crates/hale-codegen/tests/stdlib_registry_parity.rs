@@ -49,11 +49,9 @@ use crate::stdlib_dispatch_coverage::{scrape, ArmCall, ArmKind, Position};
 
 /// The rows no dispatcher lowers and no rename reaches, each with its
 /// reason. A new one is a public name that cannot be lowered, so it is
-/// named here deliberately.
-const UNLOWERED: &[(&str, &str)] = &[(
-    "std::io::file::close",
-    "a signature row the surface never listed, with no arm and no rename (the descriptor close the seeds call is `__close`)",
-)];
+/// named here deliberately. None since F.40 phase 4, S5 removed the one
+/// there was (`std::io::file::close`, a signature and nothing else).
+const UNLOWERED: &[(&str, &str)] = &[];
 
 /// What the arms of the given positions do with each path: for every
 /// arm that lowers it, the call that arm makes; and whether some arm

@@ -262,6 +262,24 @@ fn ecdsa_p256_sign_is_fallible_and_its_bare_call_is_refused() {
     assert!(wrong.iter().any(|m| m.contains("does not match success type") && m.contains("Bytes")), "got: {wrong:?}");
 }
 
+/// F.40 phase 4, S5 (a classified correction): `std::io::file::close`
+/// does not exist. Its row was a signature and nothing else (no surface
+/// entry, no lowering), so a call was an unknown function whose arity the
+/// signature still checked; the row is gone, and a call is the unknown
+/// function alone.
+#[test]
+fn io_file_close_is_an_unknown_function_and_nothing_else() {
+    let m = msgs("fn main() {\n    let r = std::io::file::close(1, 2);\n    println(r);\n}\n");
+    assert_eq!(
+        m,
+        vec![
+            "unknown stdlib function `std::io::file::close` — did you mean `std::io::file::__close`?"
+                .to_string()
+        ]
+    );
+    assert!(hale_types::stdlib_surface::row(&["std", "io", "file", "close"]).is_none());
+}
+
 #[test]
 fn statement_position_or_discards_value_type() {
     // `call() or handler(err);` in statement position discards the

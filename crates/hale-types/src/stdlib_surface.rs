@@ -203,10 +203,9 @@ pub enum Visibility {
     /// Called only by the stdlib's own seeds, and invisible to
     /// [`unknown_fn_error`] (a call from user code is an unknown
     /// function), [`effects_for`], [`suggest`] and the catalogue: the
-    /// paths a dispatcher has an arm for and the surface never listed,
-    /// plus `std::io::file::close`, a signature row the surface never
-    /// listed and nothing lowers. An internal row carries
-    /// [`EffectSet::UNCLASSIFIED`], which no query reads.
+    /// paths a dispatcher has an arm for and the surface never listed.
+    /// An internal row carries [`EffectSet::UNCLASSIFIED`], which no
+    /// query reads.
     Internal,
 }
 
@@ -737,11 +736,6 @@ pub const SURFACES: &[NsSurface] = &[
             row!("seek", SYSCALL, [Int, Int] -> Unit ! "IoError", Renamed),
             row!("write_bytes", SYSCALL, [Int, Bytes] -> Unit ! "IoError", Renamed),
             row!("write_line", SYSCALL, _, Renamed),
-            // A signature row the surface never listed, and nothing
-            // lowers: a call is an unknown function (did you mean
-            // `__close`?) whose arity and argument the signature still
-            // checks. Kept as it was by the fold (F.40 phase 4, S2).
-            internal!("close", [Int] -> Int, Unlowered),
         ],
         open_prefixes: &[],
     },
