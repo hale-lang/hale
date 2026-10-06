@@ -103,7 +103,7 @@ pub struct Flow {
 ///   starvation and birth-order laws ask this.
 ///
 /// A body that never returns is long-running; the converse does not
-/// hold (`run() { std::time::sleep(1m); }` is long-running and returns).
+/// hold (`run() { std::time::sleep(1min); }` is long-running and returns).
 #[derive(Clone)]
 pub struct RunRow {
     /// The locus as declared, and where: a declaration is found by its
@@ -459,7 +459,7 @@ mod tests {
     /// A module's loci have rows too.
     #[test]
     fn long_running_and_never_returns_are_two_columns() {
-        let src = "locus Sleeper { run() { std::time::sleep(1m); } }\n\
+        let src = "locus Sleeper { run() { std::time::sleep(1min); } }\n\
                    locus Daemon { run() { while true { std::time::sleep(1s); } } }\n\
                    locus Idle { run() { } }\n\
                    locus Plain { params { n: Int = 0; } }\n\

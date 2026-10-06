@@ -3400,11 +3400,11 @@ pub enum Literal {
     String(String),
     Bool(bool),
     Nil,
-    Duration(i64),
     Time(String),
     Bytes(Vec<u8>),
-    /// GH #1076: `3bp`, `1_250_000USD` — an integer immediately
-    /// followed by a unit name that is not a duration suffix.
+    /// GH #1076: `500ms`, `3bp`, `1_250_000USD` — an integer
+    /// immediately followed by a unit's name, as written; the catalogue
+    /// says which unit (the time units are the stdlib's, U4).
     Quantity { value: i64, unit: String },
 }
 

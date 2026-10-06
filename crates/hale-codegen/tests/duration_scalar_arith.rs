@@ -8,6 +8,9 @@
 //! (either order) and `Duration / Int` are plain integer ops.
 //! `Duration * Duration` stays rejected (ns² has no meaning) —
 //! now with a real diagnostic instead of the codegen catch-all.
+//! Since U4 (GH #1076) the algebra of the stdlib's `Duration`, a
+//! quantity like any, says all of this, and lowering emits the result
+//! its operator row names.
 
 #[path = "../../hale-types/tests/support/entries.rs"]
 mod entries;
@@ -65,11 +68,53 @@ fn duration_times_duration_is_rejected_with_a_pointer() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let diags = entries::check_program(&program);
+    // U4: the algebra's refusal, `Duration` being the stdlib's quantity.
     assert!(
-        diags.iter().any(|d| d
-            .message
-            .contains("cannot be multiplied or divided by another")),
+        diags.iter().any(|d| d.message
+            == "`Duration` * `Duration`: a product of two quantities is a quantity only when one is dimensionless \
+                (a ratio); neither is"),
         "expected the Duration×Duration diagnostic; got {:?}",
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+}
+
+/// U4 (GH #1076): `Duration` and `Time` are the stdlib's declarations
+/// and keep their representation class. A `Duration` prints its
+/// nanoseconds as it always did (decision 8), a `Time` its instant; a
+/// time literal of every unit of the stdlib's catalogue is that count of
+/// nanoseconds; and the algebra's results lower as the class they are
+/// (`Int * Duration` a `Duration`, `Time - Time` a `Duration`, `Time +
+/// Duration` a `Time`), an operator's row saying so.
+#[test]
+fn the_time_types_print_and_compute_as_they_always_did() {
+    let src = r#"
+        fn main() {
+            let t = `2026-05-08T12:00:00Z`;
+            println(1500ms);
+            println(t + 90s);
+            println((t + 2min) - t);
+            println(3 * 1h);
+            println(1day / 4);
+            println(to_string(250us) + " " + 7ns);
+            let n = 4;
+            println(n * 1ms + 1s);
+            println(1day == 24h && 1h == 60min && 1min == 60s);
+        }
+    "#;
+    let bin = harness::unique_bin(&format!("hale_dur_print_{}", std::process::id()));
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success());
+    let lines = [
+        "1500000000ns",
+        "2026-05-08T12:01:30Z",
+        "120000000000ns",
+        "10800000000000ns",
+        "21600000000000ns",
+        "250000ns 7ns",
+        "1004000000ns",
+        "true",
+    ];
+    assert_eq!(String::from_utf8_lossy(&out.stdout), lines.map(|l| format!("{l}\n")).concat());
 }

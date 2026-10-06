@@ -89,13 +89,13 @@ role_decl         = "role" , IDENTIFIER ,
    unit is that multiple of the pure number (`unit pct = 1/100;`). Both
    integers of a factor are positive: a zero is a parse error. The
    magnitude and its unit may be one token (`1_000ns`, `1024KiB`: a
-   DURATION_LIT or QUANTITY_LIT) or two (`1_000 ns`), and the two
+   QUANTITY_LIT) or two (`1_000 ns`), and the two
    spellings mean the same. `unit` is contextual: at top level it is
    the declaration when a name and then `=` or `;` follow it. Unit
    names are never mangled. *)
 unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
-                  | [ INT_LIT , "/" ] , ( QUANTITY_LIT | DURATION_LIT ) ;
+                  | [ INT_LIT , "/" ] , QUANTITY_LIT ;
 
 (* GH #901 — `target_decl` is the one `top_decl` a module body may
    NOT hold: it is a program-level build directive, and every
@@ -980,8 +980,7 @@ scalar_kind       = "quantity" | "point" | "distinct" ;
    `100 ms`. *)
 denomination      = "in" , ( IDENTIFIER
                            | INT_LIT , IDENTIFIER
-                           | QUANTITY_LIT
-                           | DURATION_LIT ) ;
+                           | QUANTITY_LIT ) ;
 
 (* Each clause at most once; a name other than these three is a
    parse error that lists them. `range`, `round` and `origin` are
@@ -990,7 +989,7 @@ scalar_clauses    = "{" , { scalar_clause , ";" } , "}" ;
 scalar_clause     = "range" , ":" , range_expr
                   | "round" , ":" , IDENTIFIER
                   | "origin" , ":" , [ "-" ] ,
-                    ( INT_LIT , IDENTIFIER | QUANTITY_LIT | DURATION_LIT ) ;
+                    ( INT_LIT , IDENTIFIER | QUANTITY_LIT ) ;
 
 (* The first alternative is the ALIAS form: a second spelling of an
    existing type, transparent everywhere a type is written — see
@@ -1484,8 +1483,7 @@ literal           = INT_LIT
                   | STRING_LIT
                   | FSTRING_LIT       (* v1.x-10: f"... {expr} ..." *)
                   | BYTES_LIT
-                  | DURATION_LIT
-                  | QUANTITY_LIT      (* #1076: `3bp` *)
+                  | QUANTITY_LIT      (* #1076: `3bp`, `500ms` *)
                   | TIME_LIT
                   | "true"
                   | "false"
@@ -1573,7 +1571,7 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 (* DECIMAL_LIT    = ?... 'd' suffix?                             *)
 (* STRING_LIT     = ?"..." with escapes; r"..." raw; """..."""?  *)
 (* BYTES_LIT      = ?b"..."?                                     *)
-(* DURATION_LIT   = ?<int>("ns"|"us"|"ms"|"s"|"m"|"h"|"d")+?     *)
-(* QUANTITY_LIT   = ?<decimal int><identifier>, no space, the    *)
-(*                   identifier not a DURATION_LIT suffix?        *)
+(* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)
+(*                   unit is the catalogue's (`500ms` the        *)
+(*                   stdlib's time catalogue's `ms`)?            *)
 (* TIME_LIT       = ?`<iso-8601>`?                               *)

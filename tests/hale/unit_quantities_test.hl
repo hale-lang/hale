@@ -4,18 +4,20 @@
 // type error is refused with pinned wording in
 // crates/hale-types/tests/unit_quantities.rs.
 //
-// The time units are renamed (`nsec`, `usec`, `msec`, `sec`): a duration
-// suffix names no unit until `Time` and `Duration` are declarations
-// (U4), and until then the two are the primitives they are, so the
-// quantity here is `Span` and its point `Instant`. `Bytes` is the buffer
-// type, so the byte quantity is `ByteCount`. `bp` is defined against the
-// number (decision 2).
+// The program declares a time catalogue of its own (`nsec`, `usec`,
+// `msec`, `sec`, `minute`), beside the stdlib's (`ns` … `min`, U4), and
+// its quantity `Span` and point `Instant`: two disjoint components, so
+// these lines test a program's catalogue, not the stdlib's. `Bytes` is
+// the buffer type, so the byte quantity is `ByteCount`. `bp` is defined
+// against the number (decision 2). A literal counts in its quantity's
+// denomination when it is a whole count of it (`3sec` is 3,000,000,000
+// of `Span`, `1_250_000USD` 125,000,000 of `Money`).
 
 unit nsec;
 unit usec = 1_000 nsec;
 unit msec = 1_000 usec;
 unit sec = 1_000 msec;
-unit min = 60 sec;
+unit minute = 60 sec;
 
 unit B;
 unit KiB = 1024 B;
@@ -61,8 +63,8 @@ fn rate(n: Int) -> Ratio {
 // A conversion that divides fails with an `InexactError` under its `or`.
 fn rounded_up(e: InexactError) -> Seconds {
     std::test::assert_eq_str(e.kind, "Seconds", "the InexactError names the target type");
-    std::test::assert_eq_int(e.value, 3500, "the count converted, in milliseconds");
-    std::test::assert_eq_int(e.divisor, 1000, "what it was divided by");
+    std::test::assert_eq_int(e.value, 3_500_000_000, "the count converted, in nanoseconds");
+    std::test::assert_eq_int(e.divisor, 1_000_000_000, "what it was divided by");
     return 4sec;
 }
 
@@ -92,7 +94,7 @@ fn main() {
     // Time: a sum at the finer denomination, converted at compile time.
     let d = 3sec + 500msec;
     std::test::assert(d == 3500msec, "3s + 500ms is 3500ms");
-    std::test::assert_eq_str(to_string(d), "3500msec", "a quantity prints its count and its unit");
+    std::test::assert_eq_str(to_string(d), "3500000000nsec", "a quantity prints its count and its unit");
     let whole = d.in(sec) or 0;
     std::test::assert(whole == 0sec, "3500ms is no whole number of seconds: the substitute");
     let secs = d.in(sec) or floor;
@@ -122,7 +124,7 @@ fn main() {
     std::test::assert(!ok, "a comparison is exact at the finer denomination");
     let out: WireStamp = a;
     std::test::assert(out == Instant(1_700_000_000_123_456usec), "ns -> us narrows; the type says how");
-    std::test::assert(a + 1min > a, "a point moves by a quantity");
+    std::test::assert(a + 1minute > a, "a point moves by a quantity");
 
     // Ticks and prices.
     let q = Quote { bid: Price(100tick), ask: Price(103tick) };
@@ -136,7 +138,7 @@ fn main() {
     // denominations (decision 2), and narrows where a policy is.
     let fee = 1_250_000USD * 3bp;
     std::test::assert(fee == 375USD, "375 USD, q = 1, exact");
-    std::test::assert_eq_str(to_string(fee), "3750000 Money in 1/100 cent", "the product's denomination");
+    std::test::assert_eq_str(to_string(fee), "375000000 Money in 1/10000 cent", "the product's denomination");
     let odd = 1_234_567USD * 3bp;
     std::test::assert(odd > 37_037cent && odd < 37_038cent, "370.3701 USD, exact here");
     let paid: Ledger = odd;

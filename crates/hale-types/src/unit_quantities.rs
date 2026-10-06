@@ -127,8 +127,21 @@ impl<'r> ScalarTypes<'r> {
     /// every other type, and for a declaration the laws left without a
     /// denomination or a catalogue.
     pub fn quantity(&self, ty: &Ty) -> Option<QType> {
-        let Ty::Named(name) = ty else { return None };
+        let name = match ty {
+            // The stdlib's `Duration` and `Time` (U4).
+            Ty::Prim(p) => {
+                let &i = self.quantities.get(crate::ty::prim_name(*p))?;
+                return (self.rows.scalars[i].primitive == Some(*p)).then(|| self.declared(i)).flatten();
+            }
+            Ty::Named(name) => name,
+            _ => return None,
+        };
         if let Some(&i) = self.quantities.get(name.as_str()) {
+            // The stdlib's declarations are the primitives, which a name
+            // never reaches (`Ty::Named("Duration")` is no type).
+            if self.rows.scalars[i].primitive.is_some() {
+                return None;
+            }
             return self.declared(i);
         }
         let (base, spelling) = name.split_once(" in ")?;
@@ -190,7 +203,7 @@ impl<'r> ScalarTypes<'r> {
     /// The component's quantity: what a literal of one of its units is,
     /// and what two points of it differ by.
     fn principal(&self, component: usize) -> Option<usize> {
-        self.rows.scalars.iter().position(|s| s.principal && s.component == Some(component))
+        self.rows.principal(component)
     }
 
     /// The factor from `from` to `to`, exact.
@@ -199,7 +212,7 @@ impl<'r> ScalarTypes<'r> {
     }
 
     fn one(&self, unit: usize) -> Denom {
-        Denom { unit: self.rows.units[unit].site.id, multiple: Ratio::one() }
+        Denom { unit: self.rows.units[unit].site, multiple: Ratio::one() }
     }
 
     /// The denomination as a type's name spells it: the first unit it is
@@ -226,7 +239,7 @@ impl<'r> ScalarTypes<'r> {
         let unit = self.rows.scalars[base]
             .denomination
             .as_ref()
-            .and_then(|d| self.rows.units.iter().position(|u| u.site.id == d.unit))
+            .and_then(|d| self.rows.units.iter().position(|u| u.site == d.unit))
             .unwrap_or(component);
         let m = self.factor(denom, &self.one(unit)).unwrap_or_else(|| denom.multiple.clone());
         format!("{} {}", multiple_text(&m), self.rows.units[unit].name)
@@ -241,16 +254,16 @@ impl<'r> ScalarTypes<'r> {
             None => (Ratio::one(), spelling),
         };
         let u = self.rows.unit_named(unit)?;
-        Some(Denom { unit: self.rows.units[u].site.id, multiple })
+        Some(Denom { unit: self.rows.units[u].site, multiple })
     }
 
     /// The type of `base`'s kind at `denom`: `base` itself when that is
     /// its own denomination, else the synthesized type.
     pub fn at_denomination(&self, base: usize, denom: &Denom) -> Ty {
         let row = &self.rows.scalars[base];
-        let Some(own) = &row.denomination else { return Ty::Named(row.name.clone()) };
+        let Some(own) = &row.denomination else { return row.ty() };
         if self.factor(denom, own) == Some(Ratio::one()) {
-            return Ty::Named(row.name.clone());
+            return row.ty();
         }
         let component = row.component.unwrap_or(0);
         Ty::Named(format!("{} in {}", row.name, self.spelling(base, component, denom)))
@@ -279,16 +292,34 @@ impl<'r> ScalarTypes<'r> {
 
     /// The note at the declaration a quantity's type is (a synthesized
     /// type's base).
-    fn note(&self, q: &QType) -> (Span, String) {
+    fn note(&self, q: &QType) -> Option<(Span, String)> {
         let row = &self.rows.scalars[q.row];
-        (row.name_span, format!("`{}` is declared here", row.display))
+        // The stdlib's declarations (`Duration`, `Time`) are in no file
+        // of the program.
+        (row.site.universe == crate::placement::SiteUniverse::User)
+            .then(|| (row.name_span, format!("`{}` is declared here", row.display)))
     }
 
-    /// The type a quantity literal of `unit` is: its component's
-    /// quantity, at the literal's own unit; or why there is none.
-    pub fn literal_type(&self, value: i64, unit: &str) -> Result<Ty, String> {
+    /// The type a quantity literal of `unit` is, and its count there: its
+    /// component's quantity at the quantity's denomination when the
+    /// literal is a whole count of it (`500ms` is 500,000,000 of
+    /// `Duration`, `3USD` 300 of `Money` in cent), else at the literal's
+    /// own unit (`5mK` of a quantity in `K` is `TempDelta in mK`, 5); or
+    /// why there is none.
+    pub fn quantity_literal(&self, value: i64, unit: &str) -> Result<(Ty, i64), String> {
+        let ty = self.literal_type(value, unit)?;
+        let at_quantity = self.rows.unit_named(unit).and_then(|u| self.rows.literal_at_quantity(value, u));
+        Ok(match at_quantity {
+            Some((p, count)) if !matches!(ty, Ty::Unknown) => (self.rows.scalars[p].ty(), count),
+            _ => (ty, value),
+        })
+    }
+
+    /// The type a quantity literal of `unit` is at its own unit (its
+    /// component's quantity there); or why there is none.
+    fn literal_type(&self, value: i64, unit: &str) -> Result<Ty, String> {
         let Some(u) = self.rows.unit_named(unit) else {
-            let suggestion = crate::stdlib_surface::nearest_name(unit, self.rows.units.iter().map(|u| u.name.as_str()))
+            let suggestion = self.rows.nearest_unit(unit)
                 .map(|n| format!("; did you mean `{n}`?"))
                 .unwrap_or_default();
             return Err(format!("`{value}{unit}`: no `unit` declares `{unit}`{suggestion}"));
@@ -373,7 +404,7 @@ impl<'r> ScalarTypes<'r> {
     fn refused(&self, message: String, sides: &[&QType]) -> QBinop {
         let mut notes: Vec<(Span, String)> = Vec::new();
         for q in sides {
-            let n = self.note(q);
+            let Some(n) = self.note(q) else { continue };
             if !notes.contains(&n) {
                 notes.push(n);
             }
@@ -492,6 +523,24 @@ impl<'r> ScalarTypes<'r> {
                 }
             ))),
             // Quotients.
+            // U4, until its second correction: a `Duration`'s quotient
+            // by an `Int` is the integer division it was.
+            (Div, Some(q), None) if q.kind == QKind::Quantity && is_int(rt) && self.rows.scalars[q.base].primitive.is_some() => {
+                Some(QBinop::Typed { ty: lt.clone(), left: None, right: None })
+            }
+            (Div, Some(a), Some(b))
+                if a.kind == QKind::Quantity
+                    && b.kind == QKind::Quantity
+                    && a.component == b.component
+                    && self.rows.scalars[a.base].primitive.is_some() =>
+            {
+                Some(both(format!(
+                    "`{}` / `{}`: `Duration` cannot be divided by another `Duration` — scale with an Int instead \
+                     (`n * 1ms`, `d / 2`)",
+                    name(lt),
+                    name(rt)
+                )))
+            }
             (Div, Some(q), None) if q.kind == QKind::Quantity && is_int(rt) => {
                 match crate::unit_values::int_literal(r) {
                     Some(1) | None => Some(QBinop::Typed { ty: lt.clone(), left: None, right: None }),
@@ -579,7 +628,7 @@ impl<'r> ScalarTypes<'r> {
 
     /// A unit of `q`'s denomination, for a hint (`cent`).
     pub fn unit_hint(&self, q: &QType) -> String {
-        self.rows.units.iter().find(|u| u.site.id == q.denom.unit).map_or_else(String::new, |u| u.name.clone())
+        self.rows.units.iter().find(|u| u.site == q.denom.unit).map_or_else(String::new, |u| u.name.clone())
     }
 
     /// What a point of `q` moves by: its component's quantity at the
@@ -601,7 +650,7 @@ impl<'r> ScalarTypes<'r> {
     pub fn notes(&self, sides: &[Option<&QType>]) -> Vec<(Span, String)> {
         let mut notes: Vec<(Span, String)> = Vec::new();
         for q in sides.iter().flatten() {
-            let n = self.note(q);
+            let Some(n) = self.note(q) else { continue };
             if !notes.contains(&n) {
                 notes.push(n);
             }
@@ -626,9 +675,6 @@ impl<'r> ScalarTypes<'r> {
         let (multiple, unit, text) = match arg {
             Expr::Ident(id) => (1, id.name.as_str(), id.name.clone()),
             Expr::Literal(Literal::Quantity { value, unit }, _) if *value > 0 => (*value as u64, unit.as_str(), format!("{value}{unit}")),
-            Expr::Literal(Literal::Duration(_), _) => {
-                return Err("a duration suffix is `Duration`'s, which is no quantity of a declared unit until U4 (GH #1076)".into())
-            }
             _ => return Err("its argument names a unit (`.in(cent)`) or a multiple of one (`.in(100msec)`)".into()),
         };
         let Some(u) = self.rows.unit_named(unit) else {
@@ -642,7 +688,7 @@ impl<'r> ScalarTypes<'r> {
                 self.rows.scalars[q.base].display
             ));
         }
-        Ok(Denom { unit: self.rows.units[u].site.id, multiple: Ratio::new(BigInt::from(multiple), BigInt::from(1)).expect("positive") })
+        Ok(Denom { unit: self.rows.units[u].site, multiple: Ratio::new(BigInt::from(multiple), BigInt::from(1)).expect("positive") })
     }
 
     /// What `.split(u)` makes of a value of `q`: the type of the rest
@@ -663,6 +709,11 @@ impl<'r> ScalarTypes<'r> {
     /// (`37037 Money in 1/100 cent`, `3 Bucket`); a point, nothing.
     pub fn printed_unit(&self, q: &QType) -> Option<String> {
         if q.kind == QKind::Point {
+            return None;
+        }
+        // A `Duration` prints as it always has (decision 8): its
+        // representation class writes the count and `ns` itself.
+        if !q.synthesized && self.rows.scalars[q.row].primitive.is_some() {
             return None;
         }
         let spelled = self.spelling(q.base, q.component, &q.denom);

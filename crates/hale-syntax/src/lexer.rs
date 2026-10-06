@@ -68,17 +68,11 @@ pub enum TokenKind {
     FStringLit(Vec<FStringPart>),
     /// Bytes literal payload.
     BytesLit(Vec<u8>),
-    /// Duration literal. `ns` is its value in nanoseconds, which is
-    /// what every reader of a duration reads. `spelled` keeps what was
-    /// written, the magnitude and the suffix (`100ms` is `(100, "ms")`),
-    /// so a reader that needs the unit (a `unit` declaration's factor,
-    /// a denomination: GH #1076) does not recover it from the scaled
-    /// value; `None` for a compound literal (`1h30m`), which has no one
-    /// suffix.
-    DurationLit { ns: i64, spelled: Option<(i64, String)> },
     /// GH #1076: a quantity literal, a decimal integer immediately
-    /// followed by a name that is not a duration suffix (`3bp`,
-    /// `1_250_000USD`): the magnitude and the unit's name as written.
+    /// followed by a name (`500ms`, `3bp`, `1_250_000USD`): the
+    /// magnitude and the unit's name as written. Which unit the name is
+    /// (the stdlib's time catalogue's `ms`, a program's `bp`) is the
+    /// catalogue's to say, not the lexer's (U4).
     QuantityLit(i64, String),
     /// Time literal carries the raw ISO-8601 text (without backticks).
     TimeLit(String),
@@ -779,21 +773,14 @@ impl<'a> Lexer<'a> {
             return Ok(Token::new(TokenKind::DecimalLit(num_text), span));
         }
 
-        // Duration suffix: ns / us / ms / s / m / h / d (we already checked d
-        // above; here d cannot follow because `d` alone would have been the
-        // decimal suffix; but `1d` as duration is still valid — we resolve by
-        // letting d-decimal win when followed by non-alpha, otherwise check
-        // duration unit). For simplicity, only treat it as duration when the
-        // base is an integer (no float).
-        if !is_float && is_duration_unit_start(self) {
-            return self.lex_duration_after(start, num_text.parse().unwrap_or(0));
-        }
-
-        // GH #1076: a quantity literal. Any other name written against
-        // a decimal integer is the unit of a quantity (`3bp`, `5kg`,
-        // `1_250_000USD`). An integer token followed by an identifier
-        // token was a parse error everywhere, so no program changes
-        // meaning. A float with a suffix stays the error it was.
+        // GH #1076: a quantity literal. A name written against a decimal
+        // integer is the unit of a quantity (`500ms`, `3bp`, `5kg`,
+        // `1_250_000USD`), resolved in the catalogue where the literal
+        // is checked: the time units are the stdlib's declarations
+        // (U4), no suffix the lexer knows. An integer token followed by
+        // an identifier token was a parse error everywhere, so no
+        // program changes meaning. A float with a suffix stays the
+        // error it was.
         if !is_float && matches!(self.peek(), Some(b) if b.is_ascii_alphabetic()) {
             let unit_start = self.pos;
             while matches!(self.peek(), Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
@@ -863,92 +850,6 @@ impl<'a> Lexer<'a> {
             },
         };
         Ok(Token::new(TokenKind::IntLit(v), span))
-    }
-
-    fn lex_duration_after(&mut self, start: usize, mut total_ns: i64) -> Result<Token, Diag> {
-        let magnitude = total_ns;
-        let suffix_start = self.pos;
-        let mut compound = false;
-        // We just consumed the leading integer; loop reading <unit> and
-        // optional <int><unit> compound suffixes.
-        loop {
-            let unit_start = self.pos;
-            let unit_chars = take_alpha_run(self);
-            let multiplier_ns = match unit_chars.as_str() {
-                "ns" => 1i64,
-                "us" => 1_000,
-                "ms" => 1_000_000,
-                "s" => 1_000_000_000,
-                "m" => 60_000_000_000,
-                "h" => 3_600_000_000_000,
-                "d" => 86_400_000_000_000,
-                _ => {
-                    let span = Span::new(start, self.pos);
-                    return Err(Diag::lex(
-                        span,
-                        format!("unknown duration unit: {}", unit_chars),
-                    ));
-                }
-            };
-            // total_ns is the most-recently consumed integer; multiply by unit
-            total_ns = total_ns
-                .checked_mul(multiplier_ns)
-                .ok_or_else(|| {
-                    Diag::lex(
-                        Span::new(unit_start, self.pos),
-                        "duration overflow",
-                    )
-                })?
-                + 0; // (running accumulator — we'll add subsequent components)
-
-            // Compound? Look for digit-led continuation.
-            let save = total_ns;
-            let cont_start = self.pos;
-            let mut has_more_digits = false;
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    has_more_digits = true;
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            }
-            if has_more_digits {
-                compound = true;
-                let next_int: i64 =
-                    self.source[cont_start..self.pos].parse().map_err(|_| {
-                        Diag::lex(
-                            Span::new(cont_start, self.pos),
-                            "invalid duration component",
-                        )
-                    })?;
-                // Recurse for the new integer.
-                let unit_start2 = self.pos;
-                let unit2 = take_alpha_run(self);
-                let mul2 = match unit2.as_str() {
-                    "ns" => 1i64,
-                    "us" => 1_000,
-                    "ms" => 1_000_000,
-                    "s" => 1_000_000_000,
-                    "m" => 60_000_000_000,
-                    "h" => 3_600_000_000_000,
-                    "d" => 86_400_000_000_000,
-                    _ => {
-                        return Err(Diag::lex(
-                            Span::new(unit_start2, self.pos),
-                            format!("unknown duration unit: {}", unit2),
-                        ));
-                    }
-                };
-                total_ns = save + next_int.checked_mul(mul2).unwrap_or(0);
-                continue;
-            }
-            break;
-        }
-        let span = Span::new(start, self.pos);
-        let spelled =
-            (!compound).then(|| (magnitude, self.source[suffix_start..self.pos].to_string()));
-        Ok(Token::new(TokenKind::DurationLit { ns: total_ns, spelled }, span))
     }
 
     fn lex_string(&mut self, start: usize) -> Result<Token, Diag> {
@@ -1518,42 +1419,6 @@ fn is_compound_alpha(lx: &Lexer, offset: usize) -> bool {
     )
 }
 
-fn is_duration_unit_start(lx: &Lexer) -> bool {
-    let next = match lx.peek() {
-        Some(b) => b,
-        None => return false,
-    };
-    if !matches!(next, b'n' | b'u' | b'm' | b's' | b'h' | b'd') {
-        return false;
-    }
-    // Verify it's actually one of the legal units (ns, us, ms, s, m, h, d).
-    // Look ahead a few chars; if the alpha-run matches a known unit, yes.
-    let mut end = lx.pos;
-    while end < lx.bytes.len() && lx.bytes[end].is_ascii_alphabetic() {
-        end += 1;
-    }
-    let unit = &lx.source[lx.pos..end];
-    DURATION_SUFFIXES.contains(&unit)
-}
-
-/// The suffixes a duration literal takes (`500ms`), fixed in the lexer
-/// until `Time` and `Duration` are declarations of the time catalogue
-/// (GH #1076): the unit dialect's checker refuses a `unit` of one of
-/// these names, which no literal could ever reach.
-pub const DURATION_SUFFIXES: [&str; 7] = ["ns", "us", "ms", "s", "m", "h", "d"];
-
-fn take_alpha_run(lx: &mut Lexer) -> String {
-    let start = lx.pos;
-    while let Some(b) = lx.peek() {
-        if b.is_ascii_alphabetic() {
-            lx.pos += 1;
-        } else {
-            break;
-        }
-    }
-    lx.source[start..lx.pos].to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1623,13 +1488,16 @@ mod tests {
 
     #[test]
     fn lex_duration() {
-        let ks = kinds("100ms 5s 1s");
+        // A time literal is a quantity literal: the unit's name as
+        // written, which the stdlib's time catalogue resolves (U4).
+        let ks = kinds("100ms 5s 1s 3min");
         assert_eq!(
             ks,
             vec![
-                TokenKind::DurationLit { ns: 100_000_000, spelled: Some((100, "ms".into())) },
-                TokenKind::DurationLit { ns: 5_000_000_000, spelled: Some((5, "s".into())) },
-                TokenKind::DurationLit { ns: 1_000_000_000, spelled: Some((1, "s".into())) },
+                TokenKind::QuantityLit(100, "ms".into()),
+                TokenKind::QuantityLit(5, "s".into()),
+                TokenKind::QuantityLit(1, "s".into()),
+                TokenKind::QuantityLit(3, "min".into()),
                 TokenKind::Eof,
             ]
         );

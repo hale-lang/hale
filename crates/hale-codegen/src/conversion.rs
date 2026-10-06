@@ -115,7 +115,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let row = row.clone();
         let (v, ty) = lowered;
-        if ty != CodegenTy::Int {
+        if !is_quantity_repr(&ty) {
             return Err(CodegenError::UnsupportedAt(
                 format!("the conversion into `{}` converts an `Int`; its value lowered as {ty:?}", row.target),
                 e.span(),
@@ -140,7 +140,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         unit: &str,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let count = self.row(SiteKind::value(span)).and_then(|row| row.count).ok_or_else(|| {
+        let missing = || {
             CodegenError::UnsupportedAt(
                 format!(
                     "quantity literal `{value}{unit}` has no required `expression_typing` row: the checker converts a \
@@ -148,8 +148,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ),
                 span,
             )
-        })?;
-        Ok((self.context.i64_type().const_int(count as u64, true).into(), CodegenTy::Int))
+        };
+        let (count, ty) = match self.row(SiteKind::value(span)) {
+            Some(row) => (row.count.ok_or_else(missing)?, quantity_repr(&row.to)),
+            // U4: a body the checker types no row in (the stdlib's own,
+            // a `bindings { }` initializer) has the literal's own row of
+            // the stdlib's catalogue: a time literal is that count of
+            // `Duration`, in every program.
+            None if !self.current_body.is_some_and(|b| self.typed.has_conversions_in(b)) => {
+                let (count, ty) = hale_types::units::stdlib_literal(value, unit).ok_or_else(missing)?;
+                (count, quantity_repr(&ty))
+            }
+            None => return Err(missing()),
+        };
+        Ok((self.context.i64_type().const_int(count as u64, true).into(), ty))
+    }
+
+    /// GH #1076 (U4): what an arithmetic operator over a quantity or a
+    /// point at `span` results in, from its row: the representation the
+    /// operation is emitted in (`Int * Duration` a `Duration`, `Time -
+    /// Time` a `Duration`, a quantity counted in a denomination no
+    /// declaration names an `Int`). `None` for every other operator.
+    pub(crate) fn operator_result(&self, span: Span) -> Option<CodegenTy> {
+        if !self.typed.has_quantity_rows() {
+            return None;
+        }
+        Some(quantity_repr(&self.row(SiteKind::operator(span))?.to))
     }
 
     /// GH #1076 (U3): the unit a printed value's row writes after its
@@ -198,7 +222,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<Converted<'ctx>, CodegenError> {
         let (v, ty) = self.lower_expr(arg, scope)?;
-        if ty != CodegenTy::Int {
+        if !is_quantity_repr(&ty) {
             return Err(CodegenError::UnsupportedAt(
                 format!("`{}(…)` converts an `Int`; its value lowered as {ty:?}", row.target),
                 arg.span(),
@@ -368,15 +392,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             v = emit(self.builder.build_int_add(v, k, "unit.shift"))?;
         }
         if let Some(d) = row.split {
-            return self.lower_split(v, d);
+            return self.lower_split(v, d, quantity_repr(&row.to));
         }
         if machine.denominator == 1 {
-            return Ok(Converted::Value(v.into(), CodegenTy::Int));
+            return Ok(Converted::Value(v.into(), quantity_repr(&row.to)));
         }
         let q = i64_t.const_int(machine.denominator as u64, true);
         match row.policy {
             Some(Discharge::Round { policy, .. }) => {
-                self.lower_rounding(v, q, policy).map(|r| Converted::Value(r.into(), CodegenTy::Int))
+                self.lower_rounding(v, q, policy).map(|r| Converted::Value(r.into(), quantity_repr(&row.to)))
             }
             Some(Discharge::Clamp | Discharge::Wrap) | None => Err(CodegenError::UnsupportedAt(
                 format!(
@@ -483,14 +507,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i1_path: inexact,
             out_val_slot: Some(out_val_slot),
             out_err_slot,
-            success_ty: Some(CodegenTy::Int),
+            success_ty: Some(quantity_repr(&row.to)),
             payload_ty,
         })
     }
 
     /// `.split(u)`: the floored quotient by `u`'s count `d` and the
     /// remainder, which is then never negative, as a pair.
-    fn lower_split(&mut self, v: IntValue<'ctx>, d: i64) -> Result<Converted<'ctx>, CodegenError> {
+    fn lower_split(&mut self, v: IntValue<'ctx>, d: i64, rest_ty: CodegenTy) -> Result<Converted<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         let zero = i64_t.const_zero();
         let dc = i64_t.const_int(d as u64, true);
@@ -501,7 +525,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let whole = emit(self.builder.build_int_sub(quo, down, "unit.split.whole"))?;
         let lift = emit(self.builder.build_select(below, dc, zero, "unit.split.lift"))?.into_int_value();
         let rest = emit(self.builder.build_int_add(rem, lift, "unit.split.rest"))?;
-        let elem_tys = vec![CodegenTy::Int, CodegenTy::Int];
+        let elem_tys = vec![CodegenTy::Int, rest_ty];
         let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
         let bytes = storage_ty.size_of().expect("tuple storage type has known size");
         let tup_ptr = self.arena_alloc(bytes, "unit.split.alloc")?;
@@ -519,6 +543,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         Ok(Converted::Value(tup_ptr.into(), CodegenTy::Tuple(elem_tys)))
     }
+}
+
+/// The representation a value of a unit-dialect type `t` lowers as: the
+/// stdlib's `Duration` and `Time` keep their own class (U4), every other
+/// quantity, point, identity or range is the `Int` it counts.
+pub(crate) fn quantity_repr(t: &hale_types::ty::Ty) -> CodegenTy {
+    use hale_syntax::ast::PrimType;
+    match t {
+        hale_types::ty::Ty::Prim(PrimType::Duration) => CodegenTy::Duration,
+        hale_types::ty::Ty::Prim(PrimType::Time) => CodegenTy::Time,
+        hale_types::ty::Ty::Prim(PrimType::Bool) => CodegenTy::Bool,
+        _ => CodegenTy::Int,
+    }
+}
+
+/// Whether a value lowered as `ty` is one a conversion of the unit
+/// dialect converts: an `Int`, or a `Duration` or `Time` (U4).
+fn is_quantity_repr(ty: &CodegenTy) -> bool {
+    matches!(ty, CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time)
 }
 
 /// A row's bound as a machine `Int`: a bound past an `Int`'s is the

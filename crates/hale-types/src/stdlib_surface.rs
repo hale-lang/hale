@@ -1302,6 +1302,12 @@ pub const SURFACES: &[NsSurface] = &[
     },
     NsSurface {
         ns: &["time"],
+        // GH #1076 (U4): `Duration` and `Time` are declared in the stdlib's
+        // seed (`hale-stdlib/hl/time.hl`: the time catalogue, `type
+        // Duration = quantity Int in ns;`, `type Time = point Duration;`).
+        // Each is the primitive a type position reads by its name, so these
+        // rows take and return them as `SigTy::Duration` and `SigTy::Time`,
+        // nanoseconds at the C boundary as they always were.
         fns: &[
             // #353: the inverse of `time_from_unix`, which already yields
             // ISO-8601 text. Returns unix seconds. UTC only, and PURE — it

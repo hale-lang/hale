@@ -800,7 +800,7 @@ through the flow rows):
 - **long-running**: the `run()` body has a statement of its own. A
   nested child's `run()` runs to completion before its parent's
   begins, so any body delays the parent whether or not it returns: a
-  child whose `run()` is `std::time::sleep(1m)` is long-running and
+  child whose `run()` is `std::time::sleep(1min)` is long-running and
   draws this error. This rule reads it.
 - **never returns**: the `run()` body's last statement is a `while`
   with no exit whose condition never flips false (`while true`,

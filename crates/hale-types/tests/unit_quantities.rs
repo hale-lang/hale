@@ -22,16 +22,26 @@ mod entries;
 use entries::check_program;
 
 /// The declarations every program below starts with: the committed
-/// form's catalogue, its time units renamed (a duration suffix names no
-/// unit until U4, law 10) and `Duration`, `Time` and `Bytes` renamed
-/// (they are primitives until U4).
+/// form's catalogue, its time units renamed (the stdlib's time catalogue
+/// declares `ns` … `min`, U4, and these lines test a program's own) and
+/// `Duration`, `Time` and `Bytes` renamed (the first two are the
+/// stdlib's, the third the buffer type); and a mass counted in grams, so
+/// a literal of a finer unit (`5mg`) is no whole count of its quantity.
+/// A literal counts in its quantity's denomination when it is a whole
+/// count of it, so the operands a test wants at another denomination
+/// are made so: `seconds(3sec).in(sec)` is `Span in sec`.
 const DECLS: &str = "\
 unit nsec;
 unit usec = 1_000 nsec;
 unit msec = 1_000 usec;
 unit sec = 1_000 msec;
+unit mg;
+unit g = 1_000 mg;
+type Mass = quantity Int in g;
 unit B;
 unit KiB = 1024 B;
+type KiBs = ByteCount in KiB;
+fn kib(b: KiBs) -> KiBs { return b; }
 unit cent;
 unit USD = 100 cent;
 unit pct = 1/100;
@@ -181,19 +191,24 @@ fn round(policy: RoundPolicy, from_type: bool) -> Option<Discharge> {
 
 // The literals.
 
-/// A quantity literal is its component's quantity at its own unit: the
-/// declared quantity when that unit is its denomination, else the
-/// synthesized type. A unit's name is its own namespace: a local named
-/// like a unit neither shadows it nor is shadowed by it.
+/// A quantity literal is its component's quantity at the quantity's
+/// denomination when it is a whole count of it (U4: `3sec` is
+/// 3,000,000,000 of `Span`, as `500ms` is 500,000,000 of `Duration`),
+/// else at its own unit, the synthesized type (`5mg` of a `Mass` counted
+/// in grams). A unit's name is its own namespace: a local named like a
+/// unit neither shadows it nor is shadowed by it.
 #[test]
-fn a_literal_is_its_quantity_at_its_own_unit() {
+fn a_literal_is_its_quantity_at_its_denomination_when_whole() {
     assert_eq!(ty_of("", "5nsec"), "Span");
-    assert_eq!(ty_of("", "3sec"), "Span in sec");
-    assert_eq!(ty_of("", "1_250_000USD"), "Money in USD");
+    assert_eq!(ty_of("", "3sec"), "Span");
+    assert_eq!(ty_of("", "1_250_000USD"), "Money");
     assert_eq!(ty_of("", "3bp"), "Rate");
-    assert_eq!(ty_of("", "4KiB"), "ByteCount in KiB");
+    assert_eq!(ty_of("", "4KiB"), "ByteCount");
     assert_eq!(ty_of("", "3cent"), "Money");
-    clean("    let sec = 2;\n    let d = 3sec + 1sec;\n    let w = d.in(sec);\n    let n = sec + 1;\n");
+    assert_eq!(ty_of("", "2g"), "Mass");
+    assert_eq!(ty_of("", "5mg"), "Mass in mg");
+    assert_eq!(ty_of("", "500ms"), "Duration");
+    clean("    let sec = 2;\n    let d = 3sec + 1sec;\n    let w = d.in(sec) or floor;\n    let n = sec + 1;\n");
     one("    let q = 3xyz;\n", "3xyz", "`3xyz`: no `unit` declares `xyz`");
     one("    let q = 3usc;\n", "3usc", "`3usc`: no `unit` declares `usc`; did you mean `usec`?");
 }
@@ -212,26 +227,38 @@ fn a_literal_converts_where_it_flows_at_compile_time() {
         ..row(at, to, kind, factor)
     };
     assert_eq!(
-        rows("    let d: Span = 3sec;\n    let b: Bucket = 150msec;\n    let s: Seconds = 2_000msec;\n"),
+        rows(
+            "    let d: Span = 3sec;\n    let b: Bucket = 150msec;\n    let s: Seconds = 2_000msec;\n    \
+             let m: Mass = 2_000mg;\n"
+        ),
         [
-            literal("3sec", "Span", Widening, "1000000000", 3_000_000_000, None),
-            literal("150msec", "Bucket", Narrowing, "1/100", 1, round(RoundPolicy::Floor, true)),
+            // Already a count of `Span`: its own row, nothing to convert.
+            literal("3sec", "Span", Widening, "1", 3_000_000_000, None),
+            literal("150msec", "Bucket", Narrowing, "1/100000000", 1, round(RoundPolicy::Floor, true)),
             // 2000 msec is 2 sec, exactly: no narrowing.
-            literal("2_000msec", "Seconds", Widening, "1/1000", 2, None),
+            literal("2_000msec", "Seconds", Widening, "1/1000000000", 2, None),
+            // A literal at its own unit converts where it flows.
+            literal("2_000mg", "Mass", Widening, "1/1000", 2, None),
         ]
     );
     assert_eq!(
         rows("    let d = 3sec + 500msec;\n"),
         [
-            literal("3sec", "Span in msec", Widening, "1000", 3_000, None),
-            literal("500msec", "Span in msec", Widening, "1", 500, None),
+            literal("3sec", "Span", Widening, "1", 3_000_000_000, None),
+            literal("500msec", "Span", Widening, "1", 500_000_000, None),
         ]
     );
     one(
         "    let s: Seconds = 1_500msec;\n",
         "1_500msec",
-        "`Seconds` from `Span in msec` divides by 1,000: say what happens to the remainder: convert explicitly \
+        "`Seconds` from `Span` divides by 1,000,000,000: say what happens to the remainder: convert explicitly \
          (`.in(u) or floor`, `Seconds(…) or half_even`, `or <value>`, `or raise`), or give `Seconds` a `round:` policy",
+    );
+    one(
+        "    let m: Mass = 1_500mg;\n",
+        "1_500mg",
+        "`Mass` from `Mass in mg` divides by 1,000: say what happens to the remainder: convert explicitly \
+         (`.in(u) or floor`, `Mass(…) or half_even`, `or <value>`, `or raise`), or give `Mass` a `round:` policy",
     );
 }
 
@@ -241,7 +268,8 @@ fn a_literal_converts_where_it_flows_at_compile_time() {
 /// the same quantity at another, another quantity, a dimensionless one,
 /// an `Int`, a point, two points of one quantity with different origins,
 /// and an identity.
-const OPERANDS: &str = "    let q = span(1);\n    let s = 3sec;\n    let b = 4KiB;\n    let r = rate(3);\n    \
+const OPERANDS: &str = "    let q = span(1);\n    let s = seconds(3sec).in(sec);\n    let b = kib(4KiB).in(KiB);\n    \
+                        let r = rate(3);\n    \
                         let i = 2;\n    let p = Instant(q);\n    let k = Kelvin(300K);\n    let c = Celsius(0mK);\n    \
                         let o = OrderId(1);\n";
 
@@ -303,10 +331,7 @@ fn a_refusal_names_both_declarations() {
     let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "{errors:#?}");
     assert_eq!(errors[0].span.slice(&src), "5msec + 4KiB");
-    assert_eq!(
-        errors[0].message,
-        "`Span in msec` + `ByteCount in KiB`: different quantities, `Span` and `ByteCount`; `+` holds within one"
-    );
+    assert_eq!(errors[0].message, "`Span` + `ByteCount`: different quantities, `Span` and `ByteCount`; `+` holds within one");
     let notes: Vec<(&str, &str)> = errors[0].related.iter().map(|r| (r.span.slice(&src), r.label.as_str())).collect();
     assert_eq!(notes, [("Span", "`Span` is declared here"), ("ByteCount", "`ByteCount` is declared here")]);
     one("    let n = -Instant(span(1));\n", "-Instant(span(1))", "`-` of the point `Instant`: a point has no negation");
@@ -320,9 +345,15 @@ fn a_refusal_names_both_declarations() {
     one(
         "    let x: Money = 3sec;\n",
         "3sec",
-        "`Span in sec` is not `Money`: different quantities, `Span` and `Money`; no conversion holds between them",
+        "`Span` is not `Money`: different quantities, `Span` and `Money`; no conversion holds between them",
     );
-    one("    let y: Int = 3sec;\n", "3sec", "`Span in sec` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1sec`)");
+    one(
+        "    let y: Int = seconds(3sec).in(sec);\n",
+        "seconds(3sec).in(sec)",
+        "`Span in sec` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1sec`)",
+    );
+    // U4: the stdlib's `Duration` is a quantity like any.
+    one("    let y: Int = 3s;\n", "3s", "`Duration` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1ns`)");
     one("    let z: Span = 5;\n", "5", "`Int` is not `Span`: a count becomes a quantity by a unit (`n * 1nsec`)");
     clean("    let zero: Span = 0;\n");
     one(
@@ -348,18 +379,19 @@ fn a_refusal_names_both_declarations() {
 #[test]
 fn every_site_a_denomination_changes_is_a_row() {
     use ConversionKind::*;
-    let body = "    let d = span(3_500_000_000);\n    let s = 3sec;\n    let a: Span = s;\n    let w = wait(s);\n    \
+    let body = "    let d = span(3_500_000_000);\n    let s = seconds(3sec).in(sec);\n    let a: Span = s;\n    let w = wait(s);\n    \
                 let e = s + 1msec;\n    let f = d.in(sec) or floor;\n    let (whole, rest) = d.split(sec);\n    \
                 let b = Bucket(d);\n    let h = d / 2 or floor;\n    println(s);\n    let mut t = 0nsec;\n    \
                 t += s;\n    let c = Celsius(0mK);\n    let k = Kelvin(c);\n";
     assert_eq!(
         rows(body),
         [
-            Row { count: Some(3), ..row("3sec", "Span in sec", Widening, "1") },
+            row("seconds(3sec).in(sec)", "Span in sec", Widening, "1"),
+            Row { count: Some(3), ..row("3sec", "Seconds", Widening, "1/1000000000") },
             row("s", "Span", Widening, "1000000000"),
             row("s", "Span", Widening, "1000000000"),
-            row("s", "Span in msec", Widening, "1000"),
-            Row { count: Some(1), ..row("1msec", "Span in msec", Widening, "1") },
+            row("s", "Span", Widening, "1000000000"),
+            Row { count: Some(1_000_000), ..row("1msec", "Span", Widening, "1") },
             Row { policy: round(RoundPolicy::Floor, false), ..row("d.in(sec)", "Span in sec", Narrowing, "1/1000000000") },
             Row { split: Some(1_000_000_000), ..row("d.split(sec)", "Span", Widening, "1") },
             Row { policy: round(RoundPolicy::Floor, true), ..row("Bucket(d)", "Bucket", Narrowing, "1/100000000") },
@@ -381,14 +413,19 @@ fn every_site_a_denomination_changes_is_a_row() {
 fn a_return_and_a_default_convert_into_their_types() {
     use ConversionKind::*;
     let src = format!(
-        "{DECLS}type Fee {{ m: Money = 3USD; }}\nfn charge(m: Money = 2USD) -> Money {{ return m; }}\n\
-         fn main() {{\n    let f = Fee {{}};\n    println(f.m + charge());\n}}\n"
+        "{DECLS}type Dose {{ m: Mass = 3_000mg; }}\nfn dose(m: Mass = 2_000mg) -> Mass {{ return m; }}\n\
+         fn bytes(b: KiBs) -> ByteCount {{ return b.in(KiB); }}\n\
+         fn main() {{\n    let f = Dose {{}};\n    println(f.m + dose());\n    println(bytes(kib(1KiB)));\n}}\n"
     );
     let found = rows_of(&src);
     let at = |text: &str| found.iter().filter(|r| r.at == text).collect::<Vec<_>>();
-    assert_eq!(at("n * 1USD"), [&row("n * 1USD", "Money", Widening, "100")], "a return");
-    assert_eq!(at("3USD"), [&Row { count: Some(300), ..row("3USD", "Money", Widening, "100") }], "a field's default");
-    assert_eq!(at("2USD"), [&Row { count: Some(200), ..row("2USD", "Money", Widening, "100") }], "a parameter's default");
+    assert_eq!(
+        at("b.in(KiB)"),
+        [&row("b.in(KiB)", "ByteCount in KiB", Widening, "1"), &row("b.in(KiB)", "ByteCount", Widening, "1024")],
+        "a return, of the value `.in(KiB)` made"
+    );
+    assert_eq!(at("3_000mg"), [&Row { count: Some(3), ..row("3_000mg", "Mass", Widening, "1/1000") }], "a field's default");
+    assert_eq!(at("2_000mg"), [&Row { count: Some(2), ..row("2_000mg", "Mass", Widening, "1/1000") }], "a parameter's default");
 }
 
 /// A literal in a default is converted once per evaluation, into what
@@ -437,26 +474,27 @@ fn a_literal_in_a_default_has_a_row_per_evaluation() {
 /// A quantity scaled by a ratio is the quantity at the product of the two
 /// denominations, exact: nothing is rounded at the product. The
 /// narrowing is where the value meets a coarser type: the target's
-/// `round:` discharges it, and with none the check refuses it. With
-/// literal operands each literal is its own unit's (`USD`), so the
-/// product counts `1/100 cent`; with runtime operands typed `Money` and
-/// `Rate`, `1/10000 cent`.
+/// `round:` discharges it, and with none the check refuses it. Each
+/// literal counts in its quantity's denomination (`1_234_567USD` is
+/// 123,456,700 cent, U4), so with literal operands the product counts
+/// `1/10000 cent` (370,370,100), as it does with runtime operands typed
+/// `Money` and `Rate`: decision 2's figure either way.
 #[test]
 fn the_ratio_product_is_exact_and_narrows_at_the_boundary() {
     use ConversionKind::*;
     // Literal operands, the products bound separately.
     let literal = "    let fee = 1_250_000USD * 3bp;\n    let odd = 1_234_567USD * 3bp;\n    let paid: Ledger = odd;\n";
-    assert_eq!(ty_of("", "1_250_000USD * 3bp"), "Money in 1/100 cent");
-    assert_eq!(ty_of("", "1_234_567USD * 3bp"), "Money in 1/100 cent");
+    assert_eq!(ty_of("", "1_250_000USD * 3bp"), "Money in 1/10000 cent");
+    assert_eq!(ty_of("", "1_234_567USD * 3bp"), "Money in 1/10000 cent");
     let found = rows(literal);
     assert_eq!(
         found.iter().map(|r| (r.at.as_str(), r.count)).filter(|(_, c)| c.is_some()).collect::<Vec<_>>(),
-        [("1_250_000USD", Some(1_250_000)), ("3bp", Some(3)), ("1_234_567USD", Some(1_234_567)), ("3bp", Some(3))],
-        "each literal at its own unit"
+        [("1_250_000USD", Some(125_000_000)), ("3bp", Some(3)), ("1_234_567USD", Some(123_456_700)), ("3bp", Some(3))],
+        "each literal at its quantity's denomination"
     );
     assert_eq!(
         found.last(),
-        Some(&Row { policy: round(RoundPolicy::HalfEven, true), ..row("odd", "Ledger", Narrowing, "1/100") }),
+        Some(&Row { policy: round(RoundPolicy::HalfEven, true), ..row("odd", "Ledger", Narrowing, "1/10000") }),
         "the narrowing is at the binding, its policy `Ledger`'s"
     );
     // Runtime operands.
@@ -470,7 +508,7 @@ fn the_ratio_product_is_exact_and_narrows_at_the_boundary() {
     one(
         "    let odd = 1_234_567USD * 3bp;\n    let bad: Money = odd;\n",
         "odd",
-        "`Money` from `Money in 1/100 cent` divides by 100: say what happens to the remainder: convert explicitly \
+        "`Money` from `Money in 1/10000 cent` divides by 10,000: say what happens to the remainder: convert explicitly \
          (`.in(u) or floor`, `Money(…) or half_even`, `or <value>`, `or raise`), or give `Money` a `round:` policy",
     );
     clean(
@@ -557,17 +595,17 @@ fn an_unclassified_position_refuses_a_synthesized_denomination() {
             .collect()
     };
     assert_eq!(
-        check("    let b: Box<Span> = Box { v: 2sec };\n"),
+        check("    let b: Box<Span> = Box { v: seconds(2sec).in(sec) };\n"),
         [(
-            "2sec".to_string(),
+            "seconds(2sec).in(sec)".to_string(),
             "a value of `Span in sec` meets a place whose type is not known here, so it has nothing to be converted \
              into: convert it first (`Span(…)`)"
                 .to_string()
         )]
     );
-    assert_eq!(check("    let b: Box<Span> = Box { v: Span(2sec) };\n"), []);
+    assert_eq!(check("    let b: Box<Span> = Box { v: Span(seconds(2sec).in(sec)) };\n"), []);
     assert_eq!(
-        check("    let a = id(3sec);\n"),
+        check("    let a = id(seconds(3sec).in(sec));\n"),
         [(
             "id".to_string(),
             "generic fn `id`: `Span in sec` is a denomination no declaration names, and a generic argument is a \
@@ -576,12 +614,19 @@ fn an_unclassified_position_refuses_a_synthesized_denomination() {
         )]
     );
     assert_eq!(
-        check("    let flag = true;\n    let e: Span = if flag { 1sec } else { 2msec };\n"),
+        check("    let flag = true;\n    let e: Mass = if flag { 2g } else { 2mg };\n"),
         [(
-            "if flag { 1sec } else { 2msec }".to_string(),
-            "if-expression arms have mismatched types: then=`Span in sec`, else=`Span in msec`".to_string()
+            "if flag { 2g } else { 2mg }".to_string(),
+            "if-expression arms have mismatched types: then=`Mass`, else=`Mass in mg`".to_string()
         )]
     );
+    // A literal is at its quantity's denomination wherever it is a whole
+    // count of it (U4), so literals of one quantity meet these positions
+    // as one type: a time literal in a generic literal, an argument, an
+    // `if`'s arms.
+    assert_eq!(check("    let b: Box<Span> = Box { v: 2sec };\n    let a = id(3sec);\n"), []);
+    assert_eq!(check("    let flag = true;\n    let e: Span = if flag { 1sec } else { 2msec };\n"), []);
+    assert_eq!(check("    let flag = true;\n    let e = if flag { 1s } else { 2ms };\n    let x = [1s, 500ms];\n"), []);
 }
 
 // The wire (decision 9).

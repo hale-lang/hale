@@ -9793,6 +9793,20 @@ impl<'a> Checker<'a> {
                 }
                 // Original assertion checks for assertion-bearing
                 // closures.
+                // GH #1076 (U4): `epoch duration(e)`'s span is a
+                // `Duration` lowering emits where the closure is armed, so
+                // it is typed here and its literal has its row.
+                let epoch = cd.clauses.iter().rev().find_map(|c| match c {
+                    ClosureClause::Epoch(spec) => Some(spec),
+                    _ => None,
+                });
+                if let Some(EpochSpec::Duration(e)) = epoch {
+                    let got = self.check_expr(e);
+                    let want = Ty::Prim(PrimType::Duration);
+                    if !want.assignable_from(&got) {
+                        let _ = self.quantity_flow(&want, &got, e);
+                    }
+                }
                 if let Some(assertion) = &cd.assertion {
                     self.expr_types = Some(Vec::new());
                     let lt = self.check_expr(&assertion.left);
@@ -12569,18 +12583,20 @@ impl<'a> Checker<'a> {
             row.policy = policy.map(|policy| Discharge::Round { policy, from_type: true });
         }
         let site = self.site(SiteKind::value(value.span()));
-        if let Expr::Literal(Literal::Quantity { value: n, unit }, span) = value {
-            // A literal's conversion is computed here: a whole number of
-            // the target is exact, whatever the factor.
-            if narrows && crate::unit_quantities::convert_count(*n, &scale, None).is_some() {
+        if let Expr::Literal(Literal::Quantity { value: written, unit }, span) = value {
+            // A literal's conversion is computed here, from its count of
+            // its own type: a whole number of the target is exact,
+            // whatever the factor.
+            let n = self.scalars.quantity_literal(*written, unit).map_or(*written, |(_, count)| count);
+            if narrows && crate::unit_quantities::convert_count(n, &scale, None).is_some() {
                 row.kind = ConversionKind::Widening;
                 row.policy = None;
             }
-            match crate::unit_quantities::convert_count(*n, &scale, policy) {
+            match crate::unit_quantities::convert_count(n, &scale, policy) {
                 Some(Ok(count)) => row.count = Some(count),
                 Some(Err(())) => self.unit_error(Diag::ty(
                     *span,
-                    format!("`{n}{unit}` as a count of `{}` overflows an `Int`", row.target),
+                    format!("`{written}{unit}` as a count of `{}` overflows an `Int`", row.target),
                 )),
                 None => {}
             }
@@ -12592,21 +12608,23 @@ impl<'a> Checker<'a> {
         self.typed.conversion(self.body, site, row);
     }
 
-    /// GH #1076 (U3): a quantity literal: its component's quantity at its
-    /// own unit, with its own row (its count, before it flows anywhere).
+    /// GH #1076 (U3, U4): a quantity literal: its component's quantity at
+    /// the quantity's denomination when the literal is a whole count of
+    /// it (`500ms` is `Duration`), else at its own unit, with its own row
+    /// (its count, before it flows anywhere).
     fn quantity_literal(&mut self, n: i64, unit: &str, span: Span) -> Ty {
         use crate::typed_bodies::{ConversionKind, ConversionRow, Scale};
-        match self.scalars.literal_type(n, unit) {
+        match self.scalars.quantity_literal(n, unit) {
             Err(why) => {
                 self.unit_error(Diag::ty(span, why));
                 Ty::Unknown
             }
-            Ok(Ty::Unknown) => Ty::Unknown,
-            Ok(t) => {
+            Ok((Ty::Unknown, _)) => Ty::Unknown,
+            Ok((t, count)) => {
                 if self.specializing.is_none() {
                     let mut row = ConversionRow::new(span, t.clone(), t.clone(), ConversionKind::Widening, self.scalars.type_display(&t));
                     row.scale = Some(Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 });
-                    row.count = Some(n);
+                    row.count = Some(count);
                     let site = self.site(SiteKind::value(span));
                     self.typed.conversion(self.body, site, row);
                 }
@@ -12654,8 +12672,9 @@ impl<'a> Checker<'a> {
                 // A literal's cast is the literal flowing into `T`, at
                 // compile time, when its count is a whole number of `T` or
                 // `T` rounds it: the cast itself then changes nothing.
-                if let Expr::Literal(Literal::Quantity { value: n, .. }, _) = arg {
-                    if crate::unit_quantities::convert_count(*n, &scale, q.policy).is_some() {
+                if let Expr::Literal(Literal::Quantity { value: n, unit }, _) = arg {
+                    let n = self.scalars.quantity_literal(*n, unit).map_or(*n, |(_, count)| count);
+                    if crate::unit_quantities::convert_count(n, &scale, q.policy).is_some() {
                         self.record_scale(arg, &from, &to, scale, q.policy);
                         let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };
                         if self.specializing.is_none() {
@@ -12788,7 +12807,12 @@ impl<'a> Checker<'a> {
             }
             return Some(self.check_cast(call, span, Ty::Prim(PrimType::Int), from, "Int"));
         } else {
-            let t = Ty::Named(callee.name.clone());
+            // U4: `Duration(…)` and `Time(…)` name the stdlib's
+            // declarations, whose type is the primitive.
+            let t = match hale_syntax::parser::primitive_from_name(&callee.name) {
+                Some(p @ (PrimType::Duration | PrimType::Time)) => Ty::Prim(p),
+                _ => Ty::Named(callee.name.clone()),
+            };
             // GH #1076 (U3): a quantity's or a point's cast.
             if let Some(q) = self.scalars.quantity(&t).filter(|q| !q.synthesized) {
                 if args.len() != 1 {
@@ -16049,74 +16073,13 @@ impl<'a> Checker<'a> {
             (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::Float))
                 | (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int))
         );
-        // Crumb batch-3 item 5: Duration scalar arithmetic. A
-        // runtime-computed delay (`ms * 1ms` where ms is an Int
-        // from an FFI boundary) had no direct expression —
-        // Duration literals compose only with Durations. `Int *
-        // Duration` (either order) scales the interval; `Duration
-        // / Int` divides it. Duration is i64 nanoseconds
-        // internally, so both are plain integer ops in codegen.
-        let is_dur_scalar_mul = matches!(op, Mul)
-            && matches!(
-                (lt, rt),
-                (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::Duration))
-                    | (Ty::Prim(PrimType::Duration), Ty::Prim(PrimType::Int))
-            );
-        let is_dur_scalar_div = matches!(op, Div)
-            && matches!(
-                (lt, rt),
-                (Ty::Prim(PrimType::Duration), Ty::Prim(PrimType::Int))
-            );
-        // GH #607: Time is an instant, i64 nanoseconds since the
-        // epoch. `Time ± Duration` (and `Duration + Time`) is a Time;
-        // `Time - Time` is a Duration; anything else with a Time in
-        // it has no meaning and is refused here.
-        let is_time = |t: &Ty| matches!(t, Ty::Prim(PrimType::Time));
-        let is_dur = |t: &Ty| matches!(t, Ty::Prim(PrimType::Duration));
-        let is_time_shift = (matches!(op, Add | Sub) && is_time(lt) && is_dur(rt))
-            || (matches!(op, Add) && is_dur(lt) && is_time(rt));
-        let is_time_diff = matches!(op, Sub) && is_time(lt) && is_time(rt);
+        // `Duration` and `Time` are the stdlib's declarations (GH #1076,
+        // U4): the algebra above answered for them, and this table holds
+        // no rule of theirs.
         match op {
             Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                 if is_int_float_mix {
                     return Ty::Prim(PrimType::Float);
-                }
-                if is_dur_scalar_mul || is_dur_scalar_div {
-                    return Ty::Prim(PrimType::Duration);
-                }
-                if is_time_shift {
-                    return Ty::Prim(PrimType::Time);
-                }
-                if is_time_diff {
-                    return Ty::Prim(PrimType::Duration);
-                }
-                if is_time(lt) || is_time(rt) {
-                    self.diags.push(Diag::ty(
-                        span,
-                        "`Time` arithmetic: an instant shifts by a `Duration` \
-                         (`t + 5s`, `t - 1h`) and two instants differ by one \
-                         (`t2 - t1`); nothing else has a meaning"
-                            .to_string(),
-                    ));
-                    return Ty::Prim(PrimType::Time);
-                }
-                // Duration × Duration (and ÷ / %) has no unit-
-                // sane meaning (ns² / a dimensionless ratio) —
-                // reject with a pointer at the scalar forms
-                // instead of the codegen catch-all it used to
-                // die on.
-                if matches!(op, Mul | Div | Mod)
-                    && matches!(lt, Ty::Prim(PrimType::Duration))
-                    && matches!(rt, Ty::Prim(PrimType::Duration))
-                {
-                    self.diags.push(Diag::ty(
-                        span,
-                        "`Duration` cannot be multiplied or divided by \
-                         another `Duration` — scale with an Int instead \
-                         (`n * 1ms`, `d / 2`)"
-                            .to_string(),
-                    ));
-                    return Ty::Prim(PrimType::Duration);
                 }
                 if !lt.assignable_from(rt) && !rt.assignable_from(lt) {
                     self.diags.push(Diag::ty(
@@ -16175,6 +16138,16 @@ impl<'a> Checker<'a> {
                     if let Some(o) = operand {
                         self.record_scale(e, &o.from, &o.to, o.scale, None);
                     }
+                }
+                // U4: an arithmetic operator's result, which lowering
+                // reads for the representation it is (`Int * Duration` is
+                // a `Duration`, `Time - Time` a `Duration`, `Duration /
+                // Duration` an `Int`).
+                let arithmetic = !matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq);
+                if arithmetic && self.specializing.is_none() {
+                    let row = ConversionRow::new(span, lt.clone(), ty.clone(), ConversionKind::Total, self.scalars.type_display(&ty));
+                    let site = self.site(SiteKind::operator(span));
+                    self.typed.conversion(self.body, site, row);
                 }
                 ty
             }
@@ -16863,10 +16836,9 @@ fn lit_ty(lit: &Literal) -> Ty {
         Literal::String(_) => Ty::Prim(PrimType::String),
         Literal::Bool(_) => Ty::Prim(PrimType::Bool),
         Literal::Nil => Ty::Unknown,
-        Literal::Duration(_) => Ty::Prim(PrimType::Duration),
         Literal::Time(_) => Ty::Prim(PrimType::Time),
         Literal::Bytes(_) => Ty::Prim(PrimType::Bytes),
-        // GH #1076: refused where it is checked (`units::value_not_yet`).
+        // GH #1076: typed where it is checked (`Checker::quantity_literal`).
         Literal::Quantity { .. } => Ty::Unknown,
     }
 }

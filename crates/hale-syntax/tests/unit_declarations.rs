@@ -325,16 +325,21 @@ fn a_quantity_literal_is_its_magnitude_and_its_unit() {
 }
 
 #[test]
-fn a_duration_literal_reads_as_it_always_did() {
+fn a_time_literal_is_a_quantity_literal_of_its_written_unit() {
+    // U4: the lexer knows no time suffix; `500ms` is the magnitude and
+    // the unit's name, which the stdlib's time catalogue resolves.
     let items = parse("fn f() {\n    let a = 500ms;\n}\n");
-    assert!(matches!(let_value(&main_body(&items)[0]), Expr::Literal(Literal::Duration(500_000_000), _)));
-    // The token keeps what was written beside the nanoseconds.
-    let toks = lex("500ms 1_000ns").unwrap();
-    assert_eq!(
-        toks[0].kind,
-        TokenKind::DurationLit { ns: 500_000_000, spelled: Some((500, "ms".into())) }
-    );
-    assert_eq!(toks[1].kind, TokenKind::DurationLit { ns: 1_000, spelled: Some((1_000, "ns".into())) });
+    assert!(matches!(
+        let_value(&main_body(&items)[0]),
+        Expr::Literal(Literal::Quantity { value: 500, unit }, _) if unit == "ms"
+    ));
+    let toks = lex("500ms 1_000ns 2min 3day").unwrap();
+    assert_eq!(toks[0].kind, TokenKind::QuantityLit(500, "ms".into()));
+    assert_eq!(toks[1].kind, TokenKind::QuantityLit(1_000, "ns".into()));
+    assert_eq!(toks[2].kind, TokenKind::QuantityLit(2, "min".into()));
+    assert_eq!(toks[3].kind, TokenKind::QuantityLit(3, "day".into()));
+    // `3d` is the Decimal literal it always was.
+    assert_eq!(lex("3d").unwrap()[0].kind, TokenKind::DecimalLit("3".into()));
     // An exponent is still an exponent.
     assert_eq!(lex("1e5").unwrap()[0].kind, TokenKind::FloatLit(1e5));
     assert_eq!(lex("1E-3").unwrap()[0].kind, TokenKind::FloatLit(1e-3));

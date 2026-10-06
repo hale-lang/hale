@@ -2950,7 +2950,7 @@ row	ParentL@main1	ParentL	main	default
 dynamic	ChildL	on main
 dynamic	PingerL	on main
 
-== crates/hale-codegen/tests/nested_long_running_child.rs#cb6079b2
+== crates/hale-codegen/tests/nested_long_running_child.rs#293c369a
 -- Holder@main1	Holder
 row	~	Holder	main	default
 row	~.w	Worker	main	inherited
@@ -5682,6 +5682,9 @@ row	Parent@main1	Parent	main	default
 
 == crates/hale-types/tests/terminate_release_gate.rs#7458df60
 row	Mgr@main1	Mgr	main	default
+
+== crates/hale-types/tests/time_declarations.rs#4f115b27
+row	Clock@main1	Clock	main	default
 
 == crates/hale-types/tests/topology_projection.rs#d391f02f
 root	App	the entry
