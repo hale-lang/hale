@@ -723,7 +723,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.owner_table.temp_verdict(self.owner_table.entry_of(inner)),
             crate::ownership::TempVerdict::SiteOwned
         );
-        let call = self.lower_fallible_call(inner, scope)?;
+        // GH #1076 (U2): a narrowing `T(x) or …`, from its row: a clamp or
+        // a wrap is the value itself; any other discharge is the checked
+        // value this `or`'s join takes, as a fallible call's result.
+        let narrowing = match (self.conversion_row(inner)?, inner) {
+            (Some(row), Expr::Call { args, span, .. }) => {
+                let [arg] = args.as_slice() else {
+                    return Err(CodegenError::UnsupportedAt(format!("`{}(…)` converts one value", row.target), *span));
+                };
+                match self.lower_conversion(&row, arg, scope)? {
+                    crate::conversion::Converted::Value(v, t) => return Ok((Some(v), Some(t))),
+                    crate::conversion::Converted::Checked(call) => Some(call),
+                }
+            }
+            _ => None,
+        };
+        let call = match narrowing {
+            Some(call) => call,
+            None => self.lower_fallible_call(inner, scope)?,
+        };
         let func = self
             .current_fn
             .ok_or_else(|| {

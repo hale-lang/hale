@@ -5933,6 +5933,9 @@ row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
 
+== tests/hale/identities_and_ranges_test.hl
+row	Book@main1	Book	main	default
+
 == tests/hale/interface_fallible_test.hl
 row	Lenient@main2	Lenient	main	default
 row	Strict@main1	Strict	main	default

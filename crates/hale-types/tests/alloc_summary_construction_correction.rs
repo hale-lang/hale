@@ -599,8 +599,9 @@ fn own_entries_run_to_exit_programs() {
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
     }
     // 81: GH #1076's `tests/hale/unit_declarations_test.hl` is one more,
-    // losing the copy's 21 like the rest.
-    assert_eq!(moved, 81, "the run-to-exit programs among the targets");
+    // losing the copy's 21 like the rest; 82: U2's
+    // `tests/hale/identities_and_ranges_test.hl` is one more again.
+    assert_eq!(moved, 82, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [

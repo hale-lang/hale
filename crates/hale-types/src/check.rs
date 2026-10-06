@@ -13429,7 +13429,9 @@ impl<'a> Checker<'a> {
                             for (i, a) in args.iter().enumerate() {
                                 let got = self.check_expr(a);
                                 if let Some(want) = sig.params.get(i) {
-                                    if !want.accepts(&got) {
+                                    // GH #1076 (U2): and a range widens to
+                                    // an `Int` parameter.
+                                    if !want.accepts(&got) && !self.flows_into(&want.to_ty(), &got, a) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
