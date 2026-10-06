@@ -7619,8 +7619,17 @@ impl Parser {
             let span = fail_tok.span.merge(payload.span());
             Ok((OrDisposition::Fail(Box::new(payload), span), span))
         } else {
+            let parenthesized = matches!(self.peek(), TokenKind::LParen);
             let rhs = self.parse_expr()?;
-            let rhs_span = rhs.span();
+            let mut rhs_span = rhs.span();
+            // GH #1076 (U2, decision 6): after a narrowing, a bare
+            // `clamp` or `wrap` is a policy, and a value of that name is
+            // written in parentheses. The parentheses leave no node, so
+            // the `or`'s span keeps the `)`: the checker reads a policy
+            // only where the name ends the `or`.
+            if parenthesized && matches!(rhs, Expr::Ident(_)) && self.pos > 0 {
+                rhs_span = rhs_span.merge(self.tokens[self.pos - 1].span);
+            }
             Ok((OrDisposition::Substitute(Box::new(rhs)), rhs_span))
         }
     }

@@ -267,9 +267,13 @@ impl<'r> ScalarTypes<'r> {
 
     /// Two types the scalar rules keep apart.
     fn distinct(&self, a: &Ty, b: &Ty) -> String {
+        format!("{}; convert one explicitly", self.distinct_pair(a, b))
+    }
+
+    fn distinct_pair(&self, a: &Ty, b: &Ty) -> String {
         let both_identities = [a, b].iter().all(|t| self.index(t).is_some_and(|i| self.identity_root(i) == Some(i)));
         format!(
-            "`{}` and `{}` are distinct {}; convert one explicitly",
+            "`{}` and `{}` are distinct {}",
             self.display(a),
             self.display(b),
             if both_identities { "identities" } else { "types" }
@@ -381,8 +385,8 @@ impl<'r> ScalarTypes<'r> {
                     Ok(if self.range(t) == self.range(i) { CastKind::Widening } else { CastKind::Narrowing })
                 } else {
                     Err(format!(
-                        "{}: a conversion between them goes through `Int` (`{}(Int(…))`)",
-                        self.distinct(to, from),
+                        "{}; a conversion between them goes through `Int`: `{}(Int(…))`",
+                        self.distinct_pair(to, from),
                         self.name(t)
                     ))
                 }

@@ -16,6 +16,7 @@ use hale_syntax::{parse_source, Diag};
 use hale_types::capability::{FfiTypeClass, TargetClass};
 use hale_types::resolve::build_top_scope;
 use hale_types::ty::{is_flat_shapeable, is_key_eligible, Ty};
+use hale_types::typed_bodies::{ConversionKind, ConversionRow, Discharge};
 use hale_types::unit_values::ScalarTypes;
 
 #[path = "support/entries.rs"]
@@ -34,6 +35,7 @@ type RegisterId = Int { range: 0..16; }
 fn wide(n: Int) -> Int { return n; }
 fn byte(b: Byte) -> Byte { return b; }
 fn order(o: OrderId) -> OrderId { return o; }
+fn sink(e: RangeError) -> Session { return 0; }
 ";
 
 fn diags(body: &str) -> (String, Vec<Diag>) {
@@ -285,4 +287,146 @@ fn every_layout_predicate_answers_through_the_representation() {
     assert_eq!(FfiTypeClass::of(&scalars.representation(&Ty::Named("Order".into()))), FfiTypeClass::Named);
     let (class, abi) = (TargetClass::PosixAsync, hale_types::capability::Abi::C);
     assert!(hale_types::capability::ffi_type_refusal(class, &int, abi).is_none());
+}
+
+/// The conversions of `body` (after [`DECLS`]), as the typed bodies hold
+/// them: (the text at the row's span, from, to, kind, range, policy), in
+/// source order.
+fn conversions(body: &str) -> Vec<(String, String, String, ConversionKind, Option<(i128, i128)>, Option<Discharge>)> {
+    let src = format!("{DECLS}fn main() {{\n{body}    println(1);\n}}\n");
+    let program = parse_source(&src).expect("parses");
+    let errors: Vec<String> =
+        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot = Snapshot::from_program(program, Vec::new(), Config::check(true, false))
+        .unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let mut rows: Vec<&ConversionRow> = table.conversions().collect();
+    rows.sort_by_key(|r| r.span.start.as_usize());
+    rows.iter()
+        .map(|r| (r.span.slice(&src).to_string(), r.from.display(), r.to.display(), r.kind, r.range, r.policy))
+        .collect()
+}
+
+#[test]
+fn a_conversion_is_a_row_of_the_typed_bodies() {
+    use ConversionKind::*;
+    let row = |at: &str, from: &str, to: &str, kind, range, policy| {
+        (at.to_string(), from.to_string(), to.to_string(), kind, range, policy)
+    };
+    let session = Some((0, 64));
+    assert_eq!(
+        conversions(
+            "    let n = 70;\n    let o = OrderId(n);\n    let i = Int(o);\n    let b: Byte = 9;\n\
+             let w = Int(b);\n    let nib: Nibble = 3;\n    let up = Byte(nib);\n    let v = wide(b);\n\
+             let s1 = Session(n) or 0;\n    let s2 = Session(n) or clamp;\n    let s3 = Session(n) or wrap;\n\
+             let s4 = Session(n) or sink(err);\n    let down = Nibble(b) or clamp;\n"
+        ),
+        [
+            row("OrderId(n)", "Int", "OrderId", Total, None, None),
+            row("Int(o)", "OrderId", "Int", Total, None, None),
+            row("Int(b)", "Byte", "Int", Widening, None, None),
+            row("Byte(nib)", "Nibble", "Byte", Widening, None, None),
+            row("b", "Byte", "Int", Widening, None, None),
+            row("Session(n)", "Int", "Session", Narrowing, session, Some(Discharge::Substitute)),
+            row("Session(n)", "Int", "Session", Narrowing, session, Some(Discharge::Clamp)),
+            row("Session(n)", "Int", "Session", Narrowing, session, Some(Discharge::Wrap)),
+            row("Session(n)", "Int", "Session", Narrowing, session, Some(Discharge::Handler)),
+            row("Nibble(b)", "Byte", "Nibble", Narrowing, Some((0, 16)), Some(Discharge::Clamp)),
+        ]
+    );
+}
+
+#[test]
+fn a_raise_discharges_into_the_enclosing_error_path() {
+    let src = format!(
+        "{DECLS}fn strict(n: Int) -> Session fallible(RangeError) {{\n    let s = Session(n) or raise;\n    return s;\n}}\n\
+         fn main() {{\n    let s = strict(3) or 0;\n    println(s);\n}}\n"
+    );
+    let program = parse_source(&src).expect("parses");
+    let errors: Vec<String> =
+        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot = Snapshot::from_program(program, Vec::new(), Config::check(true, false))
+        .unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let policies: Vec<Option<Discharge>> = table.conversions().map(|r| r.policy).collect();
+    assert_eq!(policies, [Some(Discharge::Raise)]);
+}
+
+#[test]
+fn a_bare_narrowing_is_refused_like_a_bare_fallible_call() {
+    one(
+        "    let n = 70;\n    let s = Session(n);\n",
+        "Session(n)",
+        "`Session(…)` narrows `Int` into `Session`'s range `0..64` and this conversion says nothing about a \
+         value outside it: write `or <fallback>` for a value to use instead, `or clamp` for the nearest bound, \
+         `or wrap` to wrap around the range, `or handler(err)` to deal with the `RangeError` here, or `or raise` \
+         to hand it to the caller",
+    );
+    // A total conversion has nothing to discharge.
+    one(
+        "    let n = 70;\n    let o = OrderId(n) or 0;\n",
+        "OrderId(n)",
+        "`OrderId` is not fallible (it returns `OrderId`); drop the `or` clause",
+    );
+    // The substitute is a value of the target, held to its range.
+    one("    let n = 70;\n    let s = Session(n) or 64;\n", "64", "`64` is outside `Session`'s range `0..64`");
+}
+
+#[test]
+fn a_policy_word_is_read_as_a_policy_and_a_parenthesized_one_as_a_value() {
+    // `clamp` is a local here: in parentheses it is the substitute, an
+    // `Int`, which does not narrow into `Session` implicitly.
+    one(
+        "    let n = 70;\n    let clamp = 5;\n    let s = Session(n) or (clamp);\n",
+        "clamp",
+        "`Int` does not narrow to `Session` implicitly: write `Session(…) or …`, which says what becomes of a \
+         value outside `0..64`",
+    );
+    clean("    let n = 70;\n    let clamp = 5;\n    let s = Session(n) or clamp;\n");
+}
+
+#[test]
+fn a_conversion_across_families_goes_through_int() {
+    one(
+        "    let o: OrderId = 1;\n    let q = SeqNo(o);\n",
+        "SeqNo(o)",
+        "`SeqNo` and `OrderId` are distinct identities; a conversion between them goes through `Int`: \
+         `SeqNo(Int(…))`",
+    );
+    one(
+        "    let b: Byte = 1;\n    let o = OrderId(b);\n",
+        "OrderId(b)",
+        "`OrderId` and `Byte` are distinct types; a conversion between them goes through `Int`: `OrderId(Int(…))`",
+    );
+    clean("    let b: Byte = 1;\n    let o = OrderId(Int(b));\n    let q = SeqNo(Int(o));\n");
+}
+
+#[test]
+fn range_error_is_a_builtin_type_where_a_range_is_declared() {
+    let row = hale_types::builtin_types::builtin_type("RangeError").expect("a builtin type");
+    let fields: Vec<&str> = row.fields.iter().map(|(n, _)| *n).collect();
+    assert_eq!(fields, ["kind", "value", "low", "high"]);
+    // A handler reads its fields.
+    clean("    let n = 70;\n    let s = Session(n) or sink(err);\n");
+    let read = format!(
+        "{DECLS}fn report(e: RangeError) -> Session {{\n    println(e.kind + \" \" + e.value + \" \" + e.low + \" \" + e.high);\n    return 0;\n}}\n\
+         fn main() {{\n    println(1);\n}}\n"
+    );
+    let errors: Vec<String> = check_program(&parse_source(&read).expect("parses"))
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    // Injected where a type declares a range, as `BusUnmatchedKey` is
+    // where a topic fails: a program with none has no such symbol.
+    let injected = |src: &str| {
+        let program = parse_source(src).expect("parses");
+        let bundle = hale_types::Bundle::new(BTreeMap::from([(String::new(), &program)]));
+        build_top_scope(&bundle).0.lookup("RangeError").is_some()
+    };
+    assert!(injected("type Byte = Int { range: 0..256; }\nfn main() { println(1); }\n"));
+    assert!(!injected("type OrderId = distinct Int;\nfn main() { println(1); }\n"));
 }

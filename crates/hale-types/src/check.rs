@@ -12373,6 +12373,20 @@ impl<'a> Checker<'a> {
             }
         }
         if self.scalars.widens(got, want) {
+            // A row, so every place a value changes type is one; lowering
+            // emits nothing for it.
+            if self.specializing.is_none() {
+                let row = crate::typed_bodies::ConversionRow {
+                    span: value.span(),
+                    from: got.clone(),
+                    to: want.clone(),
+                    kind: crate::typed_bodies::ConversionKind::Widening,
+                    range: None,
+                    policy: None,
+                    target: want.display(),
+                };
+                self.typed.conversion(self.body, crate::typed_bodies::ConversionSite::value(value.span()), row);
+            }
             return true;
         }
         match self.scalars.flow_refusal(want, got, value.span()) {
@@ -12382,6 +12396,86 @@ impl<'a> Checker<'a> {
             }
             None => false,
         }
+    }
+
+    /// GH #1076 (U2): a call `T(x)` naming an identity or a range, or
+    /// `Int(x)` of one: a conversion, its row recorded in the typed
+    /// bodies' `conversions` column, typed as `T` (a narrowing's `or`
+    /// reads the row). `None` for every other call, which the caller
+    /// types as before: `Int(x)` of anything but a scalar included, whose
+    /// argument is walked again there.
+    fn scalar_cast(&mut self, call: NodeId, span: Span, callee: &Ident, args: &[Expr]) -> Option<Ty> {
+        if self.scalars.is_empty()
+            || self.generic_params.contains(&callee.name)
+            || self.locals.lookup(&callee.name).is_some()
+        {
+            return None;
+        }
+        let to = if callee.name == "Int" {
+            if self.top.lookup("Int").is_some() || args.len() != 1 {
+                return None;
+            }
+            let mark = self.walk_mark();
+            let from = self.check_expr(&args[0]);
+            if self.scalars.index(&from).is_none() {
+                self.discard_since(mark);
+                return None;
+            }
+            return Some(self.check_cast(call, span, Ty::Prim(PrimType::Int), from, "Int"));
+        } else {
+            let t = Ty::Named(callee.name.clone());
+            let i = self.scalars.index(&t)?;
+            if args.len() != 1 {
+                for a in args {
+                    let _ = self.check_expr(a);
+                }
+                let name = &self.scalars.row(i).display;
+                self.diags.push(Diag::ty(
+                    span,
+                    format!("`{name}(…)` converts one value into `{name}`; it is given {}", args.len()),
+                ));
+                return Some(t);
+            }
+            t
+        };
+        let from = self.check_expr(&args[0]);
+        let target = callee.name.clone();
+        Some(self.check_cast(call, span, to, from, &target))
+    }
+
+    /// The cast `to(x)` of a value of `from`, classified by the scalar
+    /// rules: refused at `span` with their message, or recorded as a row.
+    fn check_cast(&mut self, call: NodeId, span: Span, to: Ty, from: Ty, target: &str) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        match self.scalars.cast(&to, &from) {
+            Err(why) => self.diags.push(Diag::ty(span, why)),
+            Ok(kind) => {
+                let kind = match kind {
+                    crate::unit_values::CastKind::Total => ConversionKind::Total,
+                    crate::unit_values::CastKind::Widening => ConversionKind::Widening,
+                    crate::unit_values::CastKind::Narrowing => ConversionKind::Narrowing,
+                };
+                let range = match kind {
+                    ConversionKind::Narrowing => self.scalars.index(&to).and_then(|i| self.scalars.range(i)),
+                    _ => None,
+                };
+                if self.specializing.is_none() {
+                    let row =
+                        ConversionRow { span, from, to: to.clone(), kind, range, policy: None, target: target.to_string() };
+                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                }
+            }
+        }
+        to
+    }
+
+    /// The narrowing `inner` is, when it is a cast the conversions column
+    /// holds as one: its site.
+    fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
+        let Expr::Call { id, .. } = inner else { return None };
+        let site = crate::typed_bodies::ConversionSite::Cast(id.0);
+        let row = self.typed.conversion_at(site)?;
+        (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
     }
 
     /// GH #1076: the not-yet boundary's error, once per place however
@@ -13164,13 +13258,18 @@ impl<'a> Checker<'a> {
                     UnaryOp::Not => Ty::Prim(PrimType::Bool),
                 }
             }
-            Expr::Call { callee, args, id: call_id, .. } => {
+            Expr::Call { callee, args, id: call_id, span: call_span } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
-                // GH #1076: `Money(5)` makes a value of a unit-dialect
-                // type, which is not typed yet.
+                // GH #1076: `Money(5)` makes a value of a quantity or a
+                // point, which is not typed yet.
                 if let Expr::Ident(id) = callee.as_ref() {
                     if let Some(display) = self.unit_types.get(id.name.as_str()).copied() {
                         self.refuse_unit_value(id.span, format!("type `{display}`"));
+                    }
+                    // GH #1076 (U2): `Session(n)`, `OrderId(n)`, `Int(id)`:
+                    // a conversion, classified and recorded.
+                    if let Some(t) = self.scalar_cast(*call_id, *call_span, id, args) {
+                        return t;
                     }
                 }
                 // (Stdlib target-gating is the capability admission's:
@@ -14566,8 +14665,38 @@ impl<'a> Checker<'a> {
                 // types. If the inner isn't actually fallible,
                 // the `or` clause is a no-op at best and likely
                 // a user mistake.
+                // GH #1076 (U2): a narrowing `T(x)` is fallible here: its
+                // success is `T`, its failure a `RangeError`, and what
+                // discharges it is its row's policy.
+                let narrowing = self.narrowing_at(inner);
+                if let Some(site) = narrowing {
+                    use crate::typed_bodies::Discharge;
+                    let policy = match disposition {
+                        OrDisposition::Raise(_) => Some(Discharge::Raise),
+                        OrDisposition::Fail(..) => Some(Discharge::Fail),
+                        OrDisposition::Discard(_) => Some(Discharge::Discard),
+                        OrDisposition::Wait(_) => None,
+                        OrDisposition::Substitute(rhs) => Some(match rhs.as_ref() {
+                            // A bare policy word ends the `or`; a value of
+                            // that name is written in parentheses.
+                            Expr::Ident(w) if w.span.end == span.end && w.name == "clamp" => Discharge::Clamp,
+                            Expr::Ident(w) if w.span.end == span.end && w.name == "wrap" => Discharge::Wrap,
+                            Expr::Call { .. } => Discharge::Handler,
+                            _ => Discharge::Substitute,
+                        }),
+                    };
+                    if let Some(p) = policy {
+                        if self.specializing.is_none() {
+                            self.typed.discharge(site, p);
+                        }
+                        if matches!(p, Discharge::Clamp | Discharge::Wrap) {
+                            return inner_ty;
+                        }
+                    }
+                }
                 let (success, payload) = match (stdlib_or, inner_ty) {
                     (Some((s, p)), _) => (s, p),
+                    (None, success) if narrowing.is_some() => (success, Ty::Named("RangeError".to_string())),
                     (None, Ty::Fallible { success, payload }) => {
                         (*success, *payload)
                     }

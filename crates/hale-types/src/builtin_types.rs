@@ -24,6 +24,9 @@ pub enum Injected {
     /// Only in a bundle with a topic that declares `on_unmatched: fail`,
     /// whose publishes carry the type through an `or`.
     WhenAFailTopic,
+    /// Only in a bundle that declares a type with a `range:` clause, whose
+    /// narrowings carry the type through an `or`.
+    WhenARange,
 }
 
 /// One builtin type: its name, its fields in declaration order (each a
@@ -84,6 +87,14 @@ pub const BUILTIN_TYPES: &[BuiltinType] = &[
     // `std::str::parse_int` / `parse_float` / `parse_decimal`: `kind`
     // names the parser, `input` the text it refused.
     BuiltinType { name: "ParseError", fields: &[("kind", Str), ("input", Str)], injected: Injected::Always },
+    // GH #1076 (U2): a narrowing into a range (`Session(n)`) whose value
+    // is outside it. `kind` names the target type, `value` the value,
+    // `low` / `high` the half-open range.
+    BuiltinType {
+        name: "RangeError",
+        fields: &[("kind", Str), ("value", Int), ("low", Int), ("high", Int)],
+        injected: Injected::WhenARange,
+    },
 ];
 
 /// The builtin type named `name`.

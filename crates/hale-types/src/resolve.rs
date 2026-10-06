@@ -362,6 +362,13 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             .entry("BusUnmatchedKey".to_string())
             .or_insert(Span::new(0, 0));
     }
+    // GH #1076 (U2): `RangeError`, which a narrowing into a range
+    // carries through its `or`, when a type declares a range.
+    if bundle_declares_a_range(bundle) {
+        known_names
+            .entry("RangeError".to_string())
+            .or_insert(Span::new(0, 0));
+    }
     // GH #470: pre-register the ENTIRE Hale-source stdlib surface —
     // loci, types, interfaces, enums, free fns — so a user's
     // `std::http::Router {}` / `ctx: std::http::Context` resolves to
@@ -466,7 +473,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // injected only for `on_unmatched: fail` topics, whose publishes
     // carry it through `or handler(err)` / `or fail <payload>`, to keep
     // the name out of scope for programs that don't use them.
-    inject_builtin_types(&mut scope, bundle_uses_fail_topics(bundle));
+    inject_builtin_types(&mut scope, bundle_uses_fail_topics(bundle), bundle_declares_a_range(bundle));
     // FUv0.8.2 #1 (2026-05-25): if the user has declared a
     // type whose name shadows a stdlib error type but with
     // a different shape AND the program actually uses a
@@ -552,6 +559,17 @@ fn bundle_uses_fail_topics(bundle: &Bundle<'_>) -> bool {
     bundle.programs.values().any(|p| scan_items(&p.items))
 }
 
+/// GH #1076 (U2): true when a type in the bundle declares a `range:`
+/// clause. Gates `RangeError` injection, as `bundle_uses_fail_topics`
+/// gates `BusUnmatchedKey`: no program without a range sees the name.
+fn bundle_declares_a_range(bundle: &Bundle<'_>) -> bool {
+    bundle.programs.values().any(|p| {
+        flat_decls(&p.items).any(|item| {
+            matches!(item, TopDecl::Type(t) if matches!(&t.body, TypeDeclBody::Scalar(s)
+                if s.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }))))
+        })
+    })
+}
 
 fn collect_type_names(
     items: &[TopDecl],
@@ -2152,20 +2170,22 @@ fn synthesize_form_lru_cache_methods(
 /// `fail_topics`, the bundle has an `on_unmatched: fail` topic) the
 /// `BusUnmatchedKey` publish payload. A synthesized `@form` method's,
 /// a `bounded` push's and a fallible stdlib call's error type then
-/// resolves with its fields.
+/// resolves with its fields. With `ranges` (a type declares a `range:`
+/// clause, GH #1076), the `RangeError` a narrowing carries.
 ///
 /// Idempotent per name: a name the scope already holds (declared by
 /// user code or a stdlib `.hl` file) wins, so a project that shipped
 /// its own error shapes keeps them (and `check_stdlib_error_shadowing`
 /// says when one cannot stand in for the stdlib's). The injected
 /// entries carry a zero span.
-pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool) {
+pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool) {
     use crate::builtin_types::{Injected, BUILTIN_TYPES};
     let zero = Span::new(0, 0);
     for t in BUILTIN_TYPES {
         let injected = match t.injected {
             Injected::Always => true,
             Injected::WhenAFailTopic => fail_topics,
+            Injected::WhenARange => ranges,
         };
         if !injected || scope.symbols.contains_key(t.name) {
             continue;
