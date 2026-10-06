@@ -68,6 +68,41 @@ impl Ratio {
     pub fn is_integral(&self) -> bool {
         self.denominator() == &BigInt::from(1)
     }
+
+    /// The factor as two machine integers, for lowering's one
+    /// multiplication and one division. A numerator or denominator
+    /// outside `i64` is an explicit overflow, never a truncation.
+    pub fn to_machine(&self) -> Result<MachineRatio, FactorOverflow> {
+        match (i64::try_from(self.numerator()), i64::try_from(self.denominator())) {
+            (Ok(numerator), Ok(denominator)) => Ok(MachineRatio { numerator, denominator }),
+            _ => Err(FactorOverflow { factor: self.clone() }),
+        }
+    }
+}
+
+/// A [`Ratio`] whose numerator and denominator both fit an `i64`;
+/// positive and reduced, as the ratio is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineRatio {
+    pub numerator: i64,
+    pub denominator: i64,
+}
+
+/// A factor no `i64` pair holds, with the factor itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactorOverflow {
+    pub factor: Ratio,
+}
+
+/// A denomination as a value: a declared unit and an exact positive
+/// multiple of it (`100 ms` is `{ ms, 100 }`). It can be stored and
+/// compared without the catalogue; two values may denote one
+/// denomination (`{ ms, 1 }` and `{ us, 1000 }`), which only the
+/// catalogue can tell ([`UnitGraph::factor`] is one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Denom {
+    pub unit: SiteId,
+    pub multiple: Ratio,
 }
 
 impl std::fmt::Display for Ratio {
@@ -167,6 +202,9 @@ pub struct Denomination<'g> {
     graph: &'g UnitGraph,
     component: SiteId,
     scale: Ratio,
+    /// The first input: the declared unit [`Denomination::value`]
+    /// states the denomination against.
+    anchor: SiteId,
     /// Input positions: deterministic and irredundant. A gcd can need
     /// more than two inputs (6, 10, 15); never drop a necessary witness.
     pub witnesses: Vec<usize>,
@@ -185,6 +223,16 @@ impl Denomination<'_> {
     pub fn factor_to(&self, target: SiteId) -> Option<Ratio> {
         let n = self.graph.nodes.get(&target)?;
         (n.component == self.component).then(|| self.scale.divided_by(&n.scale))
+    }
+
+    /// The denomination as a value, stated against the first input's
+    /// unit: a meet with no declared spelling is still a unit and a
+    /// multiple (`{ s, 1/2 }`).
+    pub fn value(&self) -> Denom {
+        Denom {
+            unit: self.anchor,
+            multiple: self.scale.divided_by(&self.graph.nodes[&self.anchor].scale),
+        }
     }
 }
 
@@ -366,8 +414,17 @@ impl UnitGraph {
             graph: self,
             component: first_node.component,
             scale,
+            anchor: first,
             witnesses,
         })
+    }
+
+    /// How many `to` one `from` is: exact, so a denominator above one
+    /// is a narrowing the consumer must discharge. None when either
+    /// unit is unknown or the two are in different components.
+    pub fn factor(&self, from: &Denom, to: &Denom) -> Option<Ratio> {
+        let c = self.conversion(from.unit, to.unit)?;
+        Some(from.multiple.times(&c.factor).divided_by(&to.multiple))
     }
 
     fn path(&self, from: SiteId, to: SiteId) -> Vec<Step> {
@@ -609,6 +666,47 @@ mod tests {
         let finer = graph.meet(&[unit(0), unit(1), unit(2), unit(3)]).unwrap();
         assert_eq!(finer.witnesses, [3]);
         assert_eq!(finer.factor_to(unit(1)), Some(ratio(1, 1_000_000)));
+    }
+
+    #[test]
+    fn a_denomination_is_a_value_and_its_factor_is_exact() {
+        // s(0) = 1000 ms(1) = 1_000_000 us(2)
+        let graph = UnitGraph::close(
+            (0..3).map(unit),
+            [equation(0, 0, 1, 1000, 1), equation(1, 1, 2, 1000, 1)],
+        )
+        .unwrap();
+        let hundred_ms = Denom { unit: unit(1), multiple: ratio(100, 1) };
+        let us = Denom { unit: unit(2), multiple: Ratio::one() };
+        let s = Denom { unit: unit(0), multiple: Ratio::one() };
+        assert_eq!(graph.factor(&hundred_ms, &us), Some(ratio(100_000, 1)));
+        assert_eq!(graph.factor(&us, &hundred_ms), Some(ratio(1, 100_000)));
+        assert_eq!(graph.factor(&s, &hundred_ms), Some(ratio(10, 1)));
+        // Two values, one denomination: only the catalogue says so.
+        let thousand_us = Denom { unit: unit(2), multiple: ratio(1000, 1) };
+        let ms = Denom { unit: unit(1), multiple: Ratio::one() };
+        assert_ne!(thousand_us, ms);
+        assert_eq!(graph.factor(&thousand_us, &ms), Some(Ratio::one()));
+        let elsewhere = Denom { unit: unit(9), multiple: Ratio::one() };
+        assert_eq!(graph.factor(&s, &elsewhere), None);
+        // A meet's value is stated against its first input.
+        let d = graph.meet(&[unit(0), unit(1)]).unwrap();
+        assert_eq!(d.value(), Denom { unit: unit(0), multiple: ratio(1, 1000) });
+        assert_eq!(graph.factor(&d.value(), &ms), Some(Ratio::one()));
+    }
+
+    #[test]
+    fn a_factor_reaches_machine_integers_or_says_it_overflows() {
+        assert_eq!(
+            ratio(1000, 3).to_machine(),
+            Ok(MachineRatio { numerator: 1000, denominator: 3 })
+        );
+        let max = Ratio::new(BigInt::from(i64::MAX), BigInt::from(1)).unwrap();
+        assert_eq!(max.to_machine().unwrap().numerator, i64::MAX);
+        let over = Ratio::new(BigInt::from(i64::MAX) + 1, BigInt::from(1)).unwrap();
+        assert_eq!(over.to_machine(), Err(FactorOverflow { factor: over.clone() }));
+        let under = over.reciprocal();
+        assert_eq!(under.to_machine(), Err(FactorOverflow { factor: under.clone() }));
     }
 
     #[test]

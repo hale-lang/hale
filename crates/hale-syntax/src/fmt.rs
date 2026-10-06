@@ -215,7 +215,8 @@ fn is_wordlike(kind: &TokenKind) -> bool {
             | StringLit(_)
             | FStringLit(_)
             | BytesLit(_)
-            | DurationLit(_)
+            | DurationLit { .. }
+            | QuantityLit(..)
             | TimeLit(_)
     ) || kind.keyword_lexeme().is_some()
 }
@@ -270,7 +271,8 @@ fn ends_operand(kind: &TokenKind) -> bool {
             | StringLit(_)
             | FStringLit(_)
             | BytesLit(_)
-            | DurationLit(_)
+            | DurationLit { .. }
+            | QuantityLit(..)
             | TimeLit(_)
             | RParen
             | RBracket
@@ -480,6 +482,11 @@ impl<'a> SpaceCx<'a> {
                     | Resolution
                     | Perspective
             ) {
+                return false;
+            }
+            // GH #1076: `d.in(s)` is a method call; `in` after `.` is
+            // a member name.
+            if matches!(p, In) && pi > 0 && matches!(self.tokens[pi - 1].kind, Dot) {
                 return false;
             }
             return true;

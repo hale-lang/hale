@@ -137,3 +137,56 @@ fn embedded_corpus_formats_and_is_idempotent() {
         non_idempotent.join("\n")
     );
 }
+
+/// GH #1076: every form of the unit dialect's declaration layer passes
+/// the token-equivalence gate, is a fixed point, and keeps what was
+/// written: a quantity literal and a denomination written against their
+/// magnitude stay one token.
+#[test]
+fn unit_dialect_forms_round_trip() {
+    let src = r#"unit us  =  1_000 ns;
+unit KiB = 1024B;
+unit pct = 1/100;
+unit tick;
+
+type Duration = quantity Int in ns;
+type Time = point Duration;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+type Session = distinct Int { range: 0..64; }
+type Byte = Int {range:0..=255;}
+type WireStamp = Time in us { round: floor; };
+type Bucket = quantity Int in 100ms { round: floor; }
+type Bucket2 = quantity Int in 100 ms;
+
+fn main() {
+    let fee = 1_250_000USD;
+    let d = 500ms;
+    let w = d.in(s);
+    let (a, b) = d.split(ms);
+}
+"#;
+    let once = format_source(src).expect("gate");
+    assert_eq!(format_source(&once).expect("gate, 2nd pass"), once, "not a fixed point");
+    let expected = r#"unit us = 1_000 ns;
+unit KiB = 1024B;
+unit pct = 1 / 100;
+unit tick;
+
+type Duration = quantity Int in ns;
+type Time = point Duration;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+type Session = distinct Int { range: 0..64; }
+type Byte = Int { range: 0..=255; }
+type WireStamp = Time in us { round: floor; };
+type Bucket = quantity Int in 100ms { round: floor; }
+type Bucket2 = quantity Int in 100 ms;
+
+fn main() {
+    let fee = 1_250_000USD;
+    let d = 500ms;
+    let w = d.in(s);
+    let (a, b) = d.split(ms);
+}
+"#;
+    assert_eq!(once, expected);
+}

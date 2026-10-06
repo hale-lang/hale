@@ -373,18 +373,31 @@ impl<'p> UseScopes<'p, '_> {
                 | TopDecl::Target(_)
                 | TopDecl::Role(_)
                 | TopDecl::Claims(_)
-                | TopDecl::Constitution(_) => {}
+                | TopDecl::Constitution(_)
+                | TopDecl::Unit(_) => {}
             }
         }
     }
 
     fn type_decl(&mut self, t: &'p hale_syntax::ast::TypeDecl) {
-        if let TypeDeclBody::Struct(fields) = &t.body {
-            for f in fields {
-                if let Some(d) = &f.default {
-                    self.detached(d);
+        match &t.body {
+            TypeDeclBody::Struct(fields) => {
+                for f in fields {
+                    if let Some(d) = &f.default {
+                        self.detached(d);
+                    }
                 }
             }
+            // GH #1076: a range's bounds are expressions.
+            TypeDeclBody::Scalar(s) => {
+                for c in &s.clauses {
+                    if let hale_syntax::ast::ScalarClause::Range { lo, hi, .. } = c {
+                        self.detached(lo);
+                        self.detached(hi);
+                    }
+                }
+            }
+            TypeDeclBody::Alias(_) | TypeDeclBody::Enum(_) => {}
         }
     }
 

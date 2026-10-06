@@ -149,6 +149,7 @@ pub fn kind_and_name(item: &TopDecl) -> (&'static str, String) {
         TopDecl::Role(r) => ("role", r.name.name.clone()),
         TopDecl::Claims(_) => ("claims", String::new()),
         TopDecl::Constitution(c) => ("constitution", c.name.name.clone()),
+        TopDecl::Unit(u) => ("unit", u.name.name.clone()),
     }
 }
 

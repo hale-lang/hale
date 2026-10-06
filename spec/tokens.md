@@ -378,6 +378,29 @@ Rule of thumb for use:
   (`parse_int` / `can_parse_int`). Not every stdlib fn is
   fallible — the marker is reserved for true error paths.
 
+### Unit dialect words (GH #1076)
+
+```
+unit            quantity        point           distinct
+```
+
+All four are **contextual keywords** (spec/units.md
+§ Declarations), each recognized in one position and an ordinary
+`Ident` everywhere else, so a local, field, parameter, `fn` or
+method may still be named by any of them:
+
+- **`unit`** — at top level, when a name and then `=` or `;`
+  follow it: `unit ms = 1_000 us;`, `unit tick;`.
+- **`quantity`**, **`point`**, **`distinct`** — right after a
+  `type` declaration's `=`, when a type expression follows:
+  `type Money = quantity Int in cent;`. `type P = point;` still
+  aliases a type named `point`.
+
+`range`, `round` and `origin` name the clauses of a scalar type's
+`{ }` block (`type Byte = Int { range: 0..256; }`) and are not
+words anywhere else. `in` stays a hard keyword; after `.` it is a
+member name, so `d.in(s)` is an ordinary method call.
+
 ## Operators
 
 ### Arithmetic
@@ -483,12 +506,30 @@ annotations are not in v1.
 - Hexadecimal: `0xFF`, `0x1A_2B`.
 - Octal: `0o755`.
 - Binary: `0b1010_1010`.
-- Optional type suffix: `42i32`, `0xFFu64`. Default: `int`.
+- There is no type suffix. A decimal integer written against a name
+  is a decimal literal (`d`), a duration literal (its suffixes) or a
+  quantity literal (any other name), below; a radix integer followed
+  by a name is a parse error.
 
 ### Float literals
 
-- Decimal: `3.14`, `1.0e-3`, `2.5E+10`.
-- Optional type suffix: `3.14f32`, `2.5f64`. Default: `float`.
+- Decimal: `3.14`, `1.0e-3`, `2.5E+10`. An `e` or `E` is an exponent
+  only when a digit, or a sign and a digit, follows it.
+- There is no type suffix: but for the decimal literal's `d`
+  (below), a float written against a name is a parse error.
+
+### Quantity literals (GH #1076)
+
+- A decimal integer immediately followed, with no space, by a name
+  that is not a duration suffix: `3bp`, `5kg`, `2min`,
+  `1_250_000USD`, `2EUR`. One token, carrying the magnitude and the
+  unit's name as written. Integer magnitudes only.
+- Values of the unit dialect are not typed yet: a program that
+  writes a quantity literal is refused by `hale check` with one
+  error per literal (spec/units.md § Values arrive with the next
+  step).
+- The duration suffixes are not unit names: no `unit` may take one
+  (spec/units.md § The laws, law 10).
 
 ### Decimal literals
 
@@ -500,6 +541,14 @@ annotations are not in v1.
 
 - Duration suffixes: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
   Examples: `100ms`, `5s`, `1h30m`. Compound forms permitted.
+- A duration literal is one token whose value is its length in
+  nanoseconds, which is what an expression reads. The token also
+  keeps the magnitude and the suffix as written (`100ms` is 100 and
+  `ms`), which a unit declaration's factor and a denomination read
+  (spec/units.md § Declarations): `unit tick = 100ms;` parses as
+  `unit tick = 100 ms;`. Until the time catalogue is declared, no
+  `unit` named `ms` exists for it to resolve to, so the checker
+  refuses the equation (law 2) as it refuses a `unit ms;` (law 10).
 - Time literals: ISO-8601 UTC between backticks: `` `2026-05-08T12:00:00Z` ``,
   `` `2026-09-14T08:30:15.25Z` `` (a fraction of one to nine digits; the
   `Z` is optional; an offset is a compile error). Parsed at check time

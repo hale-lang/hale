@@ -524,6 +524,18 @@ fn bce_call_safe(
     bce_expr_safe(callee, vkey, var)
 }
 
+/// GH #1076: a unit-dialect value reached lowering (a quantity literal,
+/// a generic template that is a scalar). A declaration lowers to no
+/// code; the checker refuses every value of the dialect's types until
+/// they are typed, so only a program that skipped the check gets here;
+/// it is refused, named and located, never skipped.
+pub(crate) fn unit_dialect_unsupported(what: &str, span: hale_syntax::Span) -> CodegenError {
+    CodegenError::UnsupportedAt(
+        format!("{what}: the unit dialect is not lowered yet (GH #1076); `hale check` refuses it"),
+        span,
+    )
+}
+
 #[derive(Debug)]
 pub enum CodegenError {
     Unsupported(String),
@@ -12367,6 +12379,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 requests,
                             )?;
                         }
+                        // GH #1076: a unit-dialect scalar names `Int` or
+                        // another scalar, never a generic instantiation.
+                        TypeDeclBody::Scalar(_) => {}
                     }
                 }
                 TopDecl::Type(_) => {
@@ -12470,6 +12485,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TopDecl::Claims(_) | TopDecl::Constitution(_) => {
                     // #392 / #409: claims and constitutions lower to
                     // no code and carry no type-bearing positions.
+                }
+                TopDecl::Unit(_) => {
+                    // GH #1076: a unit is a node of the catalogue the
+                    // checker closes; it lowers to no code.
                 }
             }
         }
@@ -12612,6 +12631,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             requests,
                         )?;
                     }
+                    // GH #1076: see the top-level arm.
+                    TypeDeclBody::Scalar(_) => {}
                 }
             }
             LocusMember::Failure(fd) => {
@@ -12788,6 +12809,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                      and enum templates only)",
                     template.name.name
                 )));
+            }
+            // The parser refuses a scalar with generic parameters, so
+            // no template is one.
+            TypeDeclBody::Scalar(_) => {
+                return Err(unit_dialect_unsupported(
+                    &format!("type `{}`", template.name.name),
+                    template.span,
+                ));
             }
             TypeDeclBody::Enum(variants) => {
                 // m61c: substitute generic params throughout each
@@ -22966,6 +22995,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))?;
                 Ok((self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time))
             }
+            Expr::Literal(Literal::Quantity { value, unit }, span) => Err(
+                unit_dialect_unsupported(&format!("quantity literal `{value}{unit}`"), *span),
+            ),
             Expr::Path(qn) => {
                 // m47 + payloads: enum variant construction
                 // `EnumName::Variant`. For pure no-payload enums
@@ -33537,6 +33569,10 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
             Ok(ParamValue::Decimal(m))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
+        Expr::Literal(Literal::Quantity { value, unit }, span) => Err(unit_dialect_unsupported(
+            &format!("quantity literal `{value}{unit}`"),
+            *span,
+        )),
         _ => Err(CodegenError::Unsupported(
             "param initializer must be a literal in milestone-1 codegen".to_string(),
         )),

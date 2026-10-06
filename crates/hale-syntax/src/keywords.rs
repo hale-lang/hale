@@ -70,7 +70,16 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     // GH #409: constitutions — a named claimset shared across
     // entrypoints, composed per environment.
     "constitution", "extends", "adopt",
+    // GH #1076: the unit dialect's declarations (`UNIT_DIALECT_KEYWORDS`).
+    "unit", "quantity", "point", "distinct",
 ];
+
+/// GH #1076: the unit dialect's declaration words: `unit` at the top
+/// level, and a scalar's kind right after a `type` declaration's `=`.
+/// All four are in [`CONTEXTUAL_KEYWORDS`]; the editor completes them.
+/// The clause names (`range`, `round`, `origin`) are words of a
+/// scalar's `{ }` block only and are not listed.
+pub const UNIT_DIALECT_KEYWORDS: &[&str] = &["unit", "quantity", "point", "distinct"];
 
 /// The union of [`HARD_KEYWORDS`] and [`CONTEXTUAL_KEYWORDS`], sorted and
 /// deduped — exactly what a syntax highlighter colours as a keyword.

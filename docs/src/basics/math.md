@@ -211,6 +211,46 @@ println("took ", took);
 epoch when you genuinely need calendar time; `monotonic()` is
 the basis for anything timing-related.
 
+## Your own units: declared today, values next
+
+`Duration` is not the only number with a unit. Money is counted in
+cents, sizes in bytes, rates in basis points, and a program can
+declare those units and the integer types counted in them:
+
+```hale
+unit cent;
+unit USD = 100 cent;
+unit bp = 1/10000;
+
+type Money   = quantity Int in cent;
+type Ledger  = quantity Int in cent { round: half_even; }
+type Rate    = quantity Int in bp;
+type Session = distinct Int { range: 0..64; }
+```
+
+A `unit` is a name and, optionally, what it equals: one `USD` is
+100 `cent`, and `bp` is a ten-thousandth of the number one. A
+`quantity` counts an `Int` in one of them; a type with a
+`{ round: … }` policy is another denomination of the same quantity,
+the one a narrowing into it rounds by; a `distinct Int` is an
+identity, an integer that is not interchangeable with other
+integers, here limited to `0..64`.
+
+**What works today:** the declarations are checked. The compiler
+closes the catalogue (every chain of equations has to agree, and it
+tells you which two paths don't), allows one quantity per family of
+units, and checks every clause: an undeclared unit, a `round:` that
+names no policy, a range outside its parent's, each gets an error at
+the place, saying what to write instead.
+
+**What does not, yet:** values. A `Money` parameter, field or
+`let`, or a literal like `3cent`, is an error that says values of
+these types are not typed yet. Count in `Int` for now; values of
+these types, with exact conversions between their units, come in a
+later version (`spec/units.md` holds the contract as it ships). One restriction until `Duration` itself becomes one
+of these declarations: a unit may not be named `ns`, `us`, `ms`, `s`,
+`m`, `h` or `d`, because `5ms` is already a duration literal.
+
 ## Why these are in the language
 
 `Decimal`, `Duration`, and `Time` aren't library types you opt

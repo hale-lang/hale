@@ -29,6 +29,7 @@ const EVERY_KIND: &str = r#"
 topic Tick { payload: Int; }
 type Point { x: Int; y: Int; }
 const LIMIT: Int = 3;
+unit ms = 1_000 us;
 interface Store { fn get() -> Int; }
 group workers = { Worker };
 module util {
@@ -68,6 +69,8 @@ fn one_of_each_kind_in_pre_order() {
         Topic,
         Type,
         Const,
+        Unit,
+        UnitEquation,
         Interface,
         Group,
         Module,
@@ -117,7 +120,7 @@ fn one_of_each_kind_in_pre_order() {
         Locus, Fn, Topic, Type, Interface, Closure, Lifecycle, Mode, Failure,
         Perspective, Const, Group, Module, Param, PlacementEntry,
         BindingEntry, Publish, Subscribe, Let, LetTuple, Assign, For, Send,
-        StructLiteral, Call, Use, Binder,
+        StructLiteral, Call, Use, Binder, Unit, UnitEquation,
     ]
     .into_iter()
     .collect();
@@ -211,7 +214,7 @@ fn corpus_walk_reaches_every_identity_field() {
     }
     eprintln!("{} programs, {} sites: {:?}", programs.len(), total, by_kind);
     // Vacuity: every kind turns up somewhere in the corpus.
-    assert_eq!(by_kind.len(), 27, "kinds seen: {:?}", by_kind.keys());
+    assert_eq!(by_kind.len(), 29, "kinds seen: {:?}", by_kind.keys());
 }
 
 /// The same over the syntax crate's own desugars, which synthesize

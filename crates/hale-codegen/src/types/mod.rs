@@ -427,6 +427,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeDeclBody::Alias(_) => {
                 return Ok(());
             }
+            // GH #1076: a unit-dialect declaration declares nothing to
+            // lower until its values are typed; the checker refuses
+            // every use of one where a value would live.
+            TypeDeclBody::Scalar(_) => {
+                return Ok(());
+            }
             TypeDeclBody::Enum(variants) => {
                 // m47 + payloads: register the enum's variants
                 // and compute the storage layout. Each variant's

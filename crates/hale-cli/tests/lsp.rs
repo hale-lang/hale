@@ -772,6 +772,105 @@ fn lsp_v5_formatting_symbols_enforcement() {
     let _ = std::fs::remove_dir_all(&seed);
 }
 
+/// GH #1076: the editor sees a `unit` declaration though the checker
+/// refuses it for now: it is in the outline (as a constant: LSP has no
+/// unit kind), a quantity literal's suffix goes to it, and its
+/// references count the equations, denominations and literals naming it.
+#[test]
+fn lsp_unit_declarations_outline_definition_references() {
+    let seed = std::env::temp_dir().join(format!("hale_lsp_units_test_{}", std::process::id()));
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+    let src = "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n\
+               fn main() {\n    let fee = 3cent;\n    println(1);\n}\n";
+    std::fs::write(&file, src).expect("write");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _init = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": src
+        }}
+    }));
+    let _diags = lsp.recv();
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let resp = lsp.recv();
+    let syms = resp.pointer("/result").and_then(|v| v.as_array()).expect("syms");
+    let kind = |name: &str| {
+        syms.iter()
+            .find(|s| s["name"] == name)
+            .unwrap_or_else(|| panic!("no symbol `{name}`: {resp}"))["kind"]
+            .clone()
+    };
+    assert_eq!(kind("cent"), 14, "unit = Constant");
+    assert_eq!(kind("USD"), 14, "unit = Constant");
+    assert_eq!(kind("Money"), 23, "scalar type = Struct, as every non-enum type");
+
+    // definition: the `cent` of `3cent` → `unit cent;` on line 0.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 15 }
+        }
+    }));
+    let d = lsp.recv();
+    assert_eq!(d.pointer("/result/range/start/line"), Some(&serde_json::json!(0)), "{d}");
+
+    // references: the declaration, the equation's target, the
+    // denomination and the literal's suffix.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 6 },
+            "context": { "includeDeclaration": true }
+        }
+    }));
+    let refs = lsp.recv();
+    let lines: Vec<u64> = refs
+        .pointer("/result")
+        .and_then(|v| v.as_array())
+        .expect("refs")
+        .iter()
+        .map(|r| r.pointer("/range/start/line").and_then(|l| l.as_u64()).unwrap())
+        .collect();
+    assert_eq!(lines, vec![0, 1, 2, 4], "{refs}");
+
+    // completion: the dialect's words are offered as keywords
+    // (`type Money = qua|ntity`).
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 16 }
+        }
+    }));
+    let resp = lsp.recv();
+    let items = resp.pointer("/result/items").and_then(|v| v.as_array()).expect("items");
+    assert!(items.iter().any(|i| i["label"] == "quantity"), "{resp}");
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}
+
 /// The outline reads the open file's member program, which the editor's
 /// load keeps however the rest of the seed fares (outside review of
 /// #1295, finding 2): an import that does not resolve blocks the check
@@ -1409,6 +1508,21 @@ fn price(n: Int) -> Int {\n    return leaf(n);\n}\n\
 fn main() {\n    println(price(5));\n}\n",
 )];
 
+/// The unit-law parity seed
+/// (`lsp_and_check_agree_over_a_seed_with_unit_laws`, GH #1076): a unit
+/// declared in both files (law 1, its witness in the other file), a
+/// denomination naming no unit (law 2), and a value of a unit-dialect
+/// type inside a body (the not-yet boundary).
+const UNITS: Files = &[
+    ("a_units.hl", "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n"),
+    (
+        "b_app.hl",
+        "unit cent;\ntype Wallet = quantity Int in cnt;\n\
+fn total(n: Int) -> Int {\n    let m: Money = n;\n    return n;\n}\n\
+fn main() {\n    println(total(1));\n}\n",
+    ),
+];
+
 /// Every parity seed: its tag, its files and its library's.
 const PARITY: &[(&str, Files, Files)] = &[
     ("plain", PLAIN, &[]),
@@ -1417,7 +1531,27 @@ const PARITY: &[(&str, Files, Files)] = &[
     ("author-leak", AUTHOR_LEAK, &[]),
     ("laws", LAWS, LAWS_LIB),
     ("effects", EFFECTS, &[]),
+    ("units", UNITS, &[]),
 ];
+
+/// The unit-law parity fixture (GH #1076): the unit laws and the not-yet
+/// boundary are check diagnostics like any other, so `hale check <dir>`,
+/// the editor on disk and the editor's buffers give one answer, each
+/// finding at its file and place.
+#[test]
+fn lsp_and_check_agree_over_a_seed_with_unit_laws() {
+    let check = agree_three_ways("units", UNITS, &[]);
+    for (line, col, want) in [
+        (1, 6, "unit `cent` is declared twice"),
+        (2, 31, "type `Wallet`: its denomination names `cnt`, which no `unit` declares"),
+        (4, 12, "type `Money`: values of the unit dialect's types are not typed yet"),
+    ] {
+        let found: Vec<&Finding> = check.iter().filter(|(.., m)| m.contains(want)).collect();
+        assert_eq!(found.len(), 1, "one `{want}` finding: {check:?}");
+        let (f, l, c, _) = found[0];
+        assert_eq!((f.as_str(), *l, *c), ("b_app.hl", line, col), "{want}");
+    }
+}
 
 /// The laws parity fixture (F.40 phase 3, X1): a program that breaks a
 /// law and holds a finding of each kind the typing stage carries is
@@ -1772,6 +1906,50 @@ fn the_incremental_typing_stage_is_the_full_one() {
     }
     assert!(reused > 10, "body edits reuse what they do not reach: {reused} steps");
     assert!(whole >= PARITY.len(), "an added declaration checks the seed whole: {whole} steps");
+}
+
+/// A parameter default holding a quantity literal, left by two callers
+/// (GH #1076, U1, review 2).
+const DEFAULT_TWO_CALLERS: &str = "unit cent;\n\
+fn take(n: Int = 3cent) {\n    println(n);\n}\n\
+fn first() {\n    take();\n}\n\
+fn second() {\n    take();\n}\n\
+fn main() {\n    first();\n    second();\n}\n";
+
+/// The not-yet boundary's error at a parameter default belongs to each
+/// caller that leaves the default, not to the first one walked (GH #1076,
+/// U1, review 2): with `first` edited to pass the argument, the editor
+/// reuses `second`'s result, which must still carry the refusal, since
+/// `second` still leaves `3cent`; with both edited, neither reports it.
+/// Each step typed reusing the one before equals the fresh typing.
+#[test]
+fn a_default_refused_for_two_callers_stays_refused_while_one_leaves_it() {
+    use hale_frontend::typing_reuse::TypingReuse;
+    let root = scratch_root("incremental-default-callers");
+    let dir = root.canonicalize().expect("canonical dir");
+    let entry = dir.join("main.hl");
+    std::fs::write(&entry, DEFAULT_TWO_CALLERS).expect("write app");
+    let first_passes = DEFAULT_TWO_CALLERS.replacen("    take();", "    take(1);", 1);
+    let both_pass = first_passes.replacen("    take();", "    take(1);", 1);
+    let steps = [
+        std::collections::BTreeMap::from([(entry.clone(), first_passes)]),
+        std::collections::BTreeMap::from([(entry.clone(), both_pass)]),
+    ];
+    let reuses = incremental_equals_full("default-callers", &entry, &steps);
+    let refused = |keys: &[String]| keys.iter().filter(|k| k.contains("quantity literal `3cent`: values")).count();
+    let (mut prev, before) = typed_snapshot(&entry, &std::collections::BTreeMap::new(), None);
+    assert_eq!(refused(&before), 1, "the default is refused once: {before:#?}");
+    for (n, (overlays, want)) in steps.iter().zip([1, 0]).enumerate() {
+        let (snap, incremental) = typed_snapshot(&entry, overlays, Some(prev));
+        assert_eq!(refused(&incremental), want, "step {n}: {incremental:#?}");
+        prev = snap;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        matches!(reuses[0], TypingReuse::Reused { reused, .. } if reused > 0),
+        "the edit to `first` reuses the rest: {:?}",
+        reuses[0]
+    );
 }
 
 /// The same equality over `dna/host` (X2): one declaration's body

@@ -1338,6 +1338,9 @@ mod sym_kind {
     pub const INTERFACE: u64 = 11;
     pub const FUNCTION: u64 = 12;
     pub const CONSTANT: u64 = 14;
+    /// GH #1076: a `unit` declaration. LSP has no unit symbol kind;
+    /// a unit is a fixed, named magnitude, so it is a constant.
+    pub const UNIT: u64 = CONSTANT;
     pub const STRUCT: u64 = 23;
     pub const EVENT: u64 = 24;
     pub const ENUM: u64 = 10;
@@ -1469,6 +1472,15 @@ fn document_symbols(
                     sym_kind::CONSTANT,
                     c.span,
                     c.name.span,
+                    Vec::new(),
+                ));
+            }
+            TopDecl::Unit(u) => {
+                out.push(mk(
+                    &u.name.name,
+                    sym_kind::UNIT,
+                    u.span,
+                    u.name.span,
                     Vec::new(),
                 ));
             }
@@ -1875,6 +1887,13 @@ fn complete_top_level(
     }
     // Keywords + primitive type names + the std root.
     for kw in hale_syntax::keywords::HARD_KEYWORDS {
+        if kw.starts_with(partial) {
+            push_item(items, kw, ci_kind::KEYWORD, None);
+        }
+    }
+    // GH #1076: the unit dialect's declaration words, contextual and so
+    // not among the hard keywords.
+    for kw in hale_syntax::keywords::UNIT_DIALECT_KEYWORDS {
         if kw.starts_with(partial) {
             push_item(items, kw, ci_kind::KEYWORD, None);
         }
@@ -2318,6 +2337,10 @@ fn definition(
     let top = snap.demand_scope().ok()?;
     let src = source_of(&snap, &path)?;
     let offset = lsp_pos_to_offset(src, line, character);
+    // GH #1076: a quantity literal (`3bp`) names its unit.
+    if let Some(unit) = quantity_unit_at(src, offset) {
+        return merged_span_to_location(&snap, unit_decl_span(&snap, &unit)?);
+    }
     let (tokens, idx, word, segs) = token_context(src, offset)?;
 
     // std:: paths resolve into the EMBEDDED stdlib source
@@ -2346,8 +2369,24 @@ fn definition(
         return merged_span_to_location(&snap, p.span);
     }
 
-    let sym = top.lookup(&word)?;
-    merged_span_to_location(&snap, sym.span())
+    match top.lookup(&word) {
+        Some(sym) => merged_span_to_location(&snap, sym.span()),
+        None => merged_span_to_location(&snap, unit_decl_span(&snap, &word)?),
+    }
+}
+
+/// GH #1076: the unit a quantity literal at `offset` names (`bp` in
+/// `3bp`).
+fn quantity_unit_at(src: &str, offset: usize) -> Option<String> {
+    let tokens = hale_syntax::lexer::lex(src).ok()?;
+    tokens.iter().find_map(|t| match &t.kind {
+        hale_syntax::lexer::TokenKind::QuantityLit(_, unit)
+            if t.span.start.as_usize() <= offset && offset < t.span.end.as_usize() =>
+        {
+            Some(unit.clone())
+        }
+        _ => None,
+    })
 }
 
 /// The stdlib AST, parsed once per process from the embedded
@@ -2376,8 +2415,23 @@ fn top_decl_name(
         TD::Interface(i) => Some(&i.name),
         TD::Const(c) => Some(&c.name),
         TD::Topic(t) => Some(&t.name),
+        TD::Unit(u) => Some(&u.name),
         _ => None,
     }
+}
+
+/// GH #1076: the name of the `unit` declaration called `word`, in any
+/// program the snapshot loaded. A unit is no symbol of the scope (it
+/// names a node of the unit graph, never a value or a type) and is
+/// never mangled, so goto and references find it here.
+fn unit_decl_span(snap: &Snapshot, word: &str) -> Option<hale_syntax::Span> {
+    use hale_syntax::ast::TopDecl;
+    snap.programs().values().find_map(|p| {
+        hale_syntax::ast::flat_decls(&p.items).find_map(|d| match d {
+            TopDecl::Unit(u) if u.name.name == word => Some(u.name.span),
+            _ => None,
+        })
+    })
 }
 
 /// Materialize one embedded stdlib file into the versioned
@@ -2472,14 +2526,19 @@ fn references(
     let snap = editor_snapshot(&path, overlays).ok()?;
     let src = source_of(&snap, &path)?;
     let offset = lsp_pos_to_offset(src, line, character);
-    let (_, _, word, _) = token_context(src, offset)?;
+    let word = match quantity_unit_at(src, offset) {
+        Some(unit) => unit,
+        None => token_context(src, offset)?.2,
+    };
 
     // The declaration's merged span, for includeDeclaration=false:
-    // the editor's scope (a hole leaves the members that parsed).
+    // the editor's scope (a hole leaves the members that parsed), or
+    // a unit's declaration, which the scope does not hold.
     let decl_span = snap
         .demand_editor_scope()
         .ok()
-        .and_then(|scope| scope.top.lookup(&word).map(|s| s.span()));
+        .and_then(|scope| scope.top.lookup(&word).map(|s| s.span()))
+        .or_else(|| unit_decl_span(&snap, &word));
 
     // Name-scoped scan of every file's Ident tokens. Honest v3
     // semantics: references-by-name across the seed (hale's flat
@@ -2494,32 +2553,38 @@ fn references(
         };
         let base = base_of(&snap, file).unwrap_or(0);
         for t in &tokens {
-            if let hale_syntax::lexer::TokenKind::Ident(n) = &t.kind {
-                if n == &word {
-                    if !include_decl {
-                        if let Some(ds) = decl_span {
-                            let merged =
-                                base as usize + t.span.start.as_usize();
-                            if ds.start.as_usize() <= merged
-                                && merged < ds.end.as_usize()
-                            {
-                                continue;
-                            }
-                        }
+            // GH #1076: a quantity literal's suffix names its unit; the
+            // reference is the suffix.
+            let (name, span) = match &t.kind {
+                hale_syntax::lexer::TokenKind::Ident(n) => (n, t.span),
+                hale_syntax::lexer::TokenKind::QuantityLit(_, unit) => {
+                    let end = t.span.end.as_usize();
+                    (unit, hale_syntax::Span::new(end - unit.len(), end))
+                }
+                _ => continue,
+            };
+            if name != &word {
+                continue;
+            }
+            if !include_decl {
+                if let Some(ds) = decl_span {
+                    let merged = base as usize + span.start.as_usize();
+                    if ds.start.as_usize() <= merged
+                        && merged < ds.end.as_usize()
+                    {
+                        continue;
                     }
-                    let (sl, sc) =
-                        offset_to_lsp_pos(source, t.span.start.as_usize());
-                    let (el, ec) =
-                        offset_to_lsp_pos(source, t.span.end.as_usize());
-                    out.push(json!({
-                        "uri": path_to_uri(file),
-                        "range": {
-                            "start": { "line": sl, "character": sc },
-                            "end":   { "line": el, "character": ec }
-                        }
-                    }));
                 }
             }
+            let (sl, sc) = offset_to_lsp_pos(source, span.start.as_usize());
+            let (el, ec) = offset_to_lsp_pos(source, span.end.as_usize());
+            out.push(json!({
+                "uri": path_to_uri(file),
+                "range": {
+                    "start": { "line": sl, "character": sc },
+                    "end":   { "line": el, "character": ec }
+                }
+            }));
         }
     }
     Some(Value::Array(out))

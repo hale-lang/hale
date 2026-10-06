@@ -13,7 +13,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `desugar_sequence` | Layer 1 | Canonical | desugar | `desugar_before_check` | 0 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, qualified bus subjects, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Canonical | derivation | `form_rows` | 0 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the domains each of its instances is called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
-| `unit_catalogue` | Layer 2 | Canonical | derivation | `close` | 0 | Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. This is a compiler API; source declarations and expression typing do not demand it yet. |
+| `unit_catalogue` | Layer 2 | Canonical | derivation | `close` | 0 | Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. A program's catalogue is closed from its `unit` declarations (the `unit_declarations` family); expression typing does not demand it yet. |
+| `unit_declarations` | Layer 2 | Canonical | derivation | `derive_unit_rows` | 0 | What each unit-dialect declaration is (GH #1076): every `unit` and its equation, every quantity, point, identity, range and refinement with its component, denomination, quantity, origin, policy and range, every unit a declaration names resolved, and the program's catalogue closed from them; and whether the declarations obey the dialect's structural laws. |
 | `top_scope` | Layer 2 | Canonical | derivation | `build_top_scope` | 0 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Canonical | derivation | `unify_generic_ty` | 0 | Which monomorph a generic call instantiates and how its bindings unify. |
@@ -220,13 +221,15 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 ### `unit_catalogue` — Canonical · derivation
 
-**Answers.** Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. This is a compiler API; source declarations and expression typing do not demand it yet.
+**Answers.** Exact rational relationships between resolved unit identities, cycle consistency witnesses, and coarsest widening-compatible denominations. A program's catalogue is closed from its `unit` declarations (the `unit_declarations` family); expression typing does not demand it yet.
 
 **Inputs.** unit declaration SiteIds; equations with declaration SiteIds and positive exact rational factors
 
 **Producer.** `crates/hale-types/src/unit_graph.rs` · `close`
 
-**Consumers.** conversion queries (reduced factor, exactness and equation witness) (`crates/hale-types/src/unit_graph.rs` · `conversion`); unpinned denomination queries (rational gcd and necessary input witnesses) (`crates/hale-types/src/unit_graph.rs` · `meet`)
+**Also owned.** `crates/hale-types/src/unit_graph.rs` · `pub fn factor`; `crates/hale-types/src/unit_graph.rs` · `pub fn to_machine`
+
+**Consumers.** the unit declarations (the program's catalogue, closed once from its equations; its inconsistent cycles are law 3's witnesses; a point's origin counted through `factor`) (`crates/hale-types/src/units.rs` · `UnitGraph::close`); conversion queries (reduced factor, exactness and equation witness) (`crates/hale-types/src/unit_graph.rs` · `conversion`); unpinned denomination queries (rational gcd and necessary input witnesses) (`crates/hale-types/src/unit_graph.rs` · `meet`); denomination values (a unit and an exact multiple; the factor between two, exact and as machine integers with an explicit overflow) (`crates/hale-types/src/unit_graph.rs` · `pub fn factor`)
 
 **Invariants.**
 
@@ -236,12 +239,46 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - a conversion between disconnected components or through an unknown unit has no answer
 - denomination is the rational gcd of the input units, potentially unnamed, with an irredundant set of input witnesses; 6, 10 and 15 require three witnesses
 - a denominator of one proves denomination conversion exactness only, not that a runtime range or representation width can hold the result
+- a denomination is also a value (`Denom`: a unit and an exact positive multiple), stored and compared without the catalogue; whether two values denote one denomination, and the factor between them, are the catalogue's (`factor`); the factor reaches machine integers only through `Ratio::to_machine`, whose overflow is an explicit `FactorOverflow`, never a truncation
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/src/unit_graph.rs
+**Focused tests.** crates/hale-types/src/unit_graph.rs; crates/hale-types/tests/unit_declarations.rs
 
 **Spec.** spec/units.md
+
+### `unit_declarations` — Canonical · derivation
+
+**Answers.** What each unit-dialect declaration is (GH #1076): every `unit` and its equation, every quantity, point, identity, range and refinement with its component, denomination, quantity, origin, policy and range, every unit a declaration names resolved, and the program's catalogue closed from them; and whether the declarations obey the dialect's structural laws.
+
+**Inputs.** unit declarations and their equations (`UnitDecl`, `UnitEquation`); scalar type declarations (`TypeDeclBody::Scalar`: kind word, base, denomination, `range:` / `round:` / `origin:` clauses); the bundle's other type, locus, interface and perspective names (what a base that is no scalar is); snapshot identities; unit_catalogue (the closure, and its witnessed cycles)
+
+**Producer.** `crates/hale-types/src/units.rs` · `derive_unit_rows`
+
+**Also owned.** `crates/hale-types/src/units.rs` · `unit_laws`; `crates/hale-types/src/units.rs` · `value_not_yet`; `crates/hale-types/src/units.rs` · `declared_twice`; `crates/hale-types/src/units.rs` · `undeclared_units`; `crates/hale-types/src/units.rs` · `inconsistent_cycles`; `crates/hale-types/src/units.rs` · `second_quantity`; `crates/hale-types/src/units.rs` · `quantity_shape`; `crates/hale-types/src/units.rs` · `point_shape`; `crates/hale-types/src/units.rs` · `clauses`; `crates/hale-types/src/units.rs` · `identity_and_range_bases`; `crates/hale-types/src/units.rs` · `refinement_bases`; `crates/hale-types/src/units.rs` · `duration_suffix_names`; `crates/hale-frontend/src/snapshot.rs` · `demand_units`
+
+**Consumers.** demand (one cell per snapshot, counted as this family) (`crates/hale-frontend/src/snapshot.rs` · `derive_unit_rows`); check (the ten laws, through one entry, over the rows handed in: `CheckInputs::units`) (`crates/hale-types/src/check.rs` · `unit_laws`); check (the not-yet boundary: a scalar type's name where a value would live, read from the rows' names, and a quantity literal, are one located error each) (`crates/hale-types/src/check.rs` · `value_not_yet`)
+
+**Invariants.**
+
+- one producer over the programs after the desugar sequence, each row keyed by its declaration's site (`SiteRef`), demanded once per snapshot (`Snapshot::demand_units`), not gated on the typing: it reads declarations only. The stdlib declares no unit and no scalar yet; when its time catalogue arrives (U4) its declarations join the rows under `SiteRef::stdlib`
+- every unit a declaration names (an equation's target, a denomination, an origin) is a reference row, resolved by name to the first unit of that name or to none; the components join the units of every equation whose target resolves, and the number one is a node of them, so every unit written against a number (`unit pct = 1/100;`) is in one dimensionless component (law 11)
+- the catalogue is closed once, from the rows (the number one under an identity the snapshot's mint never issues), and kept only when no catalogue law fails: a unit declared twice, an equation naming no declared unit, a cycle that does not multiply to one
+- a scalar's kind is its word's (`quantity`, `point`, `distinct`), else its base's: a refinement of a quantity is a quantity, of a point a point, of `Int`, an identity or a range a range, and `Int in D` a quantity missing its word. A quantity's or a point's denomination is its own `in`, else its parent's; its component is its parent's, else its denomination's unit's. Each component's quantity is the first declared with `quantity` and no policy; every other quantity over the component is a boundary denomination of it and records it as its `of`. A point's origin is a count of its own denomination, through the catalogue
+- the laws are registered rules of `spec/verification.md`'s structural table, each a function over the rows producing `law::Violation`s, run by the check through `unit_laws`: a unit is declared once; an equation, a denomination or an origin names a declared unit; every cycle of equations multiplies to one; a component has one quantity, and a refinement of a quantity stays in its component; a quantity counts an `Int` and names its denomination; a point is over a quantity, and its denomination and origin are in its component; `round:` names a policy, on a quantity or a point, and a `range:` is literal, non-empty and inside its parent's; an identity is `distinct Int` and a range refines `Int`, an identity or a range; a refinement refines a scalar or `Int`, never a struct, an enum or itself; no unit takes a duration suffix's name
+- values are not typed yet: a scalar type's name where a value would live (a parameter, a field, a binding, a return, a topic payload, a generic argument, an alias's target) and a quantity literal are one located error each, made by one function (`value_not_yet`), so a program that passes the check holds no value of a new type
+
+**Missing data.** a missing required row is a compiler error
+
+**Focused tests.** crates/hale-types/tests/unit_declarations.rs; crates/hale-types/tests/demand_gate.rs; tests/hale/unit_declarations_test.hl
+
+**Spec.** spec/units.md § Declarations; spec/verification.md § Structural & design rules
+
+**Guarded seams.**
+
+- `derive_unit_rows(` may be referenced from: `crates/hale-types/src/units.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `unit_laws(` may be referenced from: `crates/hale-types/src/units.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `value_not_yet(` may be referenced from: `crates/hale-types/src/units.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `top_scope` — Canonical · derivation
 
@@ -1536,7 +1573,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 29 |
+| `spec/verification.md` § Structural & design rules | 39 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1592,6 +1629,16 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/pool-starvation | `spec/verification.md` § Structural & design rules | Pool starvation | two or more never-returning `run()` bodies on one cooperative pool of the deployed root (warning, at the first) | `flows` | `crates/hale-types/src/check.rs` · `check_pool_starvation` | `placement`, `flows` | Canonical |
 | verification/structural/birth-order-trap | `spec/verification.md` § Structural & design rules | Birth-order trap | a root params field whose never-returning `run()` runs inline on main, so the params after it are never born (warning, at the first such field) | `flows` | `crates/hale-types/src/check.rs` · `check_birth_order` | `placement`, `flows` | Canonical |
 | verification/structural/hot-path-allocation | `spec/verification.md` § Structural & design rules | Hot-path allocation | an allocation per loop iteration or per bus message (warning; an error under `@hot`, where it also flags `snapshot()` / `finish()` and a whole-struct self-field replace) | `alloc_summary` | `crates/hale-types/src/check.rs` · `check_hot_path_alloc` | `alloc_summary`, `top_scope` | Canonical |
+| verification/structural/unit-declared-once | `spec/verification.md` § Structural & design rules | Unit declared once | a `unit` declared twice (error, at the second's name, the witness the first) | `unit_declarations` | `crates/hale-types/src/units.rs` · `declared_twice` | `unit_declarations` | Canonical |
+| verification/structural/declared-unit | `spec/verification.md` § Structural & design rules | Declared unit | an equation's target, a denomination or an origin naming no declared unit (error, at the name, the nearest declared unit suggested) | `unit_declarations` | `crates/hale-types/src/units.rs` · `undeclared_units` | `unit_declarations` | Canonical |
+| verification/structural/unit-cycles-multiply-to-one | `spec/verification.md` § Structural & design rules | Unit cycles multiply to one | a cycle of unit equations whose product is not one (error, at the equation the closure found inconsistent, with what it claims and what the other path implies; the witness is the other path, each step at its declaration) | `unit_declarations` | `crates/hale-types/src/units.rs` · `inconsistent_cycles` | `unit_declarations`, `unit_catalogue` | Canonical |
+| verification/structural/one-quantity-per-component | `spec/verification.md` § Structural & design rules | One quantity per component | a second quantity declared with no policy over one component of the catalogue (error, at its name, the witness the component's quantity), and a refinement of a quantity denominated outside its component | `unit_declarations` | `crates/hale-types/src/units.rs` · `second_quantity` | `unit_declarations` | Canonical |
+| verification/structural/quantity-counts-an-int | `spec/verification.md` § Structural & design rules | Quantity counts an Int | a quantity over anything but `Int`, a quantity with no `in`, or `Int in D` with no `quantity` (error, saying what to write) | `unit_declarations` | `crates/hale-types/src/units.rs` · `quantity_shape` | `unit_declarations` | Canonical |
+| verification/structural/point-over-a-quantity | `spec/verification.md` § Structural & design rules | Point over a quantity | a `point` over anything but a quantity, an `origin:` on anything but a point, and a point's denomination or origin in a unit outside its quantity's component (error) | `unit_declarations` | `crates/hale-types/src/units.rs` · `point_shape` | `unit_declarations` | Canonical |
+| verification/structural/round-and-range-clauses | `spec/verification.md` § Structural & design rules | Round and range clauses | a `round:` naming none of the five policies or on an identity or a range; a `range:` bound that is no integer literal, a range holding no value, or one outside its parent's (error, the witness the parent's range) | `unit_declarations` | `crates/hale-types/src/units.rs` · `clauses` | `unit_declarations` | Canonical |
+| verification/structural/identity-and-range-bases | `spec/verification.md` § Structural & design rules | Identity and range bases | an identity that is not `distinct Int` or has a denomination; a range over a primitive other than `Int`, with a denomination, or a refinement of `Int` with no `range:` (error) | `unit_declarations` | `crates/hale-types/src/units.rs` · `identity_and_range_bases` | `unit_declarations` | Canonical |
+| verification/structural/refinement-of-a-scalar | `spec/verification.md` § Structural & design rules | Refinement of a scalar | a scalar declaration over a name nothing declares, a refinement of a struct, an enum, an alias of one or another non-scalar, and a refinement chain that comes back to itself (error, at the base) | `unit_declarations` | `crates/hale-types/src/units.rs` · `refinement_bases` | `unit_declarations` | Canonical |
+| verification/structural/unit-named-like-a-duration-suffix | `spec/verification.md` § Structural & design rules | Unit named like a duration suffix | a `unit` named `ns`, `us`, `ms`, `s`, `m`, `h` or `d`, which the lexer reads as a duration literal's suffix until `Time` and `Duration` are declarations (error, at the name) | `unit_declarations` | `crates/hale-types/src/units.rs` · `duration_suffix_names` | `unit_declarations` | Canonical |
 
 ## The shadow facility's allowance
 

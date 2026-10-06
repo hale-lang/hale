@@ -623,6 +623,8 @@ impl CallWalk {
                 }
             }
             TopDecl::Type(t) => self.type_decl(t),
+            // A unit declaration holds names and numbers, no call.
+            TopDecl::Unit(_) => {}
             TopDecl::Const(c) => {
                 self.owner = c.name.name.clone();
                 self.ty(&c.ty);
@@ -793,6 +795,9 @@ impl CallWalk {
                     }
                 }
             }
+            // A scalar declaration (a quantity, a point, an identity, a
+            // range) names a unit and literal bounds, no call.
+            TypeDeclBody::Scalar(_) => {}
         }
     }
 

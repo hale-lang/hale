@@ -1254,6 +1254,15 @@ impl Parser {
             {
                 self.parse_role_decl().map(TopDecl::Role)
             }
+            // GH #1076: `unit NAME;` / `unit NAME = ...;`, told from an
+            // identifier named `unit` by a name and then `=` or `;`.
+            TokenKind::Ident(s)
+                if s == "unit"
+                    && matches!(self.peek_at(1), TokenKind::Ident(_))
+                    && matches!(self.peek_at(2), TokenKind::Eq | TokenKind::Semi) =>
+            {
+                self.parse_unit_decl().map(TopDecl::Unit)
+            }
             // #392 thread 2: a top-level `claims { }` block — the
             // LIBRARY tier: a seed swears about itself and its own
             // boundary, and the block travels with the import.
@@ -1382,6 +1391,94 @@ impl Parser {
             includes,
             span: kw_tok.span.merge(semi.span),
         })
+    }
+
+    /// GH #1076: `unit NAME;` or `unit NAME = FACTOR [TARGET];`, where
+    /// FACTOR is a positive integer or `N/D`, and TARGET the unit it
+    /// is a multiple of (none: the pure number, `unit pct = 1/100;`).
+    /// The magnitude and the target may be written apart
+    /// (`1_000 ns`) or together (`1_000ns`, one literal token); the
+    /// two spellings mean the same.
+    fn parse_unit_decl(&mut self) -> Result<UnitDecl, Diag> {
+        let kw = self.bump(); // `unit`
+        let name = self.expect_ident("unit name")?;
+        if self.at(&TokenKind::Semi) {
+            let semi = self.bump();
+            return Ok(UnitDecl {
+                name,
+                equation: None,
+                span: kw.span.merge(semi.span),
+                id: NodeId::NONE,
+            });
+        }
+        self.expect(TokenKind::Eq, "=")?;
+        let start = self.peek_token().span;
+        let (num, mut target) = self.parse_unit_magnitude("unit factor")?;
+        let mut den = 1;
+        if target.is_none() && self.eat(&TokenKind::Slash) {
+            let (d, t) = self.parse_unit_magnitude("unit factor's denominator")?;
+            den = d;
+            target = t;
+        }
+        if target.is_none() {
+            if let TokenKind::Ident(t) = self.peek().clone() {
+                let span = self.bump().span;
+                target = Some(Ident::new(t, span));
+            }
+        }
+        let end = self.tokens[self.pos - 1].span;
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(UnitDecl {
+            name,
+            equation: Some(UnitEquation {
+                num,
+                den,
+                target,
+                span: start.merge(end),
+                id: NodeId::NONE,
+            }),
+            span: kw.span.merge(semi.span),
+            id: NodeId::NONE,
+        })
+    }
+
+    /// GH #1076: a positive integer magnitude, alone (`100`) or with a
+    /// unit written against it in one literal token (`100ms`,
+    /// `1024KiB`), which comes back as the second element. A unit
+    /// written apart (`100 ms`) is the caller's to read.
+    fn parse_unit_magnitude(&mut self, what: &str) -> Result<(u64, Option<Ident>), Diag> {
+        let tok = self.peek_token().clone();
+        let suffix = |len: usize| {
+            let end = tok.span.end.as_usize();
+            Span::new(end - len, end)
+        };
+        let (n, unit) = match &tok.kind {
+            TokenKind::IntLit(n) => (*n, None),
+            TokenKind::DurationLit { spelled: Some((n, s)), .. } => {
+                (*n, Some(Ident::new(s.clone(), suffix(s.len()))))
+            }
+            TokenKind::QuantityLit(n, s) => (*n, Some(Ident::new(s.clone(), suffix(s.len())))),
+            TokenKind::DurationLit { spelled: None, .. } => {
+                return Err(Diag::parse(
+                    tok.span,
+                    format!("a {what} is one magnitude and one unit; a compound duration has two"),
+                ));
+            }
+            other => {
+                return Err(Diag::parse(
+                    tok.span,
+                    format!("expected a positive integer {what}, got {other:?}"),
+                ));
+            }
+        };
+        if n <= 0 {
+            return Err(Diag::parse(
+                tok.span,
+                format!("a {what} must be positive: zero relates no unit to another"),
+            ));
+        }
+        self.bump();
+        Ok((n as u64, unit))
     }
 
     fn parse_group_decl(&mut self) -> Result<GroupDecl, Diag> {
@@ -5954,21 +6051,84 @@ impl Parser {
             // (GH #834). Refusing it here also keeps the shape away
             // from resolve, check, codegen and `hale fmt`, none of
             // which have anything to say about it.
+            //
+            // GH #1076: or a scalar of the unit dialect. Its kind word
+            // (`quantity`, `point`, `distinct`) is contextual, matched
+            // by spelling as `enum` is, and only when a type follows
+            // it: `type P = point;` still aliases a type named `point`.
+            let kind = match self.peek() {
+                TokenKind::Ident(s) if starts_type_expr(self.peek_at(1)) => match s.as_str() {
+                    "quantity" => Some(ScalarKind::Quantity),
+                    "point" => Some(ScalarKind::Point),
+                    "distinct" => Some(ScalarKind::Distinct),
+                    _ => None,
+                },
+                _ => None,
+            };
             if let Some(lt) = lt_span {
                 return Err(Diag::parse(
                     lt,
-                    "generic type aliases are not supported; write the \
-                     concrete alias `type Name = Pair<Int>;`",
+                    if kind.is_some() {
+                        "a scalar type takes no generic parameters"
+                    } else {
+                        "generic type aliases are not supported; write the \
+                         concrete alias `type Name = Pair<Int>;`"
+                    },
                 ));
             }
+            if kind.is_some() {
+                self.bump();
+            }
             let ty = self.parse_type_expr()?;
-            let semi = self.expect(TokenKind::Semi, ";")?;
+            // The denomination, `in UNIT` / `in 100ms` / `in 100 ms`.
+            let denom = if self.at(&TokenKind::In) {
+                let in_tok = self.bump();
+                let (multiple, unit) = match self.peek() {
+                    TokenKind::Ident(_) => (1, None),
+                    _ => self.parse_unit_magnitude("denomination's multiple")?,
+                };
+                let unit = match unit {
+                    Some(u) => u,
+                    None => self.expect_ident("denomination unit")?,
+                };
+                Some(Denomination { multiple, span: in_tok.span.merge(unit.span), unit })
+            } else {
+                None
+            };
+            let clauses = if self.at(&TokenKind::LBrace) {
+                Some(self.parse_scalar_clauses()?)
+            } else {
+                None
+            };
+            let is_scalar = kind.is_some() || denom.is_some() || clauses.is_some();
+            // A clause block closes the declaration as a struct's
+            // body does; the `;` after it is optional.
+            let end = match &clauses {
+                Some((_, close)) if !self.at(&TokenKind::Semi) => *close,
+                _ => self.expect(TokenKind::Semi, ";")?.span,
+            };
+            if is_scalar {
+                return Ok(TypeDecl {
+                    display: None,
+                    name,
+                    generics,
+                    body: TypeDeclBody::Scalar(ScalarDecl {
+                        kind,
+                        base: ty,
+                        denom,
+                        clauses: clauses.map(|(c, _)| c).unwrap_or_default(),
+                    }),
+                    span: kw.span.merge(end),
+                    id: NodeId::NONE,
+                    synthetic: false,
+                });
+            }
             Ok(TypeDecl {
                 display: None,
                 name,
                 generics,
                 body: TypeDeclBody::Alias(ty),
-                span: kw.span.merge(semi.span),
+                span: kw.span.merge(end),
                 id: NodeId::NONE,
                 synthetic: false,
             })
@@ -5990,6 +6150,106 @@ impl Parser {
                 synthetic: false,
             })
         }
+    }
+
+    /// GH #1076: a scalar's `{ clause; ... }` block, each clause at most
+    /// once. Returns the clauses and the closing brace's span. The
+    /// clause names are words of this block only.
+    fn parse_scalar_clauses(&mut self) -> Result<(Vec<ScalarClause>, Span), Diag> {
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut clauses: Vec<ScalarClause> = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            let name_tok = self.peek_token().clone();
+            let name = match &name_tok.kind {
+                TokenKind::Ident(s) if matches!(s.as_str(), "range" | "round" | "origin") => {
+                    s.clone()
+                }
+                TokenKind::Ident(s) => {
+                    return Err(Diag::parse(
+                        name_tok.span,
+                        format!(
+                            "unknown scalar clause `{s}`: the clauses are `range`, \
+                             `round` and `origin`"
+                        ),
+                    ));
+                }
+                other => {
+                    return Err(Diag::parse(
+                        name_tok.span,
+                        format!(
+                            "expected a scalar clause (`range`, `round` or `origin`), \
+                             got {other:?}"
+                        ),
+                    ));
+                }
+            };
+            self.bump();
+            self.expect(TokenKind::Colon, ":")?;
+            let clause = match name.as_str() {
+                "range" => match self.parse_expr()? {
+                    Expr::Range { lo, hi, inclusive, span } => ScalarClause::Range {
+                        lo: *lo,
+                        hi: *hi,
+                        inclusive,
+                        span: name_tok.span.merge(span),
+                    },
+                    other => {
+                        return Err(Diag::parse(
+                            other.span(),
+                            "a `range` clause is a range, `lo..hi` or `lo..=hi`",
+                        ));
+                    }
+                },
+                "round" => {
+                    let policy = self.expect_ident("rounding policy")?;
+                    ScalarClause::Round { span: name_tok.span.merge(policy.span), policy }
+                }
+                _ => {
+                    let negative = self.eat(&TokenKind::Minus);
+                    let tok = self.peek_token().clone();
+                    let suffix = |s: &str| {
+                        let end = tok.span.end.as_usize();
+                        Ident::new(s, Span::new(end - s.len(), end))
+                    };
+                    let (n, unit) = match &tok.kind {
+                        TokenKind::IntLit(n) => (*n, None),
+                        TokenKind::QuantityLit(n, s) => (*n, Some(suffix(s))),
+                        TokenKind::DurationLit { spelled: Some((n, s)), .. } => {
+                            (*n, Some(suffix(s)))
+                        }
+                        other => {
+                            return Err(Diag::parse(
+                                tok.span,
+                                format!(
+                                    "an `origin` is an integer and its unit \
+                                     (`273_150 mK`), got {other:?}"
+                                ),
+                            ));
+                        }
+                    };
+                    self.bump();
+                    let unit = match unit {
+                        Some(u) => u,
+                        None => self.expect_ident("origin unit")?,
+                    };
+                    ScalarClause::Origin {
+                        value: if negative { -n } else { n },
+                        span: name_tok.span.merge(unit.span),
+                        unit,
+                    }
+                }
+            };
+            if clauses.iter().any(|c| c.name() == clause.name()) {
+                return Err(Diag::parse(
+                    name_tok.span,
+                    format!("the `{name}` clause appears twice; a scalar states each clause once"),
+                ));
+            }
+            clauses.push(clause);
+            self.expect(TokenKind::Semi, ";")?;
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok((clauses, close.span))
     }
 
     fn parse_struct_field(&mut self) -> Result<StructField, Diag> {
@@ -6987,7 +7247,7 @@ impl Parser {
                 self.bump();
                 Ok(Pattern::Literal(Literal::Decimal(s), span))
             }
-            TokenKind::DurationLit(ns) => {
+            TokenKind::DurationLit { ns, .. } => {
                 self.bump();
                 Ok(Pattern::Literal(Literal::Duration(ns), span))
             }
@@ -7562,9 +7822,13 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Literal(Literal::Nil, span))
             }
-            TokenKind::DurationLit(d) => {
+            TokenKind::DurationLit { ns: d, .. } => {
                 self.bump();
                 Ok(Expr::Literal(Literal::Duration(d), span))
+            }
+            TokenKind::QuantityLit(value, unit) => {
+                self.bump();
+                Ok(Expr::Literal(Literal::Quantity { value, unit }, span))
             }
             TokenKind::TimeLit(s) => {
                 self.bump();
@@ -8325,8 +8589,28 @@ fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
         TokenKind::Run => "run",
         TokenKind::Drain => "drain",
         TokenKind::Dissolve => "dissolve",
+        // GH #1076: `d.in(s)`, the conversion the unit dialect gives
+        // meaning to, is an ordinary method call.
+        TokenKind::In => "in",
         _ => return None,
     })
+}
+
+/// GH #1076: can `k` begin a type expression? What tells a scalar's
+/// kind word (`type D = quantity Int in ns;`) from a type named by
+/// that word (`type P = point;`).
+fn starts_type_expr(k: &TokenKind) -> bool {
+    matches!(
+        k,
+        TokenKind::Ident(_)
+            | TokenKind::Perspective
+            | TokenKind::Rich
+            | TokenKind::Chunked
+            | TokenKind::Recognition
+            | TokenKind::LBracket
+            | TokenKind::LParen
+            | TokenKind::Fn
+    )
 }
 
 /// Canonical primitive type names. Recognized in type position;

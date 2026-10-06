@@ -179,6 +179,7 @@ impl Shift for TopDecl {
             TopDecl::Role(x) => x.shift(d),
             TopDecl::Claims(x) => x.shift(d),
             TopDecl::Constitution(x) => x.shift(d),
+            TopDecl::Unit(x) => x.shift(d),
         }
     }
 }
@@ -186,6 +187,8 @@ impl Shift for TopDecl {
 // Claims vocabulary.
 
 shift_struct!(RoleDecl { name, includes, span });
+shift_struct!(UnitDecl { name, equation, span, id });
+shift_struct!(UnitEquation { num, den, target, span, id });
 shift_struct!(GroupDecl { name, members, may_be_empty, span, id });
 shift_struct!(ConstitutionDecl { name, extends, entries, span });
 shift_struct!(GroupMember { segments, glob, span });
@@ -579,6 +582,21 @@ impl Shift for TypeDeclBody {
             TypeDeclBody::Alias(x) => x.shift(d),
             TypeDeclBody::Struct(x) => x.shift(d),
             TypeDeclBody::Enum(x) => x.shift(d),
+            TypeDeclBody::Scalar(x) => x.shift(d),
+        }
+    }
+}
+
+shift_struct!(ScalarDecl { kind, base, denom, clauses });
+shift_unit_enum!(ScalarKind { Quantity, Point, Distinct });
+shift_struct!(Denomination { multiple, unit, span });
+
+impl Shift for ScalarClause {
+    fn shift(&mut self, d: Move) {
+        match self {
+            ScalarClause::Range { lo, hi, inclusive, span } => sh!(d; lo, hi, inclusive, span),
+            ScalarClause::Round { policy, span } => sh!(d; policy, span),
+            ScalarClause::Origin { value, unit, span } => sh!(d; value, unit, span),
         }
     }
 }
@@ -884,6 +902,7 @@ impl Shift for Literal {
             Literal::Duration(x) => x.shift(d),
             Literal::Time(x) => x.shift(d),
             Literal::Bytes(x) => x.shift(d),
+            Literal::Quantity { value, unit } => sh!(d; value, unit),
         }
     }
 }

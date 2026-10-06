@@ -3536,7 +3536,8 @@ impl Resolver<'_> {
                 | TopDecl::Group(_)
                 | TopDecl::Role(_)
                 | TopDecl::Claims(_)
-                | TopDecl::Constitution(_) => {}
+                | TopDecl::Constitution(_)
+                | TopDecl::Unit(_) => {}
             }
         }
     }

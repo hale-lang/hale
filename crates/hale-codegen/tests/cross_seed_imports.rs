@@ -57,6 +57,8 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         // constitution's name is claim vocabulary cited by `adopt`
         // rather than a mangled decl.
         TopDecl::Claims(_) | TopDecl::Constitution(_) => None,
+        // GH #1076: a unit is seed-global and never mangled.
+        TopDecl::Unit(_) => None,
     }
 }
 

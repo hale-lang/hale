@@ -128,6 +128,10 @@ pub enum TopDecl {
     /// the inherited one: weakening is not rejected, it is
     /// unexpressible.
     Constitution(ConstitutionDecl),
+    /// GH #1076: `unit NAME;` or `unit NAME = FACTOR [TARGET];` — a
+    /// node of the unit graph, and the edge that relates it to
+    /// another. Seed-global, as `role` is.
+    Unit(UnitDecl),
 }
 
 impl TopDecl {
@@ -147,6 +151,7 @@ impl TopDecl {
             TopDecl::Role(r) => r.span,
             TopDecl::Claims(c) => c.span,
             TopDecl::Constitution(c) => c.span,
+            TopDecl::Unit(u) => u.span,
         }
     }
 }
@@ -257,6 +262,31 @@ pub struct RoleDecl {
     pub name: Ident,
     pub includes: Vec<Ident>,
     pub span: Span,
+}
+
+/// GH #1076: `unit NAME;` | `unit NAME = N TARGET;` | `unit NAME = N/D;`.
+/// A unit with no equation is a node with no edge, its own component
+/// (`unit tick;`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnitDecl {
+    pub name: Ident,
+    pub equation: Option<UnitEquation>,
+    pub span: Span,
+    /// Snapshot identity, minted after desugar; NONE until then.
+    pub id: NodeId,
+}
+
+/// One NAME is `num/den` of `target`; `target: None` is the pure
+/// number (`unit pct = 1/100;`). Both parts are positive: the parser
+/// refuses a zero.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnitEquation {
+    pub num: u64,
+    pub den: u64,
+    pub target: Option<Ident>,
+    pub span: Span,
+    /// Snapshot identity, minted after desugar; NONE until then.
+    pub id: NodeId,
 }
 
 /// GH #382 phase 1: `group NAME = { member, ... } [may_be_empty];`
@@ -2269,6 +2299,64 @@ pub enum TypeDeclBody {
     Alias(TypeExpr),
     Struct(Vec<StructField>),
     Enum(Vec<EnumVariant>),
+    /// GH #1076: a scalar of the unit dialect.
+    Scalar(ScalarDecl),
+}
+
+/// `type T = [quantity | point | distinct] BASE [in DENOM] [{ clause; ... }]`.
+/// It is a Scalar when it has a kind word, an `in`, or a clause block;
+/// with none of the three it is the [`TypeDeclBody::Alias`] it always was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScalarDecl {
+    pub kind: Option<ScalarKind>,
+    pub base: TypeExpr,
+    pub denom: Option<Denomination>,
+    pub clauses: Vec<ScalarClause>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarKind {
+    Quantity,
+    Point,
+    Distinct,
+}
+
+/// `ns`, `100ms`, `tick`: a unit and a positive integer multiple of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Denomination {
+    pub multiple: u64,
+    pub unit: Ident,
+    pub span: Span,
+}
+
+/// One clause of a scalar's `{ ... }` block. Each appears at most once.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScalarClause {
+    /// `range: 0..16;` — the bounds of today's range expression.
+    Range { lo: Expr, hi: Expr, inclusive: bool, span: Span },
+    /// `round: floor;`
+    Round { policy: Ident, span: Span },
+    /// `origin: 273_150 mK;`
+    Origin { value: i64, unit: Ident, span: Span },
+}
+
+impl ScalarClause {
+    /// The clause's name as written.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ScalarClause::Range { .. } => "range",
+            ScalarClause::Round { .. } => "round",
+            ScalarClause::Origin { .. } => "origin",
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            ScalarClause::Range { span, .. }
+            | ScalarClause::Round { span, .. }
+            | ScalarClause::Origin { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3315,6 +3403,9 @@ pub enum Literal {
     Duration(i64),
     Time(String),
     Bytes(Vec<u8>),
+    /// GH #1076: `3bp`, `1_250_000USD` — an integer immediately
+    /// followed by a unit name that is not a duration suffix.
+    Quantity { value: i64, unit: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
