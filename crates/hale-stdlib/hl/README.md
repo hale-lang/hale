@@ -2,9 +2,10 @@
 
 The `.hl` files in this directory are the stdlib modules written
 in Hale itself. **They are not the whole stdlib.** A number of
-namespaces exist only as compiler builtins — lowered directly in
-`crates/hale-codegen/src/` (the `["std", "<ns>", "<fn>"]` match
-arms, mostly `codegen.rs` and `src/stdlib/*.rs`) over C
+namespaces exist only as compiler builtins — rows of
+`crates/hale-types/src/stdlib_surface.rs` with an intrinsic id,
+lowered by the id's arm in `crates/hale-codegen/src/codegen.rs`
+(`lower_std_intrinsic`) over C
 primitives in `../lotus_arena.c` / `../lotus_tls.c` — and have
 **no `.hl` file here**. Grepping this directory for them finds
 nothing, which has repeatedly read as "doesn't exist" downstream

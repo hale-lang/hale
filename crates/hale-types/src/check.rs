@@ -6391,8 +6391,8 @@ impl<'a> Checker<'a> {
             }
             TopDecl::Role(_) => {
                 // GH #1109: authorization vocabulary. Declared-ness,
-                // `includes` and the annotation sites are checked
-                // bundle-wide in `check_api_roles`.
+                // `includes` and the annotation sites are judged by
+                // the role laws over the role rows (`roles::role_laws`).
             }
             TopDecl::Topic(t) => {
                 // Topic declarations carry `payload: T; subject:
