@@ -143,6 +143,11 @@ let week     = 7day;
 let compound = 1h + 30min;      // durations add up
 ```
 
+A literal has one unit, so a mixed span is a sum: `1h30m` is refused,
+the message saying to write `1h + 30min`. Minutes are `min` (`5m` is
+refused and says so), and a day is `day`: `3d` is the Decimal `3`
+(above), never three days.
+
 No more "is this milliseconds or seconds?" — the unit is part of
 the literal. Those units are not built into the compiler: the standard
 library declares them, the way a program declares its own units

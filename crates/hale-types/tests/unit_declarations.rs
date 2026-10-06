@@ -556,6 +556,48 @@ fn a_unit_the_stdlib_declares_is_declared_twice_and_one_against_it_joins() {
     assert_eq!(to_ns, Some(ratio(10_000_000, 1)));
 }
 
+// Law 11: no unit takes a name the lexer reads before a unit (U4): `d`,
+// the Decimal literal's suffix, and a Float's exponent. And law 2's hint
+// for a retired time unit: `m` is `min` now, whatever is nearest by
+// spelling.
+
+#[test]
+fn a_unit_named_like_a_literal_suffix_is_refused_at_its_name() {
+    let src = "unit d;\nunit e5;\nunit E2x;\nunit dd;\nunit e;\nfn main() { }\n";
+    let all = diags(src);
+    let d = the_error(&all, "unit `d`");
+    assert_eq!(
+        d.message,
+        "unit `d`: a unit named `d` collides with the Decimal literal's suffix: `3d` is the Decimal `3`; give it \
+         another name"
+    );
+    assert_eq!(at(src, d.span), "d");
+    assert_eq!(d.span.start.as_usize(), src.find("d;").unwrap());
+    let d = the_error(&all, "unit `e5`");
+    assert_eq!(
+        d.message,
+        "unit `e5`: a unit named `e5` collides with a Float literal's exponent: `3e5` reads as the Float `3e5`; \
+         give it another name"
+    );
+    assert_eq!(at(src, d.span), "e5");
+    let d = the_error(&all, "unit `E2x`");
+    assert_eq!(
+        d.message,
+        "unit `E2x`: a unit named `E2x` collides with a Float literal's exponent: `3E2x` reads as the Float `3E2`; \
+         give it another name"
+    );
+    // `3dd` and `3e` are quantity literals: the lexer reads `d` only
+    // alone, and `e` as an exponent only before a digit or a sign.
+    assert_eq!(all.iter().filter(|d| d.is_error()).count(), 3, "{all:#?}");
+    assert!(rows(src).catalogue.is_some(), "law 11 is no catalogue law");
+
+    let src = "type Wait = quantity Int in m;\nfn main() { }\n";
+    let all = diags(src);
+    let d = the_error(&all, "type `Wait`");
+    assert_eq!(d.message, "type `Wait`: its denomination names `m`, which no `unit` declares: declare it (`unit m;`); minutes are `min`");
+    assert_eq!(at(src, d.span), "m");
+}
+
 // Law 10: every unit written against a number is in one dimensionless
 // component.
 

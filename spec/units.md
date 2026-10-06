@@ -136,7 +136,8 @@ located error whose related notes are its witness.
 2. **A named unit is declared.** An equation's target, a
    denomination and an origin name a declared unit; the error is at
    the name, suggesting the nearest declared one (a program's own
-   before the stdlib's).
+   before the stdlib's); a retired time unit says what it is now
+   instead (`m`: minutes are `min`).
 
    ```hale,fragment
    unit cent;
@@ -230,6 +231,18 @@ located error whose related notes are its witness.
     ```hale,fragment
     unit bp = 1/10000;
     unit pct = 1/100;   // one component with `bp`: one `pct` is 100 `bp`
+    ```
+
+11. **No unit is named like a literal's suffix.** The lexer reads a
+    number's own suffixes before a unit: `d` alone is the Decimal
+    literal's (`3d` is the Decimal `3`), and `e` or `E` followed by a
+    digit is a Float's exponent (`3e5`). A unit of either name could
+    never be written as a literal; the error is at its name. (`day` is
+    the day, § The stdlib's time catalogue.)
+
+    ```hale,fragment
+    unit d;    // error: a unit named `d` collides with the Decimal literal's suffix: `3d` is the Decimal `3`
+    unit e5;   // error: … collides with a Float literal's exponent
     ```
 
 ### Where values are typed
@@ -690,7 +703,10 @@ refused naming both), and lowering emits each operator as its row
 says; `.in(u)`, `.split(u)`, `Duration(x)` and `Time(x)` are the
 dialect's conversions (`d.in(ms) or floor` is a `Duration in ms`,
 printed `1500ms`). The names are `ns us ms s min h day` (decision 4):
-`m` and `d` are no time units. A program's unit may join the
+`m` and `d` are no time units: `5m` is refused, the message saying
+minutes are `min`; `3d` is the Decimal `3`, and no unit may be named
+`d` (law 11); `1h30m` is refused as one literal of several units, the
+message saying to write `1h + 30min`. A program's unit may join the
 component by an equation against one of these (`unit tick = 10
 ms;`), and never take one's name (law 1). Two quotients changed with
 the declarations (U4's second correction, decision 5): `Duration /

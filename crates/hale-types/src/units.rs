@@ -48,6 +48,14 @@ const CLAUSES: RuleId = RuleId::registered("verification/structural", "round-and
 const BASES: RuleId = RuleId::registered("verification/structural", "identity-and-range-bases");
 /// Law 9: a refinement of a struct, an enum, or nothing.
 const REFINEMENT: RuleId = RuleId::registered("verification/structural", "refinement-of-a-scalar");
+/// Law 11: a unit named like a suffix the lexer reads before a unit.
+const LITERAL_SUFFIX: RuleId = RuleId::registered("verification/structural", "unit-named-like-a-literal-suffix");
+
+/// The unit names the time catalogue once had and has no more (U4),
+/// each with the name it is now and what it counts: `5m` was five
+/// minutes. `d` is none of them: `3d` is the Decimal `3`, and no unit
+/// may take its name (law 11).
+const RETIRED_UNITS: [(&str, &str, &str); 1] = [("m", "min", "minutes")];
 
 /// The number one, as a node of the program's catalogue: the target of
 /// an equation written against a number (`unit pct = 1/100;`). It is an
@@ -211,6 +219,38 @@ impl UnitRows {
     pub fn nearest_unit(&self, name: &str) -> Option<String> {
         let of = |universe: SiteUniverse| self.units.iter().filter(move |u| u.site.universe == universe).map(|u| u.name.as_str());
         nearest_name(name, of(SiteUniverse::User)).or_else(|| nearest_name(name, of(SiteUniverse::StdlibAnalysis)))
+    }
+
+    /// What a message about the undeclared unit `name` ends with: what a
+    /// retired name is now (`m`: minutes are `min`), before the nearest
+    /// declared unit by spelling, which for `m` is `ms`.
+    pub fn unknown_unit_hint(&self, name: &str) -> String {
+        match RETIRED_UNITS.iter().find(|r| r.0 == name) {
+            Some((_, now, what)) => format!("; {what} are `{now}`"),
+            None => self.nearest_unit(name).map(|n| format!("; did you mean `{n}`?")).unwrap_or_default(),
+        }
+    }
+
+    /// A literal that writes several units in one token (`1h30m`, lexed as
+    /// `1` of a unit `h30m`): a declared unit, then digits. The refusal,
+    /// saying the sum to write instead (`1h + 30min`), a retired name in
+    /// it written as it is now; `None` when the unit is of another shape.
+    pub fn compound_literal(&self, value: i64, unit: &str) -> Option<String> {
+        let first = unit.find(|c: char| c.is_ascii_digit())?;
+        self.unit_named(&unit[..first])?;
+        let mut sum = vec![format!("{value}{}", &unit[..first])];
+        let mut rest = &unit[first..];
+        while !rest.is_empty() {
+            let (digits, tail) = rest.split_at(rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len()));
+            let (name, next) = tail.split_at(tail.find(|c: char| c.is_ascii_digit()).unwrap_or(tail.len()));
+            if name.is_empty() {
+                return Some(format!("`{value}{unit}`: a quantity literal has one unit; write a sum, one unit to each literal"));
+            }
+            let name = RETIRED_UNITS.iter().find(|r| r.0 == name).map_or(name, |r| r.1);
+            sum.push(format!("{digits}{name}"));
+            rest = next;
+        }
+        Some(format!("`{value}{unit}`: a quantity literal has one unit; write `{}`", sum.join(" + ")))
     }
 
     /// The component's one quantity: what a literal of one of its units
@@ -811,7 +851,7 @@ fn close(rows: &mut UnitRows, by_name: &BTreeMap<&str, usize>) {
 
 /// Every unit-dialect law over `rows`, as diagnostics, law by law.
 pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
-    let laws: [Law<UnitRows>; 9] = [
+    let laws: [Law<UnitRows>; 10] = [
         Law { rule: DECLARED_ONCE, eval: declared_twice },
         Law { rule: DECLARED_UNIT, eval: undeclared_units },
         Law { rule: CYCLES, eval: inconsistent_cycles },
@@ -821,6 +861,7 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
         Law { rule: CLAUSES, eval: clauses },
         Law { rule: BASES, eval: identity_and_range_bases },
         Law { rule: REFINEMENT, eval: refinement_bases },
+        Law { rule: LITERAL_SUFFIX, eval: literal_suffix_names },
     ];
     laws.iter().flat_map(|law| law.diags(rows)).collect()
 }
@@ -992,7 +1033,7 @@ fn named_by(rows: &UnitRows, at: RefAt) -> (String, &'static str) {
 fn undeclared_units(rows: &UnitRows, out: &mut Vec<Violation>) {
     for r in rows.refs.iter().filter(|r| r.unit.is_none()) {
         let (who, role) = named_by(rows, r.at);
-        let suggestion = rows.nearest_unit(&r.name).map(|n| format!("; did you mean `{n}`?")).unwrap_or_default();
+        let suggestion = rows.unknown_unit_hint(&r.name);
         let message =
             format!("{who}: {role} names `{}`, which no `unit` declares: declare it (`unit {};`){suggestion}", r.name, r.name);
         out.push(Violation::error(DECLARED_UNIT, r.span, message));
@@ -1482,5 +1523,24 @@ fn refinement_bases(rows: &UnitRows, out: &mut Vec<Violation>) {
             )),
             _ => {}
         }
+    }
+}
+
+/// Law 11: no unit takes a name the lexer reads as part of a number
+/// before it reads a unit, which no literal could ever write: `d`, the
+/// Decimal literal's suffix (`3d` is the Decimal `3`), and an exponent,
+/// `e` or `E` and a digit (`3e5` is a Float).
+fn literal_suffix_names(rows: &UnitRows, out: &mut Vec<Violation>) {
+    for u in &rows.units {
+        let n = u.name.as_str();
+        let why = if n == "d" {
+            "a unit named `d` collides with the Decimal literal's suffix: `3d` is the Decimal `3`".to_string()
+        } else if n.len() > 1 && n.starts_with(['e', 'E']) && n.as_bytes()[1].is_ascii_digit() {
+            let exponent = n[1..].find(|c: char| !c.is_ascii_digit()).map_or(n, |i| &n[..i + 1]);
+            format!("a unit named `{n}` collides with a Float literal's exponent: `3{n}` reads as the Float `3{exponent}`")
+        } else {
+            continue;
+        };
+        out.push(Violation::error(LITERAL_SUFFIX, u.name_span, format!("unit `{n}`: {why}; give it another name")));
     }
 }

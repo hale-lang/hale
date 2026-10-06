@@ -319,10 +319,12 @@ impl<'r> ScalarTypes<'r> {
     /// component's quantity there); or why there is none.
     fn literal_type(&self, value: i64, unit: &str) -> Result<Ty, String> {
         let Some(u) = self.rows.unit_named(unit) else {
-            let suggestion = self.rows.nearest_unit(unit)
-                .map(|n| format!("; did you mean `{n}`?"))
-                .unwrap_or_default();
-            return Err(format!("`{value}{unit}`: no `unit` declares `{unit}`{suggestion}"));
+            // The lexer reads every name after the digits as one unit, so
+            // `1h30m` arrives here as `1` of `h30m`.
+            if let Some(why) = self.rows.compound_literal(value, unit) {
+                return Err(why);
+            }
+            return Err(format!("`{value}{unit}`: no `unit` declares `{unit}`{}", self.rows.unknown_unit_hint(unit)));
         };
         let component = self.rows.units[u].component;
         let Some(p) = self.principal(component) else {

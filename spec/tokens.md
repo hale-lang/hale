@@ -553,8 +553,13 @@ annotations are not in v1.
   computes; a program's own unit of the time component (`unit tick =
   10 ms;`) writes `5tick` the same way. One magnitude, one unit: a
   span of mixed units is a sum (`1h + 30min`).
-- `m` and `d` are no time units: `5m` names a unit no catalogue
-  declares, and `3d` is the decimal literal `3`, as it always was.
+- `d` is the Decimal literal's and `day` is the day: `3d` is the
+  Decimal `3`, as it always was, and no unit may be named `d`
+  (spec/units.md, law 11). `m` is no unit: `5m` is refused as a unit
+  no catalogue declares, the message saying minutes are `min`.
+- A compound such as `1h30m` is one magnitude and the unit `h30m`,
+  which no catalogue declares: the check refuses it as a literal of
+  several units and says the sum to write (`1h + 30min`).
 - A unit declaration's factor and a denomination read the magnitude
   and the unit as written (spec/units.md § Declarations): `unit tick
   = 100ms;` parses as `unit tick = 100 ms;`.
