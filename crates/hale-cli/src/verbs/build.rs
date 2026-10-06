@@ -326,10 +326,9 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // Stage-2 FFI: append the FFI surface declared by each
     // imported lib's hale.toml [ffi] section. CLI flags from
     // parse_build_options come first (preserves the manual
-    // escape hatch); toml-sourced flags append. Duplicates are
-    // tolerated — clang's `-lX -lX` is harmless, and the linker
-    // dedupes csrc translation-unit contents at symbol level.
-    // The options the identity is computed from, by the function
+    // escape hatch); toml-sourced flags append, and a flag naming
+    // what a manifest names is dropped (a C file compiled twice is
+    // a duplicate symbol at link). The options the identity is computed from, by the function
     // `run` and `replay` compute theirs with (I2); the build builds
     // with them.
     let mut options = identity_options(&options, &snap, target);

@@ -33,16 +33,16 @@ pub(crate) fn check_stale_cli() {
     if !root.join("crates").is_dir() {
         return;
     }
-    check_stale_dna(root);
-    let baked = Baked {
-        hash: baked_hash,
-        files: env!("HALE_STALE_SRC_COUNT").parse().unwrap_or(0),
-    };
     // A binary whose own time cannot be read is compared by its fold.
     let built_at = env::current_exe()
         .and_then(std::fs::metadata)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
+    check_stale_dna(root, built_at);
+    let baked = Baked {
+        hash: baked_hash,
+        files: env!("HALE_STALE_SRC_COUNT").parse().unwrap_or(0),
+    };
     if stale_sources(root, &baked, built_at) == Staleness::Stale {
         eprintln!(
             "warning: hale CLI binary was built from an older compiler \
@@ -68,8 +68,9 @@ pub(crate) fn check_stale_cli() {
 /// last build runs nowhere, and nothing said so until `hale dna
 /// status` was asked. The tree digested is the workspace the binary
 /// was built from, or the one `HALE_STALE_DNA_ROOT` names — the
-/// regression test's way to hand the check a tree it may edit.
-pub(crate) fn check_stale_dna(workspace_root: &Path) {
+/// regression test's way to hand the check a tree it may edit. See
+/// [`stale_dna`] for what an ordinary invocation pays.
+pub(crate) fn check_stale_dna(workspace_root: &Path, built_at: SystemTime) {
     let root = match env::var_os("HALE_STALE_DNA_ROOT").filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
         None => workspace_root.to_path_buf(),
@@ -77,10 +78,11 @@ pub(crate) fn check_stale_dna(workspace_root: &Path) {
     if !root.join("dna").is_dir() {
         return;
     }
-    let Ok(current) = hale_dna::digest_of_tree(&root) else {
-        return;
+    let embedded = Baked {
+        hash: hale_dna::EMBEDDED_DIGEST,
+        files: hale_dna::embedded_files().count(),
     };
-    if current != hale_dna::EMBEDDED_DIGEST {
+    if stale_dna(&root, &embedded, built_at) == Some(Staleness::Stale) {
         eprintln!(
             "warning: hale CLI binary embeds an older dna/ source set."
         );
@@ -98,9 +100,10 @@ pub(crate) fn check_stale_dna(workspace_root: &Path) {
     }
 }
 
-/// What `build.rs` baked: the fold of the identity-covered sources
+/// What a build script baked: the fold of the identity-covered sources
 /// (`HALE_STALE_SRC_HASH`) and how many files it folded
-/// (`HALE_STALE_SRC_COUNT`).
+/// (`HALE_STALE_SRC_COUNT`), or the embedded DNA set's digest
+/// (`hale_dna::EMBEDDED_DIGEST`) and how many files it names.
 pub(crate) struct Baked<'a> {
     pub(crate) hash: &'a str,
     pub(crate) files: usize,
@@ -130,17 +133,7 @@ pub(crate) enum Staleness {
 /// so a file touched and left as it was costs a fold and warns nothing.
 pub(crate) fn stale_sources(root: &Path, baked: &Baked, built_at: SystemTime) -> Staleness {
     let files = hale_graph::identity::identity_files(root);
-    let newer = |p: &Path| {
-        std::fs::metadata(p)
-            .and_then(|m| m.modified())
-            .map(|t| t > built_at)
-            .unwrap_or(true)
-    };
-    let dirs: BTreeSet<&Path> = files.iter().filter_map(|f| f.parent()).collect();
-    let touched = files.len() != baked.files
-        || files.iter().any(|f| newer(f))
-        || dirs.iter().any(|d| newer(d));
-    if !touched {
+    if !touched(&files, baked.files, built_at) {
         return Staleness::Fresh;
     }
     let current = format!("{:016x}", hale_graph::identity::fold_files(root, &files));
@@ -149,6 +142,44 @@ pub(crate) fn stale_sources(root: &Path, baked: &Baked, built_at: SystemTime) ->
     } else {
         Staleness::Stale
     }
+}
+
+/// The DNA half (GH #785), in the shape of [`stale_sources`]: the
+/// embedded directories are listed (`hale_dna::digest::tree_files`, a
+/// `read_dir` each), every file and every directory holding one is
+/// `stat`ed, and the tree is read and digested only when one of them
+/// is newer than the binary or the count is not the embedded set's.
+/// `None` when that digest cannot be taken (an embedded directory is
+/// missing): such a tree is not called stale.
+///
+/// What the cheap check guarantees is what modification times say: an
+/// edit, an addition, a removal or a rename leaves a file or its
+/// directory newer than the binary, or the count other than the
+/// embedded one, and is digested. A write that puts back a time from
+/// before the build (`touch -d`, `cp -p` or `rsync -t` from an older
+/// tree) and keeps the count is not seen, exactly as for the code
+/// half; `hale dna status` digests the tree whatever its times.
+pub(crate) fn stale_dna(root: &Path, embedded: &Baked, built_at: SystemTime) -> Option<Staleness> {
+    let files = hale_dna::digest::tree_files(root);
+    if !touched(&files, embedded.files, built_at) {
+        return Some(Staleness::Fresh);
+    }
+    let current = hale_dna::digest_of_tree(root).ok()?;
+    Some(if current == embedded.hash { Staleness::Unchanged } else { Staleness::Stale })
+}
+
+/// The cheap check both halves share: the count is not the baked one,
+/// or a file or a directory holding one is newer than `built_at` (or
+/// cannot be `stat`ed).
+fn touched(files: &[PathBuf], baked_files: usize, built_at: SystemTime) -> bool {
+    let newer = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .map(|t| t > built_at)
+            .unwrap_or(true)
+    };
+    let dirs: BTreeSet<&Path> = files.iter().filter_map(|f| f.parent()).collect();
+    files.len() != baked_files || files.iter().any(|f| newer(f)) || dirs.iter().any(|d| newer(d))
 }
 
 #[cfg(test)]
@@ -277,6 +308,88 @@ mod tests {
         date(&src.join("frontend.rs"), t0);
         date(&src, later);
         assert_eq!(stale_sources(&root, &baked, built), Staleness::Stale, "the directory");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A scratch tree with a file in every embedded DNA directory, a
+    /// file no directory embeds, each dated `at`, and its digest and
+    /// count as a build bakes them.
+    fn scratch_dna(tag: &str, at: SystemTime) -> (PathBuf, String, usize) {
+        let root = std::env::temp_dir().join(format!("hale-cli-stale-dna-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut files: Vec<PathBuf> = hale_dna::EMBEDDED_DIRS
+            .iter()
+            .map(|(dir, exts)| root.join(dir).join(format!("seed.{}", exts[0])))
+            .collect();
+        files.push(root.join("dna/core/pond/README.md"));
+        for f in &files {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, format!("// {}\n", f.display())).unwrap();
+        }
+        for f in &files {
+            date(f, at);
+            date(f.parent().unwrap(), at);
+        }
+        let digest = hale_dna::digest_of_tree(&root).unwrap();
+        let count = hale_dna::digest::tree_files(&root).len();
+        (root, digest, count)
+    }
+
+    /// GH #785's check reads the DNA tree only when a time or the count
+    /// says it may have changed: untouched, it is fresh; an edit, or a
+    /// removal whose directory's time is put back, is stale; a touch
+    /// is digested and warns nothing.
+    #[test]
+    fn the_dna_tree_is_digested_only_when_a_time_or_the_count_moved() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let built = t0 + Duration::from_secs(10);
+        let later = t0 + Duration::from_secs(20);
+
+        let (root, digest, files) = scratch_dna("fresh", t0);
+        let embedded = Baked { hash: &digest, files };
+        assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Fresh), "nothing newer: no read");
+        let early = t0 - Duration::from_secs(10);
+        assert_eq!(stale_dna(&root, &embedded, early), Some(Staleness::Unchanged), "digested, and it agrees");
+        date(&root.join("dna/core/seed.hl"), later);
+        assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Unchanged), "a touch");
+        edit(&root.join("dna/core/seed.hl"), later);
+        assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Stale), "an edit");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (root, digest, files) = scratch_dna("remove", t0);
+        let embedded = Baked { hash: &digest, files };
+        std::fs::remove_file(root.join("dna/core/legs/seed.hl")).unwrap();
+        date(&root.join("dna/core/legs"), t0);
+        assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Stale), "the count");
+        std::fs::remove_dir(root.join("dna/core/legs")).unwrap();
+        assert_eq!(stale_dna(&root, &embedded, built), None, "a missing directory is not digested");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (root, digest, files) = scratch_dna("uncovered", t0);
+        let embedded = Baked { hash: &digest, files };
+        edit(&root.join("dna/core/pond/README.md"), later);
+        assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Fresh), "a file no directory embeds");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The limit `stale_dna` states, pinned: an edit that keeps the
+    /// count and puts back a time from before the build is not seen by
+    /// the cheap check (the digest, taken, would see it).
+    #[test]
+    fn a_dna_edit_that_restores_its_time_is_not_seen_by_the_cheap_check() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let built = t0 + Duration::from_secs(10);
+        let (root, digest, files) = scratch_dna("restored", t0);
+        let embedded = Baked { hash: &digest, files };
+        let seed = root.join("dna/core/seed.hl");
+        let text = std::fs::read_to_string(&seed).unwrap();
+        std::fs::write(&seed, text.replace("//", "/*")).unwrap();
+        assert_eq!(std::fs::read_to_string(&seed).unwrap().len(), text.len(), "the same length");
+        date(&seed, t0);
+        date(seed.parent().unwrap(), t0);
+        assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Fresh), "the times say nothing moved");
+        let early = t0 - Duration::from_secs(10);
+        assert_eq!(stale_dna(&root, &embedded, early), Some(Staleness::Stale), "the digest sees the edit");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

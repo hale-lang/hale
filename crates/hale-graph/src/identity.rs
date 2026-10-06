@@ -521,7 +521,7 @@ pub const IDENTITIES: &[Identity] = &[
     Identity {
         name: "embedded_dna_digest",
         identifies: "a binary embeds this DNA source set: the files of the listed directories, by path and content",
-        computed: "compiler build (`HALE_DNA_EMBEDDED_DIGEST`, hale-dna/build.rs), and over any checkout's tree (`digest_of_tree`)",
+        computed: "compiler build (`HALE_DNA_EMBEDDED_DIGEST`, hale-dna/build.rs), and over any checkout's tree (`digest_of_tree`); the stale-DNA check on a check, verify, build, run, test, dna or inputs invocation in a development checkout digests the tree only when an embedded file or its directory is newer than the binary or the count is not the embedded set's (`stale_dna`: otherwise it stats and reads nothing)",
         fold: Fold::Sha256,
         covers: &[Input::EmbeddedDna],
         leaves_out: &[(Input::EmbeddedDna, "by design: the directories are listed non-recursively, with the extensions each contributes (`EMBEDDED_DIRS`); a file outside them is not embedded")],

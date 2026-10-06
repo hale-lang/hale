@@ -7,9 +7,12 @@
 //! `quarantine`), the name as written either way. [`closure_event_rows`]
 //! makes one row per such clause; the laws here judge the rows, each a
 //! registered rule of `spec/verification.md`'s structural table, and
-//! [`closure_event_laws`] is the one entry the check runs. Lowering reads
-//! the same typed list (`ClosureDecl::persists_through`), so what the
-//! laws accept is what runs.
+//! [`closure_event_laws`] is the one entry the check runs for the clause
+//! rows alone. Whether a recovery reaches a locus reads what the checker
+//! typed (the typed bodies' `recoveries`), so [`unreached_event_laws`]
+//! runs over the whole typed-body table, beside the `bare_fallible` law.
+//! Lowering reads the same typed list (`ClosureDecl::persists_through`),
+//! so what the laws accept is what runs.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,10 +22,11 @@ use hale_syntax::ast::{
 use hale_syntax::{Diag, SpanOrigin};
 
 use crate::entry::EntryRow;
-use crate::handler_routing::{ChildRef, HandlerRouting, HandlerRow, RecoveryRow};
+use crate::handler_routing::{ChildRef, HandlerRouting, HandlerRow};
 use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
-use crate::placement::SiteRef;
-use crate::typed_bodies::accumulator_sites;
+use crate::placement::{SiteRef, SiteUniverse};
+use crate::ty::Ty;
+use crate::typed_bodies::{accumulator_sites, RecoveryRow, TypedBodies};
 use crate::Bundle;
 
 /// A name outside the alphabet.
@@ -98,26 +102,43 @@ pub fn closure_event_rows<'b>(bundle: &Bundle<'b>) -> ClosureEventRows<'b> {
 }
 
 /// What the reach law reads beside the clauses: the handler rows (who
-/// applies which recovery to a child of which type), the entry row
-/// (whether the world is closed), and the bundle's declarations (whose
-/// generic params a handler's child may be).
+/// applies which recovery to a child of which type), the typed bodies
+/// (each recovery statement outside a handler, with the locus the
+/// checker typed its receiver as), the entry row (whether the world is
+/// closed), and the bundle's declarations (whose generic params a
+/// handler's child may be).
 struct Reach<'r, 'b> {
     clauses: &'r ClosureEventRows<'b>,
     handlers: &'r HandlerRouting,
+    typed: &'r TypedBodies,
     entry: &'r EntryRow,
     bundle: &'r Bundle<'b>,
 }
 
-/// Every recovery-event law over `bundle`'s clauses, as diagnostics.
-pub fn closure_event_laws(bundle: &Bundle<'_>, handlers: &HandlerRouting, entry: &EntryRow) -> Vec<Diag> {
+/// The recovery-event laws over `bundle`'s clauses alone, as
+/// diagnostics: every one but the reach law ([`unreached_event_laws`]).
+pub fn closure_event_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
     let rows = closure_event_rows(bundle);
     let mut diags = Law { rule: ALPHABET, eval: outside_the_alphabet }.diags(&rows);
     diags.extend(Law { rule: DISSOLVE, eval: persists_through_dissolve }.diags(&rows));
     diags.extend(Law { rule: CONTRADICTION, eval: in_both_clauses }.diags(&rows));
-    let reach = Reach { clauses: &rows, handlers, entry, bundle };
-    diags.extend(Law { rule: UNREACHED, eval: unreached_events }.diags(&reach));
     diags.extend(Law { rule: NOTHING_KEPT, eval: nothing_to_keep }.diags(&rows));
     diags
+}
+
+/// The reach law over `bundle`'s clauses, the handler rows and the whole
+/// typed-body table `typed` (a typing that reused a declaration holds no
+/// record of its bodies, so the law reads the table, never the check's
+/// partial record).
+pub fn unreached_event_laws(
+    bundle: &Bundle<'_>,
+    handlers: &HandlerRouting,
+    entry: &EntryRow,
+    typed: &TypedBodies,
+) -> Vec<Diag> {
+    let rows = closure_event_rows(bundle);
+    let reach = Reach { clauses: &rows, handlers, typed, entry, bundle };
+    Law { rule: UNREACHED, eval: unreached_events }.diags(&reach)
 }
 
 /// The alphabet as a message names it.
@@ -281,17 +302,34 @@ fn is_locus(child: &ChildRef, child_decl: Option<SiteRef>, locus: &LocusDecl, si
     }
 }
 
+/// Whether a recovery statement's typed receiver is `locus`: by the
+/// declaration the checker typed it as (a monomorph's template), else,
+/// in a bundle no mint numbered, by the name the type has.
+fn receives(row: &RecoveryRow, locus: &LocusDecl) -> bool {
+    let Some(child) = row.child else { return false };
+    if locus.id.is_none() {
+        return matches!(&row.receiver, Ty::Named(n) if *n == locus.name.name);
+    }
+    child.universe == SiteUniverse::User && child.decl.0 == locus.id.0
+}
+
 /// An event a closure names that no recovery in the closed world applies
 /// to its locus, for a locus of the program's own seed: a warning at the
 /// name, whose witness is every handler and recovery statement that
 /// names the locus with the events it applies (or the locus, when none
-/// does). A spent `restart(c) for N` bound is `quarantine`.
+/// does). A spent `restart(c) for N` bound is `quarantine`. A recovery
+/// statement outside the handlers names the locus the checker typed its
+/// receiver as, whatever the receiver is (a param, a local, a field of
+/// another value, a call's result); a generic body's, as each of its
+/// specializations types it.
 ///
 /// Not judged when the world is not closed (the entry row has no entry,
 /// as rule 9 asks: a library checked alone has no parents), for an
-/// imported locus, or for an event some recovery applies to a child the
-/// rows cannot name: a generic supervisor's child (its parent's type
-/// parameter) or a statement whose receiver is not a declared param.
+/// imported locus, or for an event some recovery applies to a child no
+/// row names: a generic supervisor's handler's child (its parent's type
+/// parameter), or a statement whose receiver the checker typed as no
+/// locus (a value of a type parameter in a body no specialization was
+/// walked for).
 fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
     if reach.entry.entry().is_none() {
         return;
@@ -317,8 +355,18 @@ fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
             unnamed.extend(handler_events(row));
         }
     }
-    for row in reach.handlers.recoveries() {
-        if row.child.as_ref().is_none_or(|c| is_type_param(row.parent.as_deref(), c)) {
+    // A generic body's statement is named by its specializations' rows:
+    // the template's walk types a value of a type parameter as nothing.
+    let specialized: BTreeSet<(u32, u32, u32)> = reach
+        .typed
+        .recoveries()
+        .filter(|(_, r)| !r.specialization.is_empty())
+        .map(|(body, r)| (body.0, r.statement.start.0, r.statement.end.0))
+        .collect();
+    for (body, row) in reach.typed.recoveries() {
+        let theirs = row.specialization.is_empty()
+            && specialized.contains(&(body.0, row.statement.start.0, row.statement.end.0));
+        if row.child.is_none() && !theirs {
             unnamed.extend(statement_events(row));
         }
     }
@@ -327,12 +375,13 @@ fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
         let site = reach.bundle.snapshot.site_id(locus.id).map(SiteRef::user);
         let handlers: Vec<&HandlerRow> =
             reach.handlers.rows().iter().filter(|h| is_locus(&h.child, h.child_decl, locus, site)).collect();
-        let statements: Vec<&RecoveryRow> = reach
-            .handlers
-            .recoveries()
-            .iter()
-            .filter(|s| s.child.as_ref().is_some_and(|c| is_locus(c, s.child_decl, locus, site)))
-            .collect();
+        // One statement once, however many specializations name the locus.
+        let mut statements: Vec<&RecoveryRow> = Vec::new();
+        for (_, s) in reach.typed.recoveries().filter(|(_, s)| receives(s, locus)) {
+            if !statements.iter().any(|seen| seen.statement == s.statement && seen.op == s.op) {
+                statements.push(s);
+            }
+        }
         let applied: BTreeSet<RecoveryEvent> = handlers
             .iter()
             .map(|h| handler_events(h))
@@ -360,7 +409,7 @@ fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
                 origin: SpanOrigin::Seed,
                 note: format!(
                     "{} applies {} to a `{l}` here",
-                    s.parent.as_deref().map(|p| format!("`{p}`")).unwrap_or_else(|| "a free fn".to_string()),
+                    s.parent_name.as_deref().map(|p| format!("`{p}`")).unwrap_or_else(|| "a free fn".to_string()),
                     spelled(&statement_events(s)),
                 ),
             }));

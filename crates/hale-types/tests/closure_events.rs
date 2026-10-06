@@ -338,7 +338,9 @@ fn an_imported_locus_is_not_judged() {
 
 #[test]
 fn an_event_a_generic_supervisor_applies_is_not_judged() {
-    // `Sup<T>` restarts a `T`: the rows cannot name which loci, so no
+    // `Sup<T>`'s handler restarts a `T`: the handler row's child is the
+    // `T` its `on_failure` declares (a recovery receiver outside a
+    // handler is typed per monomorph; a handler's child is not), so no
     // `restart` is reported unreached; `quarantine` still is.
     let src = world(
         "persists_through(restart, quarantine);",
@@ -352,11 +354,63 @@ fn an_event_a_generic_supervisor_applies_is_not_judged() {
 }
 
 #[test]
-fn a_receiver_the_rows_cannot_name_suspends_its_event() {
-    // `restart(x)` on a local: its child type is not a declared param's,
-    // so whether it restarts a `Tracker` is not judged.
+fn a_generic_locus_s_statement_is_judged_through_its_monomorph() {
+    // `Sup<T>` restarts its `T` outside a handler; the one specialization
+    // the program builds binds `T` to `Other`, so nothing restarts a
+    // `Tracker`: judged, and reported.
+    let other = "locus Other { params { n: Int = 0; } }\n\
+                 locus Sup<T> {\n    params { c: T; }\n    fn again() { restart(self.c); }\n}\n";
+    let method = "    fn mk() { let s: Sup<Other> = Sup { c: Other { } }; }\n";
+    let src = format!("{other}{}", world("persists_through(restart, quarantine);", None, method));
+    let all = diags(&src);
+    assert!(!all.iter().any(|d| d.is_error()), "{all:?}");
+    let found: Vec<&str> = warnings(&all).into_iter().map(|d| at(&src, d)).collect();
+    assert_eq!(found, ["restart", "quarantine"], "{all:?}");
+    // Bound to `Tracker`, the same statement applies `restart` to one.
+    let bound = src.replace("Sup<Other> = Sup { c: Other { } }", "Sup<Tracker> = Sup { c: Tracker { } }");
+    let all = diags(&bound);
+    let found: Vec<&Diag> = warnings(&all);
+    assert_eq!(found.iter().map(|d| at(&bound, d)).collect::<Vec<_>>(), ["quarantine"], "{all:?}");
+    assert_eq!(
+        witness(&bound, found[0]),
+        [("`Sup` applies `restart` to a `Tracker` here", "restart(self.c);")]
+    );
+}
+
+#[test]
+fn a_receiver_the_checker_types_is_judged() {
+    // `restart(x)` on a local, on a field of another locus's value and on
+    // a call's result: the checker types each receiver, so whether it
+    // restarts a `Tracker` is judged. W3's syntactic reader named only a
+    // declared param's, and suspended the event for the rest.
+    let other = "locus Other { params { n: Int = 0; } }\nlocus Keeper { params { o: Other = Other { }; } }\n\
+                 fn spare() -> Other { return Other { }; }\n";
+    let extra = "    params { t: Tracker = Tracker { }; o: Other = Other { }; k: Keeper = Keeper { }; }\n";
+    for statement in ["let x = self.o; restart(x);", "restart(self.k.o);", "restart(spare());"] {
+        let method = format!("    fn again() {{ {statement} }}\n");
+        let src = format!("{other}{}", world("persists_through(restart, quarantine);", None, &method))
+            .replace("    params { t: Tracker = Tracker { }; }\n", extra);
+        let all = diags(&src);
+        assert!(!all.iter().any(|d| d.is_error()), "{statement}: {all:?}");
+        let found: Vec<&str> = warnings(&all).into_iter().map(|d| at(&src, d)).collect();
+        assert_eq!(found, ["restart", "quarantine"], "{statement} restarts an `Other`: {all:?}");
+    }
+    // A local bound to the `Tracker` restarts one: reached, and named.
     let method = "    fn again() { let x = self.t; restart(x); }\n";
     let src = world("persists_through(restart, quarantine);", None, method);
+    let all = diags(&src);
+    let found: Vec<&Diag> = warnings(&all);
+    assert_eq!(found.iter().map(|d| at(&src, d)).collect::<Vec<_>>(), ["quarantine"], "{all:?}");
+    assert_eq!(witness(&src, found[0]), [("`App` applies `restart` to a `Tracker` here", "restart(x);")]);
+}
+
+#[test]
+fn a_receiver_the_checker_cannot_type_suspends_its_event() {
+    // The one receiver no row names: a value of a type parameter in a
+    // generic body no specialization binds. The checker types `self.c`
+    // as nothing, so whether `restart` reaches a `Tracker` is not judged.
+    let sup = "locus Sup<T> {\n    params { c: T; }\n    fn again() { restart(self.c); }\n}\n";
+    let src = format!("{sup}{}", world("persists_through(restart, quarantine);", None, ""));
     let all = diags(&src);
     let found: Vec<&str> = warnings(&all).into_iter().map(|d| at(&src, d)).collect();
     assert_eq!(found, ["quarantine"], "{all:?}");

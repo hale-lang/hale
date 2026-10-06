@@ -182,10 +182,11 @@ pub(crate) fn run_program(
             return ExitCode::from(1);
         }
     };
-    // The identity's options are `build`'s and `replay`'s (I2): the
-    // `[ffi]` surface of the imported packages among them. `run` builds
-    // with its flags alone.
-    let options_fp = build_env::options_fingerprint(&identity_options(&options, &snap, target));
+    // The options are `build`'s and `replay`'s (I2): the `[ffi]` surface
+    // of the imported packages among them, so a package's `csrc` and
+    // `link` reach the build as they reach the identity.
+    let options = identity_options(&options, &snap, target);
+    let options_fp = build_env::options_fingerprint(&options);
     let identity = match model_identity(&snap, view, &options) {
         Ok(x) => x,
         Err(b) => {

@@ -501,7 +501,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // Per-type usage gating avoids false-positives for users
     // who happen to name a type `ParseError` in a program
     // that never calls `std::str::parse_*`.
-    let stdlib_usage = scan_stdlib_error_usage(bundle);
+    let stdlib_usage = scan_stdlib_error_usage(bundle, &scope);
     check_stdlib_error_shadowing(&scope, &stdlib_usage, &mut diags);
 
     scope.topics = topics;
@@ -2271,29 +2271,49 @@ pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, rang
 /// reaches for — populated from a walk of all path-call sites.
 /// If `ParseError` isn't in this set, the user can shadow it
 /// freely; no diagnostic fires.
-#[derive(Debug, Default)]
-struct StdlibErrorUsage {
-    parse_error: bool,
-    io_error: bool,
-    index_error: bool,
-    key_error: bool,
-    empty_error: bool,
-    crypto_error: bool,
+struct StdlibErrorUsage<'a> {
+    /// The scope the stdlib's Hale-source fns are registered in: a
+    /// path that renames to one fails with that fn's error type.
+    scope: &'a TopScope,
+    reached: std::collections::BTreeSet<String>,
 }
 
 /// Scan every top-level item, every fn / locus-method body,
 /// and every Expr for stdlib path-calls whose codegen needs
-/// one of the stdlib error types. Detection is by qualified
-/// path prefix (`std::str::parse_*`, `std::io::fs::*`,
-/// `std::io::tcp::*`) plus any `@form(vec)` / `@form(hashmap)`
-/// / `@form(ring_buffer)` decl that synthesizes a fallible
-/// method using the respective error type.
-fn scan_stdlib_error_usage(bundle: &Bundle<'_>) -> StdlibErrorUsage {
-    let mut out = StdlibErrorUsage::default();
+/// one of the stdlib error types, plus any `@form(vec)` /
+/// `@form(hashmap)` / `@form(ring_buffer)` decl that synthesizes
+/// a fallible method using the respective error type. Which error
+/// type a path-call fails with is [`stdlib_call_error`]'s answer.
+fn scan_stdlib_error_usage<'a>(
+    bundle: &Bundle<'_>,
+    scope: &'a TopScope,
+) -> StdlibErrorUsage<'a> {
+    let mut out = StdlibErrorUsage { scope, reached: Default::default() };
     for program in bundle.programs.values() {
         scan_items_for_stdlib_usage(&program.items, &mut out);
     }
     out
+}
+
+/// The error type a stdlib path-call fails with, read as the check
+/// types the call: a path that renames to a registered Hale-source
+/// fn (GH #470) fails with that fn's `fallible(E)`, and any other
+/// path with its stdlib surface row's error column (`! "E"`).
+/// `None` for a path that cannot fail, or that is not the stdlib's.
+fn stdlib_call_error(segs: &[&str], scope: &TopScope) -> Option<String> {
+    if let Some(mangled) = crate::stdlib_bodies::mangled_locus_name(segs) {
+        if let Some(TopSymbol::Fn(f)) = scope.lookup(mangled) {
+            return match &f.fallible {
+                Some(Ty::Named(name)) => Some(name.clone()),
+                _ => None,
+            };
+        }
+    }
+    crate::stdlib_surface::row(segs)?
+        .sig
+        .as_ref()?
+        .fallible
+        .map(str::to_string)
 }
 
 fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
@@ -2301,11 +2321,14 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
         match item {
             TopDecl::Locus(l) => {
                 if let Some(form) = &l.form {
-                    match form.name.name.as_str() {
-                        "vec" => out.index_error = true,
-                        "hashmap" => out.key_error = true,
-                        "ring_buffer" => out.empty_error = true,
-                        _ => {}
+                    let error = match form.name.name.as_str() {
+                        "vec" => Some("IndexError"),
+                        "hashmap" => Some("KeyError"),
+                        "ring_buffer" => Some("EmptyError"),
+                        _ => None,
+                    };
+                    if let Some(error) = error {
+                        out.reached.insert(error.to_string());
                     }
                 }
                 for member in &l.members {
@@ -2535,46 +2558,8 @@ fn mark_stdlib_error_from_path(
 ) {
     let segs: Vec<&str> =
         qn.segments.iter().map(|s| s.name.as_str()).collect();
-    if segs.len() >= 3 && segs[0] == "std" {
-        match segs[1] {
-            "str" => {
-                // parse_int, parse_float, parse_decimal, plus the
-                // 2026-05-26 range-bounded variants
-                // range_parse_int / range_parse_decimal.
-                if segs[2].starts_with("parse_")
-                    || segs[2].starts_with("range_parse_")
-                {
-                    out.parse_error = true;
-                }
-            }
-            "io" => {
-                // std::io::fs::* and std::io::tcp::* both
-                // return fallible(IoError). std::io::stdin
-                // also has io fallibles.
-                if segs.len() >= 3 {
-                    out.io_error = true;
-                }
-            }
-            "crypto" => {
-                // std::crypto::ecdsa_p256_sign returns
-                // fallible(CryptoError) in `or` context.
-                if segs[2] == "ecdsa_p256_sign" {
-                    out.crypto_error = true;
-                }
-            }
-            "bytes" => {
-                // std::bytes::at + the binary-pack readers
-                // (read_u32_le, ...) + the A1 writers (write_u32_le, ...)
-                // return fallible(IndexError).
-                if segs[2] == "at"
-                    || segs[2].starts_with("read_")
-                    || segs[2].starts_with("write_")
-                {
-                    out.index_error = true;
-                }
-            }
-            _ => {}
-        }
+    if let Some(error) = stdlib_call_error(&segs, out.scope) {
+        out.reached.insert(error);
     }
 }
 
@@ -2586,19 +2571,19 @@ fn check_stdlib_error_shadowing(
     // (stdlib type name, qualified-path suggestion to surface in the
     // diagnostic, "is this type actually used in this program" gate);
     // the expected fields are the builtin type's row.
-    let expected: &[(&str, &str, bool)] = &[
-        ("ParseError", "std::str::ParseError", usage.parse_error),
-        ("IoError", "std::io::IoError", usage.io_error),
-        ("IndexError", "std::index::IndexError", usage.index_error),
-        ("KeyError", "std::form::hashmap::KeyError", usage.key_error),
-        ("EmptyError", "std::form::ring_buffer::EmptyError", usage.empty_error),
-        ("CryptoError", "std::crypto::CryptoError", usage.crypto_error),
+    let expected: &[(&str, &str)] = &[
+        ("ParseError", "std::str::ParseError"),
+        ("IoError", "std::io::IoError"),
+        ("IndexError", "std::index::IndexError"),
+        ("KeyError", "std::form::hashmap::KeyError"),
+        ("EmptyError", "std::form::ring_buffer::EmptyError"),
+        ("CryptoError", "std::crypto::CryptoError"),
     ];
-    for (name, qualified, in_use) in expected {
+    for (name, qualified) in expected {
         let expected_fields = crate::builtin_types::builtin_type(name)
             .expect("a shadowable stdlib error type is a builtin type")
             .fields;
-        if !in_use {
+        if !usage.reached.contains(*name) {
             continue;
         }
         let Some(TopSymbol::Type(ti)) = scope.symbols.get(*name)

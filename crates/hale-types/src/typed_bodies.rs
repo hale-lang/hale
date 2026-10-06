@@ -45,8 +45,9 @@
 //!    `params` field through a receiver the checker typed as that locus
 //!    (`self.k`, `self.child.k`, `x.k = v`), with the locus it is read
 //!    from inside and the receiver's declaration, recorded before any
-//!    rule judges it. The sealed rule and the `--sealable` survey read
-//!    it (F.40 phase 4, W4).
+//!    rule judges it, on the evaluation path it was typed on (a
+//!    parameter's default has a row per call that leaves it). The sealed
+//!    rule and the `--sealable` survey read it (F.40 phase 4, W4).
 //! 8. `conversions`, per body (GH #1076, U2): every conversion between
 //!    an identity or a range and its family, by site (a cast by its call,
 //!    an implicit widening by the value's span), with its kind (total,
@@ -59,6 +60,12 @@
 //!    with its exact factor ([`Scale`]) and its policy, each quantity
 //!    literal with its count converted at compile time, and each printed
 //!    quantity with its unit.
+//! 9. `recoveries`, per body: each recovery statement written outside
+//!    every `on_failure` body (`restart(self.w)` in a method), with its
+//!    operation, whether it states a `for` bound, and its receiver as
+//!    the checker typed the first argument: the locus that type names, a
+//!    monomorph's template. The unreached-event law reads it (F.40 phase
+//!    4's leftovers).
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -485,8 +492,8 @@ impl PartialEq for LocusRef {
 /// inside the locus's own members is a row whose reader is the
 /// receiver. Only `params` are rows: a capacity slot or a method named
 /// on a locus is no state access. A receiver typed as a generic locus's
-/// monomorph (`Box_Int`) is no row: the scope declares no locus by that
-/// name, as the conformance column says of it.
+/// monomorph (`Box_Int`), which the scope declares no locus by, reaches
+/// its template's params: the row names the template.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamAccess {
     /// The locus whose member the access is written in (its method, hook,
@@ -504,6 +511,18 @@ pub struct ParamAccess {
     /// The read's whole `receiver.param` expression; a write's param
     /// segment.
     pub span: Span,
+    /// The evaluation path the access was typed on, as a conversion's
+    /// (`ConversionSite::path`): empty outside a default; inside a
+    /// parameter's default, typed at each call that leaves it, every
+    /// evaluation from the outermost inward. One access in a default is
+    /// a row per evaluation, each with that scope's reader.
+    pub evaluation: Vec<u32>,
+    /// The specialization the access was typed in, by its monomorph's
+    /// type arguments: empty on the ordinary walk; a generic fn's or
+    /// locus's body walked per monomorph, its parameters bound, has a
+    /// row per monomorph for an access through a value of a parameter
+    /// type (`self.inner.key` where `inner: T`).
+    pub specialization: Vec<Ty>,
 }
 
 impl ParamAccess {
@@ -511,6 +530,36 @@ impl ParamAccess {
     pub fn from_inside(&self) -> bool {
         self.reader == Some(self.receiver)
     }
+}
+
+/// One recovery statement written outside every `on_failure` body (a
+/// method or a lifecycle body that restarts a child it holds), as the
+/// checker typed it: the `recoveries` column. A handler's own statements
+/// are its handler row's `ops`, on the handler's child.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoveryRow {
+    /// The locus whose member writes the statement, by declaration (a
+    /// generic locus's template); `None` in a free fn.
+    pub parent: Option<LocusRef>,
+    /// That locus's declared name, as a witness says it.
+    pub parent_name: Option<String>,
+    /// The statement's span.
+    pub statement: Span,
+    pub op: hale_syntax::ast::RecoveryOp,
+    /// Whether it states a `for` bound: a spent one quarantines the child.
+    pub bounded: bool,
+    /// The type the checker gave the receiver, the statement's first
+    /// argument (`Unknown` for one it could not type).
+    pub receiver: Ty,
+    /// The locus the receiver's type names, by declaration: a monomorph's
+    /// template's. `None` for any other type, an untyped receiver's
+    /// included, whose child no row names.
+    pub child: Option<LocusRef>,
+    /// The specialization the statement was typed in, by its monomorph's
+    /// type arguments: empty on the ordinary walk. A generic body walked
+    /// per monomorph has a row per monomorph, so a receiver of a
+    /// parameter type is named in each.
+    pub specialization: Vec<Ty>,
 }
 
 /// The rows of one body.
@@ -535,12 +584,15 @@ pub struct TypedBody {
     /// By call site.
     pub fallible_calls: BTreeMap<u32, FallibleCall>,
     /// In walk order. A generic fn's or locus's body has the template
-    /// walk's rows only: the walk per monomorph reports nothing and
-    /// records none, as for `accumulators`.
+    /// walk's rows, then each walk per monomorph's, by its
+    /// specialization (`ParamAccess::specialization`): what an access
+    /// through a parameter type reaches is known only there.
     pub param_accesses: Vec<ParamAccess>,
     /// GH #1076 (U2): by site, every conversion between an identity or a
     /// range and its family (a cast, an implicit widening).
     pub conversions: BTreeMap<ConversionSite, ConversionRow>,
+    /// In walk order: the template walk's, then each walk per monomorph's.
+    pub recoveries: Vec<RecoveryRow>,
 }
 
 /// What a monomorph's template is.
@@ -984,6 +1036,12 @@ impl TypedBodies {
     /// Every fallible call's row, body by body.
     pub fn fallible_calls(&self) -> impl Iterator<Item = &FallibleCall> {
         self.bodies.values().flat_map(|b| b.fallible_calls.values())
+    }
+
+    /// Every recovery statement's row outside the handlers, body by body
+    /// (by the body's declaration), each body's in walk order.
+    pub fn recoveries(&self) -> impl Iterator<Item = (NodeId, &RecoveryRow)> {
+        self.bodies.iter().flat_map(|(id, b)| b.recoveries.iter().map(move |r| (NodeId(*id), r)))
     }
 
     /// Every param access's row, body by body (by the body's

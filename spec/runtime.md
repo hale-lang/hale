@@ -3152,9 +3152,10 @@ does, so a recording made under `--env prod` is admitted by `hale
 replay --env prod` and refused under another environment's roles or
 none), and the `[ffi]` link libraries and C sources each imported
 package's `hale.toml` declares, which every one of the three folds
-in (`run` and `replay` still BUILD with their flags alone, so a
-program that needs a package's `[ffi] csrc` builds under `hale build`
-only). Debug information is not part of it: the DWARF line tables
+in and builds with, so a program that needs a package's `[ffi] csrc`
+runs and replays without `--csrc` / `--link` flags, and a flag naming
+what a package's `[ffi]` names is a no-op that leaves the identity the
+flagless invocation's. Debug information is not part of it: the DWARF line tables
 `hale build` adds by default change no behaviour, so a recording made
 by a binary from `hale build` of a file is admitted by `hale replay`
 of that file, and a built binary and `hale run` of one program carry
@@ -4029,7 +4030,7 @@ build.
 | `HALE_MCP_ROOT` | none | `hale mcp`: every path a tool call names must resolve under this directory. | unset: no restriction |
 | `HALE_MODEL_TRACE` | none | Print the model builder's and the fleet lowering's demand-proof line on stderr (`1` turns it on). | off |
 | `HALE_REPLAY_TEST_HOLD` | none | A test hook: `hale replay` waits, between admitting a recording and starting it, until this path exists, so a test can replace the recording at a chosen moment. | unset |
-| `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from: every source of the identity-covered crates, the lock file and the ts-shim manifest (statted on each invocation, read only when one is newer than the binary), and the `dna/` tree it embeds. | off |
+| `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from: every source of the identity-covered crates, the lock file and the ts-shim manifest (statted on each invocation, read only when one is newer than the binary), and the `dna/` tree it embeds (statted the same way, digested only when a file or its directory is newer than the binary or the file count is not the embedded set's). | off |
 | `HALE_STALE_DNA_ROOT` | none | The tree the stale-DNA check compares the embedded DNA against; the regression test's way to hand it a tree it may edit. | the workspace the binary was built from |
 | `HALE_TEST_JOBS` | none | How many workers `hale test` runs when `-j` is not given. | one per available core |
 | `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`) after its run and prints where, instead of removing it. | remove |

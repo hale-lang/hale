@@ -661,8 +661,9 @@ pub fn check_bundle_scoped(
 /// its `@effects`, `@phase_effects` and placement diagnostics, and the
 /// certificate evidence a law is judged against reads the same run
 /// instead of repeating it. The entry of a bundle no snapshot holds, so
-/// the `bare_fallible` law runs here over the table packaged from the
-/// typing's record, as the snapshot's check runs it over its own.
+/// the `bare_fallible` law and the closures' reach law run here over the
+/// table packaged from the typing's record, as the snapshot's check runs
+/// them over its own.
 pub fn check_bundle_reporting(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -674,6 +675,7 @@ pub fn check_bundle_reporting(
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
     let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
+    diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
 
@@ -881,6 +883,7 @@ pub fn check_bundle_by_declaration(
         handling: crate::typed_bodies::Handling::Bare,
         scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
         unit_findings: std::collections::BTreeSet::new(),
+        default_findings: std::collections::BTreeSet::new(),
         defaults_judged_at_literals: false,
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
@@ -897,16 +900,17 @@ pub fn check_bundle_by_declaration(
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
                     cx.check_top_decl(item);
-                    cx.settle_param_accesses();
+                    cx.settle_param_accesses(start);
                     cx.diags.split_off(start)
                 }
             };
             // GH #1076 (U3): a quantity rule's error a default's walk found
             // is in the result of each declaration that leaves the default,
-            // and is reported once.
+            // and is reported once; so is the sealed rule's (GH #436).
             for d in &typing {
                 let key = (d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone());
-                if !cx.unit_findings.contains(&key) || reported.insert(key) {
+                let once = cx.unit_findings.contains(&key) || cx.default_findings.contains(&key);
+                if !once || reported.insert(key) {
                     cx.diags.push(d.clone());
                 }
             }
@@ -915,8 +919,11 @@ pub fn check_bundle_by_declaration(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
-    // The walks per monomorph keep nothing: there is nothing to settle.
-    debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
+    // The walks per monomorph keep their param accesses alone: an access
+    // through a value of a parameter type is judged there, against every
+    // diagnostic the check has, a template's own included.
+    cx.settle_param_accesses(0);
+    debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -960,8 +967,10 @@ pub fn check_bundle_by_declaration(
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
-    // `persists_through(...)` / `resets_on(...)` clauses name.
-    diags.extend(crate::closure_events::closure_event_laws(bundle, inputs.handlers, inputs.entry));
+    // `persists_through(...)` / `resets_on(...)` clauses name; whether a
+    // recovery reaches each is judged over the typed-body table
+    // (`unreached_event_laws`, beside the `bare_fallible` law).
+    diags.extend(crate::closure_events::closure_event_laws(bundle));
     // GH #1076: the unit dialect's declarations, judged over their rows.
     diags.extend(crate::units::unit_laws(inputs.units));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
@@ -1228,6 +1237,99 @@ impl<'a> GenericTemplates<'a> {
         }
         None
     }
+
+    /// The specializations the table's rows from `from` on instantiate
+    /// through their own fields, to a fixpoint: a field whose declared
+    /// type applies a template to the row's parameters (`h: Holder<T>`
+    /// in `Outer<T>`) names, in `Outer_Signer`, `Holder_Signer`, which
+    /// the source never spells and lowering synthesizes for the field.
+    /// With its row in the table, `field_ty` types the field as it, so a
+    /// chain of fields (`self.h.s`) reaches a parameter's binding at any
+    /// depth.
+    fn close_over_fields(&self, known: &KnownNames, table: &mut crate::typed_bodies::Monomorphs, from: usize) {
+        const LIMIT: usize = 1024;
+        let mut next = from;
+        while next < table.rows().len() && table.rows().len() < LIMIT {
+            let m = table.rows()[next].clone();
+            next += 1;
+            if m.kind == crate::typed_bodies::TemplateKind::Fn || m.args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                continue;
+            }
+            let Some(template) = self.get(m.template) else { continue };
+            let bindings: BTreeMap<String, Ty> =
+                template.generics().iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+            let mut names = std::collections::BTreeSet::new();
+            match template {
+                GenericTemplate::Type(td) => {
+                    if let TypeDeclBody::Struct(fields) = &td.body {
+                        for f in fields {
+                            spelled_monomorphs(&f.ty, known, &bindings, &mut names);
+                        }
+                    }
+                }
+                GenericTemplate::Locus(ld) => {
+                    for member in &ld.members {
+                        if let LocusMember::Params(pb) = member {
+                            for te in pb.params.iter().filter_map(|p| p.ty.as_ref()) {
+                                spelled_monomorphs(te, known, &bindings, &mut names);
+                            }
+                        }
+                    }
+                }
+            }
+            for name in names {
+                if let Some((template, kind, args)) = self.parse(&name, known) {
+                    if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                        table.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The names a type expression spells that may name a monomorph, each
+/// generic instantiation resolved under `bindings` (`Box<Int>` as
+/// `Box_Int`); a name `bindings` holds is a parameter, not a type.
+fn spelled_monomorphs(
+    te: &TypeExpr,
+    known: &KnownNames,
+    bindings: &BTreeMap<String, Ty>,
+    names: &mut std::collections::BTreeSet<String>,
+) {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } => {
+            for a in generic_args {
+                spelled_monomorphs(a, known, bindings, names);
+            }
+            if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
+                return;
+            }
+            if generic_args.is_empty() {
+                names.insert(path.segments[0].name.clone());
+            } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
+                names.insert(n);
+            }
+        }
+        TypeExpr::Projection { inner, .. } => spelled_monomorphs(inner, known, bindings, names),
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+            spelled_monomorphs(elem, known, bindings, names)
+        }
+        TypeExpr::Tuple(parts, _) => {
+            for p in parts {
+                spelled_monomorphs(p, known, bindings, names);
+            }
+        }
+        TypeExpr::Function { params, ret, .. } => {
+            for p in params {
+                spelled_monomorphs(p, known, bindings, names);
+            }
+            if let Some(r) = ret {
+                spelled_monomorphs(r, known, bindings, names);
+            }
+        }
+        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+    }
 }
 
 /// The monomorph table's type and locus rows (F.40 phase 3, E4), one
@@ -1235,8 +1337,10 @@ impl<'a> GenericTemplates<'a> {
 /// names a monomorph — each generic instantiation a type expression
 /// writes (`Box<Int>`, named as the checker resolves it, `Box_Int`),
 /// each name an annotation or a struct literal spells (`Box_Int { }`) —
-/// keyed by its template's site and its type arguments. The mangled
-/// name is parsed here, once per name; every lookup reads the row.
+/// keyed by its template's site and its type arguments, and every
+/// specialization those rows instantiate through their fields
+/// ([`GenericTemplates::close_over_fields`]). The mangled name is parsed
+/// here, once per name; every lookup reads the row.
 fn monomorph_table(
     bundle: &Bundle<'_>,
     known: &KnownNames,
@@ -1247,45 +1351,12 @@ fn monomorph_table(
     if templates.by_key.is_empty() {
         return;
     }
-    fn spelled(te: &TypeExpr, known: &KnownNames, bindings: &BTreeMap<String, Ty>, names: &mut std::collections::BTreeSet<String>) {
-        match te {
-            TypeExpr::Named { path, generic_args, .. } => {
-                for a in generic_args {
-                    spelled(a, known, bindings, names);
-                }
-                if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
-                    return;
-                }
-                if generic_args.is_empty() {
-                    names.insert(path.segments[0].name.clone());
-                } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
-                    names.insert(n);
-                }
-            }
-            TypeExpr::Projection { inner, .. } => spelled(inner, known, bindings, names),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, bindings, names),
-            TypeExpr::Tuple(parts, _) => {
-                for p in parts {
-                    spelled(p, known, bindings, names);
-                }
-            }
-            TypeExpr::Function { params, ret, .. } => {
-                for p in params {
-                    spelled(p, known, bindings, names);
-                }
-                if let Some(r) = ret {
-                    spelled(r, known, bindings, names);
-                }
-            }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
-        }
-    }
     let mut names = std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
         crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s, parameters| {
             let bindings = parameters.iter().map(|p| (p.clone(), Ty::Unknown)).collect();
             match s {
-                TypeSpelling::Annotation(te) => spelled(te, known, &bindings, &mut names),
+                TypeSpelling::Annotation(te) => spelled_monomorphs(te, known, &bindings, &mut names),
                 TypeSpelling::Literal(path) => {
                     if path.segments.len() == 1 && !parameters.contains(&path.segments[0].name) {
                         names.insert(path.segments[0].name.clone());
@@ -1299,6 +1370,7 @@ fn monomorph_table(
             out.insert(Monomorph { template, kind, args, name });
         }
     }
+    templates.close_over_fields(known, out, 0);
 }
 
 use crate::typed_bodies::Unsatisfied;
@@ -3992,7 +4064,7 @@ fn render_impurity(
         ImpureStdlibCall { fn_name, .. } => (
             format!(
                 "calls `{}`, which has side effects (printing, \
-                 file/process I/O, sleeping, or recovery)",
+                 file, network or process I/O, sleeping, or publishing)",
                 fn_name
             ),
             "codecs must be deterministic, side-effect-free \
@@ -6138,6 +6210,10 @@ struct Checker<'a> {
     /// and message: a struct default's walk, whose findings are otherwise
     /// discarded, keeps them, since no other walk types the default.
     unit_findings: std::collections::BTreeSet<(usize, usize, String)>,
+    /// GH #436: the sealed rule's findings over a parameter default's
+    /// rows, by place and message: each declaration that evaluates the
+    /// default holds the finding in its result, and it is reported once.
+    default_findings: std::collections::BTreeSet<(usize, usize, String)>,
     /// While a type declaration's field defaults are walked for the
     /// defaults their calls leave: a name there means what each literal's
     /// scope says, so the quantity rules' errors are found at the literal
@@ -10800,12 +10876,16 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Block(b) => self.check_block(b),
-            Stmt::Recovery { args, modifier, .. } => {
-                for a in args {
-                    let _ = self.check_expr(a);
-                }
+            Stmt::Recovery { op, args, modifier, span } => {
+                let tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
                 if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
                     let _ = self.check_expr(e);
+                }
+                // A handler's statements are its handler row's ops, on the
+                // handler's child.
+                if !self.in_on_failure {
+                    let bounded = matches!(modifier, Some(RecoveryModifier::For(_)));
+                    self.record_recovery(*op, bounded, *span, tys.into_iter().next().unwrap_or(Ty::Unknown));
                 }
             }
             // v1.x-VIOLATE (F.27): rejection-context enforcement
@@ -11835,7 +11915,9 @@ impl<'a> Checker<'a> {
     /// generic call rows are recorded under the monomorph's arguments;
     /// a specialization a walk instantiates is walked in turn. The walk
     /// reports nothing: its diagnostics are the template's, reported by
-    /// the ordinary walk, and are dropped.
+    /// the ordinary walk, and are dropped. Its param accesses are kept,
+    /// each row carrying the monomorph's arguments: what an access
+    /// through a value of a parameter type reaches is known only here.
     fn specialize_generic_bodies(&mut self) {
         const LIMIT: usize = 1024;
         let mut next = 0;
@@ -11883,7 +11965,9 @@ impl<'a> Checker<'a> {
             self.current_locus = prev_locus;
             self.specializing = prev_specializing;
             self.generic_bindings = prev_bindings;
+            let reached = self.access_visits.split_off(mark.visits);
             self.discard_since(mark);
+            self.keep_visits(reached);
         }
     }
 
@@ -11943,7 +12027,7 @@ impl<'a> Checker<'a> {
                             }
                             _ => None,
                         });
-                        let elem = match declared.map(|te| substitute_generic_ty(te, &bindings, self.known)) {
+                        let elem = match declared.map(|te| self.monomorph_field_ty(te, &bindings)) {
                             Some(Ty::Unknown) | None => row.elem.clone(),
                             Some(t) => Some(Typed::Known(t)),
                         };
@@ -11965,9 +12049,13 @@ impl<'a> Checker<'a> {
     /// locus, both by declaration, and the access. Recorded whether or
     /// not the locus is sealed, as a visit the declaration's walk settles
     /// when it ends; a walk whose findings the check discards (a
-    /// receiver typed ahead of the call path that types it again, a
-    /// default typed at an invocation, a generic body walked per
-    /// monomorph) discards its visits with them.
+    /// receiver typed ahead of the call path that types it again)
+    /// discards its visits with them. Two are the exception, since no
+    /// other walk types what they reach: a parameter's default typed at
+    /// an invocation keeps its visits, one row per evaluation path
+    /// (`record_omitted_defaults`), and a generic body walked per
+    /// monomorph keeps its own, one row per specialization
+    /// (`specialize_generic_bodies`).
     fn record_param_access(
         &mut self,
         rt: &Ty,
@@ -11975,8 +12063,10 @@ impl<'a> Checker<'a> {
         span: Span,
         kind: crate::typed_bodies::AccessKind,
     ) {
-        let Ty::Named(locus_name) = rt else { return };
-        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name) else {
+        // A receiver typed as a generic locus's monomorph (`Box_Int`) is
+        // the template's params reached: the row names the template.
+        let Some(locus_name) = self.scope_name_of(rt) else { return };
+        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(&locus_name) else {
             return;
         };
         if !li.params.iter().any(|p| p.name == name.name) {
@@ -11991,8 +12081,61 @@ impl<'a> Checker<'a> {
             param: name.name.clone(),
             kind,
             span,
+            evaluation: self.default_evaluation.clone(),
+            specialization: self.specializing.clone().unwrap_or_default(),
         };
         self.access_visits.push(AccessVisit { at: self.diags.len(), body: self.body, row });
+    }
+
+    /// The scope name a type is declared by: a named type's own, or for
+    /// a generic locus's monomorph (`Box_Int`), which the scope declares
+    /// nothing by, its template's. `None` for any other type.
+    fn scope_name_of(&self, ty: &Ty) -> Option<String> {
+        let Ty::Named(named) = ty else { return None };
+        if self.top.symbols.get(named).is_some() {
+            return Some(named.clone());
+        }
+        match self.typed.monomorphs.named(named).and_then(|m| self.templates.get(m.template)) {
+            Some(GenericTemplate::Locus(l)) => Some(l.name.name.clone()),
+            _ => None,
+        }
+    }
+
+    /// The `recoveries` row of a recovery statement outside every
+    /// `on_failure` body: its operation, its bound, and the locus the
+    /// checker typed its receiver as (a monomorph's template), in the
+    /// body being walked, on the walk's specialization. A statement a
+    /// walk reaches twice is one row.
+    fn record_recovery(&mut self, op: RecoveryOp, bounded: bool, statement: Span, receiver: Ty) {
+        let child = match self.scope_name_of(&receiver) {
+            Some(name) if matches!(self.top.symbols.get(&name), Some(TopSymbol::Locus(_))) => self.locus_ref(&name),
+            _ => None,
+        };
+        let parent_name = self.current_locus.map(|l| l.name.clone());
+        let row = crate::typed_bodies::RecoveryRow {
+            parent: parent_name.as_deref().and_then(|n| self.locus_ref(n)),
+            parent_name,
+            statement,
+            op,
+            bounded,
+            receiver,
+            child,
+            specialization: self.specializing.clone().unwrap_or_default(),
+        };
+        let rows = &mut self.typed.body(self.body).recoveries;
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
+    }
+
+    /// Keep `reached`, the accesses a walk reached before the walk was
+    /// discarded (a default's, typed where it is evaluated; a generic
+    /// body's, walked for one of its monomorphs), as visits
+    /// of the walk that discarded it, each placed where the discard
+    /// left the diagnostics.
+    fn keep_visits(&mut self, reached: Vec<AccessVisit>) {
+        let at = self.diags.len();
+        self.access_visits.extend(reached.into_iter().map(|v| AccessVisit { at, ..v }));
     }
 
     /// The start of a walk whose findings may be discarded.
@@ -12012,8 +12155,10 @@ impl<'a> Checker<'a> {
     /// reached twice, a method call's receiver, is one row), and the
     /// sealed rule judges the rows ([`crate::sealed_access`]), each
     /// finding placed among the declaration's diagnostics where the walk
-    /// first reached the access.
-    fn settle_param_accesses(&mut self) {
+    /// first reached the access. Once more after the walks per monomorph,
+    /// for theirs. A finding `diags` holds from `since` on is not
+    /// reported again.
+    fn settle_param_accesses(&mut self, since: usize) {
         let mut fresh: Vec<(usize, crate::typed_bodies::ParamAccess)> = Vec::new();
         for visit in std::mem::take(&mut self.access_visits) {
             let rows = &mut self.typed.body(visit.body).param_accesses;
@@ -12024,6 +12169,24 @@ impl<'a> Checker<'a> {
         }
         let rows: Vec<crate::typed_bodies::ParamAccess> = fresh.iter().map(|(_, r)| r.clone()).collect();
         let found = crate::sealed_access::sealed_access_law(self.top, &rows);
+        // A default evaluated on several paths reaches one access as a
+        // row per path, and a generic body walked per monomorph as a row
+        // per specialization (its template's walk may have reached it
+        // too): it is refused once, where the walk first reached it, and
+        // once per check however many declarations evaluate a default.
+        let mut seen: std::collections::BTreeSet<(usize, usize, String)> = self.diags[since.min(self.diags.len())..]
+            .iter()
+            .map(|d| (d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()))
+            .collect();
+        let found: Vec<(usize, Diag)> = found
+            .into_iter()
+            .filter(|(_, d)| seen.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone())))
+            .collect();
+        for (i, d) in &found {
+            if !rows[*i].evaluation.is_empty() {
+                self.default_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+            }
+        }
         // From the last, so each insertion leaves the earlier places
         // where they were; two at one place keep their order.
         for (i, diag) in found.into_iter().rev() {
@@ -12057,6 +12220,27 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A template field's declared type in one of its monomorphs: the
+    /// template's parameters substituted, and an application of them
+    /// (`Holder<T>`) the row it names (`Holder_Signer`), which the table
+    /// holds for each field of each of its rows
+    /// ([`GenericTemplates::close_over_fields`]). The substitution alone
+    /// keeps a nested application's unbound view, `Unknown`, so a chain
+    /// of fields stopped at the first: `self.h.s` in `Outer_Signer` read
+    /// no `Signer`, and a sealed param behind it was read unjudged.
+    fn monomorph_field_ty(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Ty {
+        if let TypeExpr::Named { generic_args, .. } = te {
+            if !generic_args.is_empty() {
+                if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, self.known, bindings) {
+                    if self.typed.monomorphs.named(&n).is_some() {
+                        return Ty::Named(n);
+                    }
+                }
+            }
+        }
+        substitute_generic_ty(te, bindings, self.known)
+    }
+
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
             // Numeric tuple field access: `t.0`, `t.1`. Parser
@@ -12084,13 +12268,7 @@ impl<'a> Checker<'a> {
                                 return tfields
                                     .iter()
                                     .find(|f| f.name.name == name)
-                                    .map(|f| {
-                                        substitute_generic_ty(
-                                            &f.ty,
-                                            &bindings,
-                                            self.known,
-                                        )
-                                    });
+                                    .map(|f| self.monomorph_field_ty(&f.ty, &bindings));
                             }
                             return None;
                         }
@@ -12120,11 +12298,7 @@ impl<'a> Checker<'a> {
                                     // here — stay permissive rather
                                     // than invent one.
                                     return Some(match &p.ty {
-                                        Some(te) => substitute_generic_ty(
-                                            te,
-                                            &bindings,
-                                            self.known,
-                                        ),
+                                        Some(te) => self.monomorph_field_ty(te, &bindings),
                                         None => Ty::Unknown,
                                     });
                                 }
@@ -13332,7 +13506,9 @@ impl<'a> Checker<'a> {
         if let Ty::Named(name) = self.resolve_te(te) {
             if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
                 if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                    let from = self.typed.monomorphs.rows().len();
                     self.typed.monomorphs.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
+                    self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
                 }
             }
         }
@@ -13855,10 +14031,21 @@ impl<'a> Checker<'a> {
         }
         self.default_evaluation.pop();
         self.default_invocations.pop();
+        // The param accesses the defaults reached stay, as the
+        // conversions their casts recorded do: no other walk types a
+        // default, so the sealed rule judges them here, a row per
+        // evaluation path. Not on a type declaration's walk of its
+        // fields' calls, which is no evaluation: it types the defaults
+        // in no caller's scope.
+        let reached = self.access_visits.split_off(mark.visits);
+        let judged_here = !self.defaults_judged_at_literals;
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer. The
         // quantity rules' errors stay: no other walk types a default.
         self.discard_keeping_unit_errors(mark);
+        if judged_here {
+            self.keep_visits(reached);
+        }
     }
 
     /// GH #1076 (U3): [`Self::discard_since`], keeping the quantity rules'

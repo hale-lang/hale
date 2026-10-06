@@ -274,9 +274,11 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    // The identity's options are `build`'s and `run`'s (I2); the replay
-    // builds, as `run` does, with its flags alone.
-    let options_fp = build_env::options_fingerprint(&identity_options(&build_options, &snap, &prog));
+    // The options are `build`'s and `run`'s (I2): the replay builds, as
+    // they do, with the imported packages' `[ffi]` surface beside its
+    // flags.
+    let build_options = identity_options(&build_options, &snap, &prog);
+    let options_fp = build_env::options_fingerprint(&build_options);
     let identity = match model_identity(&snap, resolved, &build_options) {
         Ok(x) => x,
         Err(b) => {
