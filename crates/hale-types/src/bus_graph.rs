@@ -1345,7 +1345,8 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
             Ty::Named(n) if depth < 16 => match top.lookup(n) {
                 Some(TopSymbol::Type(t)) => match &t.kind {
                     TypeKind::Enum(variants) => variants.iter().all(|v| v.fields.is_empty()),
-                    TypeKind::Alias(a) => field_is_flat_scalar(top, a, depth + 1),
+                    // GH #1076: an identity or a range is its `Int`.
+                    TypeKind::Alias(a) | TypeKind::Scalar(a) => field_is_flat_scalar(top, a, depth + 1),
                     TypeKind::Struct(_) => false,
                 },
                 _ => false,
@@ -1359,7 +1360,9 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
                 Some(TopSymbol::Type(t)) => match &t.kind {
                     TypeKind::Struct(fields) => fields.iter().all(|f| field_is_flat_scalar(top, &f.ty, 0)),
                     TypeKind::Alias(a) => flat(bundle, top, a, depth + 1),
-                    TypeKind::Enum(_) => false,
+                    // GH #1076: an identity or a range is an `Int`, a
+                    // field and never a record, as `Int` is.
+                    TypeKind::Enum(_) | TypeKind::Scalar(_) => false,
                 },
                 None => generic_instance_fields(bundle, n)
                     .is_some_and(|fields| fields.iter().all(|f| field_is_flat_scalar(top, f, 0))),

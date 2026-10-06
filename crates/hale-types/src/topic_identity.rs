@@ -258,18 +258,34 @@ pub fn canonical_type_shape(items: &[TopDecl], type_name: &str) -> String {
     let TypeDeclBody::Struct(fields) = &td.body else {
         return String::new();
     };
+    // GH #1076 (U2, decision 9): an identity or a range is tagged as the
+    // `Int` it is, so declaring one changes no shape hash.
+    let scalars: BTreeMap<&str, &hale_syntax::ast::ScalarDecl> = types
+        .iter()
+        .filter_map(|(n, t)| match &t.body {
+            TypeDeclBody::Scalar(s) => Some((*n, s)),
+            _ => None,
+        })
+        .collect();
+    let ints = crate::units::typed_scalar_names(&scalars);
     fields
         .iter()
-        .map(|f| format!("{}:{}", f.name.name, field_tag(&f.ty)))
+        .map(|f| format!("{}:{}", f.name.name, field_tag(&f.ty, &ints)))
         .collect::<Vec<_>>()
         .join(";")
 }
 
 /// One field's coarse tag. Deliberately name-free for anything
 /// compound (nested structs, arrays, tuples), so the hash never
-/// depends on a declaring binary's local type names.
-fn field_tag(ty: &TypeExpr) -> &'static str {
+/// depends on a declaring binary's local type names. `ints` are the
+/// identities and ranges, each an `Int`.
+fn field_tag(ty: &TypeExpr, ints: &std::collections::BTreeSet<&str>) -> &'static str {
     match ty {
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 && generic_args.is_empty() && ints.contains(path.segments[0].name.as_str()) =>
+        {
+            "i"
+        }
         TypeExpr::Primitive(p, _) => match p {
             PrimType::Int | PrimType::Uint => "i",
             PrimType::Float => "f",

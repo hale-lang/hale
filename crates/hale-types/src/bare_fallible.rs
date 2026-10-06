@@ -21,11 +21,40 @@
 
 use hale_syntax::error::Diag;
 
-use crate::typed_bodies::{CalleeKind, FallibleCall, Handling, TypedBodies};
+use crate::typed_bodies::{CalleeKind, ConversionKind, ConversionRow, FallibleCall, Handling, TypedBodies};
 
-/// Every fallible call `table` holds that nothing handles, as errors.
+/// Every fallible call `table` holds that nothing handles, as errors;
+/// then every narrowing nothing discharges (GH #1076, U2), from the
+/// `conversions` column, once per cast: a cast in a default has a row
+/// per evaluation (`ConversionSite::DefaultCast`), and what discharges
+/// it is written in the default, the same in each.
 pub fn bare_fallible_calls(table: &TypedBodies) -> Vec<Diag> {
-    table.fallible_calls().filter_map(judge).collect()
+    let mut judged = std::collections::BTreeSet::new();
+    let narrowings = table
+        .conversions()
+        .filter_map(judge_narrowing)
+        .filter(|d| judged.insert((d.span.start.as_usize(), d.span.end.as_usize())));
+    table.fallible_calls().filter_map(judge).chain(narrowings).collect()
+}
+
+/// A narrowing (`Session(n)`) is fallible like a call: a value outside
+/// the range has to become something, and the program says what.
+fn judge_narrowing(row: &ConversionRow) -> Option<Diag> {
+    if row.kind != ConversionKind::Narrowing || row.policy.is_some() {
+        return None;
+    }
+    let range = row.range.map(|(lo, hi)| format!("`{lo}..{hi}`")).unwrap_or_default();
+    Some(Diag::ty(
+        row.span,
+        format!(
+            "`{t}(…)` narrows `{from}` into `{t}`'s range {range} and this conversion says nothing \
+             about a value outside it: write `or <fallback>` for a value to use instead, `or clamp` \
+             for the nearest bound, `or wrap` to wrap around the range, `or handler(err)` to deal \
+             with the `RangeError` here, or `or raise` to hand it to the caller",
+            t = row.target,
+            from = row.from.display(),
+        ),
+    ))
 }
 
 fn judge(row: &FallibleCall) -> Option<Diag> {

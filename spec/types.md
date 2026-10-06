@@ -43,6 +43,23 @@ typecheck-rejected (platform-variable ABI or Hale-internal).
 See [`spec/ffi.md`](./ffi.md) for the full marshalling table and
 the lifetime contract.
 
+## Scalar types (GH #1076)
+
+Beside the primitives, a program declares the unit dialect's scalar
+types (spec/units.md). Each is a nominal named type, not a new
+primitive, and each is represented as an `Int`:
+
+| Kind | Declared | Values |
+|---|---|---|
+| Identity | `type OrderId = distinct Int;`, optionally `{ range: a..b; }` | Typed (spec/units.md § Identities and ranges): no arithmetic, equality and ordering within one, widens to nothing, `Int(id)` and `OrderId(n)` convert |
+| Range | `type Byte = Int { range: 0..256; }`, or over an identity or a range | Typed: a refinement of `Int` (or of its parent), widens to it for free; narrowing into it is `Byte(n) or …` |
+| Quantity | `type Money = quantity Int in cent;` | Declared and judged; values not typed yet |
+| Point | `type Price = point Tick;` | Declared and judged; values not typed yet |
+
+Wherever a type reaches a representation (codegen, the wire, the FFI,
+a hashmap key, printing, a flat payload) an identity or a range is its
+`Int`.
+
 ## Compound types
 
 | Construct | Form | Notes |

@@ -1,0 +1,162 @@
+// GH #1076, step U2: identities and ranges, end to end (spec/units.md
+// § Identities and ranges). The identity and range lines of the
+// committed form, each value asserted.
+//
+// An identity (`distinct Int`) and a range (`Int { range: a..b; }`)
+// are represented as an `Int`. Conversions are named: `T(x)` is total
+// into an identity with no range and from an identity into `Int`, and a
+// narrowing into a range says what becomes of a value outside it: a
+// substitute, `clamp`, `wrap`, a handler of the `RangeError`, or `raise`.
+//
+// `SeqNo` carries a range here. The committed form writes `type SeqNo =
+// distinct Int;` and then `SeqNo(n) or wrap`, but with no range there is
+// nothing to wrap around: `SeqNo(n)` would be total.
+
+type OrderId = distinct Int;
+type SeqNo = distinct Int { range: 0..65536; }
+type Session = distinct Int { range: 0..64; }
+type Byte = Int { range: 0..256; }
+type Nibble = Byte { range: 0..16; }
+type Digit = Int { range: -5..5; }
+type Teen = Int { range: 5..15; }
+
+type Header { session: Int; seq: Int; }
+
+type Order { id: OrderId; qty: Byte; }
+
+type Box<T> { v: T; }
+
+type Slot { id: OrderId = OrderId(1); }
+
+type Pair {
+    plain: Slot = Slot { };
+    shadowed: Slot = {
+        let OrderId = bump;
+        Slot { }
+    };
+}
+
+@form(hashmap)
+locus Book {
+    capacity { pool rows of Order indexed_by id; }
+}
+
+// A handler sees the failure as a typed value.
+fn last_session(e: RangeError) -> Session {
+    std::test::assert_eq_str(e.kind, "Session", "the RangeError names the target type");
+    std::test::assert_eq_int(e.low, 0, "the range's low bound");
+    std::test::assert_eq_int(e.high, 64, "the range's high bound");
+    if e.value >= e.high {
+        return 63;
+    }
+    return 0;
+}
+
+// `or raise` hands the RangeError to the caller.
+fn strict(n: Int) -> Session fallible(RangeError) {
+    let s = Session(n) or raise;
+    return s;
+}
+
+fn caught(e: RangeError) -> Session {
+    std::test::assert_eq_int(e.value, 99, "the raised RangeError carries the value");
+    return 7;
+}
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn bump(n: Int) -> OrderId {
+    return OrderId(n + 10);
+}
+
+fn main() {
+    let hdr = Header { session: 70, seq: 65537 };
+    let n = 70;
+
+    // A substitute.
+    let sess = Session(hdr.session) or 0;
+    std::test::assert_eq_int(Int(sess), 0, "a session outside 0..64 takes the substitute");
+    let inside = Session(12) or 0;
+    std::test::assert_eq_int(Int(inside), 12, "a session inside its range is itself");
+
+    // Wrap: modulo the range's width, negative values included.
+    let seq = SeqNo(hdr.seq) or wrap;
+    std::test::assert_eq_int(Int(seq), 1, "65537 wraps to 1");
+    let before = SeqNo(-1) or wrap;
+    std::test::assert_eq_int(Int(before), 65535, "-1 wraps to the top of the range");
+    // At `Int`'s extremes, with a low bound that is not 0: the distance
+    // from the low bound does not overflow.
+    let top = 9223372036854775807;
+    let digit = Digit(top) or wrap;
+    std::test::assert_eq_int(digit, -3, "`Int`'s maximum wraps into -5..5");
+    let bottom = 0 - 9223372036854775807 - 1;
+    let teen = Teen(bottom) or wrap;
+    std::test::assert_eq_int(teen, 12, "`Int`'s minimum wraps into 5..15");
+
+    // Clamp: the nearest bound.
+    let high = Byte(300) or clamp;
+    std::test::assert_eq_int(high, 255, "300 clamps to the last byte");
+    let low = Byte(-5) or clamp;
+    std::test::assert_eq_int(low, 0, "-5 clamps to 0");
+    let nib = Nibble(high) or clamp;
+    std::test::assert_eq_int(nib, 15, "a sub-range clamps to its own range");
+
+    // A handler.
+    let handled = Session(n) or last_session(err);
+    std::test::assert_eq_int(Int(handled), 63, "the handler's value");
+
+    // A raise, caught by the caller's `or`.
+    let raised = strict(99) or caught(err);
+    std::test::assert_eq_int(Int(raised), 7, "the raise reached the caller");
+    let fine = strict(5) or caught(err);
+    std::test::assert_eq_int(Int(fine), 5, "no raise inside the range");
+
+    // Widening is free: a range is an `Int`, a sub-range its parent.
+    let b: Byte = 200;
+    let wider: Byte = nib;
+    std::test::assert_eq_int(add(b, wider), 215, "a range widens to `Int` at an argument");
+    let total: Int = b + wider;
+    std::test::assert_eq_int(total, 215, "a range's arithmetic is its `Int`'s");
+
+    // An identity: total conversions, equality and ordering, a key.
+    let o = OrderId(4);
+    let other: OrderId = 9;
+    std::test::assert(o != other, "two orders differ");
+    std::test::assert(o < other, "identities are ordered");
+    std::test::assert_eq_int(Int(o) + 1, 5, "an identity's `Int`");
+    let book = Book { };
+    book.set(Order { id: o, qty: 2 });
+    book.set(Order { id: other, qty: 3 });
+    let got = book.get(OrderId(9)) or Order { id: 0, qty: 0 };
+    std::test::assert_eq_int(got.qty, 3, "an identity is a hashmap key");
+    let miss = book.get(OrderId(5)) or Order { id: 0, qty: 0 };
+    std::test::assert_eq_int(miss.qty, 0, "a key not set misses");
+
+    // A generic over an identity, and an array of them: each is laid
+    // out as the `Int` it is.
+    let boxed: Box<OrderId> = Box { v: 6 };
+    std::test::assert_eq_int(Int(boxed.v), 6, "a generic over an identity");
+    let ids: [OrderId; 3] = [1, 2, 3];
+    std::test::assert_eq_int(Int(ids[2]), 3, "an array of identities from literals");
+
+    // Printing: an identity and a range print as their `Int`.
+    std::test::assert_eq_str(to_string(o), "4", "an identity prints as its `Int`");
+    std::test::assert_eq_str("byte " + b, "byte 200", "a range prints as its `Int`");
+
+    // A default is evaluated in each scope that leaves it: where a local
+    // shadows the type, its `OrderId(1)` is a call of the local.
+    let plain = Slot { };
+    {
+        let OrderId = bump;
+        let shadowed = Slot { };
+        std::test::assert_eq_int(Int(shadowed.id), 11, "the shadowed default calls the local");
+    }
+    std::test::assert_eq_int(Int(plain.id), 1, "the default elsewhere is the conversion");
+    // The same inside other defaults: one `Pair { }` evaluates `Slot`'s
+    // default in each of its fields' defaults, each in its own scope.
+    let pair = Pair { };
+    std::test::assert_eq_int(Int(pair.plain.id), 1, "the nested default is the conversion");
+    std::test::assert_eq_int(Int(pair.shadowed.id), 11, "the nested shadowed default calls the local");
+}

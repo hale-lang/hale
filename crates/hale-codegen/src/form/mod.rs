@@ -71,7 +71,7 @@ fn lower_form_value_arg<'ctx>(
     cell_name: &str,
     scope: &Scope<'ctx>,
 ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-    if let Expr::Struct { path, inits, .. } = arg {
+    if let Expr::Struct { path, inits, id: literal, .. } = arg {
         if path.segments.len() == 1
             && path.segments[0].name == cell_name
         {
@@ -81,6 +81,7 @@ fn lower_form_value_arg<'ctx>(
                     &format!("{}.cellarg", cell_name),
                 )?;
                 cx.populate_user_type_fields(
+                    *literal,
                     cell_name, &info, inits, slot, scope,
                 )?;
                 return Ok((

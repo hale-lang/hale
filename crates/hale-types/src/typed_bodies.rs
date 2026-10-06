@@ -16,7 +16,7 @@
 //! arguments, never by a name string; its mangled name is a value of
 //! the row, the symbol lowering emits.
 //!
-//! Five columns:
+//! The columns:
 //!
 //! 1. `accumulators`, per closure: each `sum(x)`, `count()` and
 //!    `mean(x)` of its assertion, in [`accumulator_sites`]' order,
@@ -47,6 +47,13 @@
 //!    from inside and the receiver's declaration, recorded before any
 //!    rule judges it. The sealed rule and the `--sealable` survey read
 //!    it (F.40 phase 4, W4).
+//! 8. `conversions`, per body (GH #1076, U2): every conversion between
+//!    an identity or a range and its family, by site (a cast by its call,
+//!    an implicit widening by the value's span), with its kind (total,
+//!    widening, narrowing), the range a narrowing checks against and what
+//!    discharges it. Lowering reads a cast's row (`lower_conversion`) and
+//!    decides nothing; the `bare_fallible` law refuses a narrowing nothing
+//!    discharges.
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -224,6 +231,102 @@ pub struct FallibleCall {
     pub handled: Handling,
 }
 
+/// What a conversion between a unit-dialect type and its family is (GH
+/// #1076, U2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionKind {
+    /// Nothing can be lost and nothing is checked: an `Int` into an
+    /// identity with no range (`OrderId(n)`), an identity's `Int`
+    /// (`Int(id)`).
+    Total,
+    /// Into an ancestor: a range into its parent, an `Int`-rooted range
+    /// into `Int`, written (`Int(b)`) or implicit (an argument, a `let`).
+    Widening,
+    /// Into a range the value may be outside of (`Session(n)`): fallible,
+    /// discharged where it stands.
+    Narrowing,
+}
+
+/// What discharges a narrowing where it stands: the form after its `or`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discharge {
+    /// `or <value>`: the value instead of one outside the range.
+    Substitute,
+    /// `or clamp`: the nearest bound.
+    Clamp,
+    /// `or wrap`: the value modulo the range's width, from its low bound.
+    Wrap,
+    /// `or handler(err)`: a call given the `RangeError`.
+    Handler,
+    /// `or raise`: the `RangeError` takes the enclosing error path.
+    Raise,
+    /// `or fail <payload>`: the enclosing fn fails with a payload of its
+    /// own.
+    Fail,
+    /// `or discard`, which the check refuses on a value.
+    Discard,
+}
+
+impl Discharge {
+    /// The form as the program writes it.
+    pub fn spelled(self) -> &'static str {
+        match self {
+            Discharge::Substitute => "or <value>",
+            Discharge::Clamp => "or clamp",
+            Discharge::Wrap => "or wrap",
+            Discharge::Handler => "or handler(err)",
+            Discharge::Raise => "or raise",
+            Discharge::Fail => "or fail",
+            Discharge::Discard => "or discard",
+        }
+    }
+}
+
+/// Where a conversion is: a cast `T(x)` by its call site, the site
+/// lowering reads it at; an implicit widening by the span of the value
+/// that widens.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConversionSite {
+    Cast(u32),
+    Value { start: u32, end: u32 },
+    /// A cast in a default, by the evaluation path it was typed on and
+    /// its call: a default is an expression of each scope that leaves
+    /// it, so its name means what that scope says (a local can shadow
+    /// the type there and not elsewhere). `path` is every evaluation
+    /// from the outermost inward: the struct literal that leaves a field
+    /// or the call that leaves a parameter, then the literal or call in
+    /// that default that leaves the next default, and so on, so two
+    /// evaluations of one default under one outer construction, each in
+    /// its own scope, are two keys. Lowering reads the row by the path
+    /// it is lowering.
+    DefaultCast { path: Vec<u32>, call: u32 },
+}
+
+impl ConversionSite {
+    pub fn value(span: Span) -> ConversionSite {
+        ConversionSite::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+}
+
+/// One conversion the checker classified: the `conversions` column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversionRow {
+    /// The cast's whole call, or the value that widens.
+    pub span: Span,
+    pub from: Ty,
+    pub to: Ty,
+    pub kind: ConversionKind,
+    /// A narrowing's target range, half-open: what lowering compares
+    /// against.
+    pub range: Option<(i128, i128)>,
+    /// What discharges a narrowing; `None` for a narrowing nothing
+    /// discharges (the `bare_fallible` law refuses it) and for every
+    /// total or widening conversion, which has nothing to discharge.
+    pub policy: Option<Discharge>,
+    /// The target as the program spells it (`Session`, `Int`).
+    pub target: String,
+}
+
 /// A call that leaves trailing arguments to their defaults: the
 /// declaration of the fn or locus method it calls (a [`hale_syntax::ast::FnDecl`]'s
 /// id, in the checked program), and the index of the first parameter it
@@ -338,6 +441,9 @@ pub struct TypedBody {
     /// walk's rows only: the walk per monomorph reports nothing and
     /// records none, as for `accumulators`.
     pub param_accesses: Vec<ParamAccess>,
+    /// GH #1076 (U2): by site, every conversion between an identity or a
+    /// range and its family (a cast, an implicit widening).
+    pub conversions: BTreeMap<ConversionSite, ConversionRow>,
 }
 
 /// What a monomorph's template is.
@@ -503,9 +609,42 @@ pub struct TypingRecord {
     pub monomorphs: Monomorphs,
     /// The `omitted_args` column.
     pub omitted_args: OmittedArgsByCall,
+    /// Which body each conversion belongs to.
+    pub conversion_sites: BTreeMap<ConversionSite, u32>,
 }
 
 impl TypingRecord {
+    /// Record a conversion; a site already recorded keeps its row (a
+    /// generic body is walked again per specialization).
+    pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
+        let unminted = match &site {
+            ConversionSite::Cast(id) => NodeId(*id).is_none(),
+            ConversionSite::DefaultCast { path, call } => {
+                NodeId(*call).is_none() || path.iter().any(|at| NodeId(*at).is_none())
+            }
+            ConversionSite::Value { .. } => false,
+        };
+        if unminted {
+            return;
+        }
+        self.conversion_sites.insert(site.clone(), body.0);
+        self.body(body).conversions.entry(site).or_insert(row);
+    }
+
+    /// Record what discharges the narrowing at `site` (its `or`).
+    pub fn discharge(&mut self, site: &ConversionSite, policy: Discharge) {
+        let Some(body) = self.conversion_sites.get(site).copied() else { return };
+        if let Some(row) = self.body(NodeId(body)).conversions.get_mut(site) {
+            row.policy = Some(policy);
+        }
+    }
+
+    /// The row recorded at `site`.
+    pub fn conversion_at(&self, site: &ConversionSite) -> Option<&ConversionRow> {
+        let body = self.conversion_sites.get(site)?;
+        self.bodies.get(body)?.conversions.get(site)
+    }
+
     /// Record that `call` leaves `callee`'s parameters from `from` on to
     /// their defaults.
     pub fn omitted_args(&mut self, call: NodeId, callee: NodeId, from: usize) {
@@ -585,9 +724,24 @@ pub struct TypedBodies {
     conformance: BTreeMap<(u32, u32), Conformance>,
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
+    conversion_sites: BTreeMap<ConversionSite, u32>,
 }
 
 impl TypedBodies {
+    /// The `conversions` column's row at `site`: lowering reads a cast's
+    /// by its call (`ConversionSite::Cast`), and a cast's in a default by
+    /// the evaluation path it lowers and its call (`DefaultCast`); `None`
+    /// for a call that is no conversion there.
+    pub fn conversion(&self, site: &ConversionSite) -> Option<&ConversionRow> {
+        let body = self.conversion_sites.get(site)?;
+        self.bodies.get(body)?.conversions.get(site)
+    }
+
+    /// Every conversion's row, body by body.
+    pub fn conversions(&self) -> impl Iterator<Item = &ConversionRow> {
+        self.bodies.values().flat_map(|b| b.conversions.values())
+    }
+
     /// The `omitted_args` column: what each call leaves to its defaults.
     pub fn omitted_args(&self) -> &OmittedArgsByCall {
         &self.omitted_args
@@ -775,6 +929,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         conformance: BTreeMap::new(),
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
+        conversion_sites: record.conversion_sites.clone(),
     };
     let mut decls = Declared::default();
     for p in bundle.programs.values() {

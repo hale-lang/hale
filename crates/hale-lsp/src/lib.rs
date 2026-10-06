@@ -2128,6 +2128,13 @@ fn hover_text(
                 t.name,
                 inner.display()
             ),
+            // GH #1076: the scope holds the representation; the
+            // declaration's clauses are its row's.
+            TypeKind::Scalar(repr) => format!(
+                "```hale\ntype {}\n```\n\nan identity or a range, represented as `{}`",
+                t.name,
+                repr.display()
+            ),
         },
         TopSymbol::Topic(ti) => {
             let mut out = format!(

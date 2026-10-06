@@ -211,6 +211,48 @@ println("took ", took);
 epoch when you genuinely need calendar time; `monotonic()` is
 the basis for anything timing-related.
 
+## Identities and ranges
+
+Some integers must not mix. An order id is not a sequence number, and
+neither is a count you can add to. Some integers have a range: a byte
+is `0..256`, a session slot `0..64`. Say so in the type:
+
+```hale
+type OrderId = distinct Int;
+type Byte    = Int { range: 0..256; }
+type Session = distinct Int { range: 0..64; }
+
+fn main() {
+    let id: OrderId = 4;             // a literal is checked against the type
+    let b: Byte = 200;
+    let total: Int = b + 55;         // a byte is an Int, for free
+    let slot = Session(70) or 0;     // 70 is outside 0..64: the substitute
+    let top = Byte(total + 10) or clamp;
+    let raw: Int = Int(id);
+    println(id, " ", total, " ", slot, " ", top, " ", raw);
+}
+```
+
+A `distinct Int` is an **identity**: it compares with itself and with
+nothing else, it has no arithmetic (`id + 1` is an error), and it
+never passes for an `Int`. You cross explicitly, `OrderId(n)` in and
+`Int(id)` out. A type with a `range:` is a **range**: it is an `Int`
+wherever an `Int` is expected, and its arithmetic is an `Int`'s.
+
+Going *into* a range can fail, so a narrowing such as `Session(n)`
+says what becomes of a value outside it, with `or`:
+
+- `or 0`, any value of the type, held to its range;
+- `or clamp`, the nearest bound;
+- `or wrap`, around the range (`-1` becomes the top);
+- `or handler(err)`, given a `RangeError` with the value and the
+  bounds;
+- `or raise`, to hand the `RangeError` to the caller.
+
+A literal outside the range is an error where you wrote it (`let b:
+Byte = 300;`), and a narrowing with no `or` is too. `spec/units.md §
+Identities and ranges` has every rule.
+
 ## Your own units: declared today, values next
 
 `Duration` is not the only number with a unit. Money is counted in
@@ -243,11 +285,12 @@ units, and checks every clause: an undeclared unit, a `round:` that
 names no policy, a range outside its parent's, each gets an error at
 the place, saying what to write instead.
 
-**What does not, yet:** values. A `Money` parameter, field or
-`let`, or a literal like `3cent`, is an error that says values of
-these types are not typed yet. Count in `Int` for now; values of
-these types, with exact conversions between their units, come in a
-later version (`spec/units.md` holds the contract as it ships). One restriction until `Duration` itself becomes one
+**What does not, yet:** quantity values. A `Money` parameter, field
+or `let`, or a literal like `3cent`, is an error that says values of
+these types are not typed yet (the identity `Session` above already
+works; see the previous section). Count in `Int` for now; quantity
+values, with exact conversions between their units, come in a later
+version (`spec/units.md` holds the contract as it ships). One restriction until `Duration` itself becomes one
 of these declarations: a unit may not be named `ns`, `us`, `ms`, `s`,
 `m`, `h` or `d`, because `5ms` is already a duration literal.
 

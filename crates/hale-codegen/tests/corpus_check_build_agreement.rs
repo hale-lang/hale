@@ -516,40 +516,51 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
     }
 }
 
-/// GH #1076 (U1, review): the not-yet boundary refused `ItemId(1)` as a
-/// cast to the scalar type `ItemId` before the callee was resolved, so a
+/// GH #1076 (U1, review): the not-yet boundary refused `Money(1)` as a
+/// cast to the scalar type `Money` before the callee was resolved, so a
 /// local of that name holding a fn was refused too. The local is the
 /// callee: the program checks, builds and runs it, as it does when
-/// `ItemId` is an alias. With no local, the cast is the boundary's, and
-/// the check refuses it before the build.
+/// `Money` is an alias. With no local, a quantity's cast is the
+/// boundary's, and the check refuses it before the build; an identity's
+/// is a conversion (U2), which builds and prints 1.
+///
+/// U2 (fix): lowering decided a conversion by the callee's name, so the
+/// shadowing local of an identity's or a range's name, which the checker
+/// resolves as the callee and records no conversion row for, was refused
+/// by the build as a cast with no row. A call is a conversion when its
+/// row says so; the local is the callee for every kind of type.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_local_that_shadows_a_unit_type_is_the_callee() {
     let shadows = |ty: &str| {
         format!(
-            "type ItemId = {};\n\
+            "unit cent;\n\
+             type Money = {};\n\
              fn id(n: Int) -> Int {{ return n; }}\n\
-             fn main() {{ let ItemId = id; println(ItemId(1)); }}\n",
+             fn main() {{ let Money = id; println(Money(1)); }}\n",
             ty
         )
     };
-    for ty in ["distinct Int", "Int"] {
+    for ty in ["quantity Int in cent", "Int", "distinct Int", "Int { range: 0..64; }"] {
         let src = shadows(ty);
         assert_eq!(build_and_run_probe(&src, "unit_shadow"), Ok("1\n".to_string()), "{}", src);
     }
-    let cast = "type ItemId = distinct Int;\n\
-                fn main() { println(ItemId(1)); }\n";
+    let cast = "unit cent;\n\
+                type Money = quantity Int in cent;\n\
+                fn main() { println(Money(1)); }\n";
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_cast"),
         Verdict::Skipped("the checker rejects it"),
         "the cast is the boundary's, so the build is never reached"
     );
+    let identity = cast.replace("quantity Int in cent", "distinct Int");
+    assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
 }
 
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
-/// scope of the literal that leaves the field, so `ItemId(1)` in it calls
-/// the constructing fn's local `ItemId` (a fn), not the scalar type the
+/// scope of the literal that leaves the field, so `Money(1)` in it calls
+/// the constructing fn's local `Money` (a fn), not the scalar type the
 /// declaration's scope would name. The check judges the cast there, and
 /// the program checks, builds and prints 1; with no local, the check
 /// refuses the cast before the build.
@@ -557,13 +568,15 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_struct_default_cast_is_judged_in_the_literals_scope() {
-    let shadows = "type ItemId = distinct Int;\n\
-                   type S { n: Int = ItemId(1); }\n\
+    let shadows = "unit cent;\n\
+                   type Money = quantity Int in cent;\n\
+                   type S { n: Int = Money(1); }\n\
                    fn id(n: Int) -> Int { return n; }\n\
-                   fn main() { let ItemId = id; let s = S {}; println(s.n); }\n";
+                   fn main() { let Money = id; let s = S {}; println(s.n); }\n";
     assert_eq!(build_and_run_probe(shadows, "unit_default_shadow"), Ok("1\n".to_string()), "{}", shadows);
-    let cast = "type ItemId = distinct Int;\n\
-                type S { n: Int = ItemId(1); }\n\
+    let cast = "unit cent;\n\
+                type Money = quantity Int in cent;\n\
+                type S { n: Int = Money(1); }\n\
                 fn main() { let s = S {}; println(s.n); }\n";
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_default_cast"),
@@ -574,7 +587,7 @@ fn a_struct_default_cast_is_judged_in_the_literals_scope() {
 
 /// GH #1076 (U1, review 3): an omitted struct default is typed where it
 /// is evaluated, so the check follows the scopes it opens (a block binding
-/// `ItemId` itself), the parameter defaults its calls leave and the field
+/// `Money` itself), the parameter defaults its calls leave and the field
 /// defaults its own literals leave, each in the constructing fn's scope.
 /// Each shadowing program checks, builds and prints 1. With nothing
 /// shadowing the nested literal's cast, the check refuses it once, at
@@ -584,38 +597,198 @@ fn a_struct_default_cast_is_judged_in_the_literals_scope() {
 /// Plain string literals, for the reason given above.
 #[test]
 fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
-    let block = "type ItemId = distinct Int;\n\
+    let block = "unit cent;\n\
+                 type Money = quantity Int in cent;\n\
                  fn id(n: Int) -> Int { return n; }\n\
-                 type S { n: Int = { let ItemId = id; ItemId(1) }; }\n\
+                 type S { n: Int = { let Money = id; Money(1) }; }\n\
                  fn main() { let s = S {}; println(s.n); }\n";
-    let through_fn = "type ItemId = distinct Int;\n\
+    let through_fn = "unit cent;\n\
+                      type Money = quantity Int in cent;\n\
                       fn id(n: Int) -> Int { return n; }\n\
-                      fn take(n: Int = ItemId(1)) -> Int { return n; }\n\
+                      fn take(n: Int = Money(1)) -> Int { return n; }\n\
                       type S { n: Int = take(); }\n\
-                      fn main() { let ItemId = id; let s = S {}; println(s.n); }\n";
-    let nested = "type ItemId = distinct Int;\n\
+                      fn main() { let Money = id; let s = S {}; println(s.n); }\n";
+    let nested = "unit cent;\n\
+                  type Money = quantity Int in cent;\n\
                   fn id(n: Int) -> Int { return n; }\n\
-                  type Inner { n: Int = ItemId(1); }\n\
+                  type Inner { n: Int = Money(1); }\n\
                   type Outer { inner: Inner = Inner {}; }\n\
-                  fn main() { let ItemId = id; let o = Outer {}; println(o.inner.n); }\n";
+                  fn main() { let Money = id; let o = Outer {}; println(o.inner.n); }\n";
     for (src, tag) in [(block, "unit_block_default"), (through_fn, "unit_fn_default"), (nested, "unit_nested_default")] {
         assert_eq!(build_and_run_probe(src, tag), Ok("1\n".to_string()), "{}", src);
     }
-    let cast = "type ItemId = distinct Int;\n\
-                type Inner { n: Int = ItemId(1); }\n\
+    let cast = "unit cent;\n\
+                type Money = quantity Int in cent;\n\
+                type Inner { n: Int = Money(1); }\n\
                 type Outer { inner: Inner = Inner {}; }\n\
                 fn main() { let o = Outer {}; println(o.inner.n); }\n";
     let program = hale_syntax::parse_source(cast).expect("parses");
     let errors: Vec<hale_syntax::Diag> =
         entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
-    assert_eq!(errors[0].span.start.as_usize(), cast.find("ItemId(1)").expect("the cast"), "at `Inner`'s default");
-    assert!(errors[0].message.starts_with("type `ItemId`: "), "{}", errors[0].message);
+    assert_eq!(errors[0].span.start.as_usize(), cast.find("Money(1)").expect("the cast"), "at `Inner`'s default");
+    assert!(errors[0].message.starts_with("type `Money`: "), "{}", errors[0].message);
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_nested_default_cast"),
         Verdict::Skipped("the checker rejects it"),
         "the cast is the boundary's, so the build is never reached"
     );
+}
+
+/// U2 (fix): an identity's or a range's cast in an omitted struct
+/// default checked clean and the build refused it as a cast with no row.
+/// Two causes: the walk that types an omitted default at the literal ran
+/// only when the program declared a quantity or a point, and it put the
+/// typed-body record back as it found it, conversion rows included. The
+/// default is typed at the literal whenever the program declares any
+/// scalar type, and its casts' rows are kept in the constructing
+/// declaration's body, so each program below checks, builds and prints
+/// 1: an identity's default, a range's narrowing under its `or`, the
+/// nested `Outer {}` → `Inner {}`, two literals leaving the field, and
+/// the identity beside a declared quantity (the walk ran there before
+/// the fix; only its rows were lost).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_scalars_cast_in_an_omitted_struct_default_is_lowered_from_its_row() {
+    let identity = "type Money = distinct Int;\n\
+                    type S { n: Money = Money(1); }\n\
+                    fn main() { let s = S {}; println(s.n); }\n";
+    let range = "type Money = Int { range: 0..64; }\n\
+                 type S { n: Money = Money(1) or clamp; }\n\
+                 fn main() { let s = S {}; println(s.n); }\n";
+    let nested = "type Money = distinct Int;\n\
+                  type Inner { n: Money = Money(1); }\n\
+                  type Outer { inner: Inner = Inner {}; }\n\
+                  fn main() { let o = Outer {}; println(o.inner.n); }\n";
+    let two_literals = "type Money = distinct Int;\n\
+                        type S { n: Money = Money(1); }\n\
+                        fn one() -> Money { let s = S {}; return s.n; }\n\
+                        fn main() { let s = S {}; println(Int(s.n) * Int(one())); }\n";
+    let beside_a_quantity = "unit cent;\n\
+                             type Cents = quantity Int in cent;\n\
+                             type Money = distinct Int;\n\
+                             type S { n: Money = Money(1); }\n\
+                             fn main() { let s = S {}; println(s.n); }\n";
+    for (src, tag) in [
+        (identity, "scalar_default_identity"),
+        (range, "scalar_default_range"),
+        (nested, "scalar_default_nested"),
+        (two_literals, "scalar_default_two"),
+        (beside_a_quantity, "scalar_default_quantity"),
+    ] {
+        assert_eq!(build_and_run_probe(src, tag), Ok("1\n".to_string()), "{}", src);
+    }
+}
+
+/// U2 (review 2): one default evaluated in two scopes has two answers.
+/// A local that shadows the type in one scope makes the default's
+/// `ItemId(1)` a call of the local there, and the cast elsewhere: each
+/// evaluation's row is keyed by the evaluation (the literal that leaves
+/// the field, the call that leaves the parameter), and lowering reads
+/// the one it lowers. Before, the first evaluation's row was every
+/// evaluation's, and each program below printed `1` for the shadowed
+/// one: the call of `bump` was dropped. Both orders of the two
+/// constructions, the shadowed one alone, and a parameter's default.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
+    let shadowed_second = "type ItemId = distinct Int;\n\
+                           type S { n: ItemId = ItemId(1); }\n\
+                           fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                           fn main() {\n\
+                           let a = S {};\n\
+                           { let ItemId = bump; let b = S {}; println(Int(b.n)); }\n\
+                           println(Int(a.n));\n\
+                           }\n";
+    let shadowed_first = "type ItemId = distinct Int;\n\
+                          type S { n: ItemId = ItemId(1); }\n\
+                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                          fn main() {\n\
+                          { let ItemId = bump; let b = S {}; println(Int(b.n)); }\n\
+                          let a = S {};\n\
+                          println(Int(a.n));\n\
+                          }\n";
+    let shadowed_alone = "type ItemId = distinct Int;\n\
+                          type S { n: ItemId = ItemId(1); }\n\
+                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                          fn main() { let ItemId = bump; let b = S {}; println(Int(b.n)); }\n";
+    let parameter = "type ItemId = distinct Int;\n\
+                     fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                     fn take(n: ItemId = ItemId(1)) -> Int { return Int(n); }\n\
+                     fn main() {\n\
+                     let a = take();\n\
+                     { let ItemId = bump; println(take()); }\n\
+                     println(a);\n\
+                     }\n";
+    for (src, tag, printed) in [
+        (shadowed_second, "default_scopes_second", "11\n1\n"),
+        (shadowed_first, "default_scopes_first", "11\n1\n"),
+        (shadowed_alone, "default_scopes_alone", "11\n"),
+        (parameter, "default_scopes_param", "11\n1\n"),
+    ] {
+        assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
+    }
+}
+
+/// U2 (review 3): the nested form. One `Outer {}` evaluates `Inner`'s
+/// default twice, once in each field's default, and `b`'s scope shadows
+/// the type. Keyed by the outermost evaluation alone, the two shared one
+/// key, so `a`'s row lowered `b`'s call of `bump` as the cast and each
+/// shadowed program below printed `1` where it says `11`. The key is the
+/// whole evaluation path (`Outer {}`, then the `Inner {}` or the call in
+/// the field's default), so each nested evaluation reads its own. The
+/// reviewer's program, its fields reversed, a parameter's default left by
+/// a call in a field's default, the shadowed field alone, and two nested
+/// evaluations in one scope: those have two paths and two rows, equal,
+/// and print `1` twice.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_nested_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
+    let reviewed = "type ItemId = distinct Int;\n\
+                    fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                    type Inner { n: ItemId = ItemId(1); }\n\
+                    type Outer {\n\
+                    a: Inner = Inner {};\n\
+                    b: Inner = { let ItemId = bump; Inner {} };\n\
+                    }\n\
+                    fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    let reversed = "type ItemId = distinct Int;\n\
+                    fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                    type Inner { n: ItemId = ItemId(1); }\n\
+                    type Outer {\n\
+                    a: Inner = { let ItemId = bump; Inner {} };\n\
+                    b: Inner = Inner {};\n\
+                    }\n\
+                    fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    let parameter = "type ItemId = distinct Int;\n\
+                     fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                     fn take(n: ItemId = ItemId(1)) -> ItemId { return n; }\n\
+                     type Outer {\n\
+                     a: ItemId = take();\n\
+                     b: ItemId = { let ItemId = bump; take() };\n\
+                     }\n\
+                     fn main() { let o = Outer {}; println(Int(o.a)); println(Int(o.b)); }\n";
+    let shadowed_alone = "type ItemId = distinct Int;\n\
+                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                          type Inner { n: ItemId = ItemId(1); }\n\
+                          type Outer { b: Inner = { let ItemId = bump; Inner {} }; }\n\
+                          fn main() { let o = Outer {}; println(Int(o.b.n)); }\n";
+    let same_scope = "type ItemId = distinct Int;\n\
+                      type Inner { n: ItemId = ItemId(1); }\n\
+                      type Outer { a: Inner = Inner {}; b: Inner = Inner {}; }\n\
+                      fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    for (src, tag, printed) in [
+        (reviewed, "nested_scopes_reviewed", "1\n11\n"),
+        (reversed, "nested_scopes_reversed", "11\n1\n"),
+        (parameter, "nested_scopes_param", "1\n11\n"),
+        (shadowed_alone, "nested_scopes_alone", "11\n"),
+        (same_scope, "nested_scopes_same", "1\n1\n"),
+    ] {
+        assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
+    }
 }
 
 /// The check with the whole-program rules OFF — what a caller holding

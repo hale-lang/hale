@@ -1496,6 +1496,7 @@ pub fn build_resolved(
         current_specialization: None,
         current_call: None,
         default_invocations: Vec::new(),
+        default_evaluation: Vec::new(),
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3339,6 +3340,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Source invocation whose omitted defaults are being lowered.
     current_call: Option<NodeId>,
     default_invocations: Vec<u32>,
+    /// While a default is lowered where it is evaluated: the evaluation
+    /// path, outermost first, each a struct literal that leaves a field
+    /// or a call that leaves a parameter, the key under which the checker
+    /// recorded its casts' conversions (`ConversionSite::DefaultCast`).
+    /// It is the checker's stack (`default_evaluation` in `hale-types`'
+    /// `check.rs`) rebuilt: both push at the same two events, a literal
+    /// leaving a field (`populate_user_type_fields`) and a call leaving a
+    /// parameter (`lower_default_in_caller`), around exactly the defaults
+    /// left, so the path lowering looks up is the one the checker wrote.
+    pub(crate) default_evaluation: Vec<u32>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -8464,6 +8475,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => None,
                 })
                 .collect();
+
+        // GH #1076 (U2): an identity or a range is represented as an
+        // `Int`, so a use of its name lowers as `Int` exactly as an alias
+        // of `Int` does, from the first type expression on: a monomorph
+        // over one (`Box<OrderId>`, declared below before anything else)
+        // lays its field out as the `Int` it is. The name is nominal only
+        // to the checker, whose rows (the typed bodies' `conversions`
+        // column) are what lowering reads where a value changes type.
+        let scalars: BTreeMap<&str, &ScalarDecl> = type_decls
+            .iter()
+            .filter_map(|t| match &t.body {
+                TypeDeclBody::Scalar(s) => Some((t.name.name.as_str(), s)),
+                _ => None,
+            })
+            .collect();
+        for name in hale_types::units::typed_scalar_names(&scalars) {
+            self.user_type_aliases
+                .insert(name.to_string(), TypeExpr::Primitive(PrimType::Int, hale_syntax::span::Span::new(0, 0)));
+        }
 
         // m61 / m61b: discover generic instantiations referenced
         // anywhere in the program, synthesize a concrete
@@ -14599,6 +14629,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_method_caller = self.current_method_caller_arena.take();
             let saved_fallible = self.current_user_fn_fallible.take();
             let saved_defaults = std::mem::take(&mut self.default_invocations);
+            let saved_evaluation = std::mem::take(&mut self.default_evaluation);
             let saved_call = self.current_call.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
@@ -14644,6 +14675,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_method_caller_arena = saved_method_caller;
             self.current_user_fn_fallible = saved_fallible;
             self.default_invocations = saved_defaults;
+            self.default_evaluation = saved_evaluation;
             self.current_call = saved_call;
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
@@ -16565,7 +16597,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         match stmt {
-            Stmt::Expr(Expr::Struct { path, inits, .. }) => {
+            Stmt::Expr(Expr::Struct { path, inits, id: literal, .. }) => {
                 // m73a: rewrite recognized `std::*` paths to the
                 // mangled stdlib locus name declared in
                 // hale_stdlib::AP_SOURCE. Unknown qualified paths still
@@ -16682,7 +16714,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // Statement-position type literal: build it,
                     // discard the pointer. Useful for side-effect-
                     // free expressions like `Foo {};` (rare but legal).
-                    let _ = self.lower_user_type_instantiation(name, inits, scope)?;
+                    let _ = self.lower_user_type_instantiation(*literal, name, inits, scope)?;
                 } else {
                     return Err(CodegenError::Unsupported(format!(
                         "struct literal `{}`: no locus or type by that name",
@@ -22731,7 +22763,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Err(CodegenError::UnsupportedAt("recursive function default evaluation".into(), default.span()));
         }
         self.default_invocations.push(call.0);
+        // The call leaves this parameter: one step of the evaluation
+        // path, as the checker's `record_omitted_defaults` pushes it.
+        self.default_evaluation.push(call.0);
         let result = self.lower_expr(default, scope);
+        self.default_evaluation.pop();
         self.default_invocations.pop();
         result
     }
@@ -23565,7 +23601,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (v, t) = self.lower_expr(operand, scope)?;
                 self.lower_unop(*op, v, &t)
             }
-            Expr::Call { callee, args, id: call_id, .. } => match callee.as_ref() {
+            Expr::Call { callee, args, id: call_id, span: call_span } => match callee.as_ref() {
+                // GH #1076 (U2): a conversion `T(x)` is lowered from its
+                // typed-body row. Outside an `or` it is total or a
+                // widening; a narrowing is lowered under its `or`.
+                Expr::Ident(_) if self.conversion_row(e).is_some() => {
+                    let row = self.conversion_row(e).expect("guard checked");
+                    let [arg] = args.as_slice() else {
+                        return Err(CodegenError::UnsupportedAt(
+                            format!("`{}(…)` converts one value", row.target),
+                            *call_span,
+                        ));
+                    };
+                    match self.lower_conversion(&row, arg, scope)? {
+                        crate::conversion::Converted::Value(v, t) => Ok((v, t)),
+                        crate::conversion::Converted::Checked(_) => Err(CodegenError::UnsupportedAt(
+                            format!("the narrowing into `{}` is lowered only under its `or`", row.target),
+                            *call_span,
+                        )),
+                    }
+                }
                 // m46-vocab: count() / mean(x) accumulator builtins
                 // — when an accumulator-eval ctx is active, route
                 // to the next slot. count() takes 0 args; mean(x)
@@ -23829,7 +23884,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // resolves to a `type` (record) → TypeRef. The mangled-
             // name lookup is shared; the dispatch (locus vs type)
             // follows whichever map the mangled name lives in.
-            Expr::Struct { path, inits, .. }
+            Expr::Struct { path, inits, id: literal, .. }
                 if path.segments.len() > 1 => {
                 let segs: Vec<&str> = path
                     .segments
@@ -23856,7 +23911,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let ptr = lowered?;
                     Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
                 } else if self.user_types.contains_key(mangled) {
-                    let ptr = self.lower_user_type_instantiation(mangled, inits, scope)?;
+                    let ptr = self.lower_user_type_instantiation(*literal, mangled, inits, scope)?;
                     Ok((ptr.into(), CodegenTy::TypeRef(mangled.to_string())))
                 } else {
                     Err(CodegenError::Unsupported(format!(
@@ -23867,12 +23922,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))
                 }
             }
-            Expr::Struct { path, inits, .. }
+            Expr::Struct { path, inits, id: literal, .. }
                 if path.segments.len() == 1
                     && self.user_types.contains_key(&path.segments[0].name) =>
             {
                 let name = path.segments[0].name.clone();
-                let ptr = self.lower_user_type_instantiation(&name, inits, scope)?;
+                let ptr = self.lower_user_type_instantiation(*literal, &name, inits, scope)?;
                 Ok((ptr.into(), CodegenTy::TypeRef(name)))
             }
             Expr::Array(parts, _) => {
@@ -31285,6 +31340,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// in m12 once `<-` dispatch lands.
     fn lower_user_type_instantiation(
         &mut self,
+        literal: NodeId,
         type_name: &str,
         inits: &[StructInit],
         scope: &Scope<'ctx>,
@@ -31319,7 +31375,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .size_of()
             .expect("user struct has known size");
         let self_ptr = self.arena_alloc(size, &format!("{}.alloc", type_name))?;
-        self.populate_user_type_fields(type_name, &info, inits, self_ptr, scope)?;
+        self.populate_user_type_fields(literal, type_name, &info, inits, self_ptr, scope)?;
         Ok(self_ptr)
     }
 

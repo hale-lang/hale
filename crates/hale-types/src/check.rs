@@ -878,10 +878,18 @@ pub fn check_bundle_by_declaration(
         specializing: None,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
-        unit_types: inputs.units.scalars.iter().map(|s| (s.name.as_str(), s.display.as_str())).collect(),
+        unit_types: inputs
+            .units
+            .scalars
+            .iter()
+            .filter(|s| matches!(s.kind, crate::units::ScalarKindRow::Quantity | crate::units::ScalarKindRow::Point))
+            .map(|s| (s.name.as_str(), s.display.as_str()))
+            .collect(),
+        scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
         unit_values_refused: BTreeMap::new(),
         casts_judged_at_literals: false,
         struct_defaults_typing: Vec::new(),
+        default_evaluation: Vec::new(),
     };
     // GH #1076: the not-yet boundary's errors belong to every declaration
     // whose walk reaches them (a parameter's default, reached by each
@@ -5840,6 +5848,9 @@ fn payload_carriage(
                 // `resolve_type_expr`, so this arm is unreachable in
                 // practice; judging it would be judging a name.
                 TypeKind::Alias(_) => Carriage::Unresolved,
+                // GH #1076: an identity or a range is carried as its
+                // `Int`, which a bus subject does not carry bare.
+                TypeKind::Scalar(_) => Carriage::NotCarried("wrap it in a user `type`"),
             },
             // A locus, interface, perspective or topic name in
             // payload position is a different mistake, reported
@@ -6128,11 +6139,14 @@ struct Checker<'a> {
     /// addresses types as its success type (the `bare_fallible` law
     /// reports the call).
     handling: crate::typed_bodies::Handling,
-    /// GH #1076: the unit dialect's type names (as declared, mangled
-    /// for an import), each with its author's spelling, read from the
-    /// unit rows: the not-yet boundary refuses each where a value would
-    /// live (`refuse_unit_types`).
+    /// GH #1076: the unit dialect's quantity and point names (as
+    /// declared, mangled for an import), each with its author's spelling,
+    /// read from the unit rows: the not-yet boundary refuses each where a
+    /// value would live (`refuse_unit_types`) until U3.
     unit_types: BTreeMap<&'a str, &'a str>,
+    /// GH #1076 (U2): the identities and ranges, whose values the rules
+    /// of `unit_values` type.
+    scalars: crate::unit_values::ScalarTypes<'a>,
     /// The places the boundary refused in the declaration being walked,
     /// by span, each with its error's message: a place walked twice is
     /// refused once, and a walk whose findings are discarded keeps the
@@ -6149,6 +6163,17 @@ struct Checker<'a> {
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
+    /// While a default is typed where it is evaluated: the evaluation
+    /// path, outermost first, each a struct literal that leaves a field
+    /// or a call that leaves a parameter. A cast typed there is that
+    /// path's row (`ConversionSite::DefaultCast`), so one default
+    /// evaluated in two scopes has two answers, nested or not. Lowering
+    /// keeps the same stack (`Cx::default_evaluation`): both push at the
+    /// same two events, a literal leaving a field
+    /// (`type_omitted_defaults`) and a call leaving a parameter
+    /// (`record_omitted_defaults`), for exactly the walk of the defaults
+    /// left, so the two stacks agree.
+    default_evaluation: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -8713,6 +8738,18 @@ impl<'a> Checker<'a> {
                     ));
                     return;
                 }
+                TypeKind::Scalar(_) => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(lru_cache) cell type `{}` is an identity or a \
+                             range, an `Int`; cell must be a struct so `indexed_by` \
+                             can resolve",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
             },
             Some(TopSymbol::Locus(_)) => {
                 self.diags.push(Diag::ty(
@@ -8975,6 +9012,18 @@ impl<'a> Checker<'a> {
                         format!(
                             "@form(hashmap) cell type `{}` is a type alias; \
                              cell must be a struct so `indexed_by` can resolve",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
+                TypeKind::Scalar(_) => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(hashmap) cell type `{}` is an identity or a \
+                             range, an `Int`; cell must be a struct so `indexed_by` \
+                             can resolve (an identity is a legal key field)",
                             cell_name
                         ),
                     ));
@@ -9458,7 +9507,7 @@ impl<'a> Checker<'a> {
                         }
                         _ => false,
                     };
-                    if !widen_ok && !conforms && !want.assignable_from(&got) {
+                    if !widen_ok && !conforms && !self.flows_into(&want, &got, init) {
                         self.diags.push(Diag::ty(
                             init.span(),
                             format!(
@@ -10154,10 +10203,13 @@ impl<'a> Checker<'a> {
             // ABI name is refused elsewhere; it is judged as `c`).
             let abi = crate::capability::Abi::of(&ffi.abi).unwrap_or(crate::capability::Abi::C);
             let class = self.target_class;
-            let cell = move |ty: &Ty| crate::capability::ffi_type_refusal(class, ty, abi);
+            // GH #1076 (U2): an identity or a range crosses as its `Int`.
+            let cell = |this: &Self, ty: &Ty| {
+                crate::capability::ffi_type_refusal(class, &this.scalars.representation(ty), abi)
+            };
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = cell(&ty) {
+                if let Some(reason) = cell(self, &ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -10172,7 +10224,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = cell(&ret_ty) {
+                if let Some(reason) = cell(self, &ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -10391,7 +10443,7 @@ impl<'a> Checker<'a> {
                             .two_spellings_of_one_monomorph(
                                 &want, &got, true,
                             );
-                        if !monomorph && !want.assignable_from(&got) {
+                        if !monomorph && !self.flows_into(&want, &got, value) {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -10465,9 +10517,30 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Stmt::Assign { target, value, span, .. } => {
-                let got = self.check_expr(value);
+            Stmt::Assign { target, op, value, span, .. } => {
+                let mut got = self.check_expr(value);
                 let want = self.lvalue_ty(target);
+                // GH #1076 (U2): `x += v` is the operator over the target
+                // and the value, stored back: no arithmetic on an
+                // identity, and a range's sum is an `Int` storing it
+                // back narrows.
+                let mut stored: Option<Expr> = None;
+                if let Some(bin) = assign_binop(*op) {
+                    if self.scalars.index(&want).is_some() || self.scalars.index(&got).is_some() {
+                        let place = Expr::Ident(target.head.clone());
+                        got = self.binop_ty(bin, &want, &got, *span, (&place, value));
+                        if matches!(got, Ty::Unknown) {
+                            got = want.clone();
+                        }
+                        stored = Some(Expr::Binary {
+                            op: bin,
+                            left: Box::new(place),
+                            right: Box::new(value.clone()),
+                            span: *span,
+                        });
+                    }
+                }
+                let stored = stored.as_ref().unwrap_or(value);
                 // bounded[T; N] fields cannot be whole-assigned
                 // (even from another bounded of the same shape —
                 // no copy semantics exist; the mutation surface is
@@ -10480,7 +10553,7 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     ));
                 }
-                if !want.assignable_from(&got) {
+                if !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
@@ -10572,7 +10645,8 @@ impl<'a> Checker<'a> {
                     // Check that the returned type matches the fn's
                     // declared success return type when in a
                     // fallible body.
-                    if let Some((expected_ret, _)) = &self.fallible_ctx {
+                    if let Some((expected_ret, _)) = self.fallible_ctx.clone() {
+                        let expected_ret = &expected_ret;
                         // GH #911 B5: the return slot is the other
                         // site codegen rewrites a bare generic
                         // template name at — `fn make() -> Box<Int> {
@@ -10583,7 +10657,7 @@ impl<'a> Checker<'a> {
                                 &got,
                                 true,
                             );
-                        if !monomorph && !expected_ret.assignable_from(&got) {
+                        if !monomorph && !self.flows_into(expected_ret, &got, e) {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -10593,7 +10667,8 @@ impl<'a> Checker<'a> {
                                 ),
                             ));
                         }
-                    } else if let Some(expected_ret) = &self.return_ctx {
+                    } else if let Some(expected_ret) = self.return_ctx.clone() {
+                        let expected_ret = &expected_ret;
                         // #335: the non-fallible case, which had no
                         // check. Same Unknown-permissive rule, and the
                         // same Int -> Float widening a call site
@@ -10615,7 +10690,7 @@ impl<'a> Checker<'a> {
                             );
                         if !widening
                             && !monomorph
-                            && !expected_ret.assignable_from(&got)
+                            && !self.flows_into(expected_ret, &got, e)
                         {
                             self.diags.push(Diag::ty(
                                 e.span(),
@@ -12042,7 +12117,8 @@ impl<'a> Checker<'a> {
                         .find(|f| f.name == name)
                         .map(|f| f.ty.clone()),
                     TypeKind::Alias(t) => self.field_ty(t, name),
-                    TypeKind::Enum(_) => None,
+                    // GH #1076: an `Int` has no fields.
+                    TypeKind::Enum(_) | TypeKind::Scalar(_) => None,
                 },
                 TopSymbol::Locus(info) => {
                     if name == "children" {
@@ -12340,6 +12416,162 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1076 (U2): whether a value of `got`, the expression `value`,
+    /// flows into a place of type `want`: assignability, and the
+    /// identities' and ranges' rules (`unit_values`). An integer literal
+    /// where an identity or a range is expected is a value of it, checked
+    /// against its range here; a range widens to its parent, and an
+    /// `Int`-rooted range to `Int`, for free. A pair the scalar rules speak
+    /// about and refuse (an implicit narrowing, an identity as an `Int`, two
+    /// distinct identities) is refused here with their message, and is
+    /// `true` so the caller adds no second error; `false` is the caller's
+    /// own mismatch to report.
+    fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        if want.assignable_from(got) || self.scalars.is_empty() {
+            return want.assignable_from(got);
+        }
+        // An array literal into an array of identities or ranges: each
+        // element flows into the element type (`[1, 2]` into `[OrderId;
+        // 2]`, each literal held to the range).
+        if let (Ty::Array(we, wn), Ty::Array(ge, gn), Expr::Array(elems, _)) = (want, got, value) {
+            if wn == gn {
+                let mut all = true;
+                for e in elems {
+                    all &= self.flows_into(we, ge, e);
+                }
+                return all;
+            }
+        }
+        if let Some(v) = crate::unit_values::int_literal(value) {
+            if matches!(got, Ty::Prim(PrimType::Int)) {
+                match self.scalars.literal(want, v, value.span()) {
+                    Some(Ok(())) => return true,
+                    Some(Err(d)) => {
+                        self.diags.push(d);
+                        return true;
+                    }
+                    None => {}
+                }
+            }
+        }
+        if self.scalars.widens(got, want) {
+            // A row, so every place a value changes type is one; lowering
+            // emits nothing for it.
+            if self.specializing.is_none() {
+                let row = crate::typed_bodies::ConversionRow {
+                    span: value.span(),
+                    from: got.clone(),
+                    to: want.clone(),
+                    kind: crate::typed_bodies::ConversionKind::Widening,
+                    range: None,
+                    policy: None,
+                    target: want.display(),
+                };
+                self.typed.conversion(self.body, crate::typed_bodies::ConversionSite::value(value.span()), row);
+            }
+            return true;
+        }
+        match self.scalars.flow_refusal(want, got, value.span()) {
+            Some(d) => {
+                self.diags.push(d);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// GH #1076 (U2): a call `T(x)` naming an identity or a range, or
+    /// `Int(x)` of one: a conversion, its row recorded in the typed
+    /// bodies' `conversions` column, typed as `T` (a narrowing's `or`
+    /// reads the row). `None` for every other call, which the caller
+    /// types as before: `Int(x)` of anything but a scalar included, whose
+    /// argument is walked again there.
+    fn scalar_cast(&mut self, call: NodeId, span: Span, callee: &Ident, args: &[Expr]) -> Option<Ty> {
+        if self.scalars.is_empty()
+            || self.generic_params.contains(&callee.name)
+            || self.locals.lookup(&callee.name).is_some()
+        {
+            return None;
+        }
+        let to = if callee.name == "Int" {
+            if self.top.lookup("Int").is_some() || args.len() != 1 {
+                return None;
+            }
+            let mark = self.walk_mark();
+            let from = self.check_expr(&args[0]);
+            if self.scalars.index(&from).is_none() {
+                self.discard_since(mark);
+                return None;
+            }
+            return Some(self.check_cast(call, span, Ty::Prim(PrimType::Int), from, "Int"));
+        } else {
+            let t = Ty::Named(callee.name.clone());
+            let i = self.scalars.index(&t)?;
+            if args.len() != 1 {
+                for a in args {
+                    let _ = self.check_expr(a);
+                }
+                let name = &self.scalars.row(i).display;
+                self.diags.push(Diag::ty(
+                    span,
+                    format!("`{name}(…)` converts one value into `{name}`; it is given {}", args.len()),
+                ));
+                return Some(t);
+            }
+            t
+        };
+        let from = self.check_expr(&args[0]);
+        let target = callee.name.clone();
+        Some(self.check_cast(call, span, to, from, &target))
+    }
+
+    /// The cast `to(x)` of a value of `from`, classified by the scalar
+    /// rules: refused at `span` with their message, or recorded as a row.
+    fn check_cast(&mut self, call: NodeId, span: Span, to: Ty, from: Ty, target: &str) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
+        match self.scalars.cast(&to, &from) {
+            Err(why) => self.diags.push(Diag::ty(span, why)),
+            Ok(kind) => {
+                let kind = match kind {
+                    crate::unit_values::CastKind::Total => ConversionKind::Total,
+                    crate::unit_values::CastKind::Widening => ConversionKind::Widening,
+                    crate::unit_values::CastKind::Narrowing => ConversionKind::Narrowing,
+                };
+                let range = match kind {
+                    ConversionKind::Narrowing => self.scalars.index(&to).and_then(|i| self.scalars.range(i)),
+                    _ => None,
+                };
+                if self.specializing.is_none() {
+                    let row =
+                        ConversionRow { span, from, to: to.clone(), kind, range, policy: None, target: target.to_string() };
+                    let site = self.cast_site(call);
+                    self.typed.conversion(self.body, site, row);
+                }
+            }
+        }
+        to
+    }
+
+    /// The key of the cast at `call`: its call, or inside a default the
+    /// evaluation path being typed and its call.
+    fn cast_site(&self, call: NodeId) -> crate::typed_bodies::ConversionSite {
+        use crate::typed_bodies::ConversionSite;
+        if self.default_evaluation.is_empty() {
+            ConversionSite::Cast(call.0)
+        } else {
+            ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: call.0 }
+        }
+    }
+
+    /// The narrowing `inner` is, when it is a cast the conversions column
+    /// holds as one: its site.
+    fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
+        let Expr::Call { id, .. } = inner else { return None };
+        let site = self.cast_site(*id);
+        let row = self.typed.conversion_at(&site)?;
+        (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
+    }
+
     /// GH #1076: the not-yet boundary's error, once per place however
     /// often a declaration's walk reaches it (a generic body is walked
     /// again per specialization; an annotation's arguments by both walks).
@@ -12377,15 +12609,20 @@ impl<'a> Checker<'a> {
     /// call that leaves it (`record_omitted_defaults`): the scopes it
     /// opens, the parameter defaults its calls leave and the field
     /// defaults its own literals leave are all walked where they are
-    /// evaluated. The walk is discarded; what survives is the not-yet
-    /// boundary's errors (`discard_since`). A default no literal leaves
-    /// is never evaluated. Its quantity literals are refused at the
-    /// declaration too, which they are in any scope.
-    fn type_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
+    /// evaluated. The walk is discarded but for two things: the not-yet
+    /// boundary's errors (`discard_since`), and the conversion rows of
+    /// its casts, which lowering reads where it evaluates the default and
+    /// which are kept in the constructing declaration's body, one per
+    /// cast per evaluation (the path of evaluations ending at `literal`:
+    /// `default_evaluation`), since the cast's name means what that
+    /// scope says. A default no literal leaves is never
+    /// evaluated. Its quantity literals are refused at the declaration
+    /// too, which they are in any scope.
+    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
-        // Only the boundary's errors survive, and without a unit type
-        // the boundary refuses nothing here a declaration did not.
-        if self.unit_types.is_empty() {
+        // Without a scalar type of any kind the boundary refuses nothing
+        // here a declaration did not, and no cast has a row to keep.
+        if self.unit_types.is_empty() && self.scalars.is_empty() {
             return;
         }
         let omitted: Vec<&'a Expr> = fields
@@ -12400,22 +12637,42 @@ impl<'a> Checker<'a> {
         // The rows this walk would record (a default's calls typed in the
         // caller's body) are not the caller's: the outermost walk puts
         // the record back as it found it, with the scope stack's closed
-        // names and the closure walk's expression types.
+        // names and the closure walk's expression types, and then keeps
+        // the walk's conversions, which are.
         let saved = self.struct_defaults_typing.is_empty().then(|| {
             (self.typed.clone(), self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len))
         });
         let mark = self.walk_mark();
         let generics = self.generic_params.len();
         self.generic_params.extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        // The literal leaves these fields: one step of the path, pushed
+        // for their walk as lowering pushes it for their lowering
+        // (`populate_user_type_fields`).
+        self.default_evaluation.push(literal.0);
         for default in omitted {
             self.struct_defaults_typing.push(default);
             let _ = self.check_expr(default);
             self.struct_defaults_typing.pop();
         }
+        self.default_evaluation.pop();
         self.generic_params.truncate(generics);
         self.discard_since(mark);
         if let Some((typed, closed, seen)) = saved {
+            // The conversions the walk recorded that the record did not
+            // hold yet (an evaluation walked again keeps its first row):
+            // lowering reads them where it evaluates the default, so they
+            // are the constructing declaration's.
+            let converted: Vec<_> = self
+                .typed
+                .conversion_sites
+                .keys()
+                .filter(|site| !typed.conversion_sites.contains_key(site))
+                .filter_map(|site| Some((site.clone(), self.typed.conversion_at(site)?.clone())))
+                .collect();
             *self.typed = typed;
+            for (site, row) in converted {
+                self.typed.conversion(self.body, site, row);
+            }
             self.locals.closed = closed;
             if let (Some(seen), Some(at)) = (&mut self.expr_types, seen) {
                 seen.truncate(at);
@@ -12999,7 +13256,9 @@ impl<'a> Checker<'a> {
 
     /// Defaults are expressions at the invocation, with the caller's
     /// locals and self. Record their generic calls under the invocation
-    /// path and caller monomorph, retaining each default's source site.
+    /// path and caller monomorph, retaining each default's source site,
+    /// and their casts' conversions under the evaluation path that ends
+    /// at the invocation (`default_evaluation`).
     fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
         if self.default_invocations.contains(&invocation.0) {
             return;
@@ -13047,9 +13306,14 @@ impl<'a> Checker<'a> {
         }
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
+        // The call leaves these parameters: one step of the path, pushed
+        // for their walk as lowering pushes it for their lowering
+        // (`lower_default_in_caller`).
+        self.default_evaluation.push(invocation.0);
         for default in defaults {
             let _ = self.check_expr(default);
         }
+        self.default_evaluation.pop();
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer.
@@ -13175,21 +13439,36 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, left, right, span } => {
                 let lt = self.check_expr(left);
                 let rt = self.check_expr(right);
-                self.binop_ty(*op, &lt, &rt, *span)
+                self.binop_ty(*op, &lt, &rt, *span, (left.as_ref(), right.as_ref()))
             }
-            Expr::Unary { op, operand, .. } => {
+            Expr::Unary { op, operand, span } => {
                 let t = self.check_expr(operand);
+                // GH #1076 (U2): no arithmetic on an identity; a range's
+                // is its `Int`'s.
+                match self.scalars.unary(*op, &t) {
+                    Some(Ok(t)) => return t,
+                    Some(Err(why)) => {
+                        self.diags.push(Diag::ty(*span, why));
+                        return Ty::Unknown;
+                    }
+                    None => {}
+                }
                 match op {
                     UnaryOp::Neg | UnaryOp::BitNot => t,
                     UnaryOp::Not => Ty::Prim(PrimType::Bool),
                 }
             }
-            Expr::Call { callee, args, id: call_id, .. } => {
+            Expr::Call { callee, args, id: call_id, span: call_span } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
-                // GH #1076: `Money(5)` makes a value of a unit-dialect
-                // type, which is not typed yet.
+                // GH #1076: `Money(5)` makes a value of a quantity or a
+                // point, which is not typed yet.
                 if let Expr::Ident(id) = callee.as_ref() {
                     self.refuse_unit_cast(id);
+                    // GH #1076 (U2): `Session(n)`, `OrderId(n)`, `Int(id)`:
+                    // a conversion, classified and recorded.
+                    if let Some(t) = self.scalar_cast(*call_id, *call_span, id, args) {
+                        return t;
+                    }
                 }
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
@@ -13257,7 +13536,7 @@ impl<'a> Checker<'a> {
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
-                                        if !want.assignable_from(&got) {
+                                        if !self.flows_into(want, &got, a) {
                                             self.diags.push(Diag::ty(
                                                 a.span(),
                                                 format!(
@@ -13348,7 +13627,9 @@ impl<'a> Checker<'a> {
                             for (i, a) in args.iter().enumerate() {
                                 let got = self.check_expr(a);
                                 if let Some(want) = sig.params.get(i) {
-                                    if !want.accepts(&got) {
+                                    // GH #1076 (U2): and a range widens to
+                                    // an `Int` parameter.
+                                    if !want.accepts(&got) && !self.flows_into(&want.to_ty(), &got, a) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
@@ -14178,7 +14459,10 @@ impl<'a> Checker<'a> {
                         if !widening
                             && !view_coerces
                             && !param_is_iface
-                            && !param_ty.assignable_from(arg_ty)
+                            && !match args.get(i) {
+                                Some(a) => self.flows_into(param_ty, arg_ty, a),
+                                None => param_ty.assignable_from(arg_ty),
+                            }
                         {
                             self.diags.push(Diag::ty(
                                 callee.span(),
@@ -14492,7 +14776,7 @@ impl<'a> Checker<'a> {
                 let elem = self.check_expr_local(val);
                 Ty::Array(Box::new(elem), Some(*count))
             }
-            Expr::Struct { path, inits, span, .. } => self.check_struct_literal(path, inits, *span),
+            Expr::Struct { path, inits, span, id } => self.check_struct_literal(*id, path, inits, *span),
             Expr::Block(b) => self.check_block_as_expr(b),
             Expr::If(s) => self.check_if_as_expr(s),
             // Gap C (2026-07-17): match in expression position types
@@ -14581,8 +14865,38 @@ impl<'a> Checker<'a> {
                 // types. If the inner isn't actually fallible,
                 // the `or` clause is a no-op at best and likely
                 // a user mistake.
+                // GH #1076 (U2): a narrowing `T(x)` is fallible here: its
+                // success is `T`, its failure a `RangeError`, and what
+                // discharges it is its row's policy.
+                let narrowing = self.narrowing_at(inner);
+                if let Some(site) = &narrowing {
+                    use crate::typed_bodies::Discharge;
+                    let policy = match disposition {
+                        OrDisposition::Raise(_) => Some(Discharge::Raise),
+                        OrDisposition::Fail(..) => Some(Discharge::Fail),
+                        OrDisposition::Discard(_) => Some(Discharge::Discard),
+                        OrDisposition::Wait(_) => None,
+                        OrDisposition::Substitute(rhs) => Some(match rhs.as_ref() {
+                            // A bare policy word ends the `or`; a value of
+                            // that name is written in parentheses.
+                            Expr::Ident(w) if w.span.end == span.end && w.name == "clamp" => Discharge::Clamp,
+                            Expr::Ident(w) if w.span.end == span.end && w.name == "wrap" => Discharge::Wrap,
+                            Expr::Call { .. } => Discharge::Handler,
+                            _ => Discharge::Substitute,
+                        }),
+                    };
+                    if let Some(p) = policy {
+                        if self.specializing.is_none() {
+                            self.typed.discharge(site, p);
+                        }
+                        if matches!(p, Discharge::Clamp | Discharge::Wrap) {
+                            return inner_ty;
+                        }
+                    }
+                }
                 let (success, payload) = match (stdlib_or, inner_ty) {
                     (Some((s, p)), _) => (s, p),
+                    (None, success) if narrowing.is_some() => (success, Ty::Named("RangeError".to_string())),
                     (None, Ty::Fallible { success, payload }) => {
                         (*success, *payload)
                     }
@@ -14863,7 +15177,7 @@ impl<'a> Checker<'a> {
                         if !interface_satisfied
                             && !value_discarded
                             && !rhs_diverges
-                            && !success.assignable_from(&rhs_ty)
+                            && !self.flows_into(&success, &rhs_ty, rhs)
                         {
                             self.diags.push(Diag::ty(
                                 *span,
@@ -15196,6 +15510,9 @@ impl<'a> Checker<'a> {
                         PrintShape::Record(fs.iter().map(|f| f.ty.clone()).collect())
                     }
                     TypeKind::Alias(inner) => PrintShape::Alias(inner.clone()),
+                    // GH #1076: an identity or a range prints as its
+                    // representation, `Int`.
+                    TypeKind::Scalar(repr) => PrintShape::Alias(repr.clone()),
                 },
                 Some(
                     TopSymbol::Locus(_)
@@ -15279,7 +15596,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span) -> Ty {
+    fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Ty {
         use BinOp::*;
         // Ergonomics arc: `String + <printable>` and the symmetric
         // form auto-coerce in codegen via value_to_string. The
@@ -15293,6 +15610,20 @@ impl<'a> Checker<'a> {
             {
                 return Ty::Prim(PrimType::String);
             }
+        }
+        // GH #1076 (U2): an identity or a range on either side. A range's
+        // arithmetic is its `Int`'s; an identity has none; a comparison
+        // holds within one type and along a widening.
+        match self.scalars.binop(op, lt, rt, operands.0, operands.1) {
+            Some(crate::unit_values::BinopRule::AsInt(l, r)) => {
+                return self.binop_ty(op, &l, &r, span, operands);
+            }
+            Some(crate::unit_values::BinopRule::Compared) => return Ty::Prim(PrimType::Bool),
+            Some(crate::unit_values::BinopRule::Refused(why)) => {
+                self.diags.push(Diag::ty(span, why));
+                return if matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq) { Ty::Prim(PrimType::Bool) } else { Ty::Unknown };
+            }
+            None => {}
         }
         // B13 / G30: F.23 Int → Float widening in binary-op
         // position. If exactly one side is Int and the other is
@@ -15589,6 +15920,7 @@ impl<'a> Checker<'a> {
 
     fn check_struct_literal(
         &mut self,
+        literal: NodeId,
         path: &QualifiedName,
         inits: &[StructInit],
         span: Span,
@@ -15738,7 +16070,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
-                            self.type_omitted_defaults(td, inits);
+                            self.type_omitted_defaults(literal, td, inits);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -15851,7 +16183,7 @@ impl<'a> Checker<'a> {
         };
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
-                self.type_omitted_defaults(decl, inits);
+                self.type_omitted_defaults(literal, decl, inits);
             }
         }
 
@@ -15994,7 +16326,7 @@ impl<'a> Checker<'a> {
                     if !interface_satisfied
                         && !perspective_designated
                         && !monomorph_field
-                        && !want.assignable_from(&got)
+                        && !self.flows_into(want, &got, &init.value)
                     {
                         self.diags.push(Diag::ty(
                             init.value.span(),
@@ -16434,6 +16766,22 @@ pub const BARE_BUILTIN_CALLEES: &[&str] = &[
 /// prefix would resolve it.
 pub const UNPREFIXED_STDLIB_PATHS: &[(&str, &str)] =
     &[("time", "sleep"), ("time", "monotonic")];
+
+/// The operator a compound assignment applies (`+=` is `+`); `None` for
+/// a plain `=`.
+fn assign_binop(op: AssignOp) -> Option<BinOp> {
+    Some(match op {
+        AssignOp::Eq => return None,
+        AssignOp::PlusEq => BinOp::Add,
+        AssignOp::MinusEq => BinOp::Sub,
+        AssignOp::StarEq => BinOp::Mul,
+        AssignOp::SlashEq => BinOp::Div,
+        AssignOp::PercentEq => BinOp::Mod,
+        AssignOp::AmpEq => BinOp::BitAnd,
+        AssignOp::PipeEq => BinOp::BitOr,
+        AssignOp::CaretEq => BinOp::BitXor,
+    })
+}
 
 /// Nearest name by edit distance, for the "did you mean" hint; `None`
 /// when nothing is within a short distance.
