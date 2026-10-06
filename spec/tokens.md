@@ -289,7 +289,9 @@ namespace names that would otherwise occur.
 
 Shadowing a predefined type name with a user-defined type
 (`type Int = ...`) is permitted by the grammar but produces a
-compiler warning.
+compiler warning. A scalar declaration (a quantity, a point, an
+identity, a range) or a `unit` of such a name is an error
+(spec/units.md § The laws, law 12).
 
 ### Reserved for future use (not yet legal)
 

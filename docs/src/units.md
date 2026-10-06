@@ -48,6 +48,9 @@ type Tick      = quantity Int in tick;
 type TempDelta = quantity Int in mK;
 ```
 
+No quantity, and no unit, takes a builtin type's name: `Bytes` is the
+buffer type, so the byte count is `ByteCount`.
+
 A literal names its unit with no space, and counts in its quantity's
 denomination: `1_250_000USD` is 125,000,000 cents, `4KiB` is 4096 `B`,
 `500ms` is 500,000,000 nanoseconds.

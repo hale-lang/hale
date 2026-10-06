@@ -50,6 +50,8 @@ const BASES: RuleId = RuleId::registered("verification/structural", "identity-an
 const REFINEMENT: RuleId = RuleId::registered("verification/structural", "refinement-of-a-scalar");
 /// Law 11: a unit named like a suffix the lexer reads before a unit.
 const LITERAL_SUFFIX: RuleId = RuleId::registered("verification/structural", "unit-named-like-a-literal-suffix");
+/// Law 12: a scalar or a unit named like a builtin type.
+const BUILTIN_NAME: RuleId = RuleId::registered("verification/structural", "named-like-a-builtin-type");
 
 /// The unit names the time catalogue once had and has no more (U4),
 /// each with the name it is now and what it counts: `5m` was five
@@ -851,7 +853,7 @@ fn close(rows: &mut UnitRows, by_name: &BTreeMap<&str, usize>) {
 
 /// Every unit-dialect law over `rows`, as diagnostics, law by law.
 pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
-    let laws: [Law<UnitRows>; 10] = [
+    let laws: [Law<UnitRows>; 11] = [
         Law { rule: DECLARED_ONCE, eval: declared_twice },
         Law { rule: DECLARED_UNIT, eval: undeclared_units },
         Law { rule: CYCLES, eval: inconsistent_cycles },
@@ -862,6 +864,7 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
         Law { rule: BASES, eval: identity_and_range_bases },
         Law { rule: REFINEMENT, eval: refinement_bases },
         Law { rule: LITERAL_SUFFIX, eval: literal_suffix_names },
+        Law { rule: BUILTIN_NAME, eval: builtin_type_names },
     ];
     laws.iter().flat_map(|law| law.diags(rows)).collect()
 }
@@ -1543,4 +1546,54 @@ fn literal_suffix_names(rows: &UnitRows, out: &mut Vec<Violation>) {
         };
         out.push(Violation::error(LITERAL_SUFFIX, u.name_span, format!("unit `{n}`: {why}; give it another name")));
     }
+}
+
+/// Law 12: no scalar declaration and no unit takes a builtin type's name:
+/// a primitive's, as the parser reads a type position
+/// ([`hale_syntax::parser::primitive_from_name`], before any declaration
+/// is consulted), or a builtin error type's
+/// ([`crate::builtin_types::BUILTIN_TYPES`]). A type position would never
+/// reach the declaration (`let n: Bytes = 4B;` is the buffer type). At
+/// the name; the stdlib's `Duration` and `Time` are those primitives.
+fn builtin_type_names(rows: &UnitRows, out: &mut Vec<Violation>) {
+    let user = |site: &SiteRef| site.universe != SiteUniverse::StdlibAnalysis;
+    let scalars = rows.scalars.iter().filter(|s| user(&s.site)).map(|s| {
+        // An imported declaration's name is mangled; its author wrote the
+        // last segment of its display.
+        let written = s.display.rsplit("::").next().unwrap_or(&s.display);
+        (format!("type `{}`", s.display), written, s.kind.article(), s.name_span)
+    });
+    let units = rows.units.iter().filter(|u| user(&u.site)).map(|u| {
+        (format!("unit `{}`", u.name), u.name.as_str(), "a unit", u.name_span)
+    });
+    for (who, name, what, span) in scalars.chain(units) {
+        let Some(builtin) = builtin_type(name) else { continue };
+        out.push(Violation::error(
+            BUILTIN_NAME,
+            span,
+            format!("{who}: `{name}` is {builtin}; {what} cannot take a builtin type's name"),
+        ));
+    }
+}
+
+/// The builtin type `name` names, as a message describes it: a primitive,
+/// or a builtin error type.
+fn builtin_type(name: &str) -> Option<&'static str> {
+    if let Some(p) = hale_syntax::parser::primitive_from_name(name) {
+        return Some(match p {
+            PrimType::Int => "the builtin integer type",
+            PrimType::Uint => "the builtin unsigned integer type",
+            PrimType::Float => "the builtin floating-point type",
+            PrimType::Decimal => "the builtin decimal type",
+            PrimType::String => "the builtin string type",
+            PrimType::StringView => "the builtin string view type",
+            PrimType::Bool => "the builtin boolean type",
+            PrimType::Duration => "the builtin duration type",
+            PrimType::Time => "the builtin time type",
+            PrimType::Bytes => "the builtin buffer type",
+            PrimType::BytesView => "the builtin buffer view type",
+            PrimType::BytesMut => "the builtin mutable buffer type",
+        });
+    }
+    crate::builtin_types::builtin_type(name).map(|_| "a builtin error type")
 }

@@ -517,6 +517,31 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
     }
 }
 
+/// GH #1076 (U5): a quantity named `Bytes` checked clean and was refused
+/// by the build. A type position reads `Bytes` as the buffer type before
+/// any declaration, so `let n: Bytes = 4B;` checked against the buffer
+/// while lowering found no row for `4B` ("quantity literal `4B` has no
+/// required `expression_typing` row"). Law 12 refuses the declaration at
+/// its name, so the build is never reached.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_quantity_named_like_a_builtin_type_is_refused_by_the_check_not_the_build() {
+    let src = "unit B;\n\
+               type Bytes = quantity Int in B;\n\
+               fn main() { let n: Bytes = 4B; println(f\"{len(n)}\"); }\n";
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let errors: Vec<hale_syntax::Diag> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
+    assert_eq!(errors[0].span.slice(src), "Bytes", "located at the name");
+    assert_eq!(
+        sweep_verdict(src, "hale_cb_unit_builtin_name"),
+        Verdict::Skipped("the checker rejects it"),
+        "the check refuses it, so the build is never reached"
+    );
+}
+
 /// GH #1076 (U1, review): the not-yet boundary refused `Money(1)` as a
 /// cast to the scalar type `Money` before the callee was resolved, so a
 /// local of that name holding a fn was refused too. The local is the

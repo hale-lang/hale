@@ -131,7 +131,7 @@ fn a_literal_with_a_space_before_its_unit_is_two_tokens() {
 fn the_time_catalogue_and_its_two_types_are_the_stdlibs() {
     // U4: `ns` … `day`, `Duration` and `Time` are declared by std::time.
     // The committed form's lines declaring them, in a program, declare
-    // them a second time.
+    // them a second time, and take the primitives' names (law 12).
     let src = "\
 unit us = 1_000 ns;
 unit ms = 1_000 us;
@@ -159,6 +159,15 @@ fn main() {
                 "Duration".to_string(),
                 "type `Duration`: the units of `ns` already have their quantity, `Duration` (the stdlib's, `std::time`): a component of the catalogue has one quantity, and every other type over it is a denomination of that one; write `type Duration = Duration in ns;`, or give it a `round:` policy".to_string()
             ),
+            (
+                "Duration".to_string(),
+                "type `Duration`: `Duration` is the builtin duration type; a quantity cannot take a builtin type's name"
+                    .to_string()
+            ),
+            (
+                "Time".to_string(),
+                "type `Time`: `Time` is the builtin time type; a point cannot take a builtin type's name".to_string()
+            ),
         ]
     );
 }
@@ -182,14 +191,13 @@ fn main() {
 }
 
 #[test]
-fn a_quantity_named_bytes_is_accepted_and_shadowed_by_the_buffer_type() {
+fn a_quantity_named_bytes_is_refused_at_its_name() {
     // Decision 10 renamed the committed form's `Bytes` to `ByteCount`: the
-    // buffer type is `Bytes`. FINDING (U5, about U1/U3): the committed line
-    // `type Bytes = quantity Int in B;` is accepted, and a type position
-    // still reads `Bytes` as the buffer, so a quantity literal annotated
-    // `Bytes` checks clean here, and `hale build` refuses it as a literal
-    // with no row (codegen: "quantity literal `4B` has no required
-    // `expression_typing` row"). Pinned as the check says it today.
+    // buffer type is `Bytes`. A type position reads `Bytes` as the buffer
+    // before any declaration, so the committed line `type Bytes = quantity
+    // Int in B;` declares a quantity no annotation could name (U5 found it
+    // accepted, `let n: Bytes = 4B;` checking clean and `hale build`
+    // refusing it). Decided: law 12 refuses the declaration at its name.
     let src = "\
 unit B;
 type Bytes = quantity Int in B;
@@ -198,7 +206,13 @@ fn main() {
     println(f\"{len(n)}\");
 }
 ";
-    assert_eq!(errors_of(src), Vec::<(String, String)>::new());
+    assert_eq!(
+        errors_of(src),
+        [(
+            "Bytes".to_string(),
+            "type `Bytes`: `Bytes` is the builtin buffer type; a quantity cannot take a builtin type's name".to_string()
+        )]
+    );
 }
 
 #[test]

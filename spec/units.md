@@ -212,7 +212,7 @@ wordings are the compiler's.
    \`type Weight = Mass in kg;\`, or give it a \`round:\` policy". The
    stdlib's `Duration` is the time component's quantity, so `type
    Duration = quantity Int in ns;` in a program is this error, naming
-   the stdlib's.
+   the stdlib's (and law 12's: `Duration` is a primitive's name).
 
    ```hale,fragment
    type Mass = quantity Int in g;
@@ -302,11 +302,28 @@ wordings are the compiler's.
     unit e5;   // error: … collides with a Float literal's exponent …
     ```
 
+12. **No declaration takes a builtin type's name.** A type position
+    reads a primitive's name (`hale_syntax::parser::primitive_from_name`:
+    `Int`, `Uint`, `Float`, `Decimal`, `String`, `StringView`, `Bool`,
+    `Duration`, `Time`, `Bytes`, `BytesView`, `BytesMut`) before any
+    declaration, so a quantity, a point, an identity or a range of that
+    name could never be named, and neither may a `unit` or a scalar take
+    a builtin error type's name (`BUILTIN_TYPES`: `IoError`,
+    `RangeError`, …). At the name: "type \`Bytes\`: \`Bytes\` is the
+    builtin buffer type; a quantity cannot take a builtin type's name";
+    "unit \`String\`: \`String\` is the builtin string type; a unit cannot
+    take a builtin type's name". The stdlib's own `Duration` and `Time`
+    are those primitives (§ The stdlib's time catalogue); hence
+    `ByteCount` above (decision 10).
+
+    ```hale,fragment
+    type Bytes = quantity Int in B;   // error: `Bytes` is the builtin buffer type …
+    type Int = distinct Int;          // error: `Int` is the builtin integer type …
+    unit String;                      // error: `String` is the builtin string type …
+    ```
+
 A declaration the laws refuse has no values: its name resolves to
-nothing, so a use of it is no second error. A scalar declaration named
-like a primitive is not refused by a law, but a type position reads the
-primitive, so its name is unusable: `Bytes` is the buffer type (hence
-`ByteCount` above, decision 10).
+nothing, so a use of it is no second error.
 
 ## The algebra
 
