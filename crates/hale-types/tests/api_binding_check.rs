@@ -438,6 +438,37 @@ fn helper() { }");
 }
 
 #[test]
+fn a_gate_on_a_perspective_fn_is_refused() {
+    // spec/types.md § "Roles and `@gated`": a gate goes on exactly three
+    // sites, and a perspective's fn is none of them. Refused at the role,
+    // which is checked all the same.
+    let src = gated_program("role support;", "", "", "", "perspective Router {
+    @gated(role: nope)
+    fn route(code: Int) -> Int;
+}");
+    let diags = check_files(&[("main.hl", &src)]);
+    let at = src.find("nope)").unwrap();
+    let gate = diags.iter().find(|d| d.message.contains("on the perspective fn")).unwrap_or_else(|| panic!("{:?}", diags));
+    assert_eq!(
+        gate.message,
+        "`@gated(role: nope)` on the perspective fn `Router.route`: a perspective's fns are not gated \
+         — a gate goes on a subscribed handler, an `expose` member or a `publish` — it is checked at \
+         the api binding, and a perspective's fn is never reached from there"
+    );
+    assert_eq!((gate.span.start.0 as usize, gate.span.end.0 as usize), (at, at + "nope".len()));
+    let undeclared = diags.iter().find(|d| d.message.contains("names role `nope`")).unwrap_or_else(|| panic!("{:?}", diags));
+    assert!(undeclared.message.starts_with("`@gated` on `Router.route` names role `nope`"), "{}", undeclared.message);
+    // Declared, it is refused all the same, and only once.
+    let declared = src.replace("@gated(role: nope)", "@gated(role: support)");
+    let msgs = role_msgs(&declared);
+    assert_eq!(msgs.iter().filter(|m| m.contains("on the perspective fn `Router.route`")).count(), 1, "{:?}", msgs);
+    assert!(!msgs.iter().any(|m| m.contains("nothing declares")), "{:?}", msgs);
+    // Ungated, the perspective is clean.
+    let msgs = role_msgs(&src.replace("@gated(role: nope)\n    ", ""));
+    assert!(msgs.is_empty(), "{:?}", msgs);
+}
+
+#[test]
 fn one_handler_on_two_topics_is_two_sites() {
     // Review F5: the coherence rule is per topic, so a handler that
     // subscribes two topics cannot hide a disagreement on the second.

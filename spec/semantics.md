@@ -1070,7 +1070,15 @@ literal's lowering.
 ## `@sealed` and a revealed secret
 
 A `@sealed` locus confines its `params`: only its own methods read them
-(`spec/verification.md` § "Secrets", GH #436). `std::secret::Credential`
+(`spec/verification.md` § "Secrets", GH #436). A parameter's default
+reads them as the caller that leaves it does, since that is where it is
+evaluated: a default that reaches a sealed field is refused unless every
+call that leaves it is inside the sealed locus. A value of a sealed
+generic locus's specialization (`Box<Int>`) is that locus: its `params`
+are confined the same. A generic body reads a field of a parameter type
+as each specialization binds it: `self.inner.key` with `inner: T` is
+refused when a specialization binds `T` to a sealed locus.
+`std::secret::Credential`
 is sealed, and its `reveal()` / `reveal_text()` are the one named way
 its material leaves as a `Bytes` or `String` — a raw token or password
 has to leave as text to be put on a wire at all. The checker holds every
@@ -4281,12 +4289,16 @@ Two warnings say when a clause cannot take effect:
   the program's own seed names that no recovery applies to its locus:
   no parent's `on_failure` for the locus's type performs it, and no
   recovery statement outside a handler performs it on a child of that
-  type. The witness lists each handler and statement that names the
-  locus, with the events it applies. A library checked alone has no
-  parents, so it is not judged; nor is an imported locus, nor an event
-  some recovery applies to a child the check cannot name (a generic
-  supervisor's type parameter, a receiver that is not a declared
-  param) (*Unreached recovery event*).
+  type. A statement's child is the type the checker gives its
+  receiver, whatever the receiver is (a param, a local, a field of
+  another value, a call's result); in a generic body, the type each
+  specialization gives it. The witness lists each handler and
+  statement that names the locus, with the events it applies. A
+  library checked alone has no parents, so it is not judged; nor is an
+  imported locus, nor an event some recovery applies to a child the
+  check cannot name (a generic supervisor's handler's type parameter,
+  a receiver of a type parameter in a generic body no specialization
+  binds) (*Unreached recovery event*).
 - `persists_through(...)` on a closure whose assertion accumulates
   nothing keeps nothing (*Persistence with no accumulator*).
 

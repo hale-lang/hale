@@ -515,20 +515,34 @@ main locus App {
 fn main() { App { }; }
 ";
 
-// F.40 phase 4, W3: the recovery statements outside every handler are a
-// column of the rows, with their operation and the child their receiver
-// names; a handler's statements stay its row's ops.
+// The recovery statements outside every handler are the typed bodies'
+// `recoveries` column (F.40 phase 4's leftovers; W3 read them from the
+// syntax), each with its operation and the locus the checker typed its
+// receiver as; a handler's statements stay its row's ops.
 
-/// Each recovery row: its parent, op, bound, child and statement text.
-fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<ChildRef>, String)> {
+/// Each recovery row of the checked program: its parent, op, bound, the
+/// locus its receiver names and the statement's text.
+fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<String>, String)> {
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_syntax::ast::{flat_decls, TopDecl};
     let program = hale_syntax::parse_source(src).expect("parses");
-    let routing = handler_rows(&[&program], &[], &Default::default());
-    routing
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else { panic!("snapshot") };
+    let checked = s.demand_check().unwrap_or_else(|_| panic!("checked"));
+    let errors: Vec<&String> = checked.diags.iter().filter(|x| x.is_error()).map(|x| &x.message).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let table = s.demand_typed_bodies().unwrap_or_else(|_| panic!("the table"));
+    let p = s.program().unwrap();
+    let name_of = |r: &hale_types::typed_bodies::LocusRef| {
+        flat_decls(&p.items).find_map(|d| match d {
+            TopDecl::Locus(l) if l.id.0 == r.decl.0 => Some(l.name.name.clone()),
+            _ => None,
+        })
+    };
+    table
         .recoveries()
-        .iter()
-        .map(|r| {
+        .map(|(_, r)| {
             let text = src[r.statement.start.0 as usize..r.statement.end.0 as usize].to_string();
-            (r.parent.clone(), r.op, r.bounded, r.child.clone(), text)
+            (r.parent_name.clone(), r.op, r.bounded, r.child.as_ref().and_then(name_of), text)
         })
         .collect()
 }
@@ -537,40 +551,43 @@ fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<ChildR
 fn a_recovery_statement_outside_a_handler_is_a_row_with_its_child() {
     assert_eq!(
         recoveries(SUPERVISED),
-        [(
-            Some("App".to_string()),
-            RecoveryOp::Restart,
-            true,
-            Some(ChildRef::Locus("Worker".to_string())),
-            "restart(self.w) for 4;".to_string()
-        )],
+        [(Some("App".to_string()), RecoveryOp::Restart, true, Some("Worker".to_string()), "restart(self.w) for 4;".to_string())],
         "the handlers' statements are their rows' ops, not this column's"
     );
 }
 
 #[test]
-fn a_receiver_is_named_by_its_declared_type_or_not_at_all() {
+fn a_receiver_is_named_by_the_type_the_checker_gives_it() {
+    // A param, an alias, a local, a field of another locus's value and a
+    // call's result: the checker types each, so each names its child.
     let src = "
 locus Worker { params { n: Int = 0; } closure boom { captures: n; epoch inline; } fn go() { violate boom; } }
 type Hand = Worker;
+locus Keeper { params { w: Worker = Worker { }; } }
 main locus App {
-    params { w: Worker = Worker { }; h: Hand = Worker { }; }
+    params { w: Worker = Worker { }; h: Hand = Worker { }; k: Keeper = Keeper { }; }
     fn by_param(c: Worker) { quarantine(c); }
     fn by_alias() { restart_in_place(self.h); }
     fn by_local() { let x = self.w; restart(x); }
+    fn by_field() { restart(self.k.w); }
+    fn by_call() { quarantine(make()); }
 }
+fn make() -> Worker { return Worker { }; }
 fn by_free_param(c: Worker) { restart(c); }
 fn main() { App { }; }
 ";
-    let worker = Some(ChildRef::Locus("Worker".to_string()));
-    let rows: Vec<(Option<String>, RecoveryOp, Option<ChildRef>)> =
+    let worker = Some("Worker".to_string());
+    let app = Some("App".to_string());
+    let rows: Vec<(Option<String>, RecoveryOp, Option<String>)> =
         recoveries(src).into_iter().map(|(p, op, _, child, _)| (p, op, child)).collect();
     assert_eq!(
         rows,
         [
-            (Some("App".to_string()), RecoveryOp::Quarantine, worker.clone()),
-            (Some("App".to_string()), RecoveryOp::RestartInPlace, worker.clone()),
-            (Some("App".to_string()), RecoveryOp::Restart, None),
+            (app.clone(), RecoveryOp::Quarantine, worker.clone()),
+            (app.clone(), RecoveryOp::RestartInPlace, worker.clone()),
+            (app.clone(), RecoveryOp::Restart, worker.clone()),
+            (app.clone(), RecoveryOp::Restart, worker.clone()),
+            (app, RecoveryOp::Quarantine, worker.clone()),
             (None, RecoveryOp::Restart, worker),
         ]
     );
@@ -672,11 +689,10 @@ fn the_views_rows_answer_as_the_merged_programs_did() {
     assert_eq!(universe(&lowered), Some(SiteUniverse::StdlibAnalysis));
     assert_eq!(universe(&lowered), universe(s.demand_handlers().expect("the snapshot's rows")));
     assert_eq!(universe(&merged), Some(SiteUniverse::User));
-    // The recovery statements outside the handlers are carried as the
-    // snapshot's (the stdlib writes none): the method's one statement.
-    let snapshot_rows = s.demand_handlers().expect("the snapshot's rows");
-    assert_eq!(lowered.recoveries(), snapshot_rows.recoveries());
-    assert_eq!(lowered.recoveries().len(), 1);
+    // The recovery statements outside the handlers are no column of these
+    // rows: the typed bodies hold them, the method's one statement.
+    let typed = s.demand_typed_bodies().unwrap_or_else(|_| panic!("the typed bodies"));
+    assert_eq!(typed.recoveries().count(), 1);
 
     // A specialization: the template's rows under lowering's substitution.
     let sup = *loci.iter().find(|l| l.name.name == "Sup").expect("the generic supervisor");

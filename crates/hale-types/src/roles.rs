@@ -35,6 +35,8 @@ const DECLARED: RuleId = RuleId::registered("verification/structural", "role-dec
 const ACYCLIC: RuleId = RuleId::registered("verification/structural", "role-includes-acyclic");
 /// No gate on a free fn.
 const FREE_FN: RuleId = RuleId::registered("verification/structural", "gate-on-a-free-fn");
+/// No gate on a perspective's fn.
+const PERSPECTIVE_FN: RuleId = RuleId::registered("verification/structural", "gate-on-a-perspective-fn");
 /// A gated locus fn is a subscribed handler.
 const PLAIN_METHOD: RuleId = RuleId::registered("verification/structural", "gate-on-a-plain-method");
 /// A gated handler's topic is not bound to a transport.
@@ -370,11 +372,12 @@ pub fn role_rows(bundle: &Bundle<'_>, entry: &EntryRow) -> RoleRows {
 /// a generated `__Api` locus or an imported one is not judged: the
 /// binding does not reach it as the entrypoint's.
 ///
-/// The ten rules are the ten functions below, one message each, each a
-/// registered rule whose finding is a [`Violation`] (F.40 phase 4, W5);
-/// this walks the rows in the order the diagnostics are reported: the
-/// vocabulary, the free fns, each locus declaration's gates, the topics'
-/// agreement, then the role source. One walk judges the ten, so the
+/// The eleven rules are the eleven functions below, one message each,
+/// each a registered rule whose finding is a [`Violation`] (F.40 phase
+/// 4, W5); this walks the rows in the order the diagnostics are
+/// reported: the vocabulary, the free fns, the perspectives' fns, each
+/// locus declaration's gates, the topics' agreement, then the role
+/// source. One walk judges the eleven, so the
 /// findings keep the order the walk reaches them in.
 pub fn role_laws(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: &BindingRows) -> Vec<Diag> {
     let mut found = Vec::new();
@@ -413,6 +416,14 @@ fn role_walk(rows: &RoleRows, bus: &BusGraph, topics: &TopicRows, bindings: &Bin
         found.push(gate_on_a_free_fn(g));
         if !declared(&g.role.name) {
             found.push(undeclared(&g.role, &format!("`@gated` on `{}`", g.member)));
+        }
+    }
+    // So is a gate on a perspective's fn: a signature the loci that
+    // serve the perspective answer, which the binding never reaches.
+    for g in rows.gates.iter().filter(|g| g.kind == GateKind::PerspectiveMethod) {
+        found.push(gate_on_a_perspective_fn(g));
+        if !declared(&g.role.name) {
+            found.push(undeclared(&g.role, &format!("`@gated` on `{}.{}`", g.decl, g.member)));
         }
     }
 
@@ -608,6 +619,21 @@ fn gate_on_a_free_fn(g: &GateRow) -> Violation {
              handler, an `expose` member or a `publish` — it is checked at the api \
              binding, and a free fn is never reached from there",
             g.role.name, g.member
+        ),
+    )
+}
+
+/// Rule: no gate on a perspective's fn.
+fn gate_on_a_perspective_fn(g: &GateRow) -> Violation {
+    Violation::error(
+        PERSPECTIVE_FN,
+        g.role.span,
+        format!(
+            "`@gated(role: {})` on the perspective fn `{}.{}`: a perspective's fns \
+             are not gated — a gate goes on a subscribed handler, an `expose` member \
+             or a `publish` — it is checked at the api binding, and a perspective's \
+             fn is never reached from there",
+            g.role.name, g.decl, g.member
         ),
     )
 }

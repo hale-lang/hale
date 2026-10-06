@@ -1740,6 +1740,11 @@ impl Snapshot {
                 // record the typing kept, so it runs no second check.
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
                 diags.extend(hale_types::bare_fallible::bare_fallible_calls(typed));
+                // So does the closures' reach law: whether a recovery
+                // reaches a locus is the typed receivers' answer.
+                let handlers = self.demand_handlers().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
+                diags.extend(hale_types::closure_events::unreached_event_laws(&self.bundle(), handlers, entry, typed));
                 hale_types::finish_check_diags(&mut diags);
                 let own = diags.len();
                 let bundle = self.bundle();

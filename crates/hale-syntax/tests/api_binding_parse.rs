@@ -172,6 +172,21 @@ fn gated_goes_on_a_fn_an_expose_and_a_publish() {
 }
 
 #[test]
+fn a_gate_before_a_perspective_fn_parses_onto_the_fn() {
+    // The role law refuses it by its rule (a perspective's fns are not
+    // gated), so the parser takes it rather than stopping at the `@`;
+    // no other annotation is a perspective member.
+    let src = "role r;\nperspective V {\n    @gated(role: r)\n    fn get() -> Int;\n}\n";
+    let prog = parse_source(src).expect("parses");
+    let TopDecl::Perspective(p) = &prog.items[1] else { panic!("{:?}", prog.items[1]) };
+    let hale_syntax::ast::PerspectiveMember::Fn(f) = &p.members[0] else { panic!() };
+    assert_eq!(f.gated.as_ref().map(|g| g.name.as_str()), Some("r"));
+    assert!(f.decorators.iter().any(|d| d.name == "gated"), "recorded as written: {:?}", f.decorators);
+    let err = parse_source(&src.replace("@gated(role: r)", "@hot")).expect_err("not a perspective member");
+    assert!(err.iter().any(|d| d.message.contains("expected perspective member")), "{:?}", err);
+}
+
+#[test]
 fn gated_is_refused_where_it_means_nothing() {
     for (src, needle) in [
         (roles_program("role r;\n", "@gated(role: r) consume led: L;", "", "", ""), "goes on an `expose` member"),
