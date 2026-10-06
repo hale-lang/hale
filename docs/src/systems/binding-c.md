@@ -76,7 +76,8 @@ link = ["raylib"]
 ```
 
 A downstream project then just `import`s the binding and builds
-normally; the FFI flags thread through automatically. Only the
+normally; the FFI flags thread through automatically, under `hale
+build`, `hale run`, `hale replay` and `hale test` alike. Only the
 entry's own imports are read: if a library imports a binding in
 turn, the entry has to repeat that binding's `[ffi]` (or pass
 `--link` / `--csrc`).

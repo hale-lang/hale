@@ -3137,9 +3137,8 @@ does, so a recording made under `--env prod` is admitted by `hale
 replay --env prod` and refused under another environment's roles or
 none), and the `[ffi]` link libraries and C sources each imported
 package's `hale.toml` declares, which every one of the three folds
-in (`run` and `replay` still BUILD with their flags alone, so a
-program that needs a package's `[ffi] csrc` builds under `hale build`
-only). Debug information is not part of it: the DWARF line tables
+in and builds with, so a program that needs a package's `[ffi] csrc`
+runs and replays without `--csrc` / `--link` flags. Debug information is not part of it: the DWARF line tables
 `hale build` adds by default change no behaviour, so a recording made
 by a binary from `hale build` of a file is admitted by `hale replay`
 of that file, and a built binary and `hale run` of one program carry
