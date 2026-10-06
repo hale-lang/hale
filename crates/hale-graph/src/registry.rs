@@ -2485,6 +2485,16 @@ pub const RULES: &[Rule] = &[
         state: State::Canonical,
     },
     Rule {
+        id: "verification/structural/gate-on-a-perspective-fn",
+        title: "Gate on a perspective fn",
+        // The role rows' gates of kind `PerspectiveMethod`.
+        reads: Reads::Rows(&["api_surface"]),
+        gist: "`@gated(role:)` on a perspective's fn (error, at the role)",
+        family: "api_surface",
+        evaluator: Some(site(ROLES, "gate_on_a_perspective_fn")),
+        state: State::Canonical,
+    },
+    Rule {
         id: "verification/structural/gate-on-a-plain-method",
         title: "Gate on a plain method",
         // The role rows' method gates, against the bus graph's subscriptions of the same declaration.

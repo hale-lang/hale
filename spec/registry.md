@@ -1577,7 +1577,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 40 |
+| `spec/verification.md` § Structural & design rules | 41 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1624,6 +1624,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/role-declared | `spec/verification.md` § Structural & design rules | Declared role | a role a site names that nothing declares, `owner` aside (error, at the name) | `api_surface` | `crates/hale-types/src/roles.rs` · `undeclared` | `api_surface`, `bus_graph` | Canonical |
 | verification/structural/role-includes-acyclic | `spec/verification.md` § Structural & design rules | Acyclic role includes | a role reachable from its own `includes` chain (error, at the role's name) | `api_surface` | `crates/hale-types/src/roles.rs` · `role_cycle` | `api_surface` | Canonical |
 | verification/structural/gate-on-a-free-fn | `spec/verification.md` § Structural & design rules | Gate on a free fn | `@gated(role:)` on a free fn (error, at the role) | `api_surface` | `crates/hale-types/src/roles.rs` · `gate_on_a_free_fn` | `api_surface` | Canonical |
+| verification/structural/gate-on-a-perspective-fn | `spec/verification.md` § Structural & design rules | Gate on a perspective fn | `@gated(role:)` on a perspective's fn (error, at the role) | `api_surface` | `crates/hale-types/src/roles.rs` · `gate_on_a_perspective_fn` | `api_surface` | Canonical |
 | verification/structural/gate-on-a-plain-method | `spec/verification.md` § Structural & design rules | Gate on a plain method | `@gated(role:)` on a locus fn no `subscribe` line of its locus names (error, at the role) | `api_surface` | `crates/hale-types/src/roles.rs` · `gate_on_a_plain_method` | `api_surface`, `bus_graph` | Canonical |
 | verification/structural/gate-on-a-bound-topic | `spec/verification.md` § Structural & design rules | Gate on a bound topic | a gated handler whose topic is bound to a transport in `bindings { }` (error, at the role) | `api_surface` | `crates/hale-types/src/roles.rs` · `gate_on_a_bound_topic` | `api_surface`, `bus_graph`, `bindings`, `topics` | Canonical |
 | verification/structural/gates-agree-per-topic | `spec/verification.md` § Structural & design rules | Gates agree per topic | subscribers or publishers of one topic stating different gates (error, at the first gated site, listing every site) | `api_surface` | `crates/hale-types/src/roles.rs` · `gates_disagree` | `api_surface`, `bus_graph`, `topics` | Canonical |
