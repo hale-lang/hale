@@ -592,6 +592,33 @@ fn a_value_of_a_unit_type_is_one_located_error_per_use() {
     assert!(other.is_empty(), "the boundary is the only error: {other:#?}");
 }
 
+/// A parameter's default is typed at each invocation that leaves it, in a
+/// walk whose findings the check discards, and a field's default is not
+/// typed at all; a unit value in either still meets the boundary, at its
+/// place, or lowering gets it.
+#[test]
+fn a_unit_value_in_a_default_is_refused_where_it_is_written() {
+    let cases = [
+        ("unit cent;\nfn take(n: Int = 3cent) {\n    println(n);\n}\nfn main() {\n    take();\n}\n", "3cent"),
+        ("unit cent;\ntype S { n: Int = 3cent; }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n", "3cent"),
+        (
+            "type ItemId = distinct Int;\ntype S { n: Int = ItemId(1); }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n",
+            "ItemId",
+        ),
+    ];
+    for (src, place) in cases {
+        let all = diags(src);
+        let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "one error: {:#?}\n{src}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert_eq!(at(src, errors[0].span), place, "{src}");
+        assert!(
+            errors[0].message.contains(": values of the unit dialect's types are not typed yet (GH #1076)"),
+            "the boundary's error: {}",
+            errors[0].message
+        );
+    }
+}
+
 /// The rows are one cell of the snapshot, derived once however often the
 /// check and its consumers read them.
 #[test]

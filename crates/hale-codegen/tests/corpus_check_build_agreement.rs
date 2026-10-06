@@ -484,6 +484,38 @@ fn an_entry_point_less_program_is_built() {
     }
 }
 
+/// GH #1076 (U1, review): a quantity literal in a default checked clean
+/// and was refused by the build. A parameter's default is typed at the
+/// invocation in a walk whose findings the check discards, which took
+/// the not-yet boundary's error with them; a field's default was not
+/// typed at all. The check refuses each now, at the literal, so the
+/// build is never reached.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
+    let param = "unit cent;\n\
+                 fn take(n: Int = 3cent) { println(n); }\n\
+                 fn main() { take(); }\n";
+    let field = "unit cent;\n\
+                 type S { n: Int = 3cent; }\n\
+                 fn main() { let s = S {}; println(s.n); }\n";
+    for src in [param, field] {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
+        assert_eq!(errors[0].span.slice(src), "3cent", "located at the literal:\n{}", src);
+        assert!(errors[0].message.starts_with("quantity literal `3cent`: "), "{}", errors[0].message);
+        assert_eq!(
+            sweep_verdict(src, "hale_cb_unit_default"),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

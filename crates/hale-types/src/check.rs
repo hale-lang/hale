@@ -874,7 +874,7 @@ pub fn check_bundle_by_declaration(
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
         unit_types: inputs.units.scalars.iter().map(|s| (s.name.as_str(), s.display.as_str())).collect(),
-        unit_values_refused: BTreeSet::new(),
+        unit_values_refused: BTreeMap::new(),
     };
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
@@ -6109,9 +6109,10 @@ struct Checker<'a> {
     /// unit rows: the not-yet boundary refuses each where a value would
     /// live (`refuse_unit_types`).
     unit_types: BTreeMap<&'a str, &'a str>,
-    /// The places the boundary refused, by span, so a place walked twice
-    /// is refused once.
-    unit_values_refused: BTreeSet<(usize, usize)>,
+    /// The places the boundary refused, by span, each with its error's
+    /// message: a place walked twice is refused once, and a walk whose
+    /// findings are discarded keeps the boundary's (`discard_since`).
+    unit_values_refused: BTreeMap<(usize, usize), String>,
 }
 
 #[derive(Default)]
@@ -6285,16 +6286,36 @@ impl<'a> Checker<'a> {
                         // leave are expanded there: the `omitted_args`
                         // column records them (C3 rest, the review of
                         // #1351).
+                        // GH #1076: so is a quantity literal or a cast to a
+                        // unit-dialect type, whose value is not typed yet,
+                        // so the not-yet boundary refuses it here.
                         let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
-                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
-                            if let Expr::Call { callee, args, id, .. } = e {
+                        let mut unit_values: Vec<(Span, String)> = Vec::new();
+                        let unit_types = &self.unit_types;
+                        let fn_decls = &self.fn_decls;
+                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
+                            Expr::Call { callee, args, id, .. } => {
                                 calls.push((*id, callee.as_ref(), args.len()));
+                                if let Expr::Ident(name) = callee.as_ref() {
+                                    if let Some(display) = unit_types.get(name.name.as_str()) {
+                                        if !fn_decls.contains_key(&name.name) {
+                                            unit_values.push((name.span, format!("type `{display}`")));
+                                        }
+                                    }
+                                }
                             }
+                            Expr::Literal(Literal::Quantity { value, unit }, span) => {
+                                unit_values.push((*span, format!("quantity literal `{value}{unit}`")));
+                            }
+                            _ => {}
                         });
                         for f in fields {
                             if let Some(d) = &f.default {
                                 walk.expr(d);
                             }
+                        }
+                        for (span, what) in unit_values {
+                            self.refuse_unit_value(span, what);
                         }
                         for (id, callee, supplied) in calls {
                             self.record_omitted_defaults(id, callee, supplied);
@@ -11833,9 +11854,14 @@ impl<'a> Checker<'a> {
     }
 
     /// Discard what the walk since `mark` found: its diagnostics and the
-    /// param accesses it reached.
+    /// param accesses it reached. The not-yet boundary's errors stay
+    /// (GH #1076): each is refused once, so a place first reached by a
+    /// discarded walk (a default typed at its invocation, a receiver
+    /// typed ahead) is never refused again, and lowering would get it.
     fn discard_since(&mut self, mark: WalkMark) {
-        self.diags.truncate(mark.diags);
+        let found = self.diags.split_off(mark.diags);
+        let kept: Vec<Diag> = found.into_iter().filter(|d| self.is_unit_value_refusal(d)).collect();
+        self.diags.extend(kept);
         self.access_visits.truncate(mark.visits);
     }
 
@@ -12286,9 +12312,18 @@ impl<'a> Checker<'a> {
     /// often the walk reaches it (a generic body is walked again per
     /// specialization; an annotation's arguments by both walks).
     fn refuse_unit_value(&mut self, span: Span, what: String) {
-        if self.unit_values_refused.insert((span.start.as_usize(), span.end.as_usize())) {
-            self.diags.push(crate::units::value_not_yet(span, &what));
+        if let std::collections::btree_map::Entry::Vacant(at) =
+            self.unit_values_refused.entry((span.start.as_usize(), span.end.as_usize()))
+        {
+            let diag = crate::units::value_not_yet(span, &what);
+            at.insert(diag.message.clone());
+            self.diags.push(diag);
         }
+    }
+
+    /// Whether `d` is the not-yet boundary's error at its place.
+    fn is_unit_value_refusal(&self, d: &Diag) -> bool {
+        self.unit_values_refused.get(&(d.span.start.as_usize(), d.span.end.as_usize())) == Some(&d.message)
     }
 
     /// GH #877: a BARE type name in an annotation that names no
