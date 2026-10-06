@@ -273,7 +273,11 @@ Bytes           BytesView       StringView      BytesMut
 `BytesView` / `StringView` (F.30) are non-owning views over a
 `BytesBuilder`'s buffer; `BytesMut` (#3) is a raw `{ptr, len}`
 writable/readable window (a `Topic.write` ring slot or a
-`MirrorRing` window). See `spec/types.md`.
+`MirrorRing` window). See `spec/types.md`. `Time` and `Duration`
+are declared by the stdlib's seed (`type Duration = quantity Int in
+ns;`, `type Time = point Duration;`, spec/units.md § The stdlib's
+time catalogue); a type position reads either name as that
+declaration, whose values keep the primitive's representation.
 
 PascalCase per the type-name convention. The lexer emits these
 as `Ident` tokens; the parser recognizes them by name in **type
@@ -507,9 +511,9 @@ annotations are not in v1.
 - Octal: `0o755`.
 - Binary: `0b1010_1010`.
 - There is no type suffix. A decimal integer written against a name
-  is a decimal literal (`d`), a duration literal (its suffixes) or a
-  quantity literal (any other name), below; a radix integer followed
-  by a name is a parse error.
+  is a decimal literal (`d`) or a quantity literal (any other name,
+  the time units among them), below; a radix integer followed by a
+  name is a parse error.
 
 ### Float literals
 
@@ -520,17 +524,19 @@ annotations are not in v1.
 
 ### Quantity literals (GH #1076)
 
-- A decimal integer immediately followed, with no space, by a name
-  that is not a duration suffix: `3bp`, `5kg`, `2min`,
-  `1_250_000USD`, `2EUR`. One token, carrying the magnitude and the
-  unit's name as written. Integer magnitudes only.
+- A decimal integer immediately followed, with no space, by a name:
+  `500ms`, `3bp`, `5kg`, `2min`, `1_250_000USD`, `2EUR`. One token,
+  carrying the magnitude and the unit's name as written. Integer
+  magnitudes only. The lexer knows no unit: which one the name is,
+  a unit of the stdlib's time catalogue or one a program declares,
+  is the catalogue's to say where the literal is checked (U4).
 - The unit is named in the units' own namespace, never a local's:
-  a quantity literal is its unit's component's quantity at that
-  unit, converted at compile time into the denomination it flows
-  into (spec/units.md § Quantities and points, Literals). A unit no
-  `unit` declares is refused at the literal.
-- The duration suffixes are not unit names: no `unit` may take one
-  (spec/units.md § The laws, law 10).
+  a quantity literal is its unit's component's quantity, at the
+  quantity's denomination when it is a whole count of it (`1000mg`
+  of a quantity in grams is 1) and else at its unit (`5mg`),
+  converted at compile time into the denomination it
+  flows into (spec/units.md § Quantities and points, Literals). A
+  unit no `unit` declares is refused at the literal.
 
 ### Decimal literals
 
@@ -540,16 +546,24 @@ annotations are not in v1.
 
 ### Time / duration literals
 
-- Duration suffixes: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
-  Examples: `100ms`, `5s`, `1h30m`. Compound forms permitted.
-- A duration literal is one token whose value is its length in
-  nanoseconds, which is what an expression reads. The token also
-  keeps the magnitude and the suffix as written (`100ms` is 100 and
-  `ms`), which a unit declaration's factor and a denomination read
-  (spec/units.md § Declarations): `unit tick = 100ms;` parses as
-  `unit tick = 100 ms;`. Until the time catalogue is declared, no
-  `unit` named `ms` exists for it to resolve to, so the checker
-  refuses the equation (law 2) as it refuses a `unit ms;` (law 10).
+- A duration literal is a quantity literal of a unit of the stdlib's
+  time catalogue (`std::time`, spec/units.md § The stdlib's time
+  catalogue): `ns`, `us`, `ms`, `s`, `min`, `h`, `day`. Examples:
+  `100ms`, `5s`, `2min`, `1day`. It is a `Duration`, its value its
+  length in nanoseconds (`100ms` is 100,000,000), which the catalogue
+  computes; a program's own unit of the time component (`unit tick =
+  10 ms;`) writes `5tick` the same way. One magnitude, one unit: a
+  span of mixed units is a sum (`1h + 30min`).
+- `d` is the Decimal literal's and `day` is the day: `3d` is the
+  Decimal `3`, as it always was, and no unit may be named `d`
+  (spec/units.md, law 11). `m` is no unit: `5m` is refused as a unit
+  no catalogue declares, the message saying minutes are `min`.
+- A compound such as `1h30m` is one magnitude and the unit `h30m`,
+  which no catalogue declares: the check refuses it as a literal of
+  several units and says the sum to write (`1h + 30min`).
+- A unit declaration's factor and a denomination read the magnitude
+  and the unit as written (spec/units.md § Declarations): `unit tick
+  = 100ms;` parses as `unit tick = 100 ms;`.
 - Time literals: ISO-8601 UTC between backticks: `` `2026-05-08T12:00:00Z` ``,
   `` `2026-09-14T08:30:15.25Z` `` (a fraction of one to nine digits; the
   `Z` is optional; an offset is a compile error). Parsed at check time

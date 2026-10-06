@@ -1454,16 +1454,7 @@ impl Parser {
         };
         let (n, unit) = match &tok.kind {
             TokenKind::IntLit(n) => (*n, None),
-            TokenKind::DurationLit { spelled: Some((n, s)), .. } => {
-                (*n, Some(Ident::new(s.clone(), suffix(s.len()))))
-            }
             TokenKind::QuantityLit(n, s) => (*n, Some(Ident::new(s.clone(), suffix(s.len())))),
-            TokenKind::DurationLit { spelled: None, .. } => {
-                return Err(Diag::parse(
-                    tok.span,
-                    format!("a {what} is one magnitude and one unit; a compound duration has two"),
-                ));
-            }
             other => {
                 return Err(Diag::parse(
                     tok.span,
@@ -6214,9 +6205,6 @@ impl Parser {
                     let (n, unit) = match &tok.kind {
                         TokenKind::IntLit(n) => (*n, None),
                         TokenKind::QuantityLit(n, s) => (*n, Some(suffix(s))),
-                        TokenKind::DurationLit { spelled: Some((n, s)), .. } => {
-                            (*n, Some(suffix(s)))
-                        }
                         other => {
                             return Err(Diag::parse(
                                 tok.span,
@@ -7247,9 +7235,9 @@ impl Parser {
                 self.bump();
                 Ok(Pattern::Literal(Literal::Decimal(s), span))
             }
-            TokenKind::DurationLit { ns, .. } => {
+            TokenKind::QuantityLit(value, unit) => {
                 self.bump();
-                Ok(Pattern::Literal(Literal::Duration(ns), span))
+                Ok(Pattern::Literal(Literal::Quantity { value, unit }, span))
             }
             TokenKind::StringLit(s) => {
                 self.bump();
@@ -7830,10 +7818,6 @@ impl Parser {
             TokenKind::Nil => {
                 self.bump();
                 Ok(Expr::Literal(Literal::Nil, span))
-            }
-            TokenKind::DurationLit { ns: d, .. } => {
-                self.bump();
-                Ok(Expr::Literal(Literal::Duration(d), span))
             }
             TokenKind::QuantityLit(value, unit) => {
                 self.bump();
@@ -8629,7 +8613,9 @@ pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
     "Duration", "Bytes", "BytesView", "StringView", "BytesMut",
 ];
 
-fn primitive_from_name(name: &str) -> Option<PrimType> {
+/// The primitive a type position spelling `name` is (`Duration`,
+/// `Int`), the parser's one table of them.
+pub fn primitive_from_name(name: &str) -> Option<PrimType> {
     Some(match name {
         "Int" => PrimType::Int,
         "Uint" => PrimType::Uint,

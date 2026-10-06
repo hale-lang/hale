@@ -980,6 +980,53 @@ fn an_array_literals_elements_each_convert_from_their_own_type() {
     assert_eq!(build_and_run_probe(meet, "unit_mixed_array_meet"), Ok("1000msec\n1500msec\n".to_string()), "{}", meet);
 }
 
+/// GH #1076 (U4, review 1): a literal is its quantity at the quantity's
+/// denomination when its count there is whole, whatever its unit's factor
+/// alone is. The rule tested the factor, so `1000mg` of a `Mass` counted
+/// in grams stayed a `Mass in mg`, and `1000tick` of a unit a thousandth
+/// of a nanosecond a `Duration in tick`: both arms below were refused as
+/// two types by the check and the build alike. Each checks, builds and
+/// prints its one whole count.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_whole_count_literal_of_a_finer_unit_is_its_quantity() {
+    let mass = "unit g;\n\
+                unit mg = 1/1000 g;\n\
+                type Mass = quantity Int in g;\n\
+                fn main() { let x = if true { 1000mg } else { 1g }; println(x); println(5mg); }\n";
+    assert_eq!(build_and_run_probe(mass, "unit_whole_count_mass"), Ok("1g\n5mg\n".to_string()), "{}", mass);
+    let tick = "unit tick = 1/1000 ns;\n\
+                fn main() { let x = if true { 1000tick } else { 1ns }; println(x); }\n";
+    assert_eq!(build_and_run_probe(tick, "unit_whole_count_tick"), Ok("1ns\n".to_string()), "{}", tick);
+}
+
+/// GH #1076 (U4, review 2): a quantity's negation is the quantity, and
+/// lowering negated only an `Int`, a `Float` and a `Decimal`. The rule
+/// above made `-2000tick` the stdlib's `Duration`, so it checked and the
+/// build refused it ("unop Neg on Duration"), where before it printed
+/// `-2000tick`. A `Duration`'s negation is its count's, still a
+/// `Duration`, a literal's and a value's alike; a program's own quantity,
+/// an `Int` underneath, negated before and still does.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_negated_quantity_checks_builds_and_keeps_its_unit() {
+    let tick = "unit tick = 1/1000 ns;\n\
+                fn main() { println(-2000tick); println(-5tick); println(-(1s)); let d = 3s; println(-d); }\n";
+    assert_eq!(
+        build_and_run_probe(tick, "unit_negated_tick"),
+        Ok("-2ns\n-5tick\n-1000000000ns\n-3000000000ns\n".to_string()),
+        "{}",
+        tick
+    );
+    let mass = "unit g;\n\
+                unit mg = 1/1000 g;\n\
+                type Mass = quantity Int in g;\n\
+                fn main() { println(-2000mg); let m = 2000mg; println(-m); let n = 5mg; println(-n); }\n";
+    assert_eq!(build_and_run_probe(mass, "unit_negated_mass"), Ok("-2g\n-2g\n-5mg\n".to_string()), "{}", mass);
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

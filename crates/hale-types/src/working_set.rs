@@ -1103,7 +1103,6 @@ fn literal_storage_size(e: &Expr, idx: &Index<'_>) -> u64 {
         Expr::Literal(lit, _) => match lit {
             Literal::Int(_)
             | Literal::Float(_)
-            | Literal::Duration(_)
             | Literal::Quantity { .. } => 8,
             Literal::Decimal(_) => 16,
             Literal::Bool(_) => 1,

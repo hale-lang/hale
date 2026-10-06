@@ -22,7 +22,7 @@ fn nested_user_locus_with_run_inside_parent_with_run_is_rejected() {
     let src = r#"
         locus Worker {
             run() {
-                std::time::sleep(1m);
+                std::time::sleep(1min);
             }
         }
         locus Parent {
@@ -80,7 +80,7 @@ fn parent_with_no_run_body_is_not_flagged() {
     let src = r#"
         locus Worker {
             run() {
-                std::time::sleep(1m);
+                std::time::sleep(1min);
             }
         }
         locus Holder {
@@ -140,7 +140,7 @@ fn main_locus_with_long_running_children_is_not_flagged() {
     let src = r#"
         locus Worker {
             run() {
-                std::time::sleep(1m);
+                std::time::sleep(1min);
             }
         }
         main locus App {

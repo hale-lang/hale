@@ -16,6 +16,9 @@ use hale_graph::{families, Family, Kind, Missing, State};
 /// The families lowering reads, by name, in the registry's order.
 const LOWERING_READS: &[&str] = &[
     "sync_inference",
+    // U4: the stdlib's rows, a time literal's count where no typed body
+    // holds its row (a `params` or `const` initializer, a stdlib body).
+    "unit_declarations",
     "expression_typing",
     "generics",
     "surfaces",

@@ -43,7 +43,7 @@ locus Account {
 
 `~~` is "approximately equal, within tolerance." The `epoch`
 says when to check — `tick` (each event-loop iteration), `birth`,
-`dissolve`, `duration(1m)`, or `inline` (only when fired by
+`dissolve`, `duration(1min)`, or `inline` (only when fired by
 hand). If the assertion holds, nothing happens; closures are
 silent on success. If it breaks, the runtime constructs a typed
 `ClosureViolation` and routes it to the parent's `on_failure`.

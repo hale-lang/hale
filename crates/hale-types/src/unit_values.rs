@@ -101,10 +101,13 @@ impl<'r> ScalarTypes<'r> {
         let mut by_name = BTreeMap::new();
         let mut quantities = BTreeMap::new();
         for (i, s) in rows.scalars.iter().enumerate() {
-            let typed = matches!(
-                top.lookup(&s.name),
-                Some(TopSymbol::Type(info)) if matches!(info.kind, TypeKind::Scalar(_))
-            );
+            // The stdlib's `Duration` and `Time` (U4) are the primitives
+            // a type position reads, never a scope entry.
+            let typed = s.primitive.is_some()
+                || matches!(
+                    top.lookup(&s.name),
+                    Some(TopSymbol::Type(info)) if matches!(info.kind, TypeKind::Scalar(_))
+                );
             if typed {
                 let map = match s.kind {
                     ScalarKindRow::Quantity | ScalarKindRow::Point => &mut quantities,
@@ -187,6 +190,11 @@ impl<'r> ScalarTypes<'r> {
     /// `ty` as it is laid out: an identity, a range, a quantity or a
     /// point is its `Int`, every other type itself.
     pub fn representation(&self, ty: &Ty) -> Ty {
+        // The stdlib's `Duration` and `Time` (U4) are their primitives'
+        // class: an FFI cell, a payload field, a key reads them as it did.
+        if matches!(ty, Ty::Prim(_)) {
+            return ty.clone();
+        }
         if self.index(ty).is_some() || self.quantity(ty).is_some() {
             crate::symbol::TypeKind::scalar_representation()
         } else {

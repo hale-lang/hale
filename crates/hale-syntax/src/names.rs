@@ -816,7 +816,6 @@ fn literal<'a>(l: &'a Literal, f: &mut Visit<'_, 'a>) {
         | Literal::Float(_)
         | Literal::Bool(_)
         | Literal::Nil
-        | Literal::Duration(_)
         | Literal::Bytes(_) => {}
     }
 }

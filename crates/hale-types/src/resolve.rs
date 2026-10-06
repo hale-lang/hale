@@ -184,7 +184,12 @@ fn resolve_alias_targets(
         for item in items {
             match item {
                 TopDecl::Type(t) => {
+                    // The stdlib's `Duration` and `Time` are the
+                    // primitives (U4): no alias stands for either name.
                     if let TypeDeclBody::Scalar(s) = &t.body {
+                        if hale_syntax::parser::primitive_from_name(&t.name.name).is_some() {
+                            continue;
+                        }
                         scalars.entry(t.name.name.as_str()).or_insert(s);
                     }
                     if let TypeDeclBody::Alias(te) = &t.body {
@@ -730,6 +735,13 @@ fn register_top_decls(
     for item in items {
         match item {
             TopDecl::Locus(l) => register_locus(l, known, topics, scope, diags),
+            // GH #1076 (U4): the stdlib's `type Duration = quantity Int
+            // in ns;` and `type Time = point Duration;` declare the
+            // primitives a type position reads by those names; no scope
+            // entry stands beside them.
+            TopDecl::Type(t)
+                if matches!(t.body, TypeDeclBody::Scalar(_))
+                    && hale_syntax::parser::primitive_from_name(&t.name.name).is_some() => {}
             TopDecl::Type(t) => register_type(t, known, scope, diags),
             TopDecl::Perspective(p) => register_perspective(p, known, scope, diags),
             TopDecl::Const(c) => register_const(c, known, scope, diags),
@@ -2674,7 +2686,10 @@ fn infer_literal_ty(e: &Expr) -> Ty {
         Expr::Literal(Literal::Decimal(_), _) => Ty::Prim(PrimType::Decimal),
         Expr::Literal(Literal::String(_), _) => Ty::Prim(PrimType::String),
         Expr::Literal(Literal::Bool(_), _) => Ty::Prim(PrimType::Bool),
-        Expr::Literal(Literal::Duration(_), _) => Ty::Prim(PrimType::Duration),
+        // A literal of the stdlib's time catalogue is a `Duration` (U4).
+        Expr::Literal(Literal::Quantity { value, unit }, _) => {
+            crate::units::stdlib_literal(*value, unit).map_or(Ty::Unknown, |(_, ty)| ty)
+        }
         Expr::Literal(Literal::Time(_), _) => Ty::Prim(PrimType::Time),
         Expr::Literal(Literal::Bytes(_), _) => Ty::Prim(PrimType::Bytes),
         _ => Ty::Unknown,

@@ -899,7 +899,6 @@ impl Shift for Literal {
             Literal::String(x) => x.shift(d),
             Literal::Bool(x) => x.shift(d),
             Literal::Nil => {}
-            Literal::Duration(x) => x.shift(d),
             Literal::Time(x) => x.shift(d),
             Literal::Bytes(x) => x.shift(d),
             Literal::Quantity { value, unit } => sh!(d; value, unit),

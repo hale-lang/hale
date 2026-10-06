@@ -10,7 +10,8 @@
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_syntax::{parse_source, Diag, DiagKind};
-use hale_types::unit_graph::{MachineRatio, Ratio};
+use hale_types::placement::SiteUniverse;
+use hale_types::unit_graph::{Denom, MachineRatio, Ratio};
 use hale_types::units::{Node, RoundPolicy, ScalarKindRow, ScalarRow, UnitRows};
 use num_bigint::BigInt;
 use num_rational::BigRational;
@@ -21,15 +22,17 @@ use entries::check_program;
 
 /// The committed example's declarations (the #1212 comment "The unit
 /// dialect, concretely"), with its time units renamed (`ns` is `nsec`,
-/// …: a duration suffix may not name a unit yet, law 10), the units it
-/// leaves undeclared declared (`nsec`, `B`, `cent`, `mK`), `Duration`,
-/// `Time` and `Bytes` renamed (they are primitives today), `bp` defined
-/// against the number, and a `main` that prints one line.
+/// …: the stdlib's time catalogue declares those names, U4, and these
+/// rows test a program's own catalogue beside it), the units it leaves
+/// undeclared declared (`nsec`, `B`, `cent`, `mK`), `Duration`, `Time`
+/// and `Bytes` renamed (the first two are the stdlib's, the third the
+/// buffer type), `bp` defined against the number, and a `main` that
+/// prints one line.
 const EXAMPLE: &str = "\
 unit usec = 1_000 nsec;
 unit msec = 1_000 usec;
 unit sec  = 1_000 msec;
-unit min  = 60 sec;
+unit minute = 60 sec;
 unit nsec;
 
 unit B;
@@ -125,9 +128,11 @@ fn the_committed_example_is_rows_and_checks_clean() {
     let errors: Vec<String> = diags(EXAMPLE).into_iter().filter(Diag::is_error).map(|d| d.message).collect();
     assert!(errors.is_empty(), "{errors:#?}");
     let r = rows(EXAMPLE);
-    assert_eq!(r.units.len(), 15);
-    assert_eq!(r.equations.len(), 10);
-    assert_eq!(r.scalars.len(), 17);
+    // The stdlib's time catalogue first (U4): its 7 units, 6 equations
+    // and 2 scalars (`Duration`, `Time`), then the example's 15, 10, 17.
+    assert_eq!(r.units.len(), 7 + 15);
+    assert_eq!(r.equations.len(), 6 + 10);
+    assert_eq!(r.scalars.len(), 2 + 17);
     assert!(r.cycles.is_empty());
     let catalogue = r.catalogue.as_ref().expect("the catalogue closes");
 
@@ -135,7 +140,7 @@ fn the_committed_example_is_rows_and_checks_clean() {
     // temperature.
     let c = |n: &str| r.units[unit(&r, n)].component;
     let groups: [&[&str]; 6] =
-        [&["nsec", "usec", "msec", "sec", "min"], &["B", "KiB", "MiB"], &["cent", "USD"], &["bp", "pct"], &["tick"], &["mK", "K"]];
+        [&["nsec", "usec", "msec", "sec", "minute"], &["B", "KiB", "MiB"], &["cent", "USD"], &["bp", "pct"], &["tick"], &["mK", "K"]];
     for g in groups {
         assert!(g.iter().all(|n| c(n) == c(g[0])), "{g:?}");
     }
@@ -160,7 +165,7 @@ fn the_committed_example_is_rows_and_checks_clean() {
     assert_eq!(bucket.of, Some(index(&r, "Elapsed")));
     assert_eq!(bucket.policy, Some(RoundPolicy::Floor));
     let d = bucket.denomination.as_ref().unwrap();
-    assert_eq!((d.unit, &d.multiple), (r.units[unit(&r, "msec")].site.id, &ratio(100, 1)));
+    assert_eq!((d.unit, &d.multiple), (r.units[unit(&r, "msec")].site, &ratio(100, 1)));
     let elapsed = scalar(&r, "Elapsed").denomination.as_ref().unwrap();
     let factor = catalogue.factor(d, elapsed).unwrap();
     assert_eq!(factor, ratio(100_000_000, 1));
@@ -175,7 +180,7 @@ fn the_committed_example_is_rows_and_checks_clean() {
     assert_eq!(instant.denomination.as_ref(), Some(elapsed));
     let stamp = scalar(&r, "WireStamp");
     assert_eq!((stamp.kind, stamp.of, stamp.policy), (ScalarKindRow::Point, Some(index(&r, "Instant")), Some(RoundPolicy::Floor)));
-    assert_eq!(stamp.denomination.as_ref().unwrap().unit, r.units[unit(&r, "usec")].site.id);
+    assert_eq!(stamp.denomination.as_ref().unwrap().unit, r.units[unit(&r, "usec")].site);
     assert_eq!(stamp.component, Some(c("nsec")));
     assert_eq!(scalar(&r, "Price").of, Some(index(&r, "Tick")));
     assert_eq!(scalar(&r, "Celsius").origin, Some(BigRational::from_integer(BigInt::from(273_150))));
@@ -254,14 +259,17 @@ fn an_undeclared_unit_is_refused_at_the_name_with_the_nearest_suggested() {
         "type `Celsius`: its origin names `K`, which no `unit` declares: declare it (`unit K;`); did you mean `mK`?"
     );
     assert_eq!(at(src, d.span), "K");
+    // U4: `ms` is the stdlib's, whose component has its quantity
+    // (law 4); the stdlib's declaration is no place in the program.
     let d = the_error(&all, "type `Wait`");
     assert_eq!(
         d.message,
-        "type `Wait`: its denomination names `ms`, a built-in duration suffix and no unit: no `unit` may take \
-         that name until `Time` and `Duration` are declarations (GH #1076); declare a unit of another name \
-         (`msec`)"
+        "type `Wait`: the units of `ms` already have their quantity, `Duration` (the stdlib's, `std::time`): a \
+         component of the catalogue has one quantity, and every other type over it is a denomination of that one; \
+         write `type Wait = Duration in ms;`, or give it a `round:` policy"
     );
-    assert_eq!(at(src, d.span), "ms");
+    assert_eq!(at(src, d.span), "Wait");
+    assert!(d.related.is_empty());
     assert!(rows(src).catalogue.is_none(), "an equation names no declared unit");
 }
 
@@ -514,23 +522,83 @@ fn a_refinement_of_a_struct_of_nothing_or_of_itself_is_refused() {
     assert_eq!(at(src, d.span), "B");
 }
 
-// Law 10: no unit takes a duration suffix's name.
+// Law 1 against the stdlib's time catalogue (U4): a program's unit of a
+// name the stdlib declares is a second declaration of that unit, whose
+// first is in no file of the program; one written against a stdlib unit
+// joins its component.
 
 #[test]
-fn a_unit_named_like_a_duration_suffix_is_refused() {
+fn a_unit_the_stdlib_declares_is_declared_twice_and_one_against_it_joins() {
     let src = "unit ms;\nfn main() { }\n";
     let all = diags(src);
     let d = the_error(&all, "unit `ms`");
     assert_eq!(
         d.message,
-        "unit `ms`: `ms` is a built-in duration suffix, so `5ms` is a `Duration` literal and never this unit: no \
-         `unit` may take one of `ns`, `us`, `ms`, `s`, `m`, `h`, `d` until `Time` and `Duration` are declarations \
-         (GH #1076); name it otherwise (`msec`)"
+        "unit `ms` is declared twice: the stdlib's time catalogue declares `ms` (`std::time`), and a unit is one \
+         node of the catalogue; write `ms` for that unit (`unit tick = 10 ms;` joins a unit of the program's to \
+         it), or give this one another name"
     );
     assert_eq!(d.span.start.as_usize(), src.find("ms").unwrap());
+    assert!(d.related.is_empty(), "the stdlib's declaration is no place in the program: {:?}", d.related);
+
+    let src = "unit tick = 10 ms;\nfn main() { }\n";
+    assert!(diags(src).iter().all(|d| !d.is_error()), "{:?}", diags(src));
+    let r = rows(src);
+    let tick = unit(&r, "tick");
+    let ms = unit(&r, "ms");
+    assert_eq!(r.units[tick].component, r.units[ms].component, "`tick` is in the time component");
+    assert_eq!(r.units[ms].site.universe, SiteUniverse::StdlibAnalysis);
+    assert_eq!(r.units[tick].site.universe, SiteUniverse::User);
+    let to_ns = r.catalogue.as_ref().unwrap().factor(
+        &Denom { unit: r.units[tick].site, multiple: ratio(1, 1) },
+        &Denom { unit: r.units[unit(&r, "ns")].site, multiple: ratio(1, 1) },
+    );
+    assert_eq!(to_ns, Some(ratio(10_000_000, 1)));
 }
 
-// Law 11: every unit written against a number is in one dimensionless
+// Law 11: no unit takes a name the lexer reads before a unit (U4): `d`,
+// the Decimal literal's suffix, and a Float's exponent. And law 2's hint
+// for a retired time unit: `m` is `min` now, whatever is nearest by
+// spelling.
+
+#[test]
+fn a_unit_named_like_a_literal_suffix_is_refused_at_its_name() {
+    let src = "unit d;\nunit e5;\nunit E2x;\nunit dd;\nunit e;\nfn main() { }\n";
+    let all = diags(src);
+    let d = the_error(&all, "unit `d`");
+    assert_eq!(
+        d.message,
+        "unit `d`: a unit named `d` collides with the Decimal literal's suffix: `3d` is the Decimal `3`; give it \
+         another name"
+    );
+    assert_eq!(at(src, d.span), "d");
+    assert_eq!(d.span.start.as_usize(), src.find("d;").unwrap());
+    let d = the_error(&all, "unit `e5`");
+    assert_eq!(
+        d.message,
+        "unit `e5`: a unit named `e5` collides with a Float literal's exponent: `3e5` reads as the Float `3e5`; \
+         give it another name"
+    );
+    assert_eq!(at(src, d.span), "e5");
+    let d = the_error(&all, "unit `E2x`");
+    assert_eq!(
+        d.message,
+        "unit `E2x`: a unit named `E2x` collides with a Float literal's exponent: `3E2x` reads as the Float `3E2`; \
+         give it another name"
+    );
+    // `3dd` and `3e` are quantity literals: the lexer reads `d` only
+    // alone, and `e` as an exponent only before a digit or a sign.
+    assert_eq!(all.iter().filter(|d| d.is_error()).count(), 3, "{all:#?}");
+    assert!(rows(src).catalogue.is_some(), "law 11 is no catalogue law");
+
+    let src = "type Wait = quantity Int in m;\nfn main() { }\n";
+    let all = diags(src);
+    let d = the_error(&all, "type `Wait`");
+    assert_eq!(d.message, "type `Wait`: its denomination names `m`, which no `unit` declares: declare it (`unit m;`); minutes are `min`");
+    assert_eq!(at(src, d.span), "m");
+}
+
+// Law 10: every unit written against a number is in one dimensionless
 // component.
 
 #[test]

@@ -241,7 +241,6 @@ fn literal_spells_call_or_struct(l: &Literal) -> bool {
         | Literal::Float(_)
         | Literal::Bool(_)
         | Literal::Nil
-        | Literal::Duration(_)
         | Literal::Bytes(_)
         // A quantity literal's unit is an identifier.
         | Literal::Quantity { .. } => false,
@@ -431,7 +430,8 @@ fn self_field_classes(l: &LocusDecl, types: &TypeFacts) -> (BTreeSet<String>, BT
 /// literal and the field takes its ascription's type.
 fn literal_class(e: &Expr) -> Option<Option<ScalarClass>> {
     match e {
-        Expr::Literal(Literal::Int(_) | Literal::Float(_) | Literal::Duration(_), _) => {
+        // A quantity literal (`5s`, `3cent`) is the `Int` it counts.
+        Expr::Literal(Literal::Int(_) | Literal::Float(_) | Literal::Quantity { .. }, _) => {
             Some(Some(ScalarClass::Numeric))
         }
         Expr::Literal(Literal::Bool(_), _) => Some(Some(ScalarClass::Bool)),
@@ -1070,7 +1070,7 @@ fn expr_is_nonalloc_numeric(
     match e {
         Expr::Literal(Literal::Int(_), _)
         | Expr::Literal(Literal::Float(_), _)
-        | Expr::Literal(Literal::Duration(_), _) => true,
+        | Expr::Literal(Literal::Quantity { .. }, _) => true,
         Expr::Ident(id) => num.contains(&id.name),
         // Method-elidability: `self.x` where `x` is a numeric scalar self
         // field is itself a numeric scalar — so `self.x + 1` is arithmetic.

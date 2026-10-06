@@ -7,8 +7,9 @@ declaration-layer arithmetic core for GH #1076 / #1212. A program's
 declarations are judged against it (§ Declarations). Expression typing
 types the values of identities and ranges (§ Identities and ranges) and
 of quantities and points, reading the catalogue's factors (§
-Quantities and points); the existing `Time` and `Duration` primitive
-behavior is unchanged.
+Quantities and points). `Time` and `Duration` are two of those
+declarations, the stdlib's, over its time catalogue (§ The stdlib's
+time catalogue).
 
 ## Declarations
 
@@ -54,15 +55,18 @@ clause block closes the declaration, so a `;` after it is optional.
 A scalar type takes no generic parameters.
 
 **A quantity literal** is an integer written against a unit name,
-`3bp` or `1_250_000USD` (spec/tokens.md § Quantity literals).
+`3bp`, `1_250_000USD` or `500ms` (spec/tokens.md § Quantity
+literals).
 
 ### The rows
 
 The declarations are rows of one family, `unit_declarations`
 (`hale_types::units::derive_unit_rows`, spec/registry.md), derived
-once per snapshot from the programs after the desugar sequence, each
-row keyed by its declaration's site. The stdlib declares no unit and
-no scalar yet.
+once per snapshot from the stdlib's seed and then the programs after
+the desugar sequence, each row keyed by its declaration's site in the
+universe that minted it (§ Identities and equations): the stdlib's
+time catalogue and its `Duration` and `Time` come first, then the
+program's own.
 
 - **A unit row** per `unit` declaration, and **an equation row** per
   equation: one `unit` is `p/q` of its target, which is a unit or the
@@ -118,16 +122,22 @@ Structural & design rules), judged over the rows, and reported as a
 located error whose related notes are its witness.
 
 1. **A unit is declared once.** At the second declaration's name; the
-   witness is the first.
+   witness is the first. A program's unit of a name the stdlib's time
+   catalogue declares is that unit declared again: the message names
+   the catalogue, whose declaration is in no file of the program.
 
    ```hale,fragment
    unit cent;
    unit cent;      // error: unit `cent` is declared twice
+   unit ms;        // error: … the stdlib's time catalogue declares `ms` (`std::time`) …
+   unit tick = 10 ms;   // a unit of the program's, in the time component
    ```
 
 2. **A named unit is declared.** An equation's target, a
    denomination and an origin name a declared unit; the error is at
-   the name, suggesting the nearest declared one.
+   the name, suggesting the nearest declared one (a program's own
+   before the stdlib's); a retired time unit says what it is now
+   instead (`m`: minutes are `min`).
 
    ```hale,fragment
    unit cent;
@@ -212,16 +222,7 @@ located error whose related notes are its witness.
    type O = Order { range: 0..3; }   // error: `Order` is a struct
    ```
 
-10. **No unit takes a duration suffix's name** (`ns us ms s m h d`):
-    the lexer reads `5ms` as a `Duration` literal whatever is
-    declared, until `Time` and `Duration` are declarations of the
-    time catalogue.
-
-    ```hale,fragment
-    unit ms;   // error: `ms` is a built-in duration suffix … name it otherwise (`msec`)
-    ```
-
-11. **The dimensionless component.** A unit defined against a number
+10. **The dimensionless component.** A unit defined against a number
     is in the one component the number one belongs to, with every
     other such unit; laws 3 and 4 judge it as any component (so
     `quantity Int in bp` and `quantity Int in pct` are two quantities
@@ -230,6 +231,18 @@ located error whose related notes are its witness.
     ```hale,fragment
     unit bp = 1/10000;
     unit pct = 1/100;   // one component with `bp`: one `pct` is 100 `bp`
+    ```
+
+11. **No unit is named like a literal's suffix.** The lexer reads a
+    number's own suffixes before a unit: `d` alone is the Decimal
+    literal's (`3d` is the Decimal `3`), and `e` or `E` followed by a
+    digit is a Float's exponent (`3e5`). A unit of either name could
+    never be written as a literal; the error is at its name. (`day` is
+    the day, § The stdlib's time catalogue.)
+
+    ```hale,fragment
+    unit d;    // error: a unit named `d` collides with the Decimal literal's suffix: `3d` is the Decimal `3`
+    unit e5;   // error: … collides with a Float literal's exponent
     ```
 
 ### Where values are typed
@@ -422,9 +435,10 @@ Instant in usec { round: floor; }`) are nominal types, each represented
 as the `Int` it counts. The checker knows one by its scope entry
 (`TypeKind::Scalar`) and its scalar row (kind, component,
 denomination, quantity, origin, policy), and applies the rules below
-(`hale_types::unit_quantities`). The examples use this catalogue (the
-time units are spelled `nsec` … `sec` until the duration suffixes are
-the time catalogue's, decision 4 and law 10):
+(`hale_types::unit_quantities`); the stdlib's `Duration` and `Time`
+are a quantity and a point like these, represented as their own class
+(§ The stdlib's time catalogue). The examples use this catalogue, a
+program's own time units (`nsec` … `sec`) beside the stdlib's:
 
 ```hale
 unit nsec;
@@ -471,14 +485,23 @@ a factor alone (below), whatever their names.
 
 ### Literals
 
-A **quantity literal** (`3bp`, `1_250_000USD`, `500msec`: an integer
-adjacent to a unit name, decision 3) names its unit in the units'
-namespace, which is its own: a local named `sec` neither shadows the
-unit `sec` nor is shadowed by it. The literal is its unit's
-component's quantity at the literal's own unit: `3sec` is a `Span in
-sec`, `5nsec` a `Span`, `3bp` a `Rate`. A literal of a unit no `unit`
-declares, or of a unit whose component has no quantity, is refused at
-the literal.
+A **quantity literal** (`3bp`, `1_250_000USD`, `500msec`, `500ms`: an
+integer adjacent to a unit name, decision 3) names its unit in the
+units' namespace, which is its own: a local named `sec` neither
+shadows the unit `sec` nor is shadowed by it. The literal is its
+unit's component's quantity, at the quantity's denomination when the
+literal is a whole count of it (U4): `3sec` is 3,000,000,000 of
+`Span`, `1_250_000USD` 125,000,000 of `Money`, `3bp` 3 of `Rate`, and
+`500ms` 500,000,000 of `Duration`. What must be whole is the
+literal's count there, its value times its unit's factor, not the
+factor alone: in a `Mass` counted in grams, `1000mg` is 1 of `Mass`,
+and with `unit tick = 1/1000 ns;`, `1000tick` is 1 of `Duration`. A
+literal that is no whole count of its quantity's denomination is at
+its own unit: `5mg` and `1500mg` are each a `Mass in mg`. A whole
+count no `Int` holds (`10000000000s` is 10^19 nanoseconds) is
+refused at the literal, never wrapped and never kept at its own
+unit. A literal of a unit no `unit` declares, or of a unit whose
+component has no quantity, is refused at the literal.
 
 Where a literal flows (a binding, an argument, a return, an operand,
 a field or a default), it is **converted at compile time**: its row
@@ -486,15 +509,14 @@ holds its count in the denomination it flows into, which lowering
 emits as a constant. A whole number of that denomination is exact; one
 that is not is a narrowing like any other (§ Conversions), which the
 target's `round:` discharges or the check refuses. Literal arithmetic
-is not folded: `3sec + 500msec` is two converted constants, `3000` and
-`500` milliseconds, and an addition. The duration suffixes (`ns us ms
-s m h d`) are still `Duration` literals.
+is not folded: `3sec + 500msec` is two constants, 3,000,000,000 and
+500,000,000 of `Span`, and an addition.
 
 ```hale,fragment
 let d: Span = 3sec;        // the constant 3000000000
 let b: Bucket = 150msec;   // 1: Bucket rounds down
 let s: Seconds = 2_000msec; // 2, exact
-let t: Seconds = 1_500msec; // error: `Seconds` from `Span in msec` divides by 1,000: say what happens
+let t: Seconds = 1_500msec; // error: `Seconds` from `Span` divides by 1,000,000,000: say what happens
                             // to the remainder: convert explicitly (…), or give `Seconds` a `round:` policy
 let q = 3xyz;              // error: `3xyz`: no `unit` declares `xyz`
 ```
@@ -519,12 +541,12 @@ any other `Int` reaches a quantity by a unit (`n * 1cent`), and a
 quantity's count in a unit is a quotient (`q / 1cent`).
 
 ```hale,fragment
-let d = 3sec + 500msec;           // Span in msec: 3500
+let d = 3sec + 500msec;           // Span: 3500000000
 let n: Int = d / 1msec;           // 3500
-let fee = 1_250_000USD * 3bp;     // Money in 1/100 cent: 3750000, exact
+let fee = 1_250_000USD * 3bp;     // Money in 1/10000 cent: 375000000, exact
 let spread = ask - bid;           // Tick
 let mid = bid + (spread / 2 or floor);
-let bad = 5msec + 4KiB;           // error: `Span in msec` + `ByteCount in KiB`: different
+let bad = 5msec + 4KiB;           // error: `Span` + `ByteCount`: different
                                   // quantities, `Span` and `ByteCount`; `+` holds within one
 let no = bid + ask;               // error: `Price` + `Price`: two points do not add; …
 ```
@@ -583,12 +605,12 @@ there, or `or floor` on a range's narrowing, is refused.
   is refused.
 
 ```hale,fragment
-let whole = d.in(sec) or 0;           // 3500 msec is no whole number of seconds: 0
+let whole = d.in(sec) or 0;           // 3.5 seconds is no whole number of them: 0
 let secs  = d.in(sec) or floor;       // 3sec
-let (sec_count, rest) = d.split(sec); // 3 and 500msec
-let odd   = 1_234_567USD * 3bp;       // Money in 1/100 cent: 3703701, exact
+let (sec_count, rest) = d.split(sec); // 3 and 500000000nsec
+let odd   = 1_234_567USD * 3bp;       // Money in 1/10000 cent: 370370100, exact
 let paid: Ledger = odd;               // 37037 cent: Ledger's half_even
-let bad: Money = odd;                 // error: `Money` from `Money in 1/100 cent` divides by 100: …
+let bad: Money = odd;                 // error: `Money` from `Money in 1/10000 cent` divides by 10,000: …
 let k = Kelvin(Celsius(100_000mK));   // 373150 mK
 ```
 
@@ -596,23 +618,29 @@ An **array literal** holding a quantity or a point is typed element by
 element. Where the array's type is known (an annotated binding, an
 argument, a return, a struct field, a default), each element flows into
 the element type from its own type, with its own row: `[3cent, 2USD]`
-into `[Money; 2]` holds 3 and 200 cents, `[3USD, 2cent]` 300 and 2. An
-element that narrows is refused at that element, or discharged by the
-element type's `round:`, as a binding's value is. Where nothing types
-the array (`let a = [1sec, 1_500msec];`), its elements meet as a sum's
-operands do: it is an array of the quantity at the finer of their
-denominations, `[Span in msec; 2]`, each coarser element widened
-exactly (1000 and 1500 milliseconds). Elements of two quantities, a
-quantity beside a point or an `Int`, and two points of different
-origins have no meet, and are refused at the array, naming both. A
-nested array literal meets at each level. An array with no quantity or
-point among its elements is its first element's type.
+into `[Money; 2]` holds 3 and 200 cents, `[3USD, 2cent]` 300 and 2
+(each literal a count of `Money` already), and a value at another
+denomination beside them converts from its own. An element that
+narrows is refused at that element, or discharged by the element
+type's `round:`, as a binding's value is. Where nothing types the
+array (`let a = [3g, 1_500mg];`, a `Mass` counted in grams), its
+elements meet as a sum's operands do: it is an array of the quantity
+at the finer of their denominations, `[Mass in mg; 2]`, each coarser
+element widened exactly (3000 and 1500 milligrams). Elements all of
+one type meet at it and convert none: `[1sec, 1_500msec]` is two
+literals of `Span`, and `[1s, 500ms]` two of `Duration`. Elements of
+two quantities, a quantity beside a point or an `Int`, and two points
+of different origins have no meet, and are refused at the array,
+naming both. A nested array literal meets at each level. An array
+with no quantity or point among its elements is its first element's
+type.
 
 ```hale,fragment
 let a: [Money; 2] = [3cent, 2USD];       // 3 and 200 cents
 let b: [Money; 2] = [3USD, 2cent];       // 300 and 2 cents
-let s: [Seconds; 2] = [1sec, 1_500msec]; // error at `1_500msec`: `Seconds` from `Span in msec` divides by 1,000: …
-let m = [1sec, 1_500msec];               // [Span in msec; 2]: 1000 and 1500
+let s: [Seconds; 2] = [1sec, 1_500msec]; // error at `1_500msec`: `Seconds` from `Span` divides by 1,000,000,000: …
+let m = [3g, 1_500mg];                   // [Mass in mg; 2]: 3000 and 1500
+let t = [1sec, 1_500msec];               // [Span; 2]: no element converts
 let x = [1sec, 3cent];                   // error: `[…]`: elements of different quantities, `Span` and `Money`;
                                          // an array holds one
 ```
@@ -623,8 +651,8 @@ element of an array literal into the element type, so `p: [Money; 2] =
 [3USD, 2USD]` holds 300 and 200 cents and an element that narrows is
 the law's as the binding's would be; a default holding a quantity that
 does not flow (a tuple's part at another denomination, as for a
-binding) is refused at the default: "field `t`: declared `(Money,
-Int)`, default is `(Money in USD, Int)`".
+binding) is refused at the default: `t: (Mass, Int) = (1_500mg, 1)`,
+"field `t`: declared `(Mass, Int)`, default is `(Mass in mg, Int)`".
 
 A position the checker does not classify refuses a value counted in a
 denomination no declaration names, with a located error, and never
@@ -637,13 +665,17 @@ monomorph is named by declared types), two arms of an `if` or a
 
 A quantity **prints** as its count and its denomination: the unit
 when the denomination is one of a unit (`1500msec`), else its type
-(`3 Bucket`, `3703701 Money in 1/100 cent`); a point prints as its
+(`3 Bucket`, `370370100 Money in 1/10000 cent`); a point prints as its
 count. Printing in another unit is `.in(u)` first. A quantity inside a
-record or a sequence prints as its count.
+record or a sequence prints as its count. The stdlib's `Duration`
+prints as it always has, its nanoseconds (`1500000000ns`), and `Time`
+its instant (`2026-05-08T12:00:00Z`): decision 8, its class's own
+rendering; `d.in(ms) or floor` prints `1500ms`.
 
 Wherever a type reaches a representation, a quantity or a point is its
 `Int`: a hashmap key and a routing key, a flat payload's field, an FFI
-`Int`. On the wire (decision 9) a quantity's or a point's field is its
+`Int`. The stdlib's `Duration` and `Time` are their own class there,
+as they always were. On the wire (decision 9) a quantity's or a point's field is its
 integer, tagged by its denomination in the topic's shape string: `q(`
 the denomination as its nearest declaration writes it `)` (`q(cent)`,
 `q(100 msec)`), a point's adding `point` and its origin when one is
@@ -665,35 +697,100 @@ a positive one for `ceil`; away from zero at half or more for
 `half_even`), or for a checked discharge the remainder's test, the
 quotient on one path and the `InexactError` on the other, joined by
 the `or`. A literal is its row's count. A value converted where it
-stands has its row at its span. A row is read from the body being
-emitted, the declaration the checker recorded it in, and never from
-another (a stdlib body's spans overlap the first file's). A constant's
+stands has its row at its span. An arithmetic operator has its row at
+its span, its result's type, which says what representation the
+operation is emitted in (`Int * Duration` a `Duration`, `Time - Time`
+a `Duration`). A row is read from the body being emitted, the
+declaration the checker recorded it in, and never from another (a
+stdlib body's spans overlap the first file's). A constant's
 initializer, lowered again at each use, is its own evaluation: its rows
 are the constant's, on no evaluation path, wherever it is read, a
-default's included. A literal with no row is a missing required row,
-refused where it is written.
+default's included. A literal with no row
+is a missing required row, refused where it is written, save in a body
+the checker types no row in (the stdlib's own): there a time literal
+is its count from the stdlib's catalogue, the literal's own row in
+every program.
+
+## The stdlib's time catalogue
+
+The stdlib's seed (`std::time`, `hale-stdlib/hl/time.hl`) declares the
+time catalogue and the two time types, as a program declares its own
+(GH #1076, step U4):
+
+```hale
+unit ns;
+unit us = 1_000 ns;
+unit ms = 1_000 us;
+unit s = 1_000 ms;
+unit min = 60 s;
+unit h = 60 min;
+unit day = 24 h;
+
+type Duration = quantity Int in ns;
+type Time = point Duration;
+```
+
+Its rows are the first of every program's (§ The rows), in the
+stdlib's universe. A type position reads `Duration` and `Time` as
+these declarations: their scalar rows name the primitive each is
+(`ScalarRow::primitive`), so a value keeps the representation class
+the primitives always had: i64 nanoseconds (a `Time`, since the epoch
+the runtime defines; the point has no `origin:`), printed as it always
+was (`1500000000ns`, an ISO-8601 instant), a topic field tagged `u`
+and `t` (so no shape hash, payload hash or observer hash moves), its
+own FFI class, the runtime's nanosecond entry points. Every
+`std::time` function takes and returns them as before.
+
+What the declarations change is who decides. A time literal is a
+quantity literal of one of these units (`500ms` is 500,000,000 of
+`Duration`, the catalogue's factor; the lexer knows no suffix); the
+algebra of quantities and points types their arithmetic (`Duration ±
+Duration`, `Int * Duration`, `Duration / Int`, `Time ± Duration`,
+`Duration + Time`, `Time - Time`, the comparisons; everything else is
+refused naming both), and lowering emits each operator as its row
+says; `.in(u)`, `.split(u)`, `Duration(x)` and `Time(x)` are the
+dialect's conversions (`d.in(ms) or floor` is a `Duration in ms`,
+printed `1500ms`). The names are `ns us ms s min h day` (decision 4):
+`m` and `d` are no time units: `5m` is refused, the message saying
+minutes are `min`; `3d` is the Decimal `3`, and no unit may be named
+`d` (law 11); `1h30m` is refused as one literal of several units, the
+message saying to write `1h + 30min`. A program's unit may join the
+component by an equation against one of these (`unit tick = 10
+ms;`), and never take one's name (law 1). Two quotients changed with
+the declarations (U4's second correction, decision 5): `Duration /
+Duration` is the `Int` every quantity's quotient by itself is (`1h /
+1min` is 60), and a `Duration` divided by an integer literal other
+than one is a narrowing like any quantity's, its `or` saying what
+becomes of the remainder (`timeout / 2 or floor`); a runtime divisor
+is the integer division it always was.
 
 ## Identities and equations
 
-A node is a snapshot `SiteId`. An equation has its own declaration
-`SiteId` and states that one unit at `from` equals `p/q` units at `to`.
-Display names and source spans do not participate in identity.
-Duplicate identities and references to undeclared nodes are errors.
-An isolated declared node is a valid component.
+A node is a unit declaration's identity, a `SiteRef`: the universe
+that minted the declaration and its `SiteId` there (`unit_graph::UnitId`,
+U4). An equation has its own declaration identity and states that one
+unit at `from` equals `p/q` units at `to`. Display names and source
+spans do not participate in identity. Duplicate identities and
+references to undeclared nodes are errors. An isolated declared node
+is a valid component.
 
 Factors are positive, reduced, arbitrary-precision rationals. Zero
 and negative factors are rejected when a ratio is constructed. Point
 origins are not multiplicative unit equations.
 
-**A program's catalogue.** The unit rows close their catalogue over
-each unit declaration's `SiteId` and each equation's. The number one
-(`unit pct = 1/100;`) is one more node, under an identity the
-snapshot's mint never issues (seed `u32::MAX`; seeds are numbered
-from zero, one per seed). That keeps the choice inside the rows: the
-API knows only `SiteId`s and has no notion of a pure number, and no
-declaration can collide with it. A stdlib catalogue would need
-identities apart from the program's, since the stdlib's analysis
-copy numbers its sites on its own; the stdlib declares no unit yet.
+**A program's catalogue.** The unit rows close one catalogue over the
+stdlib's time catalogue and the program's units: each unit
+declaration's identity and each equation's. The stdlib's analysis copy
+numbers its sites on its own, from seed 0 and index 0 as the snapshot
+does, so a stdlib unit and a program's can share a `SiteId`; their
+universes keep them two nodes, and the stdlib's catalogue and a
+program's are disjoint components unless the program writes an
+equation against a stdlib unit. The number one (`unit pct = 1/100;`)
+is one more node, under an identity no mint issues (seed `u32::MAX`
+in the program's universe; seeds are numbered from zero, one per
+seed). That keeps the choice inside the rows: the API knows only unit
+identities and has no notion of a pure number, and no declaration can
+collide with it.
 
 ## Closure and conversion
 

@@ -132,17 +132,43 @@ you can't accidentally launder exactness away.
 
 ## Duration — time spans with units
 
-A duration is a length of time, written with a unit suffix:
+A duration is a length of time, written with a unit: `ns`, `us`,
+`ms`, `s`, `min`, `h` or `day`.
 
 ```hale,fragment
 let timeout = 5s;
 let frame   = 16ms;
-let day      = 24h;
-let compound = 1h + 30m;       // durations add up
+let shift    = 8h;
+let week     = 7day;
+let compound = 1h + 30min;      // durations add up
 ```
 
+A literal has one unit, so a mixed span is a sum: `1h30m` is refused,
+the message saying to write `1h + 30min`. Minutes are `min` (`5m` is
+refused and says so), and a day is `day`: `3d` is the Decimal `3`
+(above), never three days.
+
 No more "is this milliseconds or seconds?" — the unit is part of
-the literal. Durations do arithmetic and comparison:
+the literal. Those units are not built into the compiler: the standard
+library declares them, the way a program declares its own units
+(`unit tick = 10 ms;` joins them), and `Duration` is the quantity they
+count, in nanoseconds:
+
+```hale,fragment
+unit ns;
+unit us = 1_000 ns;
+unit ms = 1_000 us;
+unit s = 1_000 ms;
+unit min = 60 s;
+unit h = 60 min;
+unit day = 24 h;
+type Duration = quantity Int in ns;
+type Time = point Duration;
+```
+
+So every duration literal is a count of nanoseconds (`16ms` is
+16,000,000), and a duration prints as one: `println(frame)` shows
+`16000000ns`. Durations do arithmetic and comparison:
 
 ```hale,fragment
 let total = timeout + frame;
@@ -154,12 +180,20 @@ number of units arrives at runtime (a computed retry count, a
 millisecond value from an FFI boundary):
 
 ```hale,fragment
-let backoff = tries * 100ms;    // Int * Duration → Duration
-let half    = timeout / 2;      // Duration / Int → Duration
+let backoff = tries * 100ms;            // Int * Duration → Duration
+let slice   = timeout / workers;        // Duration / Int → Duration
+let half    = timeout / 2 or floor;     // a literal divisor: say how to round
+let frames  = timeout / frame;          // Duration / Duration → Int
 fn sleep_ms(ms: Int) { std::time::sleep(ms * 1ms); }
 ```
 
-(`Duration * Duration` is rejected — ns² isn't a thing.)
+Dividing by a number you wrote down is a question with a remainder
+(5s / 3 is not a whole number of nanoseconds), so the program says
+what happens to it: `or floor`, `or ceil`, `or trunc`, `or half_up`,
+`or half_even`, or `or <value>` for a duration to use when it does
+not divide evenly. A divisor known only at run time divides as
+integers do. Two durations divide to a plain count. (`Duration *
+Duration` is rejected — ns² isn't a thing.)
 
 This is also what the runtime's sleep takes:
 
@@ -184,7 +218,7 @@ two instants differ by one — those are the only arithmetic it admits —
 and it orders:
 
 ```hale,fragment
-let deadline = launch + 30m;
+let deadline = launch + 30min;
 let slack = deadline - std::time::current();    // a Duration
 if std::time::current() > deadline { escalate(); }
 println(deadline);                                // 2026-05-08T12:30:00Z
@@ -255,9 +289,10 @@ Identities and ranges` has every rule.
 
 ## Your own units
 
-`Duration` is not the only number with a unit. Money is counted in
-cents, sizes in bytes, rates in basis points, and a program declares
-those units and the integer types counted in them:
+`Duration` is not the only number with a unit, and its units are
+declared the way a program declares its own (above). Money is counted
+in cents, sizes in bytes, rates in basis points, and a program
+declares those units and the integer types counted in them:
 
 ```hale
 unit cent;
@@ -281,13 +316,14 @@ fn main() {
 A `unit` is a name and, optionally, what it equals: one `USD` is
 100 `cent`, and `bp` is a hundredth of a percent, itself a hundredth
 of the number one. A `quantity` counts an `Int` in one of them. A
-literal names its unit with no space, `3bp`, `1_250_000USD`.
+literal names its unit with no space, `3bp`, `1_250_000USD`, and
+counts in its quantity's unit: `1_250_000USD` is 125,000,000 cents.
 
 Arithmetic keeps every value **exact**. `fee` is not rounded to
 cents: multiplying money by a rate gives money counted in the product
-of the two units, here a hundredth of a cent, and it prints that way
-(`3750000 Money in 1/100 cent`). Rounding happens only where you
-say so, and you have to say so wherever a value goes somewhere
+of the two units, here a ten-thousandth of a cent, and it prints that
+way (`375000000 Money in 1/10000 cent`). Rounding happens only where
+you say so, and you have to say so wherever a value goes somewhere
 coarser:
 
 - a type with `{ round: … }` (here `Ledger`, `half_even`) rounds what
@@ -298,32 +334,25 @@ coarser:
   cents.
 
 `let bad: Money = odd;` is an error: `Money` has no policy, and the
-message says the division by 100 has a remainder to decide about.
+message says the division by 10,000 has a remainder to decide about.
 
-Time works the same way. Until `Duration` itself becomes one of these
-declarations, its suffixes are taken (`5ms` is a `Duration`), so
-spell the units yourself:
+Time works the same way, because `Duration` and `Time` are these
+declarations too (the standard library's, above): a quantity counted in
+nanoseconds and a point over it.
 
 ```hale
-unit nsec;
-unit usec = 1_000 nsec;
-unit msec = 1_000 usec;
-unit sec = 1_000 msec;
-
-type Span    = quantity Int in nsec;
-type Instant = point Span;
-type Bucket  = Span in 100 msec { round: floor; }
+type Bucket = Duration in 100ms { round: floor; }
 
 fn main() {
-    let d = 3sec + 500msec;           // 3500msec: the finer unit wins
-    let whole = d.in(sec) or floor;   // 3sec
-    let (s, rest) = d.split(sec);     // 3 and 500msec, nothing lost
-    let n: Int = d / 1msec;           // 3500
+    let d = 3s + 500ms;               // 3500000000ns: a Duration counts nanoseconds
+    let whole = d.in(s) or floor;     // 3s: the policy says what becomes of the rest
+    let (secs, rest) = d.split(s);    // 3 and 500000000ns, nothing lost
+    let n: Int = d / 1ms;             // 3500: two durations divide to a count
     let b: Bucket = d;                // 35 buckets of 100ms
-    let start = Instant(1_000sec);
+    let start = Time(1_000s);
     let later = start + d;            // a point moves by a quantity
     let took = later - start;         // and two points differ by one
-    println(d, " ", whole, " ", s, " ", rest, " ", n, " ", b, " ", took);
+    println(d, " ", whole, " ", secs, " ", rest, " ", n, " ", b, " ", took);
 }
 ```
 
@@ -333,24 +362,27 @@ is a point, and two points do not add. A point may declare where its
 zero is (`type Celsius = point TempDelta { origin: 273_150 mK; }`),
 and `Kelvin(c)` converts across the two zeros.
 
-An array literal may mix units of one quantity. Each element is
-converted from its own unit: `let a: [Money; 2] = [3cent, 2USD];` holds
-3 and 200 cents. With no type to fit, `[1sec, 1_500msec]` is counted
-in the finer unit, as a sum is: 1000 and 1500 milliseconds.
+An array literal may mix units of one quantity. Each literal counts in
+its quantity's unit, so `let a: [Money; 2] = [3cent, 2USD];` holds 3
+and 200 cents and `[1s, 500ms]` is two `Duration`s. A value at another
+unit is converted from its own: with no type to fit, `[whole, 500ms]`
+is counted in the finer unit, as a sum is: both in nanoseconds.
 
 Mixing kinds is an error at the operator, naming both declarations:
 `5msec + 4KiB` adds time to bytes, `bid + ask` adds two prices,
 `d > 0` compares a span with a bare number (write `d > 0msec`). An
 `Int` becomes a quantity by a unit (`n * 1cent`), and a quantity's
 count is a quotient (`q / 1cent`). `spec/units.md § Quantities and
-points` has every rule. One restriction until `Duration` is one of
-these declarations: a unit may not be named `ns`, `us`, `ms`, `s`,
-`m`, `h` or `d`.
+points` has every rule. The standard library declares the time units
+(`ns` … `day`), so a program's own unit takes another name, or joins
+them by what it equals (`unit tick = 10 ms;`).
 
 ## Why these are in the language
 
 `Decimal`, `Duration`, and `Time` aren't library types you opt
-into — they're primitives with their own literals. The reason is
+into — `Decimal` is a primitive with its own literal, and `Duration`
+and `Time` are declared by the standard library for every program,
+with the time units' literals. The reason is
 that the bugs they prevent (float drift in money, unit confusion
 in time) are *so common* and *so costly* that making them
 first-class is worth it. You get the safety without importing

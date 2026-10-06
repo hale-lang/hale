@@ -1,0 +1,28 @@
+// std::time: the time catalogue, and `Duration` and `Time` (GH #1076, U4).
+//
+// The two time types are declarations of the unit dialect, not types
+// the compiler knows by heart: the units are a catalogue like any a
+// program declares, a literal's suffix (`500ms`, `2min`) is one of
+// these units, and the algebra that types a program's quantities and
+// points types these two. A program's units join this catalogue only
+// through an equation it writes against one of these (`unit tick =
+// 10 ms;`).
+//
+// `Duration` and `Time` keep their representation: a value is a count
+// of nanoseconds (a `Time`, since the epoch the runtime defines; the
+// point has no `origin:` clause), a topic field of one is tagged `u`
+// and `t` as it always was, and a `Duration` prints its nanoseconds
+// (`1500000000ns`).
+unit ns;
+unit us = 1_000 ns;
+unit ms = 1_000 us;
+unit s = 1_000 ms;
+unit min = 60 s;
+unit h = 60 min;
+unit day = 24 h;
+
+/// A span of time, counted in nanoseconds.
+type Duration = quantity Int in ns;
+
+/// An instant, a count of nanoseconds since the epoch.
+type Time = point Duration;

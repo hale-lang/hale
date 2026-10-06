@@ -1,16 +1,16 @@
 //! The unit dialect's declaration layer (GH #1076, U1).
 //!
 //! A program declares units (`unit us = 1_000 ns;`) and the scalar types
-//! counted in them (`type Money = quantity Int in cent;`).
+//! counted in them (`type Money = quantity Int in cent;`), and so does
+//! the stdlib's seed: the time catalogue and `Duration` and `Time` (U4).
 //! [`derive_unit_rows`] makes one row per declaration (the
-//! `unit_declarations` family), resolves every unit a declaration names,
-//! and closes the program's catalogue from the equations
+//! `unit_declarations` family), the stdlib's first, each keyed by its
+//! site in the universe that minted it, resolves every unit a
+//! declaration names, and closes one catalogue from the equations
 //! ([`UnitGraph::close`]). [`unit_laws`] judges the rows, each law a
 //! registered rule of `spec/verification.md`'s structural table, and is
-//! the one entry the check runs.
-//!
-//! Values of the new types are not typed yet: [`value_not_yet`] is the
-//! one error a use of one gets, wherever a value would live.
+//! the one entry the check runs. The values of the scalar types are
+//! typed by [`crate::unit_values`] and [`crate::unit_quantities`].
 
 use std::collections::BTreeMap;
 
@@ -19,15 +19,14 @@ use hale_syntax::ast::{
     flat_decls, Expr, Literal, PrimType, ScalarClause, ScalarDecl, ScalarKind, TopDecl, TypeDecl, TypeDeclBody,
     TypeExpr, UnaryOp, UnitDecl,
 };
-use hale_syntax::lexer::DURATION_SUFFIXES;
 use hale_syntax::{Diag, Span};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 
 use crate::law::{Law, RuleId, Violation};
-use crate::placement::SiteRef;
+use crate::placement::{SiteRef, SiteUniverse};
 use crate::stdlib_surface::nearest_name;
-use crate::unit_graph::{CatalogueError, Denom, Equation, Ratio, UnitGraph};
+use crate::unit_graph::{CatalogueError, Denom, Equation, Ratio, UnitGraph, UnitId};
 use crate::Bundle;
 
 /// Law 1: a unit declared twice.
@@ -49,15 +48,22 @@ const CLAUSES: RuleId = RuleId::registered("verification/structural", "round-and
 const BASES: RuleId = RuleId::registered("verification/structural", "identity-and-range-bases");
 /// Law 9: a refinement of a struct, an enum, or nothing.
 const REFINEMENT: RuleId = RuleId::registered("verification/structural", "refinement-of-a-scalar");
-/// Law 10: a unit named like a duration literal's suffix.
-const DURATION_NAME: RuleId = RuleId::registered("verification/structural", "unit-named-like-a-duration-suffix");
+/// Law 11: a unit named like a suffix the lexer reads before a unit.
+const LITERAL_SUFFIX: RuleId = RuleId::registered("verification/structural", "unit-named-like-a-literal-suffix");
+
+/// The unit names the time catalogue once had and has no more (U4),
+/// each with the name it is now and what it counts: `5m` was five
+/// minutes. `d` is none of them: `3d` is the Decimal `3`, and no unit
+/// may take its name (law 11).
+const RETIRED_UNITS: [(&str, &str, &str); 1] = [("m", "min", "minutes")];
 
 /// The number one, as a node of the program's catalogue: the target of
 /// an equation written against a number (`unit pct = 1/100;`). It is an
-/// identity the snapshot's mint never issues (seeds are numbered from
-/// zero, one per seed), so no declaration has it, and the catalogue's
-/// API, which knows only `SiteId`s, needs no notion of it.
-const PURE_NUMBER: SiteId = SiteId::new(SeedId(u32::MAX), u32::MAX);
+/// identity no mint issues (seeds are numbered from zero, one per
+/// seed), so no declaration has it, and the catalogue's API, which
+/// knows only unit identities, needs no notion of it.
+const PURE_NUMBER: UnitId =
+    SiteRef { universe: SiteUniverse::User, id: SiteId::new(SeedId(u32::MAX), u32::MAX) };
 
 /// Every unit-dialect declaration of the programs, resolved, and the
 /// catalogue closed from them.
@@ -94,7 +100,7 @@ pub struct UnitRow {
     /// Its component: the lowest unit row connected to it by the
     /// equations whose target is declared.
     pub component: usize,
-    /// Whether its component holds the number one (law 11): every unit
+    /// Whether its component holds the number one (law 10): every unit
     /// written against a number is in this one component.
     pub dimensionless: bool,
 }
@@ -206,12 +212,118 @@ impl UnitRows {
     pub fn unit_named(&self, name: &str) -> Option<usize> {
         self.units.iter().position(|u| u.name == name)
     }
+
+    /// The declared unit nearest a misspelled `name`, the program's own
+    /// before the stdlib's (U4): a program that declares `mK` and writes
+    /// `K` meant its own, whatever the time catalogue holds.
+    pub fn nearest_unit(&self, name: &str) -> Option<String> {
+        let of = |universe: SiteUniverse| self.units.iter().filter(move |u| u.site.universe == universe).map(|u| u.name.as_str());
+        nearest_name(name, of(SiteUniverse::User)).or_else(|| nearest_name(name, of(SiteUniverse::StdlibAnalysis)))
+    }
+
+    /// What a message about the undeclared unit `name` ends with: what a
+    /// retired name is now (`m`: minutes are `min`), before the nearest
+    /// declared unit by spelling, which for `m` is `ms`.
+    pub fn unknown_unit_hint(&self, name: &str) -> String {
+        match RETIRED_UNITS.iter().find(|r| r.0 == name) {
+            Some((_, now, what)) => format!("; {what} are `{now}`"),
+            None => self.nearest_unit(name).map(|n| format!("; did you mean `{n}`?")).unwrap_or_default(),
+        }
+    }
+
+    /// A literal that writes several units in one token (`1h30m`, lexed as
+    /// `1` of a unit `h30m`): a declared unit, then digits. The refusal,
+    /// saying the sum to write instead (`1h + 30min`), a retired name in
+    /// it written as it is now; `None` when the unit is of another shape.
+    pub fn compound_literal(&self, value: i64, unit: &str) -> Option<String> {
+        let first = unit.find(|c: char| c.is_ascii_digit())?;
+        self.unit_named(&unit[..first])?;
+        let mut sum = vec![format!("{value}{}", &unit[..first])];
+        let mut rest = &unit[first..];
+        while !rest.is_empty() {
+            let (digits, tail) = rest.split_at(rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len()));
+            let (name, next) = tail.split_at(tail.find(|c: char| c.is_ascii_digit()).unwrap_or(tail.len()));
+            if name.is_empty() {
+                return Some(format!("`{value}{unit}`: a quantity literal has one unit; write a sum, one unit to each literal"));
+            }
+            let name = RETIRED_UNITS.iter().find(|r| r.0 == name).map_or(name, |r| r.1);
+            sum.push(format!("{digits}{name}"));
+            rest = next;
+        }
+        Some(format!("`{value}{unit}`: a quantity literal has one unit; write `{}`", sum.join(" + ")))
+    }
+
+    /// The component's one quantity: what a literal of one of its units
+    /// is, and what two points of it differ by.
+    pub fn principal(&self, component: usize) -> Option<usize> {
+        self.scalars.iter().position(|s| s.principal && s.component == Some(component))
+    }
+
+    /// A literal `value` of the unit row `unit` at its quantity's
+    /// denomination (`500ms` is 500,000,000 of `Duration`, `1000mg` one
+    /// of a `Mass` in g): the quantity's row and the count, when the
+    /// literal is a whole count of that denomination, whatever the unit's
+    /// factor (`5mg` is not one); `None` otherwise, when the literal is
+    /// counted in its own unit. The count is `Err` when it is whole and
+    /// no `Int` holds it, which is refused, never wrapped.
+    pub fn literal_at_quantity(&self, value: i64, unit: usize) -> Option<(usize, Result<i64, ()>)> {
+        let p = self.principal(self.units[unit].component)?;
+        let to = self.scalars[p].denomination.as_ref()?;
+        let one = Denom { unit: self.units[unit].site, multiple: Ratio::one() };
+        let f = self.catalogue.as_ref()?.factor(&one, to)?;
+        let count = BigRational::new(BigInt::from(value) * f.numerator(), f.denominator().clone());
+        if !count.is_integer() {
+            return None;
+        }
+        Some((p, i64::try_from(count.to_integer()).map_err(|_| ())))
+    }
+}
+
+/// The stdlib's own rows, once per process: its time catalogue and
+/// `Duration` and `Time` (U4), as every program's rows begin with them.
+/// What a reader with no program's rows reads a time literal by: a
+/// `params` or `const` initializer read without the typed bodies, a
+/// body the checker types no row in (the stdlib's own), the resolver's
+/// literal typing.
+pub fn stdlib_rows() -> &'static UnitRows {
+    static ROWS: std::sync::OnceLock<UnitRows> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| derive_unit_rows(&Bundle::new(Default::default())))
+}
+
+/// A literal of one of the stdlib's units (`500ms`): its count of its
+/// quantity and that quantity's type (500,000,000 of `Duration`), the
+/// literal's own row in any program, which no program's declarations
+/// change (a program's unit is never the stdlib's: law 1). `None` for a
+/// unit the stdlib does not declare, or a count no `Int` holds.
+pub fn stdlib_literal(value: i64, unit: &str) -> Option<(i64, crate::ty::Ty)> {
+    let rows = stdlib_rows();
+    let (p, count) = rows.literal_at_quantity(value, rows.unit_named(unit)?)?;
+    Some((count.ok()?, rows.scalars[p].ty()))
+}
+
+impl ScalarRow {
+    /// The type a value of the declaration is: its primitive's for the
+    /// stdlib's `Duration` and `Time`, else the nominal type its name is.
+    pub fn ty(&self) -> crate::ty::Ty {
+        match self.primitive {
+            Some(p) => crate::ty::Ty::Prim(p),
+            None => crate::ty::Ty::Named(self.name.clone()),
+        }
+    }
 }
 
 /// A scalar `type` declaration, resolved.
 #[derive(Debug, Clone)]
 pub struct ScalarRow {
     pub site: SiteRef,
+    /// The primitive the declaration is (U4): the stdlib's `type
+    /// Duration = quantity Int in ns;` and `type Time = point
+    /// Duration;` declare the two names a type position reads as the
+    /// primitives `Duration` and `Time`, so their values keep that
+    /// representation class (the shape tags `u` and `t`, the printing,
+    /// the FFI classes) and the algebra answers for them. `None` for
+    /// every other declaration, which is the `Int` it counts.
+    pub primitive: Option<PrimType>,
     /// The declared name (an imported one mangled), and the name as its
     /// author spells it.
     pub name: String,
@@ -334,27 +446,52 @@ struct Names<'b> {
 }
 
 /// The `unit_declarations` family's producer: every `unit` and scalar
-/// `type` declaration of the bundle's programs (module-nested ones
-/// included), in program order, each by its declaration's site, every
-/// unit a declaration names resolved by name, and the catalogue closed
-/// from the equations whose units resolve. The stdlib declares no unit
-/// and no scalar yet.
+/// `type` declaration of the stdlib's seed (the time catalogue and
+/// `Duration` and `Time`, U4), then of the bundle's programs
+/// (module-nested ones included), in program order, each by its
+/// declaration's site in the universe that minted it (the stdlib's
+/// analysis copy's, the snapshot's), every unit a declaration names
+/// resolved by name, and the catalogue closed from the equations whose
+/// units resolve: one catalogue, whose components are the stdlib's and
+/// the program's own unless a program's equation names a stdlib unit.
 pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
     let mut rows = UnitRows::default();
-    let mut unit_decls: Vec<&UnitDecl> = Vec::new();
-    let mut scalar_decls: Vec<(&TypeDecl, &ScalarDecl, SiteId)> = Vec::new();
+    let mut unit_decls: Vec<(&UnitDecl, SiteRef, Option<SiteRef>)> = Vec::new();
+    let mut scalar_decls: Vec<(&TypeDecl, &ScalarDecl, SiteRef)> = Vec::new();
     let mut names = Names { types: BTreeMap::new(), scalars: BTreeMap::new(), others: BTreeMap::new() };
+    let mut sources: Vec<(&[TopDecl], SiteUniverse, &crate::snapshot::Snapshot)> = Vec::new();
+    if let (Some(p), Some(ids)) = (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
+        sources.push((&p.items, SiteUniverse::StdlibAnalysis, ids));
+    }
     for program in bundle.programs.values() {
-        for item in flat_decls(&program.items) {
+        sources.push((&program.items, SiteUniverse::User, &bundle.snapshot));
+    }
+    for (items, universe, ids) in sources {
+        let site = |node| ids.site_id(node).map(|id| SiteRef { universe, id });
+        for item in flat_decls(items) {
             match item {
-                TopDecl::Unit(u) => unit_decls.push(u),
-                TopDecl::Type(t) => {
-                    names.types.entry(t.name.name.as_str()).or_insert(t);
-                    if let (TypeDeclBody::Scalar(s), Some(site)) = (&t.body, bundle.snapshot.site_id(t.id)) {
-                        names.scalars.entry(t.name.name.as_str()).or_insert(scalar_decls.len());
-                        scalar_decls.push((t, s, site));
+                // The stdlib's other declarations are no base a program's
+                // scalar may name: only its scalars and units are read.
+                TopDecl::Unit(u) => {
+                    if let Some(at) = site(u.id) {
+                        unit_decls.push((u, at, u.equation.as_ref().and_then(|e| site(e.id))));
                     }
                 }
+                TopDecl::Type(t) if universe == SiteUniverse::StdlibAnalysis => {
+                    if let (TypeDeclBody::Scalar(s), Some(at)) = (&t.body, site(t.id)) {
+                        names.types.entry(t.name.name.as_str()).or_insert(t);
+                        names.scalars.entry(t.name.name.as_str()).or_insert(scalar_decls.len());
+                        scalar_decls.push((t, s, at));
+                    }
+                }
+                TopDecl::Type(t) => {
+                    names.types.entry(t.name.name.as_str()).or_insert(t);
+                    if let (TypeDeclBody::Scalar(s), Some(at)) = (&t.body, site(t.id)) {
+                        names.scalars.entry(t.name.name.as_str()).or_insert(scalar_decls.len());
+                        scalar_decls.push((t, s, at));
+                    }
+                }
+                _ if universe == SiteUniverse::StdlibAnalysis => {}
                 TopDecl::Locus(l) => {
                     names.others.entry(l.name.name.as_str()).or_insert("a locus");
                 }
@@ -372,24 +509,22 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
     // The units, then their equations: an equation may name a unit
     // declared after it.
     let mut by_name: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut declared: Vec<&UnitDecl> = Vec::new();
-    for u in unit_decls {
-        let Some(site) = bundle.snapshot.site_id(u.id) else { continue };
+    let mut declared: Vec<(&UnitDecl, Option<SiteRef>)> = Vec::new();
+    for (u, site, equation) in unit_decls {
         let i = rows.units.len();
         by_name.entry(u.name.name.as_str()).or_insert(i);
         rows.units.push(UnitRow {
-            site: SiteRef::user(site),
+            site,
             name: u.name.name.clone(),
             span: u.span,
             name_span: u.name.span,
             component: i,
             dimensionless: false,
         });
-        declared.push(u);
+        declared.push((u, equation));
     }
-    for (i, u) in declared.iter().enumerate() {
-        let Some(eq) = &u.equation else { continue };
-        let Some(site) = bundle.snapshot.site_id(eq.id) else { continue };
+    for (i, (u, site)) in declared.iter().enumerate() {
+        let (Some(eq), Some(site)) = (&u.equation, *site) else { continue };
         // The parser refuses a zero in either place.
         let Some(factor) = Ratio::new(BigInt::from(eq.num), BigInt::from(eq.den)) else { continue };
         let e = rows.equations.len();
@@ -401,7 +536,7 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
                 unit.map(Node::Unit)
             }
         };
-        rows.equations.push(EquationRow { site: SiteRef::user(site), unit: i, target, factor, span: eq.span });
+        rows.equations.push(EquationRow { site, unit: i, target, factor, span: eq.span });
     }
     components(&mut rows);
     close(&mut rows, &by_name);
@@ -437,7 +572,10 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
             }
         }
         rows.scalars.push(ScalarRow {
-            site: SiteRef::user(*site),
+            site: *site,
+            primitive: (site.universe == SiteUniverse::StdlibAnalysis)
+                .then(|| hale_syntax::parser::primitive_from_name(&t.name.name))
+                .flatten(),
             name: t.name.name.clone(),
             display: t.display.clone().unwrap_or_else(|| t.name.name.clone()),
             span: t.span,
@@ -495,7 +633,12 @@ fn bound(e: &Expr) -> Result<i128, Span> {
 fn base(te: &TypeExpr, names: &Names<'_>, depth: usize) -> Base {
     match te {
         TypeExpr::Primitive(PrimType::Int, _) => Base::Int,
-        TypeExpr::Primitive(p, _) => Base::Primitive(*p),
+        // `Duration` and `Time` are the stdlib's declarations (U4): a
+        // type position spells them as primitives.
+        TypeExpr::Primitive(p, _) => match names.scalars.get(crate::ty::prim_name(*p)) {
+            Some(i) => Base::Scalar(*i),
+            None => Base::Primitive(*p),
+        },
         TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
             let name = path.segments[0].name.as_str();
             if let Some(i) = names.scalars.get(name) {
@@ -593,7 +736,7 @@ fn settle(rows: &mut UnitRows, state: &mut [Settle], i: usize) {
     let written = row.written.denomination.and_then(|d| {
         let unit = rows.refs[d.unit].unit?;
         let multiple = Ratio::new(BigInt::from(d.multiple), BigInt::from(1))?;
-        Some((unit, Denom { unit: rows.units[unit].site.id, multiple }))
+        Some((unit, Denom { unit: rows.units[unit].site, multiple }))
     });
     let (component, denomination, of, origin) = match row.kind {
         ScalarKindRow::Quantity | ScalarKindRow::Point => {
@@ -606,7 +749,7 @@ fn settle(rows: &mut UnitRows, state: &mut [Settle], i: usize) {
             let origin = row.written.origin.and_then(|o| {
                 let unit = rows.refs[o.unit].unit?;
                 let d = denomination.as_ref()?;
-                let one = Denom { unit: rows.units[unit].site.id, multiple: Ratio::one() };
+                let one = Denom { unit: rows.units[unit].site, multiple: Ratio::one() };
                 let f = rows.catalogue.as_ref()?.factor(&one, d)?;
                 Some(
                     BigRational::from_integer(BigInt::from(o.value))
@@ -686,17 +829,17 @@ fn components(rows: &mut UnitRows) {
 /// declared. It is kept only when no catalogue law fails.
 fn close(rows: &mut UnitRows, by_name: &BTreeMap<&str, usize>) {
     let key = |node: Node| match node {
-        Node::Unit(j) => rows.units[j].site.id,
+        Node::Unit(j) => rows.units[j].site,
         Node::Pure => PURE_NUMBER,
     };
-    let units = rows.units.iter().map(|u| u.site.id).chain([PURE_NUMBER]);
+    let units = rows.units.iter().map(|u| u.site).chain([PURE_NUMBER]);
     let equations: Vec<Equation> = rows
         .equations
         .iter()
         .filter_map(|e| {
             Some(Equation {
-                site: e.site.id,
-                from: rows.units[e.unit].site.id,
+                site: e.site,
+                from: rows.units[e.unit].site,
                 to: key(e.target?),
                 factor: e.factor.clone(),
             })
@@ -721,7 +864,7 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
         Law { rule: CLAUSES, eval: clauses },
         Law { rule: BASES, eval: identity_and_range_bases },
         Law { rule: REFINEMENT, eval: refinement_bases },
-        Law { rule: DURATION_NAME, eval: duration_suffix_names },
+        Law { rule: LITERAL_SUFFIX, eval: literal_suffix_names },
     ];
     laws.iter().flat_map(|law| law.diags(rows)).collect()
 }
@@ -734,15 +877,21 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
 /// as an `Int`. A declaration over neither `Int` nor one of these and a
 /// refinement cycle are not: the resolver registers their names as
 /// `Unknown`, so a use of one is no second error beside the laws'.
+///
+/// The stdlib's `Duration` and `Time` (U4) are not among them: a type
+/// position reads those names as the primitives, which keep their own
+/// representation. A refinement of one (`Duration in ms { round: floor;
+/// }`) is, its chain read through the stdlib's declaration.
 pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std::collections::BTreeSet<&'a str> {
     let typed = |name: &'a str| -> bool {
         let mut at = name;
-        for _ in 0..=decls.len() {
-            let Some(s) = decls.get(at) else { return false };
+        for _ in 0..=decls.len() + 2 {
+            let Some(s) = scalar_decl(decls, at) else { return false };
             let named = |te: &'a TypeExpr| match te {
                 TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
                     Some(path.segments[0].name.as_str())
                 }
+                TypeExpr::Primitive(p, _) => Some(crate::ty::prim_name(*p)),
                 _ => None,
             };
             match (s.kind, &s.base, &s.denom) {
@@ -759,7 +908,22 @@ pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std:
         }
         false
     };
-    decls.keys().copied().filter(|n| typed(n)).collect()
+    decls.keys().copied().filter(|n| hale_syntax::parser::primitive_from_name(n).is_none() && typed(n)).collect()
+}
+
+/// The scalar declaration `name` names among `decls`, or else the
+/// stdlib's (`Duration`, `Time`: a reader given one program's
+/// declarations reaches the stdlib's through a refinement of either).
+fn scalar_decl<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>, name: &str) -> Option<&'a ScalarDecl> {
+    decls.get(name).copied().or_else(|| {
+        crate::stdlib_bodies::program()?.items.iter().find_map(|it| match it {
+            TopDecl::Type(t) if t.name.name == name => match &t.body {
+                TypeDeclBody::Scalar(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        })
+    })
 }
 
 /// A quantity's or a point's wire tag (decision 9, U3), by name, from the
@@ -770,14 +934,18 @@ pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std:
 /// denominations disagree in the tag, so in the shape hash. A name that
 /// is no quantity or point, or whose chain names no denomination, has
 /// none.
+///
+/// The stdlib's `Duration` and `Time` have none (U4): a field of either
+/// keeps its primitive's tag (`u`, `t`), so no existing topic's shape
+/// hash moves. A refinement of one is tagged by its chain, as any.
 pub fn quantity_tags<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<&'a str, String> {
     let tag = |name: &'a str| -> Option<String> {
         let mut at = name;
         let mut denom: Option<String> = None;
         let mut origin: Option<String> = None;
         let mut point = false;
-        for _ in 0..=decls.len() {
-            let s = decls.get(at)?;
+        for _ in 0..=decls.len() + 2 {
+            let s = scalar_decl(decls, at)?;
             if denom.is_none() {
                 denom = s.denom.as_ref().map(|d| match d.multiple {
                     1 => d.unit.name.clone(),
@@ -803,19 +971,42 @@ pub fn quantity_tags<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<
                     point |= kind == Some(ScalarKind::Point);
                     at = path.segments[0].name.as_str();
                 }
+                (kind, TypeExpr::Primitive(p, _)) if *p != PrimType::Int => {
+                    point |= kind == Some(ScalarKind::Point);
+                    at = crate::ty::prim_name(*p);
+                }
                 _ => return None,
             }
         }
         None
     };
-    decls.keys().filter_map(|n| Some((*n, tag(n)?))).collect()
+    decls
+        .keys()
+        .filter(|n| hale_syntax::parser::primitive_from_name(n).is_none())
+        .filter_map(|n| Some((*n, tag(n)?)))
+        .collect()
 }
 
 /// Law 1: a unit is declared once. At the second declaration's name; the
-/// witness is the first.
+/// witness is the first, or, for a unit of the stdlib's time catalogue
+/// (U4), the message names the catalogue: its declaration is in no file
+/// of the program.
 fn declared_twice(rows: &UnitRows, out: &mut Vec<Violation>) {
     for (i, u) in rows.units.iter().enumerate() {
         let Some(first) = rows.units[..i].iter().find(|f| f.name == u.name) else { continue };
+        if first.site.universe == SiteUniverse::StdlibAnalysis {
+            out.push(Violation::error(
+                DECLARED_ONCE,
+                u.name_span,
+                format!(
+                    "unit `{}` is declared twice: the stdlib's time catalogue declares `{}` (`std::time`), and a \
+                     unit is one node of the catalogue; write `{}` for that unit (`unit tick = 10 ms;` joins a \
+                     unit of the program's to it), or give this one another name",
+                    u.name, u.name, u.name
+                ),
+            ));
+            continue;
+        }
         out.push(
             Violation::error(
                 DECLARED_ONCE,
@@ -845,22 +1036,9 @@ fn named_by(rows: &UnitRows, at: RefAt) -> (String, &'static str) {
 fn undeclared_units(rows: &UnitRows, out: &mut Vec<Violation>) {
     for r in rows.refs.iter().filter(|r| r.unit.is_none()) {
         let (who, role) = named_by(rows, r.at);
-        let message = if DURATION_SUFFIXES.contains(&r.name.as_str()) {
-            format!(
-                "{who}: {role} names `{}`, a built-in duration suffix and no unit: no `unit` may take that name \
-                 until `Time` and `Duration` are declarations (GH #1076); declare a unit of another name (`{}`)",
-                r.name,
-                own_name(&r.name)
-            )
-        } else {
-            let suggestion = nearest_name(&r.name, rows.units.iter().map(|u| u.name.as_str()))
-                .map(|n| format!("; did you mean `{n}`?"))
-                .unwrap_or_default();
-            format!(
-                "{who}: {role} names `{}`, which no `unit` declares: declare it (`unit {};`){suggestion}",
-                r.name, r.name
-            )
-        };
+        let suggestion = rows.unknown_unit_hint(&r.name);
+        let message =
+            format!("{who}: {role} names `{}`, which no `unit` declares: declare it (`unit {};`){suggestion}", r.name, r.name);
         out.push(Violation::error(DECLARED_UNIT, r.span, message));
     }
 }
@@ -894,7 +1072,7 @@ fn equation_text(rows: &UnitRows, e: &EquationRow) -> String {
 /// equation the closure found inconsistent, stating what it claims; the
 /// witness is the other path, each step at its declaration.
 fn inconsistent_cycles(rows: &UnitRows, out: &mut Vec<Violation>) {
-    let by_site: BTreeMap<SiteId, usize> = rows.equations.iter().enumerate().map(|(i, e)| (e.site.id, i)).collect();
+    let by_site: BTreeMap<UnitId, usize> = rows.equations.iter().enumerate().map(|(i, e)| (e.site, i)).collect();
     for err in &rows.cycles {
         let CatalogueError::InconsistentCycle { equation, claimed, implied, cycle } = err else { continue };
         let Some(blamed) = by_site.get(equation).map(|i| &rows.equations[*i]) else { continue };
@@ -964,19 +1142,27 @@ fn second_quantity(rows: &UnitRows, out: &mut Vec<Violation>) {
             let Some(p) = rows.scalars.iter().find(|p| p.principal && p.component == Some(c)) else { continue };
             let Some(d) = s.written.denomination else { continue };
             let denom = denom_text(rows, &d);
-            out.push(
-                Violation::error(
-                    ONE_QUANTITY,
-                    s.name_span,
-                    format!(
-                        "type `{}`: the units of `{}` already have their quantity, `{}`: a component of the \
-                         catalogue has one quantity, and every other type over it is a denomination of that one; \
-                         write `type {} = {} in {denom};`, or give it a `round:` policy",
-                        s.display, rows.refs[d.unit].name, p.display, s.display, p.display
-                    ),
-                )
-                .step(p.name_span, format!("`{}` is that component's quantity, declared with no policy", p.display)),
+            let v = Violation::error(
+                ONE_QUANTITY,
+                s.name_span,
+                format!(
+                    "type `{}`: the units of `{}` already have their quantity, `{}`{}: a component of the catalogue \
+                     has one quantity, and every other type over it is a denomination of that one; write `type {} = \
+                     {} in {denom};`, or give it a `round:` policy",
+                    s.display,
+                    rows.refs[d.unit].name,
+                    p.display,
+                    if p.site.universe == SiteUniverse::StdlibAnalysis { " (the stdlib's, `std::time`)" } else { "" },
+                    s.display,
+                    p.display
+                ),
             );
+            // The stdlib's declaration is in no file of the program.
+            out.push(if p.site.universe == SiteUniverse::StdlibAnalysis {
+                v
+            } else {
+                v.step(p.name_span, format!("`{}` is that component's quantity, declared with no policy", p.display))
+            });
         }
         // A refinement written over a quantity, in a unit of another
         // component.
@@ -1343,36 +1529,21 @@ fn refinement_bases(rows: &UnitRows, out: &mut Vec<Violation>) {
     }
 }
 
-/// Law 10: no unit takes a built-in duration suffix's name, which the
-/// lexer reads as a duration literal (`5ms`) whatever is declared.
-fn duration_suffix_names(rows: &UnitRows, out: &mut Vec<Violation>) {
-    for u in rows.units.iter().filter(|u| DURATION_SUFFIXES.contains(&u.name.as_str())) {
-        out.push(Violation::error(
-            DURATION_NAME,
-            u.name_span,
-            format!(
-                "unit `{}`: `{}` is a built-in duration suffix, so `5{}` is a `Duration` literal and never this \
-                 unit: no `unit` may take one of {} until `Time` and `Duration` are declarations (GH #1076); name \
-                 it otherwise (`{}`)",
-                u.name,
-                u.name,
-                u.name,
-                DURATION_SUFFIXES.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", "),
-                own_name(&u.name)
-            ),
-        ));
-    }
-}
-
-/// A name a program may give the unit a duration suffix spells.
-fn own_name(suffix: &str) -> &'static str {
-    match suffix {
-        "ns" => "nsec",
-        "us" => "usec",
-        "ms" => "msec",
-        "s" => "sec",
-        "m" => "min",
-        "h" => "hr",
-        _ => "day",
+/// Law 11: no unit takes a name the lexer reads as part of a number
+/// before it reads a unit, which no literal could ever write: `d`, the
+/// Decimal literal's suffix (`3d` is the Decimal `3`), and an exponent,
+/// `e` or `E` and a digit (`3e5` is a Float).
+fn literal_suffix_names(rows: &UnitRows, out: &mut Vec<Violation>) {
+    for u in &rows.units {
+        let n = u.name.as_str();
+        let why = if n == "d" {
+            "a unit named `d` collides with the Decimal literal's suffix: `3d` is the Decimal `3`".to_string()
+        } else if n.len() > 1 && n.starts_with(['e', 'E']) && n.as_bytes()[1].is_ascii_digit() {
+            let exponent = n[1..].find(|c: char| !c.is_ascii_digit()).map_or(n, |i| &n[..i + 1]);
+            format!("a unit named `{n}` collides with a Float literal's exponent: `3{n}` reads as the Float `3{exponent}`")
+        } else {
+            continue;
+        };
+        out.push(Violation::error(LITERAL_SUFFIX, u.name_span, format!("unit `{n}`: {why}; give it another name")));
     }
 }

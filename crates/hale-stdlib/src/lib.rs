@@ -171,6 +171,11 @@ pub const AP_SOURCE: &str = concat!(
     // std::term::RawMode guard locus (pond P4 stage 3). Calls the
     // std::term::__raw_* path-call primitives; order-independent.
     include_str!("../hl/term.hl"),
+    "\n",
+    // GH #1076 (U4): the time catalogue and `Duration` and `Time`, as
+    // declarations. Last, so no other file's spans or sites move; the
+    // checker reads them from the analysis copy (`units::derive_unit_rows`).
+    include_str!("../hl/time.hl"),
 );
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
@@ -210,6 +215,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("bytes_builder.hl", include_str!("../hl/bytes_builder.hl")),
     ("mirror_ring.hl", include_str!("../hl/mirror_ring.hl")),
     ("term.hl", include_str!("../hl/term.hl")),
+    ("time.hl", include_str!("../hl/time.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,

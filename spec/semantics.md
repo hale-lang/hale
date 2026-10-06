@@ -4217,7 +4217,7 @@ window's accumulated value; the reset prepares the next window.
 ```hale
 closure low_corrupt_rate {
     self.corrupt_per_min ~~ 0 within 10;
-    epoch duration(1m);
+    epoch duration(1min);
     resets_per_epoch(corrupt_per_min);
 }
 ```

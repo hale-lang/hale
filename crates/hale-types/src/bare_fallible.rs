@@ -51,7 +51,10 @@ fn judge_narrowing((site, row): (ConversionSite, &ConversionRow)) -> Option<Diag
     }
     if let Some(scale) = &row.scale {
         let divisor = crate::unit_quantities::grouped(scale.factor.denominator());
-        let declared = !row.target.contains(" in ");
+        // A type the program declared can take a policy; one no
+        // declaration names cannot, and neither can the stdlib's
+        // `Duration` and `Time`, which are the primitives (U4).
+        let declared = !row.target.contains(" in ") && !matches!(row.to, crate::ty::Ty::Prim(_));
         let policy = if declared { format!(", or give `{}` a `round:` policy", row.target) } else { String::new() };
         let say = match site.kind {
             // An implicit conversion has no `or` of its own.

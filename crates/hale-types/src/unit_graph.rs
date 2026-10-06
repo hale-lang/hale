@@ -5,14 +5,22 @@
 //! of declaration witnesses. Queries consume that closure; they never
 //! choose a semantic base unit or round a factor to a machine number.
 //!
-//! This is the unit dialect's semantic core. Parsing quantity/point
-//! declarations, solving expression flows, and replacing the current
-//! `Time`/`Duration` primitive handling are separate consumers still to
-//! be connected. In particular, this module grants no new source syntax.
+//! This is the unit dialect's semantic core. Its consumers are the
+//! declarations' rows (`units`, which close one catalogue over the
+//! stdlib's time catalogue and a program's units) and the quantities'
+//! algebra (`unit_quantities`), which types `Duration` and `Time` among
+//! the rest. This module grants no source syntax.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use hale_graph::ids::SiteId;
+/// A unit's identity in the catalogue: its declaration's site with the
+/// universe that minted it (GH #1076, U4). The stdlib's analysis copy
+/// numbers its sites on its own, from seed 0 and index 0 as the
+/// snapshot does, so a bare `SiteId` of the stdlib's time catalogue and
+/// one of a program's units can be equal; with the universe they never
+/// are, and the two catalogues join only through an equation a program
+/// writes against a stdlib unit (`unit tick = 10 ms;`).
+pub type UnitId = crate::placement::SiteRef;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::BigRational;
@@ -101,7 +109,7 @@ pub struct FactorOverflow {
 /// catalogue can tell ([`UnitGraph::factor`] is one).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Denom {
-    pub unit: SiteId,
+    pub unit: UnitId,
     pub multiple: Ratio,
 }
 
@@ -114,9 +122,9 @@ impl std::fmt::Display for Ratio {
 /// Resolved declaration identities, never display names or source spans.
 #[derive(Clone, Debug)]
 pub struct Equation {
-    pub site: SiteId,
-    pub from: SiteId,
-    pub to: SiteId,
+    pub site: UnitId,
+    pub from: UnitId,
+    pub to: UnitId,
     pub factor: Ratio,
 }
 
@@ -124,7 +132,7 @@ pub struct Equation {
 /// up in the snapshot's provenance rather than reconstructing a path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Step {
-    pub equation: SiteId,
+    pub equation: UnitId,
     pub reversed: bool,
 }
 
@@ -139,16 +147,16 @@ impl Step {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CatalogueError {
-    DuplicateUnit(SiteId),
-    DuplicateEquation(SiteId),
+    DuplicateUnit(UnitId),
+    DuplicateEquation(UnitId),
     UnknownUnit {
-        equation: SiteId,
-        unit: SiteId,
+        equation: UnitId,
+        unit: UnitId,
     },
     /// Follow the forest from `from` to `to`, then the inconsistent
     /// equation backward. The witness's product is not one.
     InconsistentCycle {
-        equation: SiteId,
+        equation: UnitId,
         claimed: Ratio,
         implied: Ratio,
         cycle: Vec<Step>,
@@ -157,20 +165,20 @@ pub enum CatalogueError {
 
 #[derive(Clone, Debug)]
 struct Node {
-    component: SiteId,
+    component: UnitId,
     /// Relative to an arbitrary traversal root; never exposed as a
     /// base-unit choice. Only quotients and gcds leave the producer.
     scale: Ratio,
     /// Parent and the equation direction from parent to this node.
-    parent: Option<(SiteId, Step)>,
+    parent: Option<(UnitId, Step)>,
 }
 
 /// An immutable, consistent catalogue. Failed closure returns errors,
 /// never a graph from which a consumer could read an invented ratio.
 #[derive(Clone, Debug)]
 pub struct UnitGraph {
-    nodes: BTreeMap<SiteId, Node>,
-    equations: BTreeMap<SiteId, Equation>,
+    nodes: BTreeMap<UnitId, Node>,
+    equations: BTreeMap<UnitId, Equation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,7 +198,7 @@ impl Conversion {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeetError {
     NoInputs,
-    UnknownUnit { input: usize, unit: SiteId },
+    UnknownUnit { input: usize, unit: UnitId },
     DifferentComponents { first: usize, other: usize },
 }
 
@@ -200,11 +208,11 @@ pub enum MeetError {
 #[derive(Debug)]
 pub struct Denomination<'g> {
     graph: &'g UnitGraph,
-    component: SiteId,
+    component: UnitId,
     scale: Ratio,
     /// The first input: the declared unit [`Denomination::value`]
     /// states the denomination against.
-    anchor: SiteId,
+    anchor: UnitId,
     /// Input positions: deterministic and irredundant. A gcd can need
     /// more than two inputs (6, 10, 15); never drop a necessary witness.
     pub witnesses: Vec<usize>,
@@ -212,7 +220,7 @@ pub struct Denomination<'g> {
 
 impl Denomination<'_> {
     /// All declared names for this exact denomination, in identity order.
-    pub fn named_units(&self) -> impl Iterator<Item = SiteId> + '_ {
+    pub fn named_units(&self) -> impl Iterator<Item = UnitId> + '_ {
         self.graph.nodes.iter().filter_map(|(id, n)| {
             (n.component == self.component && n.scale == self.scale).then_some(*id)
         })
@@ -220,7 +228,7 @@ impl Denomination<'_> {
 
     /// The factor at a boundary with a pinned target denomination.
     /// Returns none for an unknown or disconnected unit.
-    pub fn factor_to(&self, target: SiteId) -> Option<Ratio> {
+    pub fn factor_to(&self, target: UnitId) -> Option<Ratio> {
         let n = self.graph.nodes.get(&target)?;
         (n.component == self.component).then(|| self.scale.divided_by(&n.scale))
     }
@@ -238,7 +246,7 @@ impl Denomination<'_> {
 
 impl UnitGraph {
     pub fn close(
-        units: impl IntoIterator<Item = SiteId>,
+        units: impl IntoIterator<Item = UnitId>,
         equations: impl IntoIterator<Item = Equation>,
     ) -> Result<Self, Vec<CatalogueError>> {
         let mut errors = Vec::new();
@@ -267,7 +275,7 @@ impl UnitGraph {
             return Err(errors);
         }
 
-        let mut neighbours: BTreeMap<SiteId, Vec<(SiteId, Step, Ratio)>> =
+        let mut neighbours: BTreeMap<UnitId, Vec<(UnitId, Step, Ratio)>> =
             unit_set.iter().map(|id| (*id, Vec::new())).collect();
         for equation in rows.values() {
             let step = Step {
@@ -349,11 +357,11 @@ impl UnitGraph {
         }
     }
 
-    pub fn equation(&self, site: SiteId) -> Option<&Equation> {
+    pub fn equation(&self, site: UnitId) -> Option<&Equation> {
         self.equations.get(&site)
     }
 
-    pub fn conversion(&self, from: SiteId, to: SiteId) -> Option<Conversion> {
+    pub fn conversion(&self, from: UnitId, to: UnitId) -> Option<Conversion> {
         let a = self.nodes.get(&from)?;
         let b = self.nodes.get(&to)?;
         (a.component == b.component).then(|| Conversion {
@@ -364,7 +372,7 @@ impl UnitGraph {
 
     /// Coarsest denomination into which every input widens exactly.
     /// This solves an unpinned flow; it never changes a boundary's pin.
-    pub fn meet(&self, inputs: &[SiteId]) -> Result<Denomination<'_>, MeetError> {
+    pub fn meet(&self, inputs: &[UnitId]) -> Result<Denomination<'_>, MeetError> {
         let first = *inputs.first().ok_or(MeetError::NoInputs)?;
         let first_node = self.nodes.get(&first).ok_or(MeetError::UnknownUnit {
             input: 0,
@@ -427,7 +435,7 @@ impl UnitGraph {
         Some(from.multiple.times(&c.factor).divided_by(&to.multiple))
     }
 
-    fn path(&self, from: SiteId, to: SiteId) -> Vec<Step> {
+    fn path(&self, from: UnitId, to: UnitId) -> Vec<Step> {
         let mut up = Vec::new();
         let mut ancestors = BTreeMap::from([(from, 0usize)]);
         let mut cur = from;
@@ -452,13 +460,14 @@ impl UnitGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hale_graph::ids::SeedId;
+    use crate::placement::SiteRef;
+    use hale_graph::ids::{SeedId, SiteId};
 
-    fn unit(n: u32) -> SiteId {
-        SiteId::new(SeedId(0), n)
+    fn unit(n: u32) -> UnitId {
+        SiteRef::user(SiteId::new(SeedId(0), n))
     }
-    fn equation_site(n: u32) -> SiteId {
-        SiteId::new(SeedId(1), n)
+    fn equation_site(n: u32) -> UnitId {
+        SiteRef::user(SiteId::new(SeedId(1), n))
     }
     fn ratio(n: u64, d: u64) -> Ratio {
         Ratio::new(n.into(), d.into()).unwrap()
@@ -472,7 +481,7 @@ mod tests {
         }
     }
 
-    fn walk(rows: &[Equation], mut at: SiteId, steps: &[Step]) -> (SiteId, Ratio) {
+    fn walk(rows: &[Equation], mut at: UnitId, steps: &[Step]) -> (UnitId, Ratio) {
         let mut factor = Ratio::one();
         for step in steps {
             let row = rows.iter().find(|e| e.site == step.equation).unwrap();
@@ -618,9 +627,25 @@ mod tests {
         );
         // Two units with identical local indices but different seeds
         // remain disconnected; SiteId equality, never NodeId equality.
-        let other = SiteId::new(SeedId(2), 0);
+        let other = SiteRef::user(SiteId::new(SeedId(2), 0));
         let graph = UnitGraph::close([unit(0), other], []).unwrap();
         assert!(graph.conversion(unit(0), other).is_none());
+    }
+
+    #[test]
+    fn one_site_id_in_two_universes_is_two_units() {
+        // The stdlib's analysis copy numbers its sites on its own, so
+        // its `ms` and a program's first unit can share a `SiteId`
+        // (U4): the universe keeps them two nodes, and a program's
+        // equation against the stdlib's unit is what joins them.
+        let program = unit(0);
+        let stdlib = SiteRef::stdlib(SiteId::new(SeedId(0), 0));
+        assert_ne!(program, stdlib);
+        let graph = UnitGraph::close([program, stdlib], []).unwrap();
+        assert!(graph.conversion(program, stdlib).is_none());
+        let joined = Equation { site: equation_site(0), from: program, to: stdlib, factor: ratio(10, 1) };
+        let graph = UnitGraph::close([program, stdlib], [joined]).unwrap();
+        assert_eq!(graph.conversion(program, stdlib).unwrap().factor, ratio(10, 1));
     }
 
     #[test]

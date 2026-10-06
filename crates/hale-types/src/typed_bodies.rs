@@ -319,16 +319,24 @@ pub struct ConversionSite {
 /// `.split(u)`) by its call site; an implicit conversion by the span of
 /// the value that converts (a quantity literal's own row is there too);
 /// a quantity divided by a literal by the division's span (U3); a printed
-/// quantity by the span of the value printed (U3).
+/// quantity by the span of the value printed (U3); an arithmetic
+/// operator over a quantity or a point by its span (U4): the algebra's
+/// result type, which lowering reads for the representation the result
+/// is (`Int * Duration` is a `Duration`, `Time - Time` a `Duration`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SiteKind {
     Cast(u32),
     Value { start: u32, end: u32 },
     Divide { start: u32, end: u32 },
     Printed { start: u32, end: u32 },
+    Operator { start: u32, end: u32 },
 }
 
 impl SiteKind {
+    pub fn operator(span: Span) -> SiteKind {
+        SiteKind::Operator { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+
     pub fn value(span: Span) -> SiteKind {
         SiteKind::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
     }
@@ -708,7 +716,9 @@ impl TypingRecord {
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
         let unminted = match &site.kind {
             SiteKind::Cast(id) => NodeId(*id).is_none(),
-            SiteKind::Value { .. } | SiteKind::Divide { .. } | SiteKind::Printed { .. } => false,
+            SiteKind::Value { .. } | SiteKind::Divide { .. } | SiteKind::Printed { .. } | SiteKind::Operator { .. } => {
+                false
+            }
         };
         if unminted || site.path.iter().any(|at| NodeId(*at).is_none()) {
             return;
@@ -840,8 +850,9 @@ pub struct TypedBodies {
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
     conversion_sites: BTreeMap<ConversionSite, u32>,
-    /// Whether a row changes a denomination or prints a unit (U3): a
-    /// program with neither has no value row for lowering to look up.
+    /// Whether a row changes a denomination, prints a unit (U3) or types
+    /// an operator's result (U4): a program with none has no value row
+    /// for lowering to look up.
     scaled: bool,
 }
 
@@ -868,6 +879,14 @@ impl TypedBodies {
     /// one index over every body can answer with another body's row.
     pub fn conversion_in(&self, body: NodeId, site: &ConversionSite) -> Option<&ConversionRow> {
         self.bodies.get(&body.0)?.conversions.get(site)
+    }
+
+    /// Whether the checker recorded any conversion in `body`: a body it
+    /// typed a quantity literal in has its row. A body with none is one
+    /// the checker does not type (the stdlib's own bodies, U4), whose
+    /// time literals lowering reads from the stdlib's catalogue.
+    pub fn has_conversions_in(&self, body: NodeId) -> bool {
+        self.bodies.get(&body.0).is_some_and(|b| !b.conversions.is_empty())
     }
 
     /// Every conversion's row, body by body.
@@ -1068,7 +1087,11 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
         conversion_sites: record.conversion_sites.clone(),
-        scaled: record.bodies.values().any(|b| b.conversions.values().any(|r| r.scale.is_some() || r.printed.is_some())),
+        scaled: record.bodies.values().any(|b| {
+            b.conversions.iter().any(|(site, r)| {
+                r.scale.is_some() || r.printed.is_some() || matches!(site.kind, SiteKind::Operator { .. })
+            })
+        }),
     };
     let mut decls = Declared::default();
     for p in bundle.programs.values() {

@@ -23032,13 +23032,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_bytes_from_buf returns ptr");
                 Ok((blob, CodegenTy::Bytes))
             }
-            Expr::Literal(Literal::Duration(ns), _) => {
-                // Duration literals are i64 nanoseconds at the
-                // lowered level; tracked as Duration so callers
-                // like `time::sleep` enforce the typed contract.
-                let v = self.context.i64_type().const_int(*ns as u64, true);
-                Ok((v.into(), CodegenTy::Duration))
-            }
             Expr::Literal(Literal::Decimal(s), _) => {
                 // m48: lower Decimal literals to i128 mantissa
                 // with fixed scale 9 (mantissa × 10^-9). Per-value
@@ -23565,7 +23558,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )),
                 }
             }
-            Expr::Binary { op, left, right, span: _ } => {
+            Expr::Binary { op, left, right, span } => {
                 let (lv, lt) = self.lower_expr(left, scope)?;
                 let (rv, rt) = self.lower_expr(right, scope)?;
                 // Ergonomics arc: `String + <printable>` and
@@ -23600,44 +23593,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let lv2 = self.coerce_to_float(lv, &lt, "binop lhs")?;
                     return self.lower_binop(*op, lv2.into(), rv, &CodegenTy::Float);
                 }
-                // Crumb batch-3 item 5: Duration scalar arithmetic.
-                // `Int * Duration` (either order) scales the
-                // interval; `Duration / Int` divides it. Both
-                // sides are i64 at the LLVM level (Duration is
-                // nanoseconds), so no coercion — just route to
-                // the Duration arm.
-                if *op == BinOp::Mul
-                    && ((lt == CodegenTy::Int && rt == CodegenTy::Duration)
-                        || (lt == CodegenTy::Duration
-                            && rt == CodegenTy::Int))
-                {
-                    return self.lower_binop(
-                        *op, lv, rv, &CodegenTy::Duration,
-                    );
-                }
-                if *op == BinOp::Div
-                    && lt == CodegenTy::Duration
-                    && rt == CodegenTy::Int
-                {
-                    return self.lower_binop(
-                        *op, lv, rv, &CodegenTy::Duration,
-                    );
-                }
-                // GH #607: an instant shifts by a Duration and two
-                // instants differ by one; both sides are i64
-                // nanoseconds, so these are the Duration arms with
-                // the result typed as the checker typed it.
-                if matches!(op, BinOp::Add | BinOp::Sub)
-                    && lt == CodegenTy::Time
-                    && rt == CodegenTy::Duration
-                {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Time);
-                }
-                if *op == BinOp::Add && lt == CodegenTy::Duration && rt == CodegenTy::Time {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Time);
-                }
-                if *op == BinOp::Sub && lt == CodegenTy::Time && rt == CodegenTy::Time {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
+                // GH #1076 (U4): an arithmetic operator over a quantity or
+                // a point (a `Duration`, a `Time`) is the algebra's, and
+                // its row says what the result is (`Int * Duration` a
+                // `Duration`, `Time - Time` a `Duration`): the operands
+                // are each the `Int` their representation is, emitted as
+                // the result's.
+                if let Some(result) = self.operator_result(*span) {
+                    return self.lower_binop(*op, lv, rv, &result);
                 }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
@@ -23647,8 +23610,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 self.lower_binop(*op, lv, rv, &lt)
             }
-            Expr::Unary { op, operand, .. } => {
+            Expr::Unary { op, operand, span } => {
                 let (v, t) = self.lower_expr(operand, scope)?;
+                // GH #1076 (U4): the checker's refusal, where it is.
+                if *op == UnaryOp::Neg && t == CodegenTy::Time {
+                    return Err(CodegenError::UnsupportedAt(
+                        "`-` of the point `Time`: a point has no negation".into(),
+                        *span,
+                    ));
+                }
                 self.lower_unop(*op, v, &t)
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => match callee.as_ref() {
@@ -25111,13 +25081,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let ty_owned = ty.clone();
         match (op, ty_owned) {
-            (UnaryOp::Neg, CodegenTy::Int) => {
+            // GH #1076 (U4): a quantity's negation is the quantity
+            // (`quantity_unary`), so a `Duration`'s is the `Int`
+            // negation of its nanosecond count, still a `Duration`.
+            (UnaryOp::Neg, t @ (CodegenTy::Int | CodegenTy::Duration)) => {
                 let zero = self.context.i64_type().const_int(0, true);
                 let r = self
                     .builder
                     .build_int_sub(zero, v.into_int_value(), "neg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), CodegenTy::Int))
+                Ok((r.into(), t))
             }
             (UnaryOp::Neg, CodegenTy::Float) => {
                 let r = self
@@ -33670,7 +33643,18 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
         Expr::Literal(Literal::Int(n), _) => Ok(ParamValue::Int(*n)),
         Expr::Literal(Literal::Float(f), _) => Ok(ParamValue::Float(*f)),
         Expr::Literal(Literal::Bool(b), _) => Ok(ParamValue::Bool(*b)),
-        Expr::Literal(Literal::Duration(ns), _) => Ok(ParamValue::Duration(*ns)),
+        // GH #1076 (U4): a literal of the stdlib's time catalogue is the
+        // count of `Duration` the catalogue makes it, the literal's own
+        // row in every program (`500ms` is 500,000,000).
+        Expr::Literal(Literal::Quantity { value, unit }, _)
+            if matches!(
+                hale_types::units::stdlib_literal(*value, unit),
+                Some((_, hale_types::ty::Ty::Prim(PrimType::Duration)))
+            ) =>
+        {
+            let (ns, _) = hale_types::units::stdlib_literal(*value, unit).expect("guard checked");
+            Ok(ParamValue::Duration(ns))
+        }
         Expr::Literal(Literal::Decimal(s), _) => {
             let m = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
                 CodegenError::Unsupported(format!(

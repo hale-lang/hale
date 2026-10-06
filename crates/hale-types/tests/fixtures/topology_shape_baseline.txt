@@ -466,6 +466,8 @@ crates/hale-codegen/tests/drain_grace_names_the_wait.rs#2 f93ba90ecbf2502e
 crates/hale-codegen/tests/dump_pool_residency.rs#0 6ed57213cc511298
 crates/hale-codegen/tests/dump_pool_residency.rs#1 7d5cf57defcf548e
 crates/hale-codegen/tests/duration_scalar_arith.rs#0 1da3ae7aef880cc6
+crates/hale-codegen/tests/duration_scalar_arith.rs#2 f2c1228edb650960
+crates/hale-codegen/tests/duration_scalar_arith.rs#3 865d341109268295
 crates/hale-codegen/tests/ecdsa_p256.rs#4 81e4f70f0a0aa575
 crates/hale-codegen/tests/effects_conformance.rs#0 d3700f11332caa2b
 crates/hale-codegen/tests/effects_conformance.rs#1 e62d4fd40364b9e3
@@ -1829,6 +1831,7 @@ crates/hale-types/tests/stdlib_sig_check.rs#8 668c0f302d4031ed
 crates/hale-types/tests/terminate_release_gate.rs#1 d85d74c1f266771b
 crates/hale-types/tests/terminate_release_gate.rs#3 5fac13650978129a
 crates/hale-types/tests/terminate_release_gate.rs#4 d20723b9b90d953c
+crates/hale-types/tests/time_declarations.rs#0 bedd5ed10a72c4cc
 crates/hale-types/tests/topology_projection.rs#0 c648d9a25650dde3
 crates/hale-types/tests/topology_projection.rs#1 8e795754137e723b
 crates/hale-types/tests/topology_projection.rs#10 c2f0895d9c4fdb8c
