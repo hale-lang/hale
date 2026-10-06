@@ -54,6 +54,9 @@ type Kelvin = point TempDelta;
 type Celsius = point TempDelta { origin: 273_150 mK; }
 type OrderId = distinct Int;
 type Byte = Int { range: 0..256; }
+fn span(n: Int) -> Span { return n * 1nsec; }
+fn amount(n: Int) -> Money { return n * 1USD; }
+fn rate(n: Int) -> Rate { return n * 1bp; }
 fn seconds(d: Seconds) -> Seconds { return d; }
 fn wait(d: Span) -> Span { return d; }
 ";
@@ -219,6 +222,93 @@ fn a_literal_converts_where_it_flows_at_compile_time() {
         "1_500msec",
         "`Seconds` from `Span in msec` divides by 1,000: say what happens to the remainder: convert explicitly \
          (`.in(u) or floor`, `Seconds(…) or half_even`, `or <value>`, `or raise`), or give `Seconds` a `round:` policy",
+    );
+}
+
+// The algebra.
+
+/// The operands the matrix combines: a quantity at its own denomination,
+/// the same quantity at another, another quantity, a dimensionless one,
+/// an `Int`, a point, two points of one quantity with different origins,
+/// and an identity.
+const OPERANDS: &str = "    let q = span(1);\n    let s = 3sec;\n    let b = 4KiB;\n    let r = rate(3);\n    \
+                        let i = 2;\n    let p = Instant(q);\n    let k = Kelvin(300K);\n    let c = Celsius(0mK);\n    \
+                        let o = OrderId(1);\n";
+
+/// What `expr` is over [`OPERANDS`]: its type, or its refusal.
+fn outcome(expr: &str) -> String {
+    let found = errors(&format!("{OPERANDS}    let probe: Bool = {expr};\n"));
+    let mismatch = "let `probe`: expected `Bool`, got `";
+    match found.as_slice() {
+        [] => "Bool".to_string(),
+        [(_, m)] if m.starts_with(mismatch) => m[mismatch.len()..m.len() - 1].to_string(),
+        [(at, m)] => format!("refused at `{at}`: {m}"),
+        more => panic!("one outcome for `{expr}`: {more:#?}"),
+    }
+}
+
+/// The plan's table, as a matrix of operand kinds by operators: each
+/// cell the result's type (a sum at the finer denomination, a ratio
+/// product at the product of the two, a quotient of one quantity an
+/// `Int`, a difference of points their quantity) or the refusal, naming
+/// both.
+#[test]
+fn the_algebra_is_the_plans_table() {
+    let pairs = [
+        ("q", "q"),
+        ("q", "s"),
+        ("s", "q"),
+        ("q", "b"),
+        ("q", "r"),
+        ("r", "q"),
+        ("r", "r"),
+        ("q", "i"),
+        ("i", "q"),
+        ("p", "q"),
+        ("q", "p"),
+        ("p", "p"),
+        ("p", "s"),
+        ("k", "c"),
+        ("q", "o"),
+    ];
+    let mut table = String::new();
+    for (a, b) in pairs {
+        for op in ["+", "-", "*", "/", "%", "<"] {
+            table.push_str(&format!("{a} {op} {b}: {}\n", outcome(&format!("{a} {op} {b}"))));
+        }
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unit_quantity_algebra.txt");
+    if std::env::var_os("HALE_REGEN_UNIT_ALGEBRA").is_some() {
+        std::fs::write(&path, &table).expect("write the matrix");
+    }
+    let pinned = std::fs::read_to_string(&path).expect("the pinned matrix");
+    assert_eq!(table, pinned, "the algebra moved; regenerate with HALE_REGEN_UNIT_ALGEBRA=1 and read the diff");
+}
+
+/// An operator's refusal names both declarations: one note at each (a
+/// synthesized type's at its quantity's), the error at the operator's
+/// expression. A sum's operand at a coarser denomination is widened, a
+/// row at it; literal arithmetic is not folded.
+#[test]
+fn an_operator_refusal_names_both_declarations() {
+    let (src, all) = diags("    let bad = 5msec + 4KiB;\n");
+    let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(errors[0].span.slice(&src), "5msec + 4KiB");
+    assert_eq!(
+        errors[0].message,
+        "`Span in msec` + `ByteCount in KiB`: different quantities, `Span` and `ByteCount`; `+` holds within one"
+    );
+    let notes: Vec<(&str, &str)> = errors[0].related.iter().map(|r| (r.span.slice(&src), r.label.as_str())).collect();
+    assert_eq!(notes, [("Span", "`Span` is declared here"), ("ByteCount", "`ByteCount` is declared here")]);
+    one("    let n = -Instant(span(1));\n", "-Instant(span(1))", "`-` of the point `Instant`: a point has no negation");
+    use ConversionKind::*;
+    assert_eq!(
+        rows("    let d = 3sec + 500msec;\n"),
+        [
+            Row { count: Some(3_000), ..row("3sec", "Span in msec", Widening, "1000") },
+            Row { count: Some(500), ..row("500msec", "Span in msec", Widening, "1") },
+        ]
     );
 }
 

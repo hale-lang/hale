@@ -10484,7 +10484,37 @@ impl<'a> Checker<'a> {
                 // identity, and a range's sum is an `Int` storing it
                 // back narrows.
                 let mut stored: Option<Expr> = None;
-                if let Some(bin) = assign_binop(*op) {
+                // GH #1076 (U3): `x += v` of a quantity converts `v` into
+                // `x`'s denomination (a point's, its quantity's); `x *= n`
+                // and `x /= n` scale it by an `Int`, a literal divisor
+                // other than one being a narrowing `x = x / n or …` says.
+                let mut want = want;
+                if let (Some(bin), Some(w)) = (assign_binop(*op), self.scalars.quantity(&want)) {
+                    use crate::unit_quantities::QKind;
+                    let int = matches!(got, Ty::Prim(PrimType::Int));
+                    let literal = crate::unit_values::int_literal(value);
+                    match bin {
+                        BinOp::Add | BinOp::Sub if w.kind == QKind::Point => want = self.scalars.point_delta(&w),
+                        BinOp::Add | BinOp::Sub => {}
+                        BinOp::Mul if int && w.kind == QKind::Quantity => got = want.clone(),
+                        BinOp::Div if int && w.kind == QKind::Quantity && matches!(literal, None | Some(1)) => {
+                            got = want.clone()
+                        }
+                        _ => {
+                            let target = self.scalars.type_display(&want);
+                            self.unit_error(Diag::ty(
+                                *span,
+                                format!(
+                                    "`{target} {}= {}`: a quantity adds and subtracts its own kind, and scales by an \
+                                     `Int`; a literal divisor is a narrowing, written `x = x / n or …`",
+                                    crate::unit_quantities::op_symbol(bin),
+                                    self.scalars.type_display(&got)
+                                ),
+                            ));
+                            got = want.clone();
+                        }
+                    }
+                } else if let Some(bin) = assign_binop(*op) {
                     if self.scalars.index(&want).is_some() || self.scalars.index(&got).is_some() {
                         let place = Expr::Ident(target.head.clone());
                         got = self.binop_ty(bin, &want, &got, *span, (&place, value));
@@ -12720,11 +12750,15 @@ impl<'a> Checker<'a> {
         to
     }
 
-    /// The narrowing `inner` is, when it is a cast the conversions column
-    /// holds as one: its site.
+    /// The narrowing `inner` is, when the conversions column holds it as
+    /// one: a cast's, a quantity's `.in(u)`, by the call; a quantity
+    /// divided by a literal (U3), by the division.
     fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
-        let Expr::Call { id, .. } = inner else { return None };
-        let site = crate::typed_bodies::ConversionSite::Cast(id.0);
+        let site = match inner {
+            Expr::Call { id, .. } => crate::typed_bodies::ConversionSite::Cast(id.0),
+            Expr::Binary { op: BinOp::Div, span, .. } => crate::typed_bodies::ConversionSite::divide(*span),
+            _ => return None,
+        };
         let row = self.typed.conversion_at(site)?;
         (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
     }
@@ -13617,6 +13651,15 @@ impl<'a> Checker<'a> {
             }
             Expr::Unary { op, operand, span } => {
                 let t = self.check_expr(operand);
+                // GH #1076 (U3): a quantity negates; a point does not.
+                match self.scalars.quantity_unary(*op, &t) {
+                    Some(Ok(t)) => return t,
+                    Some(Err(why)) => {
+                        self.diags.push(Diag::ty(*span, why));
+                        return Ty::Unknown;
+                    }
+                    None => {}
+                }
                 // GH #1076 (U2): no arithmetic on an identity; a range's
                 // is its `Int`'s.
                 match self.scalars.unary(*op, &t) {
@@ -15801,6 +15844,11 @@ impl<'a> Checker<'a> {
                 return Ty::Prim(PrimType::String);
             }
         }
+        // GH #1076 (U3): a quantity or a point on either side: the
+        // algebra's answer, each operand's conversion a row at it.
+        if let Some(rule) = self.scalars.quantity_binop(op, lt, rt, operands.0, operands.1) {
+            return self.apply_quantity_binop(rule, op, lt, span, operands);
+        }
         // GH #1076 (U2): an identity or a range on either side. A range's
         // arithmetic is its `Int`'s; an identity has none; a comparison
         // holds within one type and along a widening.
@@ -15928,6 +15976,59 @@ impl<'a> Checker<'a> {
                 Ty::Prim(PrimType::Bool)
             }
             And | Or => Ty::Prim(PrimType::Bool),
+        }
+    }
+
+    /// GH #1076 (U3): what the algebra decided for a binary operator over
+    /// a quantity or a point: each operand's conversion recorded at it,
+    /// a division by a literal recorded at the division (a narrowing its
+    /// `or`, or the quantity type's `round:`, discharges), a refusal
+    /// reported with a note at each declaration.
+    fn apply_quantity_binop(
+        &mut self,
+        rule: crate::unit_quantities::QBinop,
+        op: BinOp,
+        lt: &Ty,
+        span: Span,
+        operands: (&Expr, &Expr),
+    ) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge, Scale};
+        use crate::unit_quantities::QBinop;
+        match rule {
+            QBinop::Typed { ty, left, right } => {
+                for (operand, e) in [(left, operands.0), (right, operands.1)] {
+                    if let Some(o) = operand {
+                        self.record_scale(e, &o.from, &o.to, o.scale, None);
+                    }
+                }
+                ty
+            }
+            QBinop::DividedByLiteral { ty, divisor } => {
+                if self.specializing.is_none() {
+                    let factor = crate::unit_graph::Ratio::new(1.into(), divisor.into()).expect("a positive divisor");
+                    let mut row = ConversionRow::new(span, lt.clone(), ty.clone(), ConversionKind::Narrowing, self.scalars.type_display(&ty));
+                    row.scale = Some(Scale { factor, offset: 0 });
+                    row.policy = self
+                        .scalars
+                        .quantity(lt)
+                        .and_then(|q| q.policy)
+                        .map(|policy| Discharge::Round { policy, from_type: true });
+                    self.typed.conversion(self.body, ConversionSite::divide(span), row);
+                }
+                ty
+            }
+            QBinop::Refused { message, notes } => {
+                let mut d = Diag::ty(span, message);
+                for (at, label) in notes {
+                    d = d.with_related(at, label);
+                }
+                self.unit_error(d);
+                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
+                    Ty::Prim(PrimType::Bool)
+                } else {
+                    Ty::Unknown
+                }
+            }
         }
     }
 
