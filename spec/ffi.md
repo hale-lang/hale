@@ -217,7 +217,9 @@ declarations don't need either.
 When `hale build` resolves an `import` against a directory
 that contains an `hale.toml`, it reads the file's `[ffi]`
 section and appends those values to the build's link surface
-automatically. Library authors ship:
+automatically. `hale run` and `hale replay` build with the same
+options, from the same function, and `hale test` and `hale bench`
+apply the same pickup. Library authors ship:
 
 ```toml
 # pond/raylib/hale.toml
@@ -242,7 +244,13 @@ fn main() {
 up `link=["raylib"]` + `csrc=["glue.c"]`, and threads them
 through to the clang invocation. The CLI flags from the prior
 section still work as additive overrides (CLI first, then toml-
-sourced); duplicates are tolerated. Single-file imports
+sourced). A flag naming what an imported package's `[ffi]`
+names — a `--csrc` with the canonical path of a package's `csrc`,
+a `--link` of a library a package links — is a no-op, not an
+error: the package's entry stands and the flag's is dropped, so
+the C file is compiled once and the options (and the execution
+identity) are the flagless invocation's. This holds for `hale
+build`, `hale run` and `hale replay` alike. Single-file imports
 (`import "helpers"` → `helpers.hl`) have no companion toml and
 contribute nothing.
 

@@ -113,7 +113,10 @@ fails the build:
   Law-of-Demeter / CQRS / dependency-inversion violation caught in one
   rule).
 - **Codec purity** — a bus codec's `encode` / `decode` must be pure;
-  they may run off-thread.
+  they may run off-thread. A stdlib call is impure when its effect
+  classes include `syscall`, `block` or `publish` (file, socket or
+  process I/O, a sleep, a bus send): `std::io::tcp::connect` in an
+  `encode` is refused, `std::time::now` is not.
 - **`ring_layout` conformance** — a foreign shared-memory ring layout
   is checked for internal and cross-field consistency before a torn
   read is possible.
@@ -384,6 +387,15 @@ Loci are not otherwise field-encapsulated: `self.signer.key` typechecks
 from anywhere holding one. `@sealed` makes the only way in a method
 call — and that method carries an effect class, so every path that can
 touch the key is visible on the call graph.
+
+The rule follows the read wherever it is evaluated. A parameter's
+default is read by each caller that leaves it, so a default that
+reaches `key` is refused, at the default, unless every such call is
+inside `Signer`. A sealed generic locus is sealed in every
+specialization: `b.v` on a `b: Box<Int>` is refused from outside `Box`.
+And a generic body is judged in each specialization: `self.inner.key`
+with `inner: T` is refused once some use binds `T` to `Signer`, and so
+is `self.h.s.key` with `h: Holder<T>`, however many fields deep.
 
 Now the law is two ordinary claims:
 

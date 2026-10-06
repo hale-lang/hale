@@ -1556,7 +1556,8 @@ program's own call paths; a guarantee about those is a later,
 opt-in claim. So `@gated` on a plain method, on a `consume`, or on
 the `subscribe` line itself is an error: nothing there is reached
 from the binding, and an annotation must not promise a check that
-does not run — a free fn included. Two more rules keep the gate on
+does not run — a free fn included, and a perspective's fn, a
+signature the loci that serve it answer. Two more rules keep the gate on
 the message rather than the handler: every subscriber of one topic
 (and every publisher of one stream) states the same gate, each
 subscription of a handler that subscribes several topics being its

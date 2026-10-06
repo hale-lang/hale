@@ -5965,6 +5965,19 @@ impl Parser {
                 Ok(PerspectiveMember::SerializeAs(ty))
             }
             TokenKind::Fn => self.parse_contract_fn().map(PerspectiveMember::Fn),
+            // A `@gated(role:)` before a perspective's fn is taken onto
+            // the fn so the role law refuses it by its rule (a
+            // perspective's fns are not gated) rather than as a stray
+            // token; no other annotation is a perspective member.
+            TokenKind::At if matches!(self.peek_at(1), TokenKind::Ident(s) if s == "gated") => {
+                let mut decos = FnDecorators::default();
+                let (role, gspan) = self.parse_gated_annotation()?;
+                decos.gated = Some(role);
+                decos.note("gated", gspan);
+                let mut f = self.parse_contract_fn()?;
+                decos.apply_to_fn(&mut f);
+                Ok(PerspectiveMember::Fn(f))
+            }
             // Phase 2c: the perspective contract's bus surface.
             TokenKind::Bus => self.parse_bus_block().map(PerspectiveMember::Bus),
             other => Err(Diag::parse(

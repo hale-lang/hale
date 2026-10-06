@@ -618,9 +618,17 @@ pub(crate) fn env_roles(spec: &crate::pkg::EnvSpec) -> String {
 /// do not say, the `[ffi]` link libraries and C sources each imported
 /// package's `hale.toml` declares ([`collect_ffi_from_imports`]), so a
 /// program importing such a package has one identity whichever verb
-/// computes it. `build` builds with what this returns; `run` and
-/// `replay` fingerprint it and build with their flags alone, as they
-/// always have.
+/// computes it. All three fingerprint what this returns and build with
+/// it, so a package's `[ffi] csrc` and `link` reach `run` and `replay`
+/// without `--csrc` / `--link` flags.
+///
+/// A flag naming what a manifest names is a no-op, not an error: a
+/// `--csrc` whose canonical path is a manifest `csrc`, or a `--link` of
+/// a library a manifest links, is dropped in favour of the manifest's
+/// entry. Appending both handed clang the C file twice, a duplicate
+/// symbol at link, and `hale run --csrc glue.c` is the documented way to
+/// run an `@ffi` program; dropping the flag's copy leaves the options,
+/// and so the identity, exactly the flagless invocation's.
 pub(crate) fn identity_options(
     options: &hale_codegen::BuildOptions,
     snap: &hale_frontend::snapshot::Snapshot,
@@ -638,7 +646,12 @@ pub(crate) fn identity_options(
         &entry_dir,
         super::workspace::find_workspace_root(target).as_deref(),
     );
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let manifest_csrc: std::collections::BTreeSet<PathBuf> =
+        toml_opts.csrc_files.iter().map(|p| canon(p)).collect();
     let mut o = options.clone();
+    o.link_libs.retain(|lib| !toml_opts.link_libs.contains(lib));
+    o.csrc_files.retain(|p| !manifest_csrc.contains(&canon(p)));
     o.link_libs.extend(toml_opts.link_libs);
     o.csrc_files.extend(toml_opts.csrc_files);
     o

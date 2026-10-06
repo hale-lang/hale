@@ -298,3 +298,286 @@ fn a_sealed_locus_without_a_contract_is_unaffected() {
     ";
     assert!(errors(src).is_empty(), "{:?}", errors(src));
 }
+
+// ---------------------------------------------------------------
+// The positions the rows reach that a walk's discard used to drop
+// (F.40 phase 4's leftovers): a parameter's default, typed at each
+// call that leaves it.
+// ---------------------------------------------------------------
+
+/// Each error with the source text it is reported at.
+fn error_sites(src: &str) -> Vec<(String, String)> {
+    let program = parse_source(src).expect("parse");
+    entries::check_program(&program)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (src[d.span.start.0 as usize..d.span.end.0 as usize].to_string(), d.message))
+        .collect()
+}
+
+const SEALED_KEY_READ: &str = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
+     methods, and `Signer.key` reads one from outside — call one of its methods instead (sign)";
+
+#[test]
+fn a_default_reading_a_sealed_param_is_refused_where_it_is_written() {
+    // The default is typed at each call that leaves it, in the caller's
+    // scope, and that walk's findings are discarded; its accesses are
+    // kept, a row per evaluation, and refused once at the default.
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Gateway {{
+            params {{ s: Signer = Signer {{ }}; }}
+            fn peek(k: Int = self.s.key) -> Int {{ return k; }}
+            fn a() -> Int {{ return self.peek(); }}
+            fn b() -> Int {{ return self.peek() + self.peek(); }}
+        }}
+        main locus App {{ params {{ g: Gateway = Gateway {{ }}; }} }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(error_sites(&src), vec![("self.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    // Two declarations evaluating one default: still once.
+    let shared = format!(
+        "{SEALED_SIGNER}
+        fn peek(k: Int = self.s.key) -> Int {{ return k; }}
+        locus Gateway {{
+            params {{ s: Signer = Signer {{ }}; }}
+            fn a() -> Int {{ return peek(); }}
+        }}
+        locus Other {{
+            params {{ s: Signer = Signer {{ }}; }}
+            fn a() -> Int {{ return peek() + peek(); }}
+        }}
+        main locus App {{ params {{ g: Gateway = Gateway {{ }}; o: Other = Other {{ }}; }} }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(error_sites(&shared), vec![("self.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    // Unsealed, both read freely.
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty());
+    assert!(error_sites(&shared.replace("@sealed ", "")).is_empty());
+}
+
+#[test]
+fn a_monomorph_receiver_reaches_its_templates_params() {
+    // `b: Box<Int>` is typed as the monomorph `Box_Int`, which the scope
+    // declares no locus by: the row names the template, whose params
+    // `b.v` reaches, and the template is sealed.
+    let src = "
+        @sealed locus Box<T> {
+            params { v: Int = 0; }
+            fn get() -> Int { return self.v; }
+            fn same(o: Box<Int>) -> Int { return o.v; }
+        }
+        locus Gateway {
+            fn read() -> Int { let b: Box<Int> = Box { }; return b.v; }
+            fn write() { let b: Box<Int> = Box { }; b.v = 3; }
+        }
+        main locus App { params { g: Gateway = Gateway { }; } }
+        fn main() { App { }; }
+    ";
+    let read = "`Box` is `@sealed`: its `params` are readable only from inside its own methods, \
+         and `Box.v` reads one from outside — call one of its methods instead (get, same)";
+    let write = "`Box` is `@sealed`: its `params` are writable only from inside its own methods, \
+         and `Box.v` writes one from outside — call one of its methods instead (get, same)";
+    let found = error_sites(src);
+    assert_eq!(found, vec![("b.v".to_string(), read.to_string()), ("v".to_string(), write.to_string())]);
+    // The write's span is its param segment, in `write`.
+    let program = parse_source(src).expect("parse");
+    let at = entries::check_program(&program).into_iter().filter(|d| d.is_error()).nth(1).unwrap().span;
+    assert_eq!(at.start.0 as usize, src.find("b.v = 3").unwrap() + 2);
+    // From inside the template (`same` reads another `Box_Int`), and
+    // with the template unsealed, it is clean.
+    let inside = src.replace("fn read() -> Int { let b: Box<Int> = Box { }; return b.v; }", "").replace(
+        "fn write() { let b: Box<Int> = Box { }; b.v = 3; }",
+        "fn call() -> Int { let b: Box<Int> = Box { }; return b.same(b); }",
+    );
+    assert!(error_sites(&inside).is_empty(), "{:?}", error_sites(&inside));
+    // `same`'s read, written outside the template, is refused: the
+    // clean read inside is a row, judged from inside.
+    let outside = inside.replace("fn call()", "fn peer(o: Box<Int>) -> Int { return o.v; }\n            fn call()");
+    assert_eq!(error_sites(&outside), vec![("o.v".to_string(), read.to_string())]);
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty(), "{:?}", error_sites(&src.replace("@sealed ", "")));
+}
+
+#[test]
+fn a_generic_body_reaching_a_sealed_param_is_refused_in_its_specializations() {
+    // `self.s.key` with `s: T` reaches nothing the template's walk can
+    // name; the walk per monomorph binds `T` to `Signer`, and its rows
+    // are judged. Two monomorphs binding `A` to `Signer` refuse it once.
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Holder<A, B> {{
+            params {{ s: A; n: B; }}
+            fn read() -> Int {{ return self.s.key; }}
+            fn write() {{ self.s.key = 2; }}
+        }}
+        fn grab<T>(x: T) -> Int {{ return x.key; }}
+        main locus App {{
+            fn go() -> Int {{
+                let h: Holder<Signer, Int> = Holder {{ s: Signer {{ }}, n: 1 }};
+                let g: Holder<Signer, Bool> = Holder {{ s: Signer {{ }}, n: true }};
+                return grab(Signer {{ }});
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    let written = SEALED_KEY_READ.replace("readable", "writable").replace("reads one", "writes one");
+    assert_eq!(
+        error_sites(&src),
+        vec![
+            ("self.s.key".to_string(), SEALED_KEY_READ.to_string()),
+            ("key".to_string(), written),
+            ("x.key".to_string(), SEALED_KEY_READ.to_string()),
+        ]
+    );
+    // Unsealed, the same specializations are clean.
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty(), "{:?}", error_sites(&src.replace("@sealed ", "")));
+}
+
+#[test]
+fn a_generic_body_reaching_a_sealed_param_through_a_field_of_a_field_is_refused() {
+    // `self.h` with `h: Holder<T>` is a nested application of the
+    // parameter: the walk for `Outer_Signer` typed it `Unknown`, so
+    // `self.h.s` reached no `Signer` and `.key` was read unjudged. The
+    // field is `Holder_Signer` there, and its `s` is `Signer`.
+    let src = "
+        @sealed locus Signer { params { key: Int = 7; } fn sign() -> Int { return self.key; } }
+        locus Plain { params { key: Int = 7; } }
+        locus Holder<A> { params { s: A; } fn noop() -> Int { return 0; } }
+        locus Outer<T> {
+            params { h: Holder<T>; }
+            fn r() -> Int { return self.h.s.key; }
+            fn through_let() -> Int { let x = self.h.s; return x.key; }
+            fn write() { self.h.s.key = 2; }
+        }
+        main locus App {
+            run() { let o: Outer<Signer> = Outer { h: Holder { s: Signer { } } }; println(o.r()); }
+        }
+        fn main() { App { }; }
+    ";
+    let read = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
+         methods, and `Signer.key` reads one from outside — call one of its methods instead (sign)";
+    let written = read.replace("readable", "writable").replace("reads one", "writes one");
+    assert_eq!(
+        error_sites(src),
+        vec![
+            ("self.h.s.key".to_string(), read.to_string()),
+            ("x.key".to_string(), read.to_string()),
+            ("key".to_string(), written),
+        ]
+    );
+    // Bound to an unsealed locus, the same body is clean.
+    let plain = src.replace(
+        "let o: Outer<Signer> = Outer { h: Holder { s: Signer { } } }",
+        "let o: Outer<Plain> = Outer { h: Holder { s: Plain { } } }",
+    );
+    assert!(error_sites(&plain).is_empty(), "{:?}", error_sites(&plain));
+}
+
+#[test]
+fn a_field_chain_into_a_sealed_param_is_clean_inside_the_sealed_locus() {
+    // `o.h` is `Holder_Signer` in a body nothing specializes too: the
+    // chain reaches `Signer.key`, read from inside `Signer`.
+    let src = "
+        @sealed locus Signer {
+            params { key: Int = 7; }
+            fn sign() -> Int { return self.key; }
+            fn peek(o: Outer<Signer>) -> Int { return o.h.s.key; }
+        }
+        locus Holder<A> { params { s: A; } }
+        locus Outer<T> { params { h: Holder<T>; } fn noop() -> Int { return 0; } }
+        main locus App {
+            run() { let o: Outer<Signer> = Outer { h: Holder { s: Signer { } } }; println(o.noop()); }
+        }
+        fn main() { App { }; }
+    ";
+    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+    // Written outside `Signer`, the same read is refused.
+    let read = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
+         methods, and `Signer.key` reads one from outside — call one of its methods instead (sign, peek)";
+    let outside = src.replace("run() {", "fn peer(o: Outer<Signer>) -> Int { return o.h.s.key; }\n            run() {");
+    assert_eq!(error_sites(&outside), vec![("o.h.s.key".to_string(), read.to_string())]);
+}
+
+#[test]
+fn a_sealed_param_three_fields_deep_in_a_generic_body_is_refused() {
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Mid<B> {{ params {{ s: B; }} }}
+        locus Holder<A> {{ params {{ m: Mid<A>; }} }}
+        locus Outer<T> {{
+            params {{ h: Holder<T>; }}
+            fn r() -> Int {{ return self.h.m.s.key; }}
+        }}
+        main locus App {{
+            fn go() -> Int {{
+                let o: Outer<Signer> = Outer {{ h: Holder {{ m: Mid {{ s: Signer {{ }} }} }} }};
+                return o.r();
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(error_sites(&src), vec![("self.h.m.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty(), "{:?}", error_sites(&src.replace("@sealed ", "")));
+}
+
+#[test]
+fn a_sealed_param_through_non_generic_fields_is_refused() {
+    // No parameter in the chain: each field's declared type names the
+    // next locus, and the read is refused wherever it is written outside
+    // `Signer` (as it was before the generic chain was).
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Holder {{ params {{ s: Signer = Signer {{ }}; }} }}
+        locus Outer {{
+            params {{ h: Holder = Holder {{ }}; }}
+            fn r() -> Int {{ return self.h.s.key; }}
+        }}
+        main locus App {{
+            params {{ o: Outer = Outer {{ }}; }}
+            fn go() -> Int {{ return self.o.h.s.key; }}
+        }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(
+        error_sites(&src),
+        vec![
+            ("self.h.s.key".to_string(), SEALED_KEY_READ.to_string()),
+            ("self.o.h.s.key".to_string(), SEALED_KEY_READ.to_string()),
+        ]
+    );
+}
+
+#[test]
+fn a_sealed_generic_locus_reads_its_own_params_in_every_specialization() {
+    let src = "
+        @sealed locus Vault<T> {
+            params { inner: T; key: Int = 7; }
+            fn get() -> Int { return self.key; }
+            fn set(k: Int) { self.key = k; }
+        }
+        main locus App {
+            fn go() -> Int { let v: Vault<Int> = Vault { inner: 1 }; return 0; }
+        }
+        fn main() { App { }; }
+    ";
+    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+}
+
+#[test]
+fn a_default_evaluated_inside_the_sealed_locus_is_clean() {
+    let src = "
+        @sealed locus Signer {
+            params { key: Int = 7; }
+            fn sign(m: Int = self.key) -> Int { return m; }
+            fn twice() -> Int { return self.sign() + self.sign(); }
+        }
+        main locus App { params { s: Signer = Signer { }; } }
+        fn main() { App { }; }
+    ";
+    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+}
