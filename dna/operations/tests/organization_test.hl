@@ -18,6 +18,41 @@ locus OrganizationFixture {
         std::test::assert_eq_int(r.code, 0, "native source checks: " + r.stderr);
         return std::io::fs::read_file(self.root + "/topology.json") or "";
     }
+    // A project laid out as the producer checks it (`check dna/org`), with
+    // or without a manifest, and with or without a seed beside the org.
+    fn compile_project(name: String, manifest: Bool, beside: Bool) -> String {
+        let dir = self.root + "/" + name;
+        let made = dna::run_tool("mkdir\n-p\n" + dir + "/dna/org\n" + dir + "/dna/lib");
+        std::test::assert_eq_int(made.code, 0, "project layout");
+        if manifest { self.write(dir + "/hale.toml", "[package]\nname = \"org-fixture\"\nversion = \"0.0.0\"\n"); }
+        let mut source = SOURCE;
+        if beside {
+            self.write(dir + "/dna/lib/lib.hl", "locus Metrics { params { total: Int = 0; } }\n");
+            source = "import \"../lib\" as lib;\n" + std::str::replace(std::str::replace(SOURCE, "locus Metrics { params { total: Int = 0; } }\n", ""), "metrics: Metrics = Metrics { }", "metrics: lib::Metrics = lib::Metrics { }");
+        }
+        self.write(dir + "/dna/org/main.hl", source);
+        let r = dna::run_tool(self.compiler + "\ncheck\n" + dir + "/dna/org\n--dump-topology=" + dir + "/topology.json");
+        std::test::assert_eq_int(r.code, 0, "project checks: " + r.stderr);
+        return std::io::fs::read_file(dir + "/topology.json") or "";
+    }
+    fn names_from_the_snapshot_root() {
+        let with = self.compile_project("with-manifest", true, false);
+        std::test::assert(std::str::contains(with, "\"file\": \"dna/org/main.hl\""), "a manifest names the seed from the project");
+        let q = ops::Organization { artifact: with, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(q.load(), "manifest project admitted: " + q.error());
+        std::test::assert_eq_str(q.position_of("Org.support.reviewer").source_file, "dna/org/main.hl", "a manifest's naming is kept as it is");
+        let bare = self.compile_project("no-manifest", false, false);
+        std::test::assert(std::str::contains(bare, "\"file\": \"main.hl\""), "no manifest: the compiler names from the seed itself");
+        let b = ops::Organization { artifact: bare, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(b.load(), "manifest-less project admitted: " + b.error());
+        std::test::assert_eq_str(b.position_of("Org.support.reviewer").source_file, "dna/org/main.hl", "named from the snapshot root, not the seed");
+        let wide = self.compile_project("no-manifest-beside", false, true);
+        std::test::assert(std::str::contains(wide, "\"file\": \"org/main.hl\"") && std::str::contains(wide, "\"file\": \"lib/lib.hl\""), "no manifest, a seed beside: named from their common ancestor");
+        let w = ops::Organization { artifact: wide, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(w.load(), "manifest-less project with a seed beside admitted: " + w.error());
+        std::test::assert_eq_str(w.position_of("Org").source_file, "dna/org/main.hl", "the org's file from the snapshot root");
+        std::test::assert_eq_str(w.position_of("Org.metrics").source_file, "dna/lib/lib.hl", "the seed beside it from the snapshot root");
+    }
     fn reseal(artifact: String) -> String {
         let marker = ",\n  \"artifact_digest\": \"";
         let at = std::str::index_of(artifact, marker);
@@ -72,7 +107,7 @@ locus OrganizationFixture {
         std::test::assert_eq_str(std::json::find_string_field(basis, "artifact_digest"), std::json::find_string_field(artifact, "artifact_digest"), "exact native integrity identity");
         let row = q.row_json(q.position_of("Org.support.reviewer"));
         std::test::assert(std::str::contains(row, "Reviewer::on_notice") && std::str::contains(row, "Notices"), "native contract detail survives");
-        std::test::assert_eq_str(std::json::find_string_field(row, "source_file"), "main.hl", "compiler seed-relative provenance");
+        std::test::assert_eq_str(std::json::find_string_field(row, "source_file"), "dna/org/main.hl", "compiler provenance, named from the snapshot root");
         let wide_artifact = self.reseal(std::str::replace(artifact, "\"capacity\": null", "\"capacity\": 18446744073709551615"));
         let wide = ops::Organization { artifact: wide_artifact, source_head: "source-a", record_head: "record-a" };
         std::test::assert(wide.load(), "canonical unsigned descriptor need not fit a signed machine integer");
@@ -141,4 +176,5 @@ fn main() {
     let configured = std::env::var("HALE_BIN");
     let fixture = OrganizationFixture { root: dna::trim_nl(made.stdout), compiler: if len(configured) > 0 { configured } else { "hale" } };
     fixture.exercise();
+    fixture.names_from_the_snapshot_root();
 }

@@ -86,8 +86,15 @@ Contract fields contain declaration types, method names, publish/subscribe
 topics and supervision policy. Capacity and retry descriptors are canonical
 decimal strings or null, preserving values beyond JavaScript's exact integer
 range. Parameter values are absent. Source files are
-compiler relative provenance: relative to the snapshot's root when its
-committed tree has a `hale.toml` there, and to the organization seed otherwise.
+compiler relative provenance, named from the snapshot's root whether or not
+its committed tree has a `hale.toml`. The compiler names them from the
+manifest's directory, else from the deepest common ancestor of the sources,
+so a manifest-less organization importing nothing outside its seed is named
+`main.hl`; the root instance is declared in `seed`, so the directory its file
+is named under is the seed's path from that root, and the part of `seed`
+before it prefixes every relative name (`dna/org/main.hl`, and a seed beside
+it `dna/lib/…`). A project with a manifest at its root is named as the
+compiler names it.
 An artifact from an older compiler may carry an absolute path; after verifying
 the artifact, the reader strips one only when it starts with the supplied
 `source_root` followed by `/`, producing a path within that source snapshot. Other absolute paths are
