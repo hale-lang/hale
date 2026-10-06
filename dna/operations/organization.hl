@@ -30,6 +30,7 @@ locus Organization {
         dependency_source: String = "none";
         source_root: String = ""; // caller-owned archive root; never serialized
         seed: String = "dna/org";
+        naming_prefix: String = ""; // derived at load; never serialized
         rows: OrganizationRows = OrganizationRows { };
         declarations: OrganizationDeclarations = OrganizationDeclarations { };
         loaded: Bool = false;
@@ -167,7 +168,37 @@ locus Organization {
         }
         // Unrelated absolute host paths never leave the head.
         if std::str::starts_with(file, "/") || std::str::contains(file, "\\") { return ""; }
-        return file;
+        return self.naming_prefix + file;
+    }
+    fn dir_of(path: String) -> String {
+        let mut i = len(path) - 1;
+        while i >= 0 && std::str::byte_at_unchecked(path, i) != 47 { i = i - 1; }
+        return if i < 0 { "" } else { path[0..i] };
+    }
+    // The compiler names files from the project's manifest directory, else
+    // from the deepest common ancestor of the sources (spec/verification.md):
+    // a manifest-less organization importing nothing outside its seed names
+    // `dna/org/main.hl` "main.hl". The root instance is declared in the seed,
+    // so the directory its file is named under is the seed's path from that
+    // naming root, and what precedes it in `seed` is the prefix every relative
+    // name lacks. A project with a manifest names the seed whole: no prefix.
+    fn derive_naming_prefix(contracts: String) {
+        let mut decls = std::json::array_first(contracts);
+        while !decls.done {
+            let mut instances = std::json::array_first(std::json::find_field_raw(decls.element, "instances"));
+            while !instances.done {
+                if std::json::find_field_raw(instances.element, "owner") == "null" {
+                    let file = std::json::find_string_field(decls.element, "file");
+                    let dir = self.dir_of(file);
+                    if std::str::starts_with(file, "/") || dir == self.seed { return; }
+                    if len(dir) == 0 { self.naming_prefix = self.seed + "/"; return; }
+                    if std::str::ends_with(self.seed, "/" + dir) { self.naming_prefix = self.seed[0..(len(self.seed) - len(dir))]; }
+                    return;
+                }
+                instances = std::json::array_next(instances);
+            }
+            decls = std::json::array_next(decls);
+        }
     }
     @unbounded
     fn load() -> Bool {
@@ -191,6 +222,7 @@ locus Organization {
         self.exact_ownership = ownership == "true";
         let contracts = std::json::find_field_raw(self.artifact, "contracts");
         if !self.array(contracts) { return self.refuse("organization artifact lacks declaration contracts"); }
+        self.derive_naming_prefix(contracts);
         let mut decls = std::json::array_first(contracts);
         while !decls.done {
             let c = decls.element;

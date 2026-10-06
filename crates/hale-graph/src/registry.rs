@@ -1979,11 +1979,11 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "external contracts are frozen through extraction: additive and unhashed sections are free; hash and replay identity change only through explicit versioned transitions with an exact diagnostic (#476's rule)",
             "a build's identities read one snapshot (2.3, `model_identity`): the model hash (P26) is the snapshot model's `shape_hash`, read from the model (`project_shape_hash`, the value its artifact stamps, never scraped from a rendered artifact), the obs ids are that model's entities, and the plan digest `exec_digest` frames is its lowering view's plan; beside them the snapshot key (`SnapshotKey`: the entry, the load mode, the target, the config digest, the overlay digest, the digest of the source text read) names the load all three were derived from. The key is snapshot-local: no binary or recording carries it",
-            "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity, or to the stale-binary warning: the replay identity, the cache key and the stale-binary hash fold one selection, every identity-covered crate (the CLI among them until hale-frontend owns its semantic work) and the manifest files (F.40 phase 4, I4); the warning stats that selection and reads it only when a file or its directory is newer than the binary",
+            "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity, or to the stale-binary warning: the replay identity, the cache key and the stale-binary hash fold one selection, every identity-covered crate (the CLI among them until hale-frontend owns its semantic work) and the manifest files (F.40 phase 4, I4); the warning stats that selection and reads it only when a file or its directory is newer than the binary, and the stale-DNA warning holds the embedded DNA directories to `embedded_dna_digest` the same way (`stale_dna`)",
             "every FNV identity folds through one function, `hale_graph::identity::Fnv64` (F.40 phase 4, I6): what tells two identities apart is the bytes each frames, and the offset basis written anywhere else in a crate's `src` or build script fails `identity_coverage.rs` (`the_fnv_basis_is_written_only_where_the_one_fold_lives`) until it calls the fold or is listed with its reason",
         ],
         missing: Missing::NotApplicable,
-        tests: &["crates/hale-cli/tests/obs_model_hash.rs", "crates/hale-cli/tests/model_diff.rs", "crates/hale-cli/tests/replay_cli.rs", "crates/hale-cli/tests/stale_dna_warning.rs", "crates/hale-cli/tests/source_map.rs", "crates/hale-cli/src/shared/stale.rs (an_edit_to_any_covered_source_is_stale_and_an_uncovered_one_is_not, an_unmodified_tree_is_fresh_without_a_read_and_its_fold_agrees)", "crates/hale-graph/tests/identity_coverage.rs (the_fnv_basis_is_written_only_where_the_one_fold_lives)"],
+        tests: &["crates/hale-cli/tests/obs_model_hash.rs", "crates/hale-cli/tests/model_diff.rs", "crates/hale-cli/tests/replay_cli.rs", "crates/hale-cli/tests/stale_dna_warning.rs", "crates/hale-cli/tests/source_map.rs", "crates/hale-cli/src/shared/stale.rs (an_edit_to_any_covered_source_is_stale_and_an_uncovered_one_is_not, an_unmodified_tree_is_fresh_without_a_read_and_its_fold_agrees, the_dna_tree_is_digested_only_when_a_time_or_the_count_moved, a_dna_edit_that_restores_its_time_is_not_seen_by_the_cheap_check)", "crates/hale-graph/tests/identity_coverage.rs (the_fnv_basis_is_written_only_where_the_one_fold_lives)"],
         spec: &["spec/model.md § Identity and versioning"],
         owned: &[
             site("crates/hale-types/src/topology_projection.rs", "project_shape_hash"),
@@ -2008,6 +2008,7 @@ pub const FAMILIES: &[Family] = &[
             site("crates/hale-cli/src/fleet.rs", "fnv"),
             site(CG, "compile_cached_runtime_object_with"),
             site(STALE, "stale_sources"),
+            site(STALE, "stale_dna"),
         ],
         seams: &[],
     },

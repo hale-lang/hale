@@ -217,7 +217,9 @@ declarations don't need either.
 When `hale build` resolves an `import` against a directory
 that contains an `hale.toml`, it reads the file's `[ffi]`
 section and appends those values to the build's link surface
-automatically. Library authors ship:
+automatically. `hale run` and `hale replay` build with the same
+options, from the same function, and `hale test` and `hale bench`
+apply the same pickup. Library authors ship:
 
 ```toml
 # pond/raylib/hale.toml

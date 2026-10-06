@@ -255,18 +255,23 @@ pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/verbs.hl",
 ];
 
-/// Every embedded file as a `(path, content)` pair: the core, the
-/// host, the surface, pond's copies and the legs —
-/// the whole of what `EMBEDDED_DIGEST` names.
+/// Every embedded file: the core, the host, the surface, pond's
+/// copies, the legs and the UI — the whole of what `EMBEDDED_DIGEST`
+/// names.
+pub fn embedded_files() -> impl Iterator<Item = &'static EmbeddedFile> {
+    FILES
+        .iter()
+        .chain(HOST_FILES)
+        .chain(OPERATION_FILES)
+        .chain(ORGANIZATION_FILES)
+        .chain(POND_FILES)
+        .chain(LEGS_FILES)
+        .chain([&UI_MAIN, &UI_HTML])
+}
+
+/// Every embedded file as a `(path, content)` pair.
 pub fn embedded_pairs() -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES).chain(LEGS_FILES) {
-        out.push((f.path.to_string(), f.content.to_string()));
-    }
-    for f in [&UI_MAIN, &UI_HTML] {
-        out.push((f.path.to_string(), f.content.to_string()));
-    }
-    out
+    embedded_files().map(|f| (f.path.to_string(), f.content.to_string())).collect()
 }
 
 #[cfg(test)]

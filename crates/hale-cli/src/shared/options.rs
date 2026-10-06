@@ -618,9 +618,9 @@ pub(crate) fn env_roles(spec: &crate::pkg::EnvSpec) -> String {
 /// do not say, the `[ffi]` link libraries and C sources each imported
 /// package's `hale.toml` declares ([`collect_ffi_from_imports`]), so a
 /// program importing such a package has one identity whichever verb
-/// computes it. `build` builds with what this returns; `run` and
-/// `replay` fingerprint it and build with their flags alone, as they
-/// always have.
+/// computes it. All three fingerprint what this returns and build with
+/// it, so a package's `[ffi] csrc` and `link` reach `run` and `replay`
+/// without `--csrc` / `--link` flags.
 pub(crate) fn identity_options(
     options: &hale_codegen::BuildOptions,
     snap: &hale_frontend::snapshot::Snapshot,

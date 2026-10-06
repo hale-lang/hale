@@ -2394,8 +2394,7 @@ fn one_program_at_two_roots_has_one_identity() {
 /// `hale.toml` declares is in the identity `build`, `run` and `replay`
 /// compute alike. Only `build` picked it up, so a program importing such
 /// a package was fingerprinted with `link=m` by `build` and without it
-/// by `run` and `replay`. (`run` still builds with its own flags alone;
-/// the library here is one the runtime links anyway.)
+/// by `run` and `replay`.
 #[test]
 fn a_manifest_ffi_surface_is_in_every_verbs_identity() {
     let dir = workdir("ffi_identity");
@@ -2430,6 +2429,60 @@ fn a_manifest_ffi_surface_is_in_every_verbs_identity() {
         "and `replay` admits the build's recording: {}",
         stderr
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The C sources an imported package's `[ffi] csrc` declares are built
+/// by `run` and `replay`, not only fingerprinted: the three verbs build
+/// with the options `identity_options` resolves, so a program calling a
+/// C function only the package compiles links under each. `run` and
+/// `replay` built with their flags alone, and their link failed on the
+/// package's symbol. The fingerprint frames `link` and `csrc`, so one
+/// exec digest from `build` and `run`, admitted by `replay`, is the
+/// three verbs agreeing on the ffi fields of their options.
+#[test]
+fn a_manifest_csrc_is_built_by_run_and_replay() {
+    let dir = workdir("ffi_csrc");
+    std::fs::write(dir.join("hale.toml"), "").unwrap();
+    let lib = dir.join("vendor/shim");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("glue.c"), "long long shim_add(long long a, long long b) { return a + b; }\n").unwrap();
+    std::fs::write(lib.join("hale.toml"), "[ffi]\ncsrc = [\"glue.c\"]\n").unwrap();
+    std::fs::write(
+        lib.join("shim.hl"),
+        "@ffi(\"c\") fn shim_add(a: Int, b: Int) -> Int;\nfn add(a: Int, b: Int) -> Int { return shim_add(a, b); }\n",
+    )
+    .unwrap();
+    let app = dir.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    let prog = app.join("main.hl");
+    std::fs::write(&prog, "import \"vendor/shim\" as shim;\nfn main() { println(shim::add(40, 2)); }\n").unwrap();
+
+    let ran = record(&dir, &prog);
+    build(&prog);
+    let built = dir.join("built.halerec");
+    record_built(&app.join("main"), &built);
+    assert_eq!(
+        recorded_exec_digest(&built),
+        recorded_exec_digest(&ran),
+        "`build` and `run` build with the manifest's C source alike"
+    );
+    // An `@ffi` call is a live effect replay refuses by default; this one
+    // only adds.
+    let out = hale()
+        .arg("replay")
+        .arg("--allow-live-effects")
+        .arg(&ran)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && !stderr.contains("different build inputs"),
+        "`replay` builds with it and admits the run's recording: {}",
+        stderr
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("42"), "the replayed program called the C function");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
