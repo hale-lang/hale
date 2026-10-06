@@ -12360,6 +12360,18 @@ impl<'a> Checker<'a> {
         if want.assignable_from(got) || self.scalars.is_empty() {
             return want.assignable_from(got);
         }
+        // An array literal into an array of identities or ranges: each
+        // element flows into the element type (`[1, 2]` into `[OrderId;
+        // 2]`, each literal held to the range).
+        if let (Ty::Array(we, wn), Ty::Array(ge, gn), Expr::Array(elems, _)) = (want, got, value) {
+            if wn == gn {
+                let mut all = true;
+                for e in elems {
+                    all &= self.flows_into(we, ge, e);
+                }
+                return all;
+            }
+        }
         if let Some(v) = crate::unit_values::int_literal(value) {
             if matches!(got, Ty::Prim(PrimType::Int)) {
                 match self.scalars.literal(want, v, value.span()) {

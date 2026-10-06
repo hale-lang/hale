@@ -78,6 +78,12 @@ fn a_literal_where_a_scalar_is_expected_is_a_value_of_it() {
 }
 
 #[test]
+fn a_literal_in_an_array_literal_is_a_value_of_its_element_type() {
+    clean("    let ids: [OrderId; 2] = [1, 2];\n    let bs: [Byte; 2] = [0, 255];\n");
+    one("    let bs: [Byte; 2] = [1, 300];\n", "300", "`300` is outside `Byte`'s range `0..256`");
+}
+
+#[test]
 fn a_literal_with_no_expected_type_is_an_int() {
     one(
         "    let n = 5;\n    let a: OrderId = n;\n",

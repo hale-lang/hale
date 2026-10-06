@@ -270,9 +270,10 @@ identity with no range has none.
 
 **Literals.** An integer literal where a value of an identity or a
 range is expected (a `let` annotation, an argument, a return, a field,
-an `or` substitute, the other side of a comparison with an identity) is
-a value of that type, and one outside its range is refused at the
-literal. A literal with no expected type is an `Int`.
+an `or` substitute, an element of an array literal of them, the other
+side of a comparison with an identity) is a value of that type, and one
+outside its range is refused at the literal. A literal with no expected
+type is an `Int`.
 
 ```hale,fragment
 let s: Session = 12;       // a Session
@@ -371,7 +372,9 @@ required row, refused at the cast.
 
 **Layout.** Wherever a type reaches a representation, an identity or a
 range is its `Int`: it prints as its `Int`, it is a legal hashmap key
-and routing key, a flat payload's field and an FFI `Int`, and a topic's
+and routing key, a flat payload's field, an FFI `Int`, a generic
+argument whose monomorph lays it out as an `Int` (`Box<OrderId>`) and
+an array element, and a topic's
 shape string tags its field `i`, as an `Int` field's (decision 9), so
 declaring one moves no shape hash.
 

@@ -22,6 +22,8 @@ type Header { session: Int; seq: Int; }
 
 type Order { id: OrderId; qty: Byte; }
 
+type Box<T> { v: T; }
+
 @form(hashmap)
 locus Book {
     capacity { pool rows of Order indexed_by id; }
@@ -107,6 +109,13 @@ fn main() {
     std::test::assert_eq_int(got.qty, 3, "an identity is a hashmap key");
     let miss = book.get(OrderId(5)) or Order { id: 0, qty: 0 };
     std::test::assert_eq_int(miss.qty, 0, "a key not set misses");
+
+    // A generic over an identity, and an array of them: each is laid
+    // out as the `Int` it is.
+    let boxed: Box<OrderId> = Box { v: 6 };
+    std::test::assert_eq_int(Int(boxed.v), 6, "a generic over an identity");
+    let ids: [OrderId; 3] = [1, 2, 3];
+    std::test::assert_eq_int(Int(ids[2]), 3, "an array of identities from literals");
 
     // Printing: an identity and a range print as their `Int`.
     std::test::assert_eq_str(to_string(o), "4", "an identity prints as its `Int`");
